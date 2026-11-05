@@ -1449,9 +1449,116 @@ def _sequential_panel_run():
     return result, views
 
 
-def test_run_result_repr_is_a_compact_readout(tmp_path):
+def _zero_control_conversion_run():
+    """A conversion with no control events: an exact set and no relative point."""
     from random import Random
 
+    rng = Random(13)
+    arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(200)]
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            {
+                "unit": [f"u{i:03d}" for i in range(200)],
+                "arm": arms,
+                "converted": [int(arm == "treatment" and i % 5 < 2) for i, arm in enumerate(arms)],
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"converted": "conversion"},
+    )
+    with reader:
+        return run(experiment, reader)
+
+
+def _full_set_sequential_run():
+    """A one-sided asymptotic sequential set that covers every ratio."""
+    from fractions import Fraction
+
+    from increment.estimators import SequentialCell
+    from tests.test_asymptotic_public_sources import _analysis, _frame, _plan
+
+    specs = [MetricSpec(name="outcome", type="mean")]
+    cell = SequentialCell(
+        metric="outcome", group_id="treatment", alpha=Fraction(1, 20), alternative="less"
+    )
+    plan = _plan(specs, cells=(cell,)).model_copy(update={"alternative": "less"})
+    experiment, reader = _analysis(_frame([-2, 1, 2] * 40, [10, 12] * 40), specs, plan)
+    with reader:
+        return run(experiment, reader)
+
+
+def _missing_arm_asof_run():
+    """An as-of asymptotic sequential cell whose control arm has no units."""
+    from dataclasses import replace
+    from datetime import date, timedelta
+
+    from increment import Randomized
+    from increment.workflows import capture_sequential
+    from tests.test_asymptotic_public_sources import _frame, _plan
+
+    specs = [MetricSpec(name="outcome", type="mean", window_days=2)]
+    start = date(2025, 1, 1)
+    experiment, reader = from_frame(
+        _frame([], [10, 12] * 40).assign(exposed=start, day=start),
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        design=Randomized(control_group="control"),
+        metrics=specs,
+        experiment_id="experiment",
+        plan=_plan(specs, panel=True),
+        observation_end=start + timedelta(days=20),
+    )
+    asof = View(view="asof", grain="asof", completion_policy=True)
+    with reader:
+        capture_sequential(experiment, reader, finalized=True, as_of=start + timedelta(days=14))
+        return run(replace(experiment, views=(asof,)), reader)
+
+
+def _undefined_rank_winsor_run():
+    """A rank winsor contrast whose control mean is identically zero."""
+    from increment import Randomized
+    from increment.winsor import WinsorInferenceSpec, WinsorSupport
+
+    winsorization = {
+        "upper_percentile": 0.99,
+        "support": WinsorSupport(lower=0, upper=0, provenance="Declared outcome support"),
+        "inference": WinsorInferenceSpec(method="joint-rank-projection-v1"),
+    }
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            [
+                {"unit": f"{arm}-{i}", "arm": arm, "value": 0.0}
+                for arm in ("control", "treatment")
+                for i in range(2)
+            ]
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean", winsorization=winsorization)],
+        plan=AnalysisPlan(primary="value"),
+    )
+    with reader:
+        return run(experiment, reader)
+
+
+def _printed_line(result, metric):
+    (line,) = (line for line in repr(result).splitlines() if line.startswith(metric))
+    return line
+
+
+def test_run_result_repr_is_a_compact_readout(tmp_path):
     from tests.analysis_factory import lift_rows
 
     result = _two_metric_run()
@@ -1475,49 +1582,37 @@ def test_run_result_repr_is_a_compact_readout(tmp_path):
         assert "status=available" in line
 
     # A conversion with no control events keeps its exact set without a point.
-    rng = Random(13)
-    arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(200)]
-    experiment, reader = from_frame(
-        pd.DataFrame(
-            {
-                "unit": [f"u{i:03d}" for i in range(200)],
-                "arm": arms,
-                "converted": [int(arm == "treatment" and i % 5 < 2) for i, arm in enumerate(arms)],
-            }
-        ),
-        shape="summary",
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics={"converted": "conversion"},
-    )
-    with reader:
-        conversion = run(experiment, reader)
+    conversion = _zero_control_conversion_run()
     (row,) = lift_rows(conversion.readout())
     assert row.lift is None and row.binomial_set is not None
-    (line,) = (line for line in repr(conversion).splitlines() if line.startswith("converted"))
+    line = _printed_line(conversion, "converted")
     assert f"{row.binomial_set.lower * 100:.6g}" in line
     assert row.binomial_set.geometry in line
     assert "status=available" in line
 
     # A one-sided sequential set that covers every ratio is printed as retained, not dropped.
-    from fractions import Fraction
-
-    from increment.estimators import SequentialCell
-    from tests.test_asymptotic_public_sources import _analysis, _frame, _plan
-
-    specs = [MetricSpec(name="outcome", type="mean")]
-    cell = SequentialCell(
-        metric="outcome", group_id="treatment", alpha=Fraction(1, 20), alternative="less"
-    )
-    plan = _plan(specs, cells=(cell,)).model_copy(update={"alternative": "less"})
-    experiment, reader = _analysis(_frame([-2, 1, 2] * 40, [10, 12] * 40), specs, plan)
-    with reader:
-        sequential = run(experiment, reader)
+    sequential = _full_set_sequential_run()
     (row,) = lift_rows(sequential.readout())
     assert row.require_asymptotic_sequential_result().bounds.status == "full"
-    (line,) = (line for line in repr(sequential).splitlines() if line.startswith("outcome"))
+    line = _printed_line(sequential, "outcome")
     assert "set=" in line and "interval=" not in line
+
+    # A sequential cell with a missing arm keeps neither a point nor a set.
+    missing = _missing_arm_asof_run()
+    (row,) = cast(Any, missing.readout())
+    bounds = row.sequential_result.bounds
+    assert row.lift is None and bounds.status == "unavailable"
+    line = _printed_line(missing, "outcome")
+    assert "status=unavailable" in line and bounds.reason in line
+
+    # A rank winsor set with undefined endpoints names each, never as an infinite bound.
+    winsorized = _undefined_rank_winsor_run()
+    (row,) = (row for row in winsorized.live_rows if row is not None)
+    endpoints = (row.confidence_set.relative.lower, row.confidence_set.relative.upper)
+    assert {endpoint.status for endpoint in endpoints} == {"undefined"}
+    line = _printed_line(winsorized, "value")
+    assert "set=" in line and "∞" not in line
+    assert all(endpoint.reason in line.split("set=", 1)[1] for endpoint in endpoints)
 
 
 def test_run_result_summary_frame_matches_view_summaries(tmp_path):

@@ -1039,8 +1039,8 @@ def _confidence_set_text(projection: EffectEstimate) -> str | None:
     return text if projection.geometry is None else f"{text} ({projection.geometry})"
 
 
-def _retained_set_extent(row) -> str | None:
-    """Name a retained confidence set that holds every value or none, which bounds cannot show.
+def _retained_set_text(row, value_scale: str) -> str | None:
+    """Format a set whose bounds cannot show it: every value, none, or typed endpoints.
 
     An unavailable sequential set is also stored as the whole line; it is not named here.
     """
@@ -1048,22 +1048,59 @@ def _retained_set_extent(row) -> str | None:
     if sequential is not None:
         status = sequential.bounds.status
         return (
-            "all values"
+            "set=all values"
             if status in ("full", "full-domain")
-            else "empty"
+            else "set=empty"
             if status == "empty"
             else None
+        )
+    typed = getattr(row, "confidence_set", None)
+    if typed is not None:
+        interval = typed.additive if value_scale == "absolute" else typed.relative
+        lower, upper = interval.lower, interval.upper
+        if lower.status == upper.status == "unbounded":
+            return "set=all values"
+        factor = 100 if value_scale == "relative" else 1
+        suffix = "%" if factor == 100 and "finite" in (lower.status, upper.status) else ""
+        return (
+            f"set=[{_endpoint_text(lower, lower=True, factor=factor)}, "
+            f"{_endpoint_text(upper, lower=False, factor=factor)}]{suffix}"
         )
     relative = getattr(row, "relative_confidence_set", None)
     if relative is not None and getattr(row, "value_scale", "relative") == "relative":
         return (
-            "all values"
+            "set=all values"
             if relative.geometry == "all_real"
-            else "empty"
+            else "set=empty"
             if relative.geometry == "empty"
             else None
         )
     return None
+
+
+def _retained_unavailable_reason(row) -> str | None:
+    """Return why a row with no point keeps no usable confidence set; None when it keeps either."""
+    if row is None or _has_point(row) or getattr(row, "failure_code", None) is not None:
+        return None
+    if any(
+        getattr(row, name, None) is not None
+        for name in ("binomial_set", "confidence_set", "abs_diff", "abs_lb", "abs_ub")
+    ):
+        return None
+    reasons = []
+    sequential = getattr(row, "sequential_result", None)
+    if sequential is not None:
+        if getattr(sequential.bounds, "available", True):
+            return None
+        reasons.append(sequential.bounds.reason)
+    relative = getattr(row, "relative_confidence_set", None)
+    if relative is not None:
+        if relative.geometry != "unavailable":
+            return None
+        reasons.append(relative.reason)
+    if not reasons:
+        return None
+    return next((reason for reason in reasons if reason), "confidence set unavailable")
 
 
 def _display_source(source_id: str | None) -> str | None:
@@ -1731,12 +1768,12 @@ def _format_bound(value, *, lower=False):
     return ("−∞" if lower else "+∞") if value is None else f"{value:.6g}"
 
 
-def _endpoint_text(endpoint, *, lower: bool):
+def _endpoint_text(endpoint, *, lower: bool, factor: float = 1):
     status = getattr(endpoint, "status", None)
     value = getattr(endpoint, "value", None)
     reason = getattr(endpoint, "reason", None)
-    if status == "finite":
-        return f"{value:.6g}"
+    if status == "finite" and value is not None:
+        return f"{value * factor:.6g}"
     if status == "unbounded":
         return "−∞" if lower else "+∞"
     if status == "undefined":
