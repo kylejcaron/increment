@@ -264,6 +264,33 @@ values.
   and each outcome-excluded member's verdict lists its own reason. A relabelled
   cell changes its readout's snapshot ID once; runs saved earlier still reopen.
   Experiment identity hashes and published estimates are unchanged.
+- Release note (bug fix): the program verdict no longer passes a primary that
+  is significant on its adverse side. `result.decisions.program` blocks with
+  `decision.primary.adverse` when a primary rejects on the side opposite its
+  declared `preferred_direction`, and with
+  `decision.primary.direction_not_established` when its confidence set lies on
+  both sides of the null. Under a two-sided plan, a rejecting primary that
+  declares no direction reports `not_evaluated` with
+  `decision.primary.direction_unspecified`; a one-sided `alternative` names the
+  favorable side of such a primary. A one-sided plan whose `alternative` is the
+  adverse side of a primary's declared direction refuses before any data is
+  read with `plan.primary.alternative_direction`, naming `metric`,
+  `alternative` and `preferred_direction`. Each `Verdict` gains `direction`
+  (`favorable`, `adverse`, `not_established`, `unspecified`, or `None` when the
+  cell does not reject), result rows gain `rejection_side()`, and sequential
+  rows now carry the metric's `preferred_direction`; see
+  [Program verdict](guides/reading-results.md#program-verdict). Estimates,
+  intervals, p-values and `stat_sig()` are unchanged. The decision plan bound
+  to a run now records each metric's favorable side, so an experiment that
+  declares a direction or uses a one-sided plan changes its `to_json()`,
+  `hash()`, `analysis_spec_hash` and registration hash once, and its runs bind
+  a version-2 plan that an earlier release cannot read; other experiments keep
+  their identity and bind version 1. Such an experiment saved earlier no longer
+  runs against a resolver built by this release
+  (`kernel.run.execution_unavailable`, field `registration`); build it again.
+  A run saved earlier still reopens, and deciding it again reads
+  `decision.primary.direction_unspecified` for a rejecting primary, as does
+  `from_moments` on a cube exported by an earlier release.
 - Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
   spelled `missing="skip"`, with the same computation: the metric uses only the
   units with a value, and those units stay in every other metric. Estimates are

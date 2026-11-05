@@ -2251,8 +2251,15 @@ class AnalysisPlan(_ExplicitOnlyFields, _Base):
         Bonferroni for ``AsymptoticMean``), encouragement breakout uncorrected,
         and as-of uncorrected unless segmented.
     alternative : {"two-sided", "greater", "less"}
-        Direction of the test. A one-sided level is displayed through the
-        standard alpha-doubling convention.
+        Direction of the test, treatment against control: ``"greater"`` tests
+        for a higher treatment value. A one-sided level is displayed through
+        the standard alpha-doubling convention. A primary's verdict reads its
+        declared ``preferred_direction``, so a two-sided plan already credits
+        only the favorable side; under it, a rejecting primary that declares
+        no direction reports ``decision.primary.direction_unspecified``. A
+        one-sided alternative names the favorable side of a primary that
+        declares no direction, and must agree with one that does, or the plan
+        refuses with ``plan.primary.alternative_direction``.
     primary : PlanEntry | tuple[PlanEntry, ...] | None
         The confirmatory metric(s). Accepts a single entry or a list;
         ``None`` declares no primary.

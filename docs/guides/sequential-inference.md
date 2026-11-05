@@ -511,13 +511,16 @@ intersection-union argument does not remove either qualification.
 
 Each guardrail row reports its own SAFE/HARM label. `run()` also reports an
 aggregate program verdict in `result.decisions`, but returns `pass` only when
-every required primary and guardrail result is available and assignment
-integrity is qualified. A caller using only the per-row labels must apply the compound
-"ship only if every guardrail is SAFE" rule. Reading several guardrail
-labels without applying that rule (for example, shipping when most, but
-not all, guardrails are SAFE) has only the weaker union bound (`k * alpha`
-across `k` guardrails) on the joint probability that at least one label is
-a false SAFE, not the tighter single-`alpha` IUT bound.
+every required primary rejects on its favorable side, every guardrail result
+is available and SAFE, and assignment integrity is qualified; a primary that
+rejects on its adverse side blocks with `decision.primary.adverse` (see
+[Program verdict](reading-results.md#program-verdict)). A caller using only
+the per-row labels must apply the compound "ship only if every guardrail is
+SAFE" rule. Reading several guardrail labels without applying that rule (for
+example, shipping when most, but not all, guardrails are SAFE) has only the
+weaker union bound (`k * alpha` across `k` guardrails) on the joint
+probability that at least one label is a false SAFE, not the tighter
+single-`alpha` IUT bound.
 
 ### Secondaries: false discovery rate control at `q` for every in-family secondary
 

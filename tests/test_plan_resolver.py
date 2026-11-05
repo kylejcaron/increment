@@ -327,6 +327,68 @@ class TestGuardrailDirection:
         assert test.null_abs == pytest.approx(1.5)  # ty: ignore[unresolved-attribute] -- plan variant is fixed by test fixture
 
 
+class TestPrimaryAlternativeDirection:
+    """Rule: a one-sided plan alternative must be the favorable side of every primary
+    that declares a direction; otherwise the plan refuses, naming the metric."""
+
+    def test_one_sided_alternative_against_declared_direction_refuses(self):
+        import pandas as pd
+
+        from increment import MetricSpec, from_frame
+
+        plan = AnalysisPlan(primary=("rev", "lat"), alternative="greater")
+        with pytest.raises(InvalidRequestError) as compiled:
+            compile_decision_plan(
+                plan,
+                [
+                    _mean("rev", preferred_direction="increase"),
+                    _mean("lat", preferred_direction="decrease"),
+                ],
+                path="warehouse",
+            )
+        # A builder compiles its plan before it returns an experiment, so neither
+        # runnable() nor run() ever receives an experiment carrying this plan.
+        with pytest.raises(InvalidRequestError) as built:
+            from_frame(
+                pd.DataFrame(
+                    {
+                        "unit": ["c1", "c2", "t1", "t2"],
+                        "arm": ["control", "control", "treatment", "treatment"],
+                        "rev": [1.0, 2.0, 3.0, 4.0],
+                        "lat": [1.0, 2.0, 3.0, 4.0],
+                    }
+                ),
+                shape="summary",
+                unit="unit",
+                group="arm",
+                control="control",
+                metrics=[
+                    MetricSpec(name="rev", type="mean", preferred_direction="increase"),
+                    MetricSpec(name="lat", type="mean", preferred_direction="decrease"),
+                ],
+                plan=plan,
+            )
+        for raised in (compiled, built):
+            assert raised.value.code == "plan.primary.alternative_direction"
+            assert dict(raised.value.context) == {
+                "metric": "lat",
+                "alternative": "greater",
+                "preferred_direction": "decrease",
+            }
+
+    def test_one_sided_alternative_on_favorable_side_compiles(self):
+        plan = AnalysisPlan(primary="lat", alternative="less")
+        resolved = compile_decision_plan(
+            plan, [_mean("lat", preferred_direction="decrease")], path="warehouse"
+        )
+        assert resolved.procedures["lat"].alternative == "less"
+
+    def test_one_sided_alternative_without_declared_direction_compiles(self):
+        plan = AnalysisPlan(primary="rev", alternative="greater")
+        resolved = compile_decision_plan(plan, [_mean("rev")], path="warehouse")
+        assert resolved.procedures["rev"].alternative == "greater"
+
+
 class TestNullMarginPrecedence:
     """Rule: plan-binding margin/margin_abs beats catalog MetricBase.margin,
     beats 0 -- delegated to resolve_null_and_alternative."""

@@ -180,6 +180,7 @@ _REFUSALS = refusals(
             ),
         ),
         "plan.guardrail.direction": "metric {metric!r}: a guardrail role requires an explicitly-set, non-neutral preferred_direction (increase|decrease) on the metric -- a guardrail's non-inferiority margin has no adverse side to test against otherwise, and 'neutral' names no side",
+        "plan.primary.alternative_direction": "metric {metric!r}: the plan tests alternative={alternative!r}, but the metric declares preferred_direction={preferred_direction!r}, so this primary could only ever show a worse result -- use alternative='two-sided' (each primary's verdict reads its own preferred_direction) or the one-sided alternative on its favorable side",
         "plan.frame.override": RefusalSpec(
             "plan.frame.override",
             InvalidRequestError,
@@ -768,6 +769,17 @@ def _resolve_declaration(
             or guardrail_metric.preferred_direction in (None, "neutral")
         ):
             _raise("plan.guardrail.direction", metric=name)
+
+    if plan.alternative != "two-sided":
+        for name in primary_names:
+            direction = metrics_by_name[name].declared_preferred_direction
+            if favorable_alternative(direction, plan.alternative) != plan.alternative:
+                _raise(
+                    "plan.primary.alternative_direction",
+                    metric=name,
+                    alternative=plan.alternative,
+                    preferred_direction=direction,
+                )
 
     if path in ("frame", "frame/contrast"):
         for entry in (*primary_entries, *(explicit_secondary_entries or []), *guardrail_entries):
