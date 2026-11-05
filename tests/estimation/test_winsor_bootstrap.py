@@ -159,12 +159,14 @@ def test_three_arm_threaded_references_match_serial_bytes_and_reuse_density_work
     serial = bootstrap.full_procedure_bootstrap_references(raw, "C", ("T1", "T2"))
 
     original_density_arm = bootstrap._scaled_log_density_arm
-    workspace_addresses = []
+    # Holding each workspace keeps its memory alive, so no later allocation can
+    # start at its address and each address names one buffer.
+    workspaces = []
     workspace_lock = Lock()
 
     def record_density_workspace(log_cutoff, values, bandwidth, total, work):
         with workspace_lock:
-            workspace_addresses.append(int(work.ctypes.data))
+            workspaces.append(work)
         return original_density_arm(log_cutoff, values, bandwidth, total, work)
 
     monkeypatch.setattr(bootstrap, "_scaled_log_density_arm", record_density_workspace)
@@ -200,7 +202,7 @@ def test_three_arm_threaded_references_match_serial_bytes_and_reuse_density_work
             assert actual_values.tobytes() == expected_values.tobytes()
     assert len(serial["T1"].log_relative.roots) == 1_999
 
-    reused = Counter(workspace_addresses)
+    reused = Counter(int(work.ctypes.data) for work in workspaces)
     reused = {address: count for address, count in reused.items() if count > 1}
     assert len(reused) == 3
     assert set(reused.values()) == {32}
