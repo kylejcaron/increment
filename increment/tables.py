@@ -26,6 +26,7 @@ from increment._interpretation import (
     render_effect_interpretation,
     render_readout_qualifications,
 )
+from increment._optional import require_tables
 from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, DailyMetricValue
 from increment.breakout.projection import to_frame
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
@@ -1766,6 +1767,7 @@ def readout_table[V](
     The sparkline's y-domain fit is hardcoded to ``"robust"`` (IQR-based)
     so a noisy early window in a cumulative/as-of series can't dominate
     a plain min/max fit and flatten the later trend."""
+    require_tables("readout_table")
     import coeftable as ct
     import narwhals as nw
     import pandas as pd
@@ -1944,6 +1946,7 @@ def trend_table[V](
     sparkline beside it. A frame with no complete period falls back to
     the latest period available.
     """
+    require_tables("trend_table")
     import coeftable as ct
     import narwhals as nw
     import pandas as pd

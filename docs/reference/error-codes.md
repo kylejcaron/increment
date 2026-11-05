@@ -1079,7 +1079,9 @@ Retired codes and their replacements are listed below.
 | `impute.impute_roles_columns` | `InvalidRequestError` | `columns`, `requested` | `increment.impute` |
 | `impute.impute_roles_value` | `InvalidRequestError` | `columns` | `increment.impute` |
 | `impute.pooled_mean_outcome` | `InvalidRequestError` | `columns`, `route` | `increment.impute` |
-| `install.warehouse_extra_missing` | `CodedError` | `feature`, `install` | `increment._optional` |
+| `install.dashboard_extra_missing` | `MissingExtraError` | `feature`, `install` | `increment._optional` |
+| `install.tables_extra_missing` | `MissingExtraError` | `feature`, `install` | `increment._optional` |
+| `install.warehouse_extra_missing` | `MissingExtraError` | `feature`, `install` | `increment._optional` |
 | `integrity.allocation_missing_or_nonconstant` | `CapabilityError` | `population` | `increment.estimation.assignment_integrity`, `increment.readouts._common` |
 | `integrity.allocation_scheme_missing` | `CapabilityError` | `population` | `increment.estimation.assignment_integrity`, `increment.readouts._common` |
 | `kernel.context.closed` | `InvalidRequestError` | — | `increment.kernel.contracts` |

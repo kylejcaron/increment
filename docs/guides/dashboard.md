@@ -26,6 +26,13 @@ and DuckDB):
 pip install "increment[dashboard,demo]"
 ```
 
+Without the `dashboard` extra, `import increment.dashboard` refuses with
+`install.dashboard_extra_missing` before importing any dashboard module. Its
+`install` context field gives the command, `pip install "increment[dashboard]"`,
+and the refusal is also an `ImportError`. A missing `warehouse` extra refuses
+separately, with `install.warehouse_extra_missing`, when you bind the
+experiment.
+
 ## Bind your own experiment
 
 Bind your own experiment with `from_definitions`, supply a `DashboardConfig`,

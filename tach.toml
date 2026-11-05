@@ -989,6 +989,7 @@ depends_on = [
   "increment._canonical",
   "increment.breakout.estimates", "increment.estimation", "increment.errors",
   "increment.estimation.sequential_result", "increment.breakout.projection", "increment._interpretation",
+  "increment._optional",
 ]
 
 [[modules]]
@@ -1004,6 +1005,7 @@ depends_on = [
   "increment._execute",
   "increment._exploratory",
   "increment._interpretation",
+  "increment._optional",
   "increment._source_diagnostics",
   "increment._source_operations",
   "increment._source_workflows",
@@ -1112,6 +1114,7 @@ expose = [
   "IncrementRuntimeWarning",
   "IncrementWarning",
   "InvalidRequestError",
+  "MissingExtraError",
   "RefusalSpec",
   "PACKAGE_FRAMES",
   "RETIRED_CODES",

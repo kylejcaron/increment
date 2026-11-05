@@ -13,6 +13,13 @@ package: estimation, power, and the dataframe entry points stay free of
 marimo, CoefTable, and pandas.
 """
 
+# Dashboard availability must be checked before importing optional dependencies.
+# ruff: noqa: E402
+
+from increment._optional import require_dashboard
+
+require_dashboard()
+
 from increment.dashboard._app import render_dashboard
 from increment.dashboard._data import (
     DashboardConfig,

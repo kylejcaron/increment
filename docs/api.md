@@ -127,6 +127,15 @@ values.
 
 ### Earlier release notes
 
+- Release note (usability): importing `increment.dashboard` without the
+  `dashboard` extra refuses with `install.dashboard_extra_missing`, and
+  `increment.tables.readout_table` or `trend_table` without the `tables` extra
+  refuses with `install.tables_extra_missing`, instead of raising a bare
+  `ModuleNotFoundError`. As with `install.warehouse_extra_missing`, the
+  `feature` and `install` context fields name the requested feature and the
+  install command, such as `pip install "increment[dashboard]"`. All three
+  refusals are now also `ImportError`s, so `except ImportError` handlers catch
+  them; `install.warehouse_extra_missing` keeps its code and context.
 - Release note (usability): reading a public submodule such as
   `increment.workflows` from the package before importing it raises an
   `AttributeError` that names the import, `from increment.workflows import ...`;
