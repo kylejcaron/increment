@@ -16,9 +16,10 @@ from increment.semantics.models import AnalysisPlan
 from tests.analysis_factory import bind_pair, make_binding_like, view_readout
 
 
-def _panel(*, metrics=None, breakouts=(), plan=None, exposure_date=None):
-    """12-unit one-day panel: control on even rows, ``country='us'`` on even
-    rows, and treatment shifted ``+2`` on ``y`` so a lift is well-defined.
+def _panel(*, metrics=None, breakouts=(), plan=None):
+    """12-unit one-day panel, every unit exposed on that day: control on even
+    rows, ``country='us'`` on even rows, and treatment shifted ``+2`` on ``y``
+    so a lift is well-defined.
     """
     import polars as pl
 
@@ -46,7 +47,7 @@ def _panel(*, metrics=None, breakouts=(), plan=None, exposure_date=None):
         metrics=metrics or {"y": "mean"},
         breakouts=list(breakouts),
         plan=plan,
-        exposure_date=exposure_date,
+        exposure_date="ds",
     )
 
 
@@ -59,7 +60,6 @@ def test_run_asof_serves_activity_and_retention_metrics_together():
             MetricSpec(name="y", type="mean"),
             MetricSpec(name="d7", type="retention", threshold_days=(0, 7)),
         ],
-        exposure_date="ds",
     )
     results = view_readout(experiment, resolver, View(view="asof", grain="asof", values=True))
     assert {row.metric for row in results} == {"y", "d7"}

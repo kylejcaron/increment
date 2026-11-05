@@ -9,19 +9,22 @@ moments equal the real ibis builders column for column. Both import ibis;
 from __future__ import annotations
 
 import importlib.util
+import json
 from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import narwhals as nw
 import pyarrow as pa
 import pytest
 
-from increment import Method, readouts
+from increment import Method, View, readouts
 from increment._frame_panel import _day_axis_label_order
-from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
+from increment.errors import CapabilityError, CodedError, IncrementWarning, InvalidRequestError
 from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.evidence import (
+    BreakoutIdentity,
     ComplianceRequest,
     CountsRequest,
     MomentsRequest,
@@ -208,6 +211,11 @@ def _panel_table(rows=None) -> pa.Table:
     return pa.table(dict(zip(_PANEL_COLUMNS, cols, strict=True)))
 
 
+def _exposed_on(frame: pa.Table, day: Any) -> pa.Table:
+    """*frame* with every unit exposed on *day*, a balanced panel's common start."""
+    return frame.append_column("exposed_on", pa.array([day] * frame.num_rows))
+
+
 def _panel_with_breakouts() -> pa.Table:
     return pa.table(
         {
@@ -270,12 +278,13 @@ def test_daily_moments_match_daily_group_summary(panel_frame: pa.Table) -> None:
     expected = con.to_pyarrow(daily_group_summary(panel, metric=metric)).to_pylist()
 
     analysis = from_unit_panel(
-        panel_frame,
+        _exposed_on(panel_frame, "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     assert analysis.densified_cells == 0, "fixture is dense by construction"
     actual = {(r["ds"], r["group_id"]): r for r in readouts.daily(analysis)}
@@ -314,12 +323,13 @@ def test_daily_moments_match_daily_group_summary(panel_frame: pa.Table) -> None:
     ).to_pylist()
 
     ratio_analysis = from_unit_panel(
-        panel_frame,
+        _exposed_on(panel_frame, "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics=[ratio_spec],
+        exposure_date="exposed_on",
     )
     actual_ratio = {(r["ds"], r["group_id"]): r for r in readouts.daily(ratio_analysis)}
 
@@ -372,38 +382,139 @@ def test_asof_moments_gate_units_until_declared_exposure_date() -> None:
     assert {(row["group_id"], row["n"]) for row in day1} == {("control", 1)}
 
 
-def test_asof_moments_without_exposure_uses_fixed_global_cohort() -> None:
+_PANEL_REVENUE = {"c1": 1.0, "c2": 3.0, "t1": 2.0, "t2": 4.0}
+
+
+def _two_day_panel_rows() -> list[dict[str, Any]]:
+    """Balanced c1, c2 control and t1, t2 treatment on two days, each unit's revenue every day."""
     base = date(2026, 1, 1)
-    rows = [
-        ("c1", "control", base, 1.0),
-        ("c1", "control", base + timedelta(days=1), 1.0),
-        ("t1", "treatment", base, 0.0),
-        ("t1", "treatment", base + timedelta(days=1), 2.0),
+    return [
+        {
+            "user_id": unit,
+            "variant": "control" if unit.startswith("c") else "treatment",
+            "day": base + timedelta(days=offset),
+            "revenue": value,
+        }
+        for unit, value in _PANEL_REVENUE.items()
+        for offset in range(2)
     ]
-    frame = pa.table(
-        dict(
-            zip(
-                ["user_id", "variant", "day", "revenue"],
-                zip(*rows, strict=True),
-                strict=True,
-            )
-        )
-    )
-    src = from_unit_panel(
+
+
+def _two_day_panel(frame: pa.Table, **options: Any) -> Any:
+    from increment import from_frame
+
+    return from_frame(
         frame,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        **options,
     )
 
-    moments = _moments(src, _metric(src, "revenue"), grain="asof")
-    day1 = [row for row in moments if row["ds"] == base]
-    assert {(row["group_id"], row["n"]) for row in day1} == {
-        ("control", 1),
-        ("treatment", 1),
+
+_COUNTRY = (BreakoutIdentity(property="country", source=None),)
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        View.daily(),
+        View.daily(values=True),
+        View(view="asof", grain="asof"),
+        View.daily(segment=_COUNTRY),
+        View.asof(segment=_COUNTRY),
+    ],
+    ids=["daily", "daily_values", "asof", "daily_breakout", "asof_breakout"],
+)
+def test_day_axis_views_need_declared_exposure_date(view: View) -> None:
+    from increment import run, runnable
+    from tests.analysis_factory import held_source
+
+    rows = [
+        {**row, "country": "US" if row["user_id"] in ("c1", "t1") else "CA"}
+        for row in _two_day_panel_rows()
+    ]
+    experiment, reader = _two_day_panel(pa.Table.from_pylist(rows), breakouts=["country"])
+    requested = experiment.with_views(view)
+
+    with pytest.raises(CapabilityError) as raised:
+        run(requested, reader, views=(view,))
+    refusal = raised.value
+    assert refusal.code == "evidence.grain_unavailable"
+    assert refusal.context["requested"] == view.grain
+    assert refusal.context["offered"] == ("total",)
+    declared = experiment.source_refs[0].capabilities
+    assert declared is not None
+    assert refusal.context["route"] == declared.grain_route
+    static = runnable(requested, "revenue")["randomized.unadjusted"].static_refusals
+    assert (refusal.code, dict(refusal.context)) in [
+        (error.code, dict(error.context)) for error in static
+    ]
+
+    source = cast(Any, held_source(reader))
+    totals = {
+        row["group_id"]: _sum_y(row) / row["n"]
+        for row in _moments(source, _metric(source, "revenue"), grain="total")
     }
+    assert totals["treatment"] / totals["control"] - 1 == pytest.approx(0.5)
+
+
+_PRECHANGE_PANELS = Path(__file__).parent / "fixtures" / "frame_panel_experiments_prechange.json"
+
+
+def test_only_panels_without_exposure_date_change_their_declaration() -> None:
+    from increment import Experiment, run
+
+    recorded = json.loads(_PRECHANGE_PANELS.read_text(encoding="utf-8"))
+    rows = _two_day_panel_rows()
+    declared, _ = _two_day_panel(
+        pa.Table.from_pylist([{**row, "exposed_on": date(2026, 1, 1)} for row in rows]),
+        exposure_date="exposed_on",
+    )
+    assert declared.to_json() == recorded["with_exposure_date"]
+
+    undeclared, reader = _two_day_panel(pa.Table.from_pylist(rows))
+    before = json.loads(recorded["without_exposure_date"])
+    after = json.loads(undeclared.to_json())
+    before_capabilities = before["source_refs"][0].pop("capabilities")
+    after_capabilities = after["source_refs"][0].pop("capabilities")
+    assert after == before
+    assert {
+        name
+        for name in before_capabilities.keys() | after_capabilities.keys()
+        if before_capabilities.get(name) != after_capabilities.get(name)
+    } == {"grains", "compliance_axis", "grain_route"}
+    assert after_capabilities["grains"] == ["total"]
+    assert after_capabilities["compliance_axis"] == "total"
+
+    restored = Experiment.from_json(undeclared.to_json())
+    assert restored.source_refs == undeclared.source_refs
+    daily = View.daily()
+    with pytest.raises(CapabilityError) as raised:
+        run(restored.with_views(daily), reader, views=(daily,))
+    assert raised.value.code == "evidence.grain_unavailable"
+    assert raised.value.context["route"] == after_capabilities["grain_route"]
+
+
+@pytest.mark.parametrize("view", [View.overall(), View.daily()], ids=["whole_window", "daily"])
+def test_panel_saved_before_exposure_date_was_required_refuses_a_fresh_reader(
+    view: View,
+) -> None:
+    from increment import Experiment, run
+
+    saved = Experiment.from_json(
+        json.loads(_PRECHANGE_PANELS.read_text(encoding="utf-8"))["without_exposure_date"]
+    )
+    _, reader = _two_day_panel(pa.Table.from_pylist(_two_day_panel_rows()))
+
+    requested = saved if view in saved.views else saved.with_views(view)
+    with pytest.raises(CodedError) as raised:
+        run(requested, reader, views=(view,))
+    assert raised.value.code == "kernel.provider.capability_mismatch"
+    assert dict(raised.value.context) == {"source_ref": "source"}
 
 
 def test_asof_cumulative_moments_order_string_day_labels_naturally() -> None:
@@ -420,12 +531,13 @@ def test_asof_cumulative_moments_order_string_day_labels_naturally() -> None:
         dict(zip(["user_id", "variant", "day", "revenue"], zip(*rows, strict=True), strict=True))
     )
     src = from_unit_panel(
-        frame,
+        _exposed_on(frame, "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     moments = _moments(src, _metric(src, "revenue"), grain="asof")
     cumulative = {row["ds"]: _sum_y(row) for row in moments}
@@ -447,12 +559,13 @@ def test_asof_cumulative_moments_refuses_ambiguous_string_day_labels() -> None:
         dict(zip(["user_id", "variant", "day", "revenue"], zip(*rows, strict=True), strict=True))
     )
     src = from_unit_panel(
-        frame,
+        _exposed_on(frame, "2025-9"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     with pytest.raises(CapabilityError) as raised:
         _moments(src, _metric(src, "revenue"), grain="asof")
@@ -570,32 +683,33 @@ def test_asof_encouragement_uptake_moments_match_group_summary() -> None:
         assert actual_row["cxd"] is None
 
 
-def test_asof_uptake_window_without_exposure_uses_first_observed_numeric_day() -> None:
+def _uptake_window_panel(**options: Any) -> FramePanelSource:
+    """c1 and t1 exposed on day 0, t2 on day 2; t2 clicks on days 4 and 5, under a 3-day window."""
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
     rows = [
-        ("c1", "control", 0, 1.0, 0.0),
-        ("c1", "control", 1, 1.0, 0.0),
-        ("c1", "control", 2, 1.0, 0.0),
-        ("c1", "control", 3, 1.0, 0.0),
-        ("c1", "control", 4, 1.0, 0.0),
-        ("c1", "control", 5, 1.0, 0.0),
-        ("t1", "treatment", 0, 2.0, 0.0),
-        ("t1", "treatment", 1, 2.0, 0.0),
-        ("t1", "treatment", 2, 2.0, 0.0),
-        ("t1", "treatment", 3, 2.0, 0.0),
-        ("t1", "treatment", 4, 2.0, 0.0),
-        ("t1", "treatment", 5, 2.0, 0.0),
-        ("t2", "treatment", 2, 3.0, 0.0),
-        ("t2", "treatment", 3, 3.0, 0.0),
-        ("t2", "treatment", 4, 3.0, 1.0),
-        ("t2", "treatment", 5, 3.0, 1.0),
+        ("c1", "control", 0, 0, 1.0, 0.0),
+        ("c1", "control", 1, 0, 1.0, 0.0),
+        ("c1", "control", 2, 0, 1.0, 0.0),
+        ("c1", "control", 3, 0, 1.0, 0.0),
+        ("c1", "control", 4, 0, 1.0, 0.0),
+        ("c1", "control", 5, 0, 1.0, 0.0),
+        ("t1", "treatment", 0, 0, 2.0, 0.0),
+        ("t1", "treatment", 1, 0, 2.0, 0.0),
+        ("t1", "treatment", 2, 0, 2.0, 0.0),
+        ("t1", "treatment", 3, 0, 2.0, 0.0),
+        ("t1", "treatment", 4, 0, 2.0, 0.0),
+        ("t1", "treatment", 5, 0, 2.0, 0.0),
+        ("t2", "treatment", 2, 2, 3.0, 0.0),
+        ("t2", "treatment", 3, 2, 3.0, 0.0),
+        ("t2", "treatment", 4, 2, 3.0, 1.0),
+        ("t2", "treatment", 5, 2, 3.0, 1.0),
     ]
-    src = from_unit_panel(
+    return from_unit_panel(
         pa.table(
             dict(
                 zip(
-                    ["user_id", "variant", "day", "revenue", "clicked"],
+                    ["user_id", "variant", "day", "exposed_on", "revenue", "clicked"],
                     zip(*rows, strict=True),
                     strict=True,
                 )
@@ -614,16 +728,76 @@ def test_asof_uptake_window_without_exposure_uses_first_observed_numeric_day() -
                 justification="assignment only moves revenue via uptake"
             ),
         ),
+        **options,
     )
+
+
+def test_asof_uptake_window_counts_from_declared_exposure_date() -> None:
+    src = _uptake_window_panel(exposure_date="exposed_on")
 
     moments = _moments(src, _metric(src, "revenue"), grain="asof")
     by_day_group = {(row["ds"], row["group_id"]): row for row in moments}
-    assert by_day_group[(0, "treatment")]["n"] == 2
+    assert by_day_group[(0, "treatment")]["n"] == 1
     final_treatment = by_day_group[(5, "treatment")]
     assert final_treatment["sum_d"] == 1.0
     assert final_treatment["cyd"] is not None
     assert final_treatment["cy2d"] is not None
     assert final_treatment["cxd"] is None
+
+
+def test_windowed_uptake_requires_exposure_date() -> None:
+    with pytest.raises(InvalidRequestError) as raised:
+        _uptake_window_panel()
+    assert raised.value.code == "source.panel.exposure_date"
+    assert raised.value.context["column"] is None
+    assert raised.value.context["count"] == 0
+
+
+def test_asof_compliance_needs_exposure_date() -> None:
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="clicked"),
+        exclusion_restriction=ExclusionRestriction(
+            justification="assignment only moves revenue via uptake"
+        ),
+    )
+    clicks = {("t1", 0), ("t2", 2)}
+    src = from_unit_panel(
+        pa.Table.from_pylist(
+            [
+                {
+                    "user_id": unit,
+                    "variant": group,
+                    "day": day,
+                    "revenue": 1.0,
+                    "clicked": float((unit, day) in clicks),
+                }
+                for unit, group in (("c1", "control"), ("t1", "treatment"), ("t2", "treatment"))
+                for day in range(3)
+            ]
+        ),
+        unit="user_id",
+        group="variant",
+        date="day",
+        control="control",
+        metrics={"revenue": "mean"},
+        uptake="clicked",
+        design=design,
+    )
+
+    whole = {arm.group_id: arm.uptake_total for arm in _compliance(src, design=design).arms}
+    assert whole["treatment"] == 2.0
+    with pytest.raises(CapabilityError) as direct:
+        src.compliance_summary(design, as_of=2)
+    assert direct.value.code == "evidence.operation_unavailable"
+    with pytest.raises(CapabilityError) as requested:
+        _compliance(src, design=design, as_of=2)
+    assert (requested.value.code, dict(requested.value.context)) == (
+        direct.value.code,
+        dict(direct.value.context),
+    )
 
 
 def test_windowed_metric_numeric_day_axis_respects_window_edge() -> None:
@@ -706,12 +880,13 @@ def test_asof_cumulative_moments_refuses_ambiguous_date_like_labels() -> None:
         dict(zip(["user_id", "variant", "day", "revenue"], zip(*rows, strict=True), strict=True))
     )
     src = from_unit_panel(
-        frame,
+        _exposed_on(frame, "12/31/2025"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     with pytest.raises(CapabilityError) as raised:
         _moments(src, _metric(src, "revenue"), grain="asof")
@@ -730,12 +905,13 @@ def test_asof_cumulative_moments_orders_negative_prefixed_integer_labels() -> No
         dict(zip(["user_id", "variant", "day", "revenue"], zip(*rows, strict=True), strict=True))
     )
     src = from_unit_panel(
-        frame,
+        _exposed_on(frame, "d-1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     moments = _moments(src, _metric(src, "revenue"), grain="asof")
     cumulative = {row["ds"]: _sum_y(row) for row in moments}
@@ -755,12 +931,13 @@ def test_asof_cumulative_moments_refuses_colliding_prefixed_integer_labels() -> 
         dict(zip(["user_id", "variant", "day", "revenue"], zip(*rows, strict=True), strict=True))
     )
     src = from_unit_panel(
-        frame,
+        _exposed_on(frame, "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     with pytest.raises(CapabilityError) as raised:
         _moments(src, _metric(src, "revenue"), grain="asof")
@@ -832,12 +1009,13 @@ def test_asof_cumulative_moments_invariant_to_input_row_order() -> None:
             )
         )
         src = from_unit_panel(
-            frame,
+            _exposed_on(frame, "d1"),
             unit="user_id",
             group="variant",
             date="day",
             control="control",
             metrics={"revenue": "mean"},
+            exposure_date="exposed_on",
         )
         return _moments(src, _metric(src, "revenue"), grain="asof")
 
@@ -926,12 +1104,13 @@ def test_sparse_panel_daily_moments_include_inactive_units_as_zero() -> None:
         ("u3", "control", "d3", 1.0, 1.0),
     ]
     analysis = from_unit_panel(
-        _panel_table(sparse_rows),
+        _exposed_on(_panel_table(sparse_rows), "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     assert analysis.densified_cells == 1
 
@@ -1202,12 +1381,13 @@ def test_sparse_daily_and_asof_match_explicit_zero_panel_in_any_input_order() ->
 
     def source(rows):
         return from_unit_panel(
-            pa.Table.from_pylist(rows),
+            _exposed_on(pa.Table.from_pylist(rows), days[0]),
             unit="unit",
             group="arm",
             date="day",
             control="control",
             metrics={"value": "mean"},
+            exposure_date="exposed_on",
         )
 
     sparse_source = source(sparse)
@@ -1247,21 +1427,23 @@ def test_panel_breakouts_preserve_declared_order() -> None:
 
 def test_panel_breakout_declarations_preserve_unsegmented_moments() -> None:
     unsegmented = from_unit_panel(
-        _panel_with_breakouts(),
+        _exposed_on(_panel_with_breakouts(), "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     declared_breakouts = from_unit_panel(
-        _panel_with_breakouts(),
+        _exposed_on(_panel_with_breakouts(), "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
         breakouts=["country", "plan"],
+        exposure_date="exposed_on",
     )
 
     assert _moments(unsegmented, _metric(unsegmented, "revenue")) == _moments(
@@ -1375,7 +1557,11 @@ def test_panel_boolean_breakout_moments_match_the_canonical_string_frame(kind: s
     from tests.test_sequential_registration_contract import typed_segment_frame
 
     labels = ["true", "true", "false", "false", "true", "true", "__null__", "__null__"]
-    canonical = _panel_with_breakouts().set_column(3, "country", pa.array(labels)).to_pandas()
+    canonical = (
+        _exposed_on(_panel_with_breakouts(), "d1")
+        .set_column(3, "country", pa.array(labels))
+        .to_pandas()
+    )
     typed = typed_segment_frame(canonical, kind, column="country")
 
     def read(frame: Any) -> dict[str, list[dict[str, Any]]]:
@@ -1387,6 +1573,7 @@ def test_panel_boolean_breakout_moments_match_the_canonical_string_frame(kind: s
             control="control",
             metrics={"revenue": "mean"},
             breakouts=["country"],
+            exposure_date="exposed_on",
         )
         metric = _metric(src, "revenue")
         return {
@@ -1408,13 +1595,14 @@ def test_panel_daily_moments_preserve_breakout_through_sparse_densification() ->
         {"user_id": "t_ca", "variant": "treatment", "day": "d1", "country": "CA", "revenue": 9.0},
     ]
     src = from_unit_panel(
-        pa.Table.from_pylist(rows),
+        _exposed_on(pa.Table.from_pylist(rows), "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
         breakouts=["country"],
+        exposure_date="exposed_on",
     )
     day2 = {
         (row["country"], row["group_id"]): row
@@ -1454,7 +1642,9 @@ def test_panel_total_moments_group_by_declared_breakout() -> None:
 
 
 def test_panel_breakout_all_null_is_visible_segment() -> None:
-    frame = _panel_with_breakouts().set_column(3, "country", pa.array([None] * 8))
+    frame = _exposed_on(
+        _panel_with_breakouts().set_column(3, "country", pa.array([None] * 8)), "d1"
+    )
     src = from_unit_panel(
         frame,
         unit="user_id",
@@ -1463,6 +1653,7 @@ def test_panel_breakout_all_null_is_visible_segment() -> None:
         control="control",
         metrics={"revenue": "mean"},
         breakouts=["country"],
+        exposure_date="exposed_on",
     )
 
     rows = _moments(src, _metric(src, "revenue"), grain="daily", by=["country"])
@@ -1681,13 +1872,14 @@ def test_panel_breakout_identity_survives_sparse_zero_fill() -> None:
         }
     )
     src = from_unit_panel(
-        frame,
+        _exposed_on(frame, "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
         breakouts=["country", "plan"],
+        exposure_date="exposed_on",
     )
     assert src.densified_cells == 1
     metric = _metric(src, "revenue")
@@ -1713,7 +1905,7 @@ def test_panel_breakout_identity_survives_sparse_zero_fill() -> None:
 
 def test_daily_returns_one_row_per_day_group_metric(panel_frame: pa.Table) -> None:
     analysis = from_unit_panel(
-        panel_frame,
+        _exposed_on(panel_frame, "d1"),
         unit="user_id",
         group="variant",
         date="day",
@@ -1722,6 +1914,7 @@ def test_daily_returns_one_row_per_day_group_metric(panel_frame: pa.Table) -> No
             MetricSpec(name="revenue", type="mean"),
             MetricSpec(name="aov", type="ratio", numerator="revenue", denominator="orders"),
         ],
+        exposure_date="exposed_on",
     )
     rows = readouts.daily(analysis)
     keys = [(r["ds"], r["group_id"], r["metric"]) for r in rows]
@@ -1834,12 +2027,13 @@ def test_frame_panel_source_moments_returns_defensive_copies(panel_frame: pa.Tab
     returned row dict must not corrupt the cache for later callers of the
     same or a different metric at that grain."""
     src = from_unit_panel(
-        panel_frame,
+        _exposed_on(panel_frame, "d1"),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics=[MetricSpec(name="revenue", type="mean")],
+        exposure_date="exposed_on",
     )
     metric = src.context.metrics[0]
     first = _moments(src, metric, grain="total")
@@ -2030,9 +2224,10 @@ def _panel_backend(backend: str, columns: Mapping[str, Sequence[object]]) -> Any
 
 
 @pytest.mark.parametrize("budget", [0, 64 * 1024 * 1024])
-def test_daily_accepts_free_form_day_labels_for_every_kernel(
+def test_daily_refuses_free_form_day_labels_for_every_kernel(
     budget: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Counting days from a declared exposure date needs an ordered day axis."""
     import increment.frame as frame_module
 
     monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", budget)
@@ -2042,6 +2237,7 @@ def test_daily_accepts_free_form_day_labels_for_every_kernel(
                 "unit": ["u1", "u2"],
                 "arm": ["control", "control"],
                 "day": ["2025-9", "2025-10"],
+                "exposed_on": ["2025-9", "2025-9"],
                 "value": [1.0, 2.0],
             }
         ),
@@ -2050,9 +2246,14 @@ def test_daily_accepts_free_form_day_labels_for_every_kernel(
         date="day",
         control="control",
         metrics={"value": "mean"},
+        exposure_date="exposed_on",
     )
-    rows = _moments(source, _metric(source, "value"), grain="daily")
-    assert {row["ds"] for row in rows} == {"2025-9", "2025-10"}
+    with pytest.raises(CapabilityError) as raised:
+        _moments(source, _metric(source, "value"), grain="daily")
+    assert raised.value.code == "frame.asof.day_axis_unorderable"
+    labels = raised.value.context["labels"]
+    assert isinstance(labels, tuple)
+    assert set(labels) == {"2025-9", "2025-10"}
 
 
 def test_streamed_day_reductions_preserve_multiple_metrics_and_breakout_identity(
@@ -2081,13 +2282,14 @@ def test_streamed_day_reductions_preserve_multiple_metrics_and_breakout_identity
     def run(budget: int) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
         monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", budget)
         source = from_unit_panel(
-            table,
+            _exposed_on(table, "d1"),
             unit="unit",
             group="arm",
             date="day",
             control="control",
             metrics={"revenue": "mean", "orders": "mean"},
             breakouts=["country"],
+            exposure_date="exposed_on",
         )
         daily = {
             metric: _moments(source, _metric(source, metric), grain="daily", by=["country"])
@@ -2132,6 +2334,7 @@ def test_panel_unit_identity_does_not_sort_mixed_public_ids(
             "unit": pd.Series([1, "two"], dtype=object),
             "arm": ["control", "control"],
             "day": [0, 1],
+            "exposed_on": [0, 0],
             "value": [1.0, 2.0],
         }
     )
@@ -2142,6 +2345,7 @@ def test_panel_unit_identity_does_not_sort_mixed_public_ids(
         date="day",
         control="control",
         metrics={"value": "mean"},
+        exposure_date="exposed_on",
     )
     rows = _moments(source, _metric(source, "value"), grain="daily")
     assert {row["ds"] for row in rows} == {0, 1}
@@ -2294,11 +2498,19 @@ def test_streamed_asof_restores_identity_after_reordered_exposure_joins(
             observation_end=max(days),
         )
 
+    if exposure_mode == "inferred":
+        with pytest.raises(InvalidRequestError) as raised:
+            build(dense_rows)
+        assert raised.value.code == "source.panel.exposure_date"
+        assert raised.value.context["column"] is None
+        assert raised.value.context["examples"] == ("clicked",)
+        return
+
     def read(source: FramePanelSource) -> dict[tuple[Any, ...], dict[str, Any]]:
         metric = _metric(source, "outcome")
         return {
             (completed, row["ds"], row["group_id"]): row
-            for completed in ((False, True) if exposure_mode == "explicit" else (False,))
+            for completed in (False, True)
             for row in _moments(source, metric, grain="asof", completed_windows_only=completed)
         }
 
@@ -4048,12 +4260,13 @@ class TestDayAxisNonStringLabels:
             }
         )
         src = from_unit_panel(
-            frame,
+            _exposed_on(frame, b"12/31/2025"),
             unit="user_id",
             group="variant",
             date="day",
             control="control",
             metrics={"revenue": "mean"},
+            exposure_date="exposed_on",
         )
         with pytest.raises(CapabilityError) as raised:
             _moments(src, _metric(src, "revenue"), grain="asof")
@@ -4072,12 +4285,13 @@ class TestDayAxisNonStringLabels:
             )
         )
         src = from_unit_panel(
-            frame,
+            _exposed_on(frame, date(2025, 12, 31)),
             unit="user_id",
             group="variant",
             date="day",
             control="control",
             metrics={"revenue": "mean"},
+            exposure_date="exposed_on",
         )
         moments = _moments(src, _metric(src, "revenue"), grain="asof")
 
@@ -4137,6 +4351,14 @@ class TestDayAxisUnhashableLabels:
         with pytest.raises(CapabilityError) as raised:
             _day_axis_label_order([memoryview(bytearray(b"a")), memoryview(bytearray(b"b"))])
         assert raised.value.code == "frame.asof.day_axis_unorderable"
+
+
+def test_non_midnight_timestamp_labels_refuse() -> None:
+    """Only midnight timestamps name a calendar day; a time of day does not."""
+    with pytest.raises(CapabilityError) as raised:
+        _day_axis_label_order(["2025-01-01T00:00:00", "2025-01-02T12:00:00"])
+    assert raised.value.code == "frame.asof.day_axis_unorderable"
+    assert raised.value.context["labels"] == ("2025-01-01T00:00:00", "2025-01-02T12:00:00")
 
 
 def test_asof_completed_windows_only_gates_a_windowed_mean() -> None:
@@ -4256,7 +4478,6 @@ def test_frame_panel_source_snapshots_fact_dates_before_first_reduction() -> Non
         plan=base.plan,
         group_counts=_counts(base),
         n_filled=base.densified_cells,
-        first_exposure=base._first_exposure,
         exposure=base._exposure,
         fact_max_ds=owned_dates,
         synthesised_metrics=base.context.metrics,

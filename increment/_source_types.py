@@ -65,8 +65,12 @@ Shape = Literal["unit_summary", "unit_panel"]
 class _BuiltinMomentSource(Protocol):
     """Legacy methods available only on built-in loaders at acquisition."""
 
-    capabilities: frozenset[Grain]
     operations: frozenset[SourceOperation]
+
+    @property
+    def capabilities(self) -> frozenset[Grain]:
+        """Grains the source declares."""
+        ...
 
     @property
     def context(self) -> SourceContext:
@@ -177,7 +181,12 @@ class ScalarEvidenceDeclaration:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceCapabilities:
-    """Evidence and product operations a source can provide."""
+    """Evidence and product operations a source can provide.
+
+    ``grain_route`` names how to obtain an undeclared day axis (a daily or
+    as-of grain, or as-of compliance) from this kind of source, when one
+    exists; ``None`` keeps the generic route.
+    """
 
     kind: Literal[
         "definitions", "artifact", "unit_summary", "unit_panel", "switchback", "moments", "breakout"
@@ -198,6 +207,7 @@ class EvidenceCapabilities:
     sql_grains: frozenset[Grain] = frozenset()
     capture: Literal["snapshot", "immutable", "live"] = "live"
     assignment_relation: Literal["none", "ledger", "reduced"] = "none"
+    grain_route: str | None = None
 
 
 class _OwnedLoaderAdapter:

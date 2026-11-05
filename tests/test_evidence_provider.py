@@ -38,11 +38,11 @@ from increment.workflows import (
 from tests.analysis_factory import bind_pair, bound_source, held_source, view_readout
 from tests.source_conformance import (
     definitions_source,
+    exposed_unit_panel_table,
     frame_panel_source,
     frame_summary_source,
     provider_adapters,
     sql_totals_source,
-    unit_panel_table,
     unit_summary_table,
 )
 
@@ -3459,12 +3459,13 @@ def test_provider_skip_metric_labels_its_daily_rows() -> None:
     from increment.frame import MetricSpec, from_unit_panel
 
     source = from_unit_panel(
-        unit_panel_table(),
+        exposed_unit_panel_table(),
         unit="user_id",
         group="variant",
         date="ds",
         control="control",
         metrics=[MetricSpec(name="revenue"), MetricSpec(name="score", value_column="revenue")],
+        exposure_date="exposed_on",
     )
     context = replace(
         source.context, metric_missingness={**source.context.metric_missingness, "score": "skip"}

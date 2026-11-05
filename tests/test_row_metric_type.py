@@ -307,6 +307,7 @@ def test_daily_lift_rows_carry_metric_type():
         date="date",
         control="control",
         metrics=FRAME_METRICS,
+        exposure_date="exposure_date",
     )
     try:
         rows = view_readout(experiment, resolver, View(view="daily", grain="daily"))
@@ -327,6 +328,7 @@ def test_daily_and_asof_value_rows_carry_metric_type():
         date="date",
         control="control",
         metrics=FRAME_METRICS,
+        exposure_date="exposure_date",
     )
     try:
         daily = view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))

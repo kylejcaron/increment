@@ -360,6 +360,36 @@ values.
   A run saved earlier still reopens, and deciding it again reads
   `decision.primary.direction_unspecified` for a rejecting primary, as does
   `from_moments` on a cube exported by an earlier release.
+- Release note (breaking bug fix): a `from_frame(shape="panel")` or
+  `increment.frame.from_unit_panel` panel without `exposure_date=` no longer
+  guesses when each unit's days start. Its daily and as-of views, including
+  daily and as-of breakouts, treated every unit as exposed on the panel's first
+  date, so a treatment arm with late enrollees read low: on a panel whose true
+  lift is about +12%, a third of the treatment units enrolling three days late
+  gave about −25% on the first day. These views now refuse before any read,
+  alike in `runnable()` and `run()`, with `evidence.grain_unavailable`,
+  `offered=("total",)` and a `route` naming `exposure_date`. An encouragement
+  uptake window (`UptakeSpec(window_days=...)`) counted from each unit's first
+  row and now refuses at construction with `source.panel.exposure_date`; as-of
+  compliance refuses with `evidence.operation_unavailable`. Whole-window results
+  of unwindowed metrics, unbounded uptake and whole-window compliance are
+  unchanged. To migrate, pass `exposure_date=<column>` naming each unit's
+  exposure date; if every unit was exposed on the same day, add a column holding
+  that date. Free-form day labels such as `"2025-9"` also need an orderable day
+  axis (ISO dates such as `"2025-09-01"` or midnight timestamps such as
+  `"2025-09-01T00:00:00"`), so declaring `exposure_date` alone is not enough for
+  them. Daily compliance rows now carry the same `datetime.date` as daily outcome
+  rows, so a daily readout of `estimands=("itt", "compliance")` on string or
+  timestamp day labels no longer fails; as-of rows keep the panel's own labels.
+  Panels that declare `exposure_date` keep their numbers, `to_json()`
+  and `hash()`. A panel without it now declares only the total grain, so its
+  `to_json()` and `hash()` change once: the source capabilities record
+  `grains=["total"]`, `compliance_axis="total"` and the new `grain_route`. An
+  experiment saved before this release refuses a freshly built reader with
+  `kernel.provider.capability_mismatch`; rebuild it with
+  `from_frame(shape="panel", ...)` and save it again. `EvidenceCapabilities`
+  gains an optional `grain_route`, a source's route to an undeclared day axis,
+  left out of saved JSON when unset.
 - Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
   spelled `missing="skip"`, with the same computation: the metric uses only the
   units with a value, and those units stay in every other metric. Estimates are
@@ -740,7 +770,8 @@ Readout options such as `decision_method`, `prior`, `metrics`, `estimands`,
 selected view. A view's population, breakout selection and completed-window
 gate belong to its `View`. One `run` reads every declared view from one
 capture, so the daily, as-of and whole-window rows agree on the data they
-describe:
+describe. Daily and as-of views on a panel need its `exposure_date=` column;
+here every unit was exposed on the first day:
 
 ```python
 import polars as pl
@@ -753,6 +784,7 @@ panel = pl.DataFrame(
         "user_id": [f"u{index}" for index in range(8)] * 2,
         "variant": ["control", "treatment"] * 8,
         "day": ["2025-01-01"] * 8 + ["2025-01-02"] * 8,
+        "exposed_on": ["2025-01-01"] * 16,
         "country": ["US", "US", "GB", "GB"] * 4,
         "revenue": [float(index % 5) for index in range(16)],
     }
@@ -763,6 +795,7 @@ experiment, reader = increment.from_frame(
     unit="user_id",
     group="variant",
     date="day",
+    exposure_date="exposed_on",
     control="control",
     metrics={"revenue": "mean"},
     breakouts=["country"],
