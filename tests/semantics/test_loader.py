@@ -5,6 +5,7 @@ import copy
 import pickle
 import warnings
 from pathlib import Path
+from typing import cast
 
 import pytest
 import sqlglot
@@ -169,23 +170,23 @@ def test_non_mapping_list_element_rejected(tmp_path: Path, section: str):
     [
         (
             "fact_sources:\n- name: source\n  sql: SELECT 1\n  facts: [oops]\n",
-            "fact_sources.0.facts.0",
+            "fact_sources[0] (name 'source').facts.0",
             "oops",
         ),
         (
             "fact_sources:\n- name: source\n  sql: SELECT 1\n  facts: null\n",
-            "fact_sources.0.facts",
+            "fact_sources[0] (name 'source').facts",
             None,
         ),
-        ("metrics:\n- name: [x]\n", "metrics.0", {"name": ["x"]}),
+        ("metrics:\n- name: [x]\n", "metrics[0]", {"name": ["x"]}),
         (
             "fact_sources: [{name: s, sql: 'SELECT 1', properties: null}]",
-            "fact_sources.0.properties",
+            "fact_sources[0] (name 's').properties",
             None,
         ),
         (
             "fact_sources: [{name: s, sql: 'SELECT 1', properties: [{name: [x]}]}]",
-            "fact_sources.0.properties.0.name",
+            "fact_sources[0] (name 's').properties.0.name",
             ["x"],
         ),
     ],
@@ -249,7 +250,10 @@ def test_field_constraint_violation_surfaces_as_a_coded_definition_error(tmp_pat
         load(f)
     assert raised.value.code == "definition.validation"
     (error,) = raised.value.context["errors"]  # ty: ignore[not-iterable]
-    assert (error["field"], error["type"]) == ("fact_sources.0.entities", "too_short")
+    assert (error["field"], error["type"]) == (
+        "fact_sources[0] (name 'events').entities",
+        "too_short",
+    )
     restored = pickle.loads(pickle.dumps(raised.value))
     assert restored.context == raised.value.context
 
@@ -577,6 +581,64 @@ def test_metric_entity_mismatch_via_loader(tmp_path: Path):
     with pytest.raises(DefinitionError) as exc_info:
         load(tmp_path / "defs.yaml")
     assert exc_info.value.code == "definition.invalid"
+
+
+def _write_split_definitions(root: Path, converted: str) -> None:
+    """Write a four-file layout whose metric 'converted' is declared alone in metrics_b.yaml."""
+    root.mkdir()
+    (root / "sources.yaml").write_text(
+        "dialect: duckdb\n"
+        "fact_sources:\n"
+        "  - {name: events, sql: SELECT * FROM events, timestamp_column: event_at,"
+        " entities: [user_id], facts: [{name: page_view, column: null},"
+        " {name: purchase, column: revenue}]}\n"
+        "exposures: [{name: enrolled, fact: page_view}]\n"
+    )
+    (root / "metrics_a.yaml").write_text(
+        "metrics: [{name: revenue, type: mean, entity: user_id, fact: purchase,"
+        " aggregation: sum, window_days: 7}]\n"
+    )
+    (root / "metrics_b.yaml").write_text(f"metrics: [{converted}]\n")
+    (root / "experiments.yaml").write_text(
+        "experiments: [{name: parity, exposure: enrolled, unit: user_id, start: 2025-01-01,"
+        " control_group: control, plan: {primary: revenue}}]\n"
+    )
+
+
+def test_validation_error_names_its_file(tmp_path: Path):
+    converted = (
+        "{name: converted, type: convrsion, entity: user_id, fact: purchase, window_days: 7}"
+    )
+    root = tmp_path / "definitions"
+    _write_split_definitions(root, converted)
+    with pytest.raises(DefinitionError) as split:
+        load(root)
+    assert split.value.code == "definition.validation"
+    (error,) = split.value.context["errors"]  # ty: ignore[not-iterable]
+    assert error["file"] == str(root / "metrics_b.yaml")
+    assert error["field"].startswith("metrics[0]")
+
+    single = tmp_path / "definitions.yaml"
+    single.write_text(f"metrics: [{converted}]\n")
+    with pytest.raises(DefinitionError) as one_file:
+        load(single)
+    (error,) = one_file.value.context["errors"]  # ty: ignore[not-iterable]
+    assert error["file"] == str(single)
+
+
+def test_unknown_fact_reference_names_its_file(tmp_path: Path):
+    root = tmp_path / "definitions"
+    _write_split_definitions(
+        root, "{name: converted, type: conversion, entity: user_id, fact: purchse, window_days: 7}"
+    )
+    with pytest.raises(DefinitionError) as raised:
+        load(root)
+    assert raised.value.code == "definition.invalid"
+    errors = cast("tuple[tuple[str, str], ...]", raised.value.context["errors"])
+    files = cast("tuple[str | None, ...]", raised.value.context["files"])
+    assert [(code, file) for (code, _), file in zip(errors, files, strict=True)] == [
+        ("definition.check_metric.references_unknown_fact", str(root / "metrics_b.yaml"))
+    ]
 
 
 def test_ratio_shorthand_with_n_pre_periods_loads_via_loader(tmp_path: Path):

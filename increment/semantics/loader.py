@@ -7,10 +7,12 @@ by top-level list keys), validated via ``Definitions``. Every non-empty
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn, cast
 
 import yaml
 import yaml.constructor
@@ -35,6 +37,7 @@ from increment.semantics.models import (
     ConversionMetric,
     Definitions,
     MeanMetric,
+    consistency_message,
 )
 
 
@@ -120,14 +123,23 @@ _MIGRATED_GUARDRAILS = RefusalSpec(
     keys=frozenset({"path"}),
 )
 _DUPLICATES = DEFINITION_REFUSALS["definition.duplicates"]
+_CONSISTENCY = DEFINITION_REFUSALS["definition.invalid"]
 
 
 def _render_validation(*, path: str, errors: Sequence[Mapping[str, object]], route: str) -> str:
     lines = "".join(
-        f"\n  {error['field']}: {error['reason']} [type={error['type']}, input={error['input']!r}]"
+        f"\n  {_in_file(path, error['file'], error['field'])}: {error['reason']} "
+        f"[type={error['type']}, input={error['input']!r}]"
         for error in errors
     )
     return f"{len(errors)} validation error(s) in definitions {path}:{lines}\n{route}"
+
+
+def _in_file(path: str, file: object, text: object) -> str:
+    """Prefix *text* with *file*, relative to the loaded *path*, when it is another file."""
+    if not isinstance(file, str) or file == path:
+        return str(text)
+    return f"{os.path.relpath(file, path)}: {text}"
 
 
 _VALIDATION = RefusalSpec("definition.validation", _DefinitionError, _render_validation)
@@ -194,9 +206,9 @@ def load(path: str | Path) -> Definitions:
 def _load(path_obj: Path, *, advise: bool) -> Definitions:
     """Load and validate definitions, emitting load-time warnings only when ``advise``."""
     if path_obj.is_file():
-        raw, origins = _load_single(path_obj)
+        raw, provenance = _load_single(path_obj)
     elif path_obj.is_dir():
-        raw, origins = _load_dir(path_obj, advise=advise)
+        raw, provenance = _load_dir(path_obj, advise=advise)
     else:
         refuse(_MISSING_PATH, path=str(path_obj))
 
@@ -247,66 +259,16 @@ def _load(path_obj: Path, *, advise: bool) -> Definitions:
             )
 
     # Duplicate-name pre-check (so the error includes file names)
-    dup_errors = _check_duplicates(raw, origins)
+    dup_errors = _check_duplicates(raw, provenance.origins)
     if dup_errors:
         refuse(
             _DUPLICATES,
             message="; ".join(dup_errors),
             path=str(path_obj),
-            sources=origins,
+            sources=provenance.origins,
         )
 
-    try:
-        defs = Definitions.model_validate(raw)
-    except _DefinitionError as exc:
-        raise _DefinitionError(
-            exc.message, code=exc.code, context={**exc.context, "path": str(path_obj)}
-        ) from exc
-    except InvalidRequestError as exc:
-        validation_error = exc.__context__
-        if not isinstance(validation_error, ValidationError) or not exc.code.startswith(
-            "model.field."
-        ):
-            raise _DefinitionError(
-                str(exc), code=exc.code, context={**dict(exc.context), "path": str(path_obj)}
-            ) from exc
-        errors = tuple(
-            {
-                "field": ".".join(str(part) for part in error["loc"]) or None,
-                "type": error["type"],
-                "reason": error["msg"],
-                "input": _safe_error_value(error.get("input")),
-            }
-            for error in validation_error.errors(include_url=False)
-        )
-        try:
-            refuse(
-                _VALIDATION,
-                path=str(path_obj),
-                errors=errors,
-                route="repair the listed definition fields and reload",
-            )
-        except _DefinitionError as error:
-            raise error from exc
-    except ValidationError as exc:
-        errors = tuple(
-            {
-                "field": ".".join(str(part) for part in error["loc"]) or None,
-                "type": error["type"],
-                "reason": error["msg"],
-                "input": _safe_error_value(error.get("input")),
-            }
-            for error in exc.errors(include_url=False)
-        )
-        try:
-            refuse(
-                _VALIDATION,
-                path=str(path_obj),
-                errors=errors,
-                route="repair the listed definition fields and reload",
-            )
-        except _DefinitionError as error:
-            raise error from exc
+    defs = _validate(raw, path_obj, provenance)
 
     # day_boundary inheritance lives on Definitions itself
     # (`_inherit_day_boundary`), so model_validate and load() agree.
@@ -323,18 +285,127 @@ def _load(path_obj: Path, *, advise: bool) -> Definitions:
 # ---------------------------------------------------------------------------
 
 
-def _load_single(path: Path) -> tuple[dict[str, Any], dict[str, list[str]]]:
+@dataclass(frozen=True, slots=True)
+class _Provenance:
+    """The file that declared each merged definition.
+
+    ``file`` is the loaded file (``None`` for a directory); ``origins`` lists the files
+    declaring each ``kind:name``; ``items`` holds ``(file, index in that file)`` for each
+    merged section item, in merged order; ``scalars`` maps each top-level scalar key to
+    its file.
+    """
+
+    file: str | None = None
+    origins: dict[str, list[str]] = field(default_factory=dict)
+    items: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
+    scalars: dict[str, str] = field(default_factory=dict)
+
+    def record(self, data: dict[str, Any], file: str) -> None:
+        """Record where the items and scalar keys of one file's *data* merge."""
+        _record_origins(data, file, self.origins)
+        for key, value in data.items():
+            if key in _MERGE_LISTS:
+                self.items.setdefault(key, []).extend((file, index) for index in range(len(value)))
+            else:
+                self.scalars[key] = file
+
+    def locate(
+        self, loc: Sequence[int | str], raw: Mapping[str, Any]
+    ) -> tuple[str | None, str | None]:
+        """The file holding merged location *loc*, and *loc* as a position in that file.
+
+        ``metrics.1`` in the merged list becomes ``metrics[0] (name 'converted')``
+        when it is the first metric of its file.
+        """
+        if not loc:
+            return self.file, None
+        section, *rest = loc
+        position = rest[0] if rest else None
+        if isinstance(section, str) and section in self.items and isinstance(position, int):
+            file, index = self.items[section][position]
+            name = raw[section][position].get("name")
+            item = f"{section}[{index}]" + (f" (name {name!r})" if isinstance(name, str) else "")
+            return file, ".".join([item, *(str(part) for part in rest[1:])])
+        return self.scalars.get(str(section), self.file), ".".join(str(part) for part in loc)
+
+    def declaring_file(self, item: tuple[str, str] | None) -> str | None:
+        """The one file declaring the ``(kind, name)`` *item*, or ``None``."""
+        files = [] if item is None else self.origins.get(f"{item[0]}:{item[1]}", [])
+        return files[0] if len(files) == 1 else None
+
+
+def _validate(raw: dict[str, Any], path: Path, provenance: _Provenance) -> Definitions:
+    """Validate merged definitions; each failure names the file holding its item."""
+    try:
+        return Definitions.model_validate(raw)
+    except _DefinitionError as exc:
+        context = {**exc.context, "path": str(path)}
+        message = exc.message
+        if exc.code == _CONSISTENCY.code:
+            errors = cast("tuple[tuple[str, str], ...]", exc.context["errors"])
+            items = cast("tuple[tuple[str, str] | None, ...]", exc.context["items"])
+            files = tuple(provenance.declaring_file(item) for item in items)
+            message = consistency_message(
+                _in_file(str(path), file, text)
+                for (_, text), file in zip(errors, files, strict=True)
+            )
+            context["files"] = files
+        raise _DefinitionError(message, code=exc.code, context=context) from exc
+    except InvalidRequestError as exc:
+        validation_error = exc.__context__
+        if not isinstance(validation_error, ValidationError) or not exc.code.startswith(
+            "model.field."
+        ):
+            raise _DefinitionError(
+                str(exc), code=exc.code, context={**dict(exc.context), "path": str(path)}
+            ) from exc
+        _refuse_validation(validation_error, raw, path, provenance, cause=exc)
+    except ValidationError as exc:
+        _refuse_validation(exc, raw, path, provenance, cause=exc)
+
+
+def _refuse_validation(
+    validation_error: ValidationError,
+    raw: Mapping[str, Any],
+    path: Path,
+    provenance: _Provenance,
+    *,
+    cause: Exception,
+) -> NoReturn:
+    errors = []
+    for error in validation_error.errors(include_url=False):
+        file, location = provenance.locate(error["loc"], raw)
+        errors.append(
+            {
+                "file": file,
+                "field": location,
+                "type": error["type"],
+                "reason": error["msg"],
+                "input": _safe_error_value(error.get("input")),
+            }
+        )
+    try:
+        refuse(
+            _VALIDATION,
+            path=str(path),
+            errors=tuple(errors),
+            route="repair the listed definition fields and reload",
+        )
+    except _DefinitionError as error:
+        raise error from cause
+
+
+def _load_single(path: Path) -> tuple[dict[str, Any], _Provenance]:
     data = _read_yaml(path)
     _validate_merge_sections(data, path)
-    origins: dict[str, list[str]] = {}
-    _record_origins(data, str(path), origins)
-    return data, origins
+    provenance = _Provenance(file=str(path))
+    provenance.record(data, str(path))
+    return data, provenance
 
 
-def _load_dir(path: Path, *, advise: bool) -> tuple[dict[str, Any], dict[str, list[str]]]:
+def _load_dir(path: Path, *, advise: bool) -> tuple[dict[str, Any], _Provenance]:
     merged: dict[str, Any] = {}
-    origins: dict[str, list[str]] = {}
-    scalar_files: dict[str, str] = {}
+    provenance = _Provenance()
 
     files = sorted({*path.rglob("*.yaml"), *path.rglob("*.yml")})
     if not files and advise:
@@ -355,14 +426,13 @@ def _load_dir(path: Path, *, advise: bool) -> tuple[dict[str, Any], dict[str, li
                         _DUPLICATE_SCALAR,
                         path=str(yaml_file),
                         field=key,
-                        files=(scalar_files[key], str(yaml_file)),
+                        files=(provenance.scalars[key], str(yaml_file)),
                         route="declare the scalar key in exactly one YAML file",
                     )
                 merged[key] = value
-                scalar_files[key] = str(yaml_file)
-        _record_origins(data, str(yaml_file), origins)
+        provenance.record(data, str(yaml_file))
 
-    return merged, origins
+    return merged, provenance
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

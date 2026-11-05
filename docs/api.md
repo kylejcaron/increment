@@ -136,6 +136,15 @@ values.
   install command, such as `pip install "increment[dashboard]"`. All three
   refusals are now also `ImportError`s, so `except ImportError` handlers catch
   them; `install.warehouse_extra_missing` keeps its code and context.
+- Release note (usability): definition errors name the YAML file that holds
+  the bad item, including in a directory of definition files. Each
+  `definition.validation` error carries `file`, and its `field` gives the
+  item's position in that file with its name, for example
+  `metrics[0] (name 'converted')` rather than the merged-list `metrics.1`. A
+  `definition.invalid` refusal carries `items`, the `(kind, name)` declaration
+  behind each listed error, and, when loaded from YAML, `files`, the file that
+  declares it; the message names that file before each error. Refusal codes
+  are unchanged.
 - Release note (usability): reading a public submodule such as
   `increment.workflows` from the package before importing it raises an
   `AttributeError` that names the import, `from increment.workflows import ...`;
