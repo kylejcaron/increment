@@ -12,7 +12,12 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from typing import Any, Literal, Never, assert_never, cast
 
 import ibis
+import ibis.expr.datatypes as ibis_dt
+import ibis.expr.operations as ops
+import ibis.expr.rules as rlz
 import ibis.expr.types as ir
+import sqlglot.expressions as sge
+from ibis.common.annotations import attribute
 
 from increment._frame_validation import CENSORING_DROPPED_UNITS
 from increment._moment_plan import (
@@ -186,18 +191,56 @@ def _utc_timestamp_literal(ts: ir.TimestampColumn, value: dt.datetime) -> ir.Sca
     return ibis.literal(normalized, type=ts.type())
 
 
-_UTC_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+class _NaiveUtc(ops.Value):
+    """The naive UTC wall clock of a time-zone-aware instant, at the instant's precision."""
+
+    arg: ops.Value[ibis_dt.Timestamp]
+
+    shape = rlz.shape_like("arg")
+
+    @attribute
+    def dtype(self) -> ibis_dt.Timestamp:
+        return ibis_dt.Timestamp(scale=self.arg.dtype.scale)
 
 
-def _since_utc_epoch(
-    ts: ir.TimestampColumn, unit: Literal["second", "microsecond"]
-) -> ir.IntegerColumn:
-    """Whole *unit*s from the UTC epoch to a time-zone-aware *ts*.
+def _register_naive_utc() -> None:
+    """Compile :class:`_NaiveUtc` to each backend's own time-zone conversion.
 
-    Counting from the epoch instant reads *ts* as an instant, where a direct
-    cast would render it in the backend's session time zone.
+    Each reads the stored instant; a cast or an epoch difference would instead
+    pass through the session time zone or drop sub-microsecond digits.
     """
-    return ts.delta(ibis.literal(_UTC_EPOCH), unit=unit)
+    from ibis.backends.sql.compilers.bigquery import BigQueryCompiler
+    from ibis.backends.sql.compilers.duckdb import DuckDBCompiler
+    from ibis.backends.sql.compilers.postgres import PostgresCompiler
+    from ibis.backends.sql.compilers.snowflake import SnowflakeCompiler
+
+    def duckdb(compiler: Any, _op: _NaiveUtc, *, arg: Any) -> Any:
+        return compiler.f.timezone("UTC", arg)
+
+    def postgres(_compiler: Any, _op: _NaiveUtc, *, arg: Any) -> Any:
+        return sge.paren(sge.AtTimeZone(this=arg, zone=sge.convert("UTC")), copy=False)
+
+    def snowflake(compiler: Any, op: _NaiveUtc, *, arg: Any) -> Any:
+        # Named NTZ type: plain TIMESTAMP follows the account's type mapping.
+        scale = cast("ibis_dt.Timestamp", op.dtype).scale
+        naive = "TIMESTAMP_NTZ" if scale is None else f"TIMESTAMP_NTZ({scale})"
+        to = sge.DataType.build(naive, dialect="snowflake")
+        return sge.Cast(this=compiler.f.convert_timezone("UTC", arg), to=to)
+
+    def bigquery(compiler: Any, _op: _NaiveUtc, *, arg: Any) -> Any:
+        return compiler.f.datetime(arg, "UTC")
+
+    # ibis resolves a compiler method from the op's class name; there is no public registry.
+    for compiler, visit in (
+        (DuckDBCompiler, duckdb),
+        (PostgresCompiler, postgres),
+        (SnowflakeCompiler, snowflake),
+        (BigQueryCompiler, bigquery),
+    ):
+        compiler.visit__NaiveUtc = visit  # ty: ignore[invalid-assignment]
+
+
+_register_naive_utc()
 
 
 def _naive_utc_ts(table: ir.Table) -> ir.Table:
@@ -205,8 +248,7 @@ def _naive_utc_ts(table: ir.Table) -> ir.Table:
     same instant; a ``ts`` of any other type is kept as it is."""
     if getattr(table.ts.type(), "timezone", None) is None:
         return table
-    micros = _since_utc_epoch(table.ts, "microsecond")
-    return table.mutate(ts=ibis.literal(dt.datetime(1970, 1, 1)) + micros.as_interval("us"))
+    return table.mutate(ts=_NaiveUtc(cast("ops.Value[ibis_dt.Timestamp]", table.ts.op())).to_expr())
 
 
 def _local_date_at_offset(ts: ir.TimestampColumn, offset: dt.timedelta) -> ir.DateColumn:
@@ -221,7 +263,8 @@ def _local_date_at_offset(ts: ir.TimestampColumn, offset: dt.timedelta) -> ir.Da
     both sides, or to dates already localized upstream.
     """
     if getattr(ts.type(), "timezone", None) is not None:
-        seconds = _since_utc_epoch(ts, "second") + int(offset.total_seconds())
+        epoch = ibis.literal(dt.datetime(1970, 1, 1, tzinfo=dt.UTC))
+        seconds = ts.delta(epoch, unit="second") + int(offset.total_seconds())
         days = (seconds.cast("float64") / 86400.0).floor().cast("int32")
         local = ibis.literal(dt.date(1970, 1, 1)) + days.as_interval("D")
         return cast("ir.DateColumn", local.cast(dt.date))

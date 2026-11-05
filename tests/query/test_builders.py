@@ -25,6 +25,7 @@ from increment.errors import (
 )
 from increment.query import panel_sql, summary_sql
 from increment.query.builders import (
+    _naive_utc_ts,
     asof_group_summary,
     breakout_property_table,
     canonical_dimension_value,
@@ -79,6 +80,22 @@ from tests.warning_codes import warning_codes, warning_context
 # not accidental cross-test state. Exempt the whole file from the
 # no-stray-tables guard rather than decorating ~150 individual tests.
 pytestmark = [pytest.mark.creates_tables, pytest.mark.integration]
+
+
+def test_aware_timestamps_convert_to_naive_utc_natively_at_full_precision():
+    """An aware timestamp becomes naive UTC through the backend's own conversion of the
+    stored instant: a cast to a naive type or an epoch difference would read the session
+    time zone (PostgreSQL), and a whole-microsecond round trip would move a nanosecond
+    exposure across later events (Snowflake)."""
+    events = ibis.table({"ts": "timestamp('UTC', 9)"}, name="events")
+    expected = {
+        "postgres": '"t0"."ts" AT TIME ZONE \'UTC\'',
+        "snowflake": 'CAST(CONVERT_TIMEZONE(\'UTC\', "t0"."ts") AS TIMESTAMPNTZ(9))',
+    }
+    for dialect, conversion in expected.items():
+        sql = ibis.to_sql(_naive_utc_ts(events), dialect=dialect)
+        assert conversion in sql, (dialect, sql)
+        assert "1970" not in sql, (dialect, sql)
 
 
 def _total(row, ref="ref_y", resid="cy1"):

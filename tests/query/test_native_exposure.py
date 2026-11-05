@@ -435,10 +435,12 @@ experiments:
 @pytest.mark.parametrize("exposure", ["fact", "sql"])
 def test_mixed_timestamp_kinds_are_session_independent(tmp_path, exposure):
     """Every arm is exposed at 10:00Z through a time-zone-aware relation and buys at naive
-    09:00 (1.0) and 11:00 (5.0). Naive timestamps are UTC, so only the 11:00 purchase
-    follows exposure and each arm's mean is 5.0 whatever the session time zone."""
+    09:00 (1.0) and 10:30 (5.0). Naive timestamps are UTC, so only the 10:30 purchase
+    follows exposure and each arm's mean is 5.0 whatever the session time zone. July puts
+    Los Angeles at a UTC offset other than its offset at the epoch, which an epoch
+    difference taken in session time would add to the exposure."""
     units = {"c1": "control", "c2": "control", "t1": "treatment", "t2": "treatment"}
-    exposed = pa.array([dt.datetime(2025, 1, 1, 10, tzinfo=dt.UTC)] * 4, pa.timestamp("us", "UTC"))
+    exposed = pa.array([dt.datetime(2025, 7, 1, 10, tzinfo=dt.UTC)] * 4, pa.timestamp("us", "UTC"))
     views = pa.table(
         {
             "user_id": list(units),
@@ -452,11 +454,11 @@ def test_mixed_timestamp_kinds_are_session_independent(tmp_path, exposure):
     )
     # The unenrolled unit's later purchase shows the feed loaded through the window.
     purchases = [
-        (unit, dt.datetime(2025, 1, 1, hour), value)
+        (unit, dt.datetime(2025, 7, 1, hour, minute), value)
         for unit in units
-        for hour, value in ((9, 1.0), (11, 5.0))
+        for hour, minute, value in ((9, 0, 1.0), (10, 30, 5.0))
     ]
-    purchases.append(("late", dt.datetime(2025, 1, 22), 1.0))
+    purchases.append(("late", dt.datetime(2025, 7, 22), 1.0))
     orders = pa.table(
         {
             "user_id": [unit for unit, _, _ in purchases],
@@ -482,8 +484,8 @@ exposures: [{enrolled}]
 metrics:
   - {{name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 7}}
 experiments:
-  - {{name: exp, exposure: enrolled, unit: user_id, start: 2025-01-01, end: 2025-01-02,
-     observation_end: 2025-01-20, control_group: control, plan: {{primary: revenue}}}}
+  - {{name: exp, exposure: enrolled, unit: user_id, start: 2025-07-01, end: 2025-07-02,
+     observation_end: 2025-07-20, control_group: control, plan: {{primary: revenue}}}}
 """,
     )
     means = {}
