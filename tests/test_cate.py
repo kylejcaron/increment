@@ -487,6 +487,31 @@ def test_cate_control_is_bound_to_identity_and_reopened_rendering():
     assert "control=control_A" in text
 
 
+@pytest.mark.parametrize(
+    ("entry_point", "options"),
+    [
+        (estimate_cate, {}),
+        (validate_cate, {"n_groups": 2}),
+        (targeting_rule, {"fraction": 0.25}),
+        (select_targeting_rule, {"fractions": (0.25, 0.5), "seed": 11}),
+    ],
+    ids=["estimate_cate", "validate_cate", "targeting_rule", "select_targeting_rule"],
+)
+def test_cate_functions_default_to_declared_control(entry_point, options):
+    """An omitted control is the declared one, even when it sorts after the treatment."""
+    experiment, reader = _experiment(arms=("control", "a_treatment"), control="control")
+    default = entry_point(experiment, reader, "revenue", interact=["spend"], **options)
+    explicit = entry_point(
+        experiment, reader, "revenue", control="control", interact=["spend"], **options
+    )
+
+    assert explicit.model_dump_json() == default.model_dump_json()
+    context = cast(dict[str, Any], default.report_context)
+    assert context == explicit.report_context
+    assert (context["control"], context["treatment"]) == ("control", "a_treatment")
+    assert default.as_cell().identity == explicit.as_cell().identity
+
+
 def test_cate_and_validation_settings_change_cell_identity():
     cate_spend = estimate_cate(
         *_experiment(), "revenue", control="control", interact=["spend"]
@@ -869,6 +894,65 @@ class TestRefusals:
         )
         (row,) = [row for row in readouts.run(source) if row.metric == "aov"]
         assert row.abs_diff is not None
+
+
+def _count_unit_frame_reads(monkeypatch, reader) -> list[object]:
+    """Record every unit-row read the reader's source serves."""
+    source = reader._binding.source
+    read = source.unit_frame
+    calls: list[object] = []
+
+    def counting(*args, **kwargs):
+        calls.append(args)
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(source, "unit_frame", counting)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("caller", "entry_point"),
+    [("estimate_cate", estimate_cate), ("validate_cate", validate_cate)],
+    ids=["estimate_cate", "validate_cate"],
+)
+def test_outcome_as_covariate_refuses(caller, entry_point, monkeypatch):
+    experiment, reader = _experiment()
+    reads = _count_unit_frame_reads(monkeypatch, reader)
+    for covariates in ({"interact": ["revenue"]}, {"interact": [], "adjust": ["revenue"]}):
+        with pytest.raises(InvalidRequestError) as exc_info:
+            entry_point(experiment, reader, "revenue", **covariates)
+        assert exc_info.value.code == "cate.covariate.is_outcome"
+        assert dict(exc_info.value.context) == {
+            "caller": caller,
+            "metric": "revenue",
+            "covariate": "revenue",
+        }
+    assert reads == []
+
+
+def test_aliased_outcome_column_as_covariate_refuses(monkeypatch):
+    """On a dataframe the outcome is the columns a metric reads, not the metric's name."""
+    experiment, reader = from_frame(
+        _frame_ratio(),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[MetricSpec(name="spend", value_column="revenue"), _RATIO_METRIC],
+    )
+    reads = _count_unit_frame_reads(monkeypatch, reader)
+    for metric, column in (("spend", "revenue"), ("aov", "orders")):
+        with pytest.raises(InvalidRequestError) as exc_info:
+            estimate_cate(experiment, reader, metric, interact=[column])
+        assert exc_info.value.code == "cate.covariate.is_outcome"
+        context = exc_info.value.context
+        assert (context["metric"], context["covariate"]) == (metric, column)
+    assert reads == []
+
+    # The frame's own pre-exposure `spend` column is not the `spend` metric's outcome.
+    fit = estimate_cate(experiment, reader, "spend", interact=["spend"])
+    # Each unit's effect is its order count (gamma, mean 9) times the ratio lift of 1.
+    assert abs(fit.ate - 9.0) < 3.0 * fit.se
 
 
 def test_estimate_cate_refuses_non_randomized_source():

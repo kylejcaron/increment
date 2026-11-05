@@ -2684,6 +2684,21 @@ def test_estimate_cate_matches_across_definitions_and_unit_summary(tmp_path):
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, tenure, group, revenue = covariate_defs_and_con(tmp_path)
+    # A pre-exposure property may share the metric's name; it is not the outcome.
+    defs_path.write_text(
+        defs_path.read_text().replace(
+            "exposures:\n",
+            "  - name: users\n"
+            "    sql: SELECT * FROM cov_events\n"
+            "    timestamp_column: ts\n"
+            "    entities: [user_id]\n"
+            "    facts: []\n"
+            "    properties:\n"
+            "      - {name: revenue, column: tenure, dtype: float, as_of: pre_exposure}\n"
+            "exposures:\n",
+            1,
+        )
+    )
     native_experiment, native_resolver = from_definitions(
         defs_path, con, experiment_name="cov_test"
     )
@@ -2698,6 +2713,9 @@ def test_estimate_cate_matches_across_definitions_and_unit_summary(tmp_path):
     native_result = estimate_cate(
         native_experiment, native_resolver, "revenue", interact=["tenure"]
     )
+    same_named = estimate_cate(native_experiment, native_resolver, "revenue", interact=["revenue"])
+    assert same_named.ate == pytest.approx(native_result.ate, rel=1e-9)
+    assert same_named.beta == pytest.approx(native_result.beta, rel=1e-9)
     oracle_result = estimate_cate(
         oracle_experiment, oracle_resolver, "revenue", control="control", interact=["tenure"]
     )

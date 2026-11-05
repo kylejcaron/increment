@@ -221,7 +221,10 @@ __all__ = [
 
 
 def declaration_value(value: Any) -> Any:
-    """Encode source declarations independently of captured row values."""
+    """Encode source declarations independently of captured row values.
+
+    A dataclass field with ``metadata={"declaration": False}`` is runtime state and is skipped.
+    """
     if callable(value):
         return {
             "runtime_callable": id(value),
@@ -235,7 +238,9 @@ def declaration_value(value: Any) -> Any:
         return {name: declaration_value(getattr(value, name)) for name in type(value).model_fields}
     if is_dataclass(value) and not isinstance(value, type):
         return {
-            field.name: declaration_value(getattr(value, field.name)) for field in fields(value)
+            field.name: declaration_value(getattr(value, field.name))
+            for field in fields(value)
+            if field.metadata.get("declaration", True)
         }
     if isinstance(value, Mapping):
         return {

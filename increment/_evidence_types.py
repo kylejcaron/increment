@@ -1067,10 +1067,23 @@ class SourceContext:
     #: Per-metric missing-value policy retained by the source that owns the
     #: metric catalog. Evidence consumers must not reach into loader internals.
     metric_missingness: Mapping[str, str] = dataclass_field(default_factory=dict)
+    #: Physical columns each metric's outcome reads, retained by a source whose
+    #: metrics name dataframe columns; empty where metrics name no column.
+    #: Runtime state derived from the metrics, so not part of a source declaration.
+    metric_outcome_columns: Mapping[str, frozenset[str]] = dataclass_field(
+        default_factory=dict, metadata={"declaration": False}
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "metric_missingness", MappingProxyType(dict(self.metric_missingness))
+        )
+        object.__setattr__(
+            self,
+            "metric_outcome_columns",
+            MappingProxyType(
+                {name: frozenset(columns) for name, columns in self.metric_outcome_columns.items()}
+            ),
         )
 
     # SourceContext is construction state shared by every population view.

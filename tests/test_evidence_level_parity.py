@@ -1662,6 +1662,7 @@ def _assert_coordinate_inputs(live, frozen):
     from tests.parity_harness.expected_differences import (
         CONSUMER_INPUT_DIFFERENCES,
         with_expected_difference,
+        without_metric_outcome_columns,
     )
     from tests.test_evidence_identity_parity import _capture
 
@@ -1673,14 +1674,15 @@ def _assert_coordinate_inputs(live, frozen):
             archived_outcome["population_identity"],
             path="source_population_membership",
         )
+    expected_inputs = with_expected_difference(
+        live.scenario_id,
+        live.ingress,
+        _source_input_identity_projection(frozen),
+        differences=CONSUMER_INPUT_DIFFERENCES,
+    )
     _assert_input_value(
-        _source_input_identity_projection(live),
-        with_expected_difference(
-            live.scenario_id,
-            live.ingress,
-            _source_input_identity_projection(frozen),
-            differences=CONSUMER_INPUT_DIFFERENCES,
-        ),
+        without_metric_outcome_columns(expected_inputs, _source_input_identity_projection(live)),
+        expected_inputs,
         path="source_input_identity",
     )
     _assert_runtime_versions(live, frozen)

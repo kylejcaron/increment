@@ -139,6 +139,13 @@ identification, overlap, or honest-validation requirements. See
 [observational adjustment](observational.md) for source-specific declarations
 and missing-value policies.
 
+Like `estimate_cate`, they contrast the experiment's declared control arm
+unless `control=` names another. Covariates must be measured before exposure,
+so on a dataframe experiment all four refuse a column the metric's value is
+read from (its `value_column`, or a ratio's numerator and denominator) as an
+`interact` or `adjust` covariate with `cate.covariate.is_outcome`, before any
+data is read. A column that only shares the metric's name is accepted.
+
 The lower-level array functions also accept custom five-argument `psi_fn`
 callbacks, typed as `PsiFn`. Import `PsiFn` and `ScoreDesign` from
 `increment.estimation`; annotate the callback's third argument as
