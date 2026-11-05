@@ -3186,7 +3186,9 @@ class TestBoundedDomain:
         The ceiling is the rate as written: a lift of 0.25 on 0.8 is exactly
         one, and 2.333333333333333 is the last float lift on 0.3 at or below
         one, so a minimum detectable effect is always one the supplied-effect
-        route evaluates."""
+        route evaluates. A ceiling effect keeps its distance from an adjacent
+        null: lift 4.0 on 0.2 sits one float above the null 3.9999999999999996,
+        so it still has a size."""
         from increment.errors import InvalidRequestError
 
         baseline = Baseline.from_proportion(0.5)
@@ -3219,6 +3221,13 @@ class TestBoundedDomain:
             "power.minimum_detectable_effect.unattainable",
             "power.minimum_detectable_effect.unrepresentable",
         }
+
+        adjacent_null = _absorbed(
+            metric_type="conversion", alternative="greater", null_lift=3.9999999999999996
+        )
+        sized = required_sample_size(4.0, Baseline.from_proportion(0.2), adjacent_null)
+        assert math.isfinite(sized.n_per_arm)
+        assert sized.n_per_arm > 0
 
         with pytest.raises(InvalidRequestError) as refusal:
             minimum_detectable_effect(4, baseline, procedure, PowerDesign(power=0.8))

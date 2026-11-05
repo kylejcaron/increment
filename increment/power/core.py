@@ -1392,18 +1392,19 @@ def _written_rate(mean: float, lift: float, compliance: float, null_lift: float 
 
 
 def _bounded_point(
-    rate: Fraction, *, log_m0: float, theta0: float, theta: float, distance: float
+    rate: Fraction, *, log_m0: float, theta: float, distance: float
 ) -> tuple[float, float] | None:
     """``(theta, distance)`` of a bounded effect whose rate as written is
     ``rate``, or ``None`` above one. A rate of one, or a rate below one whose
-    ``log(m0) + theta`` rounds above zero, is the boundary ``theta =
-    -log(m0)`` at distance ``-log(m0) - theta0``: there the treatment rate is
-    one exactly in log space, and a supplied effect and a candidate minimum
-    detectable effect are evaluated at the same point."""
+    ``log(m0) + theta`` rounds above zero, takes the boundary ``theta =
+    -log(m0)``, where the treatment rate is one exactly in log space; the
+    caller's lift-based distance is kept, since ``-log(m0) - theta0`` cancels
+    for a null adjacent to the effect. A supplied effect and a candidate
+    minimum detectable effect share this rule."""
     if rate > 1:
         return None
     if rate == 1 or log_m0 + theta > 0.0:
-        return -log_m0, -log_m0 - theta0
+        return -log_m0, distance
     return theta, distance
 
 
@@ -1741,8 +1742,8 @@ def _supplied_effect(
     """``(theta, distance)`` of a supplied complier-scale ``relative_lift``:
     its absolute effective log ratio ``log1p(relative_lift * compliance)``
     and its signed log-distance from the null. Validates the public domain
-    and, for a bounded metric, refuses a rate above one as written and puts
-    a rate of one on the boundary point (``_bounded_point``) that minimum
+    and, for a bounded metric, refuses a rate above one as written and gives
+    a rate of one the boundary log ratio (``_bounded_point``) that minimum
     detectable effect candidates share. Sizing and achieved power share this
     conversion, so their supplied effect is the same alternative the
     companion solver measures distance from.
@@ -1758,7 +1759,6 @@ def _supplied_effect(
     point = _bounded_point(
         rate,
         log_m0=math.log(baseline.mean),
-        theta0=math.log1p(decision.null_lift),
         theta=theta,
         distance=distance,
     )
@@ -1989,7 +1989,6 @@ class _MdeSearch:
         point = _bounded_point(
             _written_rate(self.plan.baseline.mean, m, self.compliance, self.null_lift),
             log_m0=self.log_m0,
-            theta0=self.theta0,
             theta=theta,
             distance=distance,
         )
