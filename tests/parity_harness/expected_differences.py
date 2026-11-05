@@ -244,3 +244,39 @@ def without_breakout_family_size(expected: Any, actual: Any) -> Any:
         ]
         return tuple(paired) if isinstance(actual, tuple) else paired
     return actual
+
+
+def without_metric_outcome_columns(expected: Any, actual: Any) -> Any:
+    """``actual`` consumer inputs without the ``metric_outcome_columns`` each source context
+    gained after ``expected`` was captured.
+
+    Only a context whose capture lacks the field is projected, and only when its value follows
+    from the captured source inputs: a declared dataframe's metric specs name each metric's value
+    column (the numerator for a ratio) and any denominator; every other source names none.
+    """
+    derived: dict[str, set[str]] = {}
+    for source_input in expected["source_inputs"]:
+        if source_input["kind"] != "declared_source_frame":
+            continue
+        for spec in source_input["configuration"]["source_declaration"]["specs"]:
+            value = spec["numerator"] if spec["type"] == "ratio" else spec["value_column"]
+            derived[spec["name"]] = {value or spec["name"]} | (
+                {spec["denominator"]} if spec["denominator"] else set()
+            )
+
+    def project(captured: Any, live: Any) -> Any:
+        if isinstance(captured, Mapping) and isinstance(live, Mapping):
+            fields = dict(live)
+            if (
+                "metric_missingness" in captured
+                and "metric_outcome_columns" not in captured
+                and "metric_outcome_columns" in fields
+            ):
+                columns = fields.pop("metric_outcome_columns")
+                assert {name: set(value) for name, value in columns.items()} == derived, columns
+            return {key: project(captured.get(key), value) for key, value in fields.items()}
+        if isinstance(captured, list) and isinstance(live, list) and len(captured) == len(live):
+            return [project(left, right) for left, right in zip(captured, live, strict=True)]
+        return live
+
+    return project(expected, actual)

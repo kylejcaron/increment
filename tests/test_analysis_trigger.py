@@ -2231,6 +2231,45 @@ def test_triggered_observational_artifact_matches_the_definitions_readout(tmp_pa
             _close_parity_binding(adopted)
 
 
+@pytest.mark.integration
+def test_triggered_artifact_cate_checks_the_metric_before_any_query(tmp_path):
+    import duckdb
+    from packaging.version import Version
+
+    from increment.estimators import estimate_cate
+    from tests.parity_harness.query_log import disable_query_log, enable_query_log, query_log
+
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=30, trigger_rate=0.5, effect=0.6))
+    native = _pinned_experiment(_write_defs(tmp_path), con)
+    experiments = [native]
+    try:
+        adopted = _adopted_cate_experiment(
+            con, native, kinds=("trigger_population", "trigger_measure_stats")
+        )
+        experiments.append(adopted)
+        # The query log sees every statement, including the trigger-population check.
+        logs_queries = enable_query_log(con)
+        # DuckDB's QueryLog first ships in 1.3.0.
+        assert logs_queries == (Version(duckdb.__version__) >= Version("1.3.0"))
+        try:
+            logged = len(query_log(con)) if logs_queries else 0
+            with pytest.raises(InvalidRequestError) as raised:
+                estimate_cate(*adopted, "orders", interact=[])
+            statements = (
+                [s for s in query_log(con)[logged:] if "duckdb_logs" not in s]
+                if logs_queries
+                else []
+            )
+        finally:
+            if logs_queries:
+                disable_query_log(con)
+        assert raised.value.code == "cate.metric_declared_source"
+        assert statements == []
+    finally:
+        _close_experiments(con, *experiments)
+
+
 @pytest.mark.slow
 def test_triggered_cate_randomized_artifact_without_covariates_preserves_population(tmp_path):
     from collections import Counter

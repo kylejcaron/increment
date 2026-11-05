@@ -138,6 +138,7 @@ Retired codes and their replacements are listed below.
 | `cate.cluster.randomization_arm_purity` | `InvalidRequestError` | `caller`, `cluster`, `values` | `increment.cate` |
 | `cate.contrasts_exactly_two` | `InvalidRequestError` | `arms`, `caller`, `control`, `metric`, `n_arms`, `others` | `increment.cate` |
 | `cate.control_arm_present` | `InvalidRequestError` | `arms`, `control`, `metric` | `increment.cate` |
+| `cate.covariate.is_outcome` | `InvalidRequestError` | `caller`, `covariate`, `metric` | `increment.cate` |
 | `cate.does_support_ratio` | `UnsupportedRequestError` | `caller`, `metric` | `increment.cate` |
 | `cate.identification.randomized_only` | `InvalidRequestError` | `caller`, `mechanism` | `increment.cate` |
 | `cate.identification.unsupported_max_smd` | `InvalidRequestError` | `caller`, `max_smd` | `increment.cate` |

@@ -101,6 +101,7 @@ _REFUSALS = refusals(
         "cate.control_arm_present": "control arm {control!r} is not present in {metric!r}; arms are {arms}",
         "cate.contrasts_exactly_two": "{caller} contrasts exactly two arms, but {metric!r} has {n_arms}: {arms}. Against control {control!r} the treatment indicator would pool {others} into a single arm, which estimates a different quantity. Restrict the source to two arms and call once per contrast",
         "cate.cluster.covariate_conflict": "{caller}: {column!r} is this source's declared cluster identity (source.context.cluster) and cannot also be requested as an interact/adjust covariate or observational adjustment column, even though it may look numeric -- cluster identity is metadata, never a model feature.",
+        "cate.covariate.is_outcome": "{caller}: covariate {covariate!r} is the outcome of metric {metric!r}. Covariates must be measured before exposure; remove the outcome from interact, adjust and the design's adjustment set.",
         "cate.cluster.randomization_arm_purity": "{caller}: cluster {cluster!r} contains both treatment arms ({values}) under a declared cluster-randomized source (source.context.design.mechanism == 'randomized' with a declared cluster) -- randomization at the cluster grain requires every cluster to be a pure arm. An observational design (declaring the dependence honestly) preserves mixed-treatment clusters instead.",
         "cate.cluster.identity_unavailable": "{caller}: source.context.cluster == {column!r} declares a cluster identity, but unit_frame served no aligned cluster_id column -- a nonconformant MomentSource implementation. Refusing rather than silently treating this population as unclustered.",
         "cate.cluster.intervention_grain_unavailable": "{caller}: source.context.intervention_grain == 'cluster' declares a whole-cluster policy deployment, but this source resolved no cluster identity (source.context.cluster is None) -- there is no cluster grain to intervene on.",
@@ -138,6 +139,27 @@ def _resolve_metric(source: EvidenceSource, metric: str) -> Metric:
     _raise("cate.metric_declared_source", metric=metric, available=available)
 
 
+def _fittable_metric(
+    source: EvidenceSource, metric: str, covariates: Sequence[str], *, caller: str
+) -> Metric:
+    """The declared *metric*, refusing a covariate that is its outcome and a type CATE cannot fit.
+
+    The outcome is the columns the metric's value reads, which only a dataframe
+    source names; as a covariate it makes the design collinear with the outcome.
+    Other sources serve the outcome as ``y`` and covariates as declared properties.
+    """
+    resolved = _resolve_metric(source, metric)
+    outcome = source.context.metric_outcome_columns.get(metric, frozenset())
+    for name in covariates:
+        if name in outcome:
+            _raise("cate.covariate.is_outcome", caller=caller, metric=metric, covariate=name)
+    if resolved.type == "ratio":
+        _raise("cate.does_support_ratio", caller=caller, metric=metric)
+    if resolved.type == "quantile":
+        _raise("cate.cate_supported_quantile", metric=metric)
+    return resolved
+
+
 class _UnitDesign(NamedTuple):
     """Unit-grain arrays and the frame they came from."""
 
@@ -146,6 +168,8 @@ class _UnitDesign(NamedTuple):
     d: np.ndarray
     cols: dict[str, np.ndarray]
     identification: Design | None
+    #: The contrasted control arm: the requested one, else the declared control.
+    control: str
     #: Canonicalized, aligned cluster identity -- `None` when the source
     #: declares no `cluster`. Metadata only: never entered as a model column.
     cluster_ids: np.ndarray | None
@@ -184,7 +208,7 @@ def _unit_design(
     source: EvidenceSource,
     metric: str,
     *,
-    control: str,
+    control: str | None,
     covariates: Sequence[str],
     caller: str,
     permit_observational: bool,
@@ -221,17 +245,14 @@ def _unit_design(
                 )
     elif mechanism != "randomized":
         refuse(_RANDOMIZED_ONLY, caller=caller, mechanism=mechanism)
-    requested = list(covariates)
-    if design is not None and design.mechanism == "observational":
-        requested = list(dict.fromkeys((*requested, *design.adjustment.covariates)))
+    if control is None:
+        assert design is not None
+        control = design.control_group
+    requested = _requested_covariates(design, covariates)
     cluster_column = source.context.cluster
     if cluster_column is not None and cluster_column in requested:
         _raise("cate.cluster.covariate_conflict", caller=caller, column=cluster_column)
     resolved = _resolve_metric(source, metric)
-    if resolved.type == "ratio":
-        _raise("cate.does_support_ratio", caller=caller, metric=metric)
-    if resolved.type == "quantile":
-        _raise("cate.cate_supported_quantile", metric=metric)
     evidence = declared_evidence(source)
     population = (
         "triggered"
@@ -319,19 +340,20 @@ def _unit_design(
         d=d,
         cols=cols,
         identification=design,
+        control=control,
         cluster_ids=cluster_ids,
         intervention_grain=intervention_grain,
     )
 
 
 def _report_identity_context(
-    source: EvidenceSource, unit: _UnitDesign, metric: str, control: str
+    source: EvidenceSource, unit: _UnitDesign, metric: str
 ) -> dict[str, JsonValue]:
     from importlib import import_module
 
     source_identity = import_module("increment._source_identity").source_identity(source)
     arms = set(unit.frame["group_id"].to_list())
-    treatment = next(arm for arm in arms if arm != control)
+    treatment = next(arm for arm in arms if arm != unit.control)
     evidence = declared_evidence(source)
     population = (
         "triggered"
@@ -340,7 +362,7 @@ def _report_identity_context(
     )
     return {
         "metric": metric,
-        "control": control,
+        "control": unit.control,
         "treatment": treatment,
         "source_identity": source_identity,
         "source_snapshot_id": None,
@@ -401,6 +423,28 @@ def _score_plan(
     return (), _ipw_psi_fn, "welch"
 
 
+def _requested_covariates(design: Design | None, covariates: Sequence[str]) -> list[str]:
+    """Every covariate column a fit reads, an observational adjustment set included."""
+    if design is not None and design.mechanism == "observational":
+        return list(dict.fromkeys((*covariates, *design.adjustment.covariates)))
+    return list(covariates)
+
+
+def _fitted_source(
+    binding: SourceBinding, method: str, *, metric: str, covariates: Sequence[str]
+) -> EvidenceSource:
+    """The unit source *method* fits, after checking *metric* and its covariates.
+
+    The checks read only the bound context, because building a triggered view
+    can read data.
+    """
+    if binding.state.family != "arm_moments":
+        refuse(CONTRAST_UNAVAILABLE, method=method)
+    requested = _requested_covariates(binding.source.context.design, covariates)
+    _fittable_metric(binding.source, metric, requested, caller=method)
+    return _cate_source(binding, method)
+
+
 def _cate_source(binding: SourceBinding, method: str) -> EvidenceSource:
     """The unit source *method* reads: its triggered view when a trigger is declared."""
     if binding.state.family != "arm_moments":
@@ -430,14 +474,11 @@ def _estimate_cate_binding(
     ard: bool,
     cluster_weight: Literal["member_count", "equal"],
 ) -> CateResult:
-    if control is None:
-        assert binding.design is not None
-        control = binding.design.control_group
-    source = _cate_source(binding, "estimate_cate")
-    _validate_cluster_weight(cluster_weight, clustered=source.context.cluster is not None)
     interact_covs = _coerce(interact)
     adjust_covs = _coerce(adjust)
     covariates = _requested_columns(interact_covs, adjust_covs)
+    source = _fitted_source(binding, "estimate_cate", metric=metric, covariates=covariates)
+    _validate_cluster_weight(cluster_weight, clustered=source.context.cluster is not None)
     unit = _unit_design(
         source,
         metric,
@@ -459,7 +500,7 @@ def _estimate_cate_binding(
         intervention_grain=unit.intervention_grain,
     )
     return result.model_copy(
-        update={"report_context": _report_identity_context(source, unit, metric, control)}
+        update={"report_context": _report_identity_context(source, unit, metric)}
     )
 
 
@@ -467,7 +508,7 @@ def _validate_cate_binding(
     binding: SourceBinding,
     metric: str,
     *,
-    control: str,
+    control: str | None,
     interact: Sequence[Covariate | str],
     adjust: Sequence[Covariate | str],
     n_groups: int,
@@ -476,14 +517,14 @@ def _validate_cate_binding(
     bootstrap: ClusterBootstrap | None,
     include_evaluation_population: bool,
 ) -> CateValidation:
-    source = _cate_source(binding, "validate_cate")
+    interact_covs = _coerce(interact)
+    adjust_covs = _coerce(adjust)
+    covariates = _requested_columns(interact_covs, adjust_covs)
+    source = _fitted_source(binding, "validate_cate", metric=metric, covariates=covariates)
     _validate_cluster_weight(cluster_weight, clustered=source.context.cluster is not None)
     bootstrap = (
         ClusterBootstrap() if bootstrap is None else ClusterBootstrap.model_validate(bootstrap)
     )
-    interact_covs = _coerce(interact)
-    adjust_covs = _coerce(adjust)
-    covariates = _requested_columns(interact_covs, adjust_covs)
     unit = _unit_design(
         source,
         metric,
@@ -514,7 +555,7 @@ def _validate_cate_binding(
     )
     if not isinstance(result, CateValidation):
         return result
-    report_context = _report_identity_context(source, unit, metric, control)
+    report_context = _report_identity_context(source, unit, metric)
     report_context["method_settings"] = _validation_settings(
         interact_covs, adjust_covs, cluster_weight, bootstrap
     )
@@ -525,7 +566,7 @@ def _targeting_rule_binding(
     binding: SourceBinding,
     metric: str,
     *,
-    control: str,
+    control: str | None,
     interact: Sequence[Covariate | str],
     adjust: Sequence[Covariate | str],
     fraction: float,
@@ -535,7 +576,10 @@ def _targeting_rule_binding(
     deploy_grain: Literal["unit", "cluster"] | None,
     include_evaluation_population: bool,
 ) -> TargetingRule:
-    source = _cate_source(binding, "targeting_rule")
+    interact_covs = _coerce(interact)
+    adjust_covs = _coerce(adjust)
+    covariates = _requested_columns(interact_covs, adjust_covs)
+    source = _fitted_source(binding, "targeting_rule", metric=metric, covariates=covariates)
     deploy_grain = resolve_deploy_grain(
         source.context.intervention_grain,
         deploy_grain,
@@ -545,9 +589,6 @@ def _targeting_rule_binding(
     bootstrap = (
         ClusterBootstrap() if bootstrap is None else ClusterBootstrap.model_validate(bootstrap)
     )
-    interact_covs = _coerce(interact)
-    adjust_covs = _coerce(adjust)
-    covariates = _requested_columns(interact_covs, adjust_covs)
     unit = _unit_design(
         source,
         metric,
@@ -579,7 +620,7 @@ def _targeting_rule_binding(
     )
     if not isinstance(result, TargetingRule):
         return result
-    identity_context = _report_identity_context(source, unit, metric, control)
+    identity_context = _report_identity_context(source, unit, metric)
     validation_context = {
         **identity_context,
         "method_settings": _validation_settings(
@@ -594,7 +635,7 @@ def _select_targeting_rule_binding(  # noqa: PLR0913
     binding: SourceBinding,
     metric: str,
     *,
-    control: str,
+    control: str | None,
     interact: Sequence[Covariate | str],
     adjust: Sequence[Covariate | str],
     fractions: Sequence[float],
@@ -607,7 +648,10 @@ def _select_targeting_rule_binding(  # noqa: PLR0913
     deploy_grain: Literal["unit", "cluster"] | None,
     include_evaluation_population: bool,
 ) -> TargetingSelection:
-    source = _cate_source(binding, "select_targeting_rule")
+    interact_covs = _coerce(interact)
+    adjust_covs = _coerce(adjust)
+    covariates = _requested_columns(interact_covs, adjust_covs)
+    source = _fitted_source(binding, "select_targeting_rule", metric=metric, covariates=covariates)
     deploy_grain = resolve_deploy_grain(
         source.context.intervention_grain,
         deploy_grain,
@@ -617,9 +661,6 @@ def _select_targeting_rule_binding(  # noqa: PLR0913
     bootstrap = (
         ClusterBootstrap() if bootstrap is None else ClusterBootstrap.model_validate(bootstrap)
     )
-    interact_covs = _coerce(interact)
-    adjust_covs = _coerce(adjust)
-    covariates = _requested_columns(interact_covs, adjust_covs)
     unit = _unit_design(
         source,
         metric,
@@ -654,7 +695,7 @@ def _select_targeting_rule_binding(  # noqa: PLR0913
     )
     if not isinstance(result, TargetingSelection):
         return result
-    identity_context = _report_identity_context(source, unit, metric, control)
+    identity_context = _report_identity_context(source, unit, metric)
     validation = result.rule.validation.model_copy(update={"report_context": identity_context})
     rule = result.rule.model_copy(
         update={"report_context": identity_context, "validation": validation}
@@ -704,9 +745,10 @@ def estimate_cate(
     undeclared metric, absent control, or a non-two-arm frame;
     ``NotImplementedError`` for ratio and quantile metrics.
 
-    Covariates must be strictly pre-exposure; results do not compose
-    with the package's default relative lifts (see
-    ``increment.estimation.cate``).
+    Covariates must be strictly pre-exposure: on a dataframe source, a column
+    the metric's value reads raises ``cate.covariate.is_outcome`` before data
+    is read. Results do not compose with the package's default relative lifts
+    (see ``increment.estimation.cate``).
     """
     return _estimate_cate_binding(
         binding_for(experiment, reader),
@@ -725,7 +767,7 @@ def validate_cate(
     reader: ExperimentReader,
     metric: str,
     *,
-    control: str,
+    control: str | None = None,
     interact: Sequence[Covariate | str],
     adjust: Sequence[Covariate | str] = (),
     n_groups: int = 5,
@@ -763,7 +805,8 @@ def validate_cate(
     and shrinkage is a reporting choice for ``estimate_cate``, not a
     knob on the test.
 
-    Missing or unsupported identification raises
+    ``control`` and the covariate rules follow ``estimate_cate``. Missing or
+    unsupported identification raises
     ``cate.identification.unsupported_mechanism``. Observational policies
     other than ``missing="refuse"`` or with a non-null ``max_smd`` raise
     ``cate.identification.unsupported_missing_policy`` or
@@ -799,7 +842,7 @@ def targeting_rule(
     reader: ExperimentReader,
     metric: str,
     *,
-    control: str,
+    control: str | None = None,
     interact: Sequence[Covariate | str],
     adjust: Sequence[Covariate | str] = (),
     fraction: float,
@@ -821,7 +864,7 @@ def targeting_rule(
     ``fraction`` is required with no default: pre-committing to the cut
     is the entire value of this function - choosing it after seeing
     ``validate_cate``'s group table biases the reported policy value
-    upward by 60-120%. Identification and policy refusals follow
+    upward by 60-120%. ``control``, identification and policy refusals follow
     ``validate_cate``, including observational adjustment and overlap rules.
     ``alpha`` gates the same ``autoc.p_value < alpha`` test. ``ard=`` is absent for the
     same reason it is absent from ``validate_cate``: the gate was
@@ -869,7 +912,7 @@ def select_targeting_rule(  # noqa: PLR0913
     reader: ExperimentReader,
     metric: str,
     *,
-    control: str,
+    control: str | None = None,
     interact: Sequence[Covariate | str],
     adjust: Sequence[Covariate | str] = (),
     fractions: Sequence[float],
@@ -901,8 +944,9 @@ def select_targeting_rule(  # noqa: PLR0913
     at the default ``0.0`` the objective is total benefit, which favors
     wide fractions whenever the marginal unit's effect is positive.
 
-    Raises exactly what :func:`targeting_rule` raises, plus ``ValueError``
-    for an invalid grid or a fold too small to hold 2 units per arm.
+    ``control`` defaults as in :func:`targeting_rule`. Raises exactly what
+    :func:`targeting_rule` raises, plus ``ValueError`` for an invalid grid or
+    a fold too small to hold 2 units per arm.
     Declared clusters use ``cluster_weight="member_count"`` (unit weights)
     or ``"equal"`` (inverse cluster-size weights). Clustered rank, GATES and
     CLAN intervals contain both a heldout-only whole-cluster bootstrap-t and a

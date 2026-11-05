@@ -467,6 +467,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             cluster=cluster,
             intervention_grain=intervention_grain,
             metric_missingness={name: spec.missing for name, spec in self._specs_by_name.items()},
+            metric_outcome_columns=_metric_outcome_columns(self._specs),
         )
         # Snapshot exact values so later caller mutation cannot change the
         # inferred population while leaving the constructed moments fixed.
@@ -1083,6 +1084,14 @@ class FrameTotalsSource(SequentialSourceMixin):
         )
 
 
+def _metric_outcome_columns(specs: Sequence[MetricSpec]) -> dict[str, frozenset[str]]:
+    """The columns each metric's outcome reads: its value column and any denominator."""
+    return {
+        spec.name: frozenset(column for column in (spec.y_column, spec.denominator) if column)
+        for spec in specs
+    }
+
+
 def _numeric_metric_columns(specs: Sequence[MetricSpec]) -> set[str]:
     columns = {column for spec in specs for column in (spec.y_column, spec.denominator) if column}
     columns.update(
@@ -1657,6 +1666,7 @@ class FramePanelSource(SequentialSourceMixin):
             ),
             cluster=None,
             metric_missingness={spec.name: spec.missing for spec in metrics},
+            metric_outcome_columns=_metric_outcome_columns(metrics),
         )
 
     def _day_identity(self) -> nw.DataFrame[Any]:

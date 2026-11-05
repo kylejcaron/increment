@@ -178,6 +178,18 @@ values.
   one as written is refused too, and so, as before, is a null whose computed
   logarithm rounds above zero. Other results and experiment identity hashes are
   unchanged.
+- Release note (breaking API cutover): `increment.estimators.validate_cate`,
+  `targeting_rule` and `select_targeting_rule` default `control` to the
+  experiment's declared control arm, as `estimate_cate` does; omitting it
+  previously raised `TypeError`. Results, report identity and cell identity
+  are the same whether the declared control is passed or omitted. On a
+  dataframe experiment all four operations refuse a covariate that is a column
+  the metric's value reads (its `value_column`, or a ratio's numerator and
+  denominator) with `cate.covariate.is_outcome` (context `caller`, `metric`
+  and `covariate`) before any data is read; previously such a fit returned an
+  effect of about zero with a near-zero standard error. Migrate by removing the
+  outcome from `interact` and `adjust`.
+  Other estimates, experiment JSON and identity hashes are unchanged.
 - Release note (usability): reading a public submodule such as
   `increment.workflows` from the package before importing it raises an
   `AttributeError` that names the import, `from increment.workflows import ...`;
