@@ -139,6 +139,21 @@ values.
   instant, such as a first-purchase exposure's enrolling order, counts in
   neither the outcome nor the CUPED window. Refusals, estimates and experiment
   identity are unchanged.
+- Release note (usability): `readout_table` renders a breakout view by
+  default. `nest_by` now defaults to `None`, which nests by `"segment"` when
+  rows of one method carry more than one segment and by `"arm"` otherwise, so
+  `readout_table(result.readout(view))` on a one-method breakout view gives
+  each segment its own row instead of refusing with
+  `tables.readout_table_ambiguous`. An explicit `nest_by` behaves as before.
+  That refusal now carries a `route` context field: `nest_by="segment"` when
+  the colliding rows differ by segment, otherwise distinct
+  `analysis_population` values. Segment labels render as written, so the
+  missing-value segment reads `__null__` rather than a bold "null",
+  Markdown in a segment label shows as text, an empty-string segment reads
+  `""`, and a row without a segment, such as a run's whole-window row, shows
+  a blank segment label rather than `nan`, so the two stay distinct rows.
+  Table qualification cells show `>` as written rather than `&gt;`.
+  Readout estimates and experiment identity are unchanged.
 - Release note (documentation): the power guide's `PowerResult` table states
   that `mde_relative` is relative to the declared `null_lift`, not to control,
   and that the matching `relative_lift` is

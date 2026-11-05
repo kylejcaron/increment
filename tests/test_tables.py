@@ -1443,6 +1443,92 @@ def test_readout_table_nest_by_segment_raises_for_multiple_methods():
     assert exc_info.value.code == "tables.readout_table_nest"
 
 
+@pytest.fixture(scope="module")
+def country_breakout():
+    """A run breakout readout over US, CA and a missing country, plus MX, which
+    has one unit per arm and so stays as a count-excluded row."""
+    np = pytest.importorskip("numpy")
+    pl = pytest.importorskip("polars")
+    from increment import AnalysisPlan, MetricSpec, Randomized, View, from_frame, run
+    from increment.errors import IncrementWarning
+
+    rng = np.random.default_rng(7)
+    rows = [
+        {"u": f"{seg}{arm}{i}", "arm": arm, "country": seg, "revenue": float(rng.normal(10, 2))}
+        for seg in ("US", "CA", None)
+        for arm in ("control", "treatment")
+        for i in range(60)
+    ]
+    rows += [
+        {"u": f"MX{arm}", "arm": arm, "country": "MX", "revenue": 10.0}
+        for arm in ("control", "treatment")
+    ]
+    experiment, reader = from_frame(
+        pl.DataFrame(rows),
+        shape="summary",
+        unit="u",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="revenue")],
+        breakouts=["country"],
+        plan=AnalysisPlan(primary="revenue"),
+    )
+    view = View(view="breakout", grain="total")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        return run(experiment.with_views(view), reader).readout(view)
+
+
+def test_readout_table_nests_a_breakout_readout_by_segment_by_default(country_breakout):
+    pytest.importorskip("coeftable")
+
+    table = readout_table(country_breakout)
+    table.gt().as_raw_html()
+
+    assert table.nest == "segment"
+    assert len(table.data) == 4
+
+
+def test_readout_table_breakout_nested_by_arm_refusal_routes_to_segment(country_breakout):
+    pytest.importorskip("coeftable")
+    from increment.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError) as exc_info:
+        readout_table(country_breakout, nest_by="arm")
+
+    assert exc_info.value.code == "tables.readout_table_ambiguous"
+    assert "nest_by" in exc_info.value.context["route"]  # ty: ignore[unsupported-operator]
+
+
+def test_readout_table_shows_the_missing_segment_label_as_written(country_breakout):
+    """``__null__`` reads as written, and an empty-string segment stays
+    distinct from a whole-window row, which has no segment."""
+    pytest.importorskip("coeftable")
+
+    html = readout_table(country_breakout, nest_by="segment").gt().as_raw_html()
+
+    assert "__null__" in html
+    assert "<strong>null</strong>" not in html
+
+    rows = estimates_to_readout(
+        [
+            _estimate("revenue", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            _breakout_estimate(
+                "revenue", "T", "unadjusted", "country", "", 0.05, lb=-0.02, ub=0.12
+            ),
+        ]
+    )
+    dom = _Dom(readout_table(rows, nest_by="segment").gt().as_raw_html())
+
+    assert '""' in dom.text
+    tokens = dom.percent_tokens()
+    assert tokens["+22.0%"] == tokens["-2.0%"] == 1
+
+
 def test_readout_table_trend_renders_sparkline_column():
     """A breakout frame plus a matching trend frame renders a sparkline
     column labelled `trend_label`, containing at least one inline SVG."""
@@ -1491,7 +1577,7 @@ def test_readout_table_trend_accepts_daily_lift_estimates_sequence():
 
 def test_readout_table_trend_missing_key_column_raises():
     """A trend frame missing a required key column (here `group_id`, the
-    default nest_by='arm' nest column) raises ValueError naming it."""
+    nest column unsegmented rows default to) raises ValueError naming it."""
     pytest.importorskip("coeftable")
     pd = pytest.importorskip("pandas")
     ests = [_estimate("revenue", "T", "unadjusted", 0.12, lb=0.02, ub=0.22)]
@@ -1515,9 +1601,10 @@ def test_readout_table_trend_missing_key_column_raises():
 
 def test_readout_table_trend_dimensioned_frame_raises_for_default_nest_by():
     """A dimensioned trend frame (carrying `segment`) passed with the
-    default nest_by='arm' raises: `segment` isn't a nest_by='arm' grouping
-    key, so per-day segment rows would collapse onto the same
-    (metric, group_id, ds) key - the highest-value misuse case."""
+    default nest_by, which is 'arm' for unsegmented rows, raises: `segment`
+    isn't a nest_by='arm' grouping key, so per-day segment rows would
+    collapse onto the same (metric, group_id, ds) key - the highest-value
+    misuse case."""
     pytest.importorskip("coeftable")
     ests = [_estimate("revenue", "T", "unadjusted", 0.12, lb=0.02, ub=0.22)]
     rows = estimates_to_readout(ests)
@@ -2808,8 +2895,9 @@ _RAW_MARKUP = [
     pytest.param("<svg onload=alert(1)>", id="svg-onload"),
 ]
 
-# Surfaces that render the label as Markdown (row / nest cells) vs. as a
-# column-spanner or group heading.
+# Surfaces that render the label as Markdown (row / nest cells; a segment nest
+# label is escaped first, so it reads as written) vs. as a column-spanner or
+# group heading.
 _MARKDOWN_SURFACES = ["metric", "arm", "segment", "method_nest"]
 _SPLIT_SURFACES = ["split_method", "split_arm"]
 _READOUT_SURFACES = [*_MARKDOWN_SURFACES, *_SPLIT_SURFACES, "group_heading"]
@@ -2947,11 +3035,12 @@ def test_readout_table_units_wrapped_split_label_is_inert(surface, label):
 @pytest.mark.grid(
     "Safe URL schemes are checked across Markdown label surfaces because renderer allowlisting can vary by context."
 )
-@pytest.mark.parametrize("surface", _MARKDOWN_SURFACES)
+@pytest.mark.parametrize("surface", [s for s in _MARKDOWN_SURFACES if s != "segment"])
 @pytest.mark.parametrize("href", _SAFE_LINKS)
 def test_readout_table_keeps_safe_markdown_links_and_emphasis(surface, href):
     """Neutralizing dangerous destinations must not disable Markdown: safe
-    links keep their exact destination and text, emphasis still renders."""
+    links keep their exact destination and text, emphasis still renders.
+    A segment label is data and renders as written instead."""
     pytest.importorskip("coeftable")
 
     _, dom = _render_readout(surface, f"**bold** _soft_ [docs]({href})")
