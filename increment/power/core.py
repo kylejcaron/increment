@@ -3679,9 +3679,10 @@ def required_sample_size(  # noqa: PLR0915
     enclosures do not certify power for Beta/NIG/NIW runtime likelihood
     evidence. Registered runtime policies are refused.
 
-    For triggered experiments, sequential looks count analyzed units:
-    configure the planning maximum from ``PowerResult.n_triggered_total``,
-    not the assigned-unit ``n_total``.
+    A sequential procedure with a ``trigger_rate < 1`` baseline is refused
+    with ``sequential.route.unsupported``. Size a triggered experiment at a
+    fixed horizon, where ``PowerResult.n_triggered_total`` reports its
+    analyzed units and ``n_total`` its assigned units.
 
     A *relative_lift* exactly at the null boundary raises ``ValueError``
     instead of returning a degenerate sentinel: no finite sample size

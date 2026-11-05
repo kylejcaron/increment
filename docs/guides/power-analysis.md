@@ -600,7 +600,7 @@ Refused on this route:
 | `power_lower`, `power_upper` | The computed range holding an enumerated binomial power; `None` for a closed-form or sequential plan |
 | `power_basis` | `exact`, `lower_bound`, or `asymptotic`; see [above](#what-power-and-power_lower-mean) |
 | `numerical_qualification` | `closed_form_model_only_v1` for the asymptotic model; `scipy_special_function_error_model_conditional_v1` for either enumerated basis (conditional on the deployed SciPy/Boost special-function error model, not a cross-build proof) |
-| `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`; `None` when no admissible numeric answer is certified |
+| `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`, relative to the declared `null_lift`, not to control; the matching `relative_lift` is `(1 + null_lift) * (1 + mde_relative) - 1` at `compliance=1`; `None` when no admissible numeric answer is certified |
 | `mde_unavailable_reason` | `unattainable`, `unrepresentable`, or `numerical_resolution` when `mde_relative` is `None`; otherwise `None` |
 | `effective_var` | Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Enumerated binomial power uses event rates and counts, not this variance. |
 | `n_clusters_per_arm`, `n_clusters_total` | Ceiled randomization-cluster counts, or `None` for unit randomization |
@@ -612,6 +612,28 @@ Read the result at its actual integer size and check `power_basis` and
 `numerical_qualification` before quoting it as a runtime-power claim. See
 [Reading results](reading-results.md) and [Multiplicity](multiplicity.md)
 for interpreting the analysis the plan feeds.
+
+### An MDE against a shifted null
+
+A procedure with a nonzero `null_lift`, such as `null_lift=0.03`, which tests
+the lift against 3% rather than zero, measures `mde_relative` from that null,
+not from control. Compose the two before passing the effect back to a solver as
+a `relative_lift`:
+
+```python
+import math
+
+null_lift = 0.03
+shifted = ArmPlanningProcedure.standard("mean", null_lift=null_lift)
+shifted_mde = minimum_detectable_effect(5_000, baseline, shifted)
+relative_lift = (1 + null_lift) * (1 + shifted_mde.mde_relative) - 1
+assert math.isclose(
+    achieved_power(5_000, relative_lift, baseline, shifted).power, 0.80, abs_tol=1e-9
+)
+```
+
+Passing `mde_relative` back alone plans a smaller lift than the one the design
+detects, at far lower power.
 
 ## Switchback contrasts
 

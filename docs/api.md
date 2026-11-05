@@ -127,6 +127,16 @@ values.
 
 ### Earlier release notes
 
+- Release note (documentation): the power guide's `PowerResult` table states
+  that `mde_relative` is relative to the declared `null_lift`, not to control,
+  and that the matching `relative_lift` is
+  `(1 + null_lift) * (1 + mde_relative) - 1` at `compliance=1`; a new example
+  shows that round trip. Under a nonzero `null_lift`, passing `mde_relative`
+  back alone plans a smaller lift at lower power. The `required_sample_size`
+  docstring states that a sequential procedure with a `trigger_rate < 1`
+  baseline is refused with `sequential.route.unsupported`, and that a triggered
+  experiment is sized at a fixed horizon, where `n_triggered_total` reports its
+  analyzed units. Planning results are unchanged.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra
