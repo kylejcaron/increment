@@ -18,6 +18,7 @@ from increment.estimation.decision_types import (
 )
 from increment.estimation.diagnostics import (
     COVARIATE_BALANCE_ALPHA,
+    covariate_balance_boundary,
     covariate_balance_crosses_boundary,
 )
 from increment.estimation.results import LiftEstimate
@@ -316,13 +317,14 @@ def _covariate_imbalance_advisory(result: AsymptoticSequentialResult) -> Readout
         return None
     x = retained_dimension(model.law) - 1
     difference = treatment.mean[x] - control.mean[x]
+    count = control.n + treatment.n
     if not covariate_balance_crosses_boundary(
         difference=difference,
         scatter_control=control.scatter[x][x],
         n_control=control.n,
         scatter_treatment=treatment.scatter[x][x],
         n_treatment=treatment.n,
-        count=control.n + treatment.n,
+        count=count,
         rho=model.rho,
         start_count=model.start_count,
     ):
@@ -344,6 +346,9 @@ def _covariate_imbalance_advisory(result: AsymptoticSequentialResult) -> Readout
         "difference": float(difference),
         "standard_error": standard_error,
         "statistic": float(difference) / standard_error,
+        # The statistic flags past this threshold, in the same standard errors.
+        "boundary": math.sqrt(float(covariate_balance_boundary(count, model.rho))),
+        "count": count,
         "alpha": COVARIATE_BALANCE_ALPHA,
         "constant_arms": tuple(
             group

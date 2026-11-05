@@ -19,6 +19,7 @@ from increment.estimation.encouragement import estimate_encouragement
 from increment.estimation.engine import Method
 from increment.semantics.design import Encouragement
 from increment.semantics.models import MeanMetric
+from tests.warning_codes import allow_warning_codes
 
 METRIC = MeanMetric(name="rev", entity="user_id", fact="orders", aggregation="sum")
 CUPED = [Method(name="cuped", variance_reduction="cuped")]
@@ -115,6 +116,8 @@ def _late_row(rows, *, cuped):
 _MEMO: dict[tuple, tuple] = {}
 
 
+# Randomized replicates flag their covariate by chance in about 1 in 1000 draws.
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
 def _replicate(dgp, *, n, reps, seed, true_late):
     """(cuped stats, unadjusted stats, annotation trigger rate).
 

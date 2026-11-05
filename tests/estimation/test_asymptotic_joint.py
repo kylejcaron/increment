@@ -141,7 +141,7 @@ def test_adjusted_mean_with_an_orthogonal_covariate_is_the_scalar_set():
 
 
 def _balance_advisories(scale):
-    """Advisories of one adjusted_mean cell whose covariate difference d has
+    """K_N and the advisories of one adjusted_mean cell whose covariate difference d has
     d^2 / V = scale * K_N, with V = S_t/n_t^2 + S_c/n_c^2 over the retained
     covariate scatter and K_N = (1 + lambda/N)(log1p(N/lambda) - 2 log(1/1000)),
     lambda = 1/rho^2, the count-clock boundary at the balance check's level."""
@@ -157,14 +157,17 @@ def _balance_advisories(scale):
     )
     snapshot = mean_capture(registration, mean_records(control, treatment, metrics=("m",)))
     computation = estimate_sequential(snapshot, AsymptoticMean(registration=registration))
-    return math.sqrt(scale * k), [a for items in computation.advisories.values() for a in items]
+    return k, [a for items in computation.advisories.values() for a in items]
 
 
 def test_adjusted_law_balance_advisory_uses_count_boundary():
-    statistic, above = _balance_advisories(1 + 1e-3)
+    k, above = _balance_advisories(1 + 1e-3)
     _, below = _balance_advisories(1 - 1e-3)
     assert [a.code for a in above] == ["estimation.cuped.covariate_imbalance"]
-    assert above[0].context["statistic"] == pytest.approx(statistic, rel=1e-9)
+    context = above[0].context
+    assert context["statistic"] == pytest.approx(math.sqrt((1 + 1e-3) * k), rel=1e-9)
+    assert context["boundary"] == pytest.approx(math.sqrt(k), rel=1e-9)
+    assert context["count"] == 200
     assert below == []
 
 

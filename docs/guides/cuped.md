@@ -508,8 +508,10 @@ experiments as looks accumulate, so the check uses the count-clock boundary
 that the cell's own intervals use, at level 0.001: the cell carries the advisory
 `estimation.cuped.covariate_imbalance` when the squared covariate difference
 exceeds the boundary times its variance. Its context reports each group's
-covariate mean, the `difference` with its `standard_error`, the `statistic` and
-`constant_arms`. A look without inference for the cell, such as one before
+covariate mean, the `difference` with its `standard_error`, the `statistic`, the
+`boundary` it is compared with (in the same standard errors; it depends on the
+`count` of units at the look and is wider at small counts) and `constant_arms`.
+A look without inference for the cell, such as one before
 `start_count` units in each group, is not checked. The advisory changes no
 interval, evidence value or decision, so checking it at every look leaves the
 sequential guarantee unchanged.
@@ -851,11 +853,14 @@ The advisory's context reports each group's covariate mean (`mean_control`,
 `statistic`, `dof` and `p_value`, the fitted `theta` (`theta_numerator` and
 `theta_denominator` for a ratio metric) and `constant_arms`, the groups whose
 covariate is constant. For a mean metric, `adjustment_shift` is how far the
-adjustment moved the estimate, $\theta$ times the difference; if the covariate
-is at fault, the adjusted estimate is off by about that much. A CUPED-adjusted
-LATE reports `itt_adjustment_shift` and `late_adjustment_shift`, the ITT shift
-over the first stage. A ratio metric's shift is not a multiple of the
-difference, so it is not reported.
+adjustment moved the absolute difference between groups, not the relative lift:
+the unadjusted difference minus the adjusted one, which equals $\theta$ times the
+covariate `difference`. A positive shift means the adjustment lowered the
+difference. If the covariate is at fault, the adjusted difference is off by about
+that much. A CUPED-adjusted LATE reports `itt_adjustment_shift`, the same move on
+the ITT difference, and `late_adjustment_shift`, that move divided by the first
+stage: the unadjusted LATE minus the adjusted LATE. A ratio metric's shift is not
+a multiple of the difference, so it is not reported.
 
 Three explanations fit a flagged cell:
 

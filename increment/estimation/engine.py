@@ -349,15 +349,20 @@ def _covariate_imbalance_message(
     late_adjustment_shift: float | None = None,
     **_details: object,
 ) -> str:
-    """The covariate-imbalance warning; a LATE reports the move on its own scale and a
-    ratio, whose move is not a multiple of the difference, reports none."""
+    """The covariate-imbalance warning. The move is reported on the absolute scale it was
+    made on, the LATE's own for a LATE; a ratio, whose move is not a multiple of the
+    difference, reports none."""
     subject = "the covariate" if covariate is None else f"the covariate '{covariate}'"
-    shift = adjustment_shift if late_adjustment_shift is None else late_adjustment_shift
+    shift, moved_scale = (
+        (adjustment_shift, "absolute difference")
+        if late_adjustment_shift is None
+        else (late_adjustment_shift, "LATE")
+    )
     moved = (
         ""
         if shift is None
-        else f" The adjustment moved the estimate by {abs(shift):.4g}; if the covariate is at "
-        "fault, the adjusted estimate is off by about that much."
+        else f" The adjustment moved the {moved_scale} by {abs(shift):.4g}; if the covariate "
+        f"is at fault, the adjusted {moved_scale} is off by about that much."
     )
     return (
         f"metric '{metric_name}', {treatment_group} vs {control_group}: {subject} used for "

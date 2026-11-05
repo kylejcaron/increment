@@ -35,7 +35,10 @@ from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.variance import ratio_abs_diff_se, ratio_log_mean_se
 from increment.semantics.models import MeanMetric, Measure, RatioMetric
 from tests.mc import nominal_band, replicate
-from tests.warning_codes import warning_codes
+from tests.warning_codes import allow_warning_codes, warning_codes
+
+# Randomized replicates flag their covariate by chance in about 1 in 1000 draws.
+_allow_chance_imbalance = allow_warning_codes("estimation.cuped.covariate_imbalance")
 
 # Helpers
 
@@ -213,6 +216,7 @@ def _cuped_coverage_trial(i: int, *, n_per_arm: int, rho: float, seed_base: int)
 
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
+@_allow_chance_imbalance
 def test_cuped_interval_coverage_is_nominal():
     """CUPED's CI covers the true relative lift ~95% of the time over 1500
     independent draws. MCSE at 1500 reps is ~0.56pp; k=3 gives ~3x that
@@ -316,6 +320,7 @@ def _lift_calibration(setting: str, *, reps: int, seed_base: int) -> dict[str, f
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 @pytest.mark.parametrize("setting", sorted(_CAL_SETTINGS))
+@_allow_chance_imbalance
 def test_fitted_theta_lift_is_calibrated_under_each_allocation(setting: str):
     """1500 replicates per setting. The fitted theta is a nuisance treated as
     fixed, so these are asymptotic claims checked at these sizes: the

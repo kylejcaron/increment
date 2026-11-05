@@ -509,6 +509,12 @@ def covariate_balance(
     )
 
 
+def covariate_balance_boundary(count: int, rho: Fraction) -> Fraction:
+    """``K_N = count_boundary(count, 1/1000, rho)``, the squared-statistic threshold of
+    a sequential look's covariate balance at ``COVARIATE_BALANCE_ALPHA``."""
+    return count_boundary(count, _COVARIATE_BALANCE_LEVEL, rho)
+
+
 def covariate_balance_crosses_boundary(
     *,
     difference: Fraction,
@@ -523,8 +529,8 @@ def covariate_balance_crosses_boundary(
     """Whether a sequential look's covariate difference crosses the count-clock boundary.
 
     ``difference**2 > K_N * (S_t / n_t**2 + S_c / n_c**2)`` with ``S`` each arm's
-    retained covariate scatter and ``K_N = count_boundary(count, 1/1000, rho)``, the
-    boundary of the cell's own sets at ``COVARIATE_BALANCE_ALPHA``. Being
+    retained covariate scatter and ``K_N = covariate_balance_boundary(count, rho)``,
+    the boundary of the cell's own sets at ``COVARIATE_BALANCE_ALPHA``. Being
     time-uniform, it does not accumulate false flags over repeated looks as a
     fixed-look test would. ``None`` under inference's readiness rule (an arm below 2
     or ``start_count`` units) or when both scatters are zero.
@@ -534,8 +540,7 @@ def covariate_balance_crosses_boundary(
     ):
         return None
     variance = scatter_treatment / n_treatment**2 + scatter_control / n_control**2
-    boundary = count_boundary(count, _COVARIATE_BALANCE_LEVEL, rho)
-    return difference * difference > boundary * variance
+    return difference * difference > covariate_balance_boundary(count, rho) * variance
 
 
 class AllocationBand(BaseModel):
