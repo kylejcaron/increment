@@ -2295,7 +2295,15 @@ class FramePanelSource(SequentialSourceMixin):
         )
 
     def compliance_dates(self) -> Sequence[object]:
-        """Panel labels before outcome missingness or completion filters."""
+        """Panel labels before outcome missingness or completion filters.
+
+        They index an as-of compliance series, which needs a declared
+        ``exposure_date``, the same as ``compliance_summary(as_of=...)``.
+        """
+        if self._exposure is None:
+            from increment._evidence_refusals import refuse_operation
+
+            refuse_operation(self, "compliance_series", ("asof",), route=_PANEL_EXPOSURE_DATE_ROUTE)
         return self._sparse_panel.get_column("ds").unique().to_list()
 
     def compliance_summary(
