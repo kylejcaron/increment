@@ -50,13 +50,22 @@ from __future__ import annotations
 
 import math
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
-from typing import Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, Self, Unpack, cast
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    computed_field,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import from_json
 from scipy.special import ndtr as _ndtr
 from scipy.special import ndtri as _ndtri
 
@@ -174,6 +183,9 @@ from increment.power.sequential import (
 )
 from increment.semantics.models import InferenceSpec, QuantileMetric
 
+if TYPE_CHECKING:
+    from increment.errors import _PythonValidationOptions, _ValidationOptions
+
 
 def _power_at(
     theta: float,
@@ -257,6 +269,16 @@ _REFUSALS = refusals(
         "power.baseline.mean_den": "mean_den must be > 0, got {mean_den}",
         "power.quantile_baseline.cuped_unsupported": "cuped_rho={cuped_rho} was declared, but a quantile metric has no runtime CUPED route to credit -- QuantileBaseline always plans without variance reduction",
         "power.quantile_baseline.metric_not_quantile": "a QuantileBaseline plans a quantile metric, but {metric!r} is declared as {metric_type!r} -- plan a quantile metric with ArmPlanningProcedure.standard('quantile'), and any other metric with workflows.planning_baseline(experiment, reader, metric) or a Baseline constructor",
+        "power.quantile_baseline.pilot_values_missing": RefusalSpec(
+            "power.quantile_baseline.pilot_values_missing",
+            InvalidRequestError,
+            lambda *, metric_name, n_values, route: (
+                "a quantile baseline"
+                + ("" if metric_name is None else f" for metric {metric_name!r}")
+                + f" carries {n_values} pilot values, but quantile planning needs at least 2 of"
+                f" the pilot's per-unit control values -- {route}"
+            ),
+        ),
         "power.quantile_size_search_unreachable": RefusalSpec(
             "power.quantile_size_search_unreachable",
             InvalidRequestError,
@@ -343,6 +365,41 @@ def ratio_linearized_variance(
     return (var_num + r * r * var_den - 2.0 * r * cov_num_den) / (mean_den**2)
 
 
+def _pilot_variance_bound(var: float, df: int, confidence: float = 0.80) -> float:
+    """``var`` at its ``confidence``-level one-sided chi-square upper bound on
+    ``df`` degrees of freedom, ``var * df / chi2.isf(confidence, df)``.
+
+    A pilot's point-estimate variance understates its own sampling
+    uncertainty, so a plug-in would size a 20-unit pilot like a 2M-unit one;
+    the factor tends to 1 as ``df`` grows.
+    """
+    if not 0.0 < confidence < 1.0:
+        _raise("power.baseline.confidence")
+    from scipy.stats import chi2 as _chi2
+
+    bound = var * df / _chi2.isf(confidence, df)
+    if not math.isfinite(bound):
+        _raise("power.baseline.confidence_produces_non")
+    return bound
+
+
+_PILOT_VALUES_ROUTE = (
+    "rebuild it from the pilot with workflows.planning_baseline(experiment, reader, metric) "
+    "or QuantileBaseline.from_control_values(metric, values), or restore a saved dump with "
+    "Baseline.model_validate / model_validate_json"
+)
+
+
+def _require_pilot_values(metric_name: object, n_values: int) -> None:
+    if n_values < 2:
+        _raise(
+            "power.quantile_baseline.pilot_values_missing",
+            metric_name=metric_name if isinstance(metric_name, str) else None,
+            n_values=n_values,
+            route=_PILOT_VALUES_ROUTE,
+        )
+
+
 # Three pilot ratios, two operations, and comparison incur at most six
 # roundings; eight unit roundoffs bound their error for normal inputs.
 _CLUSTER_MEAN_ROUNDOFF = 4 * math.ulp(1.0)
@@ -356,8 +413,24 @@ def _analyzed_cluster_mean(
     return 1.0 if abs(mean - 1.0) <= _CLUSTER_MEAN_ROUNDOFF else mean
 
 
+def _restores_quantile(payload: object) -> bool:
+    """Whether a payload restored through ``Baseline`` names a quantile baseline;
+    one that carries no pilot values refuses."""
+    if not (isinstance(payload, Mapping) and payload.get("metric_type") == "quantile"):
+        return False
+    if payload.get("pilot_values") is None:
+        _require_pilot_values(payload.get("metric_name"), 0)
+    return True
+
+
 class Baseline(CodedModel, BaseModel):
     """Control-arm assumptions.
+
+    ``model_dump_json()`` is a baseline's saved form, and
+    ``Baseline.model_validate_json`` (or ``model_validate`` of ``model_dump()``)
+    restores it as the class its ``metric_type`` names: a quantile baseline
+    comes back with the pilot values it plans from. A quantile baseline cannot
+    be constructed as a plain ``Baseline``.
 
     Parameters
     ----------
@@ -415,8 +488,38 @@ class Baseline(CodedModel, BaseModel):
         default="mean", exclude_if=lambda v: v == "mean"
     )
 
+    # A quantile payload restores as the subclass that keeps its pilot values,
+    # with the caller's options and validation mode.
+    @classmethod
+    def model_validate(cls, obj: object, **options: Unpack[_PythonValidationOptions]) -> Self:
+        if cls is Baseline and _restores_quantile(obj):
+            return cast("Self", QuantileBaseline.model_validate(obj, **options))
+        return super().model_validate(obj, **options)
+
+    @classmethod
+    def model_validate_json(
+        cls, json_data: str | bytes | bytearray, **options: Unpack[_ValidationOptions]
+    ) -> Self:
+        if cls is Baseline:
+            try:
+                payload = from_json(json_data)
+            except ValueError:
+                payload = None  # malformed JSON refuses in the ordinary validation below
+            if _restores_quantile(payload):
+                return cast("Self", QuantileBaseline.model_validate_json(json_data, **options))
+        return super().model_validate_json(json_data, **options)
+
+    @classmethod
+    def model_validate_strings(cls, obj: object, **options: Unpack[_ValidationOptions]) -> Self:
+        if cls is Baseline and _restores_quantile(obj):
+            return cast("Self", QuantileBaseline.model_validate_strings(obj, **options))
+        return super().model_validate_strings(obj, **options)
+
     @model_validator(mode="after")
     def _check(self) -> Baseline:
+        if type(self) is Baseline and self.metric_type == "quantile":
+            # A plain Baseline has no field for the pilot values a quantile plans from.
+            _require_pilot_values(None, 0)
         _require_finite("mean", self.mean)
         if self.mean <= 0:
             _raise("power.baseline.mean")
@@ -540,15 +643,8 @@ class Baseline(CodedModel, BaseModel):
         """
         if s.n < 2:
             _raise("power.baseline.summarystats_bound_pilot", n=s.n)
-        if not 0.0 < confidence < 1.0:
-            _raise("power.baseline.confidence")
-        df = s.n - 1
-        from scipy.stats import chi2 as _chi2
-
-        inflated_var = s.var * df / _chi2.isf(confidence, df)
-        if not math.isfinite(inflated_var):
-            _raise("power.baseline.confidence_produces_non")
-        return cls(mean=s.mean, var=inflated_var, cuped_rho=cuped_rho, metric_type=metric_type)
+        var = _pilot_variance_bound(s.var, s.n - 1, confidence)
+        return cls(mean=s.mean, var=var, cuped_rho=cuped_rho, metric_type=metric_type)
 
     @classmethod
     def from_proportion(cls, p: float, cuped_rho: float = 0.0) -> Baseline:
@@ -646,6 +742,16 @@ class _ProjectionMemo:
     __hash__ = None  # type: ignore[assignment]
 
 
+def _finite_pilot(raw: np.ndarray) -> np.ndarray:
+    """``raw`` when every pilot value is finite; otherwise the quantile
+    readout's own non-finite refusal."""
+    if not np.isfinite(raw).all():
+        _quantile_raise(
+            "estimation.quantile.values_contain_non", n_bad=int((~np.isfinite(raw)).sum())
+        )
+    return raw
+
+
 class QuantileBaseline(Baseline):
     """A ``Baseline`` for quantile-metric planning.
 
@@ -663,6 +769,11 @@ class QuantileBaseline(Baseline):
     metric is visible in the answer rather than silently mis-sizing a
     design. ``cuped_rho`` is refused (not merely defaulted and silently
     trusted): a quantile metric has no runtime CUPED route to credit.
+
+    ``pilot_values`` holds the pilot's control-arm values in ascending order.
+    They are part of the saved form, so a restored baseline plans as the
+    original did, and they are left out of the repr. Fewer than two, or any
+    value that is not finite, refuse.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -675,14 +786,20 @@ class QuantileBaseline(Baseline):
     # The pilot's own control-arm values, ascending -- the deterministic
     # SE projection's only input: not a fitted parametric quantity, not a
     # precomputed SE-at-n table.
-    _pilot_sorted: tuple[float, ...] = PrivateAttr(default=())
+    pilot_values: tuple[float, ...] = Field(default=(), repr=False)
     # The pilot's projection at each (quantile, alpha) it has been planned at.
     _projections: _ProjectionMemo = PrivateAttr(default_factory=lambda: _ProjectionMemo())
 
+    @field_validator("pilot_values")
+    @classmethod
+    def _finite_sorted_pilot(cls, values: tuple[float, ...]) -> tuple[float, ...]:
+        return tuple(np.sort(_finite_pilot(np.asarray(values, dtype=float))).tolist())
+
     @model_validator(mode="after")
-    def _refuse_cuped(self) -> QuantileBaseline:
+    def _check_quantile(self) -> QuantileBaseline:
         if self.cuped_rho != 0.0:
             _raise("power.quantile_baseline.cuped_unsupported", cuped_rho=self.cuped_rho)
+        _require_pilot_values(self.metric_name, len(self.pilot_values))
         return self
 
     @classmethod
@@ -706,28 +823,22 @@ class QuantileBaseline(Baseline):
         raw = np.asarray(values, dtype=float)
         if raw.ndim != 1:
             _quantile_raise("estimation.quantile.values_one_dimensional", shape=raw.shape)
-        if not np.isfinite(raw).all():
-            _quantile_raise(
-                "estimation.quantile.values_contain_non", n_bad=int((~np.isfinite(raw)).sum())
-            )
-        pilot = np.sort(raw)
+        pilot = np.sort(_finite_pilot(raw))
         projection = _QuantileProjection.of(pilot, metric.quantile, 0.05)
-        obj = cls(
+        return cls(
             metric_name=metric.name,
             quantile_q=metric.quantile,
             mean=projection.arm.point,
             var=pilot.size * (projection.arm.point * projection.se(pilot.size)) ** 2,
+            pilot_values=tuple(pilot.tolist()),
         )
-        # ty: ignore[invalid-assignment] -- pydantic PrivateAttr; frozen applies to fields, not this
-        obj._pilot_sorted = tuple(float(v) for v in pilot)
-        return obj
 
     def _projection(self, alpha: float) -> _QuantileProjection:
         key = (self.quantile_q, alpha)
         projection = self._projections.entries.get(key)
         if projection is None:
             projection = _QuantileProjection.of(
-                np.asarray(self._pilot_sorted), self.quantile_q, alpha
+                np.asarray(self.pilot_values), self.quantile_q, alpha
             )
             self._projections.entries[key] = projection
         return projection

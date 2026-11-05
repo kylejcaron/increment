@@ -112,10 +112,10 @@ size, including `power`, `mde_relative`, and `effective_var`.
 |---|---|
 | `Baseline(mean=, var=)` | A control-arm mean and per-unit variance. |
 | `Baseline.from_proportion(p)` | Conversion and retention rates. |
-| `Baseline.from_summary(summary_stats)` | A pilot variance with its confidence-bound inflation. |
+| `Baseline.from_summary(summary_stats)` | A pilot variance, raised to its 80% one-sided chi-square upper bound on `n - 1` degrees of freedom. |
 | `Baseline.from_ratio(...)` | A ratio metric's linearized numerator, denominator, and covariance moments. |
 | `Baseline.from_absorption(mean, var, icc)` | A measured one-way factor absorption reduction. |
-| `increment.workflows.planning_baseline(experiment, reader, metric)` | The `(experiment, reader)` pair a builder returns for a prior or pilot experiment (or an in-flight experiment's pre-treatment data): reads that data and its declared design directly. |
+| `increment.workflows.planning_baseline(experiment, reader, metric)` | The `(experiment, reader)` pair a builder returns for a prior or pilot experiment (or an in-flight experiment's pre-treatment data): reads that data and its declared design directly, and bounds the pilot variance as `from_summary` does. |
 
 `Baseline.metric_type` defaults to `"mean"` and is omitted from dumps at that
 default, so existing mean baselines keep their serialized form. Conversion,
@@ -151,6 +151,18 @@ returns a `QuantileBaseline`.
     divided by assigned control clusters. The artifact route also needs
     `cluster_identity` for a clustered pilot.
 
+    The variance is not the plain control-arm variance. As in
+    `Baseline.from_summary`, every mean, conversion, retention and ratio
+    variance is raised to its 80% one-sided chi-square upper bound,
+    `var * df / chi2.isf(0.80, df)` on the ddof=1 variance, so a small pilot
+    plans for more variance than it measured: about 21% more at 50 control
+    units and under 2% more at 5,000. `df` is the control unit count minus 1,
+    or the contributing control cluster count minus 1 when a `cluster` is
+    declared, so a few-cluster pilot plans for much more: 1.67 times its
+    variance at 10 clusters and 2.43 times at 5. A quantile baseline is not
+    bounded, because its solvers re-read the pilot values at each candidate
+    size instead of planning from `var`.
+
     Both clustered trigger routes require the metric's outcomes for every
     trigger-eligible control unit in the pilot. Missing metric rows raise
     `analysis.planning_baseline.trigger_metric_population_unavailable`, with
@@ -169,7 +181,9 @@ type, so the solver can infer the matching standard procedure; an explicit
 procedure can still be supplied when different planning choices are needed.
 Results echo `PowerResult.planned_metric_name`/`planned_quantile`, so reusing
 one metric's baseline for another is visible in the answer. There is no CUPED
-route for quantiles.
+route for quantiles. Its `var` carries no pilot-variance bound, since the
+solvers plan from the values themselves, and the values are part of the
+baseline's saved form.
 
 !!! warning "Quantile power has a ceiling and is not monotone"
     On rounded data the readout's interval never narrows below the gap from
@@ -230,6 +244,45 @@ route for quantiles.
     about every future data-generating process. Bounded baselines, nulls,
     and alternatives must imply rates in `(0, 1]`; a requested rate above 1
     is refused. Every such result reports `power_basis="asymptotic"`.
+
+### Save and reload a baseline
+
+`model_dump_json()` is a baseline's saved form, and
+`Baseline.model_validate_json` restores it as the class it was saved from. A
+quantile baseline comes back with its pilot values and plans exactly as
+before:
+
+```python
+import numpy as np
+import pandas as pd
+
+import increment
+from increment.estimators import Baseline
+from increment.workflows import planning_baseline
+
+latency = np.round(np.random.default_rng(3).lognormal(3.0, 0.5, 400), 2)
+pilot = pd.DataFrame(
+    {"unit": range(400), "group": ["control", "treatment"] * 200, "latency": latency}
+)
+experiment, reader = increment.from_frame(
+    pilot,
+    shape="summary",
+    unit="unit",
+    group="group",
+    control="control",
+    metrics=[{"name": "latency", "type": "quantile", "quantile": 0.5}],
+)
+latency_baseline = planning_baseline(experiment, reader, "latency")
+
+text = latency_baseline.model_dump_json()
+restored = Baseline.model_validate_json(text)
+assert restored == latency_baseline
+```
+
+A quantile dump without its pilot values, such as one saved by an earlier
+release, cannot plan; restoring it refuses with
+`power.quantile_baseline.pilot_values_missing`. Rebuild it with
+`planning_baseline`.
 
 ## Conversion and retention: planning follows the runtime's route
 

@@ -138,6 +138,30 @@ values.
   baseline is refused with `sequential.route.unsupported`, and that a triggered
   experiment is sized at a fixed horizon, where `n_triggered_total` reports its
   analyzed units. Planning results are unchanged.
+- Release note (breaking numerical correction): `workflows.planning_baseline`
+  applies one pilot-variance bound to every moment metric. Mean, conversion
+  and retention variances were already raised to their 80% one-sided
+  chi-square upper bound on control units minus 1 degrees of freedom; ratio
+  variances now are too, and a clustered pilot's variance is bounded on
+  contributing control clusters minus 1 instead of units minus 1. Ratio and
+  clustered plans from `planning_baseline` therefore size larger: a 50-unit
+  ratio pilot plans about 21% more variance, and a pilot of 50 control
+  clusters of 4 units plans 1.21 times its variance where it planned 1.09
+  times. Quantile baselines stay unbounded. A `QuantileBaseline` now saves
+  its pilot values in `pilot_values` (left out of the repr), and
+  `Baseline.model_validate` and `model_validate_json` restore a quantile
+  dump as a `QuantileBaseline` that plans as the original did; previously
+  the exported `Baseline` returned a plain baseline whose power differed
+  (0.7975 against 0.8004 in one plan). A quantile dump without pilot values,
+  such as one saved by an earlier release, and
+  `Baseline(..., metric_type="quantile")` refuse with
+  `power.quantile_baseline.pilot_values_missing` (context `metric_name`,
+  `n_values`, `route`); rebuild such a baseline with `planning_baseline`. A
+  saved pilot value that is not finite refuses on restore with
+  `estimation.quantile.values_contain_non`, as it does at construction.
+  `Baseline.from_summary` and `Baseline.from_ratio` are unchanged, so passing
+  a pilot's ratio moments to `from_ratio` still plans the unbounded variance.
+  Readout estimates and experiment identity are unchanged.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra

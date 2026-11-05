@@ -10,7 +10,10 @@ use that analyzed population; recruitment metadata retains assigned membership:
 - mean/var from the control arm's moments (a ratio metric's linearized
   moments; a quantile metric's control-arm values instead). Under a declared
   cluster they come from the control arm's per-unit rows, since a clustered
-  source's moments are cluster totals;
+  source's moments are cluster totals. Every moment variance is raised to
+  its 80% one-sided chi-square upper bound on control units - 1 degrees of
+  freedom, or contributing control clusters - 1 under a cluster; a quantile
+  baseline is not bounded, since its solvers re-read the pilot values;
 - ``cuped_rho`` from the runtime's own CUPED fit over the pilot's arms,
   evaluated on the control arm, when the metric declares CUPED;
 - ``compliance`` from the source's design-level uptake state under an
@@ -125,6 +128,12 @@ def planning_baseline(
     trigger_rates: Callable[[], dict[str, float]],
 ) -> Baseline:
     """The Baseline for *metric* from *source*'s control arm.
+
+    Mean, conversion, retention and ratio variances are at the pilot's 80%
+    one-sided chi-square upper bound (``df / chi2.isf(0.80, df)`` times the
+    control arm's ddof=1 variance), with ``df`` control units - 1, or
+    contributing control clusters - 1 under a declared cluster. A quantile
+    baseline carries the pilot values and is not bounded.
 
     *trigger* is the experiment's declared trigger (``None`` when it declares
     none); *trigger_rates* reads the source's observed per-arm trigger rates
@@ -337,7 +346,8 @@ def _quantile_baseline(
     population: Literal["assigned", "triggered"],
 ) -> Baseline:
     """The pilot's real per-unit control-arm values, or a SOURCE refusal
-    when the source cannot supply them."""
+    when the source cannot supply them. No variance bound applies: the
+    solvers re-read these values at each candidate size, not ``var``."""
     import narwhals as nw
 
     from increment.power.core import QuantileBaseline
@@ -364,7 +374,8 @@ def _unit_baseline(
     wants_cuped: bool,
     population: Literal["assigned", "triggered"],
 ) -> Baseline:
-    """mean/var (and ``cuped_rho``) from the control arm's unit-grain moments."""
+    """mean/var (and ``cuped_rho``) from the control arm's unit-grain moments,
+    the variance at the pilot bound on ``n - 1`` degrees of freedom."""
     from increment.estimation.armstats import SummaryStats
     from increment.estimation.engine import _df_to_arms
     from increment.power import Baseline
@@ -391,24 +402,20 @@ def _unit_baseline(
     return baseline.model_copy(update={"cuped_rho": rho})
 
 
-def _ratio_baseline(
-    control: ArmStats,
-    *,
-    var_num: float | None = None,
-    var_den: float | None = None,
-    cov_num_den: float | None = None,
-) -> Baseline:
-    """The control arm's linearized ratio Baseline, optionally with adjusted
-    second moments in place of the raw ones."""
+def _ratio_baseline(control: ArmStats) -> Baseline:
+    """The control arm's linearized ratio Baseline, its variance at the pilot
+    bound on ``n - 1`` degrees of freedom."""
     from increment.power import Baseline
+    from increment.power.core import _pilot_variance_bound
 
-    return Baseline.from_ratio(
+    baseline = Baseline.from_ratio(
         mean_num=control.mean_y(),
         mean_den=control.mean_den(),
-        var_num=control.var_y() if var_num is None else var_num,
-        var_den=control.var_den() if var_den is None else var_den,
-        cov_num_den=control.cov_yden() if cov_num_den is None else cov_num_den,
+        var_num=control.var_y(),
+        var_den=control.var_den(),
+        cov_num_den=control.cov_yden(),
     )
+    return baseline.model_copy(update={"var": _pilot_variance_bound(baseline.var, control.n - 1)})
 
 
 def _cuped_rho(arms: list[ArmStats], control: ArmStats, *, ratio: bool, metric: str) -> float:
@@ -465,12 +472,14 @@ def _clustered_baseline(
     population: Literal["assigned", "triggered"],
 ) -> Baseline:
     """Per-unit mean/var and the design-effect fields from the control arm's
-    per-unit rows: a clustered source's moments are cluster totals, not units."""
+    per-unit rows: a clustered source's moments are cluster totals, not units.
+    The variance is at the pilot bound on contributing control clusters - 1
+    degrees of freedom."""
     import narwhals as nw
     import numpy as np
 
-    from increment.estimation.armstats import SummaryStats
     from increment.power import Baseline
+    from increment.power.core import _pilot_variance_bound
 
     request = UnitRowsRequest(metric=spec, population=population)
     frame = nw.from_native(load_unit_rows(source, request), eager_only=True)
@@ -504,16 +513,18 @@ def _clustered_baseline(
             cov_num_den=float(cov[0, 1]),
         )
         # The ICC of the linearized score y - R*y_den, whose variance from_ratio carries.
-        fields = _one_way_cluster_design(y - baseline.mean * den, clusters)
-    else:
-        fields = _one_way_cluster_design(y, clusters)
-        baseline = Baseline.from_summary(
-            SummaryStats(n=y.size, mean=float(y.mean()), var=float(y.var(ddof=1))),
-            metric_type=cast(
-                "Literal['mean', 'conversion', 'retention', 'ratio', 'quantile']",
-                "mean" if spec.type in ("total", "active") else spec.type,
-            ),
-        )
+        fields, n_clusters = _one_way_cluster_design(y - baseline.mean * den, clusters)
+        var = _pilot_variance_bound(baseline.var, n_clusters - 1)
+        return baseline.model_copy(update={"var": var, **fields})
+    fields, n_clusters = _one_way_cluster_design(y, clusters)
+    baseline = Baseline(
+        mean=float(y.mean()),
+        var=_pilot_variance_bound(float(y.var(ddof=1)), n_clusters - 1),
+        metric_type=cast(
+            "Literal['mean', 'conversion', 'retention', 'ratio', 'quantile']",
+            "mean" if spec.type in ("total", "active") else spec.type,
+        ),
+    )
     return baseline.model_copy(update=fields)
 
 
@@ -531,10 +542,12 @@ def _compliance(
     return next(iter(rates.values())) - control
 
 
-def _one_way_cluster_design(values: np.ndarray, cluster_ids: np.ndarray) -> dict[str, float]:
+def _one_way_cluster_design(
+    values: np.ndarray, cluster_ids: np.ndarray
+) -> tuple[dict[str, float], int]:
     """Mean cluster size, Fisher's one-way random-effects ICC with the
     unequal-group-size n0 correction, and the coefficient of variation of
-    cluster sizes, from one per-cluster grouping."""
+    cluster sizes, from one per-cluster grouping, with the number of clusters."""
     import numpy as np
 
     unique, inverse, counts = np.unique(cluster_ids, return_inverse=True, return_counts=True)
@@ -554,11 +567,12 @@ def _one_way_cluster_design(values: np.ndarray, cluster_ids: np.ndarray) -> dict
     msw = ssw / (n_total - k)
     n0 = (n_total - np.sum(counts**2) / n_total) / (k - 1)
     icc = 0.0 if msb <= msw else (msb - msw) / (msb + (n0 - 1) * msw)
-    return {
+    fields = {
         "avg_cluster_size": n_total / k,
         "cluster_icc": max(0.0, min(icc, 0.999)),
         "cluster_size_cv": float(counts.std(ddof=0) / counts.mean()),
     }
+    return fields, k
 
 
 __all__ = ["planning_baseline"]

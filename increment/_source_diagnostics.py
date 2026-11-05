@@ -325,6 +325,14 @@ def planning_baseline(
     retains assigned units per randomized cluster; cluster_participation is the
     pilot fraction of assigned clusters contributing analyzed units.
 
+    ``var`` is not the plain control-arm variance: it is raised to its 80%
+    one-sided chi-square upper bound, ``df / chi2.isf(0.80, df)`` times the
+    ddof=1 variance, so a small pilot plans conservatively. ``df`` is control
+    units - 1, or contributing control clusters - 1 under a declared cluster.
+    A quantile baseline is not bounded: its solvers re-read the pilot values at
+    each candidate size. ``Baseline.model_validate_json(baseline.model_dump_json())``
+    restores an arm baseline as the class it was, a quantile baseline included.
+
     A switchback experiment (``from_switchback_frame``) returns the pilot-fitted
     :class:`~increment.power.switchback.SwitchbackBaseline` for the
     ``switchback_*`` solvers.
