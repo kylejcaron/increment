@@ -561,9 +561,7 @@ def _triggered_sequential_case() -> ParityCase:
         native = build_definitions()
         try:
             workflows.capture_sequential(*native, finalized=True, as_of=as_of)
-            return _export_and_replay(
-                native, [MetricSpec(name="revenue", type="mean", preferred_direction="increase")]
-            )
+            return _export_and_replay(native, [MetricSpec(name="revenue", type="mean")])
         finally:
             _close_parity_binding(native)
 
@@ -1698,11 +1696,7 @@ def _sequential_asymptotic_mean_case() -> ParityCase:
             unit="user_id",
             group="variant",
             design=design,
-            metrics=[
-                MetricSpec(
-                    name="revenue", type="mean", missing="zero", preferred_direction="increase"
-                )
-            ],
+            metrics=[MetricSpec(name="revenue", type="mean", missing="zero")],
             plan=sequential_plan,
             experiment_id="exp",
             exposure_date="exposure_date",
@@ -1719,15 +1713,7 @@ def _sequential_asymptotic_mean_case() -> ParityCase:
             group="variant",
             date="date",
             design=design,
-            metrics=[
-                MetricSpec(
-                    name="revenue",
-                    type="mean",
-                    missing="zero",
-                    window_days=1,
-                    preferred_direction="increase",
-                )
-            ],
+            metrics=[MetricSpec(name="revenue", type="mean", missing="zero", window_days=1)],
             plan=sequential_plan,
             experiment_id="exp",
             exposure_date="exposure_date",
@@ -1737,9 +1723,7 @@ def _sequential_asymptotic_mean_case() -> ParityCase:
 
     def build_moments() -> Bound:
         summary = build_unit_summary()
-        return _export_and_replay(
-            summary, [MetricSpec(name="revenue", type="mean", preferred_direction="increase")]
-        )
+        return _export_and_replay(summary, [MetricSpec(name="revenue", type="mean")])
 
     return ParityCase(
         id="sequential_asymptotic_mean_revenue",
@@ -2621,20 +2605,8 @@ def _sequential_composed_itt_and_uptake_case(
     defs_dict["dialect"] = dialect
     if metric_free:
         defs_dict["metrics"] = []
-    summary_specs = (
-        []
-        if metric_free
-        else [MetricSpec(name="revenue", missing="zero", preferred_direction="increase")]
-    )
-    panel_specs = (
-        []
-        if metric_free
-        else [
-            MetricSpec(
-                name="revenue", missing="zero", window_days=1, preferred_direction="increase"
-            )
-        ]
-    )
+    summary_specs = [] if metric_free else [MetricSpec(name="revenue", missing="zero")]
+    panel_specs = [] if metric_free else [MetricSpec(name="revenue", missing="zero", window_days=1)]
     frame_design = Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="converted", window_days=1),
@@ -3118,21 +3090,12 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
         return adopted
 
     summary_metrics = [
-        MetricSpec(name="revenue", type="mean", missing="zero", preferred_direction="increase"),
+        MetricSpec(name="revenue", type="mean", missing="zero"),
         MetricSpec(
-            name="purchase_rate",
-            type="conversion",
-            value_column="converted",
-            missing="zero",
-            preferred_direction="increase",
+            name="purchase_rate", type="conversion", value_column="converted", missing="zero"
         ),
         MetricSpec(
-            name="rps",
-            type="ratio",
-            numerator="revenue",
-            denominator="sessions",
-            missing="zero",
-            preferred_direction="increase",
+            name="rps", type="ratio", numerator="revenue", denominator="sessions", missing="zero"
         ),
     ]
 
@@ -3167,20 +3130,8 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
             date="date",
             design=frame_design,
             metrics=[
-                MetricSpec(
-                    name="revenue",
-                    type="mean",
-                    missing="zero",
-                    window_days=1,
-                    preferred_direction="increase",
-                ),
-                MetricSpec(
-                    name="purchase_rate",
-                    type="conversion",
-                    missing="zero",
-                    window_days=1,
-                    preferred_direction="increase",
-                ),
+                MetricSpec(name="revenue", type="mean", missing="zero", window_days=1),
+                MetricSpec(name="purchase_rate", type="conversion", missing="zero", window_days=1),
                 MetricSpec(
                     name="rps",
                     type="ratio",
@@ -3188,7 +3139,6 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
                     denominator="sessions",
                     missing="zero",
                     window_days=1,
-                    preferred_direction="increase",
                 ),
             ],
             plan=sequential_plan,
@@ -3209,15 +3159,9 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
         replayed = builders.from_moments(
             replay_rows,
             metrics=[
-                MetricSpec(name="revenue", type="mean", preferred_direction="increase"),
-                MetricSpec(name="purchase_rate", type="conversion", preferred_direction="increase"),
-                MetricSpec(
-                    name="rps",
-                    type="ratio",
-                    numerator="revenue",
-                    denominator="sessions",
-                    preferred_direction="increase",
-                ),
+                MetricSpec(name="revenue", type="mean"),
+                MetricSpec(name="purchase_rate", type="conversion"),
+                MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions"),
             ],
             design=frame_design,
         )
@@ -3818,18 +3762,8 @@ def _sequential_automatic_multi_arm_exact_case(
     design = Randomized(control_group="control", allocation=ds.multiplicity_allocation())
     as_of = ds._EXPERIMENT_END - dt.timedelta(days=1)
     exposure_day = ds._EXPOSURE_AT.date()
-    spec_summary = MetricSpec(
-        name="purchase_rate",
-        type="conversion",
-        value_column="converted",
-        preferred_direction="increase",
-    )
-    spec_panel = MetricSpec(
-        name="purchase_rate", type="conversion", window_days=1, preferred_direction="increase"
-    )
-    spec_replay = MetricSpec(
-        name="purchase_rate", type="conversion", preferred_direction="increase"
-    )
+    spec_summary = MetricSpec(name="purchase_rate", type="conversion", value_column="converted")
+    spec_panel = MetricSpec(name="purchase_rate", type="conversion", window_days=1)
     native_defs = defs
     frame_plan = plan
 
@@ -3913,13 +3847,15 @@ def _sequential_automatic_multi_arm_exact_case(
 
     def build_moments() -> Bound:
         if declared_registration is None:
-            return _export_and_replay(build_unit_summary(), [spec_replay])
+            return _export_and_replay(
+                build_unit_summary(), [MetricSpec(name="purchase_rate", type="conversion")]
+            )
         # The registration is bound to the native source, so the portable cube
         # is exported from that source and replayed independently of the frames.
         native = build_definitions()
         try:
             workflows.capture_sequential(*native, finalized=True, as_of=as_of)
-            return _export_and_replay(native, [spec_replay])
+            return _export_and_replay(native, [MetricSpec(name="purchase_rate", type="conversion")])
         finally:
             _close_parity_binding(native)
 

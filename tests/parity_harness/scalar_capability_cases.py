@@ -102,7 +102,6 @@ def _sequential_fixed_winsor_case() -> ParityCase:
                     type="mean",
                     missing="zero",
                     winsorization={"upper_value": upper},
-                    preferred_direction="increase",
                 )
             ],
             plan=plan,
@@ -129,7 +128,6 @@ def _sequential_fixed_winsor_case() -> ParityCase:
                         missing="zero",
                         window_days=1,
                         winsorization={"upper_value": upper},
-                        preferred_direction="increase",
                     )
                 ],
                 plan=plan,
@@ -147,7 +145,6 @@ def _sequential_fixed_winsor_case() -> ParityCase:
                     name="revenue",
                     type="mean",
                     winsorization={"upper_value": upper},
-                    preferred_direction="increase",
                 )
             ],
         )
@@ -278,7 +275,6 @@ def _sequential_mean_cuped_case() -> ParityCase:
             missing="zero",
             decision_method=cuped_frame,
             window_days=window_days,
-            preferred_direction="increase",
         )
 
     def build_summary() -> Bound:
@@ -346,10 +342,7 @@ def _sequential_mean_cuped_case() -> ParityCase:
         )
 
     def build_moments() -> Bound:
-        return _export_and_replay(
-            build_summary(),
-            [MetricSpec(name="revenue", type="mean", preferred_direction="increase")],
-        )
+        return _export_and_replay(build_summary(), [MetricSpec(name="revenue", type="mean")])
 
     def probe(_ingress: str, bound: Bound) -> None:
         snapshot = workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
