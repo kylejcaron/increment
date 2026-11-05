@@ -8,7 +8,6 @@ from typing import Any, Literal, cast
 
 from increment._evidence_types import ArtifactProvenance
 from increment.decision import MultiplicityFamily, evidence_request_procedure
-from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.multiplicity import (
     design_excluded,
     multiplicity_status,
