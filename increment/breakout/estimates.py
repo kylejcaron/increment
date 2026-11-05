@@ -245,11 +245,12 @@ _register_warning(
     IncrementWarning,
     lambda *, label, metric_name: (
         f"{label} metric={metric_name!r} lost its control arm to the "
-        "per-row estimability gate above (fewer than 2 units, or a "
-        "non-positive numerator/denominator mean) -- that metric's "
-        "cell for this slice comes back as an unavailable row with "
-        "excluded='no_control_arm', unless that arm's own row was "
-        "also dropped above, in which case its own reason wins."
+        "per-row estimability gate above -- that metric's cells for this "
+        "slice come back as unavailable rows excluded for the control's "
+        "reason: 'no_control_arm' for fewer than 2 units, "
+        "'nonpositive_mean' for a non-positive numerator/denominator mean, "
+        "or 'missing_metric_observations' when no control unit has a value. "
+        "An arm whose own row was also dropped above keeps its own reason."
     ),
 )
 _register_warning(
@@ -396,10 +397,12 @@ def _failure_exclusion_reason(failure: Any) -> ExclusionReason:
 """Why a (segment, metric, method, arm) cell in a breakout came back as unavailable.
 
 ``few_units`` (n < 2, no ddof=1 variance), ``no_control_arm`` (nothing to
-compare against -- the control row is missing, dropped, or the pair never
-appeared in this segment's raw data at all), and ``no_treatment_arm`` (the
-treatment row is missing) are DESIGN-based: they condition on arm counts,
-ancillary to the outcome, and are safe to keep in an analysis.
+compare against -- the control row is missing, has fewer than 2 units, or the
+pair never appeared in this segment's raw data at all), and ``no_treatment_arm``
+(the control row is live but the treatment row is missing) are DESIGN-based:
+they condition on arm counts, ancillary to the outcome, and are safe to keep in
+an analysis. A control row dropped for an outcome-based reason passes that
+reason to its treatment cells.
 ``nonpositive_mean`` (log(mean) undefined), ``zero_variance`` (both arms
 degenerate), and ``extreme_ratio`` (log ratio too extreme for the delta
 method) are OUTCOME-based: they truncate a tail and would bias a downstream
@@ -441,8 +444,6 @@ other ``reference_not_normal`` condition (e.g. being one-sided), is
 built fresh at the (already-matching) requested alpha on the absolute
 scale.
 """
-
-DESIGN_BASED_REASONS = frozenset({"few_units", "no_control_arm", "no_treatment_arm"})
 
 
 def _validate_flat_binomial_row(row: Any, *, refusal_code: str) -> None:
@@ -3071,10 +3072,11 @@ def _prepare_lift_slice(
 ) -> _PreparedLiftSlice:
     """Apply shared row/control-arm gates for one breakout or day slice.
 
-    With ``unobserved_control_missing`` (breakout segments, where a zero-count row is an arm
-    whose units had no value), a metric's control row with no observations makes its contrasts
-    missing observations rather than a missing control arm, as a zero-count treatment row
-    already does."""
+    A metric whose control row was dropped for an outcome-based reason passes that reason to
+    its treatment cells; ``no_control_arm`` is kept for an absent control row or one with fewer
+    than two units. With ``unobserved_control_missing`` (breakout segments, where a zero-count
+    row is an arm whose units had no value), a control row with no observations likewise makes
+    its contrasts missing observations, as a zero-count treatment row already does."""
     part = _partition_nonpositive_mean_rows(
         rows,
         control_group=control_group,
@@ -3096,16 +3098,15 @@ def _prepare_lift_slice(
         group_id = str(dropped.row.get("group_id"))
         if group_id != control_group:
             unestimable[(str(dropped.row["metric"]), group_id)] = dropped.reason
-    unobserved_control = (
-        {
-            str(dropped.row["metric"])
-            for dropped in part.dropped
-            if str(dropped.row.get("group_id")) == control_group
-            and dropped.reason == "missing_metric_observations"
-        }
-        if unobserved_control_missing
-        else set()
-    )
+    control_drop_reason: dict[str, ExclusionReason] = {
+        str(dropped.row["metric"]): dropped.reason
+        for dropped in part.dropped
+        if str(dropped.row.get("group_id")) == control_group
+        and (
+            dropped.reason == "nonpositive_mean"
+            or (unobserved_control_missing and dropped.reason == "missing_metric_observations")
+        )
+    }
     route2_pairs: set[tuple[str, str]] = set()
     for row in rows:
         group_id = str(row.get("group_id"))
@@ -3114,32 +3115,16 @@ def _prepare_lift_slice(
             pair = (metric_name, group_id)
             if pair not in unestimable and metric_name not in part.lost_control_metrics:
                 route2_pairs.add(pair)
-            unestimable.setdefault(
-                pair,
-                "missing_metric_observations"
-                if metric_name in unobserved_control
-                else "no_control_arm",
-            )
-    if not part.live_control_metrics:
-        for row in rows:
-            group_id = str(row.get("group_id"))
-            if group_id != control_group:
-                unestimable.setdefault((str(row["metric"]), group_id), "no_control_arm")
-        if warning_label is not None:
-            if part.lost_control_metrics:
-                _warn(
-                    "breakout.estimates.slice_no_live_control_dropped",
-                    warning_label=warning_label,
-                    control_group=control_group,
-                    stacklevel=3,
-                )
-            else:
-                _warn(
-                    "breakout.estimates.slice_no_control_arm",
-                    warning_label=warning_label,
-                    control_group=control_group,
-                    stacklevel=3,
-                )
+            unestimable.setdefault(pair, control_drop_reason.get(metric_name, "no_control_arm"))
+    if not part.live_control_metrics and warning_label is not None:
+        _warn(
+            "breakout.estimates.slice_no_live_control_dropped"
+            if part.lost_control_metrics
+            else "breakout.estimates.slice_no_control_arm",
+            warning_label=warning_label,
+            control_group=control_group,
+            stacklevel=3,
+        )
     return _PreparedLiftSlice(part.live, control_n, arm_n, unestimable, route2_pairs, part)
 
 
@@ -3750,7 +3735,11 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     metric_name=metric_name,
                     stacklevel=3,
                 )
-            unestimable[pair] = "no_control_arm"
+            unestimable[pair] = (
+                "no_treatment_arm"
+                if metric_name in prepared.part.live_control_metrics
+                else "no_control_arm"
+            )
     if unestimable:
         computations[(context.segment_value, "__unavailable__")] = (
             _breakout_unavailable_computation(unestimable, context, original_failures)

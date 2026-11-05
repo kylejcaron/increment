@@ -86,6 +86,7 @@ from increment.estimation.decision_types import (
     SegmentHypothesisKey,
     exact_fraction,
 )
+from increment.estimation.multiplicity import design_excluded
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.semantics.sequential import SequentialRegistration
 
@@ -309,8 +310,8 @@ def _unique_family_keys[K: Hashable](cells: Sequence[tuple[K, object]]) -> list[
 
 #: Codes for outcome-based cell degeneracy (zero variance, unusable SE, non-positive mean), not
 #: invalid requests: a key failing only with these stays in a fixed-horizon family as a sure
-#: non-rejection. Breakout keys the same hazards so run() and run_breakout() agree; design-based
-#: Missing-observation breakout cells are retained conservatively as p=1.
+#: non-rejection. Breakout keys the same hazards so run() and run_breakout() agree. Count-based
+#: cells are not hypotheses and never reach selection; missing-observation cells stay as p=1.
 _CONSERVATIVE_NONREJECTION_CODES = frozenset(
     {
         "estimation.engine.lift_guard",
@@ -747,10 +748,6 @@ _INTERVAL_FIELDS = (
 )
 #: Each selected row is capped at its own nominal level below, so selection runs uncapped.
 _UNCAPPED = math.nextafter(1.0, 0.0)
-#: Breakout exclusions that condition only on arm counts, ancillary to the outcome: such a cell
-#: is no hypothesis, so leaving it out of the family cannot bias selection. Outcome-based
-#: exclusions (zero variance, non-positive mean, extreme ratio) stay in as non-rejections.
-_DESIGN_EXCLUSIONS = frozenset({"few_units", "no_control_arm"})
 _ADMISSION_ORDER = (
     "estimation.family.exploratory_row",
     "estimation.family.exploratory_pre_corrected",
@@ -848,7 +845,8 @@ def exploratory_family_exclusion(row: LiftEstimate | BreakoutEstimate) -> str | 
     excluded row out of the family and report the reason instead of letting one hazardous cell
     refuse every cell. The string is the reason the refusal carries in its ``reasons`` context
     (``constructions`` for an interval that cannot be reissued). A cell excluded by design
-    (too few units, no control arm) is not excluded here: the family returns it unchanged.
+    (too few units, no control arm, no treatment arm) is not excluded here: the family returns
+    it unchanged.
     """
     from increment.estimation._fcr_reinterval import classify
 
@@ -894,7 +892,7 @@ def _members(rows: Sequence[LiftEstimate | BreakoutEstimate]) -> list[_Member]:
         if construction is None:
             obstructed.append((_label(index, row), reason))
             continue
-        tested = view is not None or getattr(row, "excluded", None) not in _DESIGN_EXCLUSIONS
+        tested = view is not None or not design_excluded(row)
         members.append(_Member(row, key, scope, view, construction, tested))
     if obstructed:
         refuse(
@@ -1003,8 +1001,8 @@ def select_exploratory_family(
 
     A cell excluded for an outcome-based reason (zero variance, non-positive mean, extreme
     ratio) stays in ``m`` as a non-rejection, as in ``run_breakout``. A cell excluded by design
-    (too few units, no control arm) is no hypothesis: it is returned unchanged, outside the
-    family.
+    (too few units, no control arm, no treatment arm) is no hypothesis: it is returned
+    unchanged, outside the family.
 
     The call refuses before any work, naming every offending row: rows that are not whole-window
     or segment rows (``estimation.family.exploratory_row``), rows already corrected

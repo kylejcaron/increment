@@ -15,6 +15,17 @@ MultiplicityStatus = Literal[
     "exploratory_family",
 ]
 
+#: Unavailable-cell reasons fixed by arm counts alone (an arm with fewer than two units, or
+#: an arm absent from the segment). Counts are ancillary to outcomes under randomization, so
+#: such a cell is no hypothesis of a fixed-horizon family; outcome-based reasons stay in the
+#: family as non-rejections.
+DESIGN_EXCLUSIONS: frozenset[str] = frozenset({"few_units", "no_control_arm", "no_treatment_arm"})
+
+
+def design_excluded(row: object) -> bool:
+    """Whether *row* is unavailable for a reason fixed by arm counts alone."""
+    return getattr(row, "excluded", None) in DESIGN_EXCLUSIONS
+
 
 def multiplicity_status(
     role: RowRole | None, family: MultiplicityFamily | str | None
@@ -43,10 +54,7 @@ def row_multiplicity_status(row, *, correction: str | None = None) -> Multiplici
     """
     if correction is None and getattr(row, "family_q", None) is not None:
         correction = "e_bh" if row.inference == "always_valid" else "bh"
-    if row.role == "exploratory" and getattr(row, "excluded", None) in {
-        "few_units",
-        "no_control_arm",
-    }:
+    if row.role == "exploratory" and design_excluded(row):
         return "exploratory_unadjusted"
     return multiplicity_status(row.role, correction)
 

@@ -2073,7 +2073,7 @@ class TestRunDailyLiftNaNRowsForUnestimableSlices:
         assert len(results) == 1
         assert results[0].group_id == "treatment"
         assert results[0].lift is None
-        assert results[0].unavailable == "no_control_arm"
+        assert results[0].unavailable == "nonpositive_mean"
 
     def test_one_metrics_lost_control_leaves_the_other_metric_estimable(self):
         """Two metrics, one day. Metric A's control is non-positive (its
@@ -2103,7 +2103,7 @@ class TestRunDailyLiftNaNRowsForUnestimableSlices:
         by_metric = {r.metric: r for r in results}
         assert set(by_metric) == {"a", "b"}
         assert by_metric["a"].lift is None
-        assert by_metric["a"].unavailable == "no_control_arm"
+        assert by_metric["a"].unavailable == "nonpositive_mean"
         assert by_metric["b"].lift is not None
 
     def test_degenerate_zero_variance_day_returns_nan_rows(self):
@@ -2186,7 +2186,7 @@ class TestRunDailyLiftNaNRowsForUnestimableSlices:
 
         assert len(results) == 1
         assert results[0].lift is None
-        assert results[0].unavailable == "no_control_arm"
+        assert results[0].unavailable == "nonpositive_mean"
         assert results[0].dimension == "country"
         assert results[0].dimension_value == "US"
         assert results[0].source == "events"
@@ -2215,7 +2215,7 @@ class TestRunDailyLiftNaNRowsForUnestimableSlices:
 
         assert {r.method for r in results} == {"unadjusted", "cuped"}
         assert all(r.lift is None for r in results)
-        assert all(r.unavailable == "no_control_arm" for r in results)
+        assert all(r.unavailable == "nonpositive_mean" for r in results)
 
     def test_observational_method_name_refused_on_an_unestimable_day(self):
         """The mislabel refusal is an invariant, not a side effect of a day

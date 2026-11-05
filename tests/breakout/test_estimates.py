@@ -2659,13 +2659,13 @@ class TestRunBreakoutErrorPropagation:
         )
         assert {r.metric for r in result} == {"rev", "sessions"}
         by_metric = {r.metric: r for r in result}
-        assert by_metric["rev"].excluded == "no_control_arm"
+        assert by_metric["rev"].excluded == "nonpositive_mean"
         assert by_metric["rev"].lift is None
         assert by_metric["sessions"].excluded is None
 
-    def test_zero_mean_control_row_falls_through_to_no_control_arm_skip(self):
-        """Dropping the segment's ONLY control row falls through to the
-        no-control-arm skip, distinct from a genuinely missing arm - the
+    def test_zero_mean_control_row_skips_the_segment_with_its_own_reason(self):
+        """Dropping the segment's ONLY control row skips the segment with the control's
+        non-positive-mean reason, distinct from a genuinely missing arm - the
         per-metric "lost its control arm" warning must NOT fire here."""
         rows = [
             _make_arm_row(50, 0.0, 0.0, country="US", group_id="control"),
@@ -2688,7 +2688,7 @@ class TestRunBreakoutErrorPropagation:
         assert "breakout.estimates.lost_control_metric" not in codes
         assert {r.dimension_value for r in result} == {"US", "CA"}
         by_segment = {r.dimension_value: r for r in result}
-        assert by_segment["US"].excluded == "no_control_arm"
+        assert by_segment["US"].excluded == "nonpositive_mean"
         assert by_segment["US"].lift is None
         assert by_segment["CA"].excluded is None
 
@@ -2821,7 +2821,7 @@ class TestRunBreakoutDenseGrid:
         # Union pairs: (rev, treatment_a), (rev, treatment_b) x 2 segments = 4 rows.
         assert len(result) == 4
         by_cell = {(r.dimension_value, r.group_id): r for r in result}
-        assert by_cell[("CA", "treatment_b")].excluded == "no_control_arm"
+        assert by_cell[("CA", "treatment_b")].excluded == "no_treatment_arm"
         assert by_cell[("CA", "treatment_b")].lift is None
         assert by_cell[("US", "treatment_a")].excluded is None
         assert by_cell[("US", "treatment_b")].excluded is None

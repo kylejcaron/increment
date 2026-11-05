@@ -24,7 +24,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from increment._literals import ValueScale
 from increment.breakout.estimates import (
-    DESIGN_BASED_REASONS,
     BreakoutEstimate,
     BreakoutEstimates,
     EstimateList,
@@ -52,6 +51,7 @@ from increment.estimation.meta import (
     marginalized_segment_intervals,
     pairwise_contrast_arrays,
 )
+from increment.estimation.multiplicity import design_excluded
 from increment.estimation.results import Estimate, _recover_fixed_open_interval_parameters
 
 Renderer = Callable[..., str]
@@ -932,9 +932,9 @@ def segment_heterogeneity(  # noqa: PLR0915
         estimand,
         value_scale,
     ), rows in groups.items():
-        n_design = sum(1 for r in rows if r.excluded in DESIGN_BASED_REASONS)
+        n_design = sum(1 for r in rows if design_excluded(r))
         n_outcome_upstream = sum(
-            1 for r in rows if r.excluded is not None and r.excluded not in DESIGN_BASED_REASONS
+            1 for r in rows if r.excluded is not None and not design_excluded(r)
         )
         live = [r for r in rows if r.excluded is None]
         excluded = [r for r in rows if r.excluded is not None]
