@@ -24,27 +24,28 @@ class ExpectedDifference:
     scenario: str
     ingress: str
     field: str
-    frozen: str
-    current: str
+    frozen: str | Mapping[str, str]
+    current: str | Mapping[str, str]
     reason: str
+    key: str | None = None
 
     def applied_to(self, expected: Any) -> Any:
         """The frozen outcome with every occurrence of the frozen value, as a value or a
-        mapping key, replaced by the current one. Refuses a record the outcome does not
-        contain."""
+        mapping key, replaced by the current one; a record naming a ``key`` replaces only
+        values held under that mapping key. Refuses a record the outcome does not contain."""
         found = False
 
-        def replace(value: Any) -> Any:
+        def replace(value: Any, held_under: Any = None) -> Any:
             nonlocal found
+            if (self.key is None or held_under == self.key) and value == self.frozen:
+                found = True
+                return self.current
             if isinstance(value, dict):
-                return {replace(key): replace(item) for key, item in value.items()}
+                return {replace(key): replace(item, key) for key, item in value.items()}
             if isinstance(value, list):
                 return [replace(item) for item in value]
             if isinstance(value, tuple):
                 return tuple(replace(item) for item in value)
-            if value == self.frozen:
-                found = True
-                return self.current
             return value
 
         migrated = replace(expected)
@@ -87,15 +88,55 @@ _RECORDS = (
         reason="The refusal names the declared policy, now spelled missing='skip'.",
     ),
 )
-EXPECTED_DIFFERENCES = {
-    pair: tuple(record for record in _RECORDS if (record.scenario, record.ingress) == pair)
-    for pair in dict.fromkeys((record.scenario, record.ingress) for record in _RECORDS)
-}
+# Typed consumer inputs are frozen separately from the outcomes above.
+_CONSUMER_INPUT_RECORDS = (
+    ExpectedDifference(
+        scenario="audit-compliance-only-outcome-missingness",
+        ingress="from_unit_summary",
+        # Source `specs[].missing` and the consumer context's `metric_missingness` value.
+        field="specs[].missing",
+        frozen="drop",
+        current="skip",
+        reason="The source declares the observed-only policy, now spelled missing='skip'.",
+    ),
+    ExpectedDifference(
+        scenario="audit-compliance-only-outcome-missingness",
+        ingress="from_moments",
+        # Source and consumer `context.metric_missingness`.
+        field="context.metric_missingness",
+        key="metric_missingness",
+        frozen={},
+        current={"revenue": "skip"},
+        reason=(
+            "A moments source records each metric declared missing='skip', which qualifies "
+            "its rows' population; the captured source recorded none."
+        ),
+    ),
+)
 
 
-def with_expected_difference(scenario: str, ingress: str, expected: Any) -> Any:
-    """The frozen outcome of one case, migrated by each of its recorded differences."""
-    for difference in EXPECTED_DIFFERENCES.get((scenario, ingress), ()):
+def _by_case(
+    records: tuple[ExpectedDifference, ...],
+) -> dict[tuple[str, str], tuple[ExpectedDifference, ...]]:
+    return {
+        pair: tuple(record for record in records if (record.scenario, record.ingress) == pair)
+        for pair in dict.fromkeys((record.scenario, record.ingress) for record in records)
+    }
+
+
+EXPECTED_DIFFERENCES = _by_case(_RECORDS)
+CONSUMER_INPUT_DIFFERENCES = _by_case(_CONSUMER_INPUT_RECORDS)
+
+
+def with_expected_difference(
+    scenario: str,
+    ingress: str,
+    expected: Any,
+    *,
+    differences: Mapping[tuple[str, str], tuple[ExpectedDifference, ...]] = EXPECTED_DIFFERENCES,
+) -> Any:
+    """The frozen capture of one case, migrated by each of its recorded differences."""
+    for difference in differences.get((scenario, ingress), ()):
         expected = difference.applied_to(expected)
     return expected
 
