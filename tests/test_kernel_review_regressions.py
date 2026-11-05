@@ -2050,3 +2050,33 @@ def test_switchback_partial_run_selection_cannot_pass_omitted_guardrail():
     assert result.decisions.program.status == "not_evaluated"
     assert "decision.guardrail.not_evaluated" in result.decisions.program.reason_codes
     assert "integrity.unsupported_assignment" in result.decisions.program.reason_codes
+
+
+def test_declare_views_adds_a_view_that_compares_equal_but_hashes_differently():
+    from increment.kernel.contracts import Registration
+    from increment.semantics.models import Filter, MeanMetric
+
+    def switchback(value: int | bool) -> View:
+        metric = MeanMetric(
+            name="revenue",
+            entity="user_id",
+            fact="events",
+            aggregation="sum",
+            filters=[Filter(property="platform", op="equals", values=[value])],
+        )
+        return View.switchback(metrics=(metric,))
+
+    declared, distinct = switchback(1), switchback(True)
+    assert declared == distinct and declared.hash() != distinct.hash()
+    experiment = Experiment(
+        experiment_id="equal-views",
+        design={},
+        metrics={},
+        registration=Registration(registration_hash="registration"),
+        source_refs=(SourceReference(name="source", uri="memory://source"),),
+        views=(declared,),
+    )
+
+    added = declare_views(experiment, distinct)
+    assert tuple(view.hash() for view in added.views) == (declared.hash(), distinct.hash())
+    assert declare_views(experiment, switchback(1)) is experiment

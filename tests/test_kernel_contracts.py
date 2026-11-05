@@ -61,37 +61,6 @@ def test_with_views_adds_to_declared_views():
         assert raised.value.code == "kernel.request.invalid"
 
 
-def test_declare_views_adds_a_view_that_compares_equal_but_hashes_differently():
-    from increment import Experiment, SourceReference
-    from increment.semantics.models import Filter, MeanMetric
-    from tests.analysis_factory import declare_views
-
-    def switchback(value: int | bool) -> View:
-        metric = MeanMetric(
-            name="revenue",
-            entity="user_id",
-            fact="events",
-            aggregation="sum",
-            filters=[Filter(property="platform", op="equals", values=[value])],
-        )
-        return View.switchback(metrics=(metric,))
-
-    declared, distinct = switchback(1), switchback(True)
-    assert declared == distinct and declared.hash() != distinct.hash()
-    experiment = Experiment(
-        experiment_id="equal-views",
-        design={},
-        metrics={},
-        registration=Registration(registration_hash="registration"),
-        source_refs=(SourceReference(name="source", uri="memory://source"),),
-        views=(declared,),
-    )
-
-    added = declare_views(experiment, distinct)
-    assert tuple(view.hash() for view in added.views) == (declared.hash(), distinct.hash())
-    assert declare_views(experiment, switchback(1)) is experiment
-
-
 def test_experiment_declares_distinct_values_and_lift_views_without_changing_lift_identity():
     from increment import Experiment, SourceReference
     from increment import View as PublicView
