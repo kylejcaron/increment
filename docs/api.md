@@ -165,12 +165,16 @@ values.
   `batch_size`. Floats, integral ones such as `5000.0` included, and bools are
   still refused with the same codes, and a `power_curve` `n_per_arm` array with
   more than one dimension refuses with `power.scalar_numeric_sequence`. A
-  conversion or retention alternative at a rate of exactly one, such as a lift
-  of 0.25 on a baseline of 0.8, is now planned; it used to be refused with
-  `power.bounded_metric.rate_above_one` whenever rounding put its logarithm just
-  above zero. Any larger rate is still refused, a shifted null still has to sit
-  at or below one as computed, and the refusal prints the implied rate in full.
-  Other results and experiment identity hashes are unchanged.
+  conversion or retention rate is now judged on the baseline and lift as
+  written, each number read as its shortest decimal, so an alternative at a
+  rate of exactly one, such as a lift of 0.25 on a baseline of 0.8, is planned;
+  it used to be refused with `power.bounded_metric.rate_above_one` whenever
+  rounding put its logarithm just above zero. Any rate above one as written is
+  refused, even one as close as the next float lift above 1.0 on a baseline of
+  0.5, and the refusal prints the implied rate in full. A shifted null above one
+  as written is refused too, and so, as before, is a null whose computed
+  logarithm rounds above zero. Other results and experiment identity hashes are
+  unchanged.
 - Release note (usability): reading a public submodule such as
   `increment.workflows` from the package before importing it raises an
   `AttributeError` that names the import, `from increment.workflows import ...`;

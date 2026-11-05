@@ -3137,26 +3137,36 @@ class TestBoundedDomain:
         assert refusal.value.code == "power.bounded_metric.rate_above_one"
         assert refusal.value.context["role"] == "alternative"
 
-    def test_a_treatment_rate_of_exactly_one_contributes_no_treatment_variance(self):
-        """``p0 = 0.8`` with lift 0.25 is a rate of exactly one, though
-        ``log(0.8) + log1p(0.25)`` rounds just above zero; that rate
-        contributes zero treatment variance."""
-        baseline = Baseline.from_proportion(0.8)
+    def test_a_treatment_rate_of_exactly_one_is_allowed_and_its_neighbour_is_not(self):
+        """``p0 = 0.5`` with lift 1.0 lands exactly on a rate of one, which
+        contributes zero treatment variance; the next representable lift
+        implies a rate above one."""
+        from increment.errors import InvalidRequestError
+
+        baseline = Baseline.from_proportion(0.5)
         procedure = _absorbed(metric_type="conversion", alternative="greater")
-        exact = achieved_power(4, 0.25, baseline, procedure)
-        # Only the control term remains: se2 = 0.16 / (4 * 0.64).
-        nc = math.log(1.25) / math.sqrt(0.16 / (4 * 0.64))
+        exact = achieved_power(4, 1.0, baseline, procedure)
+        # Only the control term remains: se2 = 0.25 / (4 * 0.25).
+        nc = math.log(2.0) / math.sqrt(0.25 / (4 * 0.25))
         assert exact.power == pytest.approx(float(norm.sf(norm.isf(0.05) - nc)), rel=1e-12)
+        with pytest.raises(InvalidRequestError) as refusal:
+            achieved_power(4, math.nextafter(1.0, math.inf), baseline, procedure)
+        assert refusal.value.code == "power.bounded_metric.rate_above_one"
 
     @pytest.mark.parametrize(("p0", "lift"), [(0.8, 0.25), (0.1, 9.0), (0.5, 1.0)])
     def test_bounded_rate_of_exactly_one_is_admissible(self, p0, lift):
-        """``p0 * (1 + lift)`` is one; ``log(p0) + log1p(lift)`` may round a
-        few ulps above zero, and that is still a rate of one."""
-        result = achieved_power(
-            20, lift, Baseline.from_proportion(p0), ArmPlanningProcedure.standard("conversion")
-        )
+        """``p0 * (1 + lift)`` is one as written, though ``log(p0) +
+        log1p(lift)`` may round above zero. The count route answers, and the
+        closed form keeps only the control term, ``se2 = (1 - p0) / (n p0)``."""
+        baseline = Baseline.from_proportion(p0)
+        result = achieved_power(20, lift, baseline, ArmPlanningProcedure.standard("conversion"))
         assert math.isfinite(result.power)
         assert 0.0 < result.power <= 1.0
+        procedure = _absorbed(metric_type="conversion", alternative="greater")
+        nc = math.log1p(lift) / math.sqrt((1.0 - p0) / (20 * p0))
+        assert achieved_power(20, lift, baseline, procedure).power == pytest.approx(
+            float(norm.sf(norm.isf(0.05) - nc)), rel=1e-12
+        )
 
     def test_bounded_rate_above_one_refuses(self):
         with pytest.raises(InvalidRequestError) as refusal:

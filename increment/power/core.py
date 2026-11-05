@@ -1330,8 +1330,31 @@ _BOUNDED_METRIC_RATE_ABOVE_ONE = RefusalSpec(
     InvalidRequestError,
     template="{metric_type} planning at baseline rate {mean:.6g}: the {role} lift implies a rate of {implied_rate!r}, which exceeds one -- an alternative that cannot occur is not a conservative approximation; lower the lift or the baseline rate",
 )
-# ``log(m0) + log1p(lift)`` rounds by up to a few ulps at a rate of exactly one.
-_RATE_ONE_LOG_TOLERANCE = 4 * 2**-52
+
+
+def _written(value: float) -> Fraction:
+    """A float as written: the shortest decimal that reads back as it."""
+    return Fraction(repr(float(value)))
+
+
+def _refuse_rate_above_one(
+    procedure: ArmPlanningProcedure,
+    baseline: Baseline,
+    rate: Fraction,
+    *,
+    role: str,
+    **lifts: float,
+) -> NoReturn:
+    """Refuse a bounded rate above one, reported as a float above one even
+    where the float nearest the rate is one itself."""
+    refuse(
+        _BOUNDED_METRIC_RATE_ABOVE_ONE,
+        metric_type=procedure.metric.metric_type,
+        mean=baseline.mean,
+        role=role,
+        implied_rate=max(float(rate), math.nextafter(1.0, math.inf)),
+        **lifts,
+    )
 
 
 def _bounded_preflight(
@@ -1341,8 +1364,9 @@ def _bounded_preflight(
     baseline outside ``(0, 1)`` or a null rate above one before any
     calculation. Invalid bounded inputs never fall through to the
     unbounded model. Solvers re-derive the null's log ratio from
-    ``null_lift``, so the null rate gets no rounding tolerance: one that
-    rounds above one is refused rather than clamped."""
+    ``null_lift``, so a null whose log rate rounds above zero cannot be
+    moved onto the boundary and is refused even at a rate of one as
+    written."""
     if not _is_bounded_metric(procedure):
         return False
     if not 0.0 < baseline.mean < 1.0:
@@ -1351,37 +1375,34 @@ def _bounded_preflight(
             metric_type=procedure.metric.metric_type,
             mean=baseline.mean,
         )
-    _require_bounded_rate(
-        procedure, baseline, theta=math.log1p(null_lift), role="null", tolerance=0.0
-    )
+    rate = _written(baseline.mean) * (1 + _written(null_lift))
+    if rate > 1 or math.log(baseline.mean) + math.log1p(null_lift) > 0.0:
+        _refuse_rate_above_one(procedure, baseline, rate, role="null")
     return True
 
 
-def _require_bounded_rate(
-    procedure: ArmPlanningProcedure,
-    baseline: Baseline,
-    *,
-    theta: float,
-    role: str,
-    tolerance: float,
-    **lifts: float,
+def _bounded_alternative_theta(
+    procedure: ArmPlanningProcedure, baseline: Baseline, relative_lift: float, theta: float
 ) -> float:
-    """The admissible ``theta`` of a bounded rate ``m0 * exp(theta)``, judged in
-    log space. A log rate above zero by at most ``tolerance`` is a rate of
-    exactly one and returns that boundary, ``-log(m0)``; a larger one
-    refuses."""
-    log_m0 = math.log(baseline.mean)
-    log_rate = log_m0 + theta
-    if log_rate > tolerance:
-        refuse(
-            _BOUNDED_METRIC_RATE_ABOVE_ONE,
-            metric_type=procedure.metric.metric_type,
-            mean=baseline.mean,
-            role=role,
-            implied_rate=math.exp(log_rate),
-            **lifts,
+    """The admissible ``theta`` of a bounded alternative. Its rate ``m0 * (1 +
+    relative_lift * compliance)`` is computed exactly on the inputs as
+    written, so a lift of 0.25 on 0.8 is one although ``log(0.8) +
+    log1p(0.25)`` rounds above zero, and the next float lift above 1.0 on
+    0.5 is above one. A rate above one refuses. A rate of one takes the
+    boundary ``-log(m0)``, where the treatment rate is one exactly in log
+    space; so does a rate below one whose log rate rounds above zero."""
+    rate = _written(baseline.mean) * (1 + _written(relative_lift) * _written(baseline.compliance))
+    if rate > 1:
+        _refuse_rate_above_one(
+            procedure,
+            baseline,
+            rate,
+            role="alternative",
+            relative_lift=relative_lift,
+            compliance=baseline.compliance,
         )
-    return -log_m0 if log_rate > 0.0 else theta
+    log_m0 = math.log(baseline.mean)
+    return -log_m0 if rate == 1 or log_m0 + theta > 0.0 else theta
 
 
 _CLUSTER_TOO_FEW = RefusalSpec(
@@ -1718,8 +1739,8 @@ def _supplied_effect(
     """``(theta, distance)`` of a supplied complier-scale ``relative_lift``:
     its absolute effective log ratio ``log1p(relative_lift * compliance)``
     and its signed log-distance from the null. Validates the public domain
-    and, for a bounded metric, refuses an implied rate above one; a rate
-    that is one up to the rounding of its log takes the boundary ``theta``.
+    and, for a bounded metric, refuses an implied rate above one; a rate of
+    one takes the boundary ``theta`` (``_bounded_alternative_theta``).
     Sizing and achieved power share this conversion, so their supplied
     effect is the same alternative the companion solver measures distance
     from.
@@ -1729,15 +1750,7 @@ def _supplied_effect(
     effective_lift = relative_lift * baseline.compliance
     theta = math.log1p(effective_lift)
     if bounded:
-        theta = _require_bounded_rate(
-            procedure,
-            baseline,
-            theta=theta,
-            role="alternative",
-            tolerance=_RATE_ONE_LOG_TOLERANCE,
-            relative_lift=relative_lift,
-            compliance=baseline.compliance,
-        )
+        theta = _bounded_alternative_theta(procedure, baseline, relative_lift, theta)
     return theta, _distance_from_null(effective_lift, decision.null_lift)
 
 
