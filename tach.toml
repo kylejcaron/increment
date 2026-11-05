@@ -1197,7 +1197,7 @@ expose = ["ArrayPsiFn", "PsiFn", "ScoreDesign"]
 
 [[interfaces]]
 from = ["increment.breakout.projection"]
-expose = ["to_frame", "with_readout_evidence", "result_frame"]
+expose = ["to_frame", "with_readout_evidence", "result_frame", "scope_key", "summary_columns"]
 
 [[interfaces]]
 from = ["increment._literals"]

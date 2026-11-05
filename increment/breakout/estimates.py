@@ -185,11 +185,6 @@ _REFUSALS = refusals(
         "breakout.run_daily_lift_dimension_found": "run_daily_lift: dimension column {dimension!r} not found in summary. Available columns: {columns}",
         "breakout.run_daily_lift_metric_declared": "Metric(s) {unknown} found in group_summary but not in the metrics list. Declared metrics: {declared}",
         "breakout.run_daily_lift_plan_missing_procedures": "run_daily_lift: compiled plan is missing procedure(s) for {missing_procedures!r}",
-        "results.frame.summary_unavailable": RefusalSpec(
-            "results.frame.summary_unavailable",
-            InvalidRequestError,
-            template="to_frame(columns='summary') is not available for {model}",
-        ),
     },
 )
 
@@ -1177,15 +1172,9 @@ class EstimateList[M: BaseModel](list[M]):
         """Convert this list to a native frame; defaulting to its input backend."""
         backend = default_frame_backend(backend or getattr(self, "_default_backend", None))
 
-        from increment.breakout.projection import to_frame, with_readout_evidence
+        from increment.breakout.projection import summary_columns, to_frame, with_readout_evidence
 
-        selected_columns: Sequence[str] | None
-        if columns == "summary":
-            selected_columns = self._summary_columns
-            if selected_columns is None:
-                _refuse("results.frame.summary_unavailable", model=self._model.__name__)
-        else:
-            selected_columns = columns
+        selected_columns = summary_columns(self._model) if columns == "summary" else columns
 
         native = to_frame(self, model=self._model, backend=backend, columns=selected_columns)
         if selected_columns is not None:
@@ -1729,6 +1718,7 @@ class LiftEstimates(EstimateList[LiftEstimate]):
         "method",
         "role",
         "analysis_population",
+        "population",
         "stat_sig",
         "p_value",
         "p_value_reason_code",
@@ -1821,6 +1811,7 @@ class BreakoutEstimates(EstimateList[BreakoutEstimate]):
         "method",
         "role",
         "analysis_population",
+        "population",
         "dimension",
         "dimension_value",
         "stat_sig",
@@ -1917,6 +1908,7 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
         "method",
         "role",
         "analysis_population",
+        "population",
         "ds",
         "stat_sig",
         "p_value",

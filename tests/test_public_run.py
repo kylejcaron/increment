@@ -1368,6 +1368,337 @@ def test_run_frame_keys_each_row_to_its_view_through_store_and_pickle(tmp_path):
     assert selected.columns == [*identity, "lift", "view_partial"]
 
 
+def _two_metric_run(*, skip_sessions=False):
+    import numpy as np
+
+    from increment import Randomized
+
+    rng = np.random.default_rng(2)
+    n = 400
+    arm = np.array(["control"] * n + ["treatment"] * n)
+    frame = pd.DataFrame(
+        {
+            "u": [f"u{i}" for i in range(2 * n)],
+            "arm": arm,
+            "revenue": 10 + (arm == "treatment") * 0.5 + rng.normal(0, 2, 2 * n),
+            "sessions": 4 + rng.normal(0, 1, 2 * n),
+        }
+    )
+    if skip_sessions:
+        frame.loc[::10, "sessions"] = None
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="u",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[
+            MetricSpec(name="revenue"),
+            MetricSpec(name="sessions", missing="skip" if skip_sessions else "error"),
+        ],
+        plan=AnalysisPlan(primary="revenue", secondaries=["sessions"]),
+    )
+    with reader:
+        return run(experiment, reader)
+
+
+def _sequential_panel_run():
+    import datetime as dt
+    from dataclasses import replace
+
+    from increment import InferenceSpec, Randomized
+    from increment.evidence import SequentialCaptureRequest
+
+    exposed, closed = dt.date(2025, 1, 1), dt.date(2025, 1, 10)
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"u{index}",
+                "arm": "control" if index % 2 else "treatment",
+                "day": day,
+                "exposed_on": exposed,
+                "value": value,
+            }
+            for index in range(80)
+            for day, value in ((exposed, 0.0), (dt.date(2025, 1, 2), float(index % 7 + index % 2)))
+        ]
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed_on",
+        observation_end=closed,
+        metrics=[MetricSpec(name="value", type="mean", window_days=2)],
+        design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+        plan=AnalysisPlan(primary="value", inference=InferenceSpec(kind="asymptotic_mean")),
+    )
+    views = (View(view="run", grain="total"), View(view="asof", grain="asof"))
+    with reader:
+        result = run(
+            replace(experiment, views=views),
+            reader,
+            capture=SequentialCaptureRequest(finalized=True, as_of=closed),
+        )
+    return result, views
+
+
+def _zero_control_conversion_run():
+    """A conversion with no control events: an exact set and no relative point."""
+    from random import Random
+
+    rng = Random(13)
+    arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(200)]
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            {
+                "unit": [f"u{i:03d}" for i in range(200)],
+                "arm": arms,
+                "converted": [int(arm == "treatment" and i % 5 < 2) for i, arm in enumerate(arms)],
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"converted": "conversion"},
+    )
+    with reader:
+        return run(experiment, reader)
+
+
+def _full_set_sequential_run():
+    """A one-sided asymptotic sequential set that covers every ratio."""
+    from fractions import Fraction
+
+    from increment.estimators import SequentialCell
+    from tests.test_asymptotic_public_sources import _analysis, _frame, _plan
+
+    specs = [MetricSpec(name="outcome", type="mean")]
+    cell = SequentialCell(
+        metric="outcome", group_id="treatment", alpha=Fraction(1, 20), alternative="less"
+    )
+    plan = _plan(specs, cells=(cell,)).model_copy(update={"alternative": "less"})
+    experiment, reader = _analysis(_frame([-2, 1, 2] * 40, [10, 12] * 40), specs, plan)
+    with reader:
+        return run(experiment, reader)
+
+
+def _missing_arm_asof_run():
+    """An as-of asymptotic sequential cell whose control arm has no units."""
+    from dataclasses import replace
+    from datetime import date, timedelta
+
+    from increment import Randomized
+    from increment.workflows import capture_sequential
+    from tests.test_asymptotic_public_sources import _frame, _plan
+
+    specs = [MetricSpec(name="outcome", type="mean", window_days=2)]
+    start = date(2025, 1, 1)
+    experiment, reader = from_frame(
+        _frame([], [10, 12] * 40).assign(exposed=start, day=start),
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        design=Randomized(control_group="control"),
+        metrics=specs,
+        experiment_id="experiment",
+        plan=_plan(specs, panel=True),
+        observation_end=start + timedelta(days=20),
+    )
+    asof = View(view="asof", grain="asof", completion_policy=True)
+    with reader:
+        capture_sequential(experiment, reader, finalized=True, as_of=start + timedelta(days=14))
+        return run(replace(experiment, views=(asof,)), reader)
+
+
+def _undefined_rank_winsor_run():
+    """A rank winsor contrast whose control mean is identically zero."""
+    from increment import Randomized
+    from increment.winsor import WinsorInferenceSpec, WinsorSupport
+
+    winsorization = {
+        "upper_percentile": 0.99,
+        "support": WinsorSupport(lower=0, upper=0, provenance="Declared outcome support"),
+        "inference": WinsorInferenceSpec(method="joint-rank-projection-v1"),
+    }
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            [
+                {"unit": f"{arm}-{i}", "arm": arm, "value": 0.0}
+                for arm in ("control", "treatment")
+                for i in range(2)
+            ]
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean", winsorization=winsorization)],
+        plan=AnalysisPlan(primary="value"),
+    )
+    with reader:
+        return run(experiment, reader)
+
+
+def _printed_line(result, metric):
+    (line,) = (line for line in repr(result).splitlines() if line.startswith(metric))
+    return line
+
+
+def test_run_result_repr_is_a_compact_readout(tmp_path):
+    from tests.analysis_factory import lift_rows
+
+    result = _two_metric_run()
+    text = repr(result)
+
+    assert len(text.splitlines()) <= 25
+    assert "sha256" not in text
+    assert result.run.run_id in text
+    for row in lift_rows(result.readout()):
+        assert row.metric in text
+        assert f"{row.require_lift().value * 100:.6g}%" in text
+
+    # A daily row with an estimate prints as available.
+    daily = View(view="daily", grain="daily")
+    daily_run, _, _ = _daily_panel_run(tmp_path, (daily,))
+    daily_lines = [line for line in repr(daily_run).splitlines() if "date=" in line]
+    estimated = [row for row in cast(Any, daily_run.readout(daily)) if row.lift is not None]
+    assert estimated and len(daily_lines) == len(daily_run.cells)
+    for row in estimated:
+        (line,) = (line for line in daily_lines if f"date={row.ds}" in line)
+        assert "status=available" in line
+
+    # A conversion with no control events keeps its exact set without a point.
+    conversion = _zero_control_conversion_run()
+    (row,) = lift_rows(conversion.readout())
+    assert row.lift is None and row.binomial_set is not None
+    line = _printed_line(conversion, "converted")
+    assert f"{row.binomial_set.lower * 100:.6g}" in line
+    assert row.binomial_set.geometry in line
+    assert "status=available" in line
+
+    # A one-sided sequential set that covers every ratio is printed as retained, not dropped.
+    sequential = _full_set_sequential_run()
+    (row,) = lift_rows(sequential.readout())
+    assert row.require_asymptotic_sequential_result().bounds.status == "full"
+    line = _printed_line(sequential, "outcome")
+    assert "set=" in line and "interval=" not in line
+
+    # A sequential cell with a missing arm keeps neither a point nor a set.
+    missing = _missing_arm_asof_run()
+    (row,) = cast(Any, missing.readout())
+    bounds = row.sequential_result.bounds
+    assert row.lift is None and bounds.status == "unavailable"
+    line = _printed_line(missing, "outcome")
+    assert "status=unavailable" in line and bounds.reason in line
+
+    # A rank winsor set with undefined endpoints names each, never as an infinite bound.
+    winsorized = _undefined_rank_winsor_run()
+    (row,) = (row for row in winsorized.live_rows if row is not None)
+    endpoints = (row.confidence_set.relative.lower, row.confidence_set.relative.upper)
+    assert {endpoint.status for endpoint in endpoints} == {"undefined"}
+    line = _printed_line(winsorized, "value")
+    assert "set=" in line and "∞" not in line
+    assert all(endpoint.reason in line.split("set=", 1)[1] for endpoint in endpoints)
+
+
+def test_run_result_summary_frame_matches_view_summaries(tmp_path):
+    import narwhals as nw
+
+    from tests.analysis_factory import lift_rows
+
+    identity = ["scope_view", "scope_values", "scope_key"]
+    result = _two_metric_run(skip_sessions=True)
+    summary = nw.from_native(result.to_frame(backend="polars", columns="summary"), eager_only=True)
+    view = nw.from_native(
+        result.readout().to_frame(backend="polars", columns="summary"), eager_only=True
+    )
+    assert summary.columns == [*identity, *view.columns]
+    assert summary.select(view.columns).rows() == view.rows()
+    # Only the skipped metric's row carries its observed-population label.
+    labels = dict(summary.select("metric", "population").rows())
+    (skipped,) = (row for row in lift_rows(result.readout()) if row.metric == "sessions")
+    assert labels == {"revenue": None, "sessions": skipped.population}
+    assert skipped.population is not None
+
+    scopes = (View(view="run", grain="total"), View(view="daily", grain="daily"))
+    both, _, _ = _daily_panel_run(tmp_path, scopes)
+    frame = nw.from_native(both.to_frame(backend="polars", columns="summary"), eager_only=True)
+    views = {
+        scope.view: nw.from_native(
+            both.readout(scope).to_frame(backend="polars", columns="summary"), eager_only=True
+        )
+        for scope in scopes
+    }
+    assert frame.columns[:3] == identity
+    assert set(frame.columns) == {*identity, *(name for v in views.values() for name in v.columns)}
+    for name, view_frame in views.items():
+        rows = frame.filter(nw.col("scope_view") == name).select(view_frame.columns)
+        assert rows.rows() == view_frame.rows()
+
+
+def test_run_result_frame_refuses_a_bare_column_string():
+    from increment.errors import CodedError
+
+    result = _two_metric_run()
+    with pytest.raises(CodedError) as raised:
+        result.to_frame(columns="lift")
+    assert raised.value.code == "results.frame.columns_string"
+    assert set(raised.value.context) == {"columns", "route"}
+    assert raised.value.context["columns"] == "lift"
+
+
+def test_run_result_summary_covers_every_view_kind(tmp_path):
+    import narwhals as nw
+
+    # A sequential plan governs every view of its run and refuses daily slices and
+    # unregistered breakouts, so its whole-window and as-of cells come from a second run.
+    fixed_views = (
+        View(view="run", grain="total"),
+        View(view="breakout", grain="total"),
+        View(view="daily", grain="daily"),
+    )
+    fixed, _, _ = _daily_panel_run(tmp_path, fixed_views)
+    sequential, sequential_views = _sequential_panel_run()
+    assert {cell.identity.key.inference for cell in sequential.cells} == {"asymptotic_mean"}
+    for result, views in ((fixed, fixed_views), (sequential, sequential_views)):
+        text = repr(result)
+        assert len(text.splitlines()) <= 25
+        for cell, effect in zip(result.cells, result.effects, strict=True):
+            key = cell.identity.key
+            for coordinate in (key.metric, key.dimension_value, key.ds):
+                if coordinate is not None:
+                    assert str(coordinate) in text
+            if effect is not None and effect.point is not None:
+                factor = 100 if effect.value_scale == "relative" else 1
+                assert f"{effect.point * factor:.6g}" in text
+        frame = nw.from_native(
+            result.to_frame(backend="polars", columns="summary"), eager_only=True
+        )
+        expected = {"scope_view", "scope_values", "scope_key"}
+        for scope in views:
+            expected.update(
+                nw.from_native(
+                    result.readout(scope).to_frame(backend="polars", columns="summary"),
+                    eager_only=True,
+                ).columns
+            )
+        assert set(frame.columns) == expected
+
+
 def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
     from increment import MetricSpec, Randomized
     from increment.estimation.results import LiftEstimate

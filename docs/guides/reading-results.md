@@ -7,8 +7,9 @@ keep one format:
 
 | Need | Read | Format |
 |---|---|---|
+| A quick look at the prompt | `print(result)` | The run id, the program verdict and one line per cell: its metric, arm, segment and day, any other coordinate that differs between the view's cells (such as method, population, estimand or scale), its effect and interval at six significant digits (percent for relative effects), any retained confidence set the interval does not show, with its geometry (a set that holds every value or none prints as `set=all values` or `set=empty`, and an undefined endpoint as `undefined` with its reason), and its status: `available` when the row retains a point or a usable confidence set, otherwise the set's unavailability reason or the row's failure code. A run of several views lists each view's cells under its own heading, at most 20 per view. |
 | The full result collection one view produced | `result.readout(view)` | The `LiftEstimates`, `BreakoutEstimates`, `DailyLiftEstimates`, `DailyMetricValues` or `ContrastResults` described below, with every row field and live confidence set. `model_dump_json()` writes its full-row JSON. |
-| One frame of every result row | `result.to_frame()` | Each row's `scope_view`, `scope_values` and `scope_key`, then its collection's `to_frame` columns, with qualification columns that describe the whole run. |
+| One frame of every result row | `result.to_frame()` | Each row's `scope_view`, `scope_values` and `scope_key`, then its collection's `to_frame` columns, with qualification columns that describe the whole run. `columns="summary"` keeps each view's compact preset. |
 | Portable cells to exchange or archive | `result.envelope.to_payload()` or `.to_arrow()` | Versioned result cells and run metadata; no raw outcomes. |
 | A saved run to decide again | `results_store=` on `run`, then `RunResult.from_handle` | The stored run's cells and decision plan. |
 
@@ -54,6 +55,8 @@ experiment, reader = increment.from_frame(
 result = increment.run(experiment, reader)
 table = readout_table(result)
 summary = result.to_frame(backend="polars", columns=["metric", "group_id", "lift", "lb", "ub"])
+compact = result.to_frame(backend="polars", columns="summary")
+print(result)
 rows = result.readout()
 saved_rows = rows.model_dump_json()
 ```
@@ -75,7 +78,10 @@ views that differ only in `completion_policy`, stay distinct, and a restored
 result's frame filters to one view on `scope_key`. Views that differ only in a
 declared day, segment or population share a key and differ in those row
 columns. A `columns` selection keeps all three scope columns, as it keeps
-`view_partial`.
+`view_partial`. `columns="summary"` selects the compact preset of each view's
+collection, described below, and a frame of several views keeps the union of
+their presets. A view whose collection has no preset, `DailyMetricValues` or
+`ContrastResults`, refuses with `results.frame.summary_unavailable`.
 
 Only whole-window `run` scopes, including the switchback contrast view, are
 evaluated against the registered decision plan. Daily, as-of, breakout,
@@ -435,15 +441,20 @@ custom_table = results.to_frame(
 ```
 
 `to_frame(columns="summary")` is a compact per-model preset; the default
-`columns=None` returns the full projection, and unknown custom column names
-raise `results.frame.unknown_columns`.
+`columns=None` returns the full projection, unknown custom column names
+raise `results.frame.unknown_columns`, and a single column name passed as a
+string, such as `columns="lift"`, raises `results.frame.columns_string`; pass
+`columns=["lift"]`.
 
 ??? info "What the summary preset keeps"
     `columns=None` remains the full projection. Each `"summary"` preset contains
     decision statistics (`stat_sig`, `p_value`, and `p_value_reason_code`) and
     available arm unit counts and raw means (`n_control`, `n_treat`,
     `mean_control`, and `mean_treat`), plus row identity (`estimand` and
-    `value_scale`), `decision_scope_complete`, and `multiplicity_status`; breakout
+    `value_scale`), `population`, a population qualification, including skipped
+    outcomes and identification restrictions, null when the row covers its whole
+    analysis population,
+    `decision_scope_complete`, and `multiplicity_status`; breakout
     and daily summaries also retain segment identity and daily unavailability
     reasons. Models without a summary preset refuse. Every view appends
     `view_partial`, including custom column sequences, so a sliced collection

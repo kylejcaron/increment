@@ -93,17 +93,20 @@ _READOUT_NOT_RETAINED = RefusalSpec(
     ),
 )
 
+# A printed run lists at most this many cells per view and counts the rest.
+_REPR_CELLS_PER_VIEW = 20
 
-@dataclass(frozen=True, slots=True)
+
+@dataclass(frozen=True, slots=True, repr=False)
 class RunResult:
     cells: tuple[ResultCell, ...]
     effects: tuple[EffectEstimate | None, ...]
     decisions: Decisions
     run: RunRecord
     live_rows: tuple[LiftEstimate | None, ...] = ()
-    _scoped: tuple[ScopedReadout, ...] = field(default=(), repr=False, compare=False)
-    _row_models: tuple[type[BaseModel], ...] = field(default=(), repr=False, compare=False)
-    _input_backend: Backend | None = field(default=None, repr=False, compare=False)
+    _scoped: tuple[ScopedReadout, ...] = field(default=(), compare=False)
+    _row_models: tuple[type[BaseModel], ...] = field(default=(), compare=False)
+    _input_backend: Backend | None = field(default=None, compare=False)
 
     @classmethod
     def from_handle(cls, handle: RunHandlePort, *, registration: Registration) -> RunResult:
@@ -166,7 +169,10 @@ class RunResult:
         refuse(_READOUT_SCOPE_UNKNOWN, run_id=self.run.run_id, scope_hash=scope_hash)
 
     def to_frame(
-        self, *, backend: Backend | None = None, columns: Sequence[str] | None = None
+        self,
+        *,
+        backend: Backend | None = None,
+        columns: Sequence[str] | Literal["summary"] | None = None,
     ) -> IntoDataFrame:
         """Project every result row with its view and qualification columns as one native frame.
 
@@ -177,7 +183,10 @@ class RunResult:
         the same way, and a live confidence-set row appears as ``render`` shows it.
         Views with different row types share their common columns;
         ``readout(view).to_frame()`` returns one view's frame. ``columns`` selects
-        typed columns as there.
+        typed columns as there; ``columns="summary"`` keeps each view's compact
+        preset and refuses with ``results.frame.summary_unavailable`` when a view's
+        collection has none. A selection always keeps the scope columns and
+        ``view_partial``.
         """
         from itertools import groupby
 
@@ -199,6 +208,104 @@ class RunResult:
             backend=default_frame_backend(backend or self._input_backend),
             columns=columns,
         )
+
+    def __repr__(self) -> str:
+        from increment._interpretation import (
+            _cell_coordinates,
+            _confidence_set_text,
+            _effect_text,
+            _has_sampling_result,
+            _retained_set_text,
+            _retained_unavailable_reason,
+            _varying_fields,
+        )
+        from increment.breakout.projection import scope_key
+
+        program = self.decisions.program
+        verdict = program.status
+        if program.reason_codes:
+            verdict += f" ({', '.join(program.reason_codes)})"
+        lines = [f"RunResult {self.run.run_id}", f"Program verdict: {verdict}"]
+        if not self.cells:
+            lines.append("No result cells")
+        views: dict[str | None, list[int]] = {}
+        for index, cell in enumerate(self.cells):
+            scope = cell.identity.scope
+            views.setdefault(None if scope is None else scope_key(scope), []).append(index)
+        indent = "  " if len(views) > 1 else ""
+        rows = result_rows(self.cells, self.live_rows)
+        names = {
+            "run": "Whole-window",
+            "breakout": "Breakout",
+            "daily": "Daily",
+            "asof": "As-of",
+            "switchback": "Switchback",
+        }
+        for indexes in views.values():
+            scope = self.cells[indexes[0]].identity.scope
+            varying = _varying_fields(self.cells[index].identity.key for index in indexes)
+            if indent and scope is None:
+                lines.append("No recorded view:")
+            elif indent and scope is not None:
+                heading = names[scope.view]
+                if scope.view in ("daily", "asof"):
+                    heading += " values" if scope.values else " lift"
+                if scope.completion_policy:
+                    heading += ", completed windows only"
+                if scope.time_basis == "cohort":
+                    heading += ", cohort time basis"
+                lines.append(f"{heading}:")
+            for index in indexes[:_REPR_CELLS_PER_VIEW]:
+                cell = self.cells[index]
+                effect = self.effects[index]
+                row = rows[index]
+                # A set its bounds cannot show (every value, none, typed endpoints) is printed
+                # from the row's own set, and the point is printed without bounds.
+                owned = None if effect is None else _retained_set_text(row, effect.value_scale)
+                if effect is not None and owned is not None:
+                    effect = replace(effect, lower=None, upper=None, intervals=(), geometry=None)
+                name = "mean" if cell.row_kind in ("daily_metric", "asof_metric") else "effect"
+                text = None if effect is None else _effect_text(effect, label=name)
+                if text is None:
+                    text = f"{name} unavailable"
+                    if owned is None and effect is not None and effect.reason is not None:
+                        text += f" ({effect.reason})"
+                confidence_set = (
+                    owned
+                    if owned is not None
+                    else None
+                    if effect is None
+                    else _confidence_set_text(effect)
+                )
+                if confidence_set is not None:
+                    text += f"; {confidence_set}"
+                # Available means a point or a usable retained set, whatever the cell's portable
+                # operations; otherwise the set's own reason, the row's failure, then the cell's
+                # status says why not.
+                unusable = _retained_unavailable_reason(row)
+                if unusable is not None:
+                    text += f"; status=unavailable; reason={unusable}"
+                elif _has_sampling_result(row):
+                    text += "; status=available"
+                elif getattr(row, "failure_code", None) is not None:
+                    text += f"; status=unavailable; code={row.failure_code}"
+                else:
+                    status = cell.components["sampling"][0]
+                    text += f"; status={status.state}"
+                    if status.code is not None:
+                        text += f"; code={status.code}"
+                lines.append(f"{indent}{_cell_coordinates(cell.identity.key, varying)}: {text}")
+            if len(indexes) > _REPR_CELLS_PER_VIEW:
+                lines.append(f"{indent}… {len(indexes) - _REPR_CELLS_PER_VIEW} more cells")
+        readout = (
+            ""
+            if not self._scoped
+            else " or result.readout()"
+            if len(self._scoped) == 1
+            else " or result.readout(view)"
+        )
+        lines.append(f"Full readout: render(result){readout}")
+        return "\n".join(lines)
 
     def __reduce__(self):
         reason = self.run.decision_plan_unavailable_reason

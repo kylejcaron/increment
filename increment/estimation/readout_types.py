@@ -1413,6 +1413,18 @@ def register_collection_types(*collection_types: type) -> None:
         _COLLECTION_TYPES[collection_type.__name__] = collection_type
 
 
+def registered_collection(model: type) -> Any | None:
+    """Return the registered result collection whose rows are ``model``, if any."""
+    from importlib import import_module
+
+    # The breakout module registers its collection classes at import time.
+    import_module("increment.breakout.estimates")
+    return next(
+        (collection for collection in _COLLECTION_TYPES.values() if collection._model is model),
+        None,
+    )
+
+
 class ReadoutResults:
     """Versioned saved-result boundary; decoding returns the existing collection."""
 
