@@ -654,12 +654,13 @@ def _assert_echoed_directions(
     case_id: str,
     name: str,
     rows: dict[tuple, dict[str, dict[str, Any]]],
-    declared: dict[str, str | None],
+    declared: dict[str, str | None] | None,
 ) -> None:
     """Each sequential row carries the direction `name` declares for its metric, else None."""
     for key, methods in rows.items():
         for method, payload in methods.items():
             if _echoes_declaration(payload):
+                assert declared is not None, f"{case_id}: {name} recorded no declarations"
                 assert payload["preferred_direction"] == declared.get(payload["metric"]), (
                     f"{case_id}: {name} row {key}/{method} carries preferred_direction "
                     f"{payload['preferred_direction']!r}, but {name} declares "
@@ -804,7 +805,9 @@ def assert_parity(case: ParityCase, result: CaseResult) -> None:
             f"{oracle_name}, got discovery values {discoveries}"
         )
     for name, constructor_rows in live.items():
-        _assert_echoed_directions(case.id, name, constructor_rows, result.declared_directions[name])
+        _assert_echoed_directions(
+            case.id, name, constructor_rows, result.declared_directions.get(name)
+        )
     for name, other_rows in live.items():
         actual_limited = frozenset(case.limited_fields.get(name, ()))
         expected_limited = frozenset(case.limited_fields.get(oracle_name, ()))
