@@ -21,6 +21,30 @@ MultiplicityStatus = Literal[
 #: family as non-rejections.
 DESIGN_EXCLUSIONS: frozenset[str] = frozenset({"few_units", "no_control_arm", "no_treatment_arm"})
 
+#: Failure codes of outcome-based cell degeneracy (zero variance, unusable SE, non-positive
+#: mean, a CUPED fit guard, no usable observations): a fixed-horizon family keeps such a cell
+#: as a sure non-rejection (p = 1), so its size stays fixed by counts. run(), run_breakout()
+#: and stored decisions read the same set.
+OUTCOME_NON_REJECTIONS: frozenset[str] = frozenset(
+    {
+        "estimation.engine.lift_guard",
+        "breakout.nonpositive_mean",
+        "breakout.zero_variance",
+        "breakout.extreme_ratio",
+        "estimation.cuped_linear.level_support",
+        "estimation.cuped_linear.rank_deficiency",
+        "estimation.cuped_linear.leverage",
+        "estimation.cuped_linear.residual_df",
+        "estimation.cuped_linear.nonpositive_component",
+        "estimation.cuped_linear.nonfinite_projection",
+        "estimation.cuped_linear.missing_refused",
+        "estimation.cuped_linear.support_region",
+        "frame.validation.metric_covariate_column",
+        "frame.validation.metric_covariate_impute_all_null",
+        "readout.cell.missing_metric_observations",
+    }
+)
+
 
 def design_excluded(row: object) -> bool:
     """Whether *row* is unavailable for a reason fixed by arm counts alone."""

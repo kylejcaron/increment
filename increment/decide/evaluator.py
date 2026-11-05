@@ -524,20 +524,33 @@ def decide(  # noqa: PLR0915
                         except CodedError as exc:
                             selected_hashes = None
                             selection_error = exc.code
+                failure_codes = {
+                    item.identity_hash: item.reason_code
+                    for item in selection_evidence
+                    if item.evidence is None and item.reason_code is not None
+                }
                 if selection_error is None and selected_hashes is not None:
+                    # An outcome-excluded member is a non-rejection that keeps its own reason.
                     members = [
                         replace(
                             member,
                             discovery=member.identity_hash in selected_hashes,
+                            reason_codes=tuple(
+                                sorted(
+                                    {
+                                        *member.reason_codes,
+                                        *(
+                                            code
+                                            for code in (failure_codes.get(member.identity_hash),)
+                                            if code is not None
+                                        ),
+                                    }
+                                )
+                            ),
                         )
                         for member in members
                     ]
                 else:
-                    failure_codes = {
-                        item.identity_hash: item.reason_code
-                        for item in selection_evidence
-                        if item.evidence is None and item.reason_code is not None
-                    }
                     members = [
                         replace(
                             member,

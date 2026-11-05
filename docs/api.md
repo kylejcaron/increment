@@ -181,6 +181,29 @@ values.
   the row's `n_control` and `n_treat` are its observed units. Rows of other
   metrics keep `population=None` and an unchanged saved payload; estimates,
   source snapshots and experiment identity are unchanged.
+- Release note (bug fix): a fixed-horizon BH breakout no longer refuses with
+  `family.evidence.incomplete` because one segment is sparse. A cell with fewer
+  than two units in an arm, or with an arm missing, comes back as an
+  unavailable row with its reason, outside the family; when every segment is
+  excluded this way, every row is unavailable and the view has no family.
+  Cells excluded for an outcome reason (zero variance, a non-positive mean, an
+  extreme ratio, no usable observations) stay in the family as non-rejections,
+  and breakout rows in a BH family now record its size in `family_size`. A
+  segment with a control row but no treatment row is labelled
+  `no_treatment_arm` instead of `no_control_arm`, and a comparison whose
+  control was dropped for a non-positive mean carries `nonpositive_mean` on
+  breakout, daily and as-of rows instead of `no_control_arm`; so
+  `select_exploratory_family` counts it in `family_size`,
+  `segment_heterogeneity` withholds `tau2` and `i2` for its metric, and
+  `segment_rollout_recommendation` counts it among outcome exclusions, as an
+  outcome-based exclusion requires. `family.evidence.incomplete` is now a
+  registered refusal for cells that fail for any other reason; its context
+  always holds `failed`, `missing` and `invalid`. Decisions rebuilt from a
+  run's cells (`result.decisions`, `RunResult.from_handle`) now select such a
+  breakout family as its rows do, instead of leaving every member undecided,
+  and each outcome-excluded member's verdict lists its own reason. A relabelled
+  cell changes its readout's snapshot ID once; runs saved earlier still reopen.
+  Experiment identity hashes and published estimates are unchanged.
 - Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
   spelled `missing="skip"`, with the same computation: the metric uses only the
   units with a value, and those units stay in every other metric. Estimates are

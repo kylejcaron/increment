@@ -86,7 +86,7 @@ from increment.estimation.decision_types import (
     SegmentHypothesisKey,
     exact_fraction,
 )
-from increment.estimation.multiplicity import design_excluded
+from increment.estimation.multiplicity import OUTCOME_NON_REJECTIONS, design_excluded
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.semantics.sequential import SequentialRegistration
 
@@ -325,31 +325,6 @@ def _unique_family_keys[K: Hashable](cells: Sequence[tuple[K, object]]) -> list[
     return keys
 
 
-#: Codes for outcome-based cell degeneracy (zero variance, unusable SE, non-positive mean), not
-#: invalid requests: a key failing only with these stays in a fixed-horizon family as a sure
-#: non-rejection. Breakout keys the same hazards so run() and run_breakout() agree. Count-based
-#: cells are not hypotheses and never reach selection; missing-observation cells stay as p=1.
-_CONSERVATIVE_NONREJECTION_CODES = frozenset(
-    {
-        "estimation.engine.lift_guard",
-        "breakout.nonpositive_mean",
-        "breakout.zero_variance",
-        "breakout.extreme_ratio",
-        "estimation.cuped_linear.level_support",
-        "estimation.cuped_linear.rank_deficiency",
-        "estimation.cuped_linear.leverage",
-        "estimation.cuped_linear.residual_df",
-        "estimation.cuped_linear.nonpositive_component",
-        "estimation.cuped_linear.nonfinite_projection",
-        "estimation.cuped_linear.missing_refused",
-        "estimation.cuped_linear.support_region",
-        "frame.validation.metric_covariate_column",
-        "frame.validation.metric_covariate_impute_all_null",
-        "readout.cell.missing_metric_observations",
-    }
-)
-
-
 def _conservative_nonrejection_pvalue(
     key: HypothesisKey, failure: DecisionFailure
 ) -> PValueEvidence:
@@ -409,7 +384,7 @@ def _require_complete_evidence[K: Hashable](
                 if key in evidence_map or key not in computation.failures:
                     continue
                 failure = computation.failures[cast("HypothesisKey", key)]
-                if failure.code in _CONSERVATIVE_NONREJECTION_CODES or (
+                if failure.code in OUTCOME_NON_REJECTIONS or (
                     failure.code == "evidence.p_value.unavailable"
                     and failure.context.get("reason") == "zero_relative_variance"
                 ):
