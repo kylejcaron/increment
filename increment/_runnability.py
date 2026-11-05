@@ -483,6 +483,7 @@ def readout_refusals(
         scalar_method_evidence=False if scalar is None else scalar.method_evidence,
         scalar_breakout_evidence=False if scalar is None else scalar.breakout_evidence,
         capabilities=capabilities.grains,
+        grain_route=capabilities.grain_route,
         source_breakouts=capabilities.breakouts,
         source_name=declaration["source_name"],
         shape=capabilities.shape,

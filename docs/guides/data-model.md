@@ -132,9 +132,14 @@ counts in neither the outcome nor the CUPED window. Encouragement uptake is the
 one exception: uptake at the exposure instant qualifies.
 
 **Dataframe.** `from_frame(..., shape="panel")` accepts sparse input and treats absent eligible
-unit-days as zero. Small inputs may be densified temporarily; larger ones
-use a sparse day-at-a-time reduction. `densified_cells` counts cells that
-needed zero fill, not physical rows.
+unit-days as zero. A unit becomes eligible on its `exposure_date`. Without that
+column the rows cannot say whether a unit's absent days came before its exposure
+or after it with no activity, so only whole-window results of unwindowed metrics
+are available. Daily and as-of views, windowed and retention metrics, a windowed
+uptake, as-of compliance and sequential inference need `exposure_date=`; if every
+unit was exposed on the same day, add a column holding that date. Small inputs
+may be densified temporarily; larger ones use a sparse day-at-a-time reduction.
+`densified_cells` counts cells that needed zero fill, not physical rows.
 
 ??? info "Dataframe zero-fill route and memory limits"
     For small inputs, zero filling may use a temporary date spine when a scratch

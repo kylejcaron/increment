@@ -600,7 +600,7 @@ def encouragement_summary_breakout_frame():
     )
 
 
-def _encouragement_summary_breakout_analysis(frame, metrics):
+def _encouragement_summary_breakout_analysis(frame, metrics, *, uptake_window_days=None):
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
     return from_frame(
@@ -611,7 +611,7 @@ def _encouragement_summary_breakout_analysis(frame, metrics):
         metrics=metrics,
         design=Encouragement(
             control_group="control",
-            uptake=UptakeSpec(fact="clicked"),
+            uptake=UptakeSpec(fact="clicked", window_days=uptake_window_days),
             one_sided=True,
             exclusion_restriction=ExclusionRestriction(
                 justification="assignment affects y through uptake"
@@ -624,6 +624,33 @@ def _encouragement_summary_breakout_analysis(frame, metrics):
 
 def _encouragement_breakout_identity(row):
     return row.estimand, row.value_scale, row.method, row.method_role
+
+
+def test_encouragement_summary_breakout_counts_windowed_uptake_per_segment(
+    encouragement_summary_breakout_frame,
+):
+    from increment.evidence import MomentsRequest, evidence_provider, request_evidence
+    from tests.analysis_factory import held_source
+
+    frame = encouragement_summary_breakout_frame
+    _, resolver = _encouragement_summary_breakout_analysis(
+        frame, [MetricSpec(name="y")], uptake_window_days=2
+    )
+    source = cast(Any, held_source(resolver))
+    rows = cast(
+        Any,
+        request_evidence(
+            evidence_provider(source),
+            MomentsRequest(source.context.metrics[0], by=("segment",)),
+        ),
+    )
+    takers = frame[frame["clicked"] == 1.0].groupby(["segment", "arm"]).size().to_dict()
+    assert {(row["segment"], row["group_id"]): row["sum_d"] for row in rows} == {
+        (segment, arm): float(takers.get((segment, arm), 0))
+        for segment in ("A", "B")
+        for arm in ("control", "treatment_1", "treatment_2")
+    }
+    resolver.close()
 
 
 @pytest.mark.parametrize("empty_arm", ["control", "treatment_2"])

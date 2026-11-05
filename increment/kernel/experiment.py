@@ -230,7 +230,14 @@ def _encoded(payload: Callable[[], dict[str, object]], *, portable: bool = True)
 
 
 def _capability_payload(value: EvidenceCapabilities | None) -> dict[str, object] | None:
-    return None if value is None else _json_value(value)
+    if value is None:
+        return None
+    payload = _json_value(value)
+    # Unset, the route field is absent, so declarations recorded before it existed keep
+    # their canonical bytes and hashes.
+    if value.grain_route is None:
+        del payload["grain_route"]
+    return payload
 
 
 def _capabilities_from_payload(payload: Mapping[str, object]) -> EvidenceCapabilities:

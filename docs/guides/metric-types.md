@@ -817,7 +817,10 @@ name; `covariate` attaches a pre-experiment column for CUPED (see
     `MetricSpec` accepts `window_days` (mean/conversion/ratio) and
     `threshold_days`/`type="retention"` directly. On the panel path these are
     computed for real, given an explicit `exposure_date=` column naming each
-    unit's own day 0 (a derived anchor would silently define the window).
+    unit's own day 0 (a derived anchor would silently define the window). The
+    same column is the panel's only clock for daily and as-of views, an
+    encouragement design's uptake window and as-of compliance; without it these
+    refuse and only whole-window results of unwindowed metrics remain.
     `observation_end=` bounds late-enrollee censoring; omitted, it falls back
     to each metric's own observed extent. Both parameters are accepted by
     `from_frame(..., shape="panel")` and forwarded to

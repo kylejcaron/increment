@@ -55,7 +55,6 @@ from increment._frame_moments import (
 )
 from increment._frame_panel import (
     _admit_panel_totals,
-    _day_axis_label_order,
     _densify_panel,
     _fact_max_observed_dates,
     _prepare_panel,
@@ -1011,7 +1010,10 @@ class FrameTotalsSource(SequentialSourceMixin):
         )
         if exposure_date is not None:
             _validate_day_grain_columns(nwf, [("exposure_date", exposure_date)])
-        _validate_exposure_date(nwf, unit=unit, exposure_date=exposure_date, specs=specs)
+        # Summary uptake is one value per unit, so it counts no days.
+        _validate_exposure_date(
+            nwf, unit=unit, exposure_date=exposure_date, specs=specs, design=None
+        )
         nwf, unassigned = _resolve_unassigned(
             nwf,
             unit=unit,
@@ -1269,6 +1271,8 @@ def from_unit_summary(  # noqa: PLR0913
             )
             panel_specs.append(spec.model_copy(update=updates) if updates else spec)
         panel_uptake = remapped_columns.get(source._uptake, source._uptake)
+        # One synthetic day serves as both every row's date and every unit's
+        # exposure, so an uptake window anchors on that day.
         synthetic_date = _scratch_name(panel_frame, "__summary_day__")
         panel_frame = panel_frame.with_columns(nw.lit(dt.date(2000, 1, 1)).alias(synthetic_date))
         panel = FramePanelSource.from_frame(
@@ -1276,6 +1280,7 @@ def from_unit_summary(  # noqa: PLR0913
             unit=unit,
             group=group,
             date=synthetic_date,
+            exposure_date=synthetic_date,
             control=source._control,
             metrics=panel_specs,
             experiment_id=experiment_id,
@@ -1478,6 +1483,14 @@ class _MomentCacheEntry:
 # increment._window.resolve_window_days rather than each carrying its own copy.
 
 
+# Rows alone cannot say whether a unit's absent days are before its exposure or
+# after it with no activity, so every day-relative quantity needs a declared date.
+_PANEL_EXPOSURE_DATE_ROUTE = (
+    "pass exposure_date=<column> naming each unit's exposure date; if every unit was "
+    "exposed on the same day, add a column holding that date"
+)
+
+
 class FramePanelSource(SequentialSourceMixin):
     """``MomentSource`` built from a one-row-per-unit-per-day frame.
 
@@ -1487,14 +1500,14 @@ class FramePanelSource(SequentialSourceMixin):
     caller's dataframe reach no read. A dense unit x day spine is materialized
     only when a day-grain consumer requests one.
 
-    Offers whole-panel ``"total"``, independent-day ``"daily"``, and
-    cumulative ``"asof"`` moments.
+    Offers whole-panel ``"total"`` moments. Independent-day ``"daily"`` and
+    cumulative ``"asof"`` moments, and as-of compliance, count days from each
+    unit's declared ``exposure_date`` and are offered only when it is given.
 
     Returned moments and counts are defensive copies.
     """
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_panel"
-    capabilities: frozenset[Grain] = frozenset({"total", "daily", "asof"})
     scalar_covariate_grains: frozenset[Grain] = frozenset({"total"})
     operations: frozenset[SourceOperation] = frozenset(
         {"export_moments", "unit_counts", "readout_snapshot"}
@@ -1503,8 +1516,15 @@ class FramePanelSource(SequentialSourceMixin):
     #: carries a randomization-cluster column (see `cluster_counts` below).
 
     @property
+    def capabilities(self) -> frozenset[Grain]:
+        if self._exposure is None:
+            return frozenset({"total"})
+        return frozenset({"total", "daily", "asof"})
+
+    @property
     def evidence(self) -> EvidenceCapabilities:
         frame = self._source_frame if self._source_frame is not None else self._sparse_panel
+        clocked = self._exposure is not None
         return EvidenceCapabilities(
             kind="unit_panel",
             grains=self.capabilities,
@@ -1515,7 +1535,7 @@ class FramePanelSource(SequentialSourceMixin):
             unit_rows=True,
             raw_outcomes=False,
             method_fit="local",
-            compliance_axis="asof",
+            compliance_axis="asof" if clocked else "total",
             count_grains=frozenset({"unit"}),
             populations=frozenset({"assigned"}),
             sequential_capture="asof",
@@ -1531,6 +1551,7 @@ class FramePanelSource(SequentialSourceMixin):
             ),
             available_covariates=frozenset(frame.columns),
             assignment_relation="reduced",
+            grain_route=None if clocked else _PANEL_EXPOSURE_DATE_ROUTE,
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -1569,6 +1590,7 @@ class FramePanelSource(SequentialSourceMixin):
             assignment_requests,
         )
         pinned = copy(self)
+
         pinned._identity = None
         pinned._moment_rows_cache = {}
         pinned._scalar_cell_failures = None
@@ -1592,7 +1614,6 @@ class FramePanelSource(SequentialSourceMixin):
         breakouts: Sequence[str] = (),
         uptake: str | None = None,
         window_days: int | None = None,
-        first_exposure: nw.DataFrame[Any] | None = None,
         exposure: nw.DataFrame[Any] | None = None,
         observation_end: dt.date | dt.datetime | str | int | float | None = None,
         fact_max_ds: Mapping[str, Any] | None = None,
@@ -1632,7 +1653,6 @@ class FramePanelSource(SequentialSourceMixin):
         self.breakouts = tuple(breakouts)
         self._uptake = uptake
         self._window_days = window_days
-        self._first_exposure = None if first_exposure is None else _owned_frame(first_exposure)
         self._exposure = None if exposure is None else _owned_frame(exposure)
         self._observation_end = observation_end
         self._fact_max_ds: Mapping[str, Any] = MappingProxyType(
@@ -1677,6 +1697,11 @@ class FramePanelSource(SequentialSourceMixin):
                 .with_row_index(self._identity_ordinal)
             )
         return self._identity
+
+    def _declared_exposure(self) -> nw.DataFrame[Any]:
+        """The exposure anchor the declaration requires for every day grain."""
+        assert self._exposure is not None
+        return self._exposure
 
     def _bounded_day_panel(self) -> tuple[nw.DataFrame[Any], bool]:
         """Select the dense kernel using cell and variable-width identity estimates."""
@@ -1820,7 +1845,7 @@ class FramePanelSource(SequentialSourceMixin):
                         metrics=self._specs,
                         synthesised=synthesised,
                         experiment_id=self._experiment_id,
-                        exposure=self._exposure,
+                        exposure=self._declared_exposure(),
                         by=reducer_by,
                     )
                 elif grain == "asof":
@@ -1835,8 +1860,7 @@ class FramePanelSource(SequentialSourceMixin):
                             experiment_id=self._experiment_id,
                             uptake=self._uptake,
                             uptake_window_days=self._window_days,
-                            first_exposure=self._first_exposure,
-                            exposure=self._exposure,
+                            exposure=self._declared_exposure(),
                             completed_windows_only=completed_windows_only,
                             observation_end=self._observation_end,
                             fact_max_ds=self._fact_max_ds,
@@ -1886,7 +1910,6 @@ class FramePanelSource(SequentialSourceMixin):
                         experiment_id=self._experiment_id,
                         uptake=self._uptake,
                         uptake_window_days=self._window_days,
-                        first_exposure=self._first_exposure,
                         exposure=self._exposure,
                         observation_end=self._observation_end,
                         fact_max_ds=self._fact_max_ds,
@@ -2059,7 +2082,6 @@ class FramePanelSource(SequentialSourceMixin):
                 experiment_id=self._experiment_id,
                 uptake=self._uptake,
                 uptake_window_days=self._window_days,
-                first_exposure=self._first_exposure,
                 exposure=self._exposure,
                 observation_end=self._observation_end,
                 fact_max_ds=self._fact_max_ds,
@@ -2104,7 +2126,7 @@ class FramePanelSource(SequentialSourceMixin):
             [spec],
             uptake=self._uptake,
             window_days=self._window_days,
-            first_exposure=self._first_exposure,
+            exposure=self._exposure,
         )
         failures = _conversion_total_failures(collapsed, (spec,))
         if metric.name in failures:
@@ -2286,11 +2308,16 @@ class FramePanelSource(SequentialSourceMixin):
         """Design-level uptake sufficient state off the unit x day panel --
         independent of any metric's own y-column, missingness policy, or
         per-day emission gate. *as_of*, when given, matches this source's
-        own ``ds`` day-axis values and freezes the cumulative cohort
-        through that day; ``None`` reads the declared window in full.
+        own ``ds`` day-axis values and freezes the cumulative cohort of units
+        exposed through that day, so it needs a declared ``exposure_date``;
+        ``None`` reads the declared window in full.
         ``from_unit_panel`` never carries a declared cluster, so the
         returned summary is always unclustered.
         """
+        if as_of is not None and self._exposure is None:
+            from increment._evidence_refusals import refuse_operation
+
+            refuse_operation(self, "compliance", ("asof",), route=_PANEL_EXPOSURE_DATE_ROUTE)
         if self._uptake is None:
             refuse(
                 _FRAME_COMPLIANCE_NO_UPTAKE,
@@ -2316,7 +2343,7 @@ class FramePanelSource(SequentialSourceMixin):
             self._sparse_panel,
             uptake=self._uptake,
             window_days=self._window_days,
-            first_exposure=self._first_exposure,
+            exposure=self._exposure,
             as_of=as_of,
             completed_windows_only=completed_windows_only,
         )
@@ -2490,7 +2517,9 @@ class FramePanelSource(SequentialSourceMixin):
             _validate_control(nwf, group, control)
         _reject_duplicate_unit_days(nwf, unit, date)
         _validate_single_group_per_unit(nwf, unit, group)
-        _validate_exposure_date(nwf, unit=unit, exposure_date=exposure_date, specs=specs)
+        _validate_exposure_date(
+            nwf, unit=unit, exposure_date=exposure_date, specs=specs, design=design
+        )
         null_exposure = 0
         if exposure_date is not None:
             nwf, null_exposure = _resolve_null_exposure(
@@ -2540,29 +2569,6 @@ class FramePanelSource(SequentialSourceMixin):
                 nw.col(exposure_date).alias("__exposure__").min()
             )
 
-        # Each unit's own earliest observed appearance, computed before
-        # densification (else min() would return the same global date for every unit).
-        if exposure is not None:
-            first_exposure = exposure.select(
-                "unit_id", nw.col("__exposure__").alias("__first_exposure__")
-            )
-        else:
-            observed = nwf
-            if uptake is not None and isinstance(nwf.schema[date], nw.String):
-                order = _day_axis_label_order(nwf.get_column(date).to_list())
-                labels = sorted(order, key=order.__getitem__)
-                observed = nwf.with_columns(
-                    nw.col(date)
-                    .replace_strict(labels, list(range(len(labels))))
-                    .alias("__day_order__")
-                ).sort("__day_order__")
-                first_day = nw.col(date).first()
-            else:
-                first_day = nw.col(date).min()
-            first_exposure = observed.group_by(nw.col(unit).alias("unit_id")).agg(
-                first_day.alias("__first_exposure__")
-            )
-
         sparse, group_counts, n_filled = _prepare_panel(
             nwf,
             identity=identity,
@@ -2589,7 +2595,6 @@ class FramePanelSource(SequentialSourceMixin):
             breakouts=breakouts,
             uptake=uptake,
             window_days=window_days,
-            first_exposure=first_exposure,
             exposure=exposure,
             observation_end=observation_end,
             fact_max_ds=fact_max_ds,
@@ -2661,7 +2666,10 @@ def from_unit_panel(  # noqa: PLR0913
         downstream estimation reads. Omitted, every metric resolves
         ``role="unassigned"`` and ``src.plan.declared`` is ``False``.
     exposure_date : str | None
-        Each unit's day-0 date; required for a windowed/retention metric.
+        Each unit's day-0 date, the panel's only unit clock. Required for daily
+        and as-of grains, a windowed or retention metric, an encouragement
+        uptake window, and as-of compliance; a panel whose units were all
+        exposed on one day declares a column holding that date.
     observation_end : datetime.date | datetime.datetime | str | int | float | None
         Last observed date; bounds whole-unit censoring, else per-metric.
     on_unassigned : {"error", "exclude"}
@@ -2670,7 +2678,8 @@ def from_unit_panel(  # noqa: PLR0913
     Returns
     -------
     FramePanelSource
-        A ``MomentSource`` offering ``"total"``/``"daily"``/``"asof"`` grain.
+        A ``MomentSource`` offering ``"total"`` grain, and ``"daily"``/``"asof"``
+        grain when *exposure_date* is given.
 
     Raises
     ------
@@ -2679,12 +2688,15 @@ def from_unit_panel(  # noqa: PLR0913
         nulls, a non-binary uptake column, or an explicit *design* whose
         ``control_group`` disagrees with *control*.
     InvalidRequestError
-        A metric value, ratio denominator or uptake column is named ``unit_id``,
+        A windowed or retention metric, or an encouragement uptake window,
+        without *exposure_date* (``source.panel.exposure_date``); or a metric
+        value, ratio denominator or uptake column is named ``unit_id``,
         ``group_id`` or ``ds`` (``frame.panel.declaration_canonical_collision``).
         Rename that value column. These names remain valid for the unit/group/date
         roles themselves, and ``ds``/``group_id`` remain valid for CUPED-only covariates.
     CapabilityError
-        A retention metric read at ``grain="daily"``.
+        A retention metric read at ``grain="daily"``, or a daily or as-of read
+        without *exposure_date* (``evidence.grain_unavailable``).
     """
     if cluster is not None:
         from increment._evidence_refusals import CLUSTER_UNAVAILABLE, refuse

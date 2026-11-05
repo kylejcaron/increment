@@ -327,6 +327,30 @@ values.
   A run saved earlier still reopens, and deciding it again reads
   `decision.primary.direction_unspecified` for a rejecting primary, as does
   `from_moments` on a cube exported by an earlier release.
+- Release note (breaking bug fix): a `from_frame(shape="panel")` or
+  `increment.frame.from_unit_panel` panel without `exposure_date=` no longer
+  guesses when each unit's days start. Its daily and as-of views, including
+  daily and as-of breakouts, treated every unit as exposed on the panel's first
+  date, so a treatment arm with late enrollees read low: on a panel whose true
+  lift is about +12%, a third of the treatment units enrolling three days late
+  gave about −25% on the first day. These views now refuse before any read,
+  alike in `runnable()` and `run()`, with `evidence.grain_unavailable`,
+  `offered=("total",)` and a `route` naming `exposure_date`. An encouragement
+  uptake window (`UptakeSpec(window_days=...)`) counted from each unit's first
+  row and now refuses at construction with `source.panel.exposure_date`; as-of
+  compliance refuses with `evidence.operation_unavailable`. Whole-window results
+  of unwindowed metrics, unbounded uptake and whole-window compliance are
+  unchanged. To migrate, pass `exposure_date=<column>` naming each unit's
+  exposure date; if every unit was exposed on the same day, add a column holding
+  that date. Panels that declare `exposure_date` keep their numbers, `to_json()`
+  and `hash()`. A panel without it now declares only the total grain, so its
+  `to_json()` and `hash()` change once: the source capabilities record
+  `grains=["total"]`, `compliance_axis="total"` and the new `grain_route`. An
+  experiment saved before this release refuses a freshly built reader with
+  `kernel.provider.capability_mismatch`; rebuild it with
+  `from_frame(shape="panel", ...)` and save it again. `EvidenceCapabilities`
+  gains an optional `grain_route`, a source's route to an undeclared day axis,
+  left out of saved JSON when unset.
 - Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
   spelled `missing="skip"`, with the same computation: the metric uses only the
   units with a value, and those units stay in every other metric. Estimates are

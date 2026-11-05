@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import pickle
 from contextlib import contextmanager
 from typing import Any, cast
 
+import pyarrow as pa
 import pytest
 
 from increment import (
@@ -199,6 +201,28 @@ def test_switchback_declares_no_arm_moment_grains() -> None:
                 "sequential_capture": "asof",
                 "scalar_covariate_grains": frozenset({"total"}),
                 "available_covariates": frozenset(
+                    {"user_id", "segment", "ds", "variant", "revenue", "exposed_on"}
+                ),
+            },
+        ),
+        (
+            "panel_without_exposure_date",
+            {
+                "kind": "unit_panel",
+                "capture": "snapshot",
+                "grains": frozenset({"total"}),
+                "breakouts": ("segment",),
+                "shape": "unit_panel",
+                "operations": frozenset({"export_moments", "unit_counts", "readout_snapshot"}),
+                "unit_rows": True,
+                "raw_outcomes": False,
+                "method_fit": "local",
+                "compliance_axis": "total",
+                "count_grains": frozenset({"unit"}),
+                "populations": frozenset({"assigned"}),
+                "sequential_capture": "asof",
+                "scalar_covariate_grains": frozenset({"total"}),
+                "available_covariates": frozenset(
                     {"user_id", "segment", "ds", "variant", "revenue"}
                 ),
             },
@@ -217,8 +241,15 @@ def test_frame_evidence_matches_baseline(constructor, expected) -> None:
             breakouts=(),
         )
     else:
+        table = unit_panel_table()
+        options: dict[str, Any] = {}
+        if constructor == "panel":
+            table = table.append_column(
+                "exposed_on", pa.array([dt.date(2026, 1, 1)] * table.num_rows)
+            )
+            options["exposure_date"] = "exposed_on"
         analysis = from_frame(
-            unit_panel_table(),
+            table,
             shape="panel",
             unit="user_id",
             group="variant",
@@ -226,6 +257,7 @@ def test_frame_evidence_matches_baseline(constructor, expected) -> None:
             control="control",
             metrics={"revenue": "mean"},
             breakouts=("segment",),
+            **options,
         )
     source = cast("Any", held_source(analysis[1]))
     evidence = source.evidence

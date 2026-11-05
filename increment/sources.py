@@ -1201,7 +1201,7 @@ def validate_readout_source(request: ReadoutRequest) -> None:
             constructor=request.source_name,
             requested=grain,
             offered=tuple(sorted(capabilities)),
-            route="use a source that retains the requested grain",
+            route=request.grain_route or "use a source that retains the requested grain",
         )
     by = request.by
     source_breakouts = tuple(getattr(request, "source_breakouts", ()))

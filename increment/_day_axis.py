@@ -306,7 +306,7 @@ def validate_day_axis(
             src,
             req.grain,
             tuple(sorted(declared_evidence(src).grains)),
-            route="use a source with the requested day axis",
+            route=declared_evidence(src).grain_route or "use a source with the requested day axis",
         )
     if route == NATIVE_ROUTE and "day_source" not in declared_evidence(src).operations:
         from increment._evidence_refusals import refuse_grain
@@ -315,7 +315,7 @@ def validate_day_axis(
             src,
             req.grain,
             tuple(sorted(declared_evidence(src).grains)),
-            route="use a source with the requested day axis",
+            route=declared_evidence(src).grain_route or "use a source with the requested day axis",
         )
     reject_winsorized_day_axis(list(req.metrics), req.caller, grain=req.grain)
     if route == NATIVE_ROUTE:
