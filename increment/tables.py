@@ -39,6 +39,7 @@ from increment.estimation.results import (
     conversion_route_label,
     row_decision_available,
     row_decision_scale,
+    row_favorable_side,
 )
 
 if TYPE_CHECKING:
@@ -297,11 +298,13 @@ def _liftestimate_to_row(
 def _decision_stat_columns(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
 ) -> dict[str, float | None]:
-    """Best-effort posterior-derived values, explicitly model-qualified."""
+    """Best-effort posterior-derived values, explicitly model-qualified. A metric
+    that declares a direction reports its favorable side of zero; the test
+    ``alternative`` never chooses the side."""
     if est.sequential_result is not None or getattr(est, "posterior_available", None) is not True:
         return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
     try:
-        if est.alternative == "less" or getattr(est, "preferred_direction", None) == "decrease":
+        if row_favorable_side(est) is not None:
             return {
                 "posterior_chance_to_beat": est.chance_to_beat_favorable(),  # ty: ignore[unresolved-attribute]
                 "posterior_risk_if_shipped": est.risk_if_shipped_favorable(),  # ty: ignore[unresolved-attribute]

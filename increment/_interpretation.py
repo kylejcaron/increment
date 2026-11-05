@@ -17,6 +17,8 @@ from increment.estimation.readout_types import (
 from increment.estimation.results import (
     _selection_qualification,
     row_chance_to_beat,
+    row_chance_to_beat_favorable,
+    row_favorable_side,
     row_verdict,
 )
 
@@ -927,11 +929,11 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             )
         if getattr(row, "posterior_available", False) is True:
             posterior_estimate = getattr(row, "posterior_estimate", None)
-            chance_to_beat = row_chance_to_beat(row)
-            lines.append(
-                f"{row.metric} posterior: estimate={posterior_estimate!r}; "
-                f"chance_to_beat={chance_to_beat!r}"
-            )
+            if row_favorable_side(row) is None:
+                chance = f"chance_to_beat={row_chance_to_beat(row)!r}"
+            else:
+                chance = f"chance_to_beat_favorable={row_chance_to_beat_favorable(row)!r}"
+            lines.append(f"{row.metric} posterior: estimate={posterior_estimate!r}; {chance}")
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(

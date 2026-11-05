@@ -1187,7 +1187,6 @@ Retired codes and their replacements are listed below.
 | `plan.metric.report_only` | `InvalidRequestError` | `metric`, `role` | `increment.decision` |
 | `plan.metric_cuped_methods` | `UnsupportedRequestError` | `inference`, `metric` | `increment.plan` |
 | `plan.metric_frame_contrast` | `InvalidRequestError` | `metric` | `increment.plan` |
-| `plan.metric_informative_priors` | `UnsupportedRequestError` | `inference`, `metric` | `increment.plan` |
 | `plan.metric_priors_relative` | `UnsupportedRequestError` | `metric`, `prior` | `increment.plan` |
 | `plan.metrics.unknown` | `InvalidRequestError` | `declared`, `path`, `unknown` | `increment.decision` |
 | `plan.observational.relative_margin` | `UnsupportedRequestError` | `metrics` | `increment.plan` |
@@ -1705,6 +1704,7 @@ Retired codes and their replacements are listed below.
 | `kernel.run.resolver_missing` | `kernel.run.reader_required`, `kernel.run.reader_offline` |
 | `plan.contrast_configs_template_mismatch` | `plan.compile_configs_template_mismatch` |
 | `plan.contrast_configs_wrong_type` | `plan.compile_configs_wrong_type` |
+| `plan.metric_informative_priors` | `sequential.route.unsupported` |
 | `power.alpha` | `estimation.diagnostics.alpha` |
 | `power.segment_pairwise_minimum_n_per_arm_too_small` | `power.segment_pairwise_achieved_n_per_arm_too_small` |
 | `power.sequential_power_enclosure_se_full_finite` | `power.se_full_finite` |

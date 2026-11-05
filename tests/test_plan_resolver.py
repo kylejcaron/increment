@@ -965,15 +965,6 @@ def _resolved_config(metric, *, methods=None, prior=None):
             ),
         ),
         (
-            "plan.metric_informative_priors",
-            lambda: compile_decision_plan(
-                AnalysisPlan(primary="rev", inference=registered_spec()),
-                [_mean("rev")],
-                path="warehouse",
-                prior=Normal(mu=0.0, sigma=0.2),
-            ),
-        ),
-        (
             "plan.metric_priors_relative",
             lambda: compile_decision_plan(
                 None,

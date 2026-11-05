@@ -1033,6 +1033,7 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "kernel.run.resolver_missing": ("kernel.run.reader_required", "kernel.run.reader_offline"),
         "plan.contrast_configs_template_mismatch": "plan.compile_configs_template_mismatch",
         "plan.contrast_configs_wrong_type": "plan.compile_configs_wrong_type",
+        "plan.metric_informative_priors": "sequential.route.unsupported",
         "power.alpha": "estimation.diagnostics.alpha",
         "power.segment_pairwise_minimum_n_per_arm_too_small": "power.segment_pairwise_achieved_n_per_arm_too_small",
         "power.sequential_power_enclosure_se_full_finite": "power.se_full_finite",

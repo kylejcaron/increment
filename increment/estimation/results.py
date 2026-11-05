@@ -55,6 +55,7 @@ from increment.estimation.sequential_result import (
     SequentialInferenceResult,
     SequentialResult,
 )
+from increment.semantics.models import favorable_alternative
 from increment.winsor import (
     BootstrapReference,
     InfluenceReference,
@@ -2161,14 +2162,7 @@ class LiftEstimate(_RowIdentity):
 
     def prob_beyond(self, threshold: float) -> float | None:
         """Stored-posterior probability that lift exceeds ``threshold``."""
-        result = self.sequential_result
-        if result is not None and result.bounds.alpha != result.checkpoint.cell.alpha:
-            from increment.sequential_state import sequential_refuse
-
-            sequential_refuse(
-                "route.unsupported",
-                "selected sequential intervals do not define posterior decision probabilities",
-            )
+        self._refuse_selected_sequential_probability()
         posterior = self._posterior()
         if posterior is None:
             return None
@@ -2178,8 +2172,22 @@ class LiftEstimate(_RowIdentity):
             threshold = math.log1p(threshold)
         return posterior.survival(threshold)
 
+    def _refuse_selected_sequential_probability(self) -> None:
+        result = self.sequential_result
+        if result is not None and result.bounds.alpha != result.checkpoint.cell.alpha:
+            from increment.sequential_state import sequential_refuse
+
+            sequential_refuse(
+                "route.unsupported",
+                "selected sequential intervals do not define posterior decision probabilities",
+            )
+
     def prob_favorable(self) -> float | None:
-        """Stored posterior probability on the metric's declared good side."""
+        """Stored posterior probability on the metric's declared good side, at its
+        null; a sequential row refuses, as ``p_value()`` does."""
+        _require_fixed_horizon(
+            self, "sequential confidence sequences do not define posterior probabilities"
+        )
         posterior = self._posterior()
         if posterior is None:
             return None
@@ -2194,16 +2202,11 @@ class LiftEstimate(_RowIdentity):
                 group_id=self.group_id,
                 metric=self.metric,
             )
-        if (
-            self.preferred_direction is None
-            or self.preferred_direction == "neutral"
-            or self.null_abs is not None
-        ):
+        side = row_favorable_side(self)
+        if side is None or self.null_abs is not None:
             return None
         threshold = math.log1p(self.null_lift) if self.posterior_scale == "log" else self.null_lift
-        if self.preferred_direction == "decrease":
-            return posterior.cdf(threshold)
-        return posterior.survival(threshold)
+        return posterior.cdf(threshold) if side == "less" else posterior.survival(threshold)
 
     def prob_within(self, threshold: float) -> float | None:
         """Stored-posterior probability that lift lies inside a symmetric band."""
@@ -2226,15 +2229,9 @@ class LiftEstimate(_RowIdentity):
         return posterior.probability_between(lower, upper)
 
     def chance_to_beat_favorable(self) -> float | None:
-        """Stored posterior probability on the favorable side of zero."""
-        chance = self.chance_to_beat()
-        if (
-            chance is None
-            or self.preferred_direction is None
-            or self.preferred_direction == "neutral"
-        ):
-            return None
-        return 1.0 - chance if self.preferred_direction == "decrease" else chance
+        """Stored posterior probability on the favorable side of zero; see
+        :func:`row_chance_to_beat_favorable`."""
+        return row_chance_to_beat_favorable(self)
 
     def risk_if_shipped(self) -> float | None:
         """Stored-posterior expected negative lift, when a posterior is available."""
@@ -2319,10 +2316,42 @@ if TYPE_CHECKING:
 
 def row_chance_to_beat(row: DecisionRow) -> float | None:
     """Stored-posterior probability that a decision row's lift is positive."""
+    return _row_chance_of_side(row, "greater")
+
+
+def row_favorable_side(row: DecisionRow) -> Literal["greater", "less"] | None:
+    """The side of zero a decision row's metric declares favorable, read from its
+    ``preferred_direction`` alone (never the test ``alternative``); ``None`` for a
+    metric that declares none."""
+    return favorable_alternative(getattr(row, "preferred_direction", None))
+
+
+def row_chance_to_beat_favorable(row: DecisionRow) -> float | None:
+    """Stored-posterior probability that a decision row's lift lies on its
+    :func:`row_favorable_side` of zero, or ``None`` for a metric that declares no
+    direction. The decrease side reads the posterior's lower tail, never
+    ``1 - P(lift > 0)``, so a vanishing probability keeps its magnitude."""
+    side = row_favorable_side(row)
+    return None if side is None else _row_chance_of_side(row, side)
+
+
+def _row_chance_of_side(row: DecisionRow, side: Literal["greater", "less"]) -> float | None:
     if isinstance(row, LiftEstimate):
-        return row.prob_beyond(0.0)
+        row._refuse_selected_sequential_probability()
     posterior = row._posterior()
-    return None if posterior is None else posterior.survival(0.0)
+    if posterior is None:
+        return None
+    # Zero lift is zero on the log scale as well: log1p(0) == 0.
+    return posterior.survival(0.0) if side == "greater" else posterior.cdf(0.0)
+
+
+def _require_fixed_horizon(row: DecisionRow, reason: str) -> None:
+    """Refuse a sequential row: a confidence sequence has no fixed-look endpoint
+    distribution or posterior to summarize."""
+    if row.inference != "fixed":
+        from increment.sequential_state import sequential_refuse
+
+        sequential_refuse("route.unsupported", reason)
 
 
 #: The side of the null a rejecting confidence set lies on: above it, below it, or on both
@@ -2486,13 +2515,9 @@ def row_p_value(row: DecisionRow) -> float | None:
     row's own alpha and is valid at every level the family reads it at; a
     row outside a family reports its delta p-value.
     """
-    if row.inference != "fixed":
-        from increment.sequential_state import sequential_refuse
-
-        sequential_refuse(
-            "route.unsupported",
-            "sequential confidence sequences do not define fixed-look sampling p-values",
-        )
+    _require_fixed_horizon(
+        row, "sequential confidence sequences do not define fixed-look sampling p-values"
+    )
     if row.failure_code is not None or _sampling_availability(row) is False:
         return None
     confidence_set = getattr(row, "confidence_set", None)
