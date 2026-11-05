@@ -275,10 +275,12 @@ class _ArmDecisionProcedure(CodedModel, BaseModel):
     family: FamilyMembership = FamilyMembership()
     inference: AsymptoticMean | AlwaysValid | MixedFamily | FixedInference = FixedInference()
     # The tail on which the treatment is better, fixed from the metric's declared direction
-    # (or a one-sided plan alternative when it declares none) before any data is read.
+    # (or a one-sided plan alternative when it declares none) before any data is read. Left
+    # out of dumps and source declarations while unset, so plans without one keep their identity.
     favorable_side: Literal["greater", "less"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    _declaration_omits_none: ClassVar[frozenset[str]] = frozenset({"favorable_side"})
 
     @model_validator(mode="after")
     def _one_sided_alpha(self) -> _ArmDecisionProcedure:

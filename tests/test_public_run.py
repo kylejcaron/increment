@@ -560,11 +560,17 @@ def test_version_1_bound_plan_reads_direction_unspecified(tmp_path):
     assert "decision.primary.direction_unspecified" in decisions.program.reason_codes
 
 
-def test_undirected_two_sided_plan_identity_unchanged():
+def test_undirected_two_sided_plan_identity_unchanged(tmp_path):
     """An experiment that declares no direction under a two-sided plan keeps the identity it
-    had before plans recorded favorable sides, and its run binds a version-1 plan."""
-    from increment import Randomized
+    had before plans recorded favorable sides, and its run binds a version-1 plan. Its moments
+    export, whose source declaration holds the compiled plan, keeps its identity too."""
+    import pyarrow.parquet as pq
 
+    from increment import Randomized, from_moments
+    from increment.workflows import export_moments
+
+    specs = [MetricSpec(name="value", type="mean"), MetricSpec(name="guard", type="mean")]
+    plan = AnalysisPlan(primary="value")
     experiment, resolver = from_frame(
         _guardrail_case_frame(),
         shape="summary",
@@ -575,14 +581,22 @@ def test_undirected_two_sided_plan_identity_unchanged():
             allocation={"control": 0.5, "treatment": 0.5},
             allocation_scheme="independent",
         ),
-        metrics=[MetricSpec(name="value", type="mean"), MetricSpec(name="guard", type="mean")],
-        plan=AnalysisPlan(primary="value"),
+        metrics=specs,
+        plan=plan,
         experiment_id="exp",
     )
     try:
         result = run(experiment, resolver, run_id="run-identity")
+        export_moments(experiment, resolver, tmp_path / "moments.parquet")
     finally:
         resolver.close()
+    moments, moments_resolver = from_moments(
+        pq.read_table(tmp_path / "moments.parquet").to_pylist(),
+        control="control",
+        metrics=specs,
+        plan=plan,
+    )
+    moments_resolver.close()
 
     assert experiment.hash() == "a6dfa22c9e36df96d652849f9d87867d5129af4f6cf70d3cc992a9c7dcf221da"
     assert experiment.registration.registration_hash == (
@@ -593,6 +607,7 @@ def test_undirected_two_sided_plan_identity_unchanged():
         "90edcef83f55c9a5120d6ee3fcf3bf97af54a3d0d4822eac0e3252656d6f08af",
     ]
     assert result.run.decision_plan is not None and result.run.decision_plan.version == 1
+    assert moments.hash() == "dec2c8f641e8e668c8b3bd752c2e40ad51fc00a131c6bbba7ce19b928d6971f1"
 
 
 def test_public_run_returns_each_disjoint_family_from_its_complete_metadata_roster():
