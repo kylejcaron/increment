@@ -3033,33 +3033,57 @@ def _arm_frame(values: dict[str, list[float]]) -> pd.DataFrame:
     )
 
 
-def _summary_rows(frame: pd.DataFrame, metrics: Any) -> list[LiftEstimate]:
+def _summary_rows(frame: pd.DataFrame, metrics: Any, **options: Any) -> list[LiftEstimate]:
     experiment, reader = from_frame(
-        frame, shape="summary", unit="user_id", group="variant", control="control", metrics=metrics
+        frame,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=metrics,
+        **options,
     )
     return _lift_rows(view_readout(experiment, reader))
 
 
 def test_one_unit_extra_arm_is_an_unavailable_row():
+    from increment.semantics.models import ExperimentMetric
+
     frame = _arm_frame(
         {"control": [1.0, 2.0, 3.0, 4.0], "treatment": [2.0, 3.0, 4.0, 5.0], "qa": [3.0]}
     ).assign(den=1.0)
     metrics = [
-        MetricSpec(name="x", type="mean"),
+        MetricSpec(
+            name="x",
+            type="mean",
+            preferred_direction="increase",
+            sensitivity_methods=(Method(name="sens"),),
+        ),
         MetricSpec(name="r", type="ratio", numerator="x", denominator="den"),
     ]
+    plan = AnalysisPlan(primary=(ExperimentMetric(metric="x", margin=0.1), "r"))
     with pytest.warns(IncrementWarning):
-        rows = {(row.metric, row.group_id): row for row in _summary_rows(frame, metrics)}
-    for metric, code in (
-        ("x", "estimation.armstats.arm_stats.least_compute_metric"),
-        ("r", "estimation.variance.ratio_moments_least_two_units"),
+        rows = {
+            (row.metric, row.group_id, row.method): row
+            for row in _summary_rows(frame, metrics, plan=plan)
+        }
+    for metric, method, code in (
+        ("x", "unadjusted", "estimation.armstats.arm_stats.least_compute_metric"),
+        ("x", "sens", "estimation.armstats.arm_stats.least_compute_metric"),
+        ("r", "unadjusted", "estimation.variance.ratio_moments_least_two_units"),
     ):
-        stray = rows[metric, "qa"]
+        stray = rows[metric, "qa", method]
         assert stray.failure_code == code
         assert stray.failure_context is not None
         assert stray.failure_context["group_id"] == "qa"
         assert stray.failure_context["n"] == 1
-        assert rows[metric, "treatment"].require_lift().value == pytest.approx(0.4)
+        assert rows[metric, "treatment", method].require_lift().value == pytest.approx(0.4)
+    # A declared margin of 0.1 on an increase metric is the shifted null -0.1.
+    for method in ("unadjusted", "sens"):
+        stray = rows["x", "qa", method]
+        assert stray.null_lift == pytest.approx(-0.1)
+        assert stray.preferred_direction == "increase"
+        assert stray.alternative == "greater"
 
 
 def test_one_unit_control_refuses_every_cell():
@@ -3094,6 +3118,16 @@ def test_ratio_row_reports_arm_counts_and_ratios():
     assert row.mean_control == pytest.approx(3.0)
     assert row.mean_treat == pytest.approx(4.5)
     assert row.require_lift().value == pytest.approx(0.5)
+
+    # A negative control numerator total leaves only the additive contrast.
+    signed = frame.assign(num=[-2.0, 0.0, -4.0, 3.0, 6.0, 9.0])
+    with pytest.warns(IncrementWarning):
+        (row,) = _summary_rows(signed, metrics)
+    assert row.lift is None
+    assert row.n_control == row.n_treat == 3
+    assert row.mean_control == pytest.approx(-1.5)
+    assert row.mean_treat == pytest.approx(4.5)
+    assert row.abs_diff == pytest.approx(6.0)
 
 
 def test_quantile_row_reports_arm_counts():
