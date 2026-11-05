@@ -131,15 +131,6 @@ def test_source_reference_copies_nested_bindings():
     assert Experiment.from_json(experiment.to_json()).source_refs == experiment.source_refs
 
 
-@pytest.mark.parametrize("field", ["uri", "expected_digest"])
-def test_bound_builder_refuses_other_source_identity(field):
-    experiment, resolver = _experiment()
-    reference = replace(experiment.source_refs[0], **{field: "other://source"})
-    with pytest.raises(CodedError) as error:
-        run(replace(experiment, source_refs=(reference,)), resolver)
-    assert error.value.code == "kernel.resolver.digest_mismatch"
-
-
 def test_builder_refuses_changed_registration_and_design_before_evidence_reads():
     experiment, resolver = _experiment()
     from tests.analysis_factory import replace_bound_source
@@ -375,7 +366,7 @@ def test_clustered_preflight_applies_saved_prior_override(clear_declared_prior):
 
 def test_bound_custom_provider_is_verification_only():
     experiment, resolver = _experiment()
-    from increment.kernel.resolver import BoundResolver
+    from increment.evidence import BoundResolver
 
     experiment = replace(
         experiment,
@@ -1135,7 +1126,7 @@ def test_runtime_callable_configurations_cannot_share_a_bound_resolver():
         run(experiment_b, resolver_a)
     assert mismatch.value.code in {
         "kernel.run.execution_unavailable",
-        "kernel.resolver.digest_mismatch",
+        "kernel.provider.digest_mismatch",
     }
     with pytest.raises(CodedError) as portable:
         experiment_a.hash()

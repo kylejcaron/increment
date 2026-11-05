@@ -42,8 +42,10 @@ from increment._evidence_types import (
     UnitRowsRequest,
 )
 from increment._source_types import (
+    BoundResolver,
     EvidenceCapabilities,
     EvidenceProvider,
+    Resolver,
     ScalarEvidenceDeclaration,
     is_builtin_source,
     refuse_provider_unavailable,
@@ -178,6 +180,8 @@ __all__ = [
     "ScalarEvidenceDeclaration",
     "EvidenceCapabilities",
     "EvidenceProvider",
+    "Resolver",
+    "BoundResolver",
     "EvidenceScope",
     "EvidenceScopeResult",
     "MethodFitAnswer",

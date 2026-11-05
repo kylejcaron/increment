@@ -4,7 +4,7 @@ import reprlib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from increment._canonical import declaration_value
 from increment._execute import execute_views, operation_parameters, selected_binding
@@ -217,25 +217,38 @@ class SourceBinding:
         )
 
 
-def _execution_unavailable(experiment: Experiment, field: str) -> NoReturn:
-    raise CodedError(
-        "The bound analysis cannot execute these experiment declarations",
-        code="kernel.run.execution_unavailable",
-        context={"experiment_id": experiment.experiment_id, "field": field},
-    )
+def _differing_field(experiment: Experiment, declared: Experiment) -> str | None:
+    """The first declaration in which an experiment departs from its reader's experiment."""
+    if experiment.experiment_id != declared.experiment_id:
+        return "experiment_id"
+    if experiment.design != declared.design:
+        return "design"
+    if experiment.registration != declared.registration:
+        return "registration"
+    if declaration_value(experiment.analysis_context) != declaration_value(
+        declared.analysis_context
+    ):
+        return "analysis_context"
+    if any(declared.metrics.get(name) != metric for name, metric in experiment.metrics.items()):
+        return "metrics"
+    return None
 
 
 def _validate_experiment(experiment: Experiment, declared: Experiment) -> None:
-    invalid = (
-        experiment.experiment_id != declared.experiment_id
-        or experiment.design != declared.design
-        or experiment.registration != declared.registration
-        or declaration_value(experiment.analysis_context)
-        != declaration_value(declared.analysis_context)
-        or any(declared.metrics.get(name) != metric for name, metric in experiment.metrics.items())
-    )
-    if invalid:
-        _execution_unavailable(experiment, "declarations")
+    """Refuse an experiment the reader was not built for; views and a metric subset are free."""
+    field = _differing_field(experiment, declared)
+    if field is not None:
+        raise CodedError(
+            f"Experiment {experiment.experiment_id!r} differs in {field} from the experiment "
+            f"this reader was built for ({declared.experiment_id!r}); pass the experiment the "
+            "builder returned with this reader, or build a new reader for this experiment",
+            code="kernel.run.execution_unavailable",
+            context={
+                "experiment_id": experiment.experiment_id,
+                "reader_experiment_id": declared.experiment_id,
+                "field": field,
+            },
+        )
 
 
 def _schema_for_source(source: Any) -> dict[str, str] | None:
@@ -388,15 +401,17 @@ class ExperimentReader:
         return binding.state.source
 
     def _verify(self, source_refs: Sequence[SourceReference], provider: object) -> list[CodedError]:
+        from increment._source_types import provider_refusal
+
         failures = []
         if provider is not self._binding.state.source or tuple(
             (r.name, r.uri) for r in source_refs
         ) != tuple((r.name, r.uri) for r in self._experiment.source_refs):
             return [
-                CodedError(
-                    "Source references do not identify the bound provider",
-                    code="kernel.resolver.digest_mismatch",
-                    context={"source_refs": tuple(r.name for r in source_refs)},
+                provider_refusal(
+                    "kernel.provider.digest_mismatch",
+                    source_refs=tuple(r.name for r in source_refs),
+                    detail="the source references do not name this reader's source",
                 )
             ]
         identity = getattr(provider, "declaration_identity", None)
@@ -410,23 +425,20 @@ class ExperimentReader:
         for reference in source_refs:
             if reference.expected_digest is not None and reference.expected_digest != actual_digest:
                 failures.append(
-                    CodedError(
-                        "Source declarations do not match the bound provider",
-                        code="kernel.resolver.digest_mismatch",
-                        context={
-                            "source_ref": reference.name,
-                            "expected": reference.expected_digest,
-                            "actual": actual_digest,
-                        },
+                    provider_refusal(
+                        "kernel.provider.digest_mismatch",
+                        source_refs=(reference.name,),
+                        detail=(
+                            f"recorded digest {reference.expected_digest!r}, "
+                            f"source digest {actual_digest!r}"
+                        ),
                     )
                 )
             capabilities = getattr(provider, "evidence", None)
             if reference.capabilities is not None and reference.capabilities != capabilities:
                 failures.append(
-                    CodedError(
-                        "Source declarations do not match the bound provider",
-                        code="kernel.resolver.capability_mismatch",
-                        context={"source_ref": reference.name},
+                    provider_refusal(
+                        "kernel.provider.capability_mismatch", source_ref=reference.name
                     )
                 )
         return failures
@@ -441,8 +453,6 @@ class ExperimentReader:
         execution_context: EvidenceExecutionContext | None = None,
     ) -> tuple[ScopedReadout, ...]:
         """Admit every selected view before any read, then execute them in one capture."""
-        if provider is not self._source:
-            _execution_unavailable(experiment, "declarations")
         if experiment.request_options.get("store") is not None:
             raise CodedError(
                 "Experiment execution does not accept a store request option; "
@@ -516,10 +526,10 @@ def require_reader(reader: object) -> ExperimentReader:
     return reader
 
 
-def binding_for(experiment: Experiment, resolver: object) -> SourceBinding:
+def binding_for(experiment: Experiment, reader: object) -> SourceBinding:
     from increment.kernel.resolver import _resolve_verified
 
-    reader = require_reader(resolver)
+    reader = require_reader(reader)
     _resolve_verified(experiment, reader)
     return reader._binding
 

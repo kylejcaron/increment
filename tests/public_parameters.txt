@@ -160,7 +160,7 @@ raw_outcomes: Whether pre-transform outcome rows are required.
 src: Statistical evidence source to validate.
 unit_rows: Whether unit-level observations are required.
 exp: Experiment specification to inspect or execute.
-resolver: Runtime source resolver bound to an experiment.
+reader: Experiment reader returned by a builder.
 source_refs: Named source declarations to bind or verify.
 ctx: Optional execution context receiving resolved providers.
 expected_digest: Expected digest for a bound source provider.

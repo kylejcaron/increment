@@ -207,7 +207,7 @@ def _allocation_check(
                             "route": (
                                 "Declare allocation_scheme='independent' on a design "
                                 "that uses an independent constant-probability draw, or "
-                                "pass the target shares as workflows.srm(experiment, resolver, "
+                                "pass the target shares as workflows.srm(experiment, reader, "
                                 "inference='fixed', expected={...}) for one predeclared look."
                             )
                         }

@@ -118,9 +118,10 @@ constructor, such as `Scope.daily(population=...)`; a request option named
 `kernel.request.population_scope_only`, as does a `run(population=...)` that
 differs from a selected scope's population.
 
-`Resolver` binds the named sources and verifies their recorded declarations.
-`BoundResolver` adapts a custom `EvidenceProvider` for verification only.
-`run(experiment, resolver)` and every function that reads data accept only the
+`increment.evidence.Resolver` binds the named sources and verifies their
+recorded declarations. `increment.evidence.BoundResolver` adapts a custom
+`EvidenceProvider` for verification only.
+`run(experiment, reader)` and every function that reads data accept only the
 `ExperimentReader` a module builder returns with the experiment; anything else,
 a `BoundResolver` included, refuses with `kernel.run.reader_required`, whose
 context names the type that was passed. `run` verifies the reader's source
@@ -320,9 +321,13 @@ compliance-only and exploratory-metric cells retain their own scope/role and
 receive `not_evaluated` verdicts. Cells, effects and any live confidence-set rows
 stay aligned in one flat result with one run ID. Changed designs, decision
 plans, metric definitions or unsupported scope coordinates refuse with
-`kernel.run.execution_unavailable`, before reading evidence.
-Source names, URIs, recorded digests, and capabilities must identify the
-bound source.
+`kernel.run.execution_unavailable`, before reading evidence. When the experiment
+is not the one the reader was built for, its `field` context names the first
+declaration that differs (`experiment_id`, `design`, `registration`,
+`analysis_context` or `metrics`) and `reader_experiment_id` names the reader's
+experiment. Source names, URIs, recorded digests, and capabilities must identify
+the bound source; otherwise the read refuses with `kernel.provider.digest_mismatch`
+or `kernel.provider.capability_mismatch`.
 `run` accepts readout options as keywords:
 `decision_method`, `sensitivity_methods`, `prior`, `metrics`, `estimands`,
 `value_scale`, `exploratory_metrics`, `population` and `coherence`. Only the
@@ -431,7 +436,7 @@ bindings or schema refreshes retain each experiment's entry.
 The catalog records each loader's `declaration_identity()` digest alongside its
 schema and capabilities. A connected reader recomputes that declaration digest
 before every read and refuses a changed or unavailable recorded digest with
-`kernel.resolver.digest_mismatch`. It does not hash live rows: snapshot and
+`kernel.provider.digest_mismatch`. It does not hash live rows: snapshot and
 content digests belong to the runtime evidence, not the saved specification.
 
 Use `runnable` when a caller needs the static refusal codes, and inspect all

@@ -1,6 +1,6 @@
 """Fit, validate, and deploy a CATE model for an experiment's unit-grain data.
 
-Each operation verifies the experiment's resolver, reads one row per unit
+Each operation verifies the experiment's reader, reads one row per unit
 from the bound source (its triggered view when the experiment declares a
 trigger) and hands the columns to increment.estimation.cate and
 increment.estimation.targeting as plain numpy arrays; lives outside
@@ -664,7 +664,7 @@ def _select_targeting_rule_binding(  # noqa: PLR0913
 
 def estimate_cate(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     metric: str,
     *,
     control: str | None = None,
@@ -709,7 +709,7 @@ def estimate_cate(
     ``increment.estimation.cate``).
     """
     return _estimate_cate_binding(
-        binding_for(experiment, resolver),
+        binding_for(experiment, reader),
         metric,
         control=control,
         interact=interact,
@@ -722,7 +722,7 @@ def estimate_cate(
 
 def validate_cate(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     metric: str,
     *,
     control: str,
@@ -781,7 +781,7 @@ def validate_cate(
     establish calibration of the cluster bootstrap at small cluster counts.
     """
     return _validate_cate_binding(
-        binding_for(experiment, resolver),
+        binding_for(experiment, reader),
         metric,
         control=control,
         interact=interact,
@@ -796,7 +796,7 @@ def validate_cate(
 
 def targeting_rule(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     metric: str,
     *,
     control: str,
@@ -849,7 +849,7 @@ def targeting_rule(
     ``unavailable_reason`` code.
     """
     return _targeting_rule_binding(
-        binding_for(experiment, resolver),
+        binding_for(experiment, reader),
         metric,
         control=control,
         interact=interact,
@@ -866,7 +866,7 @@ def targeting_rule(
 # Identification, selection and deployment controls remain explicit at the public boundary.
 def select_targeting_rule(  # noqa: PLR0913
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     metric: str,
     *,
     control: str,
@@ -919,7 +919,7 @@ def select_targeting_rule(  # noqa: PLR0913
     ``unavailable_reason`` code.
     """
     return _select_targeting_rule_binding(
-        binding_for(experiment, resolver),
+        binding_for(experiment, reader),
         metric,
         control=control,
         interact=interact,
@@ -945,7 +945,7 @@ __all__ = [
 
 
 def core_operations():
-    """Return the CATE routes used by core orchestration; each takes an experiment and resolver."""
+    """Return the CATE routes used by core orchestration; each takes an experiment and reader."""
     from types import SimpleNamespace
 
     return SimpleNamespace(

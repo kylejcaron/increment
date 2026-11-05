@@ -41,13 +41,13 @@ _SWITCHBACK_ONLY = RefusalSpec(
 )
 
 
-def unit_counts(experiment: Experiment, resolver: ExperimentReader) -> dict[str, int]:
+def unit_counts(experiment: Experiment, reader: ExperimentReader) -> dict[str, int]:
     """Return enrolled unit counts by canonical group label.
 
     Excluded unassigned units appear under ``"(unassigned)"``. Sources
     without total-grain count evidence refuse with a coded capability error.
     """
-    return _unit_counts_binding(binding_for(experiment, resolver))
+    return _unit_counts_binding(binding_for(experiment, reader))
 
 
 def _unit_counts_binding(binding: SourceBinding) -> dict[str, int]:
@@ -64,7 +64,7 @@ def _unit_counts_binding(binding: SourceBinding) -> dict[str, int]:
 
 def srm(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     *,
     expected: dict[str, float] | None = None,
     alpha: float = 0.001,
@@ -85,8 +85,8 @@ def srm(
     Parameters
     ----------
     experiment : Experiment
-        Experiment declaration the resolver was built for.
-    resolver : ExperimentReader
+        Experiment declaration the reader was built for.
+    reader : ExperimentReader
         Reader returned with the experiment by its builder.
     expected : dict[str, float] | None
         Target allocation for this call; otherwise the design's ``allocation``.
@@ -105,7 +105,7 @@ def srm(
         have no target allocation to test against.
     """
     return _srm_binding(
-        binding_for(experiment, resolver),
+        binding_for(experiment, reader),
         expected=expected,
         alpha=alpha,
         inference=inference,
@@ -162,7 +162,7 @@ def _srm_binding(
     return result
 
 
-def trigger_rates(experiment: Experiment, resolver: ExperimentReader) -> dict[str, float]:
+def trigger_rates(experiment: Experiment, reader: ExperimentReader) -> dict[str, float]:
     """Observed triggered share per arm.
 
     Feed a pooled estimate (e.g. the mean of these per-arm rates) into
@@ -170,7 +170,7 @@ def trigger_rates(experiment: Experiment, resolver: ExperimentReader) -> dict[st
     to plan a follow-up at the right size.
     """
     require_warehouse("trigger_rates")
-    return _trigger_rates_binding(binding_for(experiment, resolver))
+    return _trigger_rates_binding(binding_for(experiment, reader))
 
 
 def _trigger_rates_binding(binding: SourceBinding) -> dict[str, float]:
@@ -200,7 +200,7 @@ def _trigger_rates_binding(binding: SourceBinding) -> dict[str, float]:
 
 def allocation_history(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     *,
     population: Literal["assigned", "triggered"] = "assigned",
 ) -> pa.Table:
@@ -215,7 +215,7 @@ def allocation_history(
     Sources without raw enrollment events and clustered experiments refuse
     this unit-grain timeline with a coded capability error.
     """
-    return _allocation_history_binding(binding_for(experiment, resolver), population=population)
+    return _allocation_history_binding(binding_for(experiment, reader), population=population)
 
 
 def _allocation_history_binding(
@@ -236,7 +236,7 @@ def _allocation_history_binding(
 
 def health_check(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     *,
     expected_allocation: Mapping[str, float] | None = None,
 ) -> ExperimentHealth:
@@ -252,8 +252,8 @@ def health_check(
     Parameters
     ----------
     experiment : Experiment
-        Experiment declaration the resolver was built for.
-    resolver : ExperimentReader
+        Experiment declaration the reader was built for.
+    reader : ExperimentReader
         Reader returned with the experiment by its builder.
     expected_allocation : Mapping[str, float] | None
         Target arm shares for the allocation checks when the design declares none.
@@ -264,7 +264,7 @@ def health_check(
         Every check in stable order, with the source fingerprint and cutoff.
     """
     return _health_check_binding(
-        binding_for(experiment, resolver), expected_allocation=expected_allocation
+        binding_for(experiment, reader), expected_allocation=expected_allocation
     )
 
 
@@ -287,10 +287,10 @@ def _health_check_binding(
 
 
 def assignment_diagnostic(
-    experiment: Experiment, resolver: ExperimentReader
+    experiment: Experiment, reader: ExperimentReader
 ) -> SwitchbackAssignmentDiagnostic:
     """Return switchback assignment integrity evidence."""
-    return _assignment_diagnostic_binding(binding_for(experiment, resolver))
+    return _assignment_diagnostic_binding(binding_for(experiment, reader))
 
 
 def _assignment_diagnostic_binding(binding: SourceBinding) -> SwitchbackAssignmentDiagnostic:
@@ -300,7 +300,7 @@ def _assignment_diagnostic_binding(binding: SourceBinding) -> SwitchbackAssignme
 
 
 def planning_baseline(
-    experiment: Experiment, resolver: ExperimentReader, metric: str
+    experiment: Experiment, reader: ExperimentReader, metric: str
 ) -> Baseline | SwitchbackBaseline:
     """The planning input a power solver needs, computed from this experiment's data.
 
@@ -333,7 +333,7 @@ def planning_baseline(
     metric type or declared design needs -- including a declared trigger whose
     evidence the source does not carry.
     """
-    return _planning_baseline_binding(binding_for(experiment, resolver), metric)
+    return _planning_baseline_binding(binding_for(experiment, reader), metric)
 
 
 def _planning_baseline_binding(

@@ -32,15 +32,13 @@ ExperimentDefinition: Declare an experiment as written in definitions, for a cus
 ExperimentReader: Read the data behind a builder's experiment until it is closed.
 Scope: Select a result view and its coordinates, population, and metrics.
 SourceReference: Record a named evidence source, its expected digest, schema, and capabilities.
-Resolver: Bind declared evidence sources to providers before analysis.
-BoundResolver: Verify a custom evidence provider's declarations without executing an experiment.
 Runnable: Report static refusals, data checks, and unknown feasibility requirements.
 runnable: Inspect estimator feasibility without reading source data.
-from_frame: Build an experiment and resolver from a unit-summary or unit-panel frame.
-from_definitions: Build an experiment from warehouse definitions, or read its offline catalog.
-from_unit_day_artifact: Build an experiment from a unit-day artifact.
-from_switchback_frame: Build an experiment from a switchback panel.
-from_moments: Build an experiment from retained moments.
+from_frame: Build an experiment and reader from a unit-summary or unit-panel frame.
+from_definitions: Build an experiment and reader from warehouse definitions, or read its offline catalog.
+from_unit_day_artifact: Build an experiment and reader from a unit-day artifact.
+from_switchback_frame: Build an experiment and reader from a switchback panel.
+from_moments: Build an experiment and reader from retained moments.
 render: Display qualified result cells for review.
 
 [increment.artifacts]
@@ -251,6 +249,8 @@ CountsRequest: Serve a counts request from a custom provider.
 ScalarEvidenceDeclaration: Declare the scalar evidence a custom source retains.
 EvidenceCapabilities: Declare what a custom source can provide before any read.
 EvidenceProvider: Implement typed statistical evidence for a custom data source.
+Resolver: Type the interface that binds source declarations to a custom provider and verifies them.
+BoundResolver: Verify a custom evidence provider's declarations without executing an experiment.
 EvidenceScope: Serve a scoped source view from a custom provider.
 EvidenceScopeResult: Return a scoped source view from a custom provider.
 MethodFitAnswer: Return method-fit evidence from a custom provider.

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from increment._source_types import EvidenceCapabilities, EvidenceProvider
 from increment.errors import CodedError
 from increment.kernel.contracts import Scope, declared_breakouts
 from increment.kernel.experiment import Experiment, SourceReference
@@ -30,19 +29,6 @@ class Runnable:
             and tuple((error.code, error.context) for error in self.static_refusals)
             == tuple((error.code, error.context) for error in other.static_refusals)
         )
-
-
-@runtime_checkable
-class Resolver(Protocol):
-    """Bind named source declarations to an evidence provider for one run."""
-
-    def resolve(
-        self, source_refs: Sequence[SourceReference], ctx: object | None = None
-    ) -> object: ...
-
-    def verify(
-        self, source_refs: Sequence[SourceReference], provider: object
-    ) -> list[CodedError]: ...
 
 
 class _ReaderExecution(Protocol):
@@ -79,54 +65,6 @@ def _resolve_verified(
     if failures:
         raise failures[0]
     return provider
-
-
-class BoundResolver:
-    """Verify a caller-owned EvidenceProvider without executing experiments."""
-
-    def __init__(self, provider: EvidenceProvider, *, expected_digest: str | None = None) -> None:
-        self.provider = provider
-        self.expected_digest = expected_digest
-
-    def resolve(
-        self,
-        source_refs: Sequence[SourceReference],
-        ctx: object | None = None,
-    ) -> EvidenceProvider:
-        return self.provider
-
-    def verify(
-        self,
-        source_refs: Sequence[SourceReference],
-        provider: object = None,
-    ) -> list[CodedError]:
-        if provider is not None and provider is not self.provider:
-            return [_refusal("kernel.resolver.provider_mismatch", {})]
-        candidate = self.provider
-        expected = {ref.expected_digest for ref in source_refs if ref.expected_digest is not None}
-        if self.expected_digest is not None:
-            expected.add(self.expected_digest)
-        actual = getattr(candidate.context, "source_digest", None)
-        if expected and (actual is None or expected != {actual}):
-            return [
-                _refusal(
-                    "kernel.resolver.digest_mismatch",
-                    {"expected": tuple(sorted(expected)), "actual": actual},
-                )
-            ]
-        declared = getattr(candidate, "evidence", None)
-        if not isinstance(declared, EvidenceCapabilities):
-            return [_refusal("kernel.resolver.capabilities_missing", {})]
-        for ref in source_refs:
-            if ref.capabilities is not None and ref.capabilities != declared:
-                return [_refusal("kernel.resolver.capability_mismatch", {"source_ref": ref.name})]
-        return []
-
-
-def _refusal(code: str, context: Mapping[str, object]) -> CodedError:
-    return CodedError(
-        "Source declarations do not match the bound provider", code=code, context=context
-    )
 
 
 def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedError]:

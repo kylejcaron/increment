@@ -272,7 +272,7 @@ class DashboardOverview:
 class DashboardSnapshot:
     """One prepared reading of an experiment: metadata, allocation, results, Explore views.
 
-    Read-only by construction. It holds no connection, resolver or source and is not a
+    Read-only by construction. It holds no connection, reader or source and is not a
     portable analysis format; reprepare from the source instead of persisting it.
     ``binding_fingerprint`` identifies the experiment declarations it was prepared from, so
     a later lookup can refuse another experiment without reading anything.
@@ -608,19 +608,19 @@ def _binding_fingerprint(definition: Mapping[str, object], metrics: Mapping[str,
 
 
 def prepare_dashboard(
-    experiment: Experiment, resolver: ExperimentReader, *, config: DashboardConfig
+    experiment: Experiment, reader: ExperimentReader, *, config: DashboardConfig
 ) -> DashboardSnapshot:
     """Run the headline readout once and capture it as a read-only snapshot.
 
-    This is the only place the dashboard computes results. The resolver's source is verified
+    This is the only place the dashboard computes results. The reader's source is verified
     against ``experiment`` and pinned once; the headline, allocation, health, group data and
     every Explore view a caller can later load are read from that pin, so ``load_explore``
     never touches the warehouse and a later source change cannot make the views disagree
     with the headline; reexecuting the source cell is an intentional new snapshot. The caller
-    keeps ownership of ``resolver`` and its connection: nothing here closes or replaces them,
+    keeps ownership of ``reader`` and its connection: nothing here closes or replaces them,
     and the snapshot retains neither.
     """
-    binding = binding_for(experiment, resolver)
+    binding = binding_for(experiment, reader)
     definition = _supported_experiment(binding)
     populations: tuple[Literal["assigned", "triggered"], ...] = (
         ("assigned", "triggered") if definition.trigger is not None else ("assigned",)
@@ -840,7 +840,7 @@ def _refuse_design(mechanism: str) -> NoReturn:
         _UNSUPPORTED_EXPERIMENT,
         reason=(
             f"the experiment declares a {mechanism} design; read its estimates with "
-            "run(experiment, resolver)"
+            "run(experiment, reader)"
         ),
         mechanism=mechanism,
     )

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 def capture_sequential(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     *,
     finalized: bool,
     previous=None,
@@ -28,8 +28,8 @@ def capture_sequential(
     Pass a previous snapshot to verify append-only continuation. Corrections
     to any retained unit outcome, assignment or definition refuse the path.
     Panel and relational sources require an explicit ``as_of`` horizon. The
-    capture is retained by the resolver's source, so a later
-    ``run(experiment, resolver)`` reads it.
+    capture is retained by the reader's source, so a later
+    ``run(experiment, reader)`` reads it.
 
     ``freeze`` names metrics to stop monitoring at exactly this capture:
     every registered cell of each named metric (each arm and segment) that
@@ -50,17 +50,17 @@ def capture_sequential(
         finalized=finalized, previous=previous, as_of=as_of, freeze=tuple(freeze)
     )
     return retained_sequential_capture(
-        binding_for(experiment, resolver).source, request, current_execution_context()
+        binding_for(experiment, reader).source, request, current_execution_context()
     )
 
 
 def sequential_snapshot(
-    experiment: Experiment, resolver: ExperimentReader, *, previous=None
+    experiment: Experiment, reader: ExperimentReader, *, previous=None
 ) -> SequentialSnapshot:
     """Retrieve the source's current exact checkpoint, optionally proving its parent."""
     from increment.readouts._evidence import retained_sequential_snapshot
     from increment.readouts._execution_context import current_execution_context
 
     return retained_sequential_snapshot(
-        binding_for(experiment, resolver).source, previous, current_execution_context()
+        binding_for(experiment, reader).source, previous, current_execution_context()
     )

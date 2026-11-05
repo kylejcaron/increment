@@ -36,7 +36,7 @@ _REFUSALS = refusals(
         "kernel.request.unportable": "Request kind {kind!r} field {field!r} is not portable",
         "kernel.request.capture_not_supported": (
             "Saved capture is an execution step; call "
-            "increment.workflows.capture_sequential(experiment, resolver, ...) then run",
+            "increment.workflows.capture_sequential(experiment, reader, ...) then run",
             (),
         ),
         "kernel.request.population_scope_only": "Set population on Scope(population=...)",

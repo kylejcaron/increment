@@ -38,9 +38,9 @@ _PLAN_MISSING = RefusalSpec(
 
 
 def _arm_binding(
-    experiment: KernelExperiment, resolver: ExperimentReader, method: str
+    experiment: KernelExperiment, reader: ExperimentReader, method: str
 ) -> SourceBinding:
-    return _require_arm_binding(binding_for(experiment, resolver), method)
+    return _require_arm_binding(binding_for(experiment, reader), method)
 
 
 def _artifact_context_binding(binding: SourceBinding) -> ArtifactContext:
@@ -66,10 +66,10 @@ def _artifact_context_binding(binding: SourceBinding) -> ArtifactContext:
     )
 
 
-def artifact_context(experiment: KernelExperiment, resolver: ExperimentReader) -> ArtifactContext:
+def artifact_context(experiment: KernelExperiment, reader: ExperimentReader) -> ArtifactContext:
     """Return the trusted publication context for a definitions-backed experiment."""
     require_warehouse("artifact_context")
-    return _artifact_context_binding(binding_for(experiment, resolver))
+    return _artifact_context_binding(binding_for(experiment, reader))
 
 
 def _select_artifact_extensions(context: Any, extensions: Sequence[Any]) -> tuple[Any, ...]:
@@ -143,7 +143,7 @@ def _publish_unit_day_artifact_binding(
 
 def publish_unit_day_artifact(
     experiment: KernelExperiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     store: ArtifactStore,
     *,
     extensions: Sequence[ArtifactExtensionRequest] = (),
@@ -152,7 +152,7 @@ def publish_unit_day_artifact(
     """Publish a definitions-backed experiment as an immutable unit-day artifact."""
     require_warehouse("publish_unit_day_artifact")
     return _publish_unit_day_artifact_binding(
-        binding_for(experiment, resolver), store, extensions=extensions, refresh_of=refresh_of
+        binding_for(experiment, reader), store, extensions=extensions, refresh_of=refresh_of
     )
 
 
@@ -171,10 +171,10 @@ def _materialize_binding(binding: SourceBinding) -> None:
         source.materialize()
 
 
-def materialize(experiment: KernelExperiment, resolver: ExperimentReader) -> None:
+def materialize(experiment: KernelExperiment, reader: ExperimentReader) -> None:
     """Refresh the source-owned materialized tables from current warehouse data."""
     require_warehouse("materialize")
-    _materialize_binding(_arm_binding(experiment, resolver, "materialize"))
+    _materialize_binding(_arm_binding(experiment, reader, "materialize"))
 
 
 def _export_moments_binding(binding: SourceBinding, path: str | Path) -> None:
@@ -188,29 +188,29 @@ def _export_moments_binding(binding: SourceBinding, path: str | Path) -> None:
 
 
 def export_moments(
-    experiment: KernelExperiment, resolver: ExperimentReader, path: str | Path
+    experiment: KernelExperiment, reader: ExperimentReader, path: str | Path
 ) -> None:
     """Write the source's portable per-metric moments to a parquet file."""
-    _export_moments_binding(binding_for(experiment, resolver), path)
+    _export_moments_binding(binding_for(experiment, reader), path)
 
 
 def _experiment_definition_binding(binding: SourceBinding) -> Experiment:
     return _require_arm_binding(binding, "experiment").experiment
 
 
-def experiment_definition(experiment: KernelExperiment, resolver: ExperimentReader) -> Experiment:
+def experiment_definition(experiment: KernelExperiment, reader: ExperimentReader) -> Experiment:
     """Return the semantic experiment declaration carried by the source."""
     require_warehouse("experiment_definition")
-    return _experiment_definition_binding(binding_for(experiment, resolver))
+    return _experiment_definition_binding(binding_for(experiment, reader))
 
 
 def _metrics_binding(binding: SourceBinding) -> list[Metric]:
     return binding.metrics
 
 
-def metrics(experiment: KernelExperiment, resolver: ExperimentReader) -> list[Metric]:
+def metrics(experiment: KernelExperiment, reader: ExperimentReader) -> list[Metric]:
     """Return the source's declared metrics and guardrails."""
-    return _metrics_binding(binding_for(experiment, resolver))
+    return _metrics_binding(binding_for(experiment, reader))
 
 
 def _compiled_decision_plan_binding(binding: SourceBinding) -> CompiledDecisionPlan:
@@ -219,32 +219,32 @@ def _compiled_decision_plan_binding(binding: SourceBinding) -> CompiledDecisionP
     except AttributeError:
         plan = None
     if plan is None:
-        refuse(_PLAN_MISSING, route="run(experiment, resolver)")
+        refuse(_PLAN_MISSING, route="run(experiment, reader)")
     return plan
 
 
 def compiled_decision_plan(
-    experiment: KernelExperiment, resolver: ExperimentReader
+    experiment: KernelExperiment, reader: ExperimentReader
 ) -> CompiledDecisionPlan:
     """Return the immutable compiled decision plan for this experiment."""
-    return _compiled_decision_plan_binding(binding_for(experiment, resolver))
+    return _compiled_decision_plan_binding(binding_for(experiment, reader))
 
 
-def available_metrics(experiment: KernelExperiment, resolver: ExperimentReader) -> list[Metric]:
+def available_metrics(experiment: KernelExperiment, reader: ExperimentReader) -> list[Metric]:
     """Return eligible saved metrics not declared by the experiment, in catalog order."""
     require_warehouse("available_metrics")
-    return _available_metrics(binding_for(experiment, resolver))
+    return _available_metrics(binding_for(experiment, reader))
 
 
 def breakout_summaries(
     experiment: KernelExperiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     *,
     metrics: Sequence[str | Metric] | None = None,
 ) -> dict[str, dict[str, pa.Table]]:
     """Return per-breakout moment tables for the selected declared metrics."""
     require_warehouse("breakout_summaries")
-    return _breakout_summaries_binding(binding_for(experiment, resolver), metrics)
+    return _breakout_summaries_binding(binding_for(experiment, reader), metrics)
 
 
 def _breakout_summaries_binding(
@@ -321,12 +321,10 @@ def _breakout_summaries_binding(
     return results
 
 
-def factor_summaries(
-    experiment: KernelExperiment, resolver: ExperimentReader
-) -> dict[str, pa.Table]:
+def factor_summaries(experiment: KernelExperiment, reader: ExperimentReader) -> dict[str, pa.Table]:
     """Return per-factor-level and arm moment tables for declared factors."""
     require_warehouse("factor_summaries")
-    return _factor_summaries_binding(binding_for(experiment, resolver))
+    return _factor_summaries_binding(binding_for(experiment, reader))
 
 
 def _factor_summaries_binding(binding: SourceBinding) -> dict[str, pa.Table]:
