@@ -450,7 +450,9 @@ string, such as `columns="lift"`, raises `results.frame.columns_string`; pass
     `columns=None` remains the full projection. Each `"summary"` preset contains
     decision statistics (`stat_sig`, `p_value`, and `p_value_reason_code`) and
     available arm unit counts and raw means (`n_control`, `n_treat`,
-    `mean_control`, and `mean_treat`), plus row identity (`estimand` and
+    `mean_control`, and `mean_treat`; on an unclustered ratio row each mean is
+    the arm's ratio, its numerator total over its denominator total, and a
+    quantile row carries counts only), plus row identity (`estimand` and
     `value_scale`), `population`, a population qualification, including skipped
     outcomes and identification restrictions, null when the row covers its whole
     analysis population,
@@ -1103,7 +1105,7 @@ use `abs_lb` and `abs_ub` for the additive interval.
 
 | Row | Frame columns |
 |---|---|
-| Lift row | `stat_sig`, `p_value`, `p_value_reason_code`; available arm unit counts and raw means appear as `n_control`, `n_treat`, `mean_control`, and `mean_treat`. |
+| Lift row | `stat_sig`, `p_value`, `p_value_reason_code`; available arm unit counts and raw means appear as `n_control`, `n_treat`, `mean_control`, and `mean_treat`. On an unclustered ratio row each mean is the arm's ratio, its numerator total over its denominator total; a quantile row carries counts only. |
 | Set-only exact binomial row | `set_lower`, `set_upper`, `set_level`, `set_numerical_qualification`, from `binomial_set` only. |
 | Sequential row | `sequential_lower`, `sequential_upper`, `sequential_status`, `sequential_components`. |
 

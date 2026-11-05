@@ -3020,3 +3020,90 @@ def test_open_ended_sequential_advisory_is_keyed_per_metric_and_emission():
             _warn_if_open_ended_sequential([metric])
     assert raised.value.code == "estimation.engine.open_ended_sequential"
     assert raised.value.context["metric_name"] == "outcome"
+
+
+def _arm_frame(values: dict[str, list[float]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            (f"{arm}{i}", arm, value)
+            for arm, arm_values in values.items()
+            for i, value in enumerate(arm_values)
+        ],
+        columns=["user_id", "variant", "x"],
+    )
+
+
+def _summary_rows(frame: pd.DataFrame, metrics: Any) -> list[LiftEstimate]:
+    experiment, reader = from_frame(
+        frame, shape="summary", unit="user_id", group="variant", control="control", metrics=metrics
+    )
+    return _lift_rows(view_readout(experiment, reader))
+
+
+def test_one_unit_extra_arm_is_an_unavailable_row():
+    frame = _arm_frame(
+        {"control": [1.0, 2.0, 3.0, 4.0], "treatment": [2.0, 3.0, 4.0, 5.0], "qa": [3.0]}
+    ).assign(den=1.0)
+    metrics = [
+        MetricSpec(name="x", type="mean"),
+        MetricSpec(name="r", type="ratio", numerator="x", denominator="den"),
+    ]
+    with pytest.warns(IncrementWarning):
+        rows = {(row.metric, row.group_id): row for row in _summary_rows(frame, metrics)}
+    for metric, code in (
+        ("x", "estimation.armstats.arm_stats.least_compute_metric"),
+        ("r", "estimation.variance.ratio_moments_least_two_units"),
+    ):
+        stray = rows[metric, "qa"]
+        assert stray.failure_code == code
+        assert stray.failure_context is not None
+        assert stray.failure_context["group_id"] == "qa"
+        assert stray.failure_context["n"] == 1
+        assert rows[metric, "treatment"].require_lift().value == pytest.approx(0.4)
+
+
+def test_one_unit_control_refuses_every_cell():
+    frame = _arm_frame(
+        {"control": [3.0], "treatment": [2.0, 3.0, 4.0, 5.0], "variant_b": [1.0, 2.0, 3.0, 4.0]}
+    )
+    with pytest.warns(IncrementWarning), pytest.raises(UnsupportedRequestError) as raised:
+        _summary_rows(frame, {"x": "mean"})
+    assert raised.value.code == "readout.estimate_lift_every"
+    failures = cast(list[dict[str, Any]], raised.value.context["failures"])
+    code = "estimation.armstats.arm_stats.least_compute_metric"
+    assert sorted((f["metric"], f["group_id"], f["code"]) for f in failures) == [
+        ("x", "treatment", code),
+        ("x", "variant_b", code),
+    ]
+    assert [f["context"]["group_id"] for f in failures] == ["control", "control"]
+
+
+def test_ratio_row_reports_arm_counts_and_ratios():
+    frame = pd.DataFrame(
+        {
+            "user_id": [f"u{i}" for i in range(6)],
+            "variant": ["control"] * 3 + ["treatment"] * 3,
+            "num": [2.0, 4.0, 6.0, 3.0, 6.0, 9.0],
+            "den": [1.0, 1.0, 2.0, 1.0, 2.0, 1.0],
+        }
+    )
+    metrics = [MetricSpec(name="r", type="ratio", numerator="num", denominator="den")]
+    with pytest.warns(IncrementWarning):
+        (row,) = _summary_rows(frame, metrics)
+    assert row.n_control == row.n_treat == 3
+    assert row.mean_control == pytest.approx(3.0)
+    assert row.mean_treat == pytest.approx(4.5)
+    assert row.require_lift().value == pytest.approx(0.5)
+
+
+def test_quantile_row_reports_arm_counts():
+    frame = _arm_frame(
+        {
+            "control": [float(v) for v in range(1, 21)],
+            "treatment": [float(v) for v in range(2, 22)],
+        }
+    )
+    (row,) = _summary_rows(frame, [MetricSpec(name="x", type="quantile", quantile=0.5)])
+    assert row.n_control == row.n_treat == 20
+    assert row.mean_control is None
+    assert row.mean_treat is None

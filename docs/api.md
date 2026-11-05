@@ -138,6 +138,18 @@ values.
   is strictly after the unit's `first_exposure_ts`, so an event at that exact
   instant, such as a first-purchase exposure's enrolling order, counts in
   neither the outcome nor the CUPED window. Refusals, estimates and experiment
+- Release note (usability): an arm with one unit no longer aborts the run.
+  Each of its cells comes back as an unavailable row carrying
+  `estimation.armstats.arm_stats.least_compute_metric`, or
+  `estimation.variance.ratio_moments_least_two_units` for a ratio metric, with
+  context `group_id`, `metric` and `n`, and the other arms are still
+  estimated. A one-unit control arm leaves no cell to estimate, so the run
+  refuses with `readout.estimate_lift_every`, whose `failures` carry the same
+  code for every cell. Both messages name the route "drop or merge arm".
+  Unclustered ratio rows now report `n_control` and `n_treat` as arm unit
+  counts and `mean_control` and `mean_treat` as each arm's ratio, its
+  numerator total over its denominator total; quantile rows report the
+  counts and leave the means empty. Estimates, intervals and experiment
   identity are unchanged.
 - Release note (documentation): the power guide's `PowerResult` table states
   that `mde_relative` is relative to the declared `null_lift`, not to control,

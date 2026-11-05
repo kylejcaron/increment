@@ -33,7 +33,7 @@ _REFUSALS = refusals(
         "estimation.variance.se_log_mean_out_of_range": "se_log_mean(var={var:.6g}, mean={mean:.6g}, n={n:.6g}): the true standard error is outside the float64 exponent range (log SE = {half:.6g}) -- it is not representable at this scale",
         "estimation.variance.se_log_mean_not_representable": "se_log_mean(var={var:.6g}, mean={mean:.6g}, n={n:.6g}) is {se!r} for a positive variance -- the true standard error is not representable in float64",
         "estimation.variance.ratio_moments_needs_ref_den": "ratio-family moments require ref_den/cden1/cden2/cyden (not None)",
-        "estimation.variance.ratio_moments_least_two_units": "n must be at least 2 to compute ddof=1 ratio moments (metric {metric!r}, arm {group_id!r} has n={n})",
+        "estimation.variance.ratio_moments_least_two_units": "n must be at least 2 to compute ddof=1 ratio moments (metric {metric!r}, arm {group_id!r} has n={n}); drop or merge arm {group_id!r}",
         "estimation.variance.ratio_moments_nonpositive_denominator_mean": "ratio metric {metric!r} arm {group_id!r}: nonpositive denominator mean ({d_bar!r}) -- the ratio estimand sum(num)/sum(den) is undefined or sign-ambiguous; check the denominator fact/window",
         "estimation.variance.ratio_variance_term": "{what}: the ratio variance term is not representable in float64 for num_bar={num_bar:.6g}, den_bar={den_bar:.6g}, var_den={var_den:.6g} -- r*sqrt(var_den)={rooted:.6g} squares past the exponent range",
         "estimation.variance.ratio_residual_variance": "{what}: ratio residual variance is not representable in float64 (residual={residual!r}) for num_bar={num_bar:.6g}, den_bar={den_bar:.6g} -- the quadratic form overflowed at this scale",

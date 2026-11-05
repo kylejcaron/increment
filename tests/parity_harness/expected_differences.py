@@ -11,6 +11,7 @@ from the row's own captured evidence.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -233,28 +234,61 @@ def _binomial_arm_facts(counts: BinomialCounts) -> dict[str, int | float]:
     return {"n_control": n_c, "n_treat": n_t, "mean_control": x_c / n_c, "mean_treat": x_t / n_t}
 
 
-def without_binomial_arm_facts(
+def _without_gained_unit_arm_facts(
+    expected: Mapping[str, Any], actual: Mapping[str, Any], projected: dict[str, Any]
+) -> dict[str, Any]:
+    """``projected`` without the arm unit counts an unclustered ratio or a quantile row gained,
+    and the arm ratios a ratio row gained. Their captured evidence holds neither, so the counts
+    must be positive integers and the ratios finite."""
+    metric_type = actual.get("metric_type")
+    if metric_type == "quantile":
+        gained: tuple[str, ...] = ("n_control", "n_treat")
+    elif metric_type == "ratio" and actual.get("n_clusters") is None:
+        gained = ("n_control", "n_treat", "mean_control", "mean_treat")
+    else:
+        return projected
+    for field in gained:
+        value = actual.get(field)
+        if value is None or expected.get(field) is not None:
+            continue
+        if field in ("n_control", "n_treat"):
+            # A frame holds counts in a float column; a typed row holds integers.
+            assert type(value) in (int, float) and value >= 1 and float(value).is_integer(), (
+                field,
+                value,
+            )
+        else:
+            assert type(value) is float and math.isfinite(value), (field, value)
+        if field in expected:
+            projected[field] = None
+        else:
+            del projected[field]
+    return projected
+
+
+def without_gained_arm_facts(
     expected: Any,
     actual: Any,
     counts: Mapping[tuple[str, str], BinomialCounts] | None = None,
 ) -> Any:
-    """``actual`` without the arm counts and rates exact binomial rows gained after a capture.
+    """``actual`` without the arm counts and values rows gained after a capture.
 
-    Only a ``reference_kind == "binomial"`` row is projected, and only a field its captured
-    row lacks or holds as null. The counts must equal ``n_c`` and ``n_t`` exactly, as integers
-    on a typed row; the rates must equal ``x_c / n_c`` and ``x_t / n_t`` within the harness
-    tolerance. Both come from the row's own ``binomial_set`` or, for a flattened row without
-    one, from ``counts`` keyed by ``(metric, group_id)`` as ``(x_c, n_c, x_t, n_t)``. Every other
-    field is left to the caller's comparison. Lists and tuples pair by position, so a captured
-    model's ``(type name, fields)`` form is projected too.
+    Only a field the captured row lacks or holds as null is projected. On an exact binomial row
+    (``reference_kind == "binomial"``) the counts must equal ``n_c`` and ``n_t`` exactly, as
+    integers on a typed row; the rates must equal ``x_c / n_c`` and ``x_t / n_t`` within the
+    harness tolerance. Both come from the row's own ``binomial_set`` or, for a flattened row
+    without one, from ``counts`` keyed by ``(metric, group_id)`` as ``(x_c, n_c, x_t, n_t)``.
+    Ratio and quantile rows follow ``_without_gained_unit_arm_facts``. Every other field is
+    left to the caller's comparison. Lists and tuples pair by position, so a captured model's
+    ``(type name, fields)`` form is projected too.
     """
     if isinstance(expected, Mapping) and isinstance(actual, Mapping):
         projected = {
-            key: without_binomial_arm_facts(expected.get(key), value, counts)
+            key: without_gained_arm_facts(expected.get(key), value, counts)
             for key, value in actual.items()
         }
         if actual.get("reference_kind") != "binomial":
-            return projected
+            return _without_gained_unit_arm_facts(expected, actual, projected)
         exact = actual.get("binomial_set")
         if isinstance(exact, tuple) and len(exact) == 2:
             exact = exact[1]
@@ -288,7 +322,7 @@ def without_binomial_arm_facts(
         and len(expected) == len(actual)
     ):
         paired = [
-            without_binomial_arm_facts(left, right, counts)
+            without_gained_arm_facts(left, right, counts)
             for left, right in zip(expected, actual, strict=True)
         ]
         return tuple(paired) if isinstance(actual, tuple) else paired
@@ -300,7 +334,7 @@ def without_breakout_family_size(expected: Any, actual: Any) -> Any:
 
     Only a segment row with ``family_procedure == "bh"`` and a positive integer ``family_size``
     is projected, and only when its captured row lacks the field or holds it as null. Lists
-    and tuples pair by position, as in ``without_binomial_arm_facts``.
+    and tuples pair by position, as in ``without_gained_arm_facts``.
     """
     if isinstance(expected, Mapping) and isinstance(actual, Mapping):
         projected = {

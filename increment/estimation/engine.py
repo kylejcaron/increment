@@ -1912,13 +1912,17 @@ def _infer_lift_result(
             },
         )
     update: dict[str, Any] = dict(_winsorization_result_fields(control, treatment))
-    if strategy.n_clusters is None and strategy.metric_type not in {"ratio", "quantile"}:
-        update.update(
-            n_control=control.n,
-            n_treat=treatment.n,
-            mean_control=control.mean_y(),
-            mean_treat=treatment.mean_y(),
-        )
+    if strategy.n_clusters is None:
+        update.update(n_control=control.n, n_treat=treatment.n)
+        if strategy.metric_type == "ratio":
+            # A ratio arm's value is sum(numerator) / sum(denominator), the
+            # components of the row's point estimate.
+            update.update(
+                mean_control=control.mean_y() / control.mean_den(),
+                mean_treat=treatment.mean_y() / treatment.mean_den(),
+            )
+        else:
+            update.update(mean_control=control.mean_y(), mean_treat=treatment.mean_y())
     if inference is None and strategy.ratio_notes:
         update["note"] = "; ".join(strategy.ratio_notes)
     return result.model_copy(update=update), None
@@ -3334,7 +3338,9 @@ def _ratio_denominator_refusals(frame: Any, metric_name: str) -> dict[str, Coded
 # request, source, and wire refusals abort the readout instead.
 CELL_ESTIMATION_GUARD_CODES = frozenset(
     {
+        "estimation.armstats.arm_stats.least_compute_metric",
         "estimation.cuped.covariate_zero_variance",
+        "estimation.variance.ratio_moments_least_two_units",
         "estimation.variance.ratio_moments_nonpositive_denominator_mean",
         "estimation.cuped_linear.arm_counts",
         "estimation.cuped_linear.invalid_arms",

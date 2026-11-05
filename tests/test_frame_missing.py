@@ -12,7 +12,7 @@ import importlib.util
 import math
 import warnings
 from datetime import date, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import narwhals as nw
 import numpy as np
@@ -2067,9 +2067,9 @@ def test_densified_cells_counts_declared_zero_null_fills() -> None:
 
 
 def test_single_unit_arm_error_names_metric_and_arm() -> None:
-    """A one-unit treatment arm within the declared roster refuses at estimation time.
-    The moment-grain read is legitimate, and the error must name the metric
-    and arm instead of surfacing a bare ddof=1 complaint."""
+    """A one-unit treatment arm within the declared roster is refused at estimation time.
+    The moment-grain read is legitimate; with no other cell left, the run refuses and
+    its failure evidence names the metric and arm."""
     rows = [
         *(row for row in _ROWS if row[1] == "control"),
         next(row for row in _ROWS if row[1] == "treatment"),
@@ -2084,9 +2084,13 @@ def test_single_unit_arm_error_names_metric_and_arm() -> None:
         metrics={"revenue": "mean"},
         design=_DESIGN,
     )
-    with pytest.raises(InvalidRequestError) as error:
+    with pytest.warns(IncrementWarning), pytest.raises(UnsupportedRequestError) as error:
         readouts.run(src)
-    assert error.value.code == "estimation.armstats.arm_stats.least_compute_metric"
+    assert error.value.code == "readout.estimate_lift_every"
+    (failure,) = cast(list[dict[str, Any]], error.value.context["failures"])
+    assert failure["code"] == "estimation.armstats.arm_stats.least_compute_metric"
+    assert failure["context"]["metric"] == "revenue"
+    assert failure["context"]["group_id"] == "treatment"
 
 
 def test_windowed_encouragement_panel_offers_asof_but_refuses_total() -> None:
