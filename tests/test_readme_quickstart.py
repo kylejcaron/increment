@@ -7,6 +7,7 @@ from pathlib import Path
 from increment import ExperimentReader, RunResult, from_frame
 from increment.kernel.experiment import Experiment
 from increment.result_envelope import ResultCell
+from increment.results import LiftEstimate
 from tests.analysis_factory import view_readout
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,18 +54,25 @@ def test_readme_quickstart_executes_recommended_run() -> None:
         warnings.simplefilter("always")
         exec(compile(match.group(1), "README.md quickstart", "exec"), namespace)
 
-    assert isinstance(namespace["exp"], Experiment)
-    assert isinstance(namespace["resolver"], ExperimentReader)
+    assert isinstance(namespace["experiment"], Experiment)
+    assert isinstance(namespace["reader"], ExperimentReader)
     result = namespace["result"]
     assert isinstance(result, RunResult)
     assert result.effects == tuple(cell.summary for cell in result.cells)
     assert result.decisions.run_id == result.run.run_id
     assert all(isinstance(cell, ResultCell) for cell in result.cells)
-    rendered = namespace["rendered"]
-    assert isinstance(rendered, str)
-    assert rendered
-    assert "complaints" in rendered
-    assert "unavailable" in rendered
+    rows = {row.metric: row for row in result.readout() if isinstance(row, LiftEstimate)}
+    # The README says float columns are averaged and boolean columns become conversion rates.
+    assert {name: row.metric_type for name, row in rows.items()} == {
+        "revenue": "mean",
+        "converted": "conversion",
+    }
+    revenue, converted = rows["revenue"].lift, rows["converted"].lift
+    # The README reads revenue as a significant increase and conversion as inconclusive.
+    assert revenue is not None and revenue.lb is not None
+    assert 0 < revenue.lb < revenue.value
+    assert converted is not None and converted.lb is not None and converted.ub is not None
+    assert converted.lb < 0 < converted.ub
     from increment import render
 
     for audience in ("brief", "full"):

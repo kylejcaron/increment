@@ -679,7 +679,7 @@ jobs:
               warnings.simplefilter("always")
               exec(compile(code.group(1), "README.md quickstart", "exec"), namespace)
           assert isinstance(namespace["result"], RunResult)
-          assert namespace["rendered"]
+          assert namespace["result"].readout()
           '
       - name: Collect core tests
         run: uv run --no-sync --python ${{ matrix.python-version }} pytest --collect-only -q $(cat tests/core_modules.txt)
