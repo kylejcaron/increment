@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis
 import ibis.expr.types as ir
-import narwhals as nw
 
 from increment._analysis_config import effective_methods
 from increment._frame_validation import _reject_windowed_specs
@@ -339,12 +338,13 @@ class SqlPanelSource:
             _validate_control,
             _validate_conversion_binary,
             _validate_frame_boundary,
+            eager_frame,
             skip_missing_accounts,
         )
 
         specs = coerce_metrics(metrics)
         _reject_windowed_specs(specs)
-        nwf = nw.from_native(frame, eager_only=True)
+        nwf = eager_frame(frame)
         _validate_columns(nwf, roles=[("unit", unit), ("group", group)], metrics=specs)
         nwf = _canonicalize_group_identity(nwf, group)
         metric_columns = sorted(

@@ -298,11 +298,18 @@ WINSORIZATION_MOMENT_FIELDS = (
 # Censoring above this fraction of enrolled units counts as "material";
 # unit_totals and frame's windowed panel share the threshold.
 CENSOR_WARN_FRACTION = 0.10
-_MOMENTS_PLAN_INVALID = _RefusalSpec(
-    "moments.plan.invalid",
-    _WireFormatError,
-    template="moments cube has invalid {field!r}: {value!r}; {constraint}",
-)
+
+
+def _render_plan_invalid(
+    *, field: str, value: object, constraint: str, available: tuple[str, ...] | None = None
+) -> str:
+    if available is None:
+        return f"moments cube has invalid {field!r}: {value!r}; {constraint}"
+    shown = ", ".join(available) or "none"
+    return f"metric(s) {value!r} are not in these moments rows (available: {shown}); {constraint}"
+
+
+_MOMENTS_PLAN_INVALID = _RefusalSpec("moments.plan.invalid", _WireFormatError, _render_plan_invalid)
 _MOMENTS_PLAN_CONFLICT = _RefusalSpec(
     "moments.plan.conflict",
     _WireFormatError,
@@ -1545,11 +1552,16 @@ class MomentsSource(SequentialSourceMixin):
                 metric.name for metric in metric_catalog if metric.name not in compiled.procedures
             ]
             if missing:
+                row_metrics = {row.get("metric") for row in stripped}
                 _refuse(
                     _MOMENTS_PLAN_INVALID,
                     field=DECISION_PLAN_FIELD,
                     value=tuple(sorted(missing)),
-                    constraint="the embedded decision plan must cover every supplied metric",
+                    constraint="declare metrics= from the available ones, or export moments "
+                    "that include the others",
+                    available=tuple(
+                        sorted(name for name in compiled.procedures if name in row_metrics)
+                    ),
                 )
         elif isinstance(plan, CompiledDecisionPlan):
             compiled = plan

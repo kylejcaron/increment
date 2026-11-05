@@ -162,6 +162,26 @@ values.
   `Baseline.from_summary` and `Baseline.from_ratio` are unchanged, so passing
   a pilot's ratio moments to `from_ratio` still plans the unbounded variance.
   Readout estimates and experiment identity are unchanged.
+- Release note (usability): refusals of hand-built summaries, moments rows and
+  dataframes now name the input mistake. `moments.summaries.invalid` carries a
+  `reason`, such as `unknown_field`, `not_integer`, `below_two` or
+  `missing_control_row`, and a `route`, plus `expected` (the accepted row
+  fields, metric types or declared metrics) where one exists.
+  `moments.plan.invalid` for a declared metric the rows do not carry lists the
+  `available` metrics, and `estimation.binomial.exact_counts_required` names the
+  `declared_type`. `from_moments` refuses a pandas or Polars dataframe, or an
+  Arrow table or record batch, with `source.frame.input_type`, whose `route`
+  names the conversion to rows, such as `.to_pylist()`; it previously raised an
+  `AttributeError`. A dataframe that repeats a column name refuses with
+  `source.frame.duplicate_columns` (context `columns`) instead of a narwhals
+  `DuplicateError`. A metric whose value or denominator column is the unit,
+  group, date, exposure-date or cluster column refuses with
+  `frame.validation.metric_overlaps_column` (context `name`, `role`) before its
+  dtype is checked; a Boolean group column used as a metric previously reported
+  `source.frame.column_dtype`. On `from_switchback_frame` the same mistake
+  refuses with `source.frame.switchback.columns`, reason
+  `metric_overlaps_column`. Estimates and experiment identity hashes are
+  unchanged.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra

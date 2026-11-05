@@ -1623,6 +1623,7 @@ def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
             "estimation.binomial.exact_counts_required",
             metric=arm.metric,
             group_id=arm.group_id,
+            declared_type=metric_type,
         )
     if isinstance(successes, bool) or not isinstance(successes, numbers.Integral):
         _raise(
@@ -1811,7 +1812,7 @@ _REFUSALS = refusals(
         "estimation.binomial.exact_counts_required": RefusalSpec(
             "estimation.binomial.exact_counts_required",
             CapabilityError,
-            template="binary_counts(metric={metric!r}, group_id={group_id!r}) requires an exact integer successes count; rebuild from original unit data or re-export current moments, because floating centered moments cannot recover lost count information",
+            template="metric {metric!r} is declared {declared_type!r}, but arm {group_id!r} carries no success count; declare the metric with the type its rows were built for, or rebuild the rows from unit data as a {declared_type} metric",
         ),
         "estimation.binomial.reconstructed_counts_not_binary": RefusalSpec(
             "estimation.binomial.reconstructed_counts_not_binary",

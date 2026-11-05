@@ -1576,6 +1576,7 @@ class TestBinaryCountsBernoulliConsistency:
         with pytest.raises(CapabilityError) as exc_info:
             binary_counts(arm, "conversion")
         assert exc_info.value.code == "estimation.binomial.exact_counts_required"
+        assert exc_info.value.context["declared_type"] == "conversion"
 
     @pytest.mark.parametrize(
         "order",

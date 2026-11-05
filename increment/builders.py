@@ -887,6 +887,9 @@ def from_moments(
     design: Randomized | Encouragement | Observational | None = None,
     plan: AnalysisPlan | None = None,
 ) -> tuple[Experiment, ExperimentReader]:
+    from increment._frame_validation import require_moment_rows
+
+    require_moment_rows(rows, constructor="from_moments")
     binding = _bind_moments(
         rows,
         metrics=metrics,

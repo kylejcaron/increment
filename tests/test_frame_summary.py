@@ -189,6 +189,33 @@ def test_frame_input_type_refusals_name_the_route(monkeypatch):
             assert restored.context == error.context
 
 
+def test_a_metric_on_the_group_column_is_refused_as_an_overlap():
+    frame = pa.table(
+        {"u": ["u1", "u2", "u3", "u4"], "g": [True, False, True, False], "x": [1.0, 2, 3, 4]}
+    )
+    with pytest.raises(InvalidRequestError) as caught:
+        from_frame(frame, shape="summary", unit="u", group="g", control=False, metrics=["g"])
+    assert caught.value.code == "frame.validation.metric_overlaps_column"
+    assert caught.value.context == {"name": "g", "role": "group"}
+
+
+def test_duplicate_frame_column_names_are_refused_with_their_names():
+    import pandas as pd
+
+    frame = pd.DataFrame({"u": ["u1", "u2", "u3", "u4"], "g": ["c", "t"] * 2, "x": [1.0, 2, 3, 4]})
+    with pytest.raises(InvalidRequestError) as caught:
+        from_frame(
+            pd.concat([frame, frame[["x"]]], axis=1),
+            shape="summary",
+            unit="u",
+            group="g",
+            control="c",
+            metrics={"x": "mean"},
+        )
+    assert caught.value.code == "source.frame.duplicate_columns"
+    assert caught.value.context == {"columns": ("x",)}
+
+
 _PLUGIN_TOL = 1e-6
 
 

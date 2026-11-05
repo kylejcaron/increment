@@ -94,6 +94,7 @@ from increment._frame_validation import (  # noqa: F401
     canonical_control_for_frame,
     canonical_design_for_frame,
     check_covariate_columns,
+    eager_frame,
     refuse_observational_quantile,
     require_eager_frame,
     skip_missing_accounts,
@@ -911,9 +912,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         exposure_date: str | None = None,
     ) -> FrameTotalsSource:
         require_eager_frame(frame, constructor="from_unit_summary")
-        schema = (
-            nw.from_native(frame, eager_only=True).schema if _metrics_need_schema(metrics) else None
-        )
+        schema = eager_frame(frame).schema if _metrics_need_schema(metrics) else None
         specs = _apply_plan_methods(
             _coerce_source_metrics(metrics, design=design, schema=schema), plan
         )
@@ -983,7 +982,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             if registration is not None
             else []
         )
-        nwf = nw.from_native(frame, eager_only=True)
+        nwf = eager_frame(frame)
         roles = [("unit", unit), ("group", group)]
         if exposure_date is not None:
             roles.append(("exposure_date", exposure_date))
@@ -2373,9 +2372,7 @@ class FramePanelSource(SequentialSourceMixin):
     ) -> FramePanelSource:
         """Build a source from a one-row-per-unit-per-day dataframe. See :func:`from_unit_panel`."""
         require_eager_frame(frame, constructor="from_unit_panel")
-        schema = (
-            nw.from_native(frame, eager_only=True).schema if _metrics_need_schema(metrics) else None
-        )
+        schema = eager_frame(frame).schema if _metrics_need_schema(metrics) else None
         specs = _apply_plan_methods(
             _coerce_source_metrics(metrics, design=design, schema=schema), plan
         )
@@ -2449,7 +2446,7 @@ class FramePanelSource(SequentialSourceMixin):
             exposure_date=exposure_date,
             specs=specs,
         )
-        nwf = nw.from_native(frame, eager_only=True)
+        nwf = eager_frame(frame)
         roles = [("unit", unit), ("group", group), ("date", date)]
         if uptake is not None:
             roles.append((uptake_role, uptake))
