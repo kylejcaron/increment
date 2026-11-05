@@ -73,11 +73,14 @@ ASOF_TRANSFORM_BASES = (
 # A moments replay whose cube carries the compiled plan of a source that declares more than the
 # replay does: the ingress that builds that exporting source.
 _REPLAY_EXPORTERS = {
-    ("audit-compliance-only-sequential-unbounded-retention-catalog", "from_moments"): (
-        "from_definitions"
-    ),
-    ("portable_subset_with_winsorized_sibling", "from_moments"): "from_unit_summary",
-}
+    (scenario, "from_moments"): "from_definitions"
+    for scenario in (
+        "audit-compliance-only-sequential-unbounded-retention-catalog",
+        "triggered_sequential_asymptotic_mean",
+        "sequential_registered_registration_native_artifact_identity",
+        "sequential_explicit_registration_native_artifact_identity",
+    )
+} | {("portable_subset_with_winsorized_sibling", "from_moments"): "from_unit_summary"}
 
 
 @dataclass(frozen=True, slots=True)
