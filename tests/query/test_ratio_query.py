@@ -17,7 +17,7 @@ import ibis
 import numpy as np
 import pytest
 
-from increment import Scope, from_definitions
+from increment import View, from_definitions
 from increment.errors import IncrementWarning
 from increment.query.builders import (
     first_exposures,
@@ -658,7 +658,7 @@ experiments:
     assert _total(moments["treatment"], "ref_den", "cden1") == 5.0
     assert _total(moments["control"], "ref_den", "cden1") == 2.0
     assert _total(moments["treatment"], "ref_y", "cy1") == 10.0
-    asof_values = Scope(view="asof", grain="asof", values=True)
+    asof_values = View(view="asof", grain="asof", values=True)
     snapshot_asof = view_readout(experiment, resolver, asof_values, metrics=["rev_per_view"])
     final_day = [row for row in snapshot_asof if row.ds == dt.date(2025, 6, 10)]
     assert len(final_day) == 2

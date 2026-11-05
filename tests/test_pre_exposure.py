@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Scope, from_definitions
+from increment import View, from_definitions
 from tests.analysis_factory import view_readout
 
 
@@ -210,7 +210,7 @@ def test_post_exposure_segment_artefact_killed_by_pre_exposure_scoping(tmp_path)
         path.write_text(_definitions(events_tbl, convs_tbl, props_tbl, as_of))
         experiment, resolver = from_definitions(path, con, experiment_name="exp")
         results[label] = _contrast_z(
-            view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+            view_readout(experiment, resolver, View(view="breakout", grain="total"))
         )
         con.disconnect()
 
@@ -365,7 +365,7 @@ experiments:
 """
     )
     experiment, resolver = from_definitions(path, con, experiment_name="pre_exp")
-    results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    results = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     con.disconnect()
 
     by_segment = {r.dimension_value for r in results}

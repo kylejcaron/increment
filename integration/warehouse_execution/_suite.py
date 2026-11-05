@@ -14,7 +14,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from increment import Scope, from_definitions, from_unit_day_artifact, run, workflows
+from increment import View, from_definitions, from_unit_day_artifact, run, workflows
 from increment._dashboard_capture import dashboard_group_data
 from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.evidence import BreakoutIdentity
@@ -463,11 +463,9 @@ def _assert_boolean_dimension_labels(native: Bound, adopted: Bound, *, clustered
     """
     if clustered:
         return
-    daily = Scope(
-        view="daily", grain="daily", values=True, segment=BreakoutIdentity("is_vip", None)
-    )
+    daily = View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("is_vip", None))
     for name, (experiment, resolver) in (("native", native), ("adopted", adopted)):
-        rows = run(experiment.with_views(daily), resolver).readout(daily)
+        rows = run(experiment.with_views(daily), resolver, views=(daily,)).readout(daily)
         labels = {row.dimension_value for row in rows}
         assert labels == {"true", "false", "__null__"}, (name, labels)
 

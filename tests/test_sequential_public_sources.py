@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 
 from increment import (
-    Scope,
+    View,
     artifacts,
     from_definitions,
     from_frame,
@@ -695,7 +695,7 @@ def test_sparse_panel_sequential_state_matches_dense_and_streamed_kernels(
 
     source_experiment, source_resolver = analyze(scratch_budget)
     daily = view_readout(
-        source_experiment, source_resolver, Scope(view="daily", grain="daily", values=True)
+        source_experiment, source_resolver, View(view="daily", grain="daily", values=True)
     )
     snapshot = workflows.capture_sequential(
         source_experiment, source_resolver, finalized=True, as_of=days[-1]
@@ -703,7 +703,7 @@ def test_sparse_panel_sequential_state_matches_dense_and_streamed_kernels(
     result = view_readout(source_experiment, source_resolver)[0]
     other_experiment, other_resolver = analyze(64 * 1024 * 1024 if scratch_budget == 0 else 0)
     other_daily = view_readout(
-        other_experiment, other_resolver, Scope(view="daily", grain="daily", values=True)
+        other_experiment, other_resolver, View(view="daily", grain="daily", values=True)
     )
     other_snapshot = workflows.capture_sequential(
         other_experiment, other_resolver, finalized=True, as_of=days[-1]
@@ -820,7 +820,7 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     assert len(full.records) == 192
     assert full.parent_id == empty.prefix_id
     assert _row(analysis).stat_sig()
-    daily = view_readout(*analysis, Scope(view="asof", grain="asof", completion_policy=True))
+    daily = view_readout(*analysis, View(view="asof", grain="asof", completion_policy=True))
     assert len(daily) == 1
     assert daily[0].multiplicity_status == "declared_plan"
     assert daily[0].sequential_result == _row(analysis).require_sequential_result()
@@ -847,7 +847,7 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     replay = from_moments(pq.read_table(path).to_pylist(), metrics=specs, control="control")
     assert sequential_snapshot(*replay) == full
     assert _row(replay).sequential_result == _row(analysis).sequential_result
-    replayed_daily = view_readout(*replay, Scope(view="asof", grain="asof", completion_policy=True))
+    replayed_daily = view_readout(*replay, View(view="asof", grain="asof", completion_policy=True))
     assert list(replayed_daily) == list(daily)
     assert type(replayed_daily[0].ds) is type(label(14))
 
@@ -900,7 +900,7 @@ def test_registered_asof_secondary_family_is_joint_per_look():
     )
 
     results = view_readout(
-        experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+        experiment, resolver, View(view="asof", grain="asof", completion_policy=True)
     )
 
     assert {row.metric for row in results} == {"outcome", "other", "third"}
@@ -1344,8 +1344,8 @@ def _asof_history(experiment, resolver):
 
     from increment import run
 
-    scope = Scope(view="asof", grain="asof", completion_policy=True)
-    return run(replace(experiment, scopes=(scope,)), resolver)
+    scope = View(view="asof", grain="asof", completion_policy=True)
+    return run(replace(experiment, views=(scope,)), resolver)
 
 
 def _assert_cross_source_payloads_equal(left, right):
@@ -2012,7 +2012,7 @@ def test_native_uptake_only_capture_and_wire_never_need_the_outcome_table(tmp_pa
         daily = view_readout(
             native_experiment,
             native_resolver,
-            Scope(view="asof", grain="asof", completion_policy=True),
+            View(view="asof", grain="asof", completion_policy=True),
             estimands=("compliance",),
         )
         assert len(daily) == 1 and daily[0].ds == date(2025, 1, 16)
@@ -2031,7 +2031,7 @@ def test_native_uptake_only_capture_and_wire_never_need_the_outcome_table(tmp_pa
             replayed_daily = view_readout(
                 replay_experiment,
                 replay_resolver,
-                Scope(view="asof", grain="asof", completion_policy=True),
+                View(view="asof", grain="asof", completion_policy=True),
                 estimands=("compliance",),
             )
             _assert_cross_source_readouts_equal(replayed_daily, daily)
@@ -2064,7 +2064,7 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         }
         (row,) = view_readout(
             *native,
-            scope=Scope(view="asof", grain="asof", completion_policy=True),
+            scope=View(view="asof", grain="asof", completion_policy=True),
             estimands=("compliance",),
         )
         assert row.estimand == "compliance" and row.ds == as_of
@@ -2074,7 +2074,7 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         assert checkpoint.control.successes == 24 and checkpoint.treatment.successes == 72
         daily = view_readout(
             *native,
-            scope=Scope(view="asof", grain="asof", completion_policy=True),
+            scope=View(view="asof", grain="asof", completion_policy=True),
             estimands=("compliance",),
         )
         from dataclasses import replace
@@ -2094,9 +2094,9 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         )
         experiment = replace(
             experiment,
-            scopes=(
-                Scope(view="run", grain="total"),
-                Scope(view="asof", grain="asof", completion_policy=True),
+            views=(
+                View(view="run", grain="total"),
+                View(view="asof", grain="asof", completion_policy=True),
             ),
         )
         combined = run(
@@ -2118,7 +2118,7 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         assert sequential_snapshot(*replay) == snapshot
         replayed_daily = view_readout(
             *replay,
-            scope=Scope(view="asof", grain="asof", completion_policy=True),
+            scope=View(view="asof", grain="asof", completion_policy=True),
             estimands=("compliance",),
         )
         _assert_cross_source_readouts_equal(replayed_daily, daily)
@@ -2129,7 +2129,7 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
                 with pytest.raises(CodedError) as refused:
                     view_readout(
                         *source,
-                        scope=Scope(view="asof", grain="asof", completion_policy=True),
+                        scope=View(view="asof", grain="asof", completion_policy=True),
                         estimands=estimands,
                     )
                 assert refused.value.code == "breakout.retention.encouragement", estimands

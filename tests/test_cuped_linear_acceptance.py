@@ -6,7 +6,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import AnalysisPlan, InferenceSpec, Method, MetricSpec, Scope, UptakeSpec, from_frame
+from increment import AnalysisPlan, InferenceSpec, Method, MetricSpec, UptakeSpec, View, from_frame
 from increment.errors import UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
 from increment.frame import CupedCovariate
@@ -70,7 +70,7 @@ def _linear_breakout_analysis(*, unsupported_segment: bool = False) -> Any:
 def test_cuped_linear_breakout_emits_complete_per_cell_family_evidence() -> None:
     experiment, resolver = _linear_breakout_analysis()
 
-    rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    rows = view_readout(experiment, resolver, View(view="breakout", grain="total"))
 
     assert {(row.dimension, row.dimension_value, row.group_id) for row in rows} == {
         ("segment", segment, "treatment") for segment in ("north", "south")
@@ -128,7 +128,7 @@ def test_cuped_linear_breakout_localizes_unsupported_category_cell() -> None:
     from increment.errors import IncrementWarning
 
     with pytest.warns(IncrementWarning, match="estimation.cuped_linear.level_support"):
-        rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        rows = view_readout(experiment, resolver, View(view="breakout", grain="total"))
 
     by_segment = {row.dimension_value: row for row in rows}
     assert set(by_segment) == {"north", "south", "unsupported"}
@@ -355,9 +355,7 @@ def test_cuped_linear_interactions_preserve_ingress_specific_refusals() -> None:
     )
     try:
         with pytest.raises(CapabilityError) as breakout:
-            view_readout(
-                summary_experiment, summary_resolver, Scope(view="breakout", grain="total")
-            )
+            view_readout(summary_experiment, summary_resolver, View(view="breakout", grain="total"))
         assert breakout.value.code == "evidence.breakout_unavailable"
         with pytest.raises(CapabilityError) as triggered_summary:
             view_readout(summary_experiment, summary_resolver, population="triggered")

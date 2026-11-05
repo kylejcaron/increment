@@ -13,7 +13,7 @@ def imports():
     import marimo as mo
     import pandas as pd
 
-    from increment import MetricSpec, Scope, from_definitions, from_moments, query, run, workflows
+    from increment import MetricSpec, View, from_definitions, from_moments, query, run, workflows
     from increment.tables import estimates_to_readout, readout_table
 
     DEFINITIONS = "examples/realistic_demo/definitions/"
@@ -24,7 +24,7 @@ def imports():
         EXPERIMENT,
         MetricSpec,
         Path,
-        Scope,
+        View,
         WAREHOUSE,
         dt,
         estimates_to_readout,
@@ -1080,18 +1080,18 @@ def _(breakout_tables, metric):
 def _(mo):
     mo.md(r"""
     That table above is the moments, the mechanics - here's the polished
-    coeftable the breakout view (`Scope(view="breakout", grain="total")`) actually produces from it: the same lift
+    coeftable the breakout view (`View.breakout(())`) actually produces from it: the same lift
     estimates as the headline table, nested by segment instead of by arm.
     """)
     return
 
 
 @app.cell
-def _(Scope, estimates_to_readout, experiment, readout_table, resolver, run):
-    breakout_scope = Scope(view="breakout", grain="total")
-    breakout_estimates = run(experiment.with_views(breakout_scope), resolver).readout(
-        breakout_scope
-    )
+def _(View, estimates_to_readout, experiment, readout_table, resolver, run):
+    breakout_scope = View.breakout(())
+    breakout_estimates = run(
+        experiment.with_views(breakout_scope), resolver, views=(breakout_scope,)
+    ).readout(breakout_scope)
     country_breakout_estimates = [
         e for e in breakout_estimates if e.metric == "conversion_rate" and e.dimension == "country"
     ]
@@ -1120,7 +1120,7 @@ def _(mo):
     ## The time view: daily lift instead of one point estimate
 
     Everything above collapses the whole window into one point estimate
-    per arm. The as-of lift view (`Scope(view="asof", grain="asof")`) runs the same
+    per arm. The as-of lift view (`View.asof()`) runs the same
     `unit_totals` -> `group_summary` -> `estimate_lift` pipeline once PER
     DAY instead
     """)
@@ -1128,10 +1128,13 @@ def _(mo):
 
 
 @app.cell
-def _(Scope, estimates_to_readout, experiment, metric, pd, resolver, run):
-    asof_lift_scope = Scope(view="asof", grain="asof")
+def _(View, estimates_to_readout, experiment, metric, pd, resolver, run):
+    asof_lift_scope = View.asof()
     daily_estimates = run(
-        experiment.with_views(asof_lift_scope), resolver, metrics=[metric]
+        experiment.with_views(asof_lift_scope),
+        resolver,
+        views=(asof_lift_scope,),
+        metrics=[metric],
     ).readout(asof_lift_scope)
     pd.DataFrame(estimates_to_readout(list(daily_estimates)))[
         ["ds", "group_id", "lift", "lower", "higher", "stat_sig"]

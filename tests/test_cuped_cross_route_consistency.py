@@ -8,7 +8,7 @@ import pytest
 from increment import (
     Method,
     MetricSpec,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -211,7 +211,7 @@ def test_native_multicovariate_override_acquires_effective_binding(tmp_path, bin
         native_experiment, native_resolver = from_definitions(path, con, experiment_name="cov_test")
         with cast(Any, native_resolver):
             (separate_run,) = view_readout(native_experiment, native_resolver)
-            whole = Scope(view="run", grain="total")
+            whole = View(view="run", grain="total")
             with warnings.catch_warnings():
                 warnings.filterwarnings(
                     "ignore",
@@ -219,7 +219,7 @@ def test_native_multicovariate_override_acquires_effective_binding(tmp_path, bin
                     category=DeprecationWarning,
                 )
                 scoped = run(
-                    native_experiment.with_views(whole, Scope(view="breakout", grain="total")),
+                    native_experiment.with_views(View(view="breakout", grain="total")),
                     native_resolver,
                 )
             (shared_run,) = scoped.readout(whole)
@@ -382,7 +382,7 @@ def test_encouragement_breakout_preserves_refused_scalar_decision_cells(with_pri
         result = view_readout(
             experiment,
             resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             prior=Normal(mu=0.0, sigma=0.1) if with_prior else None,
         )
     payload = json.loads(result.model_dump_json())
@@ -469,7 +469,7 @@ def test_breakout_scalar_refusal_preserves_requested_posterior_unavailability(ro
     methods = (scalar, naive) if role == "decision" else (naive, scalar)
     experiment, resolver = _frame(_refusing_breakout_records(), methods, panel=False)
     result = view_readout(
-        experiment, resolver, Scope(view="breakout", grain="total"), prior=Normal(mu=0.0, sigma=0.1)
+        experiment, resolver, View(view="breakout", grain="total"), prior=Normal(mu=0.0, sigma=0.1)
     )
     failed = next(
         row for row in result if row.dimension_value == "unavailable" and row.method == "adjusted"
@@ -511,7 +511,7 @@ def test_scalar_only_breakout_refusal_remains_in_bh_family():
     )
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
-        result = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        result = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     assert not captured
     failed = next(row for row in result if row.dimension_value == "unavailable")
     assert failed.failure_code == "frame.validation.metric_covariate_column"

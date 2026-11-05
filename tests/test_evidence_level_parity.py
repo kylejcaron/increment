@@ -14,7 +14,7 @@ from typing import Any, Literal, cast
 import pyarrow as pa
 import pytest
 
-from increment import Method, MetricSpec, Scope, from_frame
+from increment import Method, MetricSpec, View, from_frame
 from increment._canonical import canonical_digest_bytes, canonical_json_bytes
 from increment._evidence_types import DayAxisRequest, DayAxisRows
 from increment.errors import CodedError, IncrementWarning
@@ -47,7 +47,7 @@ def _key(metric="revenue", arm="control", method=None):
         "randomized.unadjusted" if method.variance_reduction == "none" else "randomized.cuped",
         method_identity(method),
         metric,
-        Scope(view="run", grain="total").hash(),
+        View(view="run", grain="total").hash(),
         RequestCoordinates("assigned", "total"),
         arm,
     )
@@ -178,7 +178,7 @@ def test_mean_and_conversion_evidence_matches_across_sources(monkeypatch):
                 warnings.simplefilter("always", IncrementWarning)
                 source = binding_for(experiment, resolver).source
                 provider = evidence_provider(source)
-                captured = _Capture((Scope(view="run", grain="total"),), expected)
+                captured = _Capture((View(view="run", grain="total"),), expected)
                 for metric in source.context.metrics:
                     request = MetricEvidenceRequest(
                         metric=metric,
@@ -269,7 +269,7 @@ def test_triggered_run_acquires_the_triggered_members_evidence():
         con,
     )
     acquisitions = _Acquisitions(
-        (Scope(view="run", grain="total", population="triggered"),), frozenset()
+        (View(view="run", grain="total", population="triggered"),), frozenset()
     )
     try:
         with warnings.catch_warnings(), _wrapped_producers(acquisitions):
@@ -359,7 +359,7 @@ def test_real_breakout_capture_checks_roster_per_declared_source():
         ],
     )
     experiment, resolver = _analysis_with_cross_source_breakouts(con)
-    scope = Scope(view="breakout", grain="total")
+    scope = View(view="breakout", grain="total")
     method = Method(name="unadjusted")
     declared_segments = {
         "src_a": (("US", ("C", "T")), ("CA", ("C", "T"))),
@@ -417,7 +417,7 @@ def test_day_axis_capture_keeps_slice_source_identity():
     from tests.evidence_fixtures.capture import _Capture
 
     metric = MeanMetric(name="revenue", entity="user", fact="revenue")
-    scope = Scope(view="daily", grain="daily", values=True)
+    scope = View(view="daily", grain="daily", values=True)
     request = DayAxisRequest(
         caller="run_daily", grain="daily", metrics=(metric,), dimension="country"
     )
@@ -466,7 +466,7 @@ def test_method_fit_comparison_ignores_source_provenance_only():
 
     metric = MeanMetric(name="revenue", entity="user", fact="revenue")
     method = Method.cuped_multicovariate(name="mixed", covariates="a")
-    scope = Scope(view="run", grain="total")
+    scope = View(view="run", grain="total")
     request = MethodFitRequest(
         metric=metric,
         method=method,
@@ -582,7 +582,7 @@ def test_mixed_cuped_secondary_fcr_reestimation_has_one_capture_boundary():
         ],
         plan=AnalysisPlan(secondaries=("zero", "borderline", "strong"), q=0.05),
     )
-    scope_hash = Scope(view="run", grain="total").hash()
+    scope_hash = View(view="run", grain="total").hash()
     expected = (
         frozenset(
             CaptureKey(

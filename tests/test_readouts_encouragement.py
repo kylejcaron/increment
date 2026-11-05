@@ -25,7 +25,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Scope, from_frame, from_switchback_frame, readouts, workflows
+from increment import View, from_frame, from_switchback_frame, readouts, workflows
 from increment.errors import CapabilityError, InvalidRequestError, UnsupportedRequestError
 from increment.estimation import Normal
 from increment.estimation.armstats import centered_row_from_raw_sums
@@ -486,7 +486,7 @@ def test_missing_compliance_axis_refuses_before_reading_outcomes(path):
         if path == "readouts":
             readouts.asof_lift(src)
         else:
-            view_readout(*bind_pair(src, design), Scope(view="asof", grain="asof"))
+            view_readout(*bind_pair(src, design), View(view="asof", grain="asof"))
     assert error.value.code == "evidence.operation_unavailable"
 
 
@@ -535,7 +535,7 @@ def test_custom_compliance_axis_is_independent_of_selected_outcome_dates(path, s
         if path == "readouts"
         else view_readout(
             *bind_pair(src, design),
-            Scope(view="asof", grain="asof"),
+            View(view="asof", grain="asof"),
             metrics=selected,
             estimands=("itt", "compliance"),
         )
@@ -569,7 +569,7 @@ def test_asof_lift_suppresses_late_on_weak_days_and_reports_it_once_strong(path)
     results = (
         readouts.asof_lift(src)
         if path == "readouts"
-        else view_readout(*bind_pair(src, design), Scope(view="asof", grain="asof"))
+        else view_readout(*bind_pair(src, design), View(view="asof", grain="asof"))
     )
 
     by_date: defaultdict[date | datetime | str | int | float, set[str]] = defaultdict(set)
@@ -800,11 +800,11 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
     from increment import run
 
     experiment, resolver = analysis
-    whole_window = Scope(view="run", grain="total")
-    cumulative = Scope(view="asof", grain="asof", completion_policy=True)
+    whole_window = View(view="run", grain="total")
+    cumulative = View(view="asof", grain="asof", completion_policy=True)
     experiment = replace(
         experiment,
-        scopes=(whole_window, cumulative),
+        views=(whole_window, cumulative),
         operations={whole_window.hash(): "run", cumulative.hash(): "run_asof_lift"},
     )
     combined = run(
@@ -1078,8 +1078,8 @@ def test_unadjusted_daily_and_asof_lift_support_declared_moment_provider():
     assert readouts.asof_lift(src)
 
     experiment, resolver = bind_pair(src, design)
-    assert view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
-    assert view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
+    assert view_readout(experiment, resolver, View(view="daily", grain="daily"))
+    assert view_readout(experiment, resolver, View(view="asof", grain="asof"))
 
 
 # - breakout(): per-segment LATE gating -------------------------------------
@@ -1111,7 +1111,7 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
     )
     sensitivity = [Method(name="sensitivity")] if include_sensitivity else []
     combined = view_readout(
-        experiment, resolver, Scope(view="breakout", grain="total"), sensitivity_methods=sensitivity
+        experiment, resolver, View(view="breakout", grain="total"), sensitivity_methods=sensitivity
     )
     separate = [
         row
@@ -1119,7 +1119,7 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
         for row in view_readout(
             experiment,
             resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             metrics=[metric],
             sensitivity_methods=sensitivity,
         )
@@ -1186,7 +1186,7 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
         view_readout(
             experiment,
             resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             decision_method=Method(name="unadjusted"),
             sensitivity_methods=[Method(name="unadjusted")],
         )
@@ -1195,7 +1195,7 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
         view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily", grain="daily", values=True, segment=BreakoutIdentity("segment", None)
             ),
             metrics=[],
@@ -1206,9 +1206,7 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
         view_readout(
             experiment,
             resolver,
-            Scope(
-                view="asof", grain="asof", values=True, segment=BreakoutIdentity("segment", None)
-            ),
+            View(view="asof", grain="asof", values=True, segment=BreakoutIdentity("segment", None)),
             metrics=[],
         )
         == []

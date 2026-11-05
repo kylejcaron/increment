@@ -158,7 +158,7 @@ from pathlib import Path
 import ibis
 import pyarrow as pa
 
-from increment import Scope, from_definitions, run
+from increment import View, from_definitions, run
 from increment.artifacts import SourceSnapshotEvidence
 
 definitions = Path("encouragement.yml")
@@ -249,11 +249,12 @@ experiment, resolver = from_definitions(
         {"events": dt.datetime(2026, 1, 4, tzinfo=dt.UTC)},
     ),
 )
-triggered_daily = Scope(view="daily", grain="daily", population="triggered")
+triggered_daily = View.daily(population="triggered")
 with resolver:
     run(
         experiment.with_views(triggered_daily),
         resolver,
+        views=(triggered_daily,),
         estimands=("compliance",),
     ).readout(triggered_daily)
 con.disconnect()

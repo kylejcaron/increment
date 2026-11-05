@@ -7,7 +7,7 @@ from typing import Any, cast
 import ibis
 import pytest
 
-from increment import Scope, from_definitions, from_frame, from_moments, from_unit_day_artifact
+from increment import View, from_definitions, from_frame, from_moments, from_unit_day_artifact
 from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.evidence import (
     ComplianceRequest,
@@ -278,7 +278,7 @@ def test_native_encouragement_day_source_declares_working_compliance_axis(con, t
         assert triggered_day.evidence.populations == frozenset({"triggered"})
         assert triggered_day.compliance_summary(source.context.design, as_of=dates[0]) == summary
         assert view_readout(
-            experiment, resolver, Scope(view="asof", grain="asof"), estimands=("compliance",)
+            experiment, resolver, View(view="asof", grain="asof"), estimands=("compliance",)
         )
     finally:
         cast(Any, resolver).close()
@@ -292,17 +292,17 @@ def test_asof_compliance_cells_execute_the_design_uptake_configuration(con, tmp_
 
     from increment import run
     from increment.builders import from_definitions
-    from increment.kernel.contracts import Scope
+    from increment.kernel.contracts import View
 
     _seed(con)
     defs_path = _write_defs_yaml(_encouragement_defs(), tmp_path)
     experiment, resolver = from_definitions(
         defs_path, con, experiment_name="native_encouragement_exp", store="none"
     )
-    scopes = (Scope(view="run", grain="total"), Scope(view="asof", grain="asof"))
+    scopes = (View(view="run", grain="total"), View(view="asof", grain="asof"))
     try:
         result = run(
-            replace(experiment, scopes=scopes), resolver, estimands=("itt", "compliance", "late")
+            replace(experiment, views=scopes), resolver, estimands=("itt", "compliance", "late")
         )
     finally:
         cast("Any", resolver).close()
@@ -364,20 +364,20 @@ def test_line_two_encouragement_reads_separate_uptake_source(con, tmp_path):
     )
     try:
         assert (
-            len(view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True)))
+            len(view_readout(experiment, resolver, View(view="daily", grain="daily", values=True)))
             == 14
         )
         assert (
-            len(view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True)))
+            len(view_readout(experiment, resolver, View(view="asof", grain="asof", values=True)))
             == 62
         )
         assert view_readout(
-            experiment, resolver, Scope(view="breakout", grain="total"), metrics=["revenue"]
+            experiment, resolver, View(view="breakout", grain="total"), metrics=["revenue"]
         )
         assert (
             len(
                 view_readout(
-                    experiment, resolver, Scope(view="asof", grain="asof"), estimands=("itt",)
+                    experiment, resolver, View(view="asof", grain="asof"), estimands=("itt",)
                 )
             )
             == 31
@@ -385,7 +385,7 @@ def test_line_two_encouragement_reads_separate_uptake_source(con, tmp_path):
         completed = view_readout(
             experiment,
             resolver,
-            Scope(view="asof", grain="asof", completion_policy=True),
+            View(view="asof", grain="asof", completion_policy=True),
             estimands=("itt",),
         )
         assert {row.ds for row in completed} == {

@@ -6,7 +6,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Method, MetricSpec, Scope, from_definitions, from_frame
+from increment import Method, MetricSpec, View, from_definitions, from_frame
 from increment.errors import CodedError, IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.evidence import (
@@ -309,7 +309,7 @@ def test_mixed_breakout_collision_mapping_matches_each_standalone():
         )
         return {
             (row.dimension_value, row.method): row
-            for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+            for row in view_readout(experiment, resolver, View(view="breakout", grain="total"))
         }
 
     joint = estimates(methods)

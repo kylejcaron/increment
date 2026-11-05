@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from increment.errors import CodedError
-from increment.kernel.contracts import Scope, declared_breakouts
+from increment.kernel.contracts import View, declared_breakouts
 from increment.kernel.experiment import Experiment, SourceReference
 
 if TYPE_CHECKING:
@@ -93,7 +93,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
 
     from increment._runnability import operation_options, scope_operation, scope_refusals
 
-    for scope in exp.scopes:
+    for scope in exp.views:
         for refusal in scope_refusals(exp, scope):
             append_unique(refusal)
     if refusals:
@@ -132,7 +132,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
         if capabilities is None:
             continue
         constructor = recorded.get("source_name") or source.name
-        for scope in exp.scopes:
+        for scope in exp.views:
             inference = recorded.get("plan", {}).get("inference") or {}
             checkpoint_projection = (
                 scope_operation(exp, scope) == "run_asof_lift"
@@ -265,12 +265,12 @@ def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:
     }
 
 
-def _select_views(exp: Experiment, views: Sequence[Scope] | None) -> Experiment:
+def _select_views(exp: Experiment, views: Sequence[View] | None) -> Experiment:
     """Narrow to the selected declared views, keeping declaration order."""
     if views is None:
         return exp
     hashes = tuple(scope.hash() for scope in views)
-    declared = {scope.hash() for scope in exp.scopes}
+    declared = {scope.hash() for scope in exp.views}
     if not hashes or len(set(hashes)) != len(hashes) or not set(hashes) <= declared:
         raise CodedError(
             "The bound analysis cannot execute these experiment declarations",
@@ -279,7 +279,7 @@ def _select_views(exp: Experiment, views: Sequence[Scope] | None) -> Experiment:
         )
     return replace(
         exp,
-        scopes=tuple(scope for scope in exp.scopes if scope.hash() in hashes),
+        views=tuple(view for view in exp.views if view.hash() in hashes),
         operations={key: value for key, value in exp.operations.items() if key in hashes},
     )
 
@@ -290,7 +290,7 @@ def run(
     *,
     ctx: object | None = None,
     options: Mapping[str, object] | None = None,
-    views: Sequence[Scope] | None = None,
+    views: Sequence[View] | None = None,
     capture: SequentialCaptureRequest | None = None,
     execution_context: EvidenceExecutionContext | None = None,
 ) -> tuple[ScopedReadout, ...]:

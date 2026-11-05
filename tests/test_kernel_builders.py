@@ -17,7 +17,7 @@ import yaml
 from increment import MetricSpec, Randomized, RunResult, Winsorization, run
 from increment.builders import from_definitions, from_frame, from_moments
 from increment.errors import CodedError, IncrementWarning
-from increment.kernel.contracts import Registration, Scope
+from increment.kernel.contracts import Registration, View
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import runnable
 from increment.workflows import export_moments, materialize, unit_counts
@@ -385,7 +385,7 @@ def _write_offline_catalog(tmp_path: Path) -> tuple[Path, Experiment]:
         metrics={},
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="warehouse://events"),),
-        scopes=(Scope(view="run", grain="total"),),
+        views=(View(view="run", grain="total"),),
     )
     catalog = definitions.with_suffix(".yaml.kernel.json")
     catalog.write_text(

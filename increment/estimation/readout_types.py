@@ -63,13 +63,13 @@ from increment.estimation.sequential_result import AsymptoticSequentialResult
 from increment.sequential_state import SequentialCheckpoint
 
 if TYPE_CHECKING:
-    from increment.kernel.contracts import Scope
+    from increment.kernel.contracts import View
 
 
 @dataclass(frozen=True, slots=True)
 class ScopedReadout:
     collection: Any
-    scope: Scope | None
+    scope: View | None
     options: Mapping[str, object]
     analysis_spec_hash: str | None = None
 

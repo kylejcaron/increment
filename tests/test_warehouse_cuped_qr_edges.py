@@ -8,7 +8,7 @@ from typing import Any, cast
 import ibis
 import pytest
 
-from increment import Scope, from_definitions, from_unit_day_artifact
+from increment import View, from_definitions, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CodedError
 from increment.estimation.engine import Method
@@ -228,7 +228,7 @@ def test_breakout_null_and_reserved_label_stay_distinct(route, tmp_path):
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             rows = view_readout(
-                *analysis, Scope(view="breakout", grain="total"), metrics=["revenue"]
+                *analysis, View(view="breakout", grain="total"), metrics=["revenue"]
             )
         cells = {row.dimension_value: row for row in rows}
         assert set(cells) == {"__null__", "\\__null__"}

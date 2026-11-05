@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 
-from increment import Scope, from_definitions, run
+from increment import View, from_definitions, run
 from increment.artifacts import publish_unit_day_artifact
 from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from tests.analysis_factory import bound_source
@@ -994,9 +994,9 @@ experiments:
         assert triggered.arm("C").values == ((2, 4) if volatile else (1, 2))
         if not volatile:
             native_results: dict[str, LiftEstimate] = {}
-            assigned_view = Scope(view="run", grain="total")
-            triggered_view = Scope(view="run", grain="total", population="triggered")
-            result = run(experiment.with_views(assigned_view, triggered_view), resolver)
+            assigned_view = View(view="run", grain="total")
+            triggered_view = View(view="run", grain="total", population="triggered")
+            result = run(experiment.with_views(triggered_view), resolver)
             for row in (*result.readout(assigned_view), *result.readout(triggered_view)):
                 assert isinstance(row, LiftEstimate)
                 native_results[row.analysis_population] = row

@@ -15,7 +15,7 @@ from increment import from_frame
 from increment import run as run_views
 from increment.errors import CodedError
 from increment.estimation.readout_types import ReadoutResults
-from increment.kernel.contracts import Scope
+from increment.kernel.contracts import View
 from increment.result_envelope import ResultCell
 from increment.store import HistorySelector, ParquetResultsStore, Run
 from tests.analysis_factory import view_readout
@@ -155,7 +155,7 @@ def _cells(
     experiment_id="exp",
     analysis_spec_hash="spec",
 ):
-    scope = Scope(view="run", grain="total")
+    scope = View(view="run", grain="total")
     cells = []
     for cell in rows.as_cells(created_at=datetime(2026, 1, 1, tzinfo=UTC)):
         update = {
@@ -521,7 +521,7 @@ def test_run_rejects_population_scope_that_differs_from_cell():
         rows = view_readout(experiment, resolver)
         cells, scope = _cells(rows)
         identity = cells[0].identity.model_copy(
-            update={"scope": Scope(view="run", grain="total", population="triggered")}
+            update={"scope": View(view="run", grain="total", population="triggered")}
         )
         bad_cell = replace(cells[0], identity=identity)
         with pytest.raises(CodedError) as error:
@@ -542,7 +542,7 @@ def test_run_rejects_mismatched_segment_scope_descriptor():
         identity = cells[0].identity.model_copy(
             update={
                 "key": key,
-                "scope": Scope(
+                "scope": View(
                     view="breakout",
                     grain="total",
                     segment=({"property": "other_dimension", "source": None},),

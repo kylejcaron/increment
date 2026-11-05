@@ -87,12 +87,11 @@ def _mutate_before_breakout_reads(
 @pytest.mark.parametrize("mutation", tuple(_MUTATIONS))
 @pytest.mark.parametrize("coherence", ("captured", "live"))
 def test_run_owner_coherence_mutations_between_primary_and_breakout(tmp_path, mutation, coherence):
-    from increment import Scope, run
+    from increment import View, run
     from increment.errors import CodedError
     from tests.analysis_factory import bound_source
 
-    primary = Scope(view="run", grain="total")
-    breakout = Scope(view="breakout", grain="total")
+    breakout = View(view="breakout", grain="total")
     baseline_dir = tmp_path / "baseline"
     mutated_dir = tmp_path / "mutated"
     baseline_dir.mkdir()
@@ -107,7 +106,7 @@ def test_run_owner_coherence_mutations_between_primary_and_breakout(tmp_path, mu
     _add_replication_units(con)
     try:
         original = run(
-            baseline_experiment.with_views(primary, breakout), baseline, coherence=coherence
+            baseline_experiment.with_views(breakout), baseline, coherence=coherence
         ).readout(breakout)
         original_breakout = _breakout_values(original)
         mutated: list[str] = []
@@ -118,7 +117,7 @@ def test_run_owner_coherence_mutations_between_primary_and_breakout(tmp_path, mu
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", IncrementWarning)
                 changed = run(
-                    experiment.with_views(primary, breakout), resolver, coherence=coherence
+                    experiment.with_views(breakout), resolver, coherence=coherence
                 ).readout(breakout)
         except CodedError as refusal:
             assert coherence == "captured"
@@ -155,21 +154,25 @@ def test_run_coherence_is_the_call_time_value_else_the_saved_one(
 ):
     from dataclasses import replace
 
-    from increment import Scope, run
+    from increment import View, run
 
-    primary = Scope(view="run", grain="total")
-    breakout = Scope(view="breakout", grain="total")
+    primary = View(view="run", grain="total")
+    breakout = View(view="breakout", grain="total")
     views = (primary, breakout) if selection == "primary_and_breakout" else (breakout,)
     (experiment, resolver), (_, con) = definitions_source(
         tmp_path, return_binding=True, return_connection=True
     )
     _add_replication_units(con)
-    saved_experiment = replace(experiment.with_views(*views), request_options={"coherence": saved})
+    saved_experiment = replace(
+        experiment.with_views(breakout), request_options={"coherence": saved}
+    )
     keywords = {} if call is None else {"coherence": call}
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            metadata = run(saved_experiment, resolver, **keywords).readout(breakout).metadata
+            metadata = (
+                run(saved_experiment, resolver, views=views, **keywords).readout(breakout).metadata
+            )
     finally:
         resolver.close()
 

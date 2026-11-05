@@ -20,7 +20,7 @@ from increment.kernel.contracts import (
     AnalysisRequest,
     ImplementationRef,
     Registration,
-    Scope,
+    View,
     _refuse,
     contract_hash,
     declared_breakouts,
@@ -274,7 +274,7 @@ class Experiment:
     metrics: Mapping[str, object]
     registration: Registration
     source_refs: tuple[SourceReference, ...]
-    scopes: tuple[Scope, ...]
+    views: tuple[View, ...]
     implementation_refs: Mapping[tuple[str, str], ImplementationRef] = dataclasses.field(
         default_factory=dict
     )
@@ -284,34 +284,34 @@ class Experiment:
     request_options: Mapping[str, DeclarationValue] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        scopes = tuple(self.scopes)
+        views = tuple(self.views)
         operations = dict(self.operations)
         migrated_operations: set[str] = set()
-        normalized_scopes = []
-        for scope in scopes:
-            legacy_hash = scope.hash()
+        normalized_views = []
+        for view in views:
+            legacy_hash = view.hash()
             operation = operations.get(legacy_hash)
-            expected = {"daily": "run_daily", "asof": "run_asof"}.get(scope.view)
+            expected = {"daily": "run_daily", "asof": "run_asof"}.get(view.view)
             if expected is not None and operation == expected:
-                scope = scope.model_copy(update={"values": True})
+                view = view.model_copy(update={"values": True})
                 migrated_operations.add(legacy_hash)
-            normalized_scopes.append(scope)
+            normalized_views.append(view)
         for legacy_hash in migrated_operations:
             operations.pop(legacy_hash)
-        scopes = tuple(normalized_scopes)
-        object.__setattr__(self, "scopes", scopes)
+        views = tuple(normalized_views)
+        object.__setattr__(self, "views", views)
         object.__setattr__(self, "operations", MappingProxyType(operations))
         if "capture" in self.request_options:
             _refuse("kernel.request.capture_not_supported")
         if "population" in self.request_options:
             _refuse("kernel.request.population_scope_only")
-        if not self.experiment_id or not self.source_refs or not self.scopes:
+        if not self.experiment_id or not self.source_refs or not self.views:
             _refuse("kernel.request.invalid", field="experiment id, source references, or scopes")
         names = tuple(source.name for source in self.source_refs)
         if len(set(names)) != len(names):
             _refuse("kernel.request.invalid", field="duplicate source reference names")
-        scope_hashes = tuple(scope.hash() for scope in scopes)
-        if len(set(scope_hashes)) != len(scope_hashes):
+        view_hashes = tuple(view.hash() for view in views)
+        if len(set(view_hashes)) != len(view_hashes):
             _refuse("kernel.request.invalid", field="duplicate experiment scopes")
         object.__setattr__(self, "design", _freeze(self.design))
         object.__setattr__(self, "metrics", _freeze(self.metrics))
@@ -323,7 +323,7 @@ class Experiment:
         object.__setattr__(self, "request_options", _freeze(self.request_options))
 
     def __reduce__(self) -> tuple[type[Experiment], tuple[object, ...]]:
-        """Rebuild from plain containers; typed values such as scopes stay typed."""
+        """Rebuild from plain containers; typed values such as views stay typed."""
         return type(self), tuple(
             _thaw(getattr(self, field.name)) for field in dataclasses.fields(self)
         )
@@ -340,7 +340,7 @@ class Experiment:
             "metrics": _json_value(self.metrics),
             "registration": self.registration.canonical_payload(),
             "source_refs": [item.canonical_payload() for item in self.source_refs],
-            "scopes": [item.canonical_payload() for item in self.scopes],
+            "scopes": [item.canonical_payload() for item in self.views],
             "implementation_refs": [
                 {
                     "method_instance_id": key[0],
@@ -375,7 +375,7 @@ class Experiment:
             ): ImplementationRef.from_payload(item["implementation"])
             for item in payload.get("implementation_refs", ())
         }
-        scopes = tuple(Scope.from_payload(item) for item in payload["scopes"])
+        views = tuple(View.from_payload(item) for item in payload["scopes"])
         operations = payload.get("operations", {})
         return cls(
             experiment_id=str(payload["experiment_id"]),
@@ -385,7 +385,7 @@ class Experiment:
             source_refs=tuple(
                 SourceReference.from_payload(item) for item in payload["source_refs"]
             ),
-            scopes=scopes,
+            views=views,
             implementation_refs=implementations,
             package_version=str(payload["package_version"]),
             analysis_context=payload.get("analysis_context", {}),
@@ -393,11 +393,12 @@ class Experiment:
             request_options=payload.get("request_options", {}),
         )
 
-    def with_views(self, *scopes: Scope) -> Experiment:
-        """Return this declaration with the selected scopes in declared order."""
-        if not scopes or len({scope.hash() for scope in scopes}) != len(scopes):
+    def with_views(self, *views: View) -> Experiment:
+        """Return this declaration with ``views`` added after its declared views."""
+        hashes = tuple(view.hash() for view in (*self.views, *views))
+        if not views or len(set(hashes)) != len(hashes):
             _refuse("kernel.request.invalid", field="empty or duplicate experiment scopes")
-        return dataclasses.replace(self, scopes=tuple(scopes), operations={})
+        return dataclasses.replace(self, views=(*self.views, *views))
 
     def __repr__(self) -> str:
         """One bounded line: the experiment, its design, metrics, views and identity prefix."""
@@ -411,7 +412,7 @@ class Experiment:
         return (
             f"Experiment(experiment_id={_DISPLAY.repr(self.experiment_id)}, "
             f"design={_DISPLAY.repr(design)}, metrics={_DISPLAY.repr(list(self.metrics))}, "
-            f"views={len(self.scopes)}, hash={identity!r})"
+            f"views={len(self.views)}, hash={identity!r})"
         )
 
     def hash(self) -> str:
@@ -438,13 +439,12 @@ class Experiment:
         metrics = TypeAdapter(tuple[Metric, ...]).validate_python(
             thaw(tuple(self.metrics.values()))
         )
-        selections = tuple(tuple(scope.metrics) or metrics for scope in self.scopes)
+        selections = tuple(tuple(view.metrics) or metrics for view in self.views)
         breakouts = tuple(
-            declared_breakouts(self.source_refs, scope, self.analysis_context)
-            for scope in self.scopes
+            declared_breakouts(self.source_refs, view, self.analysis_context) for view in self.views
         )
         source = self.source_refs[0].name
-        populations = tuple(dict.fromkeys(scope.population for scope in self.scopes))
+        populations = tuple(dict.fromkeys(view.population for view in self.views))
         inventory = EvidenceScope(
             metrics=tuple(
                 {metric.name: metric for selection in selections for metric in selection}.values()
@@ -460,17 +460,17 @@ class Experiment:
                 (
                     EvidenceScope(
                         metrics=selection,
-                        population=scope.population,
-                        grain=scope.grain,
+                        population=view.population,
+                        grain=view.grain,
                         breakouts=resolved_breakouts,
                     ),
                 ),
-                scope=scope,
+                scope=view,
                 registration_hash=self.registration.registration_hash,
                 source_ref=source,
             )
-            for scope, selection, resolved_breakouts in zip(
-                self.scopes, selections, breakouts, strict=True
+            for view, selection, resolved_breakouts in zip(
+                self.views, selections, breakouts, strict=True
             )
         )
         return inventory, requests
@@ -487,8 +487,8 @@ class Experiment:
                 "metrics": _json_value(self.metrics),
                 "registration_hash": self.registration.registration_hash,
                 "source_refs": [item.identity_payload() for item in self.source_refs],
-                "scopes": [item.canonical_payload() for item in self.scopes],
-                "operations": {scope.hash(): scope_operation(self, scope) for scope in self.scopes},
+                "scopes": [item.canonical_payload() for item in self.views],
+                "operations": {view.hash(): scope_operation(self, view) for view in self.views},
                 "request_options": _json_value(self.request_options),
             },
         )

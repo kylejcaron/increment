@@ -16,7 +16,7 @@ import yaml
 
 from increment import (
     Method,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -282,7 +282,7 @@ def test_definitions_artifact_moments_journey_replays_companions_without_unit_tr
         try:
             actual = _cells(view_readout(experiment, resolver))
             with pytest.raises(CodedError) as breakout:
-                view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+                view_readout(experiment, resolver, View(view="breakout", grain="total"))
         finally:
             resolver.close()
         assert breakout.value.code == "evidence.breakout_unavailable"

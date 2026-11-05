@@ -6,7 +6,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from increment import CupedCovariate, Method, Scope, from_definitions, from_frame, from_moments
+from increment import CupedCovariate, Method, View, from_definitions, from_frame, from_moments
 from increment.errors import IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
@@ -321,7 +321,7 @@ def test_breakout_snapshot_identity_tracks_aggregate_fit_evidence(tmp_path):
         )
         try:
             estimates = view_readout(
-                experiment, resolver, Scope(view="breakout", grain="total"), metrics=["revenue"]
+                experiment, resolver, View(view="breakout", grain="total"), metrics=["revenue"]
             )
             return (
                 {row.source_snapshot_id for row in estimates},

@@ -10,7 +10,7 @@ import pytest
 from increment import (
     AnalysisPlan,
     MetricSpec,
-    Scope,
+    View,
     from_frame,
     from_moments,
     from_switchback_frame,
@@ -794,7 +794,7 @@ def test_breakout_headline_names_dimension_value():
             metrics=[MetricSpec(name="value", type="mean")],
             breakouts=["country"],
         ),
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
     )
     headlines = [line for line in str(rows).splitlines() if " → " in line]
 

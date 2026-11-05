@@ -17,7 +17,7 @@ from pathlib import Path
 import ibis
 
 from examples._seed import seed_event_log
-from increment import Method, RunResult, Scope, from_definitions, run
+from increment import Method, RunResult, View, from_definitions, run
 from increment.results import BreakoutEstimates, DailyLiftEstimates, DailyMetricValues
 
 OUT = Path("tests/fixtures/parity_baseline.json")
@@ -37,7 +37,7 @@ def _arm_rows(results):
     return rows
 
 
-def _view[T](result: RunResult, scope: Scope, kind: type[T]) -> T:
+def _view[T](result: RunResult, scope: View, kind: type[T]) -> T:
     """One view's typed rows."""
     rows = result.readout(scope)
     if not isinstance(rows, kind):
@@ -83,15 +83,19 @@ def main() -> None:
     # materialize temporary tables. Value views take no decision method, so
     # they read in their own run.
     experiment, resolver = from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
-    whole = Scope(view="run", grain="total")
-    daily_values = Scope(view="daily", grain="daily", values=True)
-    asof_values = Scope(view="asof", grain="asof", values=True)
-    breakout = Scope(view="breakout", grain="total")
-    daily_lift = Scope(view="daily", grain="daily")
-    asof_lift = Scope(view="asof", grain="asof")
-    values = run(experiment.with_views(daily_values, asof_values), resolver)
+    whole = View(view="run", grain="total")
+    daily_values = View(view="daily", grain="daily", values=True)
+    asof_values = View(view="asof", grain="asof", values=True)
+    breakout = View(view="breakout", grain="total")
+    daily_lift = View(view="daily", grain="daily")
+    asof_lift = View(view="asof", grain="asof")
+    values = run(
+        experiment.with_views(daily_values, asof_values),
+        resolver,
+        views=(daily_values, asof_values),
+    )
     lifts = run(
-        experiment.with_views(whole, breakout, daily_lift, asof_lift),
+        experiment.with_views(breakout, daily_lift, asof_lift),
         resolver,
         decision_method=Method(name="unadjusted"),
     )

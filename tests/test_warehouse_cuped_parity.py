@@ -16,7 +16,7 @@ import ibis
 import pytest
 import yaml
 
-from increment import Method, Scope, from_definitions, from_unit_day_artifact
+from increment import Method, View, from_definitions, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import DefinitionError
 from increment.estimation.results import LiftEstimate
@@ -161,7 +161,7 @@ def test_day_axis_ratio_cuped_final_as_of_equals_the_total(duck):
             for r in view_readout(
                 experiment,
                 resolver,
-                Scope(view="asof", grain="asof"),
+                View(view="asof", grain="asof"),
                 metrics=["rpo"],
                 sensitivity_methods=[cuped],
             )

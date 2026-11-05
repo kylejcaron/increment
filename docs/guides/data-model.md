@@ -1918,15 +1918,15 @@ for name, rows in [
 
 import pyarrow.parquet as pq
 
-from increment import Scope, from_definitions, run
+from increment import View, from_definitions, run
 from increment.workflows import export_moments
 
 experiment, resolver = from_definitions(
     "definitions/", con, experiment_name="checkout_redesign"
 )
-whole_window = Scope(view="run", grain="total")
-breakouts = Scope(view="breakout", grain="total")
-result = run(experiment.with_views(whole_window, breakouts), resolver)
+whole_window = View.overall()
+breakouts = View.breakout(())
+result = run(experiment.with_views(breakouts), resolver)
 
 for r in result.readout(whole_window):
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:+.2%}")

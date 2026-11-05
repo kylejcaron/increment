@@ -18,7 +18,7 @@ from increment.estimation.sequential_result import SequentialInferenceResult
 if TYPE_CHECKING:
     from increment._interpretation import ReadoutInterpretation
     from increment.estimation.readout_types import ReadoutMetadata
-    from increment.kernel.contracts import Scope
+    from increment.kernel.contracts import View
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -655,7 +655,7 @@ def with_readout_evidence(
     return result
 
 
-def _scope_key(scope: Scope) -> str:
+def _scope_key(scope: View) -> str:
     """Hash a row's scope without its day, segment and population, which are row columns."""
     return scope.model_copy(
         update={"through_day": None, "segment": (), "population": "assigned"}
@@ -666,7 +666,7 @@ def result_frame(
     groups: Sequence[tuple[type[BaseModel], Sequence[Any]]],
     metadata: ReadoutMetadata | None,
     *,
-    scopes: Sequence[Scope | None],
+    scopes: Sequence[View | None],
     backend: Backend,
     columns: Sequence[str] | None = None,
 ) -> IntoDataFrame:

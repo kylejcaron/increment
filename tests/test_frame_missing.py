@@ -25,7 +25,7 @@ from increment import (
     AnalysisPlan,
     IdentificationGate,
     Observational,
-    Scope,
+    View,
     from_frame,
     readouts,
     render,
@@ -602,9 +602,9 @@ def _family_run(frame: pl.DataFrame) -> tuple[Any, Any, Any]:
             plan=AnalysisPlan(primary="revenue", secondaries=["score", "score2"], q=0.10),
             breakouts=("segment",),
         )
-        whole = Scope(view="run", grain="total")
-        breakout = Scope(view="breakout", grain="total")
-        result = run(experiment.with_views(whole, breakout), resolver)
+        whole = View.overall()
+        breakout = View(view="breakout", grain="total")
+        result = run(experiment.with_views(breakout), resolver)
     return result, result.readout(whole), result.readout(breakout)
 
 

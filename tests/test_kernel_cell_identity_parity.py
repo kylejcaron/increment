@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from increment import Method, Scope, from_definitions, from_switchback_frame
+from increment import Method, View, from_definitions, from_switchback_frame
 from increment.declarations import CellKey
 from increment.kernel.contracts import CellIdentity
 from tests.analysis_factory import view_readout
@@ -79,12 +79,12 @@ def test_cell_identity_from_row_agrees_with_cell_key_for_readout_rows(
             analysis_experiment, analysis_resolver, decision_method=Method(name="unadjusted")
         ),
         "daily": view_readout(
-            analysis_experiment, analysis_resolver, Scope(view="daily", grain="daily", values=True)
+            analysis_experiment, analysis_resolver, View(view="daily", grain="daily", values=True)
         ),
         "breakout": view_readout(
             analysis_experiment,
             analysis_resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             decision_method=Method(name="unadjusted"),
         ),
         "contrast": view_readout(contrast_experiment, contrast_resolver),

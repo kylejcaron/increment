@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from increment import Scope, from_definitions
+from increment import View, from_definitions
 from increment.semantics.models import AnalysisPlan, ExperimentMetric, MethodSpec
 from increment.workflows import experiment_definition, metrics
 from tests.analysis_factory import make_binding_like, view_readout
@@ -41,7 +41,7 @@ def test_native_daily_mixed_order_requests_cuped_only_for_declared_metric(
     results = view_readout(
         configured_experiment,
         configured_resolver,
-        Scope(view="daily", grain="daily"),
+        View(view="daily", grain="daily"),
         metrics=["avg_session_duration", "purchase_rate"],
     )
 
@@ -81,7 +81,7 @@ def test_native_daily_inherited_methods_and_roles_reach_estimator(
     results = view_readout(
         configured_experiment,
         configured_resolver,
-        Scope(view="daily", grain="daily"),
+        View(view="daily", grain="daily"),
         metrics=["purchase_rate", "avg_session_duration"],
     )
 

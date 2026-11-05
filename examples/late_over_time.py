@@ -16,8 +16,8 @@ def _():
         ExclusionRestriction,
         InferenceSpec,
         MetricSpec,
-        Scope,
         UptakeSpec,
+        View,
         from_frame,
         run,
     )
@@ -44,7 +44,7 @@ def _():
         MetricSpec,
         PredictivePrior,
         Scenario,
-        Scope,
+        View,
         SequentialCell,
         SequentialCompliancePolicy,
         SequentialModel,
@@ -226,9 +226,10 @@ def _(mo):
 
 
 @app.cell
-def _(Scope, experiment, resolver, run):
+def _(View, experiment, resolver, run):
+    _daily_lift = View.daily()
     try:
-        run(experiment.with_views(Scope(view="daily", grain="daily")), resolver)
+        run(experiment.with_views(_daily_lift), resolver, views=(_daily_lift,))
         daily_lift_message = "no error raised"
     except ValueError as daily_lift_error:
         daily_lift_message = str(daily_lift_error)
@@ -241,8 +242,8 @@ def _(mo):
     mo.md(r"""
     ## The as-of LATE trend
 
-    The completed-window as-of view, `Scope(view="asof", grain="asof",
-    completion_policy=True)`, admits each unit only once
+    The completed-window as-of view, `View.asof(completion_policy=True)`,
+    admits each unit only once
     both its outcome and uptake windows have closed, so every plotted date
     reports the LATE over units mature enough to trust.
     """)
@@ -250,14 +251,16 @@ def _(mo):
 
 
 @app.cell
-def _(Scope, experiment, resolver, run):
-    completed_windows = Scope(view="asof", grain="asof", completion_policy=True)
+def _(View, experiment, resolver, run):
+    completed_windows = View.asof(completion_policy=True)
 
     def _late_trend(results):
         return [r for r in results if r.estimand == "late" and r.value_scale == "relative"]
 
     fixed_late_trend = _late_trend(
-        run(experiment.with_views(completed_windows), resolver).readout(completed_windows)
+        run(experiment.with_views(completed_windows), resolver, views=(completed_windows,)).readout(
+            completed_windows
+        )
     )
     return completed_windows, fixed_late_trend
 
@@ -365,6 +368,7 @@ def _(
             run(
                 av_experiment.with_views(completed_windows),
                 av_resolver,
+                views=(completed_windows,),
                 estimands=("compliance",),
             ).readout(completed_windows)
         )

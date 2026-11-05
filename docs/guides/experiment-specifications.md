@@ -21,18 +21,21 @@ deep-copy and pickle when the factory itself pickles, such as a module-level
 function or class; unpickle only data you trust.
 
 `run(experiment, resolver)` returns one `RunResult` for all declared supported
-scopes, sharing one physical evidence capture. `views=(scope, ...)` selects
-declared scopes by their hashes; execution follows declaration order, not
+scopes, sharing one physical evidence capture. `views=(view, ...)` selects
+declared views by their hashes; execution follows declaration order, not
 selection order. Empty, duplicate or undeclared selections refuse before reads.
-`result.readout(scope)` returns the typed collection each executed scope
+`result.readout(view)` returns the typed collection each executed view
 produced; see [reading results](reading-results.md).
 
 Declare the result views on the experiment with `with_views`; it returns a new
-experiment and preserves the supplied view order:
+experiment with the supplied views added, in order, after the ones already
+declared. A builder declares the overall view, so this experiment runs three
+views; adding a view that is already declared refuses with
+`kernel.request.invalid`:
 
 ```python
 import pandas as pd
-from increment import Scope, from_frame
+from increment import View, from_frame
 
 frame = pd.DataFrame(
     {
@@ -52,8 +55,8 @@ experiment, resolver = from_frame(
     metrics={"value": "mean"},
     observation_end="2025-01-02",
 )
-daily_lift = Scope.daily()
-daily_values = Scope.daily(values=True)
+daily_lift = View.daily()
+daily_values = View.daily(values=True)
 experiment = experiment.with_views(daily_lift, daily_values)
 ```
 
@@ -113,7 +116,7 @@ capture=SequentialCaptureRequest(...))` instead takes the capture inside the
 run's own shared evidence capture, before any view reads.
 Specifications containing `capture` refuse with
 `kernel.request.capture_not_supported`. Population is declared on a view
-constructor, such as `Scope.daily(population=...)`; a request option named
+constructor, such as `View.daily(population=...)`; a request option named
 `population` refuses with
 `kernel.request.population_scope_only`, as does a `run(population=...)` that
 differs from a selected scope's population.
@@ -332,20 +335,19 @@ or `kernel.provider.capability_mismatch`.
 `decision_method`, `sensitivity_methods`, `prior`, `metrics`, `estimands`,
 `value_scale`, `exploratory_metrics`, `population` and `coherence`. Only the
 options you pass apply, so `prior=None` removes the registered prior while an
-omitted `prior` keeps it. A `population` must match every selected scope;
+omitted `prior` keeps it. A `population` must match every selected view;
 declare a different population with the matching view constructor, such as
-`Scope.daily(population=...)`.
-`result.readout(scope)` returns the `LiftEstimates`, `ContrastResults` or
-other typed collection one scope produced.
+`View.daily(population=...)`.
+`result.readout(view)` returns the `LiftEstimates`, `ContrastResults` or
+other typed collection one view produced.
 
 For example, a unit-panel source that supports daily data can declare whole-window
 and daily views together:
 
 ```python
-from dataclasses import replace
 import pandas as pd
 
-from increment import Scope, from_frame, run
+from increment import View, from_frame, run
 
 panel = pd.DataFrame(
     {
@@ -364,10 +366,10 @@ exp, resolver = from_frame(
     control="control",
     metrics={"revenue": "mean"},
 )
-total = Scope.run()
-daily = Scope.daily()
-exp = replace(exp, scopes=(total, daily))
-combined = run(exp, resolver)  # One capture, both scopes.
+total = View.overall()
+daily = View.daily()
+exp = exp.with_views(daily)  # The builder declared `total`.
+combined = run(exp, resolver)  # One capture, both views.
 only_daily = run(exp, resolver, views=(daily,))
 ```
 
@@ -457,7 +459,7 @@ else:
 `ResultCell` preserves one cell's identity and outcome in a stored run;
 `Decisions` records the verdicts computed from those cells. The top-level
 `run(experiment, resolver)` returns a `RunResult` containing cells and decisions;
-`result.readout(scope)` returns each view's estimate collection.
+`result.readout(view)` returns each view's estimate collection.
 
 ## Frozen-capture construction coverage
 

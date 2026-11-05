@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import pytest
 
-from increment import Scope, from_frame
+from increment import View, from_frame
 from increment._policy_alpha import resolve_cell_alpha
 from increment.decision import CompiledDecisionPlan
 from increment.estimation.results import LiftEstimate
@@ -141,11 +141,11 @@ def test_every_confirmatory_path_matches_the_policy_resolver():
     plan = _compiled_plan()
 
     whole = view_readout(experiment, resolver)
-    daily = view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+    daily = view_readout(experiment, resolver, View(view="daily", grain="daily"))
     asof = view_readout(
         experiment,
         resolver,
-        Scope(view="asof", grain="asof", segment=BreakoutIdentity("segment", None)),
+        View(view="asof", grain="asof", segment=BreakoutIdentity("segment", None)),
     )
 
     expected_roles = {"primary", "secondary", "guardrail"}

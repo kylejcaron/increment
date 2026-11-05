@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from increment import Scope, from_definitions
+from increment import View, from_definitions
 from increment.errors import InvalidRequestError
 from increment.estimation.inference import Normal
 from increment.evidence import BreakoutIdentity
@@ -26,12 +26,12 @@ def test_native_asof_prior_preserves_sparse_exact_inference_dimensioned_and_undi
         seeded_defs, seeded_pre_period_con, experiment_name="new_onboarding_v2"
     )
     flat = view_readout(
-        experiment, resolver, Scope(view="asof", grain="asof"), metrics=["purchase_rate"]
+        experiment, resolver, View(view="asof", grain="asof"), metrics=["purchase_rate"]
     )
     prior = view_readout(
         experiment,
         resolver,
-        Scope(view="asof", grain="asof"),
+        View(view="asof", grain="asof"),
         metrics=["purchase_rate"],
         prior=Normal(mu=0.0, sigma=0.01),
     )
@@ -51,13 +51,13 @@ def test_native_asof_prior_preserves_sparse_exact_inference_dimensioned_and_undi
     dimensioned = view_readout(
         experiment,
         resolver,
-        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
+        View(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
         metrics=["purchase_rate"],
     )
     dimensioned_prior = view_readout(
         experiment,
         resolver,
-        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
+        View(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
         metrics=["purchase_rate"],
         prior=Normal(mu=0.0, sigma=0.01),
     )
@@ -99,5 +99,5 @@ def test_native_breakout_invalid_inherited_config_refuses_before_scoped_query(co
 
     monkeypatch.setattr(bound_source(invalid_resolver), "breakout_sources", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
-        view_readout(invalid_experiment, invalid_resolver, Scope(view="breakout", grain="total"))
+        view_readout(invalid_experiment, invalid_resolver, View(view="breakout", grain="total"))
     assert exc_info.value.code == "estimation.engine.method_name_observational"

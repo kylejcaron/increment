@@ -24,7 +24,7 @@ from increment import (
 )
 from increment.errors import CodedError
 from increment.evidence import EvidenceCapabilities, EvidenceProvider, ScalarEvidenceDeclaration
-from increment.kernel.contracts import ImplementationRef, Registration, Scope
+from increment.kernel.contracts import ImplementationRef, Registration, View
 
 
 class _ConstantPropensity:
@@ -38,7 +38,7 @@ class _ConstantPropensity:
 
 
 def _recorded_experiment() -> Experiment:
-    scope = Scope(view="daily", grain="daily")
+    scope = View(view="daily", grain="daily")
     capabilities = EvidenceCapabilities(
         kind="unit_summary",
         grains=frozenset({"total", "daily"}),
@@ -77,7 +77,7 @@ def _recorded_experiment() -> Experiment:
                 capabilities=capabilities,
             ),
         ),
-        scopes=(scope,),
+        views=(scope,),
         implementation_refs={
             ("orders:decision", "propensity_learner"): ImplementationRef(
                 import_path="models.propensity:build", version_pin="1", config_digest="p"
@@ -94,7 +94,7 @@ def test_experiment_round_trips_canonical_json_and_hash():
         metrics={"orders": {"kind": "mean"}},
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="warehouse://events"),),
-        scopes=(Scope(view="run", grain="total"),),
+        views=(View(view="run", grain="total"),),
         implementation_refs={
             ("orders:decision", "propensity_learner"): ImplementationRef(
                 import_path="models.propensity:build", version_pin="1", config_digest="p"
@@ -118,7 +118,7 @@ def test_recorded_schema_does_not_change_experiment_identity():
             metrics={"orders": {"kind": "mean"}},
             registration=Registration(registration_hash="registration-hash"),
             source_refs=(SourceReference(name="events", uri="warehouse://events", schema=schema),),
-            scopes=(Scope(view="run", grain="total"),),
+            views=(View(view="run", grain="total"),),
         )
 
     unrecorded, empty, recorded = (declared(schema) for schema in (None, {}, {"t.c": "string"}))
@@ -160,7 +160,7 @@ def test_non_portable_experiment_round_trips():
         metrics={"orders": {"kind": "mean"}},
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="frame://events"),),
-        scopes=(Scope(view="run", grain="total"),),
+        views=(View(view="run", grain="total"),),
         implementation_refs={
             ("orders:decision", "propensity_learner"): ImplementationRef(
                 import_path=f"{__name__}._ConstantPropensity", version_pin="1", config_digest="c"
@@ -224,7 +224,7 @@ def test_experiment_repr_is_one_bounded_line_naming_what_it_runs(design, shown):
         metrics=metrics,
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="warehouse://events"),),
-        scopes=(Scope(view="run", grain="total"), Scope(view="breakout", grain="total")),
+        views=(View(view="run", grain="total"), View(view="breakout", grain="total")),
     )
 
     display = repr(experiment)
@@ -244,7 +244,7 @@ def test_experiment_repr_says_not_portable_instead_of_refusing():
         metrics={"orders": {"learner": len}},
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="warehouse://events"),),
-        scopes=(Scope(view="run", grain="total"),),
+        views=(View(view="run", grain="total"),),
     )
 
     assert "not portable" in repr(experiment)
@@ -258,7 +258,7 @@ def test_experiment_scopes_and_nested_definitions_are_immutable():
         metrics={},
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="warehouse://events"),),
-        scopes=(Scope(view="run", grain="total"),),
+        views=(View(view="run", grain="total"),),
     )
     original_hash = experiment.hash()
     design["mechanism"] = "observational"
@@ -277,17 +277,17 @@ def test_compile_emits_run_inventory_and_one_request_per_scope():
         metrics={},
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="warehouse://events"),),
-        scopes=(
-            Scope(view="run", grain="total"),
-            Scope(view="daily", grain="daily"),
+        views=(
+            View(view="run", grain="total"),
+            View(view="daily", grain="daily"),
         ),
     )
 
     inventory, requests = experiment.compile()
 
     assert inventory.population == "assigned"
-    assert len(requests) == len(experiment.scopes) == 2
-    assert tuple(request.scope for request in requests) == experiment.scopes
+    assert len(requests) == len(experiment.views) == 2
+    assert tuple(request.scope for request in requests) == experiment.views
     assert all(request.registration_hash == "registration-hash" for request in requests)
     assert all(request.source_ref == "events" for request in requests)
 
@@ -301,7 +301,7 @@ def test_runnable_marks_missing_capabilities_unknown_per_estimator():
         metrics={},
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="warehouse://events"),),
-        scopes=(Scope(view="run", grain="total"),),
+        views=(View(view="run", grain="total"),),
     )
 
     result = runnable(experiment, "orders")
@@ -385,20 +385,20 @@ def test_bound_resolver_refuses_runtime_capability_mismatch():
 def test_specification_identity_distinguishes_request_declarations(question):
     from increment.estimators import Normal
 
-    scope = Scope(view="daily", grain="daily")
+    scope = View(view="daily", grain="daily")
     experiment = Experiment(
         experiment_id="checkout",
         design={"mechanism": "encouragement"},
         metrics={},
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="frame://events"),),
-        scopes=(scope,),
+        views=(scope,),
     )
     explicit_default = dataclasses.replace(experiment, operations={scope.hash(): "run_daily_lift"})
     assert explicit_default.analysis_spec_hash == experiment.analysis_spec_hash
     assert explicit_default.execution_identity_hash == experiment.execution_identity_hash
     changed = (
-        experiment.with_views(Scope(view="daily", grain="daily", values=True))
+        dataclasses.replace(experiment, views=(View(view="daily", grain="daily", values=True),))
         if question == "operation"
         else dataclasses.replace(
             experiment,

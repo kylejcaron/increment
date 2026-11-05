@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from increment import Experiment, Scope, SourceReference
+from increment import Experiment, SourceReference, View
 from increment._source_operations import DashboardExploreCapture, DashboardGroupData
 from increment.dashboard import DashboardConfig, DashboardSnapshot
 from increment.dashboard._data import DashboardOverview, _binding_fingerprint, enriched_rows
@@ -65,7 +65,7 @@ def experiment_for(value: DashboardSnapshot) -> Experiment:
         metrics={model.name: model for model in (*value.metrics, *value.offered_metrics)},
         registration=Registration(registration_hash="presentation"),
         source_refs=(SourceReference(name="events", uri="memory://presentation"),),
-        scopes=(Scope(view="run", grain="total"),),
+        views=(View(view="run", grain="total"),),
         analysis_context={"experiment": {"name": value.experiment_name}},
     )
 

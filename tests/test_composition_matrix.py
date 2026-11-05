@@ -43,7 +43,7 @@ from typing import Any, cast, get_args
 import pyarrow as pa
 import pytest
 
-from increment import Scope, from_definitions, from_moments, readouts
+from increment import View, from_definitions, from_moments, readouts
 from increment.errors import CapabilityError, DefinitionError, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.estimators import sitewide
@@ -630,8 +630,8 @@ def native(tmp_path_factory):
             cuped_resolver,
             decision_method=Method(name="cuped", variance_reduction="cuped"),
         )
-        breakout = view_readout(*main, Scope(view="breakout", grain="total"))
-        asof = view_readout(*main, Scope(view="asof", grain="asof"), metrics=[d1])
+        breakout = view_readout(*main, View(view="breakout", grain="total"))
+        asof = view_readout(*main, View(view="asof", grain="asof"), metrics=[d1])
         cluster_run = view_readout(*clustered)
         rehydrated_run = view_readout(rehydrated_experiment, rehydrated_resolver)
         report = MetricTrends.from_definitions(report_defs, con)

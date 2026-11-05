@@ -20,14 +20,21 @@ from increment.query.native_source import DefinitionsMomentSource
 from increment.query.session import SourceSnapshotEvidence, WarehouseSession
 
 if TYPE_CHECKING:
-    from increment import Scope
+    from increment import View
     from increment.semantics.models import Definitions, Experiment, Metric
+
+
+def declare_views(experiment: Any, *scopes: View) -> Any:
+    """*experiment* declaring every scope, adding only those whose hash it does not declare yet."""
+    declared = {view.hash() for view in experiment.views}
+    added = tuple(scope for scope in scopes if scope.hash() not in declared)
+    return experiment.with_views(*added) if added else experiment
 
 
 def view_readout(
     experiment: Any,
     resolver: Any,
-    scope: Scope | None = None,
+    scope: View | None = None,
     *,
     population: Literal["assigned", "triggered"] | None = None,
     **options: Any,
@@ -39,12 +46,12 @@ def view_readout(
     from increment import run
 
     if scope is None:
-        (scope,) = experiment.scopes
+        (scope,) = experiment.views
         if population is not None:
             scope = scope.model_copy(update={"population": population})
     elif population is not None:
         scope = scope.model_copy(update={"population": population})
-    return run(experiment.with_views(scope), resolver, **options).readout(scope)
+    return run(declare_views(experiment, scope), resolver, views=(scope,), **options).readout(scope)
 
 
 def held_source(resolver: Any) -> object:

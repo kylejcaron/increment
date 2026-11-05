@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from increment import Scope, from_definitions, from_frame, from_switchback_frame
+from increment import View, from_definitions, from_frame, from_switchback_frame
 from tests.analysis_factory import view_readout
 
 
@@ -169,17 +169,17 @@ def test_breakout_and_day_axis_producers_round_trip_tagged_rows(seeded_con, seed
     )
     try:
         outputs = (
-            ("breakout", view_readout(experiment, resolver, Scope(view="breakout", grain="total"))),
+            ("breakout", view_readout(experiment, resolver, View(view="breakout", grain="total"))),
             (
                 "daily_metric",
-                view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True)),
+                view_readout(experiment, resolver, View(view="daily", grain="daily", values=True)),
             ),
-            ("daily_lift", view_readout(experiment, resolver, Scope(view="daily", grain="daily"))),
+            ("daily_lift", view_readout(experiment, resolver, View(view="daily", grain="daily"))),
             (
                 "asof_metric",
-                view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True)),
+                view_readout(experiment, resolver, View(view="asof", grain="asof", values=True)),
             ),
-            ("asof_lift", view_readout(experiment, resolver, Scope(view="asof", grain="asof"))),
+            ("asof_lift", view_readout(experiment, resolver, View(view="asof", grain="asof"))),
         )
         for row_kind, rows in outputs:
             assert rows
@@ -245,7 +245,7 @@ def test_reopened_daily_cells_use_dates_as_table_identity(seeded_con, seeded_def
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
     )
     try:
-        rows = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+        rows = view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
         cells = [
             cell
             for cell in rows.as_cells()
@@ -280,13 +280,13 @@ def test_asof_lift_view_survives_collection_round_trips(seeded_con, seeded_defs)
                 view_readout(
                     experiment,
                     resolver,
-                    Scope(view="asof", grain="asof", values=True, completion_policy=True),
+                    View(view="asof", grain="asof", values=True, completion_policy=True),
                 ),
                 "asof_metric",
             ),
             (
                 view_readout(
-                    experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+                    experiment, resolver, View(view="asof", grain="asof", completion_policy=True)
                 ),
                 "asof_lift",
             ),
@@ -324,7 +324,7 @@ def test_daily_lift_cells_preserve_collection_family(seeded_con, seeded_defs):
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
     )
     try:
-        rows = view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+        rows = view_readout(experiment, resolver, View(view="daily", grain="daily"))
         assert rows and rows.metadata is not None
         row = next(
             row
@@ -373,7 +373,7 @@ def test_restored_set_only_breakout_uses_public_confidence_projection():
         breakouts=("segment",),
     )
     try:
-        results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        results = view_readout(experiment, resolver, View(view="breakout", grain="total"))
         (row,) = results
         assert row.lift is None and row.binomial_set is not None
         (cell,) = results.as_cells()
@@ -401,7 +401,7 @@ def test_mixed_lift_and_report_cells_render_and_project_to_table(seeded_con, see
     )
     try:
         lift_rows = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
-        breakout_rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        breakout_rows = view_readout(experiment, resolver, View(view="breakout", grain="total"))
         cells = (*lift_rows.as_cells(), *breakout_rows.as_cells())
         decoded = tuple(
             ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))) for cell in cells
@@ -435,7 +435,7 @@ def test_filtered_breakout_cell_retains_full_family_scope(seeded_con, seeded_def
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
     )
     try:
-        rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        rows = view_readout(experiment, resolver, View(view="breakout", grain="total"))
         row = rows[0]
         assert rows.metadata is not None
         family = rows.metadata.family_of(row.source_snapshot_id, CellKey.from_row(row))

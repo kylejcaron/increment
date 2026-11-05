@@ -9,7 +9,7 @@ import ibis
 import pyarrow as pa
 import pytest
 
-from increment import Scope, from_frame, from_moments, from_unit_day_artifact, readouts, run
+from increment import View, from_frame, from_moments, from_unit_day_artifact, readouts, run
 from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.errors import CapabilityError, CodedError, IncrementRuntimeWarning
 from increment.estimation.encouragement import estimate_compliance
@@ -52,13 +52,13 @@ class ClickTiming:
     day_boundary: str | None = None
 
 
-_ASSIGNED = Scope(view="run", grain="total")
-_TRIGGERED = Scope(view="run", grain="total", population="triggered")
+_ASSIGNED = View(view="run", grain="total")
+_TRIGGERED = View(view="run", grain="total", population="triggered")
 
 
 def _both_populations(experiment, resolver, **options):
     """Whole-window rows of the assigned and triggered populations, read from one capture."""
-    result = run(experiment.with_views(_ASSIGNED, _TRIGGERED), resolver, **options)
+    result = run(experiment.with_views(_TRIGGERED), resolver, **options)
     return [*result.readout(_ASSIGNED), *result.readout(_TRIGGERED)]
 
 
@@ -693,13 +693,13 @@ def test_completed_asof_requires_uptake_feed_certification_and_preserves_late_pa
             native_late = view_readout(
                 analysis_experiment,
                 analysis_resolver,
-                Scope(view="asof", grain="asof", completion_policy=True),
+                View(view="asof", grain="asof", completion_policy=True),
                 estimands=["late"],
             )
             artifact_late = view_readout(
                 adopted_experiment,
                 adopted_resolver,
-                Scope(view="asof", grain="asof", completion_policy=True),
+                View(view="asof", grain="asof", completion_policy=True),
                 estimands=["late"],
             )
             assert native_late == artifact_late
@@ -830,13 +830,13 @@ def test_submicrosecond_exposure_preserves_completed_uptake_cohorts(
             expected = view_readout(
                 analysis_experiment,
                 analysis_resolver,
-                Scope(view="asof", grain="asof", completion_policy=True),
+                View(view="asof", grain="asof", completion_policy=True),
                 estimands=["late"],
             )
             actual = view_readout(
                 adopted_experiment,
                 adopted_resolver,
-                Scope(view="asof", grain="asof", completion_policy=True),
+                View(view="asof", grain="asof", completion_policy=True),
                 estimands=["late"],
             )
             assert [
@@ -919,14 +919,14 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
                 view_readout(
                     analysis_experiment,
                     analysis_resolver,
-                    Scope(view="daily", grain="daily"),
+                    View(view="daily", grain="daily"),
                     estimands=("compliance",),
                 )
             ) == lift_fields(
                 view_readout(
                     adopted_experiment,
                     adopted_resolver,
-                    Scope(view="daily", grain="daily"),
+                    View(view="daily", grain="daily"),
                     estimands=("compliance",),
                 )
             )
@@ -934,14 +934,14 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
                 view_readout(
                     analysis_experiment,
                     analysis_resolver,
-                    Scope(view="asof", grain="asof"),
+                    View(view="asof", grain="asof"),
                     estimands=("compliance",),
                 )
             ) == lift_fields(
                 view_readout(
                     adopted_experiment,
                     adopted_resolver,
-                    Scope(view="asof", grain="asof"),
+                    View(view="asof", grain="asof"),
                     estimands=("compliance",),
                 )
             )
@@ -1026,7 +1026,7 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
                         for row in view_readout(
                             edge_adopted_experiment,
                             edge_adopted_resolver,
-                            Scope(view="asof", grain="asof"),
+                            View(view="asof", grain="asof"),
                             estimands=("late",),
                         )
                         if row.ds == date(2025, 1, 15)
@@ -1036,7 +1036,7 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
                         for row in view_readout(
                             adopted_experiment,
                             adopted_resolver,
-                            Scope(view="asof", grain="asof"),
+                            View(view="asof", grain="asof"),
                             estimands=("late",),
                         )
                         if row.ds == date(2025, 1, 15)
@@ -1112,13 +1112,13 @@ def test_triggered_asof_uptake_accumulates_from_assignment_before_trigger():
             native_late = view_readout(
                 analysis_experiment,
                 analysis_resolver,
-                Scope(view="asof", grain="asof", population="triggered"),
+                View(view="asof", grain="asof", population="triggered"),
                 estimands=["late"],
             )
             artifact_late = view_readout(
                 adopted_experiment,
                 adopted_resolver,
-                Scope(view="asof", grain="asof", population="triggered"),
+                View(view="asof", grain="asof", population="triggered"),
                 estimands=["late"],
             )
             native_values = {
@@ -1467,7 +1467,7 @@ def test_public_asof_api_reports_one_design_level_row_per_day(readonly_complianc
                 results = view_readout(
                     source_experiment,
                     source_resolver,
-                    Scope(view="asof", grain="asof"),
+                    View(view="asof", grain="asof"),
                     estimands=("compliance",),
                 )
                 compliance = [row for row in results if row.estimand == "compliance"]
@@ -1612,8 +1612,8 @@ def test_publication_pins_outcome_and_uptake_before_inter_stream_mutation(monkey
 
 
 _TRIGGERED_LIFT_HISTORY = (
-    Scope(view="daily", grain="daily", population="triggered"),
-    Scope(view="asof", grain="asof", population="triggered"),
+    View(view="daily", grain="daily", population="triggered"),
+    View(view="asof", grain="asof", population="triggered"),
 )
 
 
@@ -1624,7 +1624,7 @@ def _assert_clustered_artifact_outcome_history_refused(experiment, resolver) -> 
         view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", values=True, population="triggered"),
+            View(view="daily", grain="daily", values=True, population="triggered"),
         )
     assert refusal.value.code == "facade.analysis.clustered_day_axis"
     assert_refusal(
@@ -1788,9 +1788,7 @@ def test_triggered_compliance_history_extends_after_trigger_to_uptake_and_maturi
                 complete = view_readout(
                     source_experiment,
                     source_resolver,
-                    Scope(
-                        view="asof", grain="asof", completion_policy=True, population="triggered"
-                    ),
+                    View(view="asof", grain="asof", completion_policy=True, population="triggered"),
                     estimands=("compliance",),
                 )
                 assert {row.ds for row in complete} == {
@@ -1830,7 +1828,7 @@ def test_sparse_triggered_compliance_keeps_later_estimable_looks(clustered):
         rows = view_readout(
             experiment,
             resolver,
-            Scope(view="asof", grain="asof", population="triggered"),
+            View(view="asof", grain="asof", population="triggered"),
             estimands=("compliance",),
         )
         by_cell = {(row.ds, row.group_id): row for row in rows}
@@ -1860,7 +1858,7 @@ def test_triggered_compliance_history_emits_missing_multi_treatment_cells():
         rows = view_readout(
             experiment,
             resolver,
-            Scope(view="asof", grain="asof", population="triggered"),
+            View(view="asof", grain="asof", population="triggered"),
             estimands=("compliance",),
         )
         early = {
@@ -1928,16 +1926,14 @@ def test_triggered_completed_compliance_respects_uptake_certification_edge(tmp_p
                 rows = view_readout(
                     source_experiment,
                     source_resolver,
-                    Scope(view="asof", grain="asof", population="triggered"),
+                    View(view="asof", grain="asof", population="triggered"),
                     estimands=("compliance",),
                 )
                 assert rows == []
                 completed = view_readout(
                     source_experiment,
                     source_resolver,
-                    Scope(
-                        view="asof", grain="asof", completion_policy=True, population="triggered"
-                    ),
+                    View(view="asof", grain="asof", completion_policy=True, population="triggered"),
                     estimands=("compliance",),
                 )
                 assert completed == []
@@ -1975,14 +1971,14 @@ def test_triggered_compliance_history_uses_population_independent_horizon():
             native_rows = view_readout(
                 analysis_experiment,
                 analysis_resolver,
-                Scope(view="asof", grain="asof", population="triggered"),
+                View(view="asof", grain="asof", population="triggered"),
                 estimands=("compliance",),
             )
             assert [row.ds for row in native_rows] == expected
             rows = view_readout(
                 adopted_experiment,
                 adopted_resolver,
-                Scope(view="asof", grain="asof", population="triggered"),
+                View(view="asof", grain="asof", population="triggered"),
                 estimands=("compliance",),
             )
             assert [row.ds for row in rows] == expected
@@ -2027,7 +2023,7 @@ def test_triggered_compliance_history_uses_uptake_feed_completion_not_trigger_fe
                 for row in view_readout(
                     analysis_experiment,
                     analysis_resolver,
-                    Scope(view="asof", grain="asof", population="triggered"),
+                    View(view="asof", grain="asof", population="triggered"),
                     estimands=("compliance",),
                 )
             ]
@@ -2036,7 +2032,7 @@ def test_triggered_compliance_history_uses_uptake_feed_completion_not_trigger_fe
                 for row in view_readout(
                     adopted_experiment,
                     adopted_resolver,
-                    Scope(view="asof", grain="asof", population="triggered"),
+                    View(view="asof", grain="asof", population="triggered"),
                     estimands=("compliance",),
                 )
             ]
@@ -2076,7 +2072,7 @@ def test_triggered_compliance_history_keeps_triggers_after_uptake_events():
                 for row in view_readout(
                     analysis_experiment,
                     analysis_resolver,
-                    Scope(view="asof", grain="asof", population="triggered"),
+                    View(view="asof", grain="asof", population="triggered"),
                     estimands=("compliance",),
                 )
             ]
@@ -2085,7 +2081,7 @@ def test_triggered_compliance_history_keeps_triggers_after_uptake_events():
                 for row in view_readout(
                     adopted_experiment,
                     adopted_resolver,
-                    Scope(view="asof", grain="asof", population="triggered"),
+                    View(view="asof", grain="asof", population="triggered"),
                     estimands=("compliance",),
                 )
             ]
@@ -2124,13 +2120,13 @@ def test_triggered_compliance_history_stops_at_pinned_observation_edge():
             native_rows = view_readout(
                 analysis_experiment,
                 analysis_resolver,
-                Scope(view="asof", grain="asof", population="triggered"),
+                View(view="asof", grain="asof", population="triggered"),
                 estimands=("compliance",),
             )
             rows = view_readout(
                 adopted_experiment,
                 adopted_resolver,
-                Scope(view="asof", grain="asof", population="triggered"),
+                View(view="asof", grain="asof", population="triggered"),
                 estimands=("compliance",),
             )
             dates = [row.ds for row in native_rows]
@@ -2198,7 +2194,7 @@ def test_triggered_compliance_reopen_clamps_stale_persisted_edge():
         native_rows = view_readout(
             analysis_experiment,
             analysis_resolver,
-            Scope(view="asof", grain="asof", population="triggered"),
+            View(view="asof", grain="asof", population="triggered"),
             estimands=("compliance",),
         )
         reopened_experiment, reopened_resolver = from_unit_day_artifact(
@@ -2208,7 +2204,7 @@ def test_triggered_compliance_reopen_clamps_stale_persisted_edge():
             artifact_rows = view_readout(
                 reopened_experiment,
                 reopened_resolver,
-                Scope(view="asof", grain="asof", population="triggered"),
+                View(view="asof", grain="asof", population="triggered"),
                 estimands=("compliance",),
             )
         assert [row.ds for row in artifact_rows] == [row.ds for row in native_rows]
@@ -2255,7 +2251,7 @@ def test_triggered_compliance_keeps_missing_control_date_and_continues(tmp_path)
                 rows = view_readout(
                     source_experiment,
                     source_resolver,
-                    Scope(view="asof", grain="asof", population="triggered"),
+                    View(view="asof", grain="asof", population="triggered"),
                     estimands=("compliance",),
                 )
                 jan4 = [row for row in rows if row.ds == date(2025, 1, 4)]
@@ -2302,7 +2298,7 @@ def test_triggered_compliance_completes_control_only_date_with_missing_treatment
                 rows = view_readout(
                     source_experiment,
                     source_resolver,
-                    Scope(view="asof", grain="asof", population="triggered"),
+                    View(view="asof", grain="asof", population="triggered"),
                     estimands=("compliance",),
                 )
                 jan4 = next(row for row in rows if row.ds == date(2025, 1, 4))
@@ -2354,7 +2350,7 @@ def test_triggered_compliance_insufficient_early_sample_continues(clustered):
                     rows = view_readout(
                         source_experiment,
                         source_resolver,
-                        Scope(view="asof", grain="asof", population="triggered"),
+                        View(view="asof", grain="asof", population="triggered"),
                         estimands=("compliance",),
                     )
                 early = next(row for row in rows if row.ds == date(2025, 1, 4))
@@ -2433,7 +2429,7 @@ def _asof_lift(experiment, resolver):
     """The public as-of lift view as a callable taking the source-level keywords."""
 
     def read(*, completed_windows_only: bool = False, **options):
-        scope = Scope(view="asof", grain="asof", completion_policy=completed_windows_only)
+        scope = View(view="asof", grain="asof", completion_policy=completed_windows_only)
         return view_readout(experiment, resolver, scope, **options)
 
     return read

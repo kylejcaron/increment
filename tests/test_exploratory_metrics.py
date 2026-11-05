@@ -16,7 +16,7 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from increment import Scope, _dashboard_capture, builders, from_frame, workflows
+from increment import View, _dashboard_capture, builders, from_frame, workflows
 from increment import run as run_views
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning
@@ -40,7 +40,7 @@ PLAN_ALPHAS = (0.05, 0.01)
 CUPED = Method(name="cuped", variance_reduction="cuped")
 UNAVAILABLE = "facade.analysis_config.exploratory_metric_unavailable"
 POPULATIONS = {
-    population: Scope(view="run", grain="total", population=population)
+    population: View(view="run", grain="total", population=population)
     for population in ("assigned", "triggered")
 }
 
@@ -149,7 +149,7 @@ def _nominal_alphas(rows: Any) -> list[float]:
 
 def _by_population(experiment: Any, resolver: Any, **options: Any) -> dict[str, Any]:
     """Whole-window rows of the assigned and triggered populations, read in one run."""
-    result = run_views(experiment.with_views(*POPULATIONS.values()), resolver, **options)
+    result = run_views(experiment.with_views(POPULATIONS["triggered"]), resolver, **options)
     return {
         population: lift_rows(result.readout(scope)) for population, scope in POPULATIONS.items()
     }
@@ -609,11 +609,11 @@ def test_added_breakout_rows_equal_the_metric_declared_in_its_own_plan(
     declared_plan = AnalysisPlan(alpha=alpha, primary=name, view_multiplicity=view)
     added_plan = AnalysisPlan(alpha=alpha, primary="revenue", view_multiplicity=view)
     declared = view_readout(
-        *_analysis(warehouse, declared_plan, breakout=True), Scope(view="breakout", grain="total")
+        *_analysis(warehouse, declared_plan, breakout=True), View(view="breakout", grain="total")
     )
     added = view_readout(
         *_analysis(warehouse, added_plan, breakout=True),
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
         metrics=[],
         exploratory_metrics=[name],
     )
@@ -636,7 +636,7 @@ def test_uncorrected_secondary_breakout_has_no_family(warehouse):
     )
     rows = view_readout(
         *_analysis(warehouse, plan, breakout=True),
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
         metrics=["purchase_rate"],
     )
     assert rows and rows.metadata is not None
@@ -657,7 +657,7 @@ def test_breakout_bh_uses_one_joint_family_for_primary_and_secondary(warehouse):
     )
     rows = view_readout(
         *_analysis(warehouse, plan, breakout=True),
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
         metrics=["revenue", "purchase_rate"],
     )
     assert rows and rows.metadata is not None
@@ -682,7 +682,7 @@ def test_added_segmented_asof_bonferroni_rows_are_disclosed_as_family(warehouse)
     rows = view_readout(
         experiment,
         resolver,
-        Scope(view="asof", grain="asof", segment=BreakoutIdentity("store", None)),
+        View(view="asof", grain="asof", segment=BreakoutIdentity("store", None)),
         metrics=[],
         exploratory_metrics=["purchase_rate"],
     )
@@ -700,7 +700,7 @@ def test_asof_view_families_are_scoped_by_metric_and_look(warehouse):
     )
     results = view_readout(
         *_analysis(warehouse, plan, breakout=True),
-        Scope(view="asof", grain="asof", segment=BreakoutIdentity("store", None)),
+        View(view="asof", grain="asof", segment=BreakoutIdentity("store", None)),
         metrics=[],
         exploratory_metrics=["purchase_rate", "rps"],
     )
@@ -727,9 +727,9 @@ def test_declared_breakout_rows_are_identical_with_added_metrics(warehouse):
         ),
         breakout=True,
     )
-    without = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    without = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     combined = view_readout(
-        experiment, resolver, Scope(view="breakout", grain="total"), exploratory_metrics=["rps"]
+        experiment, resolver, View(view="breakout", grain="total"), exploratory_metrics=["rps"]
     )
     assert [row.model_dump() for row in combined[: len(without)]] == [
         row.model_dump() for row in without
@@ -744,21 +744,21 @@ def test_added_day_axis_rows_equal_the_metric_declared_in_its_own_plan(warehouse
     declared = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary=name))
     added = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"))
     lift = view_readout(
-        *added, Scope(view="asof", grain="asof"), metrics=[], exploratory_metrics=[name]
+        *added, View(view="asof", grain="asof"), metrics=[], exploratory_metrics=[name]
     )
     assert lift and {row.role for row in lift} == {"exploratory"}
     assert {row.multiplicity_status for row in lift} == {"exploratory_unadjusted"}
-    assert _rows(lift) == _rows(view_readout(*declared, Scope(view="asof", grain="asof")))
+    assert _rows(lift) == _rows(view_readout(*declared, View(view="asof", grain="asof")))
     for values_scope in (
-        Scope(view="asof", grain="asof", values=True),
-        Scope(view="daily", grain="daily", values=True),
+        View(view="asof", grain="asof", values=True),
+        View(view="daily", grain="daily", values=True),
     ):
         values = view_readout(*added, values_scope, metrics=[], exploratory_metrics=[name])
         assert values and _rows(values) == _rows(view_readout(*declared, values_scope))
-    both = view_readout(*added, Scope(view="asof", grain="asof"), exploratory_metrics=[name])
+    both = view_readout(*added, View(view="asof", grain="asof"), exploratory_metrics=[name])
     assert [row.role for row in both if row.metric == "revenue"] == [
         row.role
-        for row in view_readout(*added, Scope(view="asof", grain="asof"))
+        for row in view_readout(*added, View(view="asof", grain="asof"))
         if row.metric == "revenue"
     ]
 
@@ -770,8 +770,8 @@ def test_daily_and_default_asof_views_do_not_claim_whole_window_selection(wareho
     )
 
     for rows in (
-        view_readout(experiment, resolver, Scope(view="daily", grain="daily")),
-        view_readout(experiment, resolver, Scope(view="asof", grain="asof")),
+        view_readout(experiment, resolver, View(view="daily", grain="daily")),
+        view_readout(experiment, resolver, View(view="asof", grain="asof")),
     ):
         assert rows
         assert rows.metadata is not None
@@ -794,14 +794,14 @@ def test_an_added_metric_keeps_the_plan_alpha_in_every_lift_view(warehouse, name
         "run_asof_lift": view_readout(
             experiment,
             resolver,
-            Scope(view="asof", grain="asof"),
+            View(view="asof", grain="asof"),
             metrics=[],
             exploratory_metrics=[name],
         ),
         "run_breakout": view_readout(
             experiment,
             resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             metrics=[],
             exploratory_metrics=[name],
         ),
@@ -832,9 +832,7 @@ def test_dimensioned_daily_reads_keep_their_refusal_of_undeclared_metrics(wareho
         view_readout(
             experiment,
             resolver,
-            Scope(
-                view="daily", grain="daily", values=True, segment=BreakoutIdentity("store", None)
-            ),
+            View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("store", None)),
             metrics=[],
             exploratory_metrics=["purchase_rate"],
         )
@@ -846,7 +844,7 @@ def test_dimensioned_asof_lift_serves_added_metrics_as_exploratory_rows(warehous
     rows = view_readout(
         experiment,
         resolver,
-        Scope(view="asof", grain="asof", segment=BreakoutIdentity("store", None)),
+        View(view="asof", grain="asof", segment=BreakoutIdentity("store", None)),
         metrics=[],
         exploratory_metrics=["purchase_rate"],
     )
@@ -855,12 +853,12 @@ def test_dimensioned_asof_lift_serves_added_metrics_as_exploratory_rows(warehous
     assert {row.dimension for row in rows} == {"store"}
 
 
-CALLS: dict[str, Scope] = {
-    "run": Scope(view="run", grain="total"),
-    "run_breakout": Scope(view="breakout", grain="total"),
-    "run_asof_lift": Scope(view="asof", grain="asof"),
-    "run_asof": Scope(view="asof", grain="asof", values=True),
-    "run_daily": Scope(view="daily", grain="daily", values=True),
+CALLS: dict[str, View] = {
+    "run": View(view="run", grain="total"),
+    "run_breakout": View(view="breakout", grain="total"),
+    "run_asof_lift": View(view="asof", grain="asof"),
+    "run_asof": View(view="asof", grain="asof", values=True),
+    "run_daily": View(view="daily", grain="daily", values=True),
 }
 
 
@@ -946,19 +944,19 @@ def test_uncorrected_segments_are_the_unadjusted_run_breakout_rows(warehouse, co
             plan.model_copy(update={"view_multiplicity": MultiplicitySpec(correction="none")}),
             breakout=True,
         ),
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
         metrics=names,
     )
     assert uncorrected and _rows(uncorrected) == _rows(standalone)
     assert all(row.family_q is None and row.discovery is None for row in uncorrected)
     if correction == "none":
         assert _rows(uncorrected) == _rows(
-            view_readout(*analysis, Scope(view="breakout", grain="total"), metrics=names)
+            view_readout(*analysis, View(view="breakout", grain="total"), metrics=names)
         )
         return
     corrected = {
         (row.metric, row.group_id, row.dimension_value): row
-        for row in view_readout(*analysis, Scope(view="breakout", grain="total"), metrics=names)
+        for row in view_readout(*analysis, View(view="breakout", grain="total"), metrics=names)
     }
     for row in uncorrected:
         wide = corrected[row.metric, row.group_id, row.dimension_value]

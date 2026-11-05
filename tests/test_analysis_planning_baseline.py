@@ -26,7 +26,7 @@ from increment import (
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning, UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
-from increment.kernel.contracts import Scope
+from increment.kernel.contracts import View
 from increment.power import Baseline
 from increment.semantics.models import CupedCovariateBinding, Measure, MethodSpec
 from increment.workflows import export_moments, planning_baseline, srm, trigger_rates
@@ -58,15 +58,15 @@ def _abs_se(pilot: tuple[Any, Any]):
 
 
 _POPULATION_VIEWS = (
-    Scope(view="run", grain="total", population="assigned"),
-    Scope(view="run", grain="total", population="triggered"),
+    View(view="run", grain="total", population="assigned"),
+    View(view="run", grain="total", population="triggered"),
 )
 
 
 def _population_rows(pair: tuple[Any, Any], **options: Any) -> list[Any]:
     """Whole-window rows of the assigned and then the triggered population of one run."""
     experiment, resolver = pair
-    result = run(replace(experiment, scopes=_POPULATION_VIEWS), resolver, **options)
+    result = run(replace(experiment, views=_POPULATION_VIEWS), resolver, **options)
     return [row for scope in _POPULATION_VIEWS for row in result.readout(scope)]
 
 

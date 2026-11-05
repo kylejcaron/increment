@@ -42,7 +42,7 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
-from increment.kernel.contracts import Scope
+from increment.kernel.contracts import View
 from increment.semantics import load
 from increment.workflows import (
     capture_sequential,
@@ -52,7 +52,7 @@ from increment.workflows import (
     metrics,
     sequential_snapshot,
 )
-from tests.analysis_factory import bound_source, make_binding, view_readout
+from tests.analysis_factory import bound_source, declare_views, make_binding, view_readout
 from tests.warning_codes import warning_codes
 
 
@@ -67,12 +67,12 @@ def _unit_rows(source, metric, **kwargs) -> pa.Table:
 
 
 _POPULATION_SCOPES = (
-    Scope(view="run", grain="total"),
-    Scope(view="run", grain="total", population="triggered"),
+    View(view="run", grain="total"),
+    View(view="run", grain="total", population="triggered"),
 )
 _BREAKOUT_POPULATION_SCOPES = (
-    Scope(view="breakout", grain="total"),
-    Scope(view="breakout", grain="total", population="triggered"),
+    View(view="breakout", grain="total"),
+    View(view="breakout", grain="total", population="triggered"),
 )
 
 
@@ -81,7 +81,12 @@ def _both_populations(
 ) -> Any:
     """One run's assigned then triggered whole-window (or breakout) collections, concatenated."""
     assigned, triggered = _BREAKOUT_POPULATION_SCOPES if breakout else _POPULATION_SCOPES
-    result = run(experiment.with_views(assigned, triggered), resolver, **options)
+    result = run(
+        declare_views(experiment, assigned, triggered),
+        resolver,
+        views=(assigned, triggered),
+        **options,
+    )
     return result.readout(assigned).concat(result.readout(triggered))
 
 
@@ -99,10 +104,10 @@ def _day_axis_scope(
     population: Literal["assigned", "triggered"],
     dimension: str | None = None,
     completed_windows_only: bool = False,
-) -> Scope:
+) -> View:
     """The day-axis scope a parametrized view name (values or lift) reads."""
     view, values = _DAY_AXIS_VIEWS[view_name]
-    return Scope(
+    return View(
         view=view,
         grain=view,
         values=values,
@@ -249,9 +254,9 @@ def test_kernel_run_preserves_triggered_population_identity(tmp_path):
             evidence_cutoff, {"events": evidence_cutoff}
         ),
     )
-    triggered = Scope(view="run", grain="total", population="triggered")
+    triggered = View(view="run", grain="total", population="triggered")
     try:
-        result = run(experiment.with_views(triggered), resolver)
+        result = run(experiment.with_views(triggered), resolver, views=(triggered,))
     finally:
         cast(Any, resolver).close()
 
@@ -359,7 +364,7 @@ def test_snapshot_identity_distinguishes_pinned_source_evidence(tmp_path):
         asof_first, asof_same, asof_different = [
             view_readout(
                 *analysis,
-                Scope(view="asof", grain="asof", values=True, population="assigned"),
+                View(view="asof", grain="asof", values=True, population="assigned"),
                 metrics=["revenue"],
             )
             for analysis in analyses[:3]
@@ -368,7 +373,7 @@ def test_snapshot_identity_distinguishes_pinned_source_evidence(tmp_path):
         assert asof_first[0].source_snapshot_id != asof_different[0].source_snapshot_id
         triggered = view_readout(
             *analyses[0],
-            Scope(view="asof", grain="asof", values=True, population="triggered"),
+            View(view="asof", grain="asof", values=True, population="triggered"),
             metrics=["revenue"],
         )
         assert triggered[0].source_snapshot_id != asof_first[0].source_snapshot_id
@@ -532,7 +537,7 @@ def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
         completed = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="asof",
                 grain="asof",
                 values=True,
@@ -546,7 +551,7 @@ def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
         triggered_asof = view_readout(
             experiment,
             resolver,
-            Scope(view="asof", grain="asof", population="triggered"),
+            View(view="asof", grain="asof", population="triggered"),
             estimands=["compliance"],
         )
         assert triggered_asof
@@ -558,7 +563,7 @@ def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
         triggered_daily = view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", population="triggered"),
+            View(view="daily", grain="daily", population="triggered"),
             estimands=["compliance"],
         )
         assert triggered_daily
@@ -570,7 +575,7 @@ def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
             view_readout(
                 experiment,
                 resolver,
-                Scope(
+                View(
                     view="asof",
                     grain="asof",
                     segment=BreakoutIdentity("missing_dimension", None),
@@ -583,7 +588,7 @@ def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
             view_readout(
                 experiment,
                 resolver,
-                Scope(
+                View(
                     view="daily",
                     grain="daily",
                     segment=BreakoutIdentity("missing_dimension", None),
@@ -648,7 +653,7 @@ def test_empty_triggered_late_request_returns_unavailable_late_cells(tmp_path):
         rows = view_readout(
             experiment,
             resolver,
-            Scope(view="asof", grain="asof", population="triggered"),
+            View(view="asof", grain="asof", population="triggered"),
             estimands=["itt", "late"],
         )
         assert rows
@@ -992,7 +997,7 @@ def test_public_decision_keeps_assigned_and_triggered_families_separate(tmp_path
     registration = Registration.from_plan(compiled)
     try:
         result = run(
-            experiment.with_views(*_POPULATION_SCOPES),
+            experiment.with_views(_POPULATION_SCOPES[1]),
             resolver,
             run_id="run-triggered-family-scopes",
         )
@@ -1293,7 +1298,9 @@ def test_triggered_analysis_store_uses_triggered_scope_for_history(tmp_path):
     triggered = _POPULATION_SCOPES[1]
     try:
         store = ParquetResultsStore(tmp_path / "results")
-        result = run(experiment.with_views(triggered), resolver, results_store=store)
+        result = run(
+            experiment.with_views(triggered), resolver, views=(triggered,), results_store=store
+        )
         handle = store.open_run("exp", result.run.analysis_spec_hash)
         (cell,) = handle.run.cells
         assert cell.identity.scope is not None
@@ -1323,14 +1330,14 @@ def test_persisted_population_specs_keep_their_own_source_reference(tmp_path):
     experiment, resolver = _analysis(tmp_path, _events(trigger_rate=0.2))
     try:
         store = ParquetResultsStore(tmp_path / "results")
-        both = run(experiment.with_views(*_POPULATION_SCOPES), resolver, results_store=store)
+        both = run(experiment.with_views(_POPULATION_SCOPES[1]), resolver, results_store=store)
         combined = store.open_run("exp", both.run.analysis_spec_hash).run
         combined_hashes = {
             cell.identity.scope.population: cell.identity.analysis_spec_hash
             for cell in combined.cells
             if cell.identity.scope is not None
         }
-        assigned = run(experiment.with_views(_POPULATION_SCOPES[0]), resolver, results_store=store)
+        assigned = run(experiment, resolver, results_store=store)
         assigned_run = store.open_run("exp", assigned.run.analysis_spec_hash).run
         (assigned_cell,) = assigned_run.cells
         assert combined_hashes["assigned"] == assigned_cell.identity.analysis_spec_hash
@@ -1562,7 +1569,7 @@ def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_p
     try:
         adopted = _publish_and_adopt(con, native, kinds=("breakout_dimension", "assignment_counts"))
         with pytest.raises(InvalidRequestError) as raised:
-            view_readout(*adopted, Scope(view="breakout", grain="total", population="triggered"))
+            view_readout(*adopted, View(view="breakout", grain="total", population="triggered"))
         assert raised.value.code == "frame.metric.window_days_supported"
     finally:
         if adopted is None:
@@ -1581,7 +1588,7 @@ def test_triggered_breakout_without_declared_trigger_is_refused_even_without_bre
     try:
         with pytest.raises(CapabilityError) as raised:
             view_readout(
-                experiment, resolver, Scope(view="breakout", grain="total", population="triggered")
+                experiment, resolver, View(view="breakout", grain="total", population="triggered")
             )
         assert raised.value.code == "facade.analysis.trigger_unsupported"
     finally:
@@ -1606,9 +1613,9 @@ def test_triggered_artifact_without_breakouts_returns_empty_estimates(tmp_path):
             kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
         )
         assert _both_populations(*adopted, breakout=True) == []
-        assert view_readout(*adopted, Scope(view="breakout", grain="total")) == []
+        assert view_readout(*adopted, View(view="breakout", grain="total")) == []
         assert (
-            view_readout(*adopted, Scope(view="breakout", grain="total", population="triggered"))
+            view_readout(*adopted, View(view="breakout", grain="total", population="triggered"))
             == []
         )
     finally:
@@ -1714,7 +1721,7 @@ def test_triggered_artifact_breakout_refuses_invalid_method_before_population_re
         with pytest.raises(InvalidRequestError) as refused:
             view_readout(
                 *adopted,
-                Scope(view="breakout", grain="total", population="triggered"),
+                View(view="breakout", grain="total", population="triggered"),
                 decision_method=Method(name="iptw"),
             )
         assert refused.value.code == "estimation.engine.method_name_observational"
@@ -2833,7 +2840,7 @@ def test_registered_sequential_trigger_checks_assigned_integrity_once_per_view(
     snapshot = sequential_snapshot(native_experiment, native_resolver)
     assert snapshot.triggered is not None
     triggered_history = view_readout(
-        native_experiment, native_resolver, Scope(view="asof", grain="asof", population="triggered")
+        native_experiment, native_resolver, View(view="asof", grain="asof", population="triggered")
     )
     assert triggered_history
     assert {row.analysis_population for row in triggered_history} == {"triggered"}
@@ -3275,7 +3282,7 @@ def test_triggered_asof_uses_per_unit_entry_and_maturity_without_future_members(
         asof = view_readout(
             experiment,
             resolver,
-            Scope(view="asof", grain="asof", values=True, population="triggered"),
+            View(view="asof", grain="asof", values=True, population="triggered"),
         )
         by_day_arm = {(row.ds.isoformat(), row.group_id): row for row in asof}
         assert by_day_arm[("2024-01-04", "C")].n == 1
@@ -3288,7 +3295,7 @@ def test_triggered_asof_uses_per_unit_entry_and_maturity_without_future_members(
         completed = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="asof",
                 grain="asof",
                 values=True,
@@ -3303,7 +3310,7 @@ def test_triggered_asof_uses_per_unit_entry_and_maturity_without_future_members(
         assert mature[("2024-01-15", "T")] == 2
 
         lift = view_readout(
-            experiment, resolver, Scope(view="asof", grain="asof", population="triggered")
+            experiment, resolver, View(view="asof", grain="asof", population="triggered")
         )
         early_treatment = [
             row for row in lift if row.ds.isoformat() == "2024-01-04" and row.group_id == "T"
@@ -3474,7 +3481,7 @@ def test_triggered_dimension_fills_missing_arm_within_each_segment(tmp_path):
         estimates = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="asof",
                 grain="asof",
                 segment=BreakoutIdentity("country", None),
@@ -3637,7 +3644,7 @@ def test_triggered_dimension_includes_assigned_segments_with_no_eligible_members
         values = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 values=True,
@@ -3651,7 +3658,7 @@ def test_triggered_dimension_includes_assigned_segments_with_no_eligible_members
         lifts = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 segment=BreakoutIdentity("country", None),
@@ -3676,7 +3683,7 @@ def test_empty_triggered_segment_rows_are_scoped_to_each_breakout_source(tmp_pat
         rows = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="asof",
                 grain="asof",
                 segment=BreakoutIdentity("country", None),
@@ -3715,7 +3722,7 @@ def test_triggered_asof_empty_segment_keeps_bonferroni_family_size(tmp_path):
         two_rows = view_readout(
             two_experiment,
             two_resolver,
-            Scope(
+            View(
                 view="asof",
                 grain="asof",
                 segment=BreakoutIdentity("country", None),
@@ -3725,7 +3732,7 @@ def test_triggered_asof_empty_segment_keeps_bonferroni_family_size(tmp_path):
         one_rows = view_readout(
             one_experiment,
             one_resolver,
-            Scope(
+            View(
                 view="asof",
                 grain="asof",
                 segment=BreakoutIdentity("country", None),
@@ -3824,7 +3831,7 @@ def test_triggered_daily_primary_keeps_full_treatment_roster_alpha_when_arm_is_e
     )
     try:
         rows = view_readout(
-            experiment, resolver, Scope(view="daily", grain="daily", population="triggered")
+            experiment, resolver, View(view="daily", grain="daily", population="triggered")
         )
         treatment = next(
             row for row in rows if row.ds == dt.date(2024, 1, 3) and row.group_id == "T1"
@@ -3866,7 +3873,7 @@ def test_triggered_asof_empty_dimension_with_unbounded_retention_uses_asof_roste
         rows = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="asof",
                 grain="asof",
                 values=True,
@@ -3899,7 +3906,7 @@ def test_triggered_empty_retention_cohort_cell_keeps_cohort_basis(tmp_path):
         rows = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 segment=BreakoutIdentity("country", None),
@@ -3955,7 +3962,7 @@ def test_triggered_empty_dimension_respects_declared_observation_horizon(tmp_pat
         rows = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 values=True,
@@ -4062,7 +4069,7 @@ def test_triggered_lift_marks_treatment_when_control_segment_is_unavailable(tmp_
         estimates = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 segment=BreakoutIdentity("country", None),
@@ -4145,7 +4152,7 @@ def test_triggered_missing_lift_rows_use_each_groups_observed_count(tmp_path):
         estimates = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 segment=BreakoutIdentity("country", None),
@@ -4184,7 +4191,7 @@ def test_triggered_empty_conversion_rows_are_typed_before_estimation(tmp_path):
         rows = view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", population="triggered"),
+            View(view="daily", grain="daily", population="triggered"),
             metrics=[metric],
         )
         assert rows
@@ -4218,7 +4225,7 @@ def test_triggered_conversion_mixed_empty_days_and_segments_skip_empty_fits(tmp_
         baseline_rows = view_readout(
             baseline_experiment,
             baseline_resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 segment=BreakoutIdentity("country", None),
@@ -4229,7 +4236,7 @@ def test_triggered_conversion_mixed_empty_days_and_segments_skip_empty_fits(tmp_
         mixed_rows = view_readout(
             mixed_experiment,
             mixed_resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 segment=BreakoutIdentity("country", None),
@@ -4336,7 +4343,7 @@ def test_triggered_single_unit_exact_binomial_cells_keep_sampling_evidence(tmp_p
         estimates = view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", population="triggered"),
+            View(view="daily", grain="daily", population="triggered"),
             metrics=["converted"],
         )
         treatment = [row for row in estimates if row.group_id == "T"]

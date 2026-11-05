@@ -85,7 +85,7 @@ and interval reference/guarantee labels (new fields only, never renamed or
 reinterpreted); stable error codes and their named context keys (message text
 may change); each saved format and the versions its readers accept, listed in
 the [saved-format table](reference/saved-formats.md); and identity hashes,
-including `Experiment.hash()`, `Scope.hash()`, and `scope_key`.
+including `Experiment.hash()`, `View.hash()`, and `scope_key`.
 
 Other modules, underscore names, registry and dispatch helpers, private
 research kernels, and the `increment.experimental` namespace are not covered
@@ -243,6 +243,24 @@ values.
   `analysis_context` or `metrics`, previously `declarations`) and the reader's
   experiment in a new `reader_experiment_id` context key. Results and
   experiment identity hashes are unchanged.
+- Release note (breaking API cutover): `Scope` is renamed `View` and its
+  overall constructor `Scope.run()` is now `View.overall()`; `View.daily`,
+  `View.asof`, `View.breakout` and `View.switchback` and every constructor
+  keyword are unchanged. `Experiment.scopes` is now `Experiment.views`, also as
+  the `Experiment(...)` keyword, and `RunResult.readout(scope)` is now
+  `readout(view)`; positional calls are unchanged. `Experiment.with_views(*views)`
+  now adds views after the declared ones instead of replacing them:
+  `experiment.with_views(View.daily())` declares the builder's overall view and
+  the daily view, and `run` returns both. Pass `views=` to `run` to execute a
+  subset. An empty call, or a view already declared, refuses with
+  `kernel.request.invalid`, so omit the builder's `View.overall()` from the
+  views you add. Refusal routes that named a `Scope(...)` construction, such as
+  the `route` of a day-axis refusal, now name the `View` constructor, such as
+  `View.asof()`. Saved experiment JSON keeps its `"scopes"` key, and every view
+  hash, the identity of an experiment whose views did not change, and the
+  `RunResult.to_frame()` columns `scope_view`, `scope_values` and `scope_key`
+  are unchanged; an experiment that used `with_views` to replace the builder's
+  view now also declares that view, so its hash changes.
 
 - Release note (typing): public signatures and fields no longer use `Any`;
   `make lint` now refuses any new `Any` in a promised name. Results, refusal
@@ -454,16 +472,16 @@ their names, defaults and refusals.
 | `resolver.catalog_writer(experiment)` | `run(experiment, resolver)` on a connected `from_definitions` pair, which records the offline catalog |
 | reading through a resolver after `close()` or its `with` block | build a new pair with the builder that returned it; a closed resolver refuses with `kernel.run.reader_closed` |
 | `analysis.run(**options)` | `run(experiment, resolver, **options).readout()`, the same `LiftEstimates` or `ContrastResults` |
-| `analysis.run(population="triggered")` | `scope = Scope(view="run", grain="total", population="triggered")`, then `run(experiment.with_views(scope), resolver).readout(scope)`; declare one run scope per population to read both |
+| `analysis.run(population="triggered")` | `view = View.overall(population="triggered")`, then `run(experiment.with_views(view), resolver, views=(view,)).readout(view)`; omit `views=` to read the builder's assigned view beside it |
 | `analysis.run(store=store)` | `run(experiment, resolver, results_store=store)`; `decision_log=` and `run_id=` are checked before any read |
 | `run(analysis, registration, compiled_plan, *, experiment_id=..., analysis_spec_hash=..., execution_identity_hash=..., run_id=..., ...)` | `run(experiment, resolver, run_id=..., results_store=..., decision_log=..., ...)`; the experiment supplies its registration and identities |
-| `analysis.run_breakout(...)` | `Scope(view="breakout", grain="total")`; `segment=(BreakoutIdentity(property, source), ...)` selects declared breakouts, and the empty default selects all |
-| `analysis.run_daily(dimension=property, ...)` | `Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity(property, None))` |
-| `analysis.run_daily_lift(dimension=property, ...)` | `Scope(view="daily", grain="daily", segment=BreakoutIdentity(property, None))` |
-| `analysis.run_asof(completed_windows_only=flag, ...)` | `Scope(view="asof", grain="asof", values=True, completion_policy=flag)` |
-| `analysis.run_asof_lift(completed_windows_only=flag, ...)` | `Scope(view="asof", grain="asof", completion_policy=flag)` |
-| `population=` on a day-axis or breakout method | `Scope(..., population=...)` |
-| `increment.readouts.run_scoped(analysis, ...)` | `run(experiment.with_views(*scopes), resolver)`: every declared view reads one capture of the data; `views=` selects a subset |
+| `analysis.run_breakout(...)` | `View.breakout(segment)`; `segment=(BreakoutIdentity(property, source), ...)` selects declared breakouts, and `()` selects all |
+| `analysis.run_daily(dimension=property, ...)` | `View.daily(values=True, segment=(BreakoutIdentity(property, None),))` |
+| `analysis.run_daily_lift(dimension=property, ...)` | `View.daily(segment=(BreakoutIdentity(property, None),))` |
+| `analysis.run_asof(completed_windows_only=flag, ...)` | `View.asof(values=True, completion_policy=flag)` |
+| `analysis.run_asof_lift(completed_windows_only=flag, ...)` | `View.asof(completion_policy=flag)` |
+| `population=` on a day-axis or breakout method | `population=` on `View.daily`, `View.asof` or `View.breakout` |
+| `increment.readouts.run_scoped(analysis, ...)` | `declared = {view.hash() for view in experiment.views}` and `added = [view for view in views if view.hash() not in declared]`, then `run(experiment.with_views(*added) if added else experiment, resolver, views=views)`: one capture of the data serves every selected view; `with_views` refuses a view the experiment already declares, such as the builder's `View.overall()` |
 | `analysis.materialize()`, `analysis.materialize().run()` | `workflows.materialize(experiment, resolver)`, then `run(experiment, resolver)` |
 | `analysis.export(path)` | `workflows.export_moments(experiment, resolver, path)` |
 | `analysis.experiment` | `workflows.experiment_definition(experiment, resolver)`, the semantic declaration |
@@ -478,18 +496,23 @@ their names, defaults and refusals.
 | `increment.Resolver`, `increment.BoundResolver` | `increment.evidence.Resolver`, `increment.evidence.BoundResolver`, under the same names |
 | `resolver=` on `run` and on every function that reads data | `reader=`; positional calls are unchanged |
 | `MetricSpec(missing="drop")` | `MetricSpec(missing="skip")`, the same computation; the rows' `population` names the units each group observed |
+| `increment.Scope` | `increment.View` |
+| `Scope.run(population=...)` | `View.overall(population=...)` |
+| `experiment.scopes`, `Experiment(..., scopes=...)` | `experiment.views`, `Experiment(..., views=...)`; saved JSON keeps its `"scopes"` key |
+| `experiment.with_views(*scopes)`, which replaced the declared views | `experiment.with_views(*views)`, which adds after the declared views: omit a view already declared, such as the builder's `View.overall()`, and pass `views=` to `run` to execute only some of them |
+| `result.readout(scope=...)` | `result.readout(view=...)`; positional calls are unchanged |
 
 Readout options such as `decision_method`, `prior`, `metrics`, `estimands`,
 `exploratory_metrics` and `coherence` are `run` keywords and apply to every
 selected view. A view's population, breakout selection and completed-window
-gate belong to its `Scope`. One `run` reads every declared view from one
+gate belong to its `View`. One `run` reads every declared view from one
 capture, so the daily, as-of and whole-window rows agree on the data they
 describe:
 
 ```python
 import polars as pl
 
-from increment import Scope, from_frame, run
+from increment import View, from_frame, run
 from increment.evidence import BreakoutIdentity
 
 panel = pl.DataFrame(
@@ -511,12 +534,10 @@ experiment, resolver = from_frame(
     metrics={"revenue": "mean"},
     breakouts=["country"],
 )
-whole = Scope(view="run", grain="total")
-daily_by_country = Scope(
-    view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
-)
-asof_lift = Scope(view="asof", grain="asof")
-result = run(experiment.with_views(whole, daily_by_country, asof_lift), resolver)
+whole = View.overall()
+daily_by_country = View.daily(values=True, segment=(BreakoutIdentity("country", None),))
+asof_lift = View.asof()
+result = run(experiment.with_views(daily_by_country, asof_lift), resolver)
 estimates = result.readout(whole)  # was analysis.run()
 values = result.readout(daily_by_country)  # was analysis.run_daily(dimension="country")
 trend = result.readout(asof_lift)  # was analysis.run_asof_lift()

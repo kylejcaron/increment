@@ -11,7 +11,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
-from increment import Scope, from_definitions, from_unit_day_artifact, workflows
+from increment import View, from_definitions, from_unit_day_artifact, workflows
 from increment.artifacts import publish_unit_day_artifact
 from increment.breakout.estimates import DailyLiftEstimate, DailyMetricValue
 from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedRequestError
@@ -163,7 +163,7 @@ def country_daily_lift_by_segment(con):
     computed once and shared the same way."""
     return view_readout(
         *_analysis_with_country_breakout(con),
-        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
     )
 
 
@@ -272,7 +272,7 @@ def daily_events_daily_values(con):
     """Plain ``run_daily()`` on the daily fixture, computed once - the
     tests below assert different facets of one deterministic readout."""
     return view_readout(
-        *_analysis_with_daily_events(con), Scope(view="daily", grain="daily", values=True)
+        *_analysis_with_daily_events(con), View(view="daily", grain="daily", values=True)
     )
 
 
@@ -280,7 +280,7 @@ def daily_events_daily_values(con):
 def daily_events_daily_lifts(con):
     """Plain ``run_daily_lift()`` on the daily fixture, computed once and
     shared the same way."""
-    return view_readout(*_analysis_with_daily_events(con), Scope(view="daily", grain="daily"))
+    return view_readout(*_analysis_with_daily_events(con), View(view="daily", grain="daily"))
 
 
 def test_run_daily_returns_per_day_metric_values(daily_events_daily_values):
@@ -347,10 +347,10 @@ def test_run_daily_lift_inherits_declared_plan_alpha(con):
     )
 
     default_results = view_readout(
-        base_experiment, base_resolver, Scope(view="daily", grain="daily")
+        base_experiment, base_resolver, View(view="daily", grain="daily")
     )
     narrow_results = view_readout(
-        narrow_alpha_experiment, narrow_alpha_resolver, Scope(view="daily", grain="daily")
+        narrow_alpha_experiment, narrow_alpha_resolver, View(view="daily", grain="daily")
     )
 
     assert len(default_results) == len(narrow_results) == 2
@@ -384,15 +384,15 @@ def test_run_daily_and_run_daily_lift_empty_when_no_metrics(con):
     analysis = _analysis_with_daily_events(con)
     analysis = make_binding_like(analysis[1], [], plan=AnalysisPlan())
 
-    assert view_readout(*analysis, Scope(view="daily", grain="daily", values=True)) == []
-    assert view_readout(*analysis, Scope(view="daily", grain="daily")) == []
+    assert view_readout(*analysis, View(view="daily", grain="daily", values=True)) == []
+    assert view_readout(*analysis, View(view="daily", grain="daily")) == []
 
 
 _DAY_AXIS_SCOPES = (
-    Scope(view="daily", grain="daily", values=True),
-    Scope(view="asof", grain="asof", values=True),
-    Scope(view="daily", grain="daily"),
-    Scope(view="asof", grain="asof"),
+    View(view="daily", grain="daily", values=True),
+    View(view="asof", grain="asof", values=True),
+    View(view="daily", grain="daily"),
+    View(view="asof", grain="asof"),
 )
 
 
@@ -424,7 +424,7 @@ def test_empty_asof_lift_keeps_implicit_compliance_capture(con, monkeypatch):
         return create_table(name, expr, **kwargs)
 
     monkeypatch.setattr(con, "create_table", record_snapshot)
-    rows = view_readout(experiment, resolver, Scope(view="asof", grain="asof"), metrics=[])
+    rows = view_readout(experiment, resolver, View(view="asof", grain="asof"), metrics=[])
 
     assert rows
     assert {row.estimand for row in rows} == {"compliance"}
@@ -467,7 +467,7 @@ def test_run_daily_raises_when_experiment_has_retention_metric(con):
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        view_readout(*analysis, Scope(view="daily", grain="daily", values=True))
+        view_readout(*analysis, View(view="daily", grain="daily", values=True))
     assert raised.value.code == "breakout.retention.unbounded"
     assert raised.value.context["names"] == ("d7_retention",)
 
@@ -488,7 +488,7 @@ def test_run_daily_lift_raises_when_experiment_has_retention_metric(con):
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        view_readout(*analysis, Scope(view="daily", grain="daily"))
+        view_readout(*analysis, View(view="daily", grain="daily"))
     assert raised.value.code == "breakout.retention.unbounded"
     assert raised.value.context["names"] == ("d7_retention",)
 
@@ -500,7 +500,7 @@ def test_run_daily_lift_raises_for_encouragement_design_before_any_query_runs(co
     _forbid_database_reads(monkeypatch, con)
 
     with pytest.raises(InvalidRequestError) as raised:
-        view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+        view_readout(experiment, resolver, View(view="daily", grain="daily"))
     assert raised.value.code == "facade.analysis.encouragement_daily_late"
 
 
@@ -528,11 +528,11 @@ def test_run_daily_metrics_override_excludes_retention_metric(con):
 
     assert (
         view_readout(
-            *analysis, Scope(view="daily", grain="daily", values=True), metrics=non_retention
+            *analysis, View(view="daily", grain="daily", values=True), metrics=non_retention
         )
         != []
     )
-    assert view_readout(*analysis, Scope(view="daily", grain="daily"), metrics=non_retention) != []
+    assert view_readout(*analysis, View(view="daily", grain="daily"), metrics=non_retention) != []
 
 
 @pytest.fixture(scope="module")
@@ -551,7 +551,7 @@ def cohort_daily_values(con, tmp_path_factory):
     return view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", values=True),
+        View(view="daily", grain="daily", values=True),
         metrics=[*mean_metrics, bounded],
     )
 
@@ -587,7 +587,7 @@ def test_run_daily_lift_returns_cohort_indexed_retention_rows(con, example_defin
         m for m in workflows.metrics(experiment, resolver) if m.name == "d7_retention"
     ).model_copy(update={"threshold_days": (7, 14)})
     estimates = view_readout(
-        experiment, resolver, Scope(view="daily", grain="daily"), metrics=[bounded]
+        experiment, resolver, View(view="daily", grain="daily"), metrics=[bounded]
     )
     assert estimates
     assert all(e.ds_basis == "cohort" for e in estimates)
@@ -609,13 +609,13 @@ def test_run_daily_still_rejects_unbounded_retention_metric(con, example_definit
         view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", values=True),
+            View(view="daily", grain="daily", values=True),
             metrics=[unbounded],
         )
     assert raised.value.code == "breakout.retention.unbounded"
     assert raised.value.context["names"] == ("d7_retention",)
     with pytest.raises(InvalidRequestError) as raised_lift:
-        view_readout(experiment, resolver, Scope(view="daily", grain="daily"), metrics=[unbounded])
+        view_readout(experiment, resolver, View(view="daily", grain="daily"), metrics=[unbounded])
     assert raised_lift.value.code == "breakout.retention.unbounded"
 
 
@@ -740,7 +740,7 @@ def test_run_daily_retention_cohort_censored_by_real_fact_table_data_as_of(con):
                 module=r"ibis\.backends\.duckdb",
             )
             results = view_readout(
-                experiment, resolver, Scope(view="daily", grain="daily", values=True)
+                experiment, resolver, View(view="daily", grain="daily", values=True)
             )
     assert "frame.censoring.dropped_units" in warning_codes(rec)
     assert results == [], (
@@ -846,7 +846,7 @@ def test_run_daily_censors_on_the_local_data_as_of_day(con):
     the pipeline has not loaded through the band's final day)."""
     utc_experiment, utc_resolver = _analysis_with_boundary_sensitive_freshness(con, "UTC")
     assert (
-        view_readout(utc_experiment, utc_resolver, Scope(view="daily", grain="daily", values=True))
+        view_readout(utc_experiment, utc_resolver, View(view="daily", grain="daily", values=True))
         != []
     ), "under UTC the cohort matures exactly on data_as_of (2025-08-02) and must be scored"
 
@@ -864,7 +864,7 @@ def test_run_daily_censors_on_the_local_data_as_of_day(con):
             localized_results = view_readout(
                 localized_experiment,
                 localized_resolver,
-                Scope(view="daily", grain="daily", values=True),
+                View(view="daily", grain="daily", values=True),
             )
     assert "frame.censoring.dropped_units" in warning_codes(rec)
     assert localized_results == [], (
@@ -977,7 +977,7 @@ def test_running_experiment_daily_series_ends_on_the_localized_horizon(con):
     assert max(
         r.ds
         for r in view_readout(
-            utc_experiment, utc_resolver, Scope(view="daily", grain="daily", values=True)
+            utc_experiment, utc_resolver, View(view="daily", grain="daily", values=True)
         )
     ) == date(2025, 8, 5)
 
@@ -989,7 +989,7 @@ def test_running_experiment_daily_series_ends_on_the_localized_horizon(con):
         for r in view_readout(
             localized_experiment,
             localized_resolver,
-            Scope(view="daily", grain="daily", values=True),
+            View(view="daily", grain="daily", values=True),
         )
     ) == date(2025, 8, 4), (
         "the last app_open (2025-08-05 02:00 UTC) is local 2025-08-04 under "
@@ -1286,7 +1286,7 @@ def test_data_as_of_scoped_to_metrics_own_fact_not_masked_by_fresher_sibling_fac
                 module=r"ibis\.backends\.duckdb",
             )
             results = view_readout(
-                experiment, resolver, Scope(view="daily", grain="daily", values=True)
+                experiment, resolver, View(view="daily", grain="daily", values=True)
             )
     assert "frame.censoring.dropped_units" in warning_codes(rec)
     assert results == [], (
@@ -1309,7 +1309,7 @@ def test_run_daily_dimension_returns_per_day_per_segment_values(con):
     results = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
     )
 
     assert len(results) == 8  # 1 metric x 2 days x 2 arms x 2 countries
@@ -1349,7 +1349,7 @@ def test_run_daily_without_dimension_unaffected_by_declared_breakout(con):
     backward-compatibility requirement on the un-dimensioned call."""
     experiment, resolver = _analysis_with_country_breakout(con)
 
-    results = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+    results = view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
 
     assert len(results) == 4  # 1 metric x 2 days x 2 arms, collapsed across country
     for r in results:
@@ -1389,7 +1389,7 @@ def test_run_daily_dimension_metrics_override_excludes_retention_metric(con):
 
     results = view_readout(
         *analysis,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
         metrics=non_retention,
     )
 
@@ -1415,7 +1415,7 @@ def test_run_daily_dimension_raises_when_experiment_has_retention_metric(con):
     with pytest.raises(InvalidRequestError) as raised:
         view_readout(
             *analysis,
-            Scope(
+            View(
                 view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
             ),
         )
@@ -1444,7 +1444,7 @@ def test_run_daily_dimension_raises_before_breakout_summaries_runs(con, monkeypa
     with pytest.raises(InvalidRequestError) as raised:
         view_readout(
             *analysis,
-            Scope(
+            View(
                 view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
             ),
         )
@@ -1463,7 +1463,7 @@ def test_run_daily_unknown_dimension_raises_naming_declared_properties(con, monk
         view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily", grain="daily", values=True, segment=BreakoutIdentity("platform", None)
             ),
         )
@@ -1493,7 +1493,7 @@ def test_run_daily_dimension_raises_for_metric_not_declared_on_experiment(con):
         view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
             ),
             metrics=[undeclared_metric],
@@ -1514,7 +1514,7 @@ def test_run_daily_unknown_dimension_raises_when_no_breakouts_declared(con, monk
         view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
             ),
         )
@@ -1542,7 +1542,7 @@ def test_run_daily_dimension_accepts_bounded_retention_metric(con, example_defin
     results = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
         metrics=[bounded],
     )
     assert results
@@ -1619,7 +1619,7 @@ def test_run_daily_dimension_metrics_filter_returns_only_requested_metric(con):
 
     results = view_readout(
         *analysis,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
         metrics=[second_metric],
     )
 
@@ -1713,7 +1713,7 @@ def test_run_daily_lift_without_dimension_unaffected_by_declared_breakout(con):
     which is precisely what the dimensioned view above recovers."""
     experiment, resolver = _analysis_with_country_breakout(con)
 
-    results = view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+    results = view_readout(experiment, resolver, View(view="daily", grain="daily"))
 
     assert len(results) == 2  # 1 metric x 1 method x 1 treatment arm x 2 days
     for r in results:
@@ -1745,7 +1745,7 @@ def test_run_daily_lift_dimension_metrics_override_excludes_retention_metric(con
 
     results = view_readout(
         *analysis,
-        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
         metrics=non_retention,
     )
 
@@ -1771,7 +1771,7 @@ def test_run_daily_lift_dimension_raises_when_experiment_has_retention_metric(co
 
     with pytest.raises(InvalidRequestError) as raised:
         view_readout(
-            *analysis, Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None))
+            *analysis, View(view="daily", grain="daily", segment=BreakoutIdentity("country", None))
         )
     assert raised.value.code == "breakout.retention.unbounded"
     assert raised.value.context["names"] == ("d7_retention",)
@@ -1797,7 +1797,7 @@ def test_run_daily_lift_dimension_raises_before_breakout_summaries_runs(con, mon
 
     with pytest.raises(InvalidRequestError) as raised:
         view_readout(
-            *analysis, Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None))
+            *analysis, View(view="daily", grain="daily", segment=BreakoutIdentity("country", None))
         )
     assert raised.value.code == "breakout.retention.unbounded"
 
@@ -1814,7 +1814,7 @@ def test_run_daily_lift_unknown_dimension_raises_naming_declared_properties(con,
         view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", segment=BreakoutIdentity("platform", None)),
+            View(view="daily", grain="daily", segment=BreakoutIdentity("platform", None)),
         )
     assert raised.value.code == "facade.analysis.unknown_dimension"
     assert raised.value.context["declared"] == ("country",)
@@ -1832,7 +1832,7 @@ def test_run_daily_lift_unknown_dimension_raises_when_no_breakouts_declared(con,
         view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+            View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
         )
     assert raised.value.code == "facade.analysis.unknown_dimension"
     assert raised.value.context["declared"] == ()
@@ -1855,7 +1855,7 @@ def test_run_daily_lift_dimension_raises_for_metric_not_declared_on_experiment(c
         view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+            View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
             metrics=[undeclared_metric],
         )
     assert raised.value.code == "facade.analysis.undeclared_metric_for_dimension"
@@ -1872,8 +1872,8 @@ def test_day_axis_lift_compiles_call_time_metric_as_unassigned(con):
     )
 
     for results in (
-        view_readout(experiment, resolver, Scope(view="daily", grain="daily"), metrics=[metric]),
-        view_readout(experiment, resolver, Scope(view="asof", grain="asof"), metrics=[metric]),
+        view_readout(experiment, resolver, View(view="daily", grain="daily"), metrics=[metric]),
+        view_readout(experiment, resolver, View(view="asof", grain="asof"), metrics=[metric]),
     ):
         assert results
         assert {row.metric for row in results} == {"extra_revenue"}
@@ -1890,7 +1890,7 @@ def test_run_daily_lift_dimension_metrics_filter_skips_excluded_panel(con):
 
     results = view_readout(
         *analysis,
-        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
         metrics=[second_metric],
     )
 
@@ -1922,7 +1922,7 @@ def test_run_daily_lift_dimension_returns_cohort_indexed_retention_rows(con, exa
     estimates = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
         metrics=[*activity_metrics, bounded],
     )
     retention_estimates = [e for e in estimates if e.ds_basis == "cohort"]
@@ -2096,7 +2096,7 @@ def test_native_daily_lift_supports_cuped(seeded_pre_period_con, example_definit
     rows = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily"),
+        View(view="daily", grain="daily"),
         decision_method=Method(name="cuped", variance_reduction="cuped"),
         metrics=["purchase_rate"],
     )
@@ -2114,7 +2114,7 @@ def test_native_dimensioned_daily_lift_supports_cuped(seeded_pre_period_con, exa
     rows = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
         decision_method=Method(name="cuped", variance_reduction="cuped"),
         metrics=["purchase_rate"],
     )
@@ -2133,7 +2133,7 @@ def test_native_daily_retention_lift_supports_cuped(retention_cuped_con, example
     rows = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily"),
+        View(view="daily", grain="daily"),
         decision_method=Method(name="cuped", variance_reduction="cuped"),
         metrics=["d7_retention"],
     )
@@ -2157,7 +2157,7 @@ def test_native_dimensioned_daily_retention_lift_supports_cuped(
     )
     rows = view_readout(
         *analysis,
-        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
         decision_method=Method(name="cuped", variance_reduction="cuped"),
         metrics=["d7_retention"],
     )
@@ -2182,7 +2182,7 @@ def test_native_daily_lift_refuses_sequential_before_moments(
 
     with pytest.raises(UnsupportedRequestError) as raised:
         view_readout(
-            experiment, resolver, Scope(view="daily", grain="daily"), metrics=["purchase_rate"]
+            experiment, resolver, View(view="daily", grain="daily"), metrics=["purchase_rate"]
         )
     assert raised.value.code == "readout.inference.disjoint_slices"
 
@@ -2213,7 +2213,7 @@ def test_native_daily_lift_mixed_methods_preserves_matrix(
     rows = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily"),
+        View(view="daily", grain="daily"),
         decision_method=methods[0],
         sensitivity_methods=tuple(methods[1:]),
         metrics=[metric],
@@ -2253,8 +2253,8 @@ def test_native_daily_and_asof_lift_inherit_configured_method_for_metric_object(
     ).model_copy(update={"description": "caller-supplied metric object"})
 
     for estimates in (
-        view_readout(*analysis, Scope(view="daily", grain="daily"), metrics=[metric]),
-        view_readout(*analysis, Scope(view="asof", grain="asof"), metrics=[metric]),
+        view_readout(*analysis, View(view="daily", grain="daily"), metrics=[metric]),
+        view_readout(*analysis, View(view="asof", grain="asof"), metrics=[metric]),
     ):
         assert estimates
         assert {row.method for row in estimates} == {"configured"}
@@ -2306,7 +2306,7 @@ def test_artifact_dimensioned_daily_lift_preserves_estimator_warning_contract(mo
         warnings.simplefilter("always")
         estimates = view_readout(
             *analysis,
-            Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+            View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
             metrics=["purchase_rate"],
         )
 
@@ -2328,7 +2328,7 @@ def test_artifact_dimensioned_daily_lift_preserves_estimator_warning_contract(mo
         with pytest.raises(UserWarning, match="retained estimable arms"):
             view_readout(
                 *analysis,
-                Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+                View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
                 metrics=["purchase_rate"],
             )
 
@@ -2345,7 +2345,7 @@ def test_native_daily_lift_cuped_without_pre_period_refuses_without_fallback(
         view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily"),
+            View(view="daily", grain="daily"),
             decision_method=Method(name="cuped", variance_reduction="cuped"),
             metrics=["purchase_rate"],
         )

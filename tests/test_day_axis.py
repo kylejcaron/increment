@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 
-from increment import Scope, from_definitions, from_frame, workflows
+from increment import View, from_definitions, from_frame, workflows
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.evidence import BreakoutIdentity
@@ -61,7 +61,7 @@ def test_run_asof_serves_activity_and_retention_metrics_together():
         ],
         exposure_date="ds",
     )
-    results = view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True))
+    results = view_readout(experiment, resolver, View(view="asof", grain="asof", values=True))
     assert {row.metric for row in results} == {"y", "d7"}
     assert all(row.ds_basis == "calendar" for row in results)
     by_metric = {row.metric: row for row in results if row.group_id == "control"}
@@ -75,7 +75,7 @@ def test_run_daily_refuses_unknown_dimension():
         view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 values=True,
@@ -98,13 +98,13 @@ def test_run_daily_refuses_no_definitions_on_unit_summary_source():
         metrics={"y": "mean"},
     )
     with pytest.raises(CapabilityError) as raised:
-        view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+        view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
     assert raised.value.code == "evidence.grain_unavailable"
 
 
 def test_run_daily_values_carry_slice_fields():
     experiment, resolver = _panel()
-    results = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+    results = view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
     by_arm = {row.group_id: row for row in results}
     assert set(by_arm) == {"control", "treat"}
     for row in results:
@@ -118,7 +118,7 @@ def test_run_daily_values_carry_slice_fields():
 
 def test_run_daily_lift_narrows_to_the_requested_metric_and_carries_plan_alpha():
     experiment, resolver = _panel(metrics={"y": "mean", "w": "mean"}, plan=AnalysisPlan(alpha=0.1))
-    narrowed = view_readout(experiment, resolver, Scope(view="daily", grain="daily"), metrics=["y"])
+    narrowed = view_readout(experiment, resolver, View(view="daily", grain="daily"), metrics=["y"])
     assert narrowed
     assert {row.metric for row in narrowed} == {"y"}
     (row,) = narrowed
@@ -136,7 +136,7 @@ def test_run_daily_honors_dimension_on_the_moments_route():
     dimensioned = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
     )
 
     by_cell = {(row.group_id, row.dimension_value): row for row in dimensioned}
@@ -149,7 +149,7 @@ def test_run_daily_honors_dimension_on_the_moments_route():
     assert all(row.n == 6 for row in dimensioned)
 
     undimensioned = view_readout(
-        experiment, resolver, Scope(view="daily", grain="daily", values=True)
+        experiment, resolver, View(view="daily", grain="daily", values=True)
     )
     assert undimensioned
     assert all(row.dimension_value is None for row in undimensioned)
@@ -163,7 +163,7 @@ def test_run_daily_lift_refuses_a_config_bound_observational_method():
         metrics=[MetricSpec(name="y", type="mean", decision_method=Method(name="aipw"))]
     )
     with pytest.raises(InvalidRequestError) as raised:
-        view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+        view_readout(experiment, resolver, View(view="daily", grain="daily"))
     assert raised.value.code == "estimation.engine.method_name_observational"
 
 
@@ -181,8 +181,8 @@ def test_native_observational_lift_uses_the_day_axis_refusal(
         control_group="control", adjustment=AdjustmentSet(covariates=("country",))
     )
     scope = {
-        "run_daily_lift": Scope(view="daily", grain="daily"),
-        "run_asof_lift": Scope(view="asof", grain="asof"),
+        "run_daily_lift": View(view="daily", grain="daily"),
+        "run_asof_lift": View(view="asof", grain="asof"),
     }[readout]
     options = {"decision_method": Method(name="unadjusted")} if explicit_decision else {}
     experiment, resolver = from_definitions(
@@ -274,14 +274,14 @@ def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
         results = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
             ),
         )
         assert results
         assert {row.dimension_value for row in results} == {"uk", "us"}
         asof_results = view_readout(
-            experiment, resolver, Scope(view="asof", grain="asof", values=True)
+            experiment, resolver, View(view="asof", grain="asof", values=True)
         )
         assert asof_results
         assert {row.metric for row in asof_results} == {"y"}

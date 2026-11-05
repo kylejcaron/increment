@@ -336,7 +336,7 @@ def check_sequential_parity(con, dialect: str, source: str) -> dict[str, tuple]:
 
 def check_day_axis_parity(con, dialect: str, source: str) -> None:
     """Day-axis ratio CUPED: the final as-of equals the total, and both readers agree."""
-    from increment import Method, Scope
+    from increment import Method, View
     from increment.results import LiftEstimate
 
     cuped = Method(name="cuped", variance_reduction="cuped")
@@ -347,8 +347,8 @@ def check_day_axis_parity(con, dialect: str, source: str) -> None:
     )
     definitions = _open(con, dialect, source, plan, artifact=False)
     artifact = _open(con, dialect, source, plan, artifact=True)
-    asof_lift = Scope(view="asof", grain="asof")
-    daily_lift = Scope(view="daily", grain="daily")
+    asof_lift = View(view="asof", grain="asof")
+    daily_lift = View(view="daily", grain="daily")
     try:
         total_row = [r for r in view_readout(*definitions) if r.method == "cuped"][0]
         assert isinstance(total_row, LiftEstimate)

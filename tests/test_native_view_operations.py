@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from increment import Scope, from_definitions
+from increment import View, from_definitions
 from increment.errors import CapabilityError
 from increment.estimation.sitewide import SitewideImpact
 from increment.evidence import BreakoutIdentity
@@ -237,7 +237,7 @@ def test_run_breakout_preserves_all_declared_sources(con):
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        results = view_readout(*analysis, Scope(view="breakout", grain="total"))
+        results = view_readout(*analysis, View(view="breakout", grain="total"))
 
     assert {result.source for result in results} == {"src_a", "src_b"}
 
@@ -256,10 +256,10 @@ def test_day_source_matches_daily_and_asof_views(pricing_analysis: tuple[Any, An
     direct_daily = DailyMetricValues(_run_daily_values(daily_rows, metrics=[metric], view="daily"))
     direct_asof = DailyMetricValues(_run_daily_values(asof_rows, metrics=[metric], view="asof"))
     facade_daily = view_readout(
-        *pricing_analysis, Scope(view="daily", grain="daily", values=True), metrics=(metric,)
+        *pricing_analysis, View(view="daily", grain="daily", values=True), metrics=(metric,)
     )
     facade_asof = view_readout(
-        *pricing_analysis, Scope(view="asof", grain="asof", values=True), metrics=(metric,)
+        *pricing_analysis, View(view="asof", grain="asof", values=True), metrics=(metric,)
     )
     _assert_model_rows_match(direct_daily, facade_daily, ignore_source_scope=True)
     _assert_model_rows_match(direct_asof, facade_asof, ignore_source_scope=True)
@@ -272,7 +272,7 @@ def test_day_source_dimensioned_result_is_typed_and_attributed(pricing_con):
     values = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
         metrics=(metric,),
     )
 
@@ -322,13 +322,13 @@ def test_day_source_adhoc_ratio_denominator_extends_daily_and_asof_horizon(examp
     )
 
     declared_daily = view_readout(
-        experiment, resolver, Scope(view="daily", grain="daily", values=True), metrics=(declared,)
+        experiment, resolver, View(view="daily", grain="daily", values=True), metrics=(declared,)
     )
     daily = view_readout(
-        experiment, resolver, Scope(view="daily", grain="daily", values=True), metrics=(adhoc,)
+        experiment, resolver, View(view="daily", grain="daily", values=True), metrics=(adhoc,)
     )
     asof = view_readout(
-        experiment, resolver, Scope(view="asof", grain="asof", values=True), metrics=(adhoc,)
+        experiment, resolver, View(view="asof", grain="asof", values=True), metrics=(adhoc,)
     )
 
     declared_horizon = max(row.ds for row in declared_daily)
@@ -477,10 +477,10 @@ def test_breakout_source_treats_inferred_and_explicit_breakout_sources_as_equiva
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         inferred = view_readout(
-            inferred_experiment, inferred_resolver, Scope(view="breakout", grain="total")
+            inferred_experiment, inferred_resolver, View(view="breakout", grain="total")
         )
         explicit = view_readout(
-            explicit_experiment, explicit_resolver, Scope(view="breakout", grain="total")
+            explicit_experiment, explicit_resolver, View(view="breakout", grain="total")
         )
 
     assert {result.source for result in inferred} == {"events"}
@@ -499,13 +499,13 @@ def test_day_source_treats_inferred_and_explicit_breakout_sources_as_equivalent(
     inferred = view_readout(
         inferred_experiment,
         inferred_resolver,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
         metrics=(metric,),
     )
     explicit = view_readout(
         explicit_experiment,
         explicit_resolver,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
         metrics=(metric,),
     )
 

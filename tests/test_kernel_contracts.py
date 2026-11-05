@@ -23,52 +23,84 @@ from increment.kernel.contracts import (
     ImplementationRef,
     MethodIdentity,
     Registration,
-    Scope,
+    View,
     analysis_spec_hash,
     execution_identity_hash,
     method_config_hash,
 )
 
 
+def test_with_views_adds_to_declared_views():
+    import pandas as pd
+
+    from increment import AnalysisPlan, from_frame
+
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "value": [1.0, 2.0, 3.0, 4.0],
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        plan=AnalysisPlan(primary="value"),
+        experiment_id="additive-views",
+    )
+    reader.close()
+
+    assert experiment.views == (View.overall(),)
+    assert experiment.with_views(View.daily()).views == (View.overall(), View.daily())
+    for views in ((View.overall(),), ()):
+        with pytest.raises(CodedError) as raised:
+            experiment.with_views(*views)
+        assert raised.value.code == "kernel.request.invalid"
+
+
 def test_experiment_declares_distinct_values_and_lift_views_without_changing_lift_identity():
     from increment import Experiment, SourceReference
-    from increment import Scope as PublicScope
+    from increment import View as PublicView
 
-    lift = PublicScope(view="daily", grain="daily")
-    values = PublicScope(view="daily", grain="daily", values=True)
-    asof_lift = PublicScope(view="asof", grain="asof")
+    lift = PublicView(view="daily", grain="daily")
+    values = PublicView(view="daily", grain="daily", values=True)
+    asof_lift = PublicView(view="asof", grain="asof")
     base = Experiment(
         experiment_id="values-and-lift",
         design={},
         metrics={},
         registration=Registration(registration_hash="registration"),
         source_refs=(SourceReference(name="source", uri="memory://source"),),
-        scopes=(lift,),
+        views=(lift,),
+        operations={lift.hash(): "run_daily_lift"},
     )
 
-    declared = base.with_views(lift, values, asof_lift)
-    assert declared.scopes == (lift, values, asof_lift)
+    declared = base.with_views(values, asof_lift)
+    assert declared.views == (lift, values, asof_lift)
     assert lift.hash() == "ca8dd0beb151c78a6ca4bc73abbae0280268479e0f33cc03d3fab34fcbedd672"
     assert asof_lift.hash() == "1b21975ed8e30ebfa525e7945cae98190e2449b9da3bfd2a68cd387d9fedfff0"
     assert "values" not in lift.canonical_payload()
     assert "values" not in asof_lift.canonical_payload()
 
     assert declared.source_refs == base.source_refs
-    assert declared.operations == {}
-    assert json.loads(declared.to_json())["operations"] == {}
-    assert declared.scopes[0].hash() == lift.hash()
-    assert declared.scopes[1].canonical_payload()["values"] is True
-    assert declared.scopes[1].hash() != lift.hash()
-    assert base.scopes == (lift,)
+    assert declared.operations == base.operations == {lift.hash(): "run_daily_lift"}
+    assert json.loads(declared.to_json())["operations"] == {lift.hash(): "run_daily_lift"}
+    assert declared.views[0].hash() == lift.hash()
+    assert declared.views[1].canonical_payload()["values"] is True
+    assert declared.views[1].hash() != lift.hash()
+    assert base.views == (lift,)
     assert Experiment.from_json(declared.to_json()) == declared
 
-    legacy = json.loads(base.with_views(lift, asof_lift).to_json())
+    legacy = json.loads(base.with_views(asof_lift).to_json())
     legacy["operations"] = {
         lift.hash(): "run_daily",
         asof_lift.hash(): "run_asof",
     }
     migrated = Experiment.from_json(json.dumps(legacy))
-    assert tuple(scope.values for scope in migrated.scopes) == (True, True)
+    assert tuple(view.values for view in migrated.views) == (True, True)
     assert migrated.operations == {}
 
     with pytest.raises(CodedError) as raised:
@@ -78,29 +110,27 @@ def test_experiment_declares_distinct_values_and_lift_views_without_changing_lif
             metrics={},
             registration=Registration(registration_hash="registration"),
             source_refs=base.source_refs,
-            scopes=(lift, lift),
+            views=(lift, lift),
             operations={lift.hash(): "run_daily"},
         )
     assert raised.value.code == "kernel.request.invalid"
-    for scope in (
-        PublicScope(view="run", grain="total"),
-        PublicScope(
+    for view in (
+        PublicView(view="run", grain="total"),
+        PublicView(
             view="breakout",
             grain="total",
             segment=({"property": "country", "source": None},),
         ),
-        PublicScope(view="switchback", grain="total"),
+        PublicView(view="switchback", grain="total"),
     ):
         with pytest.raises(CodedError) as raised:
-            PublicScope.model_validate({**scope.canonical_payload(), "values": True})
+            PublicView.model_validate({**view.canonical_payload(), "values": True})
         assert raised.value.code == "kernel.scope.invalid"
 
-    with pytest.raises(CodedError) as raised:
-        base.with_views()
-    assert raised.value.code == "kernel.request.invalid"
-    with pytest.raises(CodedError) as raised:
-        base.with_views(lift, lift)
-    assert raised.value.code == "kernel.request.invalid"
+    for views in ((), (lift,), (values, values)):
+        with pytest.raises(CodedError) as raised:
+            base.with_views(*views)
+        assert raised.value.code == "kernel.request.invalid"
 
 
 def test_scope_and_experiment_identity_hashes_are_pinned():
@@ -114,7 +144,7 @@ def test_scope_and_experiment_identity_hashes_are_pinned():
         "breakout": "45a298d52da093d44fe29946c22d7fdaea4cd16ad49b754ff343ea66c67b39df",
     }
     scopes = tuple(
-        Scope(view=view, grain=grain)
+        View(view=view, grain=grain)
         for view, grain in (
             ("run", "total"),
             ("switchback", "total"),
@@ -131,21 +161,21 @@ def test_scope_and_experiment_identity_hashes_are_pinned():
         metrics={},
         registration=Registration(registration_hash="registration"),
         source_refs=(SourceReference(name="source", uri="memory://source"),),
-        scopes=scopes,
+        views=scopes,
     )
     assert experiment.hash() == "83803aa74c52fd86efbbf4821c21e87f397ba04ed158332e1bc5ccef6653814a"
 
 
 def test_daily_day_and_cumulative_through_day_have_different_scope_hashes():
     day = date(2026, 1, 5)
-    daily = Scope(view="daily", grain="daily", through_day=day)
-    cumulative = Scope(view="asof", grain="asof", through_day=day)
+    daily = View(view="daily", grain="daily", through_day=day)
+    cumulative = View(view="asof", grain="asof", through_day=day)
     assert daily.hash() != cumulative.hash()
 
 
 def test_scope_and_implementation_ref_round_trip_with_stable_hash():
     values = (
-        Scope(view="daily", grain="daily", through_day=date(2026, 1, 5)),
+        View(view="daily", grain="daily", through_day=date(2026, 1, 5)),
         ImplementationRef(
             import_path="package.model:Estimator", version_pin="1.2", config_digest="abc"
         ),
@@ -167,7 +197,7 @@ def test_inconsistent_scope_refuses_with_code():
     )
     for fields in bad:
         with pytest.raises(CodedError) as raised:
-            Scope.model_validate(cast(Any, fields))
+            View.model_validate(cast(Any, fields))
         assert raised.value.code == "kernel.scope.invalid"
         assert pickle.loads(pickle.dumps(raised.value)).code == raised.value.code
         assert copy.deepcopy(raised.value).code == raised.value.code
@@ -199,18 +229,18 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
             ),
         )
 
-    all_breakouts = Scope(view="breakout", grain="total")
-    qualified = Scope(
+    all_breakouts = View(view="breakout", grain="total")
+    qualified = View(
         view="breakout",
         grain="total",
         segment=({"property": "country", "source": "src_b"},),
     )
-    same_property = Scope(
+    same_property = View(
         view="breakout",
         grain="total",
         segment=({"property": "country", "source": None},),
     )
-    distinct_properties = Scope(
+    distinct_properties = View(
         view="breakout",
         grain="total",
         segment=(
@@ -224,7 +254,7 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
         metrics={},
         registration=Registration(registration_hash="registration"),
         source_refs=(source("source", ("country", "device")),),
-        scopes=(all_breakouts, qualified, same_property, distinct_properties),
+        views=(all_breakouts, qualified, same_property, distinct_properties),
         analysis_context={
             "experiment": {
                 "breakouts": (
@@ -260,7 +290,7 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
     assert experiment.hash() == authored_hash
     assert all(
         scope.hash() == request.scope.hash()
-        for scope, request in zip(experiment.scopes, requests, strict=True)
+        for scope, request in zip(experiment.views, requests, strict=True)
     )
 
     with pytest.raises(CodedError) as raised:
@@ -271,8 +301,8 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
             registration=Registration(registration_hash="registration"),
             source_refs=experiment.source_refs,
             analysis_context=experiment.analysis_context,
-            scopes=(
-                Scope(
+            views=(
+                View(
                     view="breakout",
                     grain="total",
                     segment=(
@@ -285,13 +315,13 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
     assert raised.value.code == "kernel.request.invalid"
     assert raised.value.context["field"] == "duplicate breakout selection 'country'"
 
-    _, (unknown,) = experiment.with_views(
-        Scope(
+    *_, unknown = experiment.with_views(
+        View(
             view="breakout",
             grain="total",
             segment=({"property": "unknown", "source": None},),
         )
-    ).compile()
+    ).compile()[1]
     unknown_breakouts = cast(
         tuple[Mapping[str, object], ...], unknown.requests[0].fields["breakouts"]
     )
@@ -300,7 +330,7 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
     )
     with pytest.raises(CodedError) as raised:
         experiment.with_views(
-            Scope(
+            View(
                 view="breakout",
                 grain="total",
                 segment=(
@@ -315,7 +345,7 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
 def test_compile_retains_explicit_breakouts_when_capabilities_are_missing():
     from increment import Experiment, SourceReference
 
-    selector = Scope(
+    selector = View(
         view="breakout",
         grain="total",
         segment=({"property": "country", "source": None},),
@@ -326,7 +356,7 @@ def test_compile_retains_explicit_breakouts_when_capabilities_are_missing():
         metrics={},
         registration=Registration(registration_hash="registration"),
         source_refs=(SourceReference(name="events", uri="frame://events"),),
-        scopes=(selector,),
+        views=(selector,),
     )
 
     inventory, requests = experiment.compile()
@@ -340,7 +370,7 @@ def test_compile_retains_explicit_breakouts_when_capabilities_are_missing():
 
 
 def test_temporal_scopes_allow_multiple_sources_of_one_breakout_only():
-    Scope(
+    View(
         view="daily",
         grain="daily",
         segment=(
@@ -349,7 +379,7 @@ def test_temporal_scopes_allow_multiple_sources_of_one_breakout_only():
         ),
     )
     with pytest.raises(CodedError) as raised:
-        Scope(
+        View(
             view="daily",
             grain="daily",
             segment=(
@@ -362,11 +392,11 @@ def test_temporal_scopes_allow_multiple_sources_of_one_breakout_only():
 
 def test_constructors_match_direct_construction():
     constructors = (
-        (Scope.run(), Scope(view="run", grain="total")),
-        (Scope.daily(), Scope(view="daily", grain="daily")),
-        (Scope.asof(), Scope(view="asof", grain="asof")),
-        (Scope.breakout(()), Scope(view="breakout", grain="total")),
-        (Scope.switchback(), Scope(view="switchback", grain="total")),
+        (View.overall(), View(view="run", grain="total")),
+        (View.daily(), View(view="daily", grain="daily")),
+        (View.asof(), View(view="asof", grain="asof")),
+        (View.breakout(()), View(view="breakout", grain="total")),
+        (View.switchback(), View(view="switchback", grain="total")),
     )
 
     def scope_key(scope):
@@ -381,12 +411,12 @@ def test_constructors_match_direct_construction():
 
 
 def test_grain_is_derived_from_view():
-    assert Scope(view="asof").grain == "asof"
+    assert View(view="asof").grain == "asof"
 
 
 def test_a_mismatched_grain_still_refuses():
     with pytest.raises(CodedError) as raised:
-        Scope(view="daily", grain="total")
+        View(view="daily", grain="total")
     assert raised.value.code == "kernel.scope.invalid"
 
 
@@ -422,7 +452,7 @@ def test_cell_identity_round_trips_with_stable_hash():
         estimator_id="e",
         method_config_hash="c",
         method_instance_id="i",
-        scope=Scope(view="run", grain="total"),
+        scope=View(view="run", grain="total"),
     )
     decoded = CellIdentity.from_payload(
         json.loads(json.dumps(value.canonical_payload(), sort_keys=True).encode())
@@ -617,14 +647,14 @@ def test_analysis_spec_hash_excludes_implementation_pins():
     class Design(BaseModel):
         name: str = "d"
 
-    scope = Scope(view="run", grain="total")
+    scope = View(view="run", grain="total")
     method = MethodIdentity(
         estimator_id="e", method_config_hash="c", method_role="decision", method_instance_id="i"
     )
 
     def calculate(
         *,
-        current_scope: Scope = scope,
+        current_scope: View = scope,
         registration_hash: str = "r",
         source_refs: dict[str, str] | None = None,
         methods: list[MethodIdentity] | None = None,
@@ -640,7 +670,7 @@ def test_analysis_spec_hash_excludes_implementation_pins():
 
     first = calculate()
     assert calculate() == first
-    assert calculate(current_scope=Scope(view="daily", grain="daily")) != first
+    assert calculate(current_scope=View(view="daily", grain="daily")) != first
     assert calculate(registration_hash="x") != first
     assert calculate(source_refs={"s": "x"}) != first
     assert calculate(methods=[method.model_copy(update={"method_config_hash": "x"})]) != first
@@ -730,7 +760,7 @@ def test_learner_version_pins_are_execution_only_and_roles_are_method_bound():
                     method_instance_id="m",
                 )
             ],
-            scope=Scope(view="run", grain="total"),
+            scope=View(view="run", grain="total"),
         )
 
     def execution_identity(
@@ -763,7 +793,7 @@ def test_analysis_request_hash_is_stable_and_order_sensitive():
     from increment.evidence import CountsRequest, MomentsRequest
     from increment.semantics.models import MeanMetric
 
-    scope = Scope(view="run", grain="total")
+    scope = View(view="run", grain="total")
     metric = MeanMetric(name="orders", entity="user", fact="orders")
     one, two = CountsRequest(kind="unit"), MomentsRequest(metric=metric)
     value = AnalysisRequest.from_requests(
@@ -812,7 +842,7 @@ def test_analysis_request_rejects_empty_or_non_doorway_requests():
         with pytest.raises(CodedError) as raised:
             AnalysisRequest.from_requests(
                 requests,
-                scope=Scope(view="run", grain="total"),
+                scope=View(view="run", grain="total"),
                 registration_hash="r",
                 source_ref="s",
             )
@@ -825,7 +855,7 @@ def test_population_mismatch_refuses():
     with pytest.raises(CodedError) as raised:
         AnalysisRequest.from_requests(
             (CountsRequest(kind="unit", population="triggered"),),
-            scope=Scope(view="run", grain="total"),
+            scope=View(view="run", grain="total"),
             registration_hash="r",
             source_ref="s",
         )
@@ -840,7 +870,7 @@ def test_analysis_request_round_trips_only_portable_request_descriptors():
     metric = MeanMetric(name="orders", entity="user", fact="orders")
     value = AnalysisRequest.from_requests(
         (CountsRequest(kind="unit"), MomentsRequest(metric=metric)),
-        scope=Scope(view="run", grain="total"),
+        scope=View(view="run", grain="total"),
         registration_hash="r",
         source_ref="s",
     )
@@ -864,7 +894,7 @@ def test_analysis_request_rejects_unserializable_method_with_picklable_error():
     with pytest.raises(CodedError) as raised:
         AnalysisRequest.from_requests(
             (request,),
-            scope=Scope(view="run", grain="total"),
+            scope=View(view="run", grain="total"),
             registration_hash="r",
             source_ref="s",
         )
@@ -880,7 +910,7 @@ def test_analysis_request_json_round_trips_date_request_fields():
 
     value = AnalysisRequest.from_requests(
         (SequentialCaptureRequest(finalized=True, as_of=date(2026, 1, 3)),),
-        scope=Scope(
+        scope=View(
             view="asof",
             grain="asof",
             through_day=date(2026, 1, 3),
@@ -905,7 +935,7 @@ def test_analysis_request_hash_normalizes_equivalent_datetime_offsets():
     hashes = tuple(
         AnalysisRequest.from_requests(
             (SequentialCaptureRequest(finalized=True, as_of=value),),
-            scope=Scope(view="asof", grain="asof"),
+            scope=View(view="asof", grain="asof"),
             registration_hash="r",
             source_ref="s",
         ).hash()
@@ -923,7 +953,7 @@ def test_analysis_request_rejects_naive_datetime_identity():
     with pytest.raises(InvalidRequestError) as error:
         AnalysisRequest.from_requests(
             (SequentialCaptureRequest(finalized=True, as_of=datetime(2026, 1, 3)),),
-            scope=Scope(view="asof", grain="asof"),
+            scope=View(view="asof", grain="asof"),
             registration_hash="r",
             source_ref="s",
         )
@@ -949,7 +979,7 @@ def test_analysis_request_json_encodes_uuid_breakout_values():
     )
     descriptor = AnalysisRequest.from_requests(
         (request,),
-        scope=Scope(
+        scope=View(
             view="breakout",
             grain="total",
             segment=BreakoutIdentity("id", None),
@@ -987,7 +1017,7 @@ def test_analysis_request_admits_observational_breakout_and_sequential_requests(
     )
     request = AnalysisRequest.from_requests(
         requests,
-        scope=Scope(
+        scope=View(
             view="breakout",
             grain="total",
             segment=BreakoutIdentity("country", None),
@@ -1026,21 +1056,21 @@ def test_request_scope_a3_axes(case_index: int, agrees: bool) -> None:
     country = BreakoutIdentity("country", "warehouse")
     device = BreakoutIdentity("device", "warehouse")
     method = Method.unadjusted()
-    breakout_scope = Scope(view="breakout", grain="total", segment=device)
-    run_scope = Scope(view="run", grain="total")
-    daily_scope = Scope(view="daily", grain="daily")
-    asof_scope = Scope(view="asof", grain="asof")
+    breakout_scope = View(view="breakout", grain="total", segment=device)
+    run_scope = View(view="run", grain="total")
+    daily_scope = View(view="daily", grain="daily")
+    asof_scope = View(view="asof", grain="asof")
     cases = (
         (
             CountsRequest(kind="unit", population="assigned"),
-            Scope(view="run", grain="total", population="assigned"),
-            Scope(view="run", grain="total", population="triggered"),
+            View(view="run", grain="total", population="assigned"),
+            View(view="run", grain="total", population="triggered"),
             "population",
         ),
         (
             CountsRequest(kind="triggered"),
-            Scope(view="run", grain="total", population="triggered"),
-            Scope(view="run", grain="total", population="assigned"),
+            View(view="run", grain="total", population="triggered"),
+            View(view="run", grain="total", population="assigned"),
             "population",
         ),
         (
@@ -1051,7 +1081,7 @@ def test_request_scope_a3_axes(case_index: int, agrees: bool) -> None:
         ),
         (
             MomentsRequest(metric=metric, completed_windows_only=True),
-            Scope(view="run", grain="total", completion_policy=True),
+            View(view="run", grain="total", completion_policy=True),
             run_scope,
             "completed_windows_only",
         ),
@@ -1122,7 +1152,7 @@ def test_analysis_request_rejects_unportable_fields_with_code():
     with pytest.raises(CodedError) as raised:
         AnalysisRequest.from_requests(
             (SequentialCaptureRequest(finalized=True, previous=cast(Any, object())),),
-            scope=Scope(view="run", grain="total"),
+            scope=View(view="run", grain="total"),
             registration_hash="r",
             source_ref="s",
         )
@@ -1147,7 +1177,7 @@ def test_analysis_spec_refuses_duplicate_method_instance_ids():
             registration_hash="r",
             source_refs={},
             methods=[method, method.model_copy()],
-            scope=Scope(view="run", grain="total"),
+            scope=View(view="run", grain="total"),
         )
     assert raised.value.code == "kernel.method.duplicate_instance"
 
@@ -1202,7 +1232,7 @@ def test_analysis_spec_hash_matches_hand_built_golden_payload():
     class Design(BaseModel):
         name: str
 
-    scope = Scope(view="run", grain="total")
+    scope = View(view="run", grain="total")
     methods = [
         MethodIdentity(
             estimator_id="e2",

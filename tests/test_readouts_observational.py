@@ -24,7 +24,7 @@ from increment import (
     IdentificationGate,
     Method,
     Observational,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -413,7 +413,7 @@ def test_srm_not_applicable_under_observational():
 
 def test_run_breakout_refused_under_observational():
     with pytest.raises(CapabilityError) as exc:
-        view_readout(*_obs_analysis(), Scope(view="breakout", grain="total"))
+        view_readout(*_obs_analysis(), View(view="breakout", grain="total"))
     assert exc.value.code == "evidence.breakout_unavailable"
 
 
@@ -795,7 +795,7 @@ def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability
         design=Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x1",))),
     )
 
-    daily = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+    daily = view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
 
     assert len(daily) == 4
     assert {row.metric for row in daily} == {"revenue_per_session"}

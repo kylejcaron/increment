@@ -1012,7 +1012,7 @@ def test_postgres_mixed_cuped_definitions_and_artifact_match_local_and_duckdb(  
     import pyarrow as pa
     import yaml
 
-    from increment import Scope, from_definitions, from_frame, from_unit_day_artifact, run
+    from increment import View, from_definitions, from_frame, from_unit_day_artifact, run
     from increment.artifacts import publish_unit_day_artifact
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate, MetricSpec
@@ -1154,7 +1154,7 @@ def test_postgres_mixed_cuped_definitions_and_artifact_match_local_and_duckdb(  
         ) as cursor:
             return tuple(sorted(row[0] for row in cursor.fetchall()))
 
-    breakout_view = Scope(view="breakout", grain="total")
+    breakout_view = View(view="breakout", grain="total")
 
     def run_with_expected_withholding(bound, *, breakout=False):
         import warnings
@@ -1164,7 +1164,10 @@ def test_postgres_mixed_cuped_definitions_and_artifact_match_local_and_duckdb(  
             warnings.simplefilter("always", IncrementWarning)
             if breakout:
                 rows = run(
-                    experiment.with_views(breakout_view), resolver, metrics=["revenue", "rpo"]
+                    experiment.with_views(breakout_view),
+                    resolver,
+                    views=(breakout_view,),
+                    metrics=["revenue", "rpo"],
                 ).readout(breakout_view)
             else:
                 rows = run(experiment, resolver, metrics=["revenue", "rpo"]).readout()

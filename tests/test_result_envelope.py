@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from increment import Scope, from_definitions, from_frame, workflows
+from increment import View, from_definitions, from_frame, workflows
 from increment.workflows import available_metrics
 from tests.analysis_factory import make_binding_like, view_readout
 
@@ -1983,7 +1983,7 @@ def test_arrow_ipc_bytes_are_stable_across_fresh_processes(seeded_con, seeded_de
     )
     rows = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
     assert isinstance(rows, LiftEstimates)
-    breakout_rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    breakout_rows = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     envelope = AnalysisEnvelope(
         cells=(*rows.as_cells(), *breakout_rows.as_cells()),
         metadata=None,

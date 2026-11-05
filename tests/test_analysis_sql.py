@@ -10,7 +10,7 @@ from datetime import datetime
 import ibis
 import pytest
 
-from increment import Scope, workflows
+from increment import View, workflows
 from increment.builders import from_definitions
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult
@@ -900,7 +900,7 @@ def test_native_analysis_rejects_percentile_winsorization_before_reduction(
     )
 
     with pytest.raises(CapabilityError) as raised:
-        view_readout(experiment, resolver, Scope(view=view, grain="total"))
+        view_readout(experiment, resolver, View(view=view, grain="total"))
     expected = (
         "estimation.winsor.support_required"
         if view == "run"

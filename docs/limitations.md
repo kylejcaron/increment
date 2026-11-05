@@ -308,7 +308,7 @@ row count nor crossing the 40-cluster warning threshold establishes otherwise.
     and unit-day artifacts with explicit trigger evidence. Each unit enters on its
     first eligible trigger day, and outcome maturity is evaluated from that anchor.
     Triggered encouragement compliance is also available through a triggered daily or
-    as-of lift view (`Scope(view="daily", grain="daily", population="triggered")` with
+    as-of lift view (`View.daily(population="triggered")` with
     `run(..., estimands=("compliance",))`): the cohort grows at each unit's trigger date, while
     uptake windows remain anchored at assignment and obey their declared half-open
     window and completion rules. The compliance-only request reads trigger and

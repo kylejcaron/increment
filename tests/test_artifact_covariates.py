@@ -9,7 +9,7 @@ from typing import Any, cast
 import narwhals as nw
 import pytest
 
-from increment import Scope, from_definitions, from_frame, from_unit_day_artifact
+from increment import View, from_definitions, from_frame, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CodedError
 from increment.semantics.artifact import UnitDayArtifactManifest
@@ -548,7 +548,7 @@ def test_artifact_named_scalar_breakout_refuses_before_query(tmp_path, monkeypat
             view_readout(
                 experiment,
                 resolver,
-                Scope(view="breakout", grain="total"),
+                View(view="breakout", grain="total"),
                 decision_method=methods[1],
                 sensitivity_methods=(),
             )

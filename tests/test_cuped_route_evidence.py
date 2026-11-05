@@ -10,7 +10,7 @@ from increment import (
     AnalysisPlan,
     Method,
     MetricSpec,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -22,7 +22,7 @@ from increment.readouts import run
 from increment.workflows import export_moments
 from tests.analysis_factory import view_readout
 
-_BREAKOUT = Scope(view="breakout", grain="total")
+_BREAKOUT = View(view="breakout", grain="total")
 
 
 def _records() -> list[dict[str, Any]]:

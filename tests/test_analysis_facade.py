@@ -16,7 +16,7 @@ import pytest
 
 from increment import (
     Method,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -89,24 +89,24 @@ def dataframe_dependencies():
     import_module("ibis.backends.duckdb")
 
 
-_DAILY_VALUES = Scope(view="daily", grain="daily", values=True)
-_DAILY_LIFT = Scope(view="daily", grain="daily")
-_ASOF_VALUES = Scope(view="asof", grain="asof", values=True)
-_ASOF_LIFT = Scope(view="asof", grain="asof")
-_BREAKOUT = Scope(view="breakout", grain="total")
+_DAILY_VALUES = View(view="daily", grain="daily", values=True)
+_DAILY_LIFT = View(view="daily", grain="daily")
+_ASOF_VALUES = View(view="asof", grain="asof", values=True)
+_ASOF_LIFT = View(view="asof", grain="asof")
+_BREAKOUT = View(view="breakout", grain="total")
 _BY_COUNTRY = (BreakoutIdentity("country", None),)
 
 
-def _day_axis_scope(readout: str, segment: tuple[BreakoutIdentity, ...] = ()) -> Scope:
+def _day_axis_scope(readout: str, segment: tuple[BreakoutIdentity, ...] = ()) -> View:
     """The day-axis view a readout parameter names, optionally by breakout."""
     if readout == "run_daily":
-        return Scope(view="daily", grain="daily", values=True, segment=segment)
+        return View(view="daily", grain="daily", values=True, segment=segment)
     if readout == "run_daily_lift":
-        return Scope(view="daily", grain="daily", segment=segment)
+        return View(view="daily", grain="daily", segment=segment)
     if readout == "run_asof":
-        return Scope(view="asof", grain="asof", values=True, segment=segment)
+        return View(view="asof", grain="asof", values=True, segment=segment)
     if readout == "run_asof_lift":
-        return Scope(view="asof", grain="asof", segment=segment)
+        return View(view="asof", grain="asof", segment=segment)
     raise ValueError(f"unknown day-axis readout {readout!r}")
 
 
@@ -162,7 +162,7 @@ class TestAnalysisReturnsCollectionTypes:
         the un-dimensioned path - both branches need the wrap, not just
         one."""
         experiment, resolver, metrics = self.non_retention(con, example_definitions)
-        scope = Scope(view="daily", grain="daily", values=True, segment=_BY_COUNTRY)
+        scope = View(view="daily", grain="daily", values=True, segment=_BY_COUNTRY)
         results = view_readout(experiment, resolver, scope, metrics=metrics)
         assert isinstance(results, DailyMetricValues)
         assert len(results) > 0
@@ -178,7 +178,7 @@ class TestAnalysisReturnsCollectionTypes:
         self, con, example_definitions
     ):
         experiment, resolver, metrics = self.non_retention(con, example_definitions)
-        scope = Scope(view="daily", grain="daily", segment=_BY_COUNTRY)
+        scope = View(view="daily", grain="daily", segment=_BY_COUNTRY)
         results = view_readout(experiment, resolver, scope, metrics=metrics)
         assert isinstance(results, DailyLiftEstimates)
         assert len(results) > 0
@@ -2140,11 +2140,11 @@ def test_analysis_run_daily_string_and_object_forms_agree(seeded_con, seeded_def
     by_name = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", values=True),
+        View(view="daily", grain="daily", values=True),
         metrics=["purchase_rate"],
     )
     by_object = view_readout(
-        experiment, resolver, Scope(view="daily", grain="daily", values=True), metrics=[metric]
+        experiment, resolver, View(view="daily", grain="daily", values=True), metrics=[metric]
     )
 
     def keys(values):
@@ -2624,7 +2624,7 @@ def test_public_artifact_adoption_refuses_missing_extension(published_artifact):
     experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
     with pytest.raises(ArtifactContractError) as raised:
         view_readout(
-            experiment, resolver, Scope(view="breakout", grain="total"), metrics=["purchase_rate"]
+            experiment, resolver, View(view="breakout", grain="total"), metrics=["purchase_rate"]
         )
     assert raised.value.code == "artifact.extension.missing"
     assert_refusal(
@@ -3006,11 +3006,11 @@ def test_unit_panel_daily_lift_to_frame_defaults_to_input_backend_without_pandas
         """
 import sys
 import polars as pl
-from increment import Scope, from_frame, run
+from increment import View, from_frame, run
 frame = pl.DataFrame({"unit": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"], "arm": ["control"] * 4 + ["treatment"] * 4, "day": ["2025-01-01", "2025-01-02"] * 4, "value": [1.0, 2.0, 2.0, 3.0, 2.0, 4.0, 3.0, 5.0]})
 experiment, resolver = from_frame(frame, shape="panel", unit="unit", group="arm", date="day", control="control", metrics={"value": "mean"})
-daily = Scope(view="daily", grain="daily")
-results = run(experiment.with_views(daily), resolver).readout(daily)
+daily = View.daily()
+results = run(experiment.with_views(daily), resolver, views=(daily,)).readout(daily)
 sys.modules["pandas"] = None
 result = results.to_frame()
 assert isinstance(result, pl.DataFrame)
@@ -3095,7 +3095,7 @@ def test_polars_backend_survives_daily_lift_results():
             control="control",
             metrics={"value": "mean"},
         ),
-        Scope(view="daily", grain="daily"),
+        View(view="daily", grain="daily"),
     )
 
     assert isinstance(results.to_frame(), pl.DataFrame)
@@ -3120,7 +3120,7 @@ def test_polars_backend_survives_exploratory_run_and_breakout(seeded_defs, seede
         exploratory_metrics=[exploratory],
         decision_method=Method(name="unadjusted"),
     )
-    breakout = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    breakout = view_readout(experiment, resolver, View(view="breakout", grain="total"))
 
     assert any(row.metric == exploratory and row.role == "exploratory" for row in results)
     assert isinstance(results.to_frame(), pl.DataFrame)

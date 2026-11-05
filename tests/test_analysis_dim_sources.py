@@ -16,7 +16,7 @@ import warnings
 import ibis
 import pytest
 
-from increment import Scope, from_definitions
+from increment import View, from_definitions
 from increment.estimators import MetricTrends
 from increment.query import summary_sql
 from increment.semantics.models import AnalysisPlan, MultiplicitySpec
@@ -237,7 +237,7 @@ def test_pre_exposure_breakout_never_sees_post_exposure_value(tmp_path, con):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            estimates = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+            estimates = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     assert all(code.startswith("breakout.estimates.") for code in warning_codes(record))
     plan_values = {e.dimension_value for e in estimates if e.dimension == "plan"}
     assert "pro" not in plan_values  # every upgrade happened after exposure

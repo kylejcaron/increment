@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from increment import Experiment, Scope, run
+from increment import Experiment, View, run
 from increment._evidence_types import DayAxisRows, MetricEvidence
 from increment.errors import CodedError
 from increment.kernel.contracts import contract_hash, method_estimator_id
@@ -228,7 +228,7 @@ def _capture_key(scope, request, values, coordinates, estimator, method, metric,
 
 @dataclass
 class _Capture:
-    scopes: Sequence[Scope]
+    scopes: Sequence[View]
     expected: frozenset[CaptureKey]
     entries: list[tuple[CaptureKey, Any]] = field(default_factory=list)
     active: list[str] = field(default_factory=list)
@@ -250,7 +250,7 @@ class _Capture:
                     for name in ("scope", "metric", "date", "date_value", "methods", "request"):
                         if name not in values and name in frame.f_locals:
                             candidate = frame.f_locals[name]
-                            if name != "scope" or isinstance(candidate, Scope):
+                            if name != "scope" or isinstance(candidate, View):
                                 values[name] = candidate
                 frame = frame.f_back
         finally:
@@ -260,7 +260,7 @@ class _Capture:
     def record(self, name: str, result: Any, arguments: Mapping[str, Any]) -> Any:
         values = self.context(arguments)
         scope = values.get("scope")
-        if not isinstance(scope, Scope):
+        if not isinstance(scope, View):
             if len(self.scopes) > 1:
                 for selected in self.scopes:
                     result = self.record(name, result, {**values, "scope": selected})
@@ -514,11 +514,11 @@ def capture_acquired_evidence(
     experiment: Experiment,
     resolver: ExperimentReader,
     *,
-    views: Sequence[Scope] | None = None,
+    views: Sequence[View] | None = None,
     expected: frozenset[CaptureKey],
 ) -> EvidenceRecord:
     assert expected, "An evidence capture requires a nonempty expected roster"
-    selected = experiment.scopes if views is None else views
+    selected = experiment.views if views is None else views
     capture = _Capture(selected, expected)
     with _wrapped_producers(capture):
         run(experiment, resolver, views=views)

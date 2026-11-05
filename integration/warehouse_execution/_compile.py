@@ -138,7 +138,7 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
     import ibis.expr.types as ir
     import yaml
 
-    from increment import Scope, from_definitions, run
+    from increment import View, from_definitions, run
     from increment.errors import IncrementWarning
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
@@ -223,10 +223,15 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
                 experiment, resolver = from_definitions(path, con, experiment_name="mixed_cuped")
                 try:
                     run(experiment, resolver, metrics=["revenue", "rpo"])
-                    breakout = Scope(view="breakout", grain="total")
+                    breakout = View(view="breakout", grain="total")
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", IncrementWarning)
-                        run(experiment.with_views(breakout), resolver, metrics=["revenue", "rpo"])
+                        run(
+                            experiment.with_views(breakout),
+                            resolver,
+                            views=(breakout,),
+                            metrics=["revenue", "rpo"],
+                        )
                 finally:
                     resolver.close()
     finally:

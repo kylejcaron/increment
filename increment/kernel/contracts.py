@@ -30,7 +30,7 @@ CONTRACTS_SCHEMA_VERSION: int = 1
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "kernel.scope.invalid": "Invalid scope field {field!r}",
+        "kernel.scope.invalid": "Invalid view field {field!r}",
         "kernel.method.implementation_ref_missing": "Method callable field {field!r} has no implementation reference",
         "kernel.request.invalid": "Invalid analysis request: {field}",
         "kernel.request.unportable": "Request kind {kind!r} field {field!r} is not portable",
@@ -39,7 +39,7 @@ _REFUSALS = refusals(
             "increment.workflows.capture_sequential(experiment, reader, ...) then run",
             (),
         ),
-        "kernel.request.population_scope_only": "Set population on Scope(population=...)",
+        "kernel.request.population_scope_only": "Set population on the view, as in View.overall(population=...)",
         "kernel.run.reader_closed": (
             "The reader for experiment {experiment_id!r} is closed; "
             "build a new reader with the builder that returned it"
@@ -53,7 +53,7 @@ _REFUSALS = refusals(
             "a BoundResolver only verifies a custom provider, so build a reader with "
             "from_frame, from_definitions or another builder to run"
         ),
-        "kernel.request.scope_mismatch": "Request kind {kind!r} field {field!r} disagrees with scope",
+        "kernel.request.scope_mismatch": "Request kind {kind!r} field {field!r} disagrees with its view",
         "kernel.definitions.catalog_missing": "Offline definitions catalog is missing for {path!r}; bind the definitions with a connection first",
         "kernel.definitions.catalog_stale": "Offline definitions catalog is stale for {path!r}; rebind the definitions with a connection",
         "kernel.request.datetime_timezone": "Request datetime field {field!r} must be timezone-aware",
@@ -80,7 +80,7 @@ class _ContractModel(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-class Scope(_ContractModel):
+class View(_ContractModel):
     view: Literal["run", "daily", "asof", "breakout", "switchback"]
     grain: Literal["total", "daily", "asof"] = "total"
     values: bool = Field(default=False, exclude_if=lambda value: not value)
@@ -111,7 +111,7 @@ class Scope(_ContractModel):
         return value
 
     @classmethod
-    def run(cls, *, population: Literal["assigned", "triggered"] = "assigned") -> Scope:
+    def overall(cls, *, population: Literal["assigned", "triggered"] = "assigned") -> View:
         return cls(view="run", population=population)
 
     @classmethod
@@ -124,7 +124,7 @@ class Scope(_ContractModel):
         population: Literal["assigned", "triggered"] = "assigned",
         time_basis: Literal["calendar", "cohort"] = "calendar",
         segment: tuple[BreakoutIdentity, ...] = (),
-    ) -> Scope:
+    ) -> View:
         return cls(
             view="daily",
             through_day=through_day,
@@ -146,7 +146,7 @@ class Scope(_ContractModel):
         time_basis: Literal["calendar", "cohort"] = "calendar",
         completion_policy: bool = False,
         segment: tuple[BreakoutIdentity, ...] = (),
-    ) -> Scope:
+    ) -> View:
         return cls(
             view="asof",
             through_day=through_day,
@@ -164,11 +164,11 @@ class Scope(_ContractModel):
         segment: tuple[BreakoutIdentity, ...],
         *,
         population: Literal["assigned", "triggered"] = "assigned",
-    ) -> Scope:
+    ) -> View:
         return cls(view="breakout", segment=segment, population=population)
 
     @classmethod
-    def switchback(cls, *, metrics: tuple[Metric, ...] = ()) -> Scope:
+    def switchback(cls, *, metrics: tuple[Metric, ...] = ()) -> View:
         return cls(view="switchback", metrics=metrics)
 
     @field_validator("segment", mode="before")
@@ -181,7 +181,7 @@ class Scope(_ContractModel):
         return value
 
     @model_validator(mode="after")
-    def _validate_scope(self) -> Scope:
+    def _validate_scope(self) -> View:
         invalid = (
             (
                 self.view in {"run", "breakout", "switchback"}
@@ -206,7 +206,7 @@ class Scope(_ContractModel):
         return self.model_dump(mode="json")
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> Scope:
+    def from_payload(cls, payload: Mapping[str, object]) -> View:
         return cls.model_validate(dict(payload))
 
     def hash(self) -> str:
@@ -215,7 +215,7 @@ class Scope(_ContractModel):
 
 def declared_breakouts(
     source_refs: Sequence[Any],
-    scope: Scope,
+    scope: View,
     analysis_context: Mapping[str, Any] | None = None,
 ) -> tuple[BreakoutIdentity, ...]:
     """Expand selectors from recorded definition identities or source capabilities.
@@ -312,7 +312,7 @@ class CellIdentity(_ContractModel):
     method_instance_id: str | None = None
     trigger_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
     source_identity_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    scope: Scope | None = None
+    scope: View | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -514,7 +514,7 @@ def analysis_spec_hash(
     registration_hash: str,
     source_refs: Mapping[str, str],
     methods: Sequence[MethodIdentity],
-    scope: Scope,
+    scope: View,
 ) -> str:
     method_instance_ids = [method.method_instance_id for method in methods]
     if len(set(method_instance_ids)) != len(method_instance_ids):
@@ -635,7 +635,7 @@ class RequestDescriptor:
 @dataclass(frozen=True, slots=True)
 class AnalysisRequest:
     requests: tuple[RequestDescriptor, ...]
-    scope: Scope
+    scope: View
     registration_hash: str
     source_ref: str
 
@@ -689,7 +689,7 @@ class AnalysisRequest:
         cls,
         requests: Sequence[object],
         *,
-        scope: Scope,
+        scope: View,
         registration_hash: str,
         source_ref: str,
     ) -> AnalysisRequest:
@@ -735,7 +735,7 @@ class AnalysisRequest:
                 RequestDescriptor.from_payload(request)
                 for request in cast(Sequence[Mapping[str, object]], payload["requests"])
             ),
-            scope=Scope.from_payload(cast(Mapping[str, object], payload["scope"])),
+            scope=View.from_payload(cast(Mapping[str, object], payload["scope"])),
             registration_hash=cast(str, payload["registration_hash"]),
             source_ref=cast(str, payload["source_ref"]),
         )

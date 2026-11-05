@@ -62,8 +62,9 @@ An omitted sensitivity override inherits the declaration; `sensitivity_methods=[
 For observational designs, daily and as-of lift views refuse with
 `facade.analysis.observational_day_axis`; these views do not provide adjusted
 day-axis contrasts. Use daily or as-of values views
-(`Scope(..., values=True)`) for descriptive values, or the whole-window `run`
-view for adjusted whole-experiment comparisons.
+(`View.daily(values=True)`, `View.asof(values=True)`) for descriptive values,
+or the whole-window `View.overall()` view for adjusted whole-experiment
+comparisons.
 
 For metric selection, always-valid inference, secondary family roles, and interactions between methods, see the [method compatibility reference](compatibility.md) and [Multiplicity](multiplicity.md).
 
