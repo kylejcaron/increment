@@ -4441,6 +4441,101 @@ class TestQuantileBaseline:
         assert result.planned_quantile is None
         assert result.planned_for is None
 
+    def test_quantile_baseline_round_trips_through_public_baseline(self):
+        """A saved quantile baseline restores through the exported ``Baseline``
+        as the class its metric type names, and plans identically, under strict
+        validation too."""
+        pilot = np.round(np.random.default_rng(3).lognormal(3.0, 0.5, 2000), 2)
+        baseline = _pilot_baseline("latency", pilot, quantile=0.5)
+        planned = required_sample_size(0.05, baseline)
+        power = achieved_power(planned.n_per_arm, 0.05, baseline).power
+        for strict in (None, True):
+            for restored in (
+                Baseline.model_validate_json(baseline.model_dump_json(), strict=strict),
+                Baseline.model_validate(baseline.model_dump(), strict=strict),
+            ):
+                assert type(restored) is QuantileBaseline
+                assert restored == baseline
+                replanned = required_sample_size(0.05, restored)
+                assert (replanned.n_per_arm, replanned.power, replanned.mde_relative) == (
+                    planned.n_per_arm,
+                    planned.power,
+                    planned.mde_relative,
+                )
+                assert achieved_power(planned.n_per_arm, 0.05, restored).power == power
+                assert "pilot_values" not in repr(restored)
+
+    def test_saved_quantile_baseline_reloads_in_a_fresh_process(self, tmp_path):
+        import subprocess
+
+        pilot = np.round(np.random.default_rng(3).lognormal(3.0, 0.5, 2000), 2)
+        baseline = _pilot_baseline("latency", pilot, quantile=0.5)
+        saved = tmp_path / "baseline.json"
+        saved.write_text(baseline.model_dump_json())
+        code = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from increment.power import Baseline, required_sample_size\n"
+            "restored = Baseline.model_validate_json(Path(sys.argv[1]).read_text())\n"
+            "print(required_sample_size(0.05, restored).model_dump_json())\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", code, str(saved)], capture_output=True, text=True, check=False
+        )
+        assert completed.returncode == 0, completed.stderr
+        reloaded = PowerResult.model_validate_json(completed.stdout)
+        assert reloaded.model_dump() == required_sample_size(0.05, baseline).model_dump()
+
+    def test_restoring_a_baseline_refuses_an_unusable_payload(self):
+        """A quantile payload without the pilot's values -- a dump saved before
+        they were part of it, or a plain construction -- refuses by name rather
+        than planning as a plain Baseline or as a pilot of zero units. A saved
+        pilot value that is not finite refuses as it does at construction, and a
+        restore keeps the caller's strict and forbidden-extra options."""
+        import json
+
+        pilot = np.round(np.random.default_rng(3).lognormal(3.0, 0.5, 2000), 2)
+        dump = _quantile_baseline("latency", 0.5, pilot).model_dump()
+        missing = "power.quantile_baseline.pilot_values_missing"
+        cases: list[tuple[Any, Any, dict[str, Any], str, dict[str, Any]]] = [
+            (
+                Baseline.model_validate,
+                {k: v for k, v in dump.items() if k != "pilot_values"},
+                {},
+                missing,
+                {"n_values": 0, "metric_name": "latency"},
+            ),
+            (
+                lambda kwargs: Baseline(**kwargs),
+                {"mean": 1.0, "var": 1.0, "metric_type": "quantile"},
+                {},
+                missing,
+                {"n_values": 0, "metric_name": None},
+            ),
+        ]
+        unusable: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]] = []
+        for bad in (math.nan, math.inf):
+            values = list(dump["pilot_values"])
+            values[5] = bad
+            payload = {**dump, "pilot_values": values}
+            unusable.append((payload, {}, "estimation.quantile.values_contain_non", {"n_bad": 1}))
+        for payload in ({"mean": "1", "var": "2"}, {**dump, "mean": str(dump["mean"])}):
+            unusable.append((payload, {"strict": True}, "model.field.type", {"field": "mean"}))
+        for payload in ({"mean": 1.0, "var": 2.0, "bogus": 1}, {**dump, "bogus": 1}):
+            unusable.append(
+                (payload, {"extra": "forbid"}, "model.field.unknown", {"field": "bogus"})
+            )
+        for payload, options, code, context in unusable:
+            cases.append((Baseline.model_validate, payload, options, code, context))
+            cases.append(
+                (Baseline.model_validate_json, json.dumps(payload), options, code, context)
+            )
+        for restore, data, options, code, context in cases:
+            with pytest.raises(InvalidRequestError) as exc_info:
+                restore(data, **options)
+            assert exc_info.value.code == code
+            assert {key: exc_info.value.context[key] for key in context} == context
+
 
 class TestDeterministicPlanningSE:
     """Planning's deterministic projection of the runtime's own
@@ -4464,7 +4559,7 @@ class TestDeterministicPlanningSE:
                 "checkout_latency_ms", np.round(rng.lognormal(5.0, 0.6, 5000)), quantile=0.5
             )
             planned[i] = _deterministic_quantile_se(
-                np.asarray(baseline._pilot_sorted), q=0.5, alpha=0.05, n_candidate=100000
+                np.asarray(baseline.pilot_values), q=0.5, alpha=0.05, n_candidate=100000
             )
         rng2 = np.random.default_rng(9)
         n_reps = 30
@@ -4929,10 +5024,17 @@ pytestmark = pytest.mark.integration
 def test_baseline_metric_type_round_trips_and_default_dump_is_unchanged():
     mean = Baseline(mean=1.0, var=2.0)
     conversion = Baseline.from_proportion(0.1)
+    ratio = Baseline.from_ratio(2.0, 1.0, 3.0, 0.5, 0.2)
     assert mean.metric_type == "mean"
     assert "metric_type" not in mean.model_dump()
-    assert conversion.metric_type == "conversion"
-    assert Baseline.model_validate(conversion.model_dump()).metric_type == "conversion"
+    assert (conversion.metric_type, ratio.metric_type) == ("conversion", "ratio")
+    for baseline in (mean, conversion, ratio):
+        for restored in (
+            Baseline.model_validate(baseline.model_dump()),
+            Baseline.model_validate_json(baseline.model_dump_json()),
+        ):
+            assert type(restored) is Baseline
+            assert restored.model_dump() == baseline.model_dump()
 
 
 @pytest.mark.parametrize(

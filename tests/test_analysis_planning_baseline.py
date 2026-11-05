@@ -57,6 +57,14 @@ def _abs_se(pilot: tuple[Any, Any]):
     return row.abs_se
 
 
+def _pilot_bound(df: int) -> float:
+    """The 80% one-sided chi-square upper bound on a pilot variance with *df*
+    degrees of freedom, as a multiple of the point estimate."""
+    from scipy.stats import chi2
+
+    return df / chi2.isf(0.80, df)
+
+
 _POPULATION_VIEWS = (
     View(view="run", grain="total", population="assigned"),
     View(view="run", grain="total", population="triggered"),
@@ -98,6 +106,56 @@ class TestPlanningBaselineOnDataframeRoutes:
         assert baseline.mean == pytest.approx(13.0, rel=0.2)
         assert baseline.var > 0.0
 
+    def test_planning_baseline_bounds_every_moment_route_alike(self):
+        """Mean, conversion and ratio pilots share one pilot-uncertainty policy:
+        the control arm's variance (a ratio's linearized one) at its 80%
+        one-sided chi-square upper bound on n - 1 degrees of freedom."""
+        from increment.power.core import ratio_linearized_variance
+
+        rng = np.random.default_rng(7)
+        n = 50
+        revenue = rng.gamma(2.0, 10.0, n)
+        treated = rng.gamma(2.0, 10.5, n)
+        converted = (rng.random(n) < 0.1).astype(float)
+        sessions = rng.poisson(3, n) + 1.0
+        frame = pd.DataFrame(
+            {
+                "unit": [f"c{i}" for i in range(n)] + [f"t{i}" for i in range(n)],
+                "arm": ["control"] * n + ["treatment"] * n,
+                "revenue": np.r_[revenue, treated],
+                "converted": np.r_[converted, converted],
+                "sessions": np.r_[sessions, sessions],
+            }
+        )
+        pilot = from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                {"name": "revenue", "type": "mean"},
+                {"name": "converted", "type": "conversion"},
+                {"name": "rps", "type": "ratio", "numerator": "revenue", "denominator": "sessions"},
+            ],
+        )
+        cov = np.cov(revenue, sessions, ddof=1)
+        raw = {
+            "revenue": revenue.var(ddof=1),
+            "converted": converted.var(ddof=1),
+            "rps": ratio_linearized_variance(
+                float(revenue.mean()),
+                float(sessions.mean()),
+                float(cov[0, 0]),
+                float(cov[1, 1]),
+                float(cov[0, 1]),
+            ),
+        }
+        for metric, variance in raw.items():
+            assert _plan(pilot, metric).var / variance == pytest.approx(
+                _pilot_bound(n - 1), rel=1e-12
+            ), metric
+
     def test_moments_grain_refusal_propagates_unswallowed(self, monkeypatch):
         """An unrelated moments() failure -- injected here by routing the
         source's own moments() at an unsupported grain -- must never be
@@ -130,6 +188,11 @@ class TestPlanningBaselineOnDataframeRoutes:
         assert raised.value.code == "evidence.grain_unavailable"
 
     def test_quantile_metric_from_control_arm_values(self):
+        """A quantile baseline's ``var`` is the per-unit variance the readout's
+        standard error on the pilot implies, with no pilot-variance bound: its
+        solvers re-read the pilot values instead of ``var``."""
+        from increment.estimation.quantile import log_quantile_se
+
         frame = _unit_summary_frame()
         pilot = from_frame(
             frame,
@@ -141,8 +204,11 @@ class TestPlanningBaselineOnDataframeRoutes:
         )
         baseline = _plan(pilot, "revenue", "quantile-summary")
         control = frame.loc[frame["group_id"] == "control", "revenue"].to_numpy()
-        assert baseline.mean == pytest.approx(float(np.quantile(control, 0.5)), rel=1e-12)
-        assert baseline.var > 0.0
+        median = float(np.quantile(control, 0.5))
+        _, se = log_quantile_se(np.sort(control), 0.5, 0.05)
+        assert (baseline.mean, baseline.var) == pytest.approx(
+            (median, control.size * (median * se) ** 2), rel=1e-12
+        )
 
     def test_quantile_metric_from_unit_panel_values(self):
         frame = _unit_summary_frame()
@@ -627,29 +693,45 @@ class TestPlanningBaselineOnDataframeRoutes:
         assert ratio_icc == pytest.approx(_plan(pilot, "score").cluster_icc, rel=1e-9)
         assert 0.0 < ratio_icc < 0.5 < _plan(pilot, "num").cluster_icc
 
-    def test_clustered_mean_and_var_are_per_unit_not_cluster_totals(self):
+    def test_clustered_planning_baseline_bounds_with_cluster_df(self):
         """A clustered source's moments are cluster totals; the Baseline's
-        mean/var are per unit, the same as the unclustered source's on the
-        same rows, with the clustering carried by the design effect alone."""
+        mean/var are per unit, the variance at its pilot bound on the
+        contributing control clusters' K - 1 degrees of freedom, with the
+        clustering otherwise carried by the design effect."""
         frame = _unit_summary_frame(with_cluster=True)
-
-        def build(cluster):
-            return from_frame(
-                frame,
-                shape="summary",
-                unit="unit_id",
-                group="group_id",
-                control="control",
-                metrics=[{"name": "revenue", "type": "mean"}],
-                cluster=cluster,
-            )
-
-        unit_level = _plan(build(None), "revenue")
-        baseline = _plan(build("household_id"), "revenue")
-        assert (baseline.mean, baseline.var) == pytest.approx(
-            (unit_level.mean, unit_level.var), rel=1e-12
+        frame["revenue_den"] = [1.0 + (i % 3) for i in range(len(frame))]
+        pilot = from_frame(
+            frame,
+            shape="summary",
+            unit="unit_id",
+            group="group_id",
+            control="control",
+            metrics=[
+                {"name": "revenue", "type": "mean"},
+                {
+                    "name": "rps",
+                    "type": "ratio",
+                    "numerator": "revenue",
+                    "denominator": "revenue_den",
+                },
+            ],
+            cluster="household_id",
         )
-        assert baseline.avg_cluster_size == 4.0
+        control = frame[frame["group_id"] == "control"]
+        y = control["revenue"].to_numpy()
+        den = control["revenue_den"].to_numpy()
+        ratio = y.mean() / den.mean()
+        per_unit = {
+            "revenue": (y.mean(), y.var(ddof=1)),
+            "rps": (ratio, np.var(y - ratio * den, ddof=1) / den.mean() ** 2),
+        }
+        clusters = control["household_id"].nunique()
+        for metric, (mean, variance) in per_unit.items():
+            baseline = _plan(pilot, metric)
+            assert (baseline.mean, baseline.var / variance) == pytest.approx(
+                (mean, _pilot_bound(clusters - 1)), rel=1e-12
+            ), metric
+            assert baseline.avg_cluster_size == 4.0
 
 
 _TRIGGERED_DEFS = """
@@ -827,8 +909,6 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
     import warnings
     from fractions import Fraction
 
-    from scipy.stats import chi2
-
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.estimators import IncrementRuntimeWarning
     from increment.power import (
@@ -899,7 +979,8 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
     size_variance = sum((len(group) - analyzed_mean) ** 2 for group in groups) / k
     manual = Baseline(
         mean=float(mean),
-        var=float(variance) * (n - 1) / chi2.isf(0.8, n - 1),
+        # The pilot bound's degrees of freedom are contributing control clusters - 1.
+        var=float(variance) * _pilot_bound(k - 1),
         trigger_rate=n / sum(assigned_sizes),
         avg_cluster_size=sum(assigned_sizes) / len(assigned_sizes),
         cluster_participation=k / len(assigned_sizes),
@@ -1367,6 +1448,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
             expected_ratio_var = (
                 np.var(triggered - expected_ratio * denominators, ddof=1) / denominators.mean() ** 2
             )
+            bounded_ratio_var = expected_ratio_var * _pilot_bound(triggered.size - 1)
             covariate = indices % 8
             theta_num = np.cov(covariate, triggered, ddof=1)[0, 1] / np.var(covariate, ddof=1)
             theta_den = np.cov(covariate, denominators, ddof=1)[0, 1] / np.var(covariate, ddof=1)
@@ -1410,7 +1492,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 native_ratio.model_dump(), rel=1e-12
             )
             assert (native_ratio.mean, native_ratio.var) == pytest.approx(
-                (expected_ratio, expected_ratio_var), rel=1e-12
+                (expected_ratio, bounded_ratio_var), rel=1e-12
             )
             assert native_ratio.trigger_rate == pytest.approx(0.5, rel=1e-12)
             native_quantile = _plan(pilot, "revenue_p50")
@@ -1436,11 +1518,11 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 assert planned.n_triggered_total == round(planned.n_total * baseline.trigger_rate)
             assert native_ratio.cuped_rho == pytest.approx(expected_ratio_rho, rel=1e-12)
             assert native_ratio.effective_var == pytest.approx(
-                expected_ratio_var * (1 - expected_ratio_rho**2), rel=1e-12
+                bounded_ratio_var * (1 - expected_ratio_rho**2), rel=1e-12
             )
             assert artifact_ratio.cuped_rho == pytest.approx(expected_ratio_rho, rel=1e-12)
             assert artifact_ratio.effective_var == pytest.approx(
-                expected_ratio_var * (1 - expected_ratio_rho**2), rel=1e-12
+                bounded_ratio_var * (1 - expected_ratio_rho**2), rel=1e-12
             )
 
             mean_control = float(np.mean(triggered))
@@ -2045,8 +2127,10 @@ class TestPlanningBaselineParity:
                     ).model_dump()
                     assert actual == pytest.approx(expected.model_dump(), rel=1e-9), (name, metric)
                 unit_level = _plan(pilots["unclustered"], metric)
-                assert (expected.mean, expected.var) == pytest.approx(
-                    (unit_level.mean, unit_level.var), rel=1e-12
+                # Control holds 60 units in 13 contributing clusters: the clustered
+                # variance is bounded on 12 degrees of freedom, the per-unit one on 59.
+                assert (expected.mean, expected.var / _pilot_bound(12)) == pytest.approx(
+                    (unit_level.mean, unit_level.var / _pilot_bound(59)), rel=1e-12
                 )
                 assert expected.avg_cluster_size == pytest.approx(60 / 13, rel=1e-12)
             assert _plan(oracle, "revenue").cluster_icc > 0.1
