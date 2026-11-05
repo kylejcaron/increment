@@ -124,6 +124,12 @@ else `end`, else the latest observed event date for a running experiment.
 Each fact also carries `data_as_of`, the latest date actually loaded. A
 window ending after that bound is censored; a warning reports material
 drops.
+An outcome event counts only when its timestamp is strictly after the unit's
+`first_exposure_ts`, and the CUPED window ends just before that instant. An
+event logged at the exact exposure timestamp, such as the order that enrolls
+a unit under a first-purchase exposure or a line item logged with it, therefore
+counts in neither the outcome nor the CUPED window. Encouragement uptake is the
+one exception: uptake at the exposure instant qualifies.
 
 **Dataframe.** `from_frame(..., shape="panel")` accepts sparse input and treats absent eligible
 unit-days as zero. Small inputs may be densified temporarily; larger ones
