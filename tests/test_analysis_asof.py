@@ -44,6 +44,7 @@ from tests.analysis_factory import (
 )
 from tests.capability_consumers_scalar import UNBOUNDED_RETENTION_SEQUENTIAL, refused
 from tests.test_sequential_public_sources import gaussian_plan
+from tests.warning_codes import allow_warning_codes
 
 
 @backend_fixture(scope="module")
@@ -806,6 +807,8 @@ def _analysis_with_bounded_asof_encouragement_events(con, *, sequential: bool = 
     return experiment, resolver
 
 
+# The fixture's covariate means differ by arm, so its CUPED cells are flagged.
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
 def test_native_encouragement_cuped_asof_late_identity(con):
     """Public as-of CUPED rows preserve the LATE/ITT-over-compliance identity."""
     from increment import Method

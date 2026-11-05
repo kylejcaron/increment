@@ -21,7 +21,7 @@ from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, req
 from increment.semantics import load
 from increment.workflows import export_moments
 from tests.analysis_factory import bound_source, view_readout
-from tests.covariate_cases import categorical_defs_and_con
+from tests.covariate_cases import allow_tenure_imbalance, categorical_defs_and_con
 
 
 def _unit_rows(source, metric, **kwargs) -> UnitRows:
@@ -1454,6 +1454,7 @@ def _scalar_native_case(tmp_path, *, bare=False, mixed=False):
 @pytest.mark.slow
 @pytest.mark.parametrize("bare", [False, True])
 @pytest.mark.parametrize("mixed", [False, True])
+@allow_tenure_imbalance
 def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed):
     import warnings
 
@@ -1623,6 +1624,7 @@ def test_direct_native_readout_does_not_acquire_removed_scalar_binding(tmp_path)
         con.disconnect()
 
 
+@allow_tenure_imbalance
 def test_native_scalar_measure_binding_runs_end_to_end(tmp_path):
     import pyarrow as pa
 

@@ -15,9 +15,10 @@ import math
 import pytest
 
 from increment import CupedCovariate
-from increment.errors import InvalidRequestError, UnsupportedRequestError
+from increment.errors import IncrementRuntimeWarning, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.armstats import ArmStats, centered_row_from_raw_sums
 from increment.estimation.cuped import cuped_adjust, pooled_theta
+from increment.estimation.decision_types import ArmHypothesisKey
 from increment.estimation.encouragement import (
     _first_stage,
     _late_additive_cuped,
@@ -183,6 +184,30 @@ def test_cuped_late_end_to_end_matches_the_itt_over_compliance_ratio():
     # The compliance row's absolute difference IS the raw first stage.
     assert compliance.abs_diff is not None
     assert late.require_lift().value == pytest.approx(itt.abs_diff / compliance.abs_diff, rel=1e-12)
+
+
+def test_cuped_late_balance_advisory_reports_the_late_shift():
+    """Control's covariate was lost and zero-filled; treatment's averages 3. The
+    adjustment moves the ITT numerator by theta * difference and the LATE by that
+    over the raw first stage, the gap between the unadjusted and adjusted rows."""
+    seed = 20260811
+    xc, yc, dc = _units(600, seed=seed, z=0)
+    xt, yt, dt = _units(600, seed=seed + 7919, z=1)
+    rows = [_row("control", [0.0] * len(xc), yc, dc), _row("treat", [x + 3.0 for x in xt], yt, dt)]
+    with pytest.warns(IncrementRuntimeWarning):
+        computation = estimate_encouragement(
+            [METRIC],
+            rows,
+            _design(),
+            estimands=("late",),
+            methods=[Method(name="unadjusted"), *CUPED],
+        )
+    advisories = computation.advisories[ArmHypothesisKey("rev", "treat", "late")]
+    (advisory,) = [a for a in advisories if a.code == "estimation.cuped.covariate_imbalance"]
+    late = {row.method: row.require_lift().value for row in _late(computation.results)}
+    moved = late["unadjusted"] - late["cuped"]
+    assert advisory.context["late_adjustment_shift"] == pytest.approx(moved, rel=1e-9)
+    assert "itt_adjustment_shift" in advisory.context
 
 
 # The cross term (cxd) is load-bearing

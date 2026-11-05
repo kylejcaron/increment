@@ -16,6 +16,7 @@ from increment.estimation.readout_types import ReadoutResults
 from increment.estimation.results import LiftEstimate
 from tests._override_warnings import allow_declared_overrides
 from tests.analysis_factory import view_readout
+from tests.covariate_cases import allow_tenure_imbalance
 
 
 def _method(kind: str, *, name: str, covariate: str) -> Method:
@@ -222,6 +223,7 @@ def test_encouragement_decision_identity_ignores_companion_evidence(panel, role,
 @pytest.mark.parametrize("route", ["native", "artifact"])
 @pytest.mark.parametrize("decision_kind", ["scalar", "mixed", "naive"])
 @allow_declared_overrides
+@allow_tenure_imbalance
 def test_definitions_and_artifact_keep_decision_family_when_companion_changes(
     tmp_path, route, decision_kind
 ):

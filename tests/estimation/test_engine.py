@@ -24,6 +24,7 @@ from increment.semantics.models import (
     RatioMetric,
 )
 from tests.analysis_factory import view_readout
+from tests.warning_codes import allow_warning_codes
 
 
 @pytest.mark.parametrize(
@@ -1460,6 +1461,8 @@ class TestAbsoluteScalePair:
         raw_diff = treatment.mean_y() - control.mean_y()
         assert result[0].abs_diff != pytest.approx(raw_diff)
 
+    # The covariate means differ by arm by construction, so the cell is flagged.
+    @allow_warning_codes("estimation.cuped.covariate_imbalance")
     def test_cuped_branch_nonpositive_adjusted_mean_yields_an_additive_only_row(self):
         """A strong covariate on a low-mean metric can push the CUPED-
         adjusted mean non-positive; this no longer aborts estimate_lift --

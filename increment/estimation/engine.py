@@ -105,6 +105,11 @@ from increment.estimation.conversion_route import (
     route_for_counts,
 )
 from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_ratio_cuped
+from increment.estimation.diagnostics import (
+    COVARIATE_BALANCE_ALPHA,
+    CovariateBalance,
+    covariate_balance,
+)
 from increment.estimation.inference import (
     LiftGuardError,
     PosteriorFields,
@@ -327,6 +332,51 @@ _register_warning(
         "pooled at nominal 95% in calibration) and is reported unchanged -- add units or check "
         "the denominator for heavy tails before deciding."
     ),
+)
+
+
+def _covariate_imbalance_message(
+    *,
+    metric_name: str,
+    control_group: str,
+    treatment_group: str,
+    covariate: str | None,
+    mean_control: float,
+    mean_treatment: float,
+    statistic: float,
+    alpha: float,
+    adjustment_shift: float | None = None,
+    late_adjustment_shift: float | None = None,
+    **_details: object,
+) -> str:
+    """The covariate-imbalance warning; a LATE reports the move on its own scale and a
+    ratio, whose move is not a multiple of the difference, reports none."""
+    subject = "the covariate" if covariate is None else f"the covariate '{covariate}'"
+    shift = adjustment_shift if late_adjustment_shift is None else late_adjustment_shift
+    moved = (
+        ""
+        if shift is None
+        else f" The adjustment moved the estimate by {abs(shift):.4g}; if the covariate is at "
+        "fault, the adjusted estimate is off by about that much."
+    )
+    return (
+        f"metric '{metric_name}', {treatment_group} vs {control_group}: {subject} used for "
+        f"CUPED averages {mean_treatment:.4g} in {treatment_group} and {mean_control:.4g} in "
+        f"{control_group}, a difference of {abs(statistic):.3g} standard errors (nominal "
+        f"p < {alpha:g}). A difference this large in a value measured before the experiment "
+        "is unusual. It can arise by chance, and more often the more cells are checked. It is "
+        "also what a covariate built differently for one arm produces (values lost or "
+        "zero-filled in one arm, a rescaled join, a window that overlaps the experiment), and "
+        f"what a failed assignment produces.{moved} Check how the covariate was built for each "
+        "arm before relying on either estimate."
+    )
+
+
+_register_warning(
+    "estimation.cuped.covariate_imbalance",
+    IncrementRuntimeWarning,
+    _covariate_imbalance_message,
+    dedupe_fields=("metric_name", "treatment_group"),
 )
 
 
@@ -1191,6 +1241,103 @@ def _small_total_clusters_advisory(
     return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
 
 
+def _cuped_covariate_balance(treatment: ArmStats, control: ArmStats) -> CovariateBalance | None:
+    """Balance of the covariate a scalar CUPED fit adjusts by; ``None`` without one."""
+    arms = (control, treatment)
+    if any(arm.ref_x is None or arm.cx1 is None or arm.cx2 is None or arm.n < 2 for arm in arms):
+        return None
+    return covariate_balance(
+        n_control=control.n,
+        mean_control=control.mean_x(),
+        var_control=control.var_x(),
+        n_treatment=treatment.n,
+        mean_treatment=treatment.mean_x(),
+        var_treatment=treatment.var_x(),
+    )
+
+
+def _declared_covariate(methods: Iterable[Method]) -> str | None:
+    """The covariate the scalar CUPED *methods* declare; ``None`` when they declare none,
+    as a warehouse's implicit pre-period value is, or disagree."""
+    names = {
+        method.covariates[0].name
+        for method in methods
+        if method.variance_reduction == "cuped" and method.covariates
+    }
+    return next(iter(names)) if len(names) == 1 else None
+
+
+def _covariate_imbalance_advisory(
+    treatment: ArmStats,
+    control: ArmStats,
+    balance: CovariateBalance,
+    *,
+    covariate: str | None,
+    slopes: Mapping[str, float],
+    shifts: Mapping[str, float],
+) -> ReadoutAdvisory:
+    """Warn of, and return the advisory for, a CUPED cell whose covariate means differ.
+
+    *slopes* are the fitted CUPED coefficients and *shifts* the moves they made in
+    the estimates, each keyed as reported.
+    """
+    context: dict[str, object] = {
+        "metric_name": treatment.metric,
+        "control_group": control.group_id,
+        "treatment_group": treatment.group_id,
+        "covariate": covariate,
+        "mean_control": control.mean_x(),
+        "mean_treatment": treatment.mean_x(),
+        "difference": balance.difference,
+        "standard_error": balance.standard_error,
+        "statistic": balance.statistic,
+        "dof": balance.dof,
+        "p_value": balance.p_value,
+        "alpha": COVARIATE_BALANCE_ALPHA,
+        **slopes,
+        **shifts,
+        "constant_arms": tuple(arm.group_id for arm in (control, treatment) if arm.var_x() <= 0.0),
+    }
+    spec = _WARNINGS["estimation.cuped.covariate_imbalance"]
+    warn(spec, skip_file_prefixes=PACKAGE_FRAMES, context=context)
+    return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
+
+
+def _lift_covariate_imbalance_advisory(
+    treatment: ArmStats, control: ArmStats, strategy: _LiftVarianceStrategy
+) -> ReadoutAdvisory | None:
+    """The advisory for a fixed-horizon CUPED contrast whose covariate balance is flagged.
+
+    The slopes are refitted only for a flagged contrast. A fit that refuses leaves the
+    refusal to the CUPED row, which reaches the same fit.
+    """
+    balance = strategy.cuped_balance
+    if balance is None or not balance.flagged:
+        return None
+    shifts: dict[str, float] = {}
+    try:
+        if strategy.metric_type == "ratio":
+            ratio_fit = fit_ratio_cuped([control, treatment])
+            slopes = {
+                "theta_numerator": ratio_fit.numerator.theta,
+                "theta_denominator": ratio_fit.denominator.theta,
+            }
+        else:
+            theta = fit_cuped([control, treatment]).theta
+            slopes = {"theta": theta}
+            shifts["adjustment_shift"] = theta * balance.difference
+    except CodedError:
+        return None
+    return _covariate_imbalance_advisory(
+        treatment,
+        control,
+        balance,
+        covariate=_declared_covariate(item.method for item in strategy.methods),
+        slopes=slopes,
+        shifts=shifts,
+    )
+
+
 def _lift_advisories(
     metric: Metric,
     treatment: ArmStats,
@@ -1233,6 +1380,9 @@ def _lift_advisories(
                     message=note,
                 )
             )
+    imbalance_advisory = _lift_covariate_imbalance_advisory(treatment, control, strategy)
+    if imbalance_advisory is not None:
+        advisories.append(imbalance_advisory)
     if sequential:
         advisory = _open_ended_advisory(metric)
         if advisory is not None:
@@ -1958,6 +2108,9 @@ class _LiftVarianceStrategy:
     # denominator-precision note, then the denominator-skew coverage note or
     # its unavailability; empty for every other contrast.
     ratio_notes: tuple[str, ...]
+    # The covariate balance of a fixed-horizon unit-grain contrast a CUPED
+    # method adjusts; None for every other contrast or without a covariate.
+    cuped_balance: CovariateBalance | None
 
 
 def _prepare_lift_estimation(
@@ -2080,12 +2233,14 @@ def _select_lift_variance_strategy(
     *,
     fixed_horizon: bool,
 ) -> _LiftVarianceStrategy:
-    """Resolve one contrast's grain, capability, hoisted moments and ratio advisories.
+    """Resolve one contrast's grain, capability, hoisted moments, ratio advisories and
+    CUPED covariate balance.
 
     The ratio advisories are evaluated for a fixed-horizon unit-grain ratio
     contrast only: the denominator-skew region was measured for the
     single-look interval, and a clustered row's denominator is a cluster
-    total whose skew/count regime is not the measured one.
+    total whose skew/count regime is not the measured one. The covariate
+    balance is the fixed-horizon test; CUPED never runs on a clustered row.
     """
     dof: float | None = None
     n_clusters: int | None = None
@@ -2145,6 +2300,11 @@ def _select_lift_variance_strategy(
             )
             if note is not None
         )
+    cuped_balance = (
+        _cuped_covariate_balance(treatment, control)
+        if fixed_horizon and cluster is None and any(item.use_cuped for item in method_strategies)
+        else None
+    )
     return _LiftVarianceStrategy(
         variance_model=variance_model,
         metric_type=metric_type,
@@ -2153,6 +2313,7 @@ def _select_lift_variance_strategy(
         absolute_moments=absolute_moments,
         methods=method_strategies,
         ratio_notes=ratio_notes,
+        cuped_balance=cuped_balance,
     )
 
 

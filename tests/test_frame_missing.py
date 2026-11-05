@@ -1277,9 +1277,9 @@ def test_duplicate_metric_names_refused() -> None:
     assert exc_info.value.context["name"] == "m"
 
 
-def _cuped_null_covariate_frame() -> pa.Table:
-    """True lift 0, x strongly predictive of y, 50 covariate nulls in the
-    control arm only - the shape that silently biased a true-zero lift to -7.2%."""
+def _cuped_null_covariate_frame(control_nulls: int = 50) -> pa.Table:
+    """True lift 0, x strongly predictive of y, *control_nulls* covariate nulls in
+    the control arm only - the shape that silently biased a true-zero lift to -7.2%."""
     rng = np.random.default_rng(7)
     n = 500
     units, variants, ys, xs = [], [], [], []
@@ -1291,7 +1291,7 @@ def _cuped_null_covariate_frame() -> pa.Table:
         ys += y.tolist()
         xs += x.tolist()
     x_col: list[float | None] = list(xs)
-    for i in range(50):  # nulls in the CONTROL arm's covariate
+    for i in range(control_nulls):  # nulls in the CONTROL arm's covariate
         x_col[i] = None
     return pa.table({"user_id": units, "variant": variants, "y": ys, "x": x_col})
 
@@ -1320,11 +1320,40 @@ def test_cuped_covariate_nulls_auto_imputed_with_counted_warning() -> None:
             design=_DESIGN,
         )
     assert "frame.validation.metric_covariate_missing_imputed" in warning_codes(rec)
-    (est,) = readouts.run(src, decision_method=Method(name="cuped", variance_reduction="cuped"))
+    with warnings.catch_warnings(record=True) as ran:
+        warnings.simplefilter("always")
+        (est,) = readouts.run(src, decision_method=Method(name="cuped", variance_reduction="cuped"))
+    # Missingness that depends on the arm but not on the value leaves the filled
+    # covariate balanced.
+    assert "estimation.cuped.covariate_imbalance" not in warning_codes(ran)
     lift = est.require_lift()
     assert lift.lb is not None and lift.ub is not None
     assert lift.lb <= 0.0 <= lift.ub
     assert abs(lift.value) < 0.02
+
+
+def test_covariate_lost_in_one_arm_and_zero_filled_is_flagged() -> None:
+    covariate = CupedCovariate(name="x", kind="continuous", missing="zero")
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        experiment, resolver = from_frame(
+            _cuped_null_covariate_frame(control_nulls=500),
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[MetricSpec(name="y", decision_method=Method.cuped(covariates=covariate))],
+        )
+        result = run(experiment, resolver)
+    assert "frame.validation.metric_covariate_missing_imputed" in warning_codes(recorded)
+    metadata = result.readout().metadata
+    assert metadata is not None
+    flagged = [
+        record.cell.method
+        for record in metadata.cells
+        if any(item.code == "estimation.cuped.covariate_imbalance" for item in record.advisories)
+    ]
+    assert flagged == ["cuped"]
 
 
 def test_all_null_covariate_refuses_with_actionable_message() -> None:

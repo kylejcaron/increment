@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import warnings
 from fractions import Fraction
 from typing import TypedDict
 
@@ -19,7 +20,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment.errors import InvalidRequestError
+from increment.errors import IncrementRuntimeWarning, InvalidRequestError
 from increment.estimation.armstats import CENTERED_FIELDS, ArmStats
 from increment.estimation.cuped import (
     CupedFit,
@@ -29,10 +30,12 @@ from increment.estimation.cuped import (
     pooled_theta,
 )
 from increment.estimation.cuped.scalar import _within_arm_theta
+from increment.estimation.decision_types import ArmHypothesisKey
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.variance import ratio_abs_diff_se, ratio_log_mean_se
 from increment.semantics.models import MeanMetric, Measure, RatioMetric
 from tests.mc import nominal_band, replicate
+from tests.warning_codes import warning_codes
 
 # Helpers
 
@@ -1448,6 +1451,91 @@ class TestCupedRatioMetrics:
         with pytest.raises(InvalidRequestError) as exc_info:
             fit_ratio_cuped(arms)
         assert exc_info.value.code == "estimation.cuped.ratio_arm_covariate_role"
+
+
+# A covariate whose arm means differ: the balance advisory
+
+_IMBALANCE = "estimation.cuped.covariate_imbalance"
+
+
+def _covariate_contrast(*, control_covariate: bool) -> list[ArmStats]:
+    """Treatment: n=600, y mean 33, var 500, x mean 30, var 450, Cov(Y, X) 405.
+    Control: n=400, y mean 32, var 500, and either the same covariate
+    moments or x = 0 for every unit (lost and zero-filled)."""
+
+    def arm(n: int, y_mean: float, group_id: str, *, covariate: bool) -> ArmStats:
+        sum_x = 30.0 * n if covariate else 0.0
+        return _make_arm_stats(
+            n=n,
+            mean=y_mean,
+            var=500.0,
+            group_id=group_id,
+            sum_x=sum_x,
+            sum_x2=450.0 * (n - 1) + sum_x**2 / n if covariate else 0.0,
+            sum_xy=405.0 * (n - 1) + sum_x * y_mean if covariate else 0.0,
+        )
+
+    return [
+        arm(400, 32.0, "control", covariate=control_covariate),
+        arm(600, 33.0, "treatment", covariate=True),
+    ]
+
+
+def _cuped_computation(metric, arms):
+    return estimate_lift(
+        metrics=[metric],
+        summary=_summary_df(arms),
+        control_group="control",
+        methods=[Method(name="cuped", variance_reduction="cuped")],
+    )
+
+
+def test_imbalanced_covariate_attaches_advisory_without_moving_the_estimate():
+    with pytest.warns(IncrementRuntimeWarning) as recorded:
+        computation = _cuped_computation(
+            _mean_metric(), _covariate_contrast(control_covariate=False)
+        )
+    assert _IMBALANCE in warning_codes(recorded)
+    advisories = computation.advisories[ArmHypothesisKey("rev", "treatment", "itt")]
+    assert tuple(advisory.code for advisory in advisories) == (_IMBALANCE,)
+    context = advisories[0].context
+    assert context["statistic"] == pytest.approx(30.0 / math.sqrt(450.0 / 600.0))
+    assert context["constant_arms"] == ("control",)
+    # theta = (405/600) / (450/600) = 0.9 from treatment alone (control's x is
+    # constant), so the adjustment moved the 1.0 raw difference by 0.9 * 30.
+    assert context["adjustment_shift"] == pytest.approx(27.0)
+    (result,) = computation.results
+    assert result.abs_diff == pytest.approx(1.0 - 0.9 * 30.0)
+
+
+def test_balanced_covariate_has_no_balance_advisory():
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        computation = _cuped_computation(
+            _mean_metric(), _covariate_contrast(control_covariate=True)
+        )
+    assert _IMBALANCE not in warning_codes(recorded)
+    assert all(
+        advisory.code != _IMBALANCE
+        for advisories in computation.advisories.values()
+        for advisory in advisories
+    )
+
+
+def test_imbalanced_ratio_covariate_advisory_reports_both_slopes_without_a_shift():
+    rng = np.random.default_rng(5)
+    num_c, den_c, _ = _ratio_units(rng, 2000, load_num=0.4, load_den=0.5)
+    # Control's covariate was lost and zero-filled for every unit.
+    control = _ratio_arm("control", num_c, den_c, np.zeros(2000))
+    treatment = _ratio_arm("treatment", *_ratio_units(rng, 2000, load_num=0.4, load_den=0.5))
+    with pytest.warns(IncrementRuntimeWarning):
+        computation = _cuped_computation(_ratio_metric(), [control, treatment])
+    advisories = computation.advisories[ArmHypothesisKey("ratio_rev", "treatment", "itt")]
+    (advisory,) = [advisory for advisory in advisories if advisory.code == _IMBALANCE]
+    fit = fit_ratio_cuped([control, treatment])
+    assert advisory.context["theta_numerator"] == pytest.approx(fit.numerator.theta)
+    assert advisory.context["theta_denominator"] == pytest.approx(fit.denominator.theta)
+    assert "adjustment_shift" not in advisory.context
 
 
 # Near-perfect correlation: the quadratic form must not crash on fp noise

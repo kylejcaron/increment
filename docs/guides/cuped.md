@@ -217,7 +217,9 @@ as it is for units with no history before the experiment; a join or logging
 step that lost more values in one arm breaks it. A mean fill tolerates one arm
 losing more values, as long as which values went missing is unrelated to their
 size; a join that fails only for low-spending users in one arm breaks it. The
-imputation warning states the condition for the fill it applied.
+imputation warning states the condition for the fill it applied, and the
+[covariate-balance advisory](#when-cuped-misleads-a-covariate-that-differs-by-arm)
+tests the filled covariate.
 
 The policy belongs to each metric's method, never to the shared covariate table.
 The pooled mean uses the full per-unit covariate population before an outcome's
@@ -784,7 +786,9 @@ pre-period history. Watch for:
   unadjusted estimate under a CUPED label. A covariate constant in only one
   arm still fits $\theta$ from the other arm; that usually means the covariate
   was built differently for that arm, for example every value missing and
-  filled with zero.
+  filled with zero, and the
+  [covariate-balance advisory](#when-cuped-misleads-a-covariate-that-differs-by-arm)
+  usually flags it.
 - **Quantile metrics:** these reject CUPED covariates because a quantile is not
   a mean of per-unit values. [Ratio metrics](#ratio-metrics) adjust both
   components with one covariate.
@@ -805,6 +809,61 @@ precision.
     \theta = \frac{\operatorname{Cov}(Y_t, X_t)/n_t + \operatorname{Cov}(Y_c, X_c)/n_c}
                   {\operatorname{Var}(X_t)/n_t + \operatorname{Var}(X_c)/n_c}
     $$
+
+## When CUPED misleads: a covariate that differs by arm
+
+CUPED assumes the covariate is measured the same way in every arm. Randomization
+then gives both arms the same expected covariate mean, and the adjustment only
+removes chance imbalance. A covariate that depends on the arm (values lost or
+zero-filled in one arm, a join rescaled for one arm, a window that overlaps the
+experiment) shifts the adjusted difference by $\theta$ times the covariate
+difference. That bias does not shrink with sample size, and the narrower
+interval makes the wrong answer look confident.
+
+Each fixed-horizon scalar CUPED cell, including CUPED on a LATE, therefore
+compares its covariate's group means, as adjusted after any fill, with a Welch
+t test. When the two-sided p-value is below 0.001, the threshold of the
+automatic sample-ratio check, the cell carries the advisory
+`estimation.cuped.covariate_imbalance` and the run emits a runtime warning with
+the same code. The estimate, interval and decision are unchanged: the advisory
+never withholds a result. Breakout segments and daily cells are each tested on
+their own data, so a join that fails for one segment flags that segment.
+
+The advisory's context reports each group's covariate mean (`mean_control`,
+`mean_treatment`), the `difference` with its `standard_error`, the Welch
+`statistic`, `dof` and `p_value`, the fitted `theta` (`theta_numerator` and
+`theta_denominator` for a ratio metric) and `constant_arms`, the groups whose
+covariate is constant. For a mean metric, `adjustment_shift` is how far the
+adjustment moved the estimate, $\theta$ times the difference; if the covariate
+is at fault, the adjusted estimate is off by about that much. A CUPED-adjusted
+LATE reports `itt_adjustment_shift` and `late_adjustment_shift`, the ITT shift
+over the first stage. A ratio metric's shift is not a multiple of the
+difference, so it is not reported.
+
+Three explanations fit a flagged cell:
+
+- **Chance.** Under valid randomization, a value measured before the experiment
+  differs this much in about one cell in 1000. The threshold applies to each
+  cell, so chance flags accumulate: with 20 CUPED cells, about 2% of valid runs
+  show one. The 0.001 level is nominal, because the t reference is asymptotic.
+  When chance is the cause, the adjusted estimate is the better one.
+- **A covariate built differently for one arm.** The adjusted estimate is then
+  biased, by about the reported shift where there is one.
+- **A failed assignment.** Check the sample-ratio result as well; see
+  [SRM diagnostics](srm-diagnostics.md).
+
+Check how the covariate was built for each arm before relying on either
+estimate.
+
+No balance test can tell a small systematic shift from chance. With
+$\rho = \operatorname{Corr}(Y, X)$, a shift whose expected t statistic is $s$
+biases the adjusted estimate by about $s\,\rho/\sqrt{1-\rho^2}$ adjusted
+standard errors, because $\theta\,\mathrm{SE}(\Delta X) = \rho\,\mathrm{SE}(\Delta Y)$
+and the adjusted standard error is $\mathrm{SE}(\Delta Y)\sqrt{1-\rho^2}$. At
+$\rho = 0.9$, a shift with $s = 2$, which the check rarely flags, still leaves
+about 4 standard errors of bias. The check catches gross pipeline errors; it
+does not certify the covariate. Mixed-covariate cells
+(`Method.cuped_multicovariate`) are not tested.
 
 ## Mixed numeric and categorical covariates
 
@@ -1226,8 +1285,9 @@ warehouse.
     assumption about how the covariate was built for each arm: a covariate
     that depends on the arm shifts the adjusted difference by
     $-\theta\,(\mathbb{E}[\bar{X}_t] - \mathbb{E}[\bar{X}_c])$, a bias that does
-    not shrink with sample size. When both groups share a slope, the approximate
-    variance-reduction factor is:
+    not shrink with sample size, and each fixed-horizon CUPED cell
+    [tests it](#when-cuped-misleads-a-covariate-that-differs-by-arm). When both
+    groups share a slope, the approximate variance-reduction factor is:
 
     $$
     1 - \rho^2, \qquad \rho = \operatorname{Corr}(Y, X)

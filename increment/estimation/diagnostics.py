@@ -1,4 +1,5 @@
-"""Experiment diagnostics — sample-ratio mismatch (SRM) detection and allocation bands.
+"""Experiment diagnostics — sample-ratio mismatch (SRM) detection, allocation bands
+and CUPED covariate balance.
 
 ``sample_ratio_mismatch`` performs a chi-square goodness-of-fit test of
 observed group counts against expected allocation proportions.
@@ -6,14 +7,17 @@ observed group counts against expected allocation proportions.
 ``allocation_posterior_bands`` computes per-arm Beta posterior credible
 bands on allocation share over time — a descriptive complement to the SRM
 test, not a substitute for it.
+
+``covariate_balance`` compares a CUPED covariate's arm means with a Welch t test.
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -22,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation._tails import tail_isf
+from increment.estimation.armstats import welch_satterthwaite_df
 
 if TYPE_CHECKING:
     from increment._evidence_types import RowValue
@@ -429,6 +434,74 @@ def missing_by_arm_p_value(
         return None
     statistic = math.fsum((observed - expected) ** 2 / expected for observed, expected in cells)
     return float(chi2_dist.sf(statistic, len(arms) - 1))
+
+
+#: The automatic sample-ratio check's alpha, applied per CUPED cell to its covariate means.
+COVARIATE_BALANCE_ALPHA: Final = 0.001
+
+
+@dataclass(frozen=True, slots=True)
+class CovariateBalance:
+    """Welch comparison of one covariate's arm means.
+
+    ``difference`` is the treatment mean minus the control mean, ``statistic``
+    its Welch t on ``dof`` Welch-Satterthwaite degrees of freedom, ``p_value`` the
+    two-sided tail, and ``flagged`` whether that tail is below the nominal alpha.
+    """
+
+    difference: float
+    standard_error: float
+    statistic: float
+    dof: float
+    p_value: float
+    flagged: bool
+
+
+def covariate_balance(
+    *,
+    n_control: int,
+    mean_control: float,
+    var_control: float,
+    n_treatment: int,
+    mean_treatment: float,
+    var_treatment: float,
+    alpha: float = COVARIATE_BALANCE_ALPHA,
+) -> CovariateBalance | None:
+    """Welch t test that a covariate fixed before assignment has equal arm means.
+
+    ``var_*`` are ddof=1 variances. Randomization gives a pre-assignment
+    covariate equal expected arm means, so the move ``theta * difference`` a CUPED
+    adjustment makes is noise of this standard error; theta cancels from the ratio.
+    The t reference is asymptotic, so ``alpha`` is a nominal threshold. ``None``
+    when either arm has fewer than 2 units or both variances are zero, leaving no
+    sampling error to compare against.
+    """
+    from scipy.stats import t as t_dist
+
+    if min(n_control, n_treatment) < 2:
+        return None
+    se_treatment = math.sqrt(var_treatment / n_treatment)
+    se_control = math.sqrt(var_control / n_control)
+    standard_error = math.hypot(se_treatment, se_control)
+    if standard_error <= 0.0:
+        return None
+    difference = mean_treatment - mean_control
+    statistic = difference / standard_error
+    dof = welch_satterthwaite_df(
+        (se_treatment / standard_error) ** 2,
+        float(n_treatment - 1),
+        (se_control / standard_error) ** 2,
+        float(n_control - 1),
+    )
+    p_value = float(2.0 * t_dist.sf(abs(statistic), dof))
+    return CovariateBalance(
+        difference=difference,
+        standard_error=standard_error,
+        statistic=statistic,
+        dof=dof,
+        p_value=p_value,
+        flagged=p_value < alpha,
+    )
 
 
 class AllocationBand(BaseModel):

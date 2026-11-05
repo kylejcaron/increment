@@ -9,6 +9,7 @@ import pytest
 
 from increment.workflows import capture_sequential
 from tests._override_warnings import allow_declared_overrides
+from tests.warning_codes import allow_warning_codes
 
 pytestmark = pytest.mark.slow
 
@@ -107,6 +108,9 @@ def test_fixed_snapshot_keeps_old_rows_headline_and_csv_after_live_correction():
     "ignore:fetch_arrow_table\\(\\) is deprecated, use to_arrow_table\\(\\) instead\\.:DeprecationWarning"
 )
 @allow_declared_overrides
+# Treatment's pre-period values are raised by 3, so the covariate differs by arm: every read of
+# the CUPED cell, including the frame reference, carries the balance warning.
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
 def test_native_cuped_means_are_raw_and_adjusted_headline_matches_frame(tmp_path):
     from increment.dashboard import DashboardConfig, prepare_dashboard
     from increment.errors import IncrementWarning
@@ -120,7 +124,12 @@ def test_native_cuped_means_are_raw_and_adjusted_headline_matches_frame(tmp_path
                 resolver,
                 config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1}),
             )
-        assert warning_codes(captured) == ["analysis.cuped.covariate_unused"]
+        codes = warning_codes(captured)
+        assert set(codes) == {
+            "analysis.cuped.covariate_unused",
+            "estimation.cuped.covariate_imbalance",
+        }
+        assert codes.count("analysis.cuped.covariate_unused") == 1
         unadjusted, adjusted = frame_fixed(units, "revenue")
         expected = {
             arm: sum(unit["revenue"] for unit in units if unit["variant"] == arm) / 12
