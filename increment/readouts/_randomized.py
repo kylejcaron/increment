@@ -22,6 +22,7 @@ from increment.readouts._common import (
     _runtime_methods,
     _sequential_inference,
 )
+from increment.readouts._evidence import load_missing_value_account
 from increment.readouts._metric_rows import load_metric_evidence
 from increment.readouts._passes import _estimate_pass
 from increment.sources import EvidenceSource
@@ -193,6 +194,47 @@ def _secondary_rows_without_fcr(family, nominal_by_metric, outcome, family_recor
     ]
 
 
+def _control_values_all_skipped(src, metric, control_group) -> bool:
+    """A skip metric whose control arm has enrolled units but no observed value.
+
+    A control arm with no enrolled units keeps the estimator's missing-control refusal."""
+    account = load_missing_value_account(src, metric)
+    if account is None:
+        return False
+    control = str(control_group)
+    return account.units_by_arm.get(control, 0) > 0 and not account.observed_by_arm.get(control)
+
+
+def _skipped_cell_failures(src, metric, control_group) -> dict[Any, Any]:
+    """Family failures for the treatment cells of a skip metric that cannot be contrasted.
+
+    A cell whose treatment arm, or whose control arm, has enrolled units but no observed value
+    stays in the family as a sure non-rejection (p = 1), so skipping values never shrinks the
+    family. Arms with no enrolled units are left to the existing checks."""
+    from increment.decision import ArmHypothesisKey, DecisionFailure
+
+    account = load_missing_value_account(src, metric)
+    if account is None:
+        return {}
+    control = str(control_group)
+    enrolled = {arm for arm, units in account.units_by_arm.items() if units > 0}
+    unobserved = {arm for arm in enrolled if not account.observed_by_arm.get(arm)}
+    arms = enrolled - {control} if control in unobserved else unobserved - {control}
+    failures = {}
+    for arm in sorted(arms):
+        key = ArmHypothesisKey(metric.name, arm, "itt")
+        failures[key] = DecisionFailure(
+            key,
+            "readout.cell.missing_metric_observations",
+            {
+                "metric": metric.name,
+                "group_id": arm,
+                "unobserved_arm": control if control in unobserved else arm,
+            },
+        )
+    return failures
+
+
 def _secondary_source_rows(metric_rows, is_quantile, control_group):
     observed_arms = set(metric_rows.observed_arms)
     if is_quantile:
@@ -320,6 +362,7 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
     nominal_by_metric: dict[str, list[LiftEstimate]] = {}
     nominal_computation_by_metric: dict[str, DecisionComputation[LiftEstimate]] = {}
     family_groups_by_metric: dict[str, set[str]] = {}
+    skipped_by_metric: dict[str, dict[Any, Any]] = {}
     # Evidence read for the nominal pass (moment rows or a quantile unit
     # frame), reused by the FCR pass instead of re-querying the source.
     refused_cells: list[tuple[str, str, str, str]] = []
@@ -340,7 +383,11 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
         observed_by_metric[metric.name] = metric_observed
         evidence_by_metric[metric.name] = metric_rows
         observed_arms |= metric_observed
-        if is_quantile and not metric_rows.n_treatment_arms:
+        skipped = _skipped_cell_failures(src, metric, design.control_group)
+        skipped_by_metric[metric.name] = skipped
+        if _control_values_all_skipped(src, metric, design.control_group) or (
+            is_quantile and not metric_rows.n_treatment_arms
+        ):
             # Nothing to contrast; the final arm gate decides whether the
             # whole readout refuses.
             nominal, refused, computation = [], [], _merge_decision_computations([])
@@ -366,7 +413,7 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
         nominal_computation_by_metric[metric.name] = computation
         family_groups_by_metric[metric.name] = _secondary_group_ids(
             nominal, computation, observed_groups, is_quantile
-        )
+        ) | {key.group_id for key in skipped}
         refused_cells.extend(refused)
 
     computations.extend(nominal_computation_by_metric.values())
@@ -381,8 +428,21 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
         return out, refused_cells
 
     family_cells = _secondary_family_cells(family, nominal_by_metric, family_groups_by_metric)
+    from increment.decision import DecisionComputation
+
     family_computation = _merge_decision_computations(
-        [nominal_computation_by_metric[metric.name] for metric, *_rest in family]
+        [
+            *(nominal_computation_by_metric[metric.name] for metric, *_rest in family),
+            DecisionComputation(
+                results=(),
+                evidence={},
+                failures={
+                    key: failure
+                    for metric, *_rest in family
+                    for key, failure in skipped_by_metric[metric.name].items()
+                },
+            ),
+        ]
     )
     outcome = select_family(
         decision_cells(family_cells),
@@ -548,7 +608,9 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
             _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
             observed_arms |= metric_rows.observed_arms
             observed_by_metric[metric.name] = set(metric_rows.observed_arms)
-            if metric_rows.n_treatment_arms == 0:
+            if metric_rows.n_treatment_arms == 0 or _control_values_all_skipped(
+                src, metric, design.control_group
+            ):
                 continue
             if metric_methods == []:
                 rows_est, refused = [], []
@@ -574,7 +636,13 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
         else:
             observed_arms |= metric_rows.observed_arms
             observed_by_metric[metric.name] = set(metric_rows.observed_arms)
-            if test.role == "primary" and metric_rows.n_treatment_arms == 0:
+            # No arm observed, or an enrolled control arm whose every value was skipped:
+            # scope reports each cell unavailable.
+            if (
+                not metric_rows.observed_arms
+                or _control_values_all_skipped(src, metric, design.control_group)
+                or (test.role == "primary" and metric_rows.n_treatment_arms == 0)
+            ):
                 continue
             cell_alpha = resolve_cell_alpha(
                 plan, test, n_arms=metric_rows.n_treatment_arms, view=None

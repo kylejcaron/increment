@@ -1659,6 +1659,10 @@ def _assert_coordinate_inputs(live, frozen):
     assert live.source_input_hashes == tuple(
         item["sha256"] for item in live.provenance["source_inputs"]
     )
+    from tests.parity_harness.expected_differences import (
+        CONSUMER_INPUT_DIFFERENCES,
+        with_expected_difference,
+    )
     from tests.test_evidence_identity_parity import _capture
 
     archived_outcome = _capture()["scenarios"][live.scenario_id][live.ingress]
@@ -1671,7 +1675,12 @@ def _assert_coordinate_inputs(live, frozen):
         )
     _assert_input_value(
         _source_input_identity_projection(live),
-        _source_input_identity_projection(frozen),
+        with_expected_difference(
+            live.scenario_id,
+            live.ingress,
+            _source_input_identity_projection(frozen),
+            differences=CONSUMER_INPUT_DIFFERENCES,
+        ),
         path="source_input_identity",
     )
     _assert_runtime_versions(live, frozen)

@@ -3061,8 +3061,14 @@ def _prepare_lift_slice(
     metric_types: Mapping[str, str],
     binomial_gate_exempt_metrics: frozenset[str],
     warning_label: str | None = None,
+    unobserved_control_missing: bool = False,
 ) -> _PreparedLiftSlice:
-    """Apply shared row/control-arm gates for one breakout or day slice."""
+    """Apply shared row/control-arm gates for one breakout or day slice.
+
+    With ``unobserved_control_missing`` (breakout segments, where a zero-count row is an arm
+    whose units had no value), a metric's control row with no observations makes its contrasts
+    missing observations rather than a missing control arm, as a zero-count treatment row
+    already does."""
     part = _partition_nonpositive_mean_rows(
         rows,
         control_group=control_group,
@@ -3084,6 +3090,16 @@ def _prepare_lift_slice(
         group_id = str(dropped.row.get("group_id"))
         if group_id != control_group:
             unestimable[(str(dropped.row["metric"]), group_id)] = dropped.reason
+    unobserved_control = (
+        {
+            str(dropped.row["metric"])
+            for dropped in part.dropped
+            if str(dropped.row.get("group_id")) == control_group
+            and dropped.reason == "missing_metric_observations"
+        }
+        if unobserved_control_missing
+        else set()
+    )
     route2_pairs: set[tuple[str, str]] = set()
     for row in rows:
         group_id = str(row.get("group_id"))
@@ -3092,7 +3108,12 @@ def _prepare_lift_slice(
             pair = (metric_name, group_id)
             if pair not in unestimable and metric_name not in part.lost_control_metrics:
                 route2_pairs.add(pair)
-            unestimable.setdefault(pair, "no_control_arm")
+            unestimable.setdefault(
+                pair,
+                "missing_metric_observations"
+                if metric_name in unobserved_control
+                else "no_control_arm",
+            )
     if not part.live_control_metrics:
         for row in rows:
             group_id = str(row.get("group_id"))
@@ -3558,6 +3579,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                             f"run_breakout: segment {context.dimension}="
                             f"{context.segment_value!r} method={method_group[0].name!r}"
                         ),
+                        unobserved_control_missing=True,
                     )
                     method_rows = legacy_prepared.live_rows
                     for pair, reason in legacy_prepared.unestimable.items():
@@ -4433,6 +4455,7 @@ def run_breakout(  # noqa: PLR0913
             metric_types={m.name: m.type for m in metrics},
             binomial_gate_exempt_metrics=binomial_gate_exempt_metrics,
             warning_label=f"run_breakout: segment {dimension}={value!r}",
+            unobserved_control_missing=True,
         )
         pass_result = _estimate_breakout_slice_metrics(prepared, context)
         segment_computations.update(pass_result.computations)

@@ -258,7 +258,8 @@ def metric_spec(cell: Cell) -> MetricSpec | dict[str, str]:
 
 
 def _replay_spec(cell: Cell) -> MetricSpec | dict[str, str]:
-    """The re-declaration a moments cube carries: the type and band, no per-unit levers."""
+    """The re-declaration a moments cube carries: the type, band and a skip policy (which
+    qualifies the rows' population), no per-unit levers."""
     spec = metric_spec(cell)
     if isinstance(spec, dict):
         return spec
@@ -272,6 +273,7 @@ def _replay_spec(cell: Cell) -> MetricSpec | dict[str, str]:
         quantile=spec.quantile,
         window_days=spec.window_days,
         winsorization=spec.winsorization,
+        missing="skip" if spec.missing == "skip" else "error",
     )
 
 
@@ -294,9 +296,9 @@ class _Ingress:
 
     def __init__(self, cell: Cell) -> None:
         self.cell = cell
-        self.nulls = cell.missing in ("zero", "drop")
+        self.nulls = cell.missing in ("zero", "skip")
         self.payload = definitions_payload(cell)
-        if cell.missing in ("drop", "impute"):
+        if cell.missing not in ("error", "zero"):
             # The Definitions schema has no missing-policy field: declaring one is
             # the structural-absence attempt.
             self.payload["metrics"][0]["missing"] = cell.missing
@@ -431,7 +433,7 @@ class _Ingress:
         registration whose construction-time checkpoint the export carries as it is: a unit
         summary cannot recapture at an as-of horizon); a lever the producer cannot carry
         refuses here, at its own stage and code, exactly as it does for a mean cube (a
-        sequential `drop` policy).
+        sequential `skip` policy).
         """
         cell = self.cell
         mean = MetricSpec(
@@ -439,7 +441,7 @@ class _Ingress:
             type="mean",
             value_column="latency",
             preferred_direction="increase",
-            missing=cast("Literal['error', 'zero', 'drop', 'impute']", cell.missing),
+            missing=cast("Literal['error', 'zero', 'skip', 'impute']", cell.missing),
         )
         kwargs: dict[str, Any] = {
             "unit": "user_id",
@@ -610,6 +612,11 @@ def _expectations(outcomes: Mapping[str, Outcome], attempted: tuple[str, ...]) -
         "waive": waive,
         "waived_refusal_codes": codes,
         "expected_absence": absence,
+        "limited_fields": {
+            name: outcome.limited
+            for name in attempted
+            if isinstance(outcome := outcomes[name], Runs) and outcome.limited
+        },
         "refusal_only": not any(isinstance(outcomes[n], Runs) for n in attempted),
     }
 

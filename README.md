@@ -104,7 +104,7 @@ with warnings.catch_warnings(record=True) as data_warnings:
             MetricSpec(
                 name="complaints",
                 type="conversion",
-                missing="drop",
+                missing="skip",
                 preferred_direction="decrease",
             ),
         ],

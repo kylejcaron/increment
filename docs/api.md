@@ -127,6 +127,39 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
+  spelled `missing="skip"`, with the same computation: the metric uses only the
+  units with a value, and those units stay in every other metric. Estimates are
+  unchanged. `missing="drop"` refuses with `frame.metric.missing_drop_renamed`,
+  whose `route` names `missing='skip'`; the panel refusal
+  `frame.missing_policy.panel_drop` is retired to
+  `frame.missing_policy.panel_skip`. A skip metric's whole-window rows state in
+  `LiftEstimate.population` how many units each group observed, for example
+  `observed score only (control 150 of 200 units, treatment 100 of 200 units)`;
+  the label reaches `RunResult.to_frame()` and the rendered row, and a row that
+  already carries an observational population restriction keeps both, the skip
+  label first, joined by `"; "`. A `from_moments` experiment records no unit
+  counts, so its rows say the counts were not recorded. When the share of
+  missing values differs between groups (Pearson chi-square, p < 0.001), the
+  warning `frame.validation.metric_missing_differs_by_arm` reports each group's
+  `n_missing` and `n_units` and the `p_value`; the check counts units, so it is
+  not run when `cluster=` is declared or when an expected count is below 5. The
+  per-metric warning
+  `frame.validation.metric_missing_drop` is removed without replacement. When
+  every value in one group is missing, the metric's comparisons with that group
+  are unavailable with `readout.cell.missing_metric_observations` while other
+  metrics still estimate, and in a multiplicity family such a comparison counts
+  as a non-rejection, so the family keeps its size on both the whole-window and
+  the breakout readout. Under `"drop"`, missing control values aborted the run
+  and missing treatment values shrank the family. An experiment loaded with
+  `from_moments` records no unit counts, so a moments input with no row for a
+  secondary's treatment group drops that comparison from the family, and one
+  with no control row refuses: `estimation.engine.control_group_found` on the
+  whole window, `family.evidence.incomplete` for a secondary family.
+  Experiments that declared `missing="drop"` now declare `"skip"`, so their
+  `to_json()`, `hash()` and `analysis_spec_hash` change once, and a
+  `from_moments` experiment declaring `"skip"` also records the policy in its
+  source declaration. Experiments with any other policy keep their identity.
 - Release note (bug fix): an `ExperimentDefinition` prints as
   `ExperimentDefinition(...)`, the name it is imported under, instead of
   `Experiment(...)`, the name of the execution specification. Its fields, saved
@@ -401,11 +434,11 @@ values.
 
 ### Migrating from `Analysis`
 
-Every removed `Analysis` member, and every public name moved since, has one
-replacement. In the table, `experiment, resolver` is the pair a builder returns,
-`workflows`, `query`, `artifacts`, `estimators` and `dashboard` are the
-`increment.*` namespaces of those names, and parameters not shown keep their
-names, defaults and refusals.
+Every removed `Analysis` member, every public name moved since, and every renamed
+option has one replacement. In the table, `experiment, resolver` is the pair a
+builder returns, `workflows`, `query`, `artifacts`, `estimators` and `dashboard`
+are the `increment.*` namespaces of those names, and parameters not shown keep
+their names, defaults and refusals.
 
 | Removed call | Replacement |
 |---|---|
@@ -444,6 +477,7 @@ names, defaults and refusals.
 | `increment.analysis.fit_predeclared_adjustment` | `estimators.fit_predeclared_adjustment` |
 | `increment.Resolver`, `increment.BoundResolver` | `increment.evidence.Resolver`, `increment.evidence.BoundResolver`, under the same names |
 | `resolver=` on `run` and on every function that reads data | `reader=`; positional calls are unchanged |
+| `MetricSpec(missing="drop")` | `MetricSpec(missing="skip")`, the same computation; the rows' `population` names the units each group observed |
 
 Readout options such as `decision_method`, `prior`, `metrics`, `estimands`,
 `exploratory_metrics` and `coherence` are `run` keywords and apply to every

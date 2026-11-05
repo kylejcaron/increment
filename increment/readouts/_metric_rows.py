@@ -220,14 +220,18 @@ def _load_percentile_winsor_evidence(
     )
     frame = nw.from_native(native, eager_only=True)
     observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
-    if not observed - {str(control_group)}:
+    # No two-arm pool without a treatment arm, or without a control when a skip metric's
+    # control values are all missing; scope then reports the cells unavailable.
+    if not observed - {str(control_group)} or (
+        missingness == "skip" and str(control_group) not in observed
+    ):
         return MetricEvidence(
             cluster=context.cluster,
             control_group=control_group,
             rows=(),
             unit_frame=None,
             observed_arms=observed,
-            n_treatment_arms=0,
+            n_treatment_arms=len(observed - {str(control_group)}),
             evidence_kind="unit_evidence_rows",
             evidence_sha256=evidence_sha256,
             evidence_count=evidence_count,

@@ -24,27 +24,28 @@ class ExpectedDifference:
     scenario: str
     ingress: str
     field: str
-    frozen: str
-    current: str
+    frozen: str | Mapping[str, str]
+    current: str | Mapping[str, str]
     reason: str
+    key: str | None = None
 
     def applied_to(self, expected: Any) -> Any:
         """The frozen outcome with every occurrence of the frozen value, as a value or a
-        mapping key, replaced by the current one. Refuses a record the outcome does not
-        contain."""
+        mapping key, replaced by the current one; a record naming a ``key`` replaces only
+        values held under that mapping key. Refuses a record the outcome does not contain."""
         found = False
 
-        def replace(value: Any) -> Any:
+        def replace(value: Any, held_under: Any = None) -> Any:
             nonlocal found
+            if (self.key is None or held_under == self.key) and value == self.frozen:
+                found = True
+                return self.current
             if isinstance(value, dict):
-                return {replace(key): replace(item) for key, item in value.items()}
+                return {replace(key): replace(item, key) for key, item in value.items()}
             if isinstance(value, list):
                 return [replace(item) for item in value]
             if isinstance(value, tuple):
                 return tuple(replace(item) for item in value)
-            if value == self.frozen:
-                found = True
-                return self.current
             return value
 
         migrated = replace(expected)
@@ -52,31 +53,92 @@ class ExpectedDifference:
         return migrated
 
 
-EXPECTED_DIFFERENCES = {
-    (difference.scenario, difference.ingress): difference
-    for difference in (
-        ExpectedDifference(
-            scenario="triggered_encouragement_compliance_asof",
-            ingress="from_definitions",
-            # Cell and row `source_snapshot_id`, `scope.snapshot_id` and the `scope.by_source` key.
-            field="source_snapshot_id",
-            frozen="sha256:250f3b61e63d68f59821d42f3f56bbdd3969d660903abb8e649ddbf6c3541bce",
-            current="sha256:555fa9fd774dee87a087655dc870ca4bf2123da6d3298bb69e83ba7c9ad9c782",
-            reason=(
-                "A compliance-only view run through `run` requests no outcome metrics, so its "
-                "snapshot request differs from the removed "
-                "`run_asof_lift(estimands=('compliance',))`, which requested the declared "
-                "outcome metrics; the estimates are unchanged."
-            ),
+_RECORDS = (
+    ExpectedDifference(
+        scenario="triggered_encouragement_compliance_asof",
+        ingress="from_definitions",
+        # Cell and row `source_snapshot_id`, `scope.snapshot_id` and the `scope.by_source` key.
+        field="source_snapshot_id",
+        frozen="sha256:250f3b61e63d68f59821d42f3f56bbdd3969d660903abb8e649ddbf6c3541bce",
+        current="sha256:555fa9fd774dee87a087655dc870ca4bf2123da6d3298bb69e83ba7c9ad9c782",
+        reason=(
+            "A compliance-only view run through `run` requests no outcome metrics, so its "
+            "snapshot request differs from the removed "
+            "`run_asof_lift(estimands=('compliance',))`, which requested the declared "
+            "outcome metrics; the estimates are unchanged."
         ),
-    )
-}
+    ),
+    ExpectedDifference(
+        scenario="audit-compliance-only-outcome-missingness",
+        ingress="from_unit_panel",
+        field="refusal code",
+        frozen="frame.missing_policy.panel_drop",
+        current="frame.missing_policy.panel_skip",
+        reason=(
+            "The panel refusal of an observed-only outcome policy is renamed with the policy; "
+            "the retired code maps to the current one in `RETIRED_CODES`."
+        ),
+    ),
+    ExpectedDifference(
+        scenario="audit-compliance-only-outcome-missingness",
+        ingress="from_unit_panel",
+        field="refusal context missing",
+        frozen="drop",
+        current="skip",
+        reason="The refusal names the declared policy, now spelled missing='skip'.",
+    ),
+)
+# Typed consumer inputs are frozen separately from the outcomes above.
+_CONSUMER_INPUT_RECORDS = (
+    ExpectedDifference(
+        scenario="audit-compliance-only-outcome-missingness",
+        ingress="from_unit_summary",
+        # Source `specs[].missing` and the consumer context's `metric_missingness` value.
+        field="specs[].missing",
+        frozen="drop",
+        current="skip",
+        reason="The source declares the observed-only policy, now spelled missing='skip'.",
+    ),
+    ExpectedDifference(
+        scenario="audit-compliance-only-outcome-missingness",
+        ingress="from_moments",
+        # Source and consumer `context.metric_missingness`.
+        field="context.metric_missingness",
+        key="metric_missingness",
+        frozen={},
+        current={"revenue": "skip"},
+        reason=(
+            "A moments source records each metric declared missing='skip', which qualifies "
+            "its rows' population; the captured source recorded none."
+        ),
+    ),
+)
 
 
-def with_expected_difference(scenario: str, ingress: str, expected: Any) -> Any:
-    """The frozen outcome of one case, migrated by its recorded difference when it has one."""
-    difference = EXPECTED_DIFFERENCES.get((scenario, ingress))
-    return expected if difference is None else difference.applied_to(expected)
+def _by_case(
+    records: tuple[ExpectedDifference, ...],
+) -> dict[tuple[str, str], tuple[ExpectedDifference, ...]]:
+    return {
+        pair: tuple(record for record in records if (record.scenario, record.ingress) == pair)
+        for pair in dict.fromkeys((record.scenario, record.ingress) for record in records)
+    }
+
+
+EXPECTED_DIFFERENCES = _by_case(_RECORDS)
+CONSUMER_INPUT_DIFFERENCES = _by_case(_CONSUMER_INPUT_RECORDS)
+
+
+def with_expected_difference(
+    scenario: str,
+    ingress: str,
+    expected: Any,
+    *,
+    differences: Mapping[tuple[str, str], tuple[ExpectedDifference, ...]] = EXPECTED_DIFFERENCES,
+) -> Any:
+    """The frozen capture of one case, migrated by each of its recorded differences."""
+    for difference in differences.get((scenario, ingress), ()):
+        expected = difference.applied_to(expected)
+    return expected
 
 
 def _binomial_arm_facts(counts: BinomialCounts) -> dict[str, int | float]:

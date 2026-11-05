@@ -200,10 +200,10 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ("from_switchback_panel", "COMBINATION: no switchback schedule in this dataset"),
                 (
                     "from_unit_panel",
-                    "CONSTRUCTION: panel densification has no complete-case missing='drop' path; zero-filling would change the declared outcome policy",
+                    "CONSTRUCTION: panel densification has no observed-only missing='skip' path; zero-filling would change the declared outcome policy",
                 ),
             ),
-            refusals=(("from_unit_panel", "frame.missing_policy.panel_drop"),),
+            refusals=(("from_unit_panel", "frame.missing_policy.panel_skip"),),
         ),
         "audit-compliance-only-sequential-empty-catalog": ParityDeclaration(
             attempted=(

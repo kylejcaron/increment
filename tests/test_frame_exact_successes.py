@@ -8,6 +8,7 @@ sums, non-binary values) carries ``None``.
 
 from __future__ import annotations
 
+import warnings
 from datetime import date, timedelta
 from typing import Any
 
@@ -21,7 +22,6 @@ from increment._frame_moments import (
     emit_centered_moments,
 )
 from increment._moment_plan import UNIT_GRAIN
-from increment.errors import IncrementWarning
 from increment.frame import (
     MetricSpec,
     from_unit_panel,
@@ -29,6 +29,7 @@ from increment.frame import (
 )
 from increment.semantics.design import Randomized
 from tests._frame_evidence_requests import _moments
+from tests.warning_codes import warning_codes
 
 _DESIGN = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
 _BASE = date(2025, 1, 1)
@@ -183,7 +184,7 @@ def test_unit_summary_counts_conversions_and_not_zero_one_means(backend: str) ->
     assert all(row["successes"] is None for row in spend)
 
 
-def test_dropped_missing_rows_leave_the_count_in_the_population_of_n() -> None:
+def test_skipped_missing_rows_leave_the_count_in_the_population_of_n() -> None:
     table = pa.table(
         {
             "user_id": [f"u{i}" for i in range(6)],
@@ -191,15 +192,18 @@ def test_dropped_missing_rows_leave_the_count_in_the_population_of_n() -> None:
             "bought": [1.0, None, 0.0, 1.0, 1.0, None],
         }
     )
-    with pytest.warns(IncrementWarning, match="missing='drop'"):
+    # One missing value per arm: equal rates, so the missing-by-arm check stays silent.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         src = from_unit_summary(
             table,
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="bought", type="conversion", missing="drop")],
+            metrics=[MetricSpec(name="bought", type="conversion", missing="skip")],
             design=_DESIGN,
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     rows = _by_arm(_moments(src, _metric(src, "bought"), grain="total"))
     assert (rows["control"]["n"], rows["control"]["successes"]) == (2, 1)
     assert (rows["treatment"]["n"], rows["treatment"]["successes"]) == (2, 2)

@@ -417,7 +417,7 @@ def test_registered_cell_failure_renders_its_spec_explanation():
                 metrics=[
                     MetricSpec(name="value", type="mean"),
                     MetricSpec(
-                        name="guard", type="mean", preferred_direction="decrease", missing="drop"
+                        name="guard", type="mean", preferred_direction="decrease", missing="skip"
                     ),
                 ],
                 plan=AnalysisPlan(primary="value", guardrails=["guard"]),

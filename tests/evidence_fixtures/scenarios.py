@@ -679,15 +679,18 @@ def scenario_roster(*, include_temporal: bool = True) -> tuple[ScenarioIngress, 
 
 
 def observe_scenario_disposition(scenario_id: str, ingress: str) -> Mapping[str, Any]:
-    """Check a refusal or absence against its exact frozen public contract."""
+    """Check a refusal or absence against its exact frozen public contract, migrated by the
+    pair's recorded differences."""
     from increment import workflows
     from increment.errors import CodedError
+    from tests.parity_harness.expected_differences import with_expected_difference
     from tests.parity_harness.refusal_cases import REFUSAL_SCENARIOS, Unreachable
     from tests.parity_harness.runner import _read
 
     expected = _frozen_dispositions()[(scenario_id, ingress)]
     if expected["kind"] == "cells":
         raise ValueError("successful scenarios require typed input acquisition")
+    expected = with_expected_difference(scenario_id, ingress, expected)
     if ingress == "refusal":
         callback = REFUSAL_SCENARIOS[scenario_id]
         if isinstance(callback, Unreachable):

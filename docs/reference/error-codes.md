@@ -1030,6 +1030,7 @@ Retired codes and their replacements are listed below.
 | `frame.metric.declares_cuped_linear` | `InvalidRequestError` | `name` | `increment._metric_specs` |
 | `frame.metric.declares_cuped_method` | `InvalidRequestError` | `name` | `increment._metric_specs` |
 | `frame.metric.method_name_cuped` | `InvalidRequestError` | `name` | `increment._metric_specs` |
+| `frame.metric.missing_drop_renamed` | `InvalidRequestError` | `metric`, `route` | `increment._metric_specs` |
 | `frame.metric.missing_impute` | `InvalidRequestError` | `metric`, `route` | `increment._metric_specs` |
 | `frame.metric.scalar_and_set_covariates` | `InvalidRequestError` | `name` | `increment._metric_specs` |
 | `frame.metric.sets_quantile_but` | `InvalidRequestError` | `name`, `type` | `increment._metric_specs` |
@@ -1046,7 +1047,7 @@ Retired codes and their replacements are listed below.
 | `frame.metrics.type_required` | `InvalidRequestError` | `dtype`, `metric`, `options` | `increment._metric_specs` |
 | `frame.metrics_empty_supply` | `InvalidRequestError` | — | `increment._metric_specs` |
 | `frame.metrics_entries_metricspec` | `InvalidRequestError` | `type_name` | `increment._metric_specs` |
-| `frame.missing_policy.panel_drop` | `UnsupportedRequestError` | `missing` | `increment._frame_validation` |
+| `frame.missing_policy.panel_skip` | `UnsupportedRequestError` | `missing` | `increment._frame_validation` |
 | `frame.moments.asof_completed_requires_uptake_window` | `InvalidRequestError` | — | `increment._frame_moments` |
 | `frame.moments.asof_moments_completed` | `InvalidRequestError` | `band`, `metric` | `increment._frame_moments` |
 | `frame.moments.asof_source_uptake_needs_anchor` | `InvalidRequestError` | — | `increment._frame_moments` |
@@ -1379,7 +1380,7 @@ Retired codes and their replacements are listed below.
 | `readout.assignment.estimands` | `InvalidRequestError` | `estimands`, `mechanism` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.cell.key_invalid` | `InvalidRequestError` | `fields`, `kind` | `increment.declarations`, `increment.estimation.readout_types` |
 | `readout.cell.missing_arm` | `InvalidRequestError` | `group_id`, `metric`, `observed_arms` | `increment.estimation.readout_types` |
-| `readout.cell.missing_metric_observations` | `InvalidRequestError` | `group_id`, `metric`, `observed_arms` | `increment.estimation.readout_types` |
+| `readout.cell.missing_metric_observations` | `InvalidRequestError` | `metric`, `observed_arms`, `unobserved_arm` | `increment.estimation.readout_types` |
 | `readout.cell.unsupported_request` | `InvalidRequestError` | `reason` | `increment.estimation.readout_types` |
 | `readout.collection.concat_cell_collision` | `InvalidRequestError` | `cell_key`, `snapshot_ids` | `increment.estimation.readout_types` |
 | `readout.collection.concat_metadata_mismatch` | `InvalidRequestError` | `fields`, `snapshot_ids` | `increment.estimation.readout_types` |
@@ -1684,7 +1685,9 @@ Retired codes and their replacements are listed below.
 | `facade.analysis.source_context_design_disagrees_contrast` | `facade.analysis.source_context_design_disagrees_arm` |
 | `frame.frame_panel.metric_was_declared` | `frame.frame_totals.metric_was_declared` |
 | `frame.metric.finite_sample_metric_type` | `conversion_inference.finite_sample.metric_type` |
+| `frame.missing_policy.panel_drop` | `frame.missing_policy.panel_skip` |
 | `frame.moments.metric_covariate_column` | `frame.validation.metric_covariate_impute_all_null` |
+| `frame.validation.metric_missing_drop` | Removed without replacement |
 | `kernel.resolver.capabilities_missing` | `kernel.provider.capabilities_missing` |
 | `kernel.resolver.capability_mismatch` | `kernel.provider.capability_mismatch` |
 | `kernel.resolver.digest_mismatch` | `kernel.provider.digest_mismatch` |

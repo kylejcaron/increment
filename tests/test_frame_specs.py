@@ -511,7 +511,7 @@ def test_quantile_cuped_refusal_precedes_windowed_summary_refusal() -> None:
                 covariates=CupedCovariate(name="pre", kind="continuous")
             ),
             "window_days": 7,
-            "missing": "drop",
+            "missing": "skip",
         }
     )
 

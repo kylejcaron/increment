@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 import narwhals as nw
 import numpy as np
 
+from increment._evidence_types import MissingValueAccount
 from increment._labels import boolean_group_count_aliases, canonical_group_label
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics
 from increment.errors import (
+    PACKAGE_FRAMES,
     CapabilityError,
     IncrementWarning,
     InvalidRequestError,
@@ -78,10 +80,10 @@ _CLUSTER_CAPABILITY = RefusalSpec(
         f"uptake={uptake!r}, mechanism={mechanism!r}. {route}"
     ),
 )
-_PANEL_MISSING_DROP = RefusalSpec(
-    "frame.missing_policy.panel_drop",
+_PANEL_MISSING_SKIP = RefusalSpec(
+    "frame.missing_policy.panel_skip",
     UnsupportedRequestError,
-    template="missing={missing!r} is not supported on the panel shape -- the panel is densified to a unit x day spine with zero-filled cells, so a dropped (unit, day) row silently means zero, not complete-case. Declare missing='zero' if null means \"no events\", or repair the rows upstream (increment.estimators.impute.drop_null before collapsing to one row per unit).",
+    template="missing={missing!r} is not supported on the panel shape -- the panel is densified to a unit x day spine with zero-filled cells, so a skipped (unit, day) row silently means zero, not an observed-only population. Declare missing='zero' if null means \"no events\", or collapse to one row per unit and use shape='summary' with missing='skip'.",
 )
 _SOURCE_FRAME_COLUMN_DTYPE = RefusalSpec(
     "source.frame.column_dtype",
@@ -270,15 +272,18 @@ def _warn(code: str, /, *, stacklevel: int = 2, **context: object) -> None:
     warn(_WARNINGS[code], stacklevel=stacklevel + 1, context=context)
 
 
-_register_warning(
-    "frame.validation.metric_missing_drop",
+# The sample-ratio check's default alpha (`_source_diagnostics.srm`), applied to
+# the missing-versus-present split of each skip metric.
+_MISSING_BY_ARM_ALPHA = 0.001
+_MISSING_DIFFERS_BY_ARM = _register_warning(
+    "frame.validation.metric_missing_differs_by_arm",
     IncrementWarning,
-    lambda *, name, dropped: (
-        f"metric {name!r}: missing='drop' excludes rows with "
-        f"{dropped} null/NaN value(s) from this metric's moments "
-        f"(complete-case). This is unbiased only when missingness "
-        f'is unrelated to the values; if null means "no events", '
-        f"missing='zero' keeps every unit."
+    lambda *, metric, n_missing, n_units, p_value: (
+        f"metric {metric!r}: the share of units without a value differs by arm ("
+        + ", ".join(f"{arm}: {n_missing[arm]} of {n_units[arm]}" for arm in sorted(n_units))
+        + f" missing; chi-square p = {p_value:.2g}). missing='skip' compares only the units "
+        "with a value, so the arms may no longer be comparable; find out why values are "
+        "missing before acting on this metric."
     ),
 )
 _register_warning(
@@ -338,7 +343,7 @@ _REFUSALS = refusals(
         "frame.validation.covariate_not_numeric": _COVARIATE_NOT_NUMERIC,
         "frame.validation.design_control_group": "design.control_group={control_group!r} disagrees with control={control!r} -- one control, declared once",
         "frame.validation.dtype_disagree_day": "{ds_name!r} (dtype {ds_dtype}) and {anchor_name!r} (dtype {anchor_dtype}) disagree on day-axis kind -- one is an explicit numeric day index and the other is a calendar date/datetime. Declare both the same kind.",
-        "frame.validation.metric_value_missing": "metric {metric!r}: column {column!r} has {n_missing} null/NaN value(s). An undeclared null is silently averaged as 0 (n counts the row, sum skips it) and NaN sums diverge by backend. If null means \"no events\", declare MetricSpec(missing='zero') or run df, n = increment.estimators.impute.zeros(df, {column!r}). If \"not observed\", declare missing='drop' (complete-case; unbiased only when missingness is unrelated to the values) or run df, n = increment.estimators.impute.drop_null(df, {column!r}).",
+        "frame.validation.metric_value_missing": "metric {metric!r}: column {column!r} has {n_missing} null/NaN value(s). If null means \"no events\", declare MetricSpec(missing='zero') or run df, n = increment.estimators.impute.zeros(df, {column!r}). If the value is undefined for some units (an average order value for a unit without orders), declare a ratio metric, MetricSpec(type='ratio', numerator=..., denominator=...), over every unit. If the value exists but was not observed, declare missing='skip': the metric then uses only units with a value, which is unbiased only when missingness is unrelated to the values.",
         "frame.validation.from_unit_panel": RefusalSpec(
             "frame.validation.from_unit_panel",
             InvalidRequestError,
@@ -1488,7 +1493,7 @@ def _enforce_missing_policy(
 ) -> nw.DataFrame[Any]:
     """Validate every spec's declared null/NaN policy against the data.
 
-    Summary shape: purely a validation - ``"zero"``/``"drop"`` are applied
+    Summary shape: purely a validation - ``"zero"``/``"skip"`` are applied
     per spec at moment construction (``_moment_rows``/``unit_frame``), so
     two metrics reading one column under different declarations never
     contaminate each other. Panel shape: a declared ``"zero"`` column has
@@ -1497,9 +1502,9 @@ def _enforce_missing_policy(
     and ``_densify_panel`` makes "not genuinely observed" mean the same
     thing on every backend), and the actual zero is applied by
     densification's own ``fill_null(0.0)``, exactly as for absent
-    (unit, day) cells. ``"drop"`` is refused outright on the panel;
-    densification zero-fills absent cells, so dropping a null row would
-    silently mean zero anyway, not complete-case.
+    (unit, day) cells. ``"skip"`` is refused outright on the panel;
+    densification zero-fills absent cells, so skipping a null row would
+    silently mean zero anyway, not an observed-only population.
     """
     counts: dict[str, int] = {}
 
@@ -1511,9 +1516,8 @@ def _enforce_missing_policy(
     fill_zero: set[str] = set()
     for spec in specs:
         value_cols = [spec.y_column] + ([spec.denominator] if spec.denominator else [])
-        if spec.missing == "drop" and shape == "panel":
-            refuse(_PANEL_MISSING_DROP, missing=spec.missing)
-        dropped = 0
+        if spec.missing == "skip" and shape == "panel":
+            refuse(_PANEL_MISSING_SKIP, missing=spec.missing)
         for col in dict.fromkeys(value_cols):
             n_missing = miss(col)
             if n_missing == 0:
@@ -1522,15 +1526,6 @@ def _enforce_missing_policy(
                 _metric_missing_error(spec, col, n_missing)
             if spec.missing == "zero" and shape == "panel":
                 fill_zero.add(col)
-            if spec.missing == "drop":
-                dropped += n_missing
-        if dropped and emit_warnings:
-            _warn(
-                "frame.validation.metric_missing_drop",
-                name=spec.name,
-                dropped=dropped,
-                stacklevel=4,
-            )
         seen_covariate_policies: set[tuple[str, str, str]] = set()
         for method in spec._methods:
             for covariate in method.covariates or ():
@@ -1583,6 +1578,64 @@ def _enforce_missing_policy(
         if nan_cols:
             frame = frame.with_columns(*(nw.col(col).fill_nan(None).alias(col) for col in nan_cols))
     return frame
+
+
+def skip_missing_accounts(
+    frame: nw.DataFrame[Any],
+    specs: Sequence[MetricSpec],
+    *,
+    group: str,
+    cluster: str | None = None,
+) -> dict[str, MissingValueAccount]:
+    """Count each ``missing="skip"`` metric's enrolled and observed units per arm.
+
+    *frame* holds one validated row per enrolled unit, so rows are units even
+    when a cluster is declared. A unit is observed when its value (and a ratio's
+    denominator) is neither null nor NaN: exactly the rows the metric's moments
+    keep. Each account then runs the per-arm missing check, which counts units as
+    independent and so is not run when *cluster* is declared.
+    """
+    accounts: dict[str, MissingValueAccount] = {}
+    units: dict[str, int] | None = None
+    for spec in specs:
+        if spec.missing != "skip":
+            continue
+        if units is None:
+            units = _group_counts(frame, group)
+        predicate = _is_missing(frame, spec.y_column)
+        if spec.denominator is not None:
+            predicate = predicate | _is_missing(frame, spec.denominator)
+        observed = _group_counts(frame.filter(~predicate), group)
+        account = MissingValueAccount(
+            spec.name, units, {arm: observed.get(arm, 0) for arm in units}
+        )
+        if cluster is None:
+            _warn_if_missing_differs_by_arm(account)
+        accounts[spec.name] = account
+    return accounts
+
+
+def _warn_if_missing_differs_by_arm(account: MissingValueAccount) -> None:
+    """Warn when the missing-versus-present split differs by arm (Pearson chi-square).
+
+    Skipped when no value is missing or none is present; warns at p < 0.001.
+    """
+    from increment.estimation.diagnostics import missing_by_arm_p_value
+
+    n_missing = dict(account.missing_by_arm)
+    n_units = dict(account.units_by_arm)
+    p_value = missing_by_arm_p_value(n_missing, n_units)
+    if p_value is not None and p_value < _MISSING_BY_ARM_ALPHA:
+        warn(
+            _MISSING_DIFFERS_BY_ARM,
+            skip_file_prefixes=PACKAGE_FRAMES,
+            context={
+                "metric": account.metric,
+                "n_missing": n_missing,
+                "n_units": n_units,
+                "p_value": p_value,
+            },
+        )
 
 
 def _reject_covariates(specs: Sequence[MetricSpec]) -> None:

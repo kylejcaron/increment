@@ -10,17 +10,31 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import warnings
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import narwhals as nw
 import numpy as np
+import polars as pl
 import pyarrow as pa
 import pytest
 
-from increment import readouts
+from increment import (
+    AdjustmentSet,
+    AnalysisPlan,
+    IdentificationGate,
+    Observational,
+    Scope,
+    from_frame,
+    readouts,
+    render,
+    run,
+)
+from increment._evidence_types import MissingValueAccount
 from increment.errors import (
     CapabilityError,
+    CodedError,
     DefinitionError,
     IncrementWarning,
     InvalidRequestError,
@@ -28,6 +42,7 @@ from increment.errors import (
 )
 from increment.estimation.diagnostics import SRMResult
 from increment.estimation.engine import Method
+from increment.estimation.readout_types import render_readout_failure
 from increment.frame import (
     CupedCovariate,
     FramePanelSource,
@@ -36,11 +51,12 @@ from increment.frame import (
     from_unit_panel,
     from_unit_summary,
 )
+from increment.readouts._run import _observed_population_label
 from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
 from tests._frame_evidence_requests import _counts, _moments, _unit_rows
 from tests.capability_consumers_scalar import IMPUTE_POOLED_MEAN, refused
-from tests.warning_codes import warning_codes
+from tests.warning_codes import warning_codes, warning_context
 
 _PLUGIN_TOL = 1e-6
 
@@ -262,9 +278,9 @@ def test_unit_counts_on_a_plain_summary_source() -> None:
     assert raised.value.code == "evidence.cluster_unavailable"
 
 
-def test_unit_counts_ignore_first_metric_drop_and_declaration_order() -> None:
+def test_unit_counts_ignore_first_metric_skip_and_declaration_order() -> None:
     """unit_counts() is the enrolled population, not the first metric's
-    complete-case count: a metric with missing='drop' rows the others lack
+    observed count: a metric with missing='skip' rows the others lack
     must not shrink the sample-ratio input, and reversing the declared
     metric order must not move it."""
     orders = [float((i % 5) + 1) for i in range(200)]  # fully observed
@@ -274,23 +290,24 @@ def test_unit_counts_ignore_first_metric_drop_and_declaration_order() -> None:
         "group": "variant",
         "control": "control",
     }
-    drop_first = [
-        MetricSpec(name="revenue", missing="drop"),
+    skip_first = [
+        MetricSpec(name="revenue", missing="skip"),
         MetricSpec(name="orders", value_column="orders"),
     ]
+    # Missing 0/100 control vs 50/100 treatment: chi-square 66.7 on 1 df.
     with pytest.warns(IncrementWarning) as rec_first:
-        src_drop_first = from_unit_summary(table, metrics=drop_first, **kwargs)
-    assert "frame.validation.metric_missing_drop" in warning_codes(rec_first)
+        src_skip_first = from_unit_summary(table, metrics=skip_first, **kwargs)
+    assert _DIFFERS_BY_ARM in warning_codes(rec_first)
     with pytest.warns(IncrementWarning) as rec_last:
-        src_drop_last = from_unit_summary(table, metrics=list(reversed(drop_first)), **kwargs)
-    assert "frame.validation.metric_missing_drop" in warning_codes(rec_last)
+        src_skip_last = from_unit_summary(table, metrics=list(reversed(skip_first)), **kwargs)
+    assert _DIFFERS_BY_ARM in warning_codes(rec_last)
 
     enrolled = {"control": 100, "treatment": 100}
-    assert _counts(src_drop_first, "unit") == enrolled
-    assert _counts(src_drop_last, "unit") == enrolled
-    # The dropped metric's own moments still shrink; only unit_counts is enrolled.
-    revenue = _metric(src_drop_first, "revenue")
-    moments = {r["group_id"]: r["n"] for r in _moments(src_drop_first, revenue)}
+    assert _counts(src_skip_first, "unit") == enrolled
+    assert _counts(src_skip_last, "unit") == enrolled
+    # The skipped metric's own moments still shrink; only unit_counts is enrolled.
+    revenue = _metric(src_skip_first, "revenue")
+    moments = {r["group_id"]: r["n"] for r in _moments(src_skip_first, revenue)}
     assert moments == {"control": 100, "treatment": 50}
 
 
@@ -415,7 +432,7 @@ def _half_null_table() -> pa.Table:
 
 
 def test_null_metric_value_refuses_naming_both_fixes() -> None:
-    """The refusal names the declaration tier (missing='zero'/'drop') AND
+    """The refusal names the declaration tier (missing='zero'/'skip') AND
     the helper tier (increment.estimators.impute) - every failure ships its fix."""
     with pytest.raises(InvalidRequestError) as exc_info:
         from_unit_summary(
@@ -434,7 +451,7 @@ def test_null_metric_value_refuses_naming_both_fixes() -> None:
 def test_missing_zero_reproduces_null_as_zero_on_purpose() -> None:
     """missing='zero' is the old silent null-as-zero number as DECLARED
     semantics: lift equals the zero-fill prediction exactly, while
-    missing='drop' gives the (different) complete-case answer."""
+    missing='skip' gives the (different) observed-units answer."""
     table = _half_null_table()
     revenue = table["revenue"].to_pylist()
     t_vals = list(revenue[100:])
@@ -455,20 +472,24 @@ def test_missing_zero_reproduces_null_as_zero_on_purpose() -> None:
     (est_zero,) = readouts.run(src_zero)
     assert est_zero.require_lift().value == pytest.approx(zero_pred, rel=_PLUGIN_TOL)
 
-    with pytest.warns(IncrementWarning) as rec:
-        src_drop = from_unit_summary(
+    with pytest.warns(IncrementWarning):
+        src_skip = from_unit_summary(
             table,
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="revenue", missing="drop")],
+            metrics=[MetricSpec(name="revenue", missing="skip")],
             design=_DESIGN,
         )
-    assert "frame.validation.metric_missing_drop" in warning_codes(rec)
-    (est_drop,) = readouts.run(src_drop)
-    assert est_drop.require_lift().value == pytest.approx(cc_pred, rel=_PLUGIN_TOL)
-    moments = {r["group_id"]: r for r in _moments(src_drop, _metric(src_drop, "revenue"))}
-    assert moments["treatment"]["n"] == 50  # complete-case n, visibly reduced
+    (est_skip,) = readouts.run(src_skip)
+    assert est_skip.population == _observed_population_label(
+        MissingValueAccount(
+            "revenue", {"control": 100, "treatment": 100}, {"control": 100, "treatment": 50}
+        )
+    )
+    assert est_skip.require_lift().value == pytest.approx(cc_pred, rel=_PLUGIN_TOL)
+    moments = {r["group_id"]: r for r in _moments(src_skip, _metric(src_skip, "revenue"))}
+    assert moments["treatment"]["n"] == 50  # observed-units n, visibly reduced
 
 
 def test_missing_policy_is_per_spec_not_per_column() -> None:
@@ -484,22 +505,435 @@ def test_missing_policy_is_per_spec_not_per_column() -> None:
             control="control",
             metrics=[
                 MetricSpec(name="rev_zero", value_column="revenue", missing="zero"),
-                MetricSpec(name="rev_drop", value_column="revenue", missing="drop"),
+                MetricSpec(name="rev_skip", value_column="revenue", missing="skip"),
             ],
         )
-    assert "frame.validation.metric_missing_drop" in warning_codes(rec)
+    assert _DIFFERS_BY_ARM in warning_codes(rec)
     zero = {r["group_id"]: r for r in _moments(src, _metric(src, "rev_zero"))}
-    drop = {r["group_id"]: r for r in _moments(src, _metric(src, "rev_drop"))}
-    assert zero["treatment"]["n"] == 100 and drop["treatment"]["n"] == 50
-    assert _sum_y(zero["treatment"]) == pytest.approx(_sum_y(drop["treatment"]))
+    skip = {r["group_id"]: r for r in _moments(src, _metric(src, "rev_skip"))}
+    assert zero["treatment"]["n"] == 100 and skip["treatment"]["n"] == 50
+    assert _sum_y(zero["treatment"]) == pytest.approx(_sum_y(skip["treatment"]))
     zero_c = {k: v for k, v in zero["control"].items() if k != "metric"}
-    drop_c = {k: v for k, v in drop["control"].items() if k != "metric"}
-    assert zero_c == drop_c  # untouched arm identical, label aside
+    skip_c = {k: v for k, v in skip["control"].items() if k != "metric"}
+    assert zero_c == skip_c  # untouched arm identical, label aside
+
+
+_DIFFERS_BY_ARM = "frame.validation.metric_missing_differs_by_arm"
+
+
+def _score_frame(control_missing: int, treatment_missing: int) -> pl.DataFrame:
+    """400 units, 200 per arm; ``score`` is null for the first units of each arm."""
+    rows = []
+    for arm, missing in (("control", control_missing), ("treatment", treatment_missing)):
+        for i in range(200):
+            rows.append(
+                {
+                    "user_id": f"{arm}-{i:03d}",
+                    "variant": arm,
+                    "revenue": float(i % 5) + (1.0 if arm == "treatment" else 0.0),
+                    "score": None if i < missing else float(i % 7) + 1.0,
+                }
+            )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "user_id": pl.String,
+            "variant": pl.String,
+            "revenue": pl.Float64,
+            "score": pl.Float64,
+        },
+    )
+
+
+def _score_run(
+    frame: pl.DataFrame,
+    missing: Literal["zero", "skip"],
+    *,
+    score_type: Literal["mean", "quantile"] = "mean",
+) -> tuple[Any, list[str], list[Any]]:
+    """Build and run ``revenue`` plus ``score`` under *missing*; return the
+    result, the construction warning codes and the construction warnings."""
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        experiment, resolver = from_frame(
+            frame,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[
+                "revenue",
+                MetricSpec(
+                    name="score",
+                    missing=missing,
+                    type=score_type,
+                    quantile=0.5 if score_type == "quantile" else None,
+                ),
+            ],
+        )
+    return run(experiment, resolver), warning_codes(recorded), list(recorded)
+
+
+def _row(result: Any, metric: str, group_id: str = "treatment") -> Any:
+    return next(
+        row for row in result.readout() if row.metric == metric and row.group_id == group_id
+    )
+
+
+def _family_run(frame: pl.DataFrame) -> tuple[Any, Any, Any]:
+    """Run revenue (primary) with secondaries ``score`` (skip) and ``score2``, a strong effect,
+    on the whole window and on a two-segment breakout; return the result and both readouts."""
+    index = pl.int_range(pl.len())
+    frame = frame.with_columns(
+        score2=(index % 7).cast(pl.Float64)
+        + 1.0
+        + pl.when(pl.col("variant") == "treatment").then(3.0).otherwise(0.0),
+        segment=pl.when(index % 2 == 0).then(pl.lit("a")).otherwise(pl.lit("b")),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        experiment, resolver = from_frame(
+            frame,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=["revenue", MetricSpec(name="score", missing="skip"), "score2"],
+            plan=AnalysisPlan(primary="revenue", secondaries=["score", "score2"], q=0.10),
+            breakouts=("segment",),
+        )
+        whole = Scope(view="run", grain="total")
+        breakout = Scope(view="breakout", grain="total")
+        result = run(experiment.with_views(whole, breakout), resolver)
+    return result, result.readout(whole), result.readout(breakout)
+
+
+def test_skip_excludes_values_only_from_its_metric() -> None:
+    result, _codes, _ = _score_run(_score_frame(50, 100), "skip")
+    revenue, score = _row(result, "revenue"), _row(result, "score")
+    assert (revenue.n_control, revenue.n_treat) == (200, 200)
+    assert revenue.population is None
+    assert (score.n_control, score.n_treat) == (150, 100)
+    assert score.population == _observed_population_label(
+        MissingValueAccount(
+            "score",
+            {"control": 200, "treatment": 200},
+            {"control": 150, "treatment": 100},
+        )
+    )
+
+    zero, zero_codes, _ = _score_run(_score_frame(50, 100), "zero")
+    assert zero_codes == []
+    assert _row(zero, "score").population is None
+    assert (_row(zero, "score").n_control, _row(zero, "score").n_treat) == (200, 200)
+
+
+def test_skip_warns_when_missing_rates_differ_by_arm() -> None:
+    # 2 x 2 table (missing, present) x (control, treatment): (50, 150), (100, 100).
+    # Pearson chi-square without continuity correction is 26.67 on 1 df, p = 2.4e-7.
+    _result, codes, recorded = _score_run(_score_frame(50, 100), "skip")
+    assert codes.count(_DIFFERS_BY_ARM) == 1
+    context = warning_context(recorded, _DIFFERS_BY_ARM)
+    assert context["metric"] == "score"
+    assert context["n_missing"] == {"control": 50, "treatment": 100}
+    assert context["n_units"] == {"control": 200, "treatment": 200}
+    assert context["p_value"] == pytest.approx(2.4e-7, rel=0.03)
+
+    # Equal missing rates: chi-square 0, p = 1.
+    _result, equal_codes, _ = _score_run(_score_frame(50, 50), "skip")
+    assert _DIFFERS_BY_ARM not in equal_codes
+
+    # 1,000 control vs 10 treatment units, one treatment value missing: the expected missing
+    # count in treatment is 10/1010 < 5, so the chi-square approximation is not trusted and
+    # the check is unavailable (the exact conditional probability is 10/1010 = 0.0099).
+    sparse = pl.DataFrame(
+        {
+            "user_id": [f"u{i}" for i in range(1010)],
+            "variant": ["control"] * 1000 + ["treatment"] * 10,
+            "revenue": [float(i % 5) for i in range(1010)],
+            "score": [None if i == 1000 else float(i % 7) for i in range(1010)],
+        },
+        schema_overrides={"score": pl.Float64},
+    )
+    _result, sparse_codes, _ = _score_run(sparse, "skip")
+    assert _DIFFERS_BY_ARM not in sparse_codes
+
+
+def test_skip_missing_check_is_not_run_on_a_clustered_source() -> None:
+    # 2 vs 6 of 20 units missing in each of 10 clusters per arm: the unit-level test would
+    # warn, but it counts units as independent, so it is not run when a cluster is declared.
+    frame = pl.DataFrame(
+        [
+            {
+                "user_id": f"{arm}-{c}-{i}",
+                "variant": arm,
+                "cluster_id": f"{arm}-{c}",
+                "revenue": float(i % 5) + (1.0 if arm == "treatment" else 0.0),
+                "score": None if i < n_missing else float(i % 7) + 1.0,
+            }
+            for arm, n_missing in (("control", 2), ("treatment", 6))
+            for c in range(10)
+            for i in range(20)
+        ],
+        schema_overrides={"score": pl.Float64},
+    )
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        experiment, resolver = from_frame(
+            frame,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            cluster="cluster_id",
+            metrics=["revenue", MetricSpec(name="score", missing="skip")],
+        )
+        result = run(experiment, resolver)
+    assert _DIFFERS_BY_ARM not in warning_codes(recorded)
+    assert _row(result, "score").population == _observed_population_label(
+        MissingValueAccount(
+            "score", {"control": 200, "treatment": 200}, {"control": 180, "treatment": 140}
+        )
+    )
+
+
+def test_skip_handles_all_missing_and_none_missing(tmp_path) -> None:
+    import pyarrow.parquet as pq
+
+    from increment import from_moments
+    from increment.workflows import export_moments
+
+    result, codes, _ = _score_run(_score_frame(0, 200), "skip")
+    assert codes.count(_DIFFERS_BY_ARM) == 1
+    treatment = _row(result, "score")
+    assert treatment.lift is None
+    assert treatment.failure_code == "readout.cell.missing_metric_observations"
+
+    # Every value of an enrolled control arm missing, treatment observed: no contrast for
+    # score, while revenue still estimates, on the scalar and quantile routes.
+    for score_type in ("mean", "quantile"):
+        result, codes, _ = _score_run(_score_frame(200, 0), "skip", score_type=score_type)
+        assert codes.count(_DIFFERS_BY_ARM) == 1
+        score_rows = [row for row in result.readout() if row.metric == "score"]
+        assert score_rows
+        assert {(row.lift, row.failure_code) for row in score_rows} == {
+            (None, "readout.cell.missing_metric_observations")
+        }
+        assert _row(result, "revenue").lift is not None
+
+    # The same for a percentile-winsorized score, whose cutoffs need both arms, on an
+    # ordinary and a secondary readout.
+    from increment.semantics.models import Winsorization
+
+    winsorized = MetricSpec(
+        name="score", missing="skip", winsorization=Winsorization(upper_percentile=0.95)
+    )
+    for plan in (None, AnalysisPlan(primary="revenue", secondaries=["score"])):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            experiment, resolver = from_frame(
+                _score_frame(200, 0),
+                shape="summary",
+                unit="user_id",
+                group="variant",
+                control="control",
+                metrics=["revenue", winsorized],
+                plan=plan,
+            )
+            rows: Any = run(experiment, resolver).readout()
+        (score,) = [row for row in rows if row.metric == "score"]
+        assert score.failure_code == "readout.cell.missing_metric_observations"
+        assert score.failure_context["unobserved_arm"] == "control"
+        assert next(row for row in rows if row.metric == "revenue").lift is not None
+
+    # With no other metric in the run, the enrolled roster still tells the skipped control
+    # values from an absent control, so the run returns the unavailable row.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        experiment, resolver = from_frame(
+            _score_frame(200, 0),
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[MetricSpec(name="score", missing="skip")],
+        )
+        alone_rows: Any = run(experiment, resolver).readout()
+    (alone,) = alone_rows
+    assert alone.failure_code == "readout.cell.missing_metric_observations"
+
+    # A control arm with no enrolled units (a non-skip metric whose control rows are absent)
+    # keeps the estimator's missing-control refusal.
+    experiment, resolver = from_frame(
+        _score_frame(0, 0),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=["revenue", "score"],
+    )
+    export_moments(experiment, resolver, tmp_path / "moments.parquet")
+    rows = [
+        row
+        for row in pq.read_table(tmp_path / "moments.parquet").to_pylist()
+        if (row["metric"], row["group_id"]) != ("score", "control")
+    ]
+    replayed = from_moments(
+        rows,
+        metrics=[MetricSpec(name="revenue", type="mean"), MetricSpec(name="score", type="mean")],
+        control="control",
+    )
+    with pytest.raises(CodedError) as absent_control:
+        run(*replayed)
+    assert absent_control.value.code == "estimation.engine.control_group_found"
+
+    # Secondaries score (skip) and score2 (strong effect). With score's control or treatment
+    # values all missing, its cell stays in the family at p = 1, so BH keeps the no-missing
+    # family: whole window m = 2, score2 selected (1 * 0.10 / 2); breakout m = 6 (3 metrics x
+    # 2 segments), revenue and score2 selected in each (4 * 0.10 / 6).
+    for control_missing, treatment_missing in ((0, 0), (200, 0), (0, 200)):
+        _result, whole, segments = _family_run(_score_frame(control_missing, treatment_missing))
+        rows = {row.metric: row for row in whole if row.group_id == "treatment"}
+        assert rows["revenue"].lift is not None
+        assert (rows["score2"].family_size, rows["score2"].discovery) == (2, True)
+        assert rows["score2"].family_threshold == pytest.approx(0.10 * 1 / 2)
+        thresholds = [row.family_threshold for row in segments if row.metric == "score2"]
+        assert len(thresholds) == 2
+        assert all(value == pytest.approx(0.10 * 4 / 6) for value in thresholds)
+        if control_missing or treatment_missing:
+            assert rows["score"].failure_code == "readout.cell.missing_metric_observations"
+            assert {row.excluded for row in segments if row.metric == "score"} == {
+                "missing_metric_observations"
+            }
+
+    result, codes, _ = _score_run(_score_frame(200, 200), "skip")
+    assert _DIFFERS_BY_ARM not in codes
+    assert _row(result, "revenue").lift is not None
+
+    _result, codes, _ = _score_run(_score_frame(0, 0), "skip")
+    assert codes == []
+
+
+def test_skip_failure_names_the_arm_without_observations() -> None:
+    """The unavailable score cell keeps its treatment arm while its failure names the arm that
+    has no observations, on an ordinary and a secondary readout, and the rendered readout says
+    so."""
+    ordinary, _codes, _ = _score_run(_score_frame(200, 0), "skip")
+    secondary, secondary_rows, _segments = _family_run(_score_frame(200, 0))
+    treatment_missing, _codes, _ = _score_run(_score_frame(0, 200), "skip")
+    for result, rows, unobserved in (
+        (ordinary, ordinary.readout(), "control"),
+        (secondary, secondary_rows, "control"),
+        (treatment_missing, treatment_missing.readout(), "treatment"),
+    ):
+        (row,) = [row for row in rows if row.metric == "score"]
+        assert row.failure_code == "readout.cell.missing_metric_observations"
+        assert (row.group_id, row.failure_context["group_id"]) == ("treatment", "treatment")
+        assert row.failure_context["unobserved_arm"] == unobserved
+        message = render_readout_failure(
+            row.failure_code, row.failure_context, identity={"metric": row.metric}
+        )
+        assert message is not None
+        assert message in render(result, "brief")
+
+
+def test_drop_is_refused_with_route_to_skip() -> None:
+    with pytest.raises(CodedError) as exc_info:
+        MetricSpec(name="x", missing="drop")
+    assert exc_info.value.code == "frame.metric.missing_drop_renamed"
+    assert exc_info.value.context["metric"] == "x"
+    assert exc_info.value.context["route"] == "missing='skip'"
+
+
+def test_skip_label_reaches_frame_and_render() -> None:
+    result, codes, _ = _score_run(_score_frame(50, 50), "skip")
+    assert codes == []
+    row = _row(result, "score")
+    frame = pl.DataFrame(result.to_frame(backend="polars"))
+    (population,) = frame.filter(
+        (pl.col("metric") == "score") & (pl.col("group_id") == "treatment")
+    )["population"].to_list()
+    assert population is not None
+    assert population == row.population
+    (line,) = [
+        line
+        for line in render(result, "brief").splitlines()
+        if line.startswith("score / arm=treatment / ")
+    ]
+    assert line.count(row.population) == 1
+    assert line.count("population=") == 1
+
+
+class _SaturatingWhereX:
+    """Propensity 0.995 where x == 1, outside the [0.01, 0.99] overlap band; else 0.5."""
+
+    def fit(self, X, d):
+        pass
+
+    def predict(self, X):
+        return np.where(np.asarray(X)[:, 0] == 1.0, 0.995, 0.5)
+
+
+def _trimmed_observational(
+    frame: pl.DataFrame, missing: Literal["error", "skip"]
+) -> tuple[Any, Any]:
+    design = Observational(
+        control_group="C",
+        adjustment=AdjustmentSet(covariates=("x",)),
+        gate=IdentificationGate(overlap="trim"),
+    )
+    metric = MetricSpec(
+        name="revenue",
+        missing=missing,
+        decision_method=Method(name="iptw", propensity_learner=_SaturatingWhereX),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        experiment, resolver = from_frame(
+            frame, shape="summary", unit="user_id", group="variant", design=design, metrics=[metric]
+        )
+        result: Any = run(experiment, resolver)
+        (row,) = [row for row in result.readout() if row.lift is not None]
+    return result, row
+
+
+def test_skip_label_composes_with_overlap_trimming() -> None:
+    # 20 units per arm; x == 1 (trimmed) on units 0-1 of each arm; revenue is
+    # null on 2 control and 4 treatment units, none of them trimmed.
+    rows = []
+    for arm, missing in (("C", (5, 6)), ("T", (5, 6, 7, 8))):
+        for i in range(20):
+            rows.append(
+                {
+                    "user_id": f"{arm}{i:02d}",
+                    "variant": arm,
+                    "x": 1.0 if i < 2 else 0.0,
+                    "revenue": None
+                    if i in missing
+                    else float(i % 7) + (1.5 if arm == "T" else 1.0),
+                }
+            )
+    frame = pl.DataFrame(rows)
+    result, skipped = _trimmed_observational(frame, "skip")
+    _, trimmed_only = _trimmed_observational(frame.drop_nulls("revenue"), "error")
+    skip_label = _observed_population_label(
+        MissingValueAccount("revenue", {"C": 20, "T": 20}, {"C": 18, "T": 16})
+    )
+    assert trimmed_only.population is not None
+    assert skipped.population == f"{skip_label}; {trimmed_only.population}"
+    assert skipped.estimand == "overlap_subpopulation_ate"
+    (line,) = [
+        line
+        for line in render(result, "brief").splitlines()
+        if line.startswith("revenue / arm=T / ") and f"estimand={skipped.estimand}" in line
+    ]
+    assert line.count(skipped.population) == 1
+    assert line.count("population=") == 1
 
 
 def test_inferred_all_null_metric_obeys_missing_policy() -> None:
     """An inferred all-null metric is nullable numeric data, not an
-    unsupported dtype: zero keeps every unit as zero, while drop retains no
+    unsupported dtype: zero keeps every unit as zero, while skip retains no
     units and error still refuses."""
     frames: list[Any] = [
         pa.table(
@@ -569,7 +1003,8 @@ def test_inferred_all_null_metric_obeys_missing_policy() -> None:
     assert observed[0] == [("control", 2, 0.0), ("treatment", 2, 0.0)]
 
     all_null = frames[0]
-    with pytest.warns(IncrementWarning):
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         src = from_unit_summary(
             all_null,
             unit="unit",
@@ -577,13 +1012,15 @@ def test_inferred_all_null_metric_obeys_missing_policy() -> None:
             control="control",
             metrics=[
                 MetricSpec(name="y_zero", value_column="y", missing="zero"),
-                MetricSpec(name="y_drop", value_column="y", missing="drop"),
+                MetricSpec(name="y_skip", value_column="y", missing="skip"),
             ],
         )
+    # Nothing is observed, so the missing-by-arm check has no present values to test.
+    assert _DIFFERS_BY_ARM not in warning_codes(recorded)
     zero = {row["group_id"]: row for row in _moments(src, _metric(src, "y_zero"))}
-    drop = list(_moments(src, _metric(src, "y_drop")))
+    skip = list(_moments(src, _metric(src, "y_skip")))
     assert zero["treatment"]["n"] == 2
-    assert drop == []
+    assert skip == []
     assert _sum_y(zero["treatment"]) == pytest.approx(0.0)
 
     with pytest.raises(InvalidRequestError) as exc_info:
@@ -966,11 +1403,11 @@ def test_collapse_to_unit_totals_window_without_first_exposure_refuses() -> None
     assert exc_info.value.code == "frame.moments.collapse_to_unit"
 
 
-def test_covariate_imputation_computed_before_outcome_drop() -> None:
+def test_covariate_imputation_computed_before_outcome_skip() -> None:
     """The covariate's pooled mean must be computed from the covariate
-    column alone, before missing='drop' removes any outcome-null rows -
+    column alone, before missing='skip' removes any outcome-null rows -
     regression: y=[1,None,3,4], x=[0,100,None,10] previously imputed 5.0
-    (mean of the two x's surviving the y-drop) instead of the correct
+    (mean of the two x's surviving the y-skip) instead of the correct
     36.67 (mean of all three observed x's)."""
     table = pa.table(
         {
@@ -989,7 +1426,7 @@ def test_covariate_imputation_computed_before_outcome_drop() -> None:
             metrics=[
                 MetricSpec(
                     name="y",
-                    missing="drop",
+                    missing="skip",
                     decision_method=Method.cuped(
                         covariates=CupedCovariate(name="x", kind="continuous", missing="impute")
                     ),
@@ -998,7 +1435,7 @@ def test_covariate_imputation_computed_before_outcome_drop() -> None:
         )
     moments = {row["group_id"]: row for row in _moments(src, _metric(src, "y"))}
     observed_x_mean = (0.0 + 100.0 + 10.0) / 3
-    assert moments["control"]["n"] == 1  # the y=None unit is dropped
+    assert moments["control"]["n"] == 1  # the y=None unit is skipped
     assert moments["treatment"]["n"] == 2
     assert _sum_x(moments["control"]) == pytest.approx(0.0)
     assert _sum_x(moments["treatment"]) == pytest.approx(10.0 + observed_x_mean)
@@ -1154,7 +1591,7 @@ def test_panel_null_metric_value_refuses_and_zero_fills() -> None:
     assert out["control"]["n"] == 2
 
 
-def test_panel_missing_drop_refused_as_indistinguishable_from_zero() -> None:
+def test_panel_missing_skip_refused_as_indistinguishable_from_zero() -> None:
     base = date(2025, 1, 1)
     table = pa.table(
         {
@@ -1171,16 +1608,16 @@ def test_panel_missing_drop_refused_as_indistinguishable_from_zero() -> None:
             group="variant",
             date="day",
             control="control",
-            metrics=[MetricSpec(name="revenue", missing="drop")],
+            metrics=[MetricSpec(name="revenue", missing="skip")],
         )
-    assert exc.value.code == "frame.missing_policy.panel_drop"
-    assert exc.value.context["missing"] == "drop"
+    assert exc.value.code == "frame.missing_policy.panel_skip"
+    assert exc.value.context["missing"] == "skip"
 
 
 def test_unit_frame_honours_declared_missing_policy() -> None:
     """unit_frame must serve the same declared semantics as the moments:
-    zero-filled values under missing='zero', complete-case rows under
-    missing='drop' - never a raw null the chokepoint already ruled on."""
+    zero-filled values under missing='zero', observed rows only under
+    missing='skip' - never a raw null the chokepoint already ruled on."""
     table = _half_null_table()
     src_zero = from_unit_summary(
         table,
@@ -1195,20 +1632,20 @@ def test_unit_frame_honours_declared_missing_policy() -> None:
         sum(v or 0.0 for v in table["revenue"].to_pylist())
     )
     with pytest.warns(IncrementWarning) as rec:
-        src_drop = from_unit_summary(
+        src_skip = from_unit_summary(
             table,
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="revenue", missing="drop")],
+            metrics=[MetricSpec(name="revenue", missing="skip")],
         )
-    assert "frame.validation.metric_missing_drop" in warning_codes(rec)
-    uf_drop = nw.from_native(_unit_rows(src_drop, _metric(src_drop, "revenue")), eager_only=True)
-    assert uf_drop.shape[0] == 150
+    assert _DIFFERS_BY_ARM in warning_codes(rec)
+    uf_skip = nw.from_native(_unit_rows(src_skip, _metric(src_skip, "revenue")), eager_only=True)
+    assert uf_skip.shape[0] == 150
 
 
 def test_unit_frame_ratio_missing_policy_covers_the_denominator_too() -> None:
-    """A ratio metric's missing='zero'/'drop' apply to y_den exactly as to
+    """A ratio metric's missing='zero'/'skip' apply to y_den exactly as to
     y (mirroring _apply_spec_missing's combined predicate) - a null
     denominator is not a hole the numerator's policy alone papers over."""
     table = pa.table(
@@ -1241,8 +1678,10 @@ def test_unit_frame_ratio_missing_policy_covers_the_denominator_too() -> None:
     assert uf_zero["y_den"].is_null().sum() == 0
     assert float(uf_zero["y_den"].sum()) == 20.0
 
-    with pytest.warns(IncrementWarning) as rec:
-        src_drop = from_unit_summary(
+    # Observed 1/3 control vs 3/3 treatment: chi-square 3.0 on 1 df, p = 0.083.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        src_skip = from_unit_summary(
             table,
             unit="user_id",
             group="variant",
@@ -1253,14 +1692,14 @@ def test_unit_frame_ratio_missing_policy_covers_the_denominator_too() -> None:
                     type="ratio",
                     numerator="revenue",
                     denominator="orders",
-                    missing="drop",
+                    missing="skip",
                 )
             ],
         )
-    assert "frame.validation.metric_missing_drop" in warning_codes(rec)
-    uf_drop = nw.from_native(_unit_rows(src_drop, _metric(src_drop, "aov")), eager_only=True)
-    # 2 of 6 rows drop: one null revenue, one null orders (distinct rows).
-    assert uf_drop.shape[0] == 4
+    assert _DIFFERS_BY_ARM not in warning_codes(recorded)
+    uf_skip = nw.from_native(_unit_rows(src_skip, _metric(src_skip, "aov")), eager_only=True)
+    # 2 of 6 rows skip: one null revenue, one null orders (distinct rows).
+    assert uf_skip.shape[0] == 4
 
 
 def test_terse_quantile_redirects_to_explicit_metricspec() -> None:

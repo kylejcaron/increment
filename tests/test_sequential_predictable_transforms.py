@@ -568,7 +568,7 @@ def test_sequential_missing_zero_keeps_covariate_and_refusal_policies_separate()
 
     for policy, code in (
         ("error", "frame.validation.metric_value_missing"),
-        ("drop", "sequential.route.unsupported"),
+        ("skip", "sequential.route.unsupported"),
     ):
         with pytest.raises(CodedError) as missing_error:
             from_frame(

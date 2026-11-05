@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any, Literal, cast
@@ -303,7 +304,7 @@ def test_unit_summary_breakout_uses_exposure_excluded_population():
         assert actual_lift.ub == pytest.approx(expected_lift.ub, abs=1e-12)
 
 
-def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
+def test_unit_summary_breakout_missing_skip_warns_once_per_metric():
 
     frame = _summary_breakout_frame()
     frame.loc[len(frame)] = {
@@ -316,6 +317,8 @@ def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
     frame["covariate"] = [1.0] * len(frame)
     frame.loc[0, "value"] = None
     frame.loc[1, "covariate"] = None
+    # Missing 1/5 control vs 0/4 treatment: chi-square 0.9 on 1 df, p = 0.34, so only the
+    # covariate imputation warns.
     with pytest.warns(IncrementWarning) as recorded:
         experiment, resolver = from_frame(
             frame,
@@ -327,7 +330,7 @@ def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
                 MetricSpec(
                     name="value",
                     type="mean",
-                    missing="drop",
+                    missing="skip",
                     decision_method=Method.cuped(
                         covariates=CupedCovariate(
                             name="covariate", kind="continuous", missing="impute"
@@ -346,7 +349,7 @@ def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
         )
 
     codes = warning_codes(recorded)
-    assert codes.count("frame.validation.metric_missing_drop") == 1
+    assert codes.count("frame.validation.metric_missing_differs_by_arm") == 0
     assert codes.count("frame.validation.metric_covariate_missing_imputed") == 1
     assert results
     treatment_a = next(
@@ -369,16 +372,19 @@ def test_unit_summary_breakout_preserves_multiple_empty_segments_as_unavailable(
     valid["segment"] = "D"
     frame = pd.concat([frame, empty, valid], ignore_index=True)
     frame.loc[frame["segment"].isin(("A", "C")), "value"] = None
-    with pytest.warns(IncrementWarning):
+    # Missing 4/8 units in each arm: equal rates, chi-square 0, so no missing-by-arm warning.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         experiment, resolver = from_frame(
             frame,
             shape="summary",
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="value", type="mean", missing="drop")],
+            metrics=[MetricSpec(name="value", type="mean", missing="skip")],
             breakouts=("segment",),
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
 
     with pytest.warns(IncrementWarning):
         rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
@@ -422,13 +428,16 @@ def test_encouragement_breakout_deduplicates_multiple_empty_segments():
             for index in range(4)
         ]
     )
-    with pytest.warns(IncrementWarning):
+    # Missing 8/16 control, 8/8 treatment_2 and 0/8 treatment_1: the expected missing count
+    # in each treatment arm is 4 < 5, so the missing-by-arm check is not run.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         experiment, resolver = from_frame(
             frame,
             shape="summary",
             unit="unit",
             group="arm",
-            metrics=[MetricSpec(name="y", type="mean", missing="drop")],
+            metrics=[MetricSpec(name="y", type="mean", missing="skip")],
             design=Encouragement(
                 control_group="control",
                 uptake=UptakeSpec(fact="clicked"),
@@ -439,6 +448,7 @@ def test_encouragement_breakout_deduplicates_multiple_empty_segments():
             ),
             breakouts=("segment",),
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
 
     rows = view_readout(
         experiment, resolver, Scope(view="breakout", grain="total"), prior=Normal(mu=0.0, sigma=0.1)
@@ -529,10 +539,13 @@ def test_encouragement_summary_breakout_partitions_empty_arms(
 ):
     frame = encouragement_summary_breakout_frame
     frame.loc[(frame["segment"] == "A") & (frame["arm"] == empty_arm), "y"] = None
-    with pytest.warns(IncrementWarning):
+    # Missing 4/8 in one arm and 0/8 in the other two: chi-square 9.6 on 2 df, p = 0.008.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         experiment, resolver = _encouragement_summary_breakout_analysis(
-            frame, [MetricSpec(name="y", missing="drop")]
+            frame, [MetricSpec(name="y", missing="skip")]
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     for group in ("treatment_1", "treatment_2"):
         actual = [row for row in rows if row.dimension_value == "A" and row.group_id == group]
@@ -564,7 +577,7 @@ def test_encouragement_summary_breakout_keeps_metric_empty_in_every_segment(
 ):
     frame = encouragement_summary_breakout_frame
     frame["z"] = frame["y"] + 1.0
-    metrics = [MetricSpec(name="y", missing="drop")]
+    metrics = [MetricSpec(name="y", missing="skip")]
     if include_valid_metric:
         metrics.append(MetricSpec(name="z"))
     baseline = view_readout(
@@ -572,8 +585,11 @@ def test_encouragement_summary_breakout_keeps_metric_empty_in_every_segment(
         scope=Scope(view="breakout", grain="total"),
     )
     frame["y"] = None
-    with pytest.warns(IncrementWarning):
+    # No unit observes y, so no arm has a present count to compare.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         experiment, resolver = _encouragement_summary_breakout_analysis(frame, metrics)
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     def identity(row):
@@ -607,19 +623,22 @@ def test_encouragement_summary_breakout_empty_identities_match_requested_methods
 ):
     frame = encouragement_summary_breakout_frame
     frame.loc[frame["segment"] == "A", "y"] = None
-    with pytest.warns(IncrementWarning):
+    # Missing 4/8 units in each arm: equal rates, chi-square 0.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         experiment, resolver = _encouragement_summary_breakout_analysis(
             frame,
             [
                 MetricSpec(
                     name="y",
-                    missing="drop",
+                    missing="skip",
                     sensitivity_methods=(
                         Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
                     ),
                 )
             ],
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     sensitivity = [Method.cuped(covariates=CupedCovariate(name="x", kind="continuous"))]
     rows = view_readout(
         experiment, resolver, Scope(view="breakout", grain="total"), sensitivity_methods=sensitivity
@@ -645,7 +664,9 @@ def test_unit_summary_breakout_keeps_metric_missing_in_every_segment():
 
     frame = _summary_breakout_frame()
     frame["missing_metric"] = None
-    with pytest.warns(IncrementWarning):
+    # No unit observes the metric, so no arm has a present count to compare.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         experiment, resolver = from_frame(
             frame,
             shape="summary",
@@ -655,11 +676,12 @@ def test_unit_summary_breakout_keeps_metric_missing_in_every_segment():
             metrics=[
                 MetricSpec(name="value", type="mean"),
                 MetricSpec(
-                    name="missing", type="mean", value_column="missing_metric", missing="drop"
+                    name="missing", type="mean", value_column="missing_metric", missing="skip"
                 ),
             ],
             breakouts=("segment",),
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     with pytest.warns(IncrementWarning):
         rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     missing_rows = [row for row in rows if row.metric == "missing"]
@@ -736,7 +758,7 @@ def test_unit_summary_breakout_preserves_unit_column_used_as_covariate():
     assert readout_functions.breakout(source, "segment")
 
 
-def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
+def test_unit_summary_breakouts_apply_skip_and_zero_per_metric():
     frame = _summary_breakout_frame()
     for index in range(8):
         for group, value in (
@@ -750,7 +772,9 @@ def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
                 "value": value,
             }
     frame.loc[0, "value"] = None
-    with pytest.warns(IncrementWarning):
+    # Missing 1/12 control vs 0/12 treatment: chi-square 1.04 on 1 df, p = 0.31.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         experiment, resolver = from_frame(
             frame,
             shape="summary",
@@ -758,11 +782,12 @@ def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
             group="variant",
             control="control",
             metrics=[
-                MetricSpec(name="drop", type="mean", value_column="value", missing="drop"),
+                MetricSpec(name="skip", type="mean", value_column="value", missing="skip"),
                 MetricSpec(name="zero", type="mean", value_column="value", missing="zero"),
             ],
             breakouts=("segment",),
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
 
     results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     treatment_by_metric = {
@@ -773,9 +798,9 @@ def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
             and row.dimension_value == "A"
             and row.group_id == "treatment"
         )
-        for metric_name in ("drop", "zero")
+        for metric_name in ("skip", "zero")
     }
-    assert treatment_by_metric["drop"].require_lift().value == pytest.approx(13 / 14)
+    assert treatment_by_metric["skip"].require_lift().value == pytest.approx(13 / 14)
     assert treatment_by_metric["zero"].require_lift().value == pytest.approx(8 / 7)
 
 

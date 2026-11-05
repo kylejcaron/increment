@@ -1394,10 +1394,10 @@ def validate_frame_registration(
                 "route.unsupported",
                 "scalar mean inference requires a mean, conversion or retention metric",
             )
-        if spec.missing == "drop":
+        if spec.missing == "skip":
             sequential_refuse(
                 "route.unsupported",
-                "outcome-dependent missing-row deletion breaks joint reveal; use error or a declared zero outcome",
+                "skipping units with a missing outcome is outcome-dependent and breaks joint reveal; use error or a declared zero outcome",
             )
         validate_sequential_transform(spec)
         if adjustment_kind(registration, model.metric) is not None and not any(

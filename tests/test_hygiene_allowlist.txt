@@ -178,6 +178,8 @@ tests/oracles/generate/gen_dml_oracle.py 1
 tests/oracles/generate/gen_winsor_positive_roots.py 1
 tests/oracles/test_winsor_positive_roots_oracle.py 1
 tests/parity_harness/cases.py 2
+# A moments replay's skip population is checked against the one private label formatter.
+tests/parity_harness/runner.py 1
 tests/power/_sequential.py 11
 tests/power/test_binomial_planning.py 27
 tests/power/test_calibration.py 1
@@ -242,7 +244,9 @@ tests/test_evidence_identity_parity.py 4
 tests/test_experiment_health.py 2
 tests/test_exploratory_metrics.py 2
 tests/test_frame_exact_successes.py 4
-tests/test_frame_missing.py 6
+# The skip tests compare a row's population with the one private label formatter applied to
+# per-arm counts written from the specification.
+tests/test_frame_missing.py 8
 tests/test_frame_panel.py 2
 tests/test_frame_specs.py 2
 tests/test_frame_switchback.py 3

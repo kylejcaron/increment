@@ -26,7 +26,10 @@ checkpoint derives from its registration (`registration_id`, `filtration_id`, `p
 hash the path's observation mapping, see below) and, inside a winsor confidence set's raw pool,
 `study_id` (the source's identity) and `missingness` (a frame names its declared policy, a
 warehouse its inclusion rule); the pool's outcome multisets, quantile, support and inference are
-compared. All other fields compare automatically, including interval and its `alpha`/`log_mean`/
+compared. A field a case records an ingress cannot supply (`ParityCase.limited_fields`: a
+moments cube's skip population, which records no unit counts) is checked against that
+ingress's own form instead of equality. All other fields compare automatically, including
+interval and its `alpha`/`log_mean`/
 `log_se`, winsorization thresholds, counts and `confidence_set`, `n_clusters`, Fieller and
 binomial sets, null reasons, family and policy metadata, and a sequential row's own evidence.
 `family_id` is omitted because A0 ruling 12 defines it as a source-snapshot-specific physical
@@ -633,17 +636,49 @@ def run_case(
 
 
 def _assert_payload_equal(
-    case_id: str, name: str, oracle_name: str, key: tuple, method: str, expected: dict, actual: dict
+    case_id: str,
+    name: str,
+    oracle_name: str,
+    key: tuple,
+    method: str,
+    expected: dict,
+    actual: dict,
+    actual_limited: frozenset[str] = frozenset(),
+    expected_limited: frozenset[str] = frozenset(),
 ) -> None:
     assert actual.keys() == expected.keys(), (
         f"{case_id}: {name} vs {oracle_name} compare different fields for {key}/{method}"
     )
     for field_name, e in expected.items():
         a = actual[field_name]
+        # Exactly one side lacks the counted form; two limited sides compare directly.
+        if (field_name in actual_limited) != (field_name in expected_limited):
+            counted, replayed = (e, a) if field_name in actual_limited else (a, e)
+            _assert_replayed_population(case_id, field_name, key, method, counted, replayed)
+            continue
         assert nested_close(e, a), (
             f"{case_id}: {name} vs {oracle_name} disagree on {field_name} "
             f"for {key}/{method}: {a!r} != {e!r}"
         )
+
+
+def _assert_replayed_population(
+    case_id: str, field_name: str, key: tuple, method: str, counted: Any, replayed: Any
+) -> None:
+    """A moments replay states a skip metric's population without unit counts: its label is
+    the replay's observed-only qualification followed by every further restriction the counted
+    source records after its own skip qualification."""
+    from increment.readouts._run import _observed_population_label
+
+    assert field_name == "population", f"{case_id}: no replay rule for limited {field_name}"
+    expected = (
+        None
+        if counted is None
+        else "; ".join((_observed_population_label(None), *counted.split("; ")[1:]))
+    )
+    assert replayed == expected, (
+        f"{case_id}: replayed population for {key}/{method} is {replayed!r}, expected {expected!r}"
+    )
 
 
 def _assert_no_silent_skip(case: ParityCase) -> None:
@@ -735,6 +770,8 @@ def assert_parity(case: ParityCase, result: CaseResult) -> None:
             f"{oracle_name}, got discovery values {discoveries}"
         )
     for name, other_rows in live.items():
+        actual_limited = frozenset(case.limited_fields.get(name, ()))
+        expected_limited = frozenset(case.limited_fields.get(oracle_name, ()))
         assert other_rows.keys() == oracle_rows.keys(), (
             f"{case.id}: {name} emitted a different row set than {oracle_name} -- "
             f"only in {name}: {other_rows.keys() - oracle_rows.keys()}, "
@@ -749,7 +786,15 @@ def assert_parity(case: ParityCase, result: CaseResult) -> None:
             )
             for method, expected_payload in oracle_methods.items():
                 _assert_payload_equal(
-                    case.id, name, oracle_name, key, method, expected_payload, other_methods[method]
+                    case.id,
+                    name,
+                    oracle_name,
+                    key,
+                    method,
+                    expected_payload,
+                    other_methods[method],
+                    actual_limited,
+                    expected_limited,
                 )
     if case.sequential:
         live_states = {

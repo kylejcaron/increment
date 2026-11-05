@@ -208,11 +208,11 @@ and is rejected before evidence acquisition.
 
 The policy belongs to each metric's method, never to the shared covariate table.
 The pooled mean uses the full per-unit covariate population before an outcome's
-`missing="drop"` removes rows, including when that summary is broken out.
-Native outcome-window censoring likewise does not change the imputation
-population.
+`missing="skip"` leaves out units without a value, including when that summary
+is broken out. Native outcome-window censoring likewise does not change the
+imputation population.
 Refusing-policy validation also uses that full eligible population: a missing
-covariate is not hidden by dropping the same unit's missing outcome.
+covariate is not hidden by skipping the same unit's missing outcome.
 
 ### Ratio metrics
 

@@ -1168,7 +1168,7 @@ def test_switchback_deduplicates_shared_metric_source_columns():
     [
         (MetricSpec(name="mean", winsorization=Winsorization(upper_value=10.0)), "winsorization"),
         (MetricSpec(name="mean", missing="zero"), "missing"),
-        (MetricSpec(name="mean", missing="drop"), "missing"),
+        (MetricSpec(name="mean", missing="skip"), "missing"),
         (MetricSpec(name="mean", decision_method=Method(name="unadjusted")), "decision_method"),
         (
             MetricSpec(

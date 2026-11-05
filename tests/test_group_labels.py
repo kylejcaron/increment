@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import pickle
+import warnings
 from functools import partial
 
 import pandas as pd
@@ -167,9 +168,9 @@ def test_boolean_moments_group_ids_are_canonicalized_at_ingress(tmp_path):
     assert wrong_case.value.code == "source.frame.control_missing"
 
 
-def test_dropped_boolean_arm_remains_in_enrollment_counts_after_export(tmp_path):
+def test_skipped_boolean_arm_remains_in_enrollment_counts_after_export(tmp_path):
     from increment import MetricSpec
-    from increment.estimators import IncrementWarning
+    from tests.warning_codes import warning_codes
 
     frame = pd.DataFrame(
         {
@@ -178,22 +179,25 @@ def test_dropped_boolean_arm_remains_in_enrollment_counts_after_export(tmp_path)
             "y": [1.0, 2.0, None, None],
         }
     )
-    with pytest.warns(IncrementWarning):
+    # Missing 0/2 control vs 2/2 treatment: chi-square 4.0, p = 0.046, above the 0.001 alpha.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         original_experiment, original_resolver = from_frame(
             frame,
             shape="summary",
             unit="unit",
             group="arm",
             control=True,
-            metrics=[MetricSpec(name="y", missing="drop")],
+            metrics=[MetricSpec(name="y", missing="skip")],
         )
-    path = tmp_path / "dropped-boolean-arm.parquet"
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
+    path = tmp_path / "skipped-boolean-arm.parquet"
     export_moments(original_experiment, original_resolver, path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(path).to_pylist()
     replay_experiment, replay_resolver = from_moments(
-        rows, metrics=[MetricSpec(name="y", missing="drop")], control=True
+        rows, metrics=[MetricSpec(name="y", missing="skip")], control=True
     )
     with pytest.raises(InvalidRequestError) as no_treatment:
         view_readout(replay_experiment, replay_resolver)

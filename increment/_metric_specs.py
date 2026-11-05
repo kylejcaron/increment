@@ -72,6 +72,7 @@ _REFUSALS = refusals(
         "frame.metric.type_ratio_but": "metric {name!r} has type='ratio' but is missing {missing}; a ratio metric needs both a numerator and a denominator column",
         "frame.metric.type_but_sets": "metric {name!r} has type={type!r} but sets numerator/denominator; those belong to type='ratio'",
         "frame.metric.missing_impute": "metric {metric!r}: missing='impute' would fill the outcome with its own mean, shrinking variance and biasing the estimate. Route: {route}",
+        "frame.metric.missing_drop_renamed": "metric {metric!r}: missing='drop' is now spelled missing='skip' (the metric uses only units with a value; the units stay in every other metric). Route: declare {route}",
         "frame.metric.method_name_cuped": "metric {name!r}: Method(name='cuped') without variance_reduction='cuped' would label an unadjusted estimate as CUPED-adjusted; use Method.cuped(...) or choose a different result label.",
         "frame.metric.declares_cuped_method": "metric {name!r} declares a scalar CUPED method without its required method-owned covariate.",
         "frame.metrics_empty_supply": "metrics is empty; supply at least one metric to estimate",
@@ -118,11 +119,13 @@ class MetricSpec(CodedModel, BaseModel):
         Retention band: int N is [N, inf); (a, b) is [a, b) (half-open).
     quantile : float | None
         The quantile in (0, 1) to estimate; required for ``type="quantile"``.
-    missing : {"error", "zero", "drop"}
+    missing : {"error", "zero", "skip"}
         Null/NaN policy for the value column: refuse (default), count as
-        0, or drop those rows from this metric's moments. ``"impute"`` is
-        refused (``frame.metric.missing_impute``): an outcome is never
-        mean-filled; use ``"zero"`` or ``"drop"``.
+        0, or skip those units in this metric only; a skipped metric's
+        rows state the observed population. ``"impute"`` is refused
+        (``frame.metric.missing_impute``): an outcome is never mean-filled.
+        ``"drop"`` is refused (``frame.metric.missing_drop_renamed``); it
+        is now ``"skip"``.
     decision_method : Method | None
         Decision estimator for this metric. Omitted uses IPTW for an
         observational design, otherwise unadjusted. A call-time
@@ -164,7 +167,7 @@ class MetricSpec(CodedModel, BaseModel):
     threshold_days: int | tuple[int, int] | None = None
     quantile: float | None = None
     winsorization: Winsorization | None = None
-    missing: Literal["error", "zero", "drop", "impute"] = "error"
+    missing: Literal["error", "zero", "skip", "impute", "drop"] = "error"
     decision_method: Method | None = None
     sensitivity_methods: tuple[Method, ...] = ()
     prior: Normal | None = None
@@ -259,13 +262,15 @@ class MetricSpec(CodedModel, BaseModel):
         ) + self.sensitivity_methods
 
     @model_validator(mode="after")
-    def _refuse_outcome_impute(self) -> MetricSpec:
+    def _refuse_outcome_policy(self) -> MetricSpec:
         if self.missing == "impute":
             _raise(
                 "frame.metric.missing_impute",
                 metric=self.name,
-                route="missing='zero' if null means no events, or missing='drop' if not observed",
+                route="missing='zero' if null means no events, or missing='skip' if not observed",
             )
+        if self.missing == "drop":
+            _raise("frame.metric.missing_drop_renamed", metric=self.name, route="missing='skip'")
         return self
 
     @property

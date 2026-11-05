@@ -341,6 +341,7 @@ def _randomized_cell_failures(
     population,
     decision_cells,
     roster_complete,
+    control_group,
 ):
     from increment.estimation.readout_types import CellFailure
 
@@ -361,22 +362,28 @@ def _randomized_cell_failures(
                 code=row.failure_code,
                 context=row.failure_context or {},
             )
-        elif group_id not in observed_by_metric.get(metric_name, set()):
-            observed = sorted(observed_by_metric.get(metric_name, set()))
+        elif not {group_id, control_group} <= (
+            metric_observed := observed_by_metric.get(metric_name, set())
+        ):
+            observed = sorted(metric_observed)
             code = (
                 "readout.cell.missing_metric_observations"
                 if group_id in known_roster_arms
                 else "readout.cell.missing_arm"
             )
+            context = {
+                "metric": metric_name,
+                "group_id": group_id,
+                "observed_arms": observed,
+                "roster_source": roster_source,
+            }
+            if code == "readout.cell.missing_metric_observations":
+                # The cell keeps its treatment arm; the arm lacking observations may be control.
+                context["unobserved_arm"] = (
+                    group_id if group_id not in metric_observed else control_group
+                )
             cell_failures[cell] = CellFailure(
-                hypothesis=cell.hypothesis(),
-                code=code,
-                context={
-                    "metric": metric_name,
-                    "group_id": group_id,
-                    "observed_arms": observed,
-                    "roster_source": roster_source,
-                },
+                hypothesis=cell.hypothesis(), code=code, context=context
             )
         elif key not in returned_cells:
             cell_failures[cell] = CellFailure(
@@ -516,6 +523,7 @@ def _scoped_randomized_results(  # noqa: PLR0913, PLR0915
         population,
         decision_cells,
         roster.complete,
+        str(design.control_group),
     )
 
     result_by_cell = {}

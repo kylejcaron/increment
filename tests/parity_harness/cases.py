@@ -213,6 +213,9 @@ class ParityCase:
     population: Literal["assigned", "triggered"] = "assigned"
     refusal_only: bool = False
     expected_absence: Mapping[str, Absence] = field(default_factory=dict)
+    # Per ingress, row fields it cannot supply as the counted source does (a source-limited
+    # field); they are checked against that ingress's own form instead of equality.
+    limited_fields: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # Explicitly classified synthetic or legacy outputs that intentionally have no source scope.
     unscoped_outputs: Mapping[str, str] = field(default_factory=dict)
     marks: tuple[pytest.MarkDecorator, ...] = ()
@@ -4180,14 +4183,20 @@ def _encouragement_declared_definitions_case(
             row for row in rows if not (row["user_id"] in treated and row["event"] == "purchase")
         ]
         defs_dict["metrics"][0]["aggregation"] = "avg_event"
-    specs = [
-        MetricSpec(name="revenue", type="mean", missing="drop", preferred_direction="increase")
-        if missing_treatment_outcomes
-        else MetricSpec(name="revenue", type="mean", preferred_direction="increase")
-    ]
     if metric_free:
         defs_dict["metrics"] = []
-        specs = []
+
+    def specs() -> list[MetricSpec]:
+        # Built per run: the evidence-identity capture imports these cases under a pinned
+        # earlier production package, which spells this policy differently.
+        if metric_free:
+            return []
+        return [
+            MetricSpec(name="revenue", type="mean", missing="skip", preferred_direction="increase")
+            if missing_treatment_outcomes
+            else MetricSpec(name="revenue", type="mean", preferred_direction="increase")
+        ]
+
     defs = Definitions.model_validate(defs_dict)
 
     def supplied() -> dict[str, Any]:
@@ -4217,8 +4226,9 @@ def _encouragement_declared_definitions_case(
         )
 
     def build_unit_summary() -> Bound:
-        needs_drop = missing_treatment_outcomes and not metric_free
-        with pytest.warns(IncrementWarning) if needs_drop else nullcontext():
+        # Missing 0/20 control vs 20/20 treatment revenue: chi-square 40 on 1 df, p < 0.001.
+        needs_skip = missing_treatment_outcomes and not metric_free
+        with pytest.warns(IncrementWarning) if needs_skip else nullcontext():
             return builders.from_frame(
                 _encouragement_oracle_frame_for_parity(
                     missing_treatment_outcomes=missing_treatment_outcomes
@@ -4226,7 +4236,7 @@ def _encouragement_declared_definitions_case(
                 shape="summary",
                 unit="user_id",
                 group="group",
-                metrics=specs,
+                metrics=specs(),
                 design=_design(),
                 uptake="clicked",
                 plan=plan,
@@ -4241,7 +4251,7 @@ def _encouragement_declared_definitions_case(
             unit="user_id",
             group="group",
             date="day",
-            metrics=specs,
+            metrics=specs(),
             design=_design(),
             uptake="clicked",
             plan=plan,
@@ -4257,7 +4267,7 @@ def _encouragement_declared_definitions_case(
             path = Path(td) / "moments.parquet"
             workflows.export_moments(*native, path)
             replay_rows = pq.read_table(path).to_pylist()
-        replayed = builders.from_moments(replay_rows, metrics=specs, design=_design(), plan=plan)
+        replayed = builders.from_moments(replay_rows, metrics=specs(), design=_design(), plan=plan)
         native[1].close()
         con.disconnect()
         return replayed

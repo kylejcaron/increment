@@ -691,6 +691,11 @@ def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[
             )
             if qualification is not None:
                 text += f"; {qualification}"
+            # The label already names its restriction; `population=` in the cell label is the
+            # assigned or triggered analysis population.
+            restriction = getattr(row, "population", None)
+            if restriction is not None:
+                text += f"; {restriction}"
         lines.append(f"{label}: {text}")
 
     lines.extend(_brief_disclosure_lines(interpretation))
