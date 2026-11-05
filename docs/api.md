@@ -149,8 +149,9 @@ values.
   Unclustered ratio rows now report `n_control` and `n_treat` as arm unit
   counts and `mean_control` and `mean_treat` as each arm's ratio, its
   numerator total over its denominator total; quantile rows report the
-  counts and leave the means empty. Estimates, intervals and experiment
-  identity are unchanged.
+  counts and leave the means empty. A readout holding such a row gets a new
+  snapshot ID once, because snapshots digest arm counts. Estimates, intervals
+  and experiment identity are unchanged.
 - Release note (documentation): the power guide's `PowerResult` table states
   that `mde_relative` is relative to the declared `null_lift`, not to control,
   and that the matching `relative_lift` is
