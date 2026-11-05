@@ -1110,6 +1110,18 @@ def _measure_identity(measure: "Measure") -> tuple[object, ...]:
     return (measure.fact, measure.aggregation, measure.window_days, filters)
 
 
+def favorable_alternative(
+    preferred_direction: PreferredDirection | None, alternative: Alternative = "two-sided"
+) -> Literal["greater", "less"] | None:
+    """The tail on which the treatment is better: the declared increase/decrease;
+    for a metric declaring none (unset or neutral), a one-sided alternative; else None."""
+    if preferred_direction == "increase":
+        return "greater"
+    if preferred_direction == "decrease":
+        return "less"
+    return None if alternative == "two-sided" else alternative
+
+
 def resolve_margin(
     preferred_direction: PreferredDirection | None,
     # Direction explicitness is part of the public margin contract.
@@ -1143,7 +1155,9 @@ def resolve_margin(
             metric_name=metric_name,
             margin=margin,
         )
-    if preferred_direction == "increase":
+    tail = favorable_alternative(preferred_direction)
+    assert tail is not None
+    if tail == "greater":
         if margin >= 1.0:
             _definition_refusal(
                 "definition.metric_margin_implies_unrepresentable_null_lift",
@@ -1154,8 +1168,8 @@ def resolve_margin(
                 metric_name=metric_name,
                 margin=margin,
             )
-        return -margin, "greater"
-    return margin, "less"
+        return -margin, tail
+    return margin, tail
 
 
 def resolve_margin_abs(
@@ -1189,9 +1203,9 @@ def resolve_margin_abs(
             metric_name=metric_name,
             margin_abs=margin_abs,
         )
-    if preferred_direction == "increase":
-        return -margin_abs, "greater"
-    return margin_abs, "less"
+    tail = favorable_alternative(preferred_direction)
+    assert tail is not None
+    return (-margin_abs if tail == "greater" else margin_abs), tail
 
 
 class MetricIdentity(AliasMixin, _ExplicitOnlyFields, _Base):
@@ -2237,8 +2251,15 @@ class AnalysisPlan(_ExplicitOnlyFields, _Base):
         Bonferroni for ``AsymptoticMean``), encouragement breakout uncorrected,
         and as-of uncorrected unless segmented.
     alternative : {"two-sided", "greater", "less"}
-        Direction of the test. A one-sided level is displayed through the
-        standard alpha-doubling convention.
+        Direction of the test, treatment against control: ``"greater"`` tests
+        for a higher treatment value. A one-sided level is displayed through
+        the standard alpha-doubling convention. A primary's verdict reads its
+        declared ``preferred_direction``, so a two-sided plan already credits
+        only the favorable side; under it, a rejecting primary that declares
+        no direction reports ``decision.primary.direction_unspecified``. A
+        one-sided alternative names the favorable side of a primary that
+        declares no direction, and must agree with one that does, or the plan
+        refuses with ``plan.primary.alternative_direction``.
     primary : PlanEntry | tuple[PlanEntry, ...] | None
         The confirmatory metric(s). Accepts a single entry or a list;
         ``None`` declares no primary.

@@ -107,6 +107,13 @@ class ContrastDecisionProcedure(CodedModel, BaseModel):
             _raise("decision.arm_decision.one_sided_alpha")
         return self
 
+    @property
+    def favorable_side(self) -> Literal["greater", "less"] | None:
+        """The tail on which the treatment is better, from the declared direction."""
+        from increment.semantics.models import favorable_alternative
+
+        return favorable_alternative(self.preferred_direction, self.alternative)
+
 
 def sequential_hypothesis_key(cell: SequentialCell) -> ArmHypothesisKey | SegmentHypothesisKey:
     """Construct the decision key for a registered arm or segment cell."""

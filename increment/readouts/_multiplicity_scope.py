@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal, cast
 
 from increment._evidence_types import ArtifactProvenance
-from increment.decision import MultiplicityFamily
+from increment.decision import MultiplicityFamily, evidence_request_procedure
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.multiplicity import (
     design_excluded,
@@ -446,7 +446,7 @@ def scoped_collection(  # noqa: PLR0913
                     "alpha": plan.alpha,
                     "q": plan.q,
                     "procedures": {
-                        name: procedure.model_dump(mode="python")
+                        name: evidence_request_procedure(procedure, mode="python")
                         for name, procedure in plan.procedures.items()
                     },
                 },

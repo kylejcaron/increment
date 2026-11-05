@@ -1190,6 +1190,7 @@ Retired codes and their replacements are listed below.
 | `plan.metric_priors_relative` | `UnsupportedRequestError` | `metric`, `prior` | `increment.plan` |
 | `plan.metrics.unknown` | `InvalidRequestError` | `declared`, `path`, `unknown` | `increment.decision` |
 | `plan.observational.relative_margin` | `UnsupportedRequestError` | `metrics` | `increment.plan` |
+| `plan.primary.alternative_direction` | `InvalidRequestError` | `alternative`, `metric`, `preferred_direction` | `increment.decision` |
 | `plan.unsupported_decision_plan` | `InvalidRequestError` | `path` | `increment.plan` |
 | `power.alpha_finite` | `InvalidRequestError` | `alpha` | `increment.power.sequential` |
 | `power.baseline.avg_cluster_size` | `InvalidRequestError` | `avg_cluster_size` | `increment.power.core` |

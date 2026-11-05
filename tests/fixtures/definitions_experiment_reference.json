@@ -1,6 +1,6 @@
 {
- "provenance": "Captured 2026-11-01 at db79f30b, before the whole-window readout dropped its store keyword: from_definitions(<copy of examples/definitions>, <DuckDB seeded by examples._seed.seed_event_log>, experiment_name='new_onboarding_v2'). The experiment JSON is saved verbatim; never regenerate it. The hash is its identity with recorded column types excluded (captured as 82079d57392aded3d9a3054cca6cf0c56cdcbc7e2d22ac8f768f523eabde1570 when identity still covered them).",
- "hash": "647ebccb8ca651d0c3c17cfba24517aa962fdb807ef0df123cf740fb3945eb6d",
+ "provenance": "Captured 2026-11-01 at db79f30b, before the whole-window readout dropped its store keyword: from_definitions(<copy of examples/definitions>, <DuckDB seeded by examples._seed.seed_event_log>, experiment_name='new_onboarding_v2'). The experiment JSON is saved verbatim; never regenerate it. The hash is its identity with recorded column types excluded (captured as 82079d57392aded3d9a3054cca6cf0c56cdcbc7e2d22ac8f768f523eabde1570 when identity still covered them). Recaptured by the same procedure when compiled decision plans began recording each metric's favorable side, an intended identity change for experiments that declare a direction (previous hash 647ebccb8ca651d0c3c17cfba24517aa962fdb807ef0df123cf740fb3945eb6d).",
+ "hash": "30613226a30fb12053f3e304c7a99cc3696662cbc7ef31b2b6c132d6149dc3c1",
  "experiment": {
   "analysis_context": {
    "cluster": null,
@@ -299,6 +299,7 @@
        },
        "member": true
       },
+      "favorable_side": "greater",
       "inference": {
        "kind": "fixed"
       },
@@ -330,6 +331,7 @@
        },
        "member": false
       },
+      "favorable_side": "greater",
       "inference": {
        "kind": "fixed"
       },
@@ -371,6 +373,7 @@
        },
        "member": true
       },
+      "favorable_side": "greater",
       "inference": {
        "kind": "fixed"
       },
@@ -1026,7 +1029,7 @@
   "operations": {},
   "package_version": "0",
   "registration": {
-   "registration_hash": "2f5e9ca7e5f5b730bc196ad8846bd0c507372671ebe99f071eb5f7d479b72532"
+   "registration_hash": "3f786d2fa86b4fa627347f161bed7f8457f19d665a630ee44cf6ef80b8e73818"
   },
   "request_options": {},
   "schema_version": 1,

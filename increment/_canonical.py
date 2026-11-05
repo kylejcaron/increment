@@ -235,7 +235,13 @@ def declaration_value(value: Any) -> Any:
             ),
         }
     if hasattr(type(value), "model_fields"):
-        return {name: declaration_value(getattr(value, name)) for name in type(value).model_fields}
+        # A field a model adds after identities were recorded stays out while it is None.
+        omitted = getattr(type(value), "_declaration_omits_none", frozenset())
+        return {
+            name: declaration_value(getattr(value, name))
+            for name in type(value).model_fields
+            if not (name in omitted and getattr(value, name) is None)
+        }
     if is_dataclass(value) and not isinstance(value, type):
         return {
             field.name: declaration_value(getattr(value, field.name))

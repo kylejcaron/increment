@@ -19,6 +19,7 @@ from tests.analysis_factory import held_source
 from tests.parity_harness import registrations_line5 as _line5
 from tests.parity_harness.comparison import TOLERANCE
 from tests.parity_harness.expected_differences import (
+    with_declared_favorable_sides,
     with_expected_difference,
     without_binomial_arm_facts,
     without_breakout_family_size,
@@ -165,6 +166,33 @@ def _capture() -> dict:
 
 def test_capture_reuses_decoded_fixture() -> None:
     assert _capture() is _capture()
+
+
+def _captured_directions(outcome: Any) -> dict[str, str | None]:
+    """Each metric's declared direction, as its captured fixed-horizon retained rows carry it."""
+    directions: dict[str, str | None] = {}
+
+    def visit(value: Any, held_under: Any = None) -> None:
+        if isinstance(value, Mapping):
+            if held_under == "retained_row" and value.get("inference") == "fixed":
+                metric, direction = value["metric"], value.get("preferred_direction")
+                assert directions.setdefault(metric, direction) == direction, metric
+            for key, item in value.items():
+                visit(item, key)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+
+    visit(outcome)
+    return directions
+
+
+def _migrated_capture(scenario_id: str, ingress: str, expected: Mapping[str, Any]) -> Any:
+    """The frozen outcome migrated by its recorded differences, with the favorable sides its
+    captured rows declare added to each compiled plan it records."""
+    return with_declared_favorable_sides(
+        with_expected_difference(scenario_id, ingress, expected), _captured_directions(expected)
+    )
 
 
 def _comparable_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1481,7 +1509,7 @@ def test_frozen_capture_outcome(
     if key == ("categorical-cuped-moments-format-13", "from_moments"):
         _assert_raw_moment_components_match_payload(actual)
     modes = _assert_outcome_matches(
-        with_expected_difference(scenario_id, ingress, expected),
+        _migrated_capture(scenario_id, ingress, expected),
         actual,
         allow_raw_moment_identity_drift=(
             key == ("categorical-cuped-moments-format-13", "from_moments")
@@ -1499,7 +1527,7 @@ def test_frozen_capture_outcome(
 def test_subtolerance_moment_mutation_preserves_parity_but_changes_identity() -> None:
     scenario = "categorical-cuped-moments-format-13"
     ingress = "from_moments"
-    expected = _capture()["scenarios"][scenario][ingress]
+    expected = _migrated_capture(scenario, ingress, _capture()["scenarios"][scenario][ingress])
     baseline = cast(dict[str, Any], _line1_actual_outcome(scenario, ingress))
     changed_rows = 0
 

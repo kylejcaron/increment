@@ -235,10 +235,13 @@ def test_compile_uses_margin_abs_tail_and_binding_precedence():
     assert declared_procedure.null_abs == -1.0
     assert declared_procedure.alternative == "greater"
 
-    explicit_plan = compile_contrast_procedures(
-        AnalysisPlan(alternative="less", primary="revenue"), (declared,)
-    )["revenue"]
-    assert explicit_plan.alternative == "less"
+    # A one-sided plan alternative on the primary's adverse side refuses rather than
+    # overriding its margin's tail.
+    with pytest.raises(InvalidRequestError) as adverse:
+        compile_contrast_procedures(
+            AnalysisPlan(alternative="less", primary="revenue"), (declared,)
+        )
+    assert adverse.value.code == "plan.primary.alternative_direction"
 
     bound = compile_contrast_procedures(
         AnalysisPlan(primary=ExperimentMetric(metric="revenue", margin_abs=2.0)),

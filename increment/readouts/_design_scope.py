@@ -16,6 +16,7 @@ from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._source_identity import source_identity
 from increment._source_types import declared_evidence
 from increment.breakout.estimates import LiftEstimates
+from increment.decision import evidence_request_procedure
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.adjust import weight_diagnostics_projection
 from increment.estimation.assignment_integrity import assignment_integrity
@@ -708,7 +709,9 @@ def scope_design_results(  # noqa: PLR0913, PLR0915
         "q": plan.q,
         "declared": plan.declared,
         "procedures": {
-            name: _request_snapshot(value.model_dump(mode="python"), field=f"procedures.{name}")
+            name: _request_snapshot(
+                evidence_request_procedure(value, mode="python"), field=f"procedures.{name}"
+            )
             for name, value in plan.procedures.items()
         },
         **dict(request_extra or {}),

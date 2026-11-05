@@ -5,6 +5,8 @@ import sys
 from typing import Literal, TypedDict, cast
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from scipy.stats import norm as _norm_dist
 from scipy.stats import t as _t_dist
 
@@ -20,7 +22,12 @@ from increment.estimation.inference import (
     infer_lift,
     normal_posterior,
 )
-from increment.estimation.results import LiftEstimate
+from increment.estimation.results import (
+    Estimate,
+    JointContrastReference,
+    LiftEstimate,
+    RelativeConfidenceSet,
+)
 from increment.estimation.sequential import AlwaysValid
 from increment.estimation.variance import se_log_mean as _se_log_mean
 from tests.sequential_cases import registration
@@ -2042,3 +2049,90 @@ def test_infer_lift_keeps_sampling_independent_of_prior():
     assert prior.require_lift() == plain.require_lift()
     assert prior.posterior_available is True
     assert prior.posterior_estimate != plain.require_lift().value
+
+
+def _row(**fields) -> LiftEstimate:
+    return LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        **fields,
+    )
+
+
+@given(
+    value=st.floats(min_value=-0.5, max_value=1.0),
+    below=st.floats(min_value=0.0, max_value=0.4),
+    above=st.floats(min_value=0.0, max_value=0.4),
+    null_lift=st.floats(min_value=-0.5, max_value=0.5),
+    alternative=st.sampled_from(["two-sided", "greater", "less"]),
+)
+@settings(max_examples=200, deadline=None, derandomize=True)
+def test_rejection_side_is_the_side_stat_sig_rejects_on(
+    value, below, above, null_lift, alternative
+):
+    lb, ub = value - below, value + above
+    row = _row(
+        lift=Estimate(value=value, lb=lb, ub=ub, level=0.95),
+        null_lift=null_lift,
+        alternative=alternative,
+    )
+
+    side = row.rejection_side()
+
+    assert (side is not None) == (row.stat_sig() is True)
+    assert side != "split"
+    if side == "greater":
+        assert lb > null_lift
+    if side == "less":
+        assert ub < null_lift
+
+
+def test_rejection_side_is_none_for_unavailable_and_retained_rows():
+    unavailable = _row(
+        lift=Estimate(value=0.1, lb=0.05, ub=0.15, level=0.95), sampling_available=False
+    )
+    retained = _row(lift=Estimate(value=0.1, lb=-0.05, ub=0.25, level=0.95))
+
+    assert (unavailable.stat_sig(), unavailable.rejection_side()) == (None, None)
+    assert (retained.stat_sig(), retained.rejection_side()) == (False, None)
+
+
+def test_binomial_rejection_side_is_the_smaller_one_sided_tail():
+    from tests.estimation._conversion_counts import lift_row
+
+    # Treatment converts at half the control rate: 20 of 200 against 40 of 200.
+    row = lift_row((40, 200, 20, 200), mode="finite_sample")
+    bset = row.binomial_set
+    assert row.reference_kind == "binomial" and bset is not None
+
+    assert bset.null_p_value(0.0, "less") < bset.null_p_value(0.0, "greater")
+    assert row.rejection_side() == "less"
+
+
+def test_relative_set_on_both_sides_of_the_null_rejects_without_a_side():
+    # a = 1, c = 0.1, var_a = 0.01, var_c = 1, z = 1.96: the Fieller set solves
+    # 3.83 t^2 + 0.2 t - 0.9616 >= 0, so it is (-inf, -0.528] U [0.476, inf), excluding 0.
+    relative = RelativeConfidenceSet(
+        reference=JointContrastReference(a=1.0, c=0.1, var_a=0.01, var_c=1.0, cov_ac=0.0),
+        alpha=0.05,
+    )
+    # The additive sidecar is the two-sided Wald interval 1 +/- z * 0.1.
+    z = float(_norm_dist.isf(0.025))
+    abs_lb, abs_ub = 1.0 - z * 0.1, 1.0 + z * 0.1
+    row = _row(
+        lift=relative.estimate(),
+        relative_confidence_set=relative,
+        scale="linear",
+        abs_diff=1.0,
+        abs_se=0.1,
+        abs_reference_kind="normal",
+        abs_lb=abs_lb,
+        abs_ub=abs_ub,
+    )
+    (low, high) = relative.intervals
+    assert low[1] == pytest.approx(-0.528, abs=1e-3) and high[0] == pytest.approx(0.476, abs=1e-3)
+
+    assert row.stat_sig() is True
+    assert row.rejection_side() == "split"

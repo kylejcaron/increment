@@ -340,6 +340,39 @@ cannot be supported by the source or construction, use the specific coded
 refusal and its stated route forward instead of substituting another
 population or inference method.
 
+### Program verdict
+
+`result.decisions.program` combines the primary and guardrail results into one
+ship decision: its `status` is `pass`, `block` or `not_evaluated`, and its
+`reason_codes` say why. Each primary is tested as the plan declares it,
+two-sided by default, and a rejection supports it only on the side its
+`preferred_direction` names. Each verdict in `result.decisions.cells` records
+that side in `direction`: `favorable`, `adverse`, `not_established` (the
+confidence set lies on both sides of the null) or `unspecified` (the metric
+declares no direction). `direction` is `None` when the cell does not reject.
+
+| `status` | Reason code | Meaning |
+|---|---|---|
+| `pass` | none | Every primary rejects on its favorable side, every guardrail is SAFE, and every assignment integrity check reads `not_rejected`. |
+| `block` | `decision.primary.adverse` | A primary rejects on its adverse side: the treatment is significantly worse. |
+| `block` | `decision.primary.not_rejected` | A primary does not reject its null. |
+| `block` | `decision.primary.direction_not_established` | A primary's confidence set lies on both sides of the null, so the side of its effect is not established. |
+| `block` | `decision.guardrail.unsafe` | A guardrail is not certified SAFE. |
+| `block` | `integrity.<status>` | An assignment integrity check reads a status other than `not_rejected`, for example `integrity.failed`; `integrity.unknown` means none was recorded. These codes also accompany every other `block` and `not_evaluated` verdict. |
+| `not_evaluated` | `decision.primary.not_evaluated` | The plan declares no primary, or a primary result is unavailable. |
+| `not_evaluated` | `decision.primary.direction_unspecified` | A primary rejects under a two-sided plan but declares no `preferred_direction`, so neither side is favorable. Declare the direction, or a one-sided `alternative` that names the favorable side. |
+| `not_evaluated` | `decision.guardrail.not_evaluated` | A guardrail result is unavailable. |
+
+When several causes apply, the first of these sets the status: an unavailable
+primary, a primary code that blocks, a rejecting primary with no declared
+direction, an unavailable guardrail, a guardrail that is not SAFE, then
+integrity. A one-sided `alternative` must name the favorable side of every
+primary that declares a direction: a plan that tests a primary's adverse side
+refuses before any data is read, with `plan.primary.alternative_direction`. A
+run saved by an earlier release has no favorable side in its decision plan, so
+deciding it again reads `decision.primary.direction_unspecified` for a
+rejecting primary; run the experiment again to record the sides.
+
 
 ## Fixed horizon: guard the missing point
 

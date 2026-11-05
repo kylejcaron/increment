@@ -49,7 +49,7 @@ from increment.estimation.contrast_results import (
     _validate_retained_window,
 )
 from increment.estimation.decision_types import ContrastDecisionProcedure, FixedInference, NoFamily
-from increment.estimation.results import Estimate
+from increment.estimation.results import Estimate, RejectionSide
 from increment.semantics.unit_cycle import UnitCycleVarianceEnvelope
 
 if TYPE_CHECKING:
@@ -919,6 +919,30 @@ def contrast_stat_sig(result: ContrastResult) -> bool:
     )
 
 
+def contrast_rejection_side(result: ContrastResult) -> RejectionSide | None:
+    """The side of its null the contrast's rejection lies on; ``None`` exactly when
+    :func:`contrast_stat_sig` is False.
+
+    The envelope's point is the retained-window total, whose effect is the point
+    over the positive slope, so its side is the sign of the residual
+    ``point - null_abs * slope`` its p-value tests.
+    """
+    if not contrast_stat_sig(result):
+        return None
+    estimate = result.estimate
+    if result.alternative != "two-sided":
+        return result.alternative
+    if result.method == "switchback_unit_variance_envelope":
+        assert result.mean_slope is not None
+        residual = Fraction(estimate.value) - Fraction(result.null_abs) * Fraction(
+            result.mean_slope
+        )
+        return "greater" if residual > 0 else "less" if residual < 0 else "split"
+    if estimate.lb is not None and estimate.lb > result.null_abs:
+        return "greater"
+    return "less"
+
+
 def estimate_contrast(
     stats: ContrastStats, procedure: ContrastDecisionProcedure
 ) -> DecisionComputation[ContrastResult]:
@@ -982,6 +1006,7 @@ __all__ = [
     "ContrastPartition",
     "compute_contrast",
     "contrast_evidence_available",
+    "contrast_rejection_side",
     "contrast_stat_sig",
     "contrast_runtime_support",
     "estimate_contrast",

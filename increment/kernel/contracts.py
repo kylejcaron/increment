@@ -436,18 +436,27 @@ class Registration(_ContractModel):
 
 @dataclass(frozen=True, slots=True)
 class CompiledPlanBinding:
-    """Versioned portable plan payload bound to a hash-only registration."""
+    """Versioned portable plan payload bound to a hash-only registration.
+
+    ``version`` is the lowest that represents the payload: 2 once a procedure records
+    its favorable side, otherwise 1, so plans without one keep their earlier bytes.
+    """
 
     registration_hash: str
-    version: Literal[1]
+    version: Literal[1, 2]
     _payload: Mapping[str, object] = field(repr=False)
 
     def __post_init__(self) -> None:
-        if self.version != 1 or not self.registration_hash:
+        from importlib import import_module
+
+        if self.version not in (1, 2) or not self.registration_hash:
             _refuse("kernel.request.invalid", field="compiled plan binding")
         payload = _freeze_descriptor_value(dict(self._payload))
         if not isinstance(payload, Mapping):
             _refuse("kernel.request.invalid", field="compiled plan payload")
+        wire = import_module("increment.decision_wire")
+        if wire.plan_binding_version(cast(Mapping[str, object], payload)) != self.version:
+            _refuse("kernel.request.invalid", field="compiled plan binding")
         object.__setattr__(self, "_payload", payload)
         if not Registration(registration_hash=self.registration_hash).matches(self.resolve()):
             _refuse("kernel.request.invalid", field="registration/plan mismatch")
@@ -456,8 +465,9 @@ class CompiledPlanBinding:
     def from_plan(cls, registration: Registration, plan: Any) -> CompiledPlanBinding:
         from importlib import import_module
 
-        encode = import_module("increment.decision_wire").compiled_plan_to_dict
-        return cls(registration.registration_hash, 1, encode(plan))
+        wire = import_module("increment.decision_wire")
+        payload = wire.compiled_plan_to_dict(plan)
+        return cls(registration.registration_hash, wire.plan_binding_version(payload), payload)
 
     @property
     def plan_payload(self) -> dict[str, object]:
@@ -488,7 +498,7 @@ class CompiledPlanBinding:
     def from_payload(cls, payload: Mapping[str, object]) -> CompiledPlanBinding:
         return cls(
             registration_hash=cast(str, payload["registration_hash"]),
-            version=cast(Literal[1], payload["version"]),
+            version=cast(Literal[1, 2], payload["version"]),
             _payload=cast(Mapping[str, object], payload["plan_payload"]),
         )
 

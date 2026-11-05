@@ -1022,6 +1022,17 @@ def null_p_value(
     return _smallest_p(certificates, validated)
 
 
+def null_rejection_tail(
+    r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float, *, tail: float
+) -> Literal["greater", "less"]:
+    """The side of ``H0: R = r`` a two-sided rejection read against *tail* lies on: the tail
+    whose one-sided p-value is the smaller, the one ``p_two = 2 * min(p_+, p_-)`` doubles. Reads
+    the certificates `null_p_value` computes for the same two-sided test."""
+    certificates = _null_certificates(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP, "two-sided", tail)
+    side, _ = min(certificates, key=lambda item: item[1].p)
+    return "greater" if side == "plus" else "less"
+
+
 # --- Monotone inversion ----------------------------------------------------
 
 

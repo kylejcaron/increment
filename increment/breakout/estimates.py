@@ -102,6 +102,7 @@ from increment.estimation.results import (
     DeltaConversionEvidence,
     Estimate,
     LiftEstimate,
+    RejectionSide,
     RelativeConfidenceSet,
     RelativeUnavailableReason,
     _fcr_alpha_for,
@@ -116,6 +117,7 @@ from increment.estimation.results import (
     conversion_route_label,
     open_bound_from_two_sided_at_target,
     row_p_value,
+    row_rejection_side,
     row_stat_sig,
 )
 from increment.estimation.sequential import (
@@ -815,6 +817,12 @@ class BreakoutEstimate(_RowIdentity):
         ``False``; sequential cells use their retained confidence-sequence verdict.
         The same verdict ``LiftEstimate.stat_sig()`` and the readout frame report."""
         return row_stat_sig(self)
+
+    def rejection_side(self) -> RejectionSide | None:
+        """The side of its null this cell's significant result lies on; ``None``
+        exactly when ``stat_sig()`` is not True. The same rule as
+        ``LiftEstimate.rejection_side()``."""
+        return row_rejection_side(self)
 
     def p_value(self) -> float | None:
         """This cell's prior-free sampling p-value against its own null, or
@@ -1571,6 +1579,13 @@ class DailyLiftEstimate(_RowIdentity):
         ``LiftEstimate.stat_sig()`` and the readout frame report."""
         self._require_sampling_marker()
         return row_stat_sig(self)
+
+    def rejection_side(self) -> RejectionSide | None:
+        """The side of its null this day's significant result lies on; ``None``
+        exactly when ``stat_sig()`` is not True. The same rule as
+        ``LiftEstimate.rejection_side()``."""
+        self._require_sampling_marker()
+        return row_rejection_side(self)
 
     def p_value(self) -> float | None:
         """This day's prior-free sampling p-value against its own null, or

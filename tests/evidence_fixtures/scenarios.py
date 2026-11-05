@@ -53,6 +53,7 @@ from tests.parity_harness.cases import (
     _capture_kwargs,
     _close_parity_binding,
 )
+from tests.parity_harness.expected_differences import declared_directions
 
 TEMPORAL_IDS = frozenset(
     {
@@ -69,6 +70,17 @@ ASOF_TRANSFORM_BASES = (
     "conversion_route_breakout_segments",
     "audit-retention-breakout-cohorts",
 )
+# A moments replay whose cube carries the compiled plan of a source that declares more than the
+# replay does: the ingress that builds that exporting source.
+_REPLAY_EXPORTERS = {
+    (scenario, "from_moments"): "from_definitions"
+    for scenario in (
+        "audit-compliance-only-sequential-unbounded-retention-catalog",
+        "triggered_sequential_asymptotic_mean",
+        "sequential_registered_registration_native_artifact_identity",
+        "sequential_explicit_registration_native_artifact_identity",
+    )
+} | {("portable_subset_with_winsorized_sibling", "from_moments"): "from_unit_summary"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +113,9 @@ class AcquiredScenario:
     missing_representations: tuple[str, ...]
     source_input_hashes: tuple[str, ...]
     source_membership_identity: dict[str, Any] | None
+    # Each metric's declared preferred_direction, None where it declares none, in the experiment
+    # whose compiled plan the coordinate reads: the exporting one for a replay that declares less.
+    declared_directions: Mapping[str, str | None]
 
 
 def _family(case: Any) -> str:
@@ -1496,6 +1511,18 @@ def _attach_warehouse_inputs(configuration, receipts):
         configuration.setdefault("assembly", {})["warehouse_input_receipts"] = receipts
 
 
+def _plan_declarations(case, scenario_id, ingress, bound):
+    """Each metric's declared direction in the experiment whose compiled plan ``bound`` reads."""
+    exporter = _REPLAY_EXPORTERS.get((scenario_id, ingress))
+    if exporter is None:
+        return declared_directions(bound[0])
+    exporting = case.build[exporter]()
+    try:
+        return declared_directions(exporting[0])
+    finally:
+        _close_parity_binding(exporting)
+
+
 def acquire_scenario(  # noqa: PLR0915
     scenario_id: str,
     ingress: str,
@@ -1532,6 +1559,7 @@ def acquire_scenario(  # noqa: PLR0915
     format_inputs = bound.moment_inputs if isinstance(bound, BoundWithMomentInputs) else ()
     stack = ExitStack()
     try:
+        declared = _plan_declarations(case, scenario_id, ingress, bound)
         binding = binding_for(*bound)
         source = readout_source(binding, population=case.population)
         provider = evidence_provider(source)
@@ -2013,6 +2041,7 @@ def acquire_scenario(  # noqa: PLR0915
                 missing,
                 tuple(source_input_hashes),
                 source_membership_identity,
+                declared,
             )
 
         if (
@@ -2152,6 +2181,7 @@ def acquire_scenario(  # noqa: PLR0915
             missing,
             tuple(source_input_hashes),
             source_membership_identity,
+            declared,
         )
     finally:
         stack.close()
