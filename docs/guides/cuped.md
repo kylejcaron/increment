@@ -210,6 +210,15 @@ semantics apply to frame, definitions, and artifact readouts in either method
 role. A requested column that does not exist is instead a request incompatibility
 and is rejected before evidence acquisition.
 
+Either fill keeps the adjusted estimate unbiased only when the reason values
+are missing has nothing to do with the arm, in a sense that depends on the
+fill. A zero fill needs whether a value is missing to be unrelated to the arm,
+as it is for units with no history before the experiment; a join or logging
+step that lost more values in one arm breaks it. A mean fill tolerates one arm
+losing more values, as long as which values went missing is unrelated to their
+size; a join that fails only for low-spending users in one arm breaks it. The
+imputation warning states the condition for the fill it applied.
+
 The policy belongs to each metric's method, never to the shared covariate table.
 The pooled mean uses the full per-unit covariate population before an outcome's
 `missing="skip"` leaves out units without a value, including when that summary
@@ -298,9 +307,11 @@ experiments:
     control_group: C
 ```
 
-A unit with no pre-period activity gets zero in both groups. Under
-randomization, this preserves independence from assignment; such units
-contribute less precision.
+A unit with no pre-period activity gets zero in both groups. The window closes
+at each unit's own first exposure, so under randomization whether a unit has
+pre-period activity does not depend on its arm, and the zero fill preserves
+independence from assignment; such units contribute less precision. Exposure
+timestamps recorded differently by arm break that condition.
 
 `n_pre_periods` supplies the covariate but does not request the adjustment,
 and the covariate is not queried until a CUPED method is requested. Add CUPED
@@ -767,9 +778,13 @@ pre-period history. Watch for:
 - **Little correlation:** with $\rho \approx 0$, $\theta \approx 0$, so the
   adjustment does little. This is common in new-user experiments, where
   zero-filled history predicts little.
-- **Constant covariate:** zero variance makes $\theta$ undefined. The
-  estimator raises a `ValueError` rather than reporting an unadjusted
-  estimate under a CUPED label.
+- **Constant covariate:** a covariate constant in every arm makes $\theta$
+  undefined, so the CUPED cell is unavailable with
+  `estimation.cuped.covariate_zero_variance` rather than reporting an
+  unadjusted estimate under a CUPED label. A covariate constant in only one
+  arm still fits $\theta$ from the other arm; that usually means the covariate
+  was built differently for that arm, for example every value missing and
+  filled with zero.
 - **Quantile metrics:** these reject CUPED covariates because a quantile is not
   a mean of per-unit values. [Ratio metrics](#ratio-metrics) adjust both
   components with one covariate.
@@ -1206,8 +1221,12 @@ warehouse.
     allocation or matching within-group slopes. Fitting a separate $\theta$
     for each group would reintroduce bias.
 
-    Because $X$ is independent of assignment, adjustment preserves the
-    target difference. When both groups share a slope, the approximate
+    When $X$ is independent of assignment, as a value measured before
+    randomization is, adjustment preserves the target difference. That is an
+    assumption about how the covariate was built for each arm: a covariate
+    that depends on the arm shifts the adjusted difference by
+    $-\theta\,(\mathbb{E}[\bar{X}_t] - \mathbb{E}[\bar{X}_c])$, a bias that does
+    not shrink with sample size. When both groups share a slope, the approximate
     variance-reduction factor is:
 
     $$

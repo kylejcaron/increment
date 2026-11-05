@@ -147,12 +147,15 @@ def pooled_mean[FrameT: "IntoDataFrame"](
     observed values: deterministic mean imputation.
 
     Safe for a randomized design's pre-period covariate (e.g. a CUPED
-    baseline): the mean is computed from the pooled column only, never
-    from the arm or outcome, so randomization keeps the treatment effect
-    unbiased - the only cost is that imputed units add no variance
-    reduction. Not safe for an observational adjustment covariate, where
-    imputing a confounder without its missingness indicator hides residual
-    confounding; use `AdjustmentSet(missing="impute-indicator")` instead.
+    baseline) when which values are missing is unrelated to their values,
+    even if the missing share differs by arm. The fill uses the pooled column
+    only, never the arm or outcome, so imputed units only forgo variance
+    reduction. Values lost selectively in one arm (a join that fails for low
+    values) bias the adjustment under any fill, and a zero fill is biased
+    whenever the missing share differs by arm. Not safe for an observational
+    adjustment covariate, where imputing a confounder without its missingness
+    indicator hides residual confounding; use
+    `AdjustmentSet(missing="impute-indicator")` instead.
 
     Integer columns are promoted to Float64. A column with no observed
     values raises. Returns `(frame, affected_count)`.
