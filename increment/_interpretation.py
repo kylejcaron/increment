@@ -1015,6 +1015,30 @@ def _effect_text(projection: EffectEstimate, *, label: str = "effect") -> str | 
     return text
 
 
+def _confidence_set_text(projection: EffectEstimate) -> str | None:
+    """Format a retained confidence set and its geometry when no point interval shows it."""
+    if projection.point is not None and (
+        projection.lower is not None or projection.upper is not None
+    ):
+        return None
+    intervals = projection.intervals or (
+        ((projection.lower, projection.upper),)
+        if projection.lower is not None or projection.upper is not None
+        else ()
+    )
+    if not intervals and projection.geometry in (None, "unavailable"):
+        return None
+    factor = 100 if projection.value_scale == "relative" else 1
+    suffix = "%" if factor == 100 else ""
+    pieces = " ∪ ".join(
+        f"[{'−∞' if low is None else f'{low * factor:.6g}'}, "
+        f"{'+∞' if high is None else f'{high * factor:.6g}'}]"
+        for low, high in intervals
+    )
+    text = f"set={pieces}{suffix}" if intervals else "set=∅"
+    return text if projection.geometry is None else f"{text} ({projection.geometry})"
+
+
 def _display_source(source_id: str | None) -> str | None:
     if source_id is None:
         return None

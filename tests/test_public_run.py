@@ -1449,7 +1449,9 @@ def _sequential_panel_run():
     return result, views
 
 
-def test_run_result_repr_is_a_compact_readout():
+def test_run_result_repr_is_a_compact_readout(tmp_path):
+    from random import Random
+
     from tests.analysis_factory import lift_rows
 
     result = _two_metric_run()
@@ -1461,6 +1463,42 @@ def test_run_result_repr_is_a_compact_readout():
     for row in lift_rows(result.readout()):
         assert row.metric in text
         assert f"{row.require_lift().value * 100:.6g}%" in text
+
+    # A daily row with an estimate prints as available.
+    daily = View(view="daily", grain="daily")
+    daily_run, _, _ = _daily_panel_run(tmp_path, (daily,))
+    daily_lines = [line for line in repr(daily_run).splitlines() if "date=" in line]
+    estimated = [row for row in cast(Any, daily_run.readout(daily)) if row.lift is not None]
+    assert estimated and len(daily_lines) == len(daily_run.cells)
+    for row in estimated:
+        (line,) = (line for line in daily_lines if f"date={row.ds}" in line)
+        assert "status=available" in line
+
+    # A conversion with no control events keeps its exact set without a point.
+    rng = Random(13)
+    arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(200)]
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            {
+                "unit": [f"u{i:03d}" for i in range(200)],
+                "arm": arms,
+                "converted": [int(arm == "treatment" and i % 5 < 2) for i, arm in enumerate(arms)],
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"converted": "conversion"},
+    )
+    with reader:
+        conversion = run(experiment, reader)
+    (row,) = lift_rows(conversion.readout())
+    assert row.lift is None and row.binomial_set is not None
+    (line,) = (line for line in repr(conversion).splitlines() if line.startswith("converted"))
+    assert f"{row.binomial_set.lower * 100:.6g}" in line
+    assert row.binomial_set.geometry in line
+    assert "status=available" in line
 
 
 def test_run_result_summary_frame_matches_view_summaries(tmp_path):

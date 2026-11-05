@@ -7,7 +7,7 @@ keep one format:
 
 | Need | Read | Format |
 |---|---|---|
-| A quick look at the prompt | `print(result)` | The run id, the program verdict and one line per cell: its metric, arm, segment and day, any other coordinate that differs between the view's cells (such as method, population, estimand or scale), its effect and interval at six significant digits (percent for relative effects) and its status. A run of several views lists each view's cells under its own heading, at most 20 per view. |
+| A quick look at the prompt | `print(result)` | The run id, the program verdict and one line per cell: its metric, arm, segment and day, any other coordinate that differs between the view's cells (such as method, population, estimand or scale), its effect and interval at six significant digits (percent for relative effects), any retained confidence set the interval does not show, with its geometry, and its status: `available` when the row retains an estimate or set, otherwise the row's failure code. A run of several views lists each view's cells under its own heading, at most 20 per view. |
 | The full result collection one view produced | `result.readout(view)` | The `LiftEstimates`, `BreakoutEstimates`, `DailyLiftEstimates`, `DailyMetricValues` or `ContrastResults` described below, with every row field and live confidence set. `model_dump_json()` writes its full-row JSON. |
 | One frame of every result row | `result.to_frame()` | Each row's `scope_view`, `scope_values` and `scope_key`, then its collection's `to_frame` columns, with qualification columns that describe the whole run. `columns="summary"` keeps each view's compact preset. |
 | Portable cells to exchange or archive | `result.envelope.to_payload()` or `.to_arrow()` | Versioned result cells and run metadata; no raw outcomes. |
@@ -451,8 +451,9 @@ string, such as `columns="lift"`, raises `results.frame.columns_string`; pass
     decision statistics (`stat_sig`, `p_value`, and `p_value_reason_code`) and
     available arm unit counts and raw means (`n_control`, `n_treat`,
     `mean_control`, and `mean_treat`), plus row identity (`estimand` and
-    `value_scale`), `population`, which names the observed units a
-    `missing="skip"` metric was computed on and is null on other rows,
+    `value_scale`), `population`, a population qualification, including skipped
+    outcomes and identification restrictions, null when the row covers its whole
+    analysis population,
     `decision_scope_complete`, and `multiplicity_status`; breakout
     and daily summaries also retain segment identity and daily unavailability
     reasons. Models without a summary preset refuse. Every view appends

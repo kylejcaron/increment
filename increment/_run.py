@@ -210,7 +210,13 @@ class RunResult:
         )
 
     def __repr__(self) -> str:
-        from increment._interpretation import _cell_coordinates, _effect_text, _varying_fields
+        from increment._interpretation import (
+            _cell_coordinates,
+            _confidence_set_text,
+            _effect_text,
+            _has_sampling_result,
+            _varying_fields,
+        )
         from increment.breakout.projection import scope_key
 
         program = self.decisions.program
@@ -225,6 +231,7 @@ class RunResult:
             scope = cell.identity.scope
             views.setdefault(None if scope is None else scope_key(scope), []).append(index)
         indent = "  " if len(views) > 1 else ""
+        rows = result_rows(self.cells, self.live_rows)
         names = {
             "run": "Whole-window",
             "breakout": "Breakout",
@@ -255,10 +262,21 @@ class RunResult:
                     text = f"{name} unavailable"
                     if effect is not None and effect.reason is not None:
                         text += f" ({effect.reason})"
-                status = cell.components["sampling"][0]
-                text += f"; status={status.state}"
-                if status.code is not None:
-                    text += f"; code={status.code}"
+                confidence_set = None if effect is None else _confidence_set_text(effect)
+                if confidence_set is not None:
+                    text += f"; {confidence_set}"
+                # A retained estimate or set is available whatever its portable operations;
+                # otherwise the row's own failure, then the cell's status, says why not.
+                row = rows[index]
+                if _has_sampling_result(row):
+                    text += "; status=available"
+                elif getattr(row, "failure_code", None) is not None:
+                    text += f"; status=unavailable; code={row.failure_code}"
+                else:
+                    status = cell.components["sampling"][0]
+                    text += f"; status={status.state}"
+                    if status.code is not None:
+                        text += f"; code={status.code}"
                 lines.append(f"{indent}{_cell_coordinates(cell.identity.key, varying)}: {text}")
             if len(indexes) > _REPR_CELLS_PER_VIEW:
                 lines.append(f"{indent}… {len(indexes) - _REPR_CELLS_PER_VIEW} more cells")

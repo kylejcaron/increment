@@ -199,19 +199,21 @@ values.
   readout instead of every stored field: the run id, the program verdict and
   its reason codes, then one line per cell with its metric, arm, segment, day
   and any coordinate that differs between the cells of its view, its effect and
-  interval at six significant digits, and its status, ending with where to read
-  the full result. A run of several views lists each view under its own heading,
-  at most 20 cells per view. `RunResult.to_frame(columns="summary")` returns
-  each view's compact preset with the scope columns and `view_partial`, and
-  refuses with `results.frame.summary_unavailable` when a view's collection has
-  no preset. The whole-window, breakout and daily lift `"summary"` presets, of
+  interval at six significant digits, any retained confidence set the interval
+  does not show, with its geometry, and whether its estimate is available,
+  ending with where to read the full result. A run of several views lists each
+  view under its own heading, at most 20 cells per view.
+  `RunResult.to_frame(columns="summary")` returns each view's compact preset
+  with the scope columns and `view_partial`, and refuses with
+  `results.frame.summary_unavailable` when a view's collection has no preset.
+  The whole-window, breakout and daily lift `"summary"` presets, of
   `RunResult.to_frame` and of `readout(view).to_frame`, gain a `population`
-  column: the observed-population label of a `missing="skip"` metric, null on
-  other rows. A single column name passed as a string to any `to_frame(columns=)`
-  refuses with the new `results.frame.columns_string` instead of
-  `results.frame.unknown_columns` listing its letters; pass a list such as
-  `columns=["lift"]`. Results, saved cells and experiment identity hashes are
-  unchanged.
+  column: a population qualification, including skipped outcomes and
+  identification restrictions. A single column name passed as a string to any
+  `to_frame(columns=)` refuses with the new `results.frame.columns_string`
+  instead of `results.frame.unknown_columns` listing its letters; pass a list
+  such as `columns=["lift"]`. Results, saved cells and experiment identity
+  hashes are unchanged.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra
