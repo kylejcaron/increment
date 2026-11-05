@@ -204,6 +204,10 @@ class UnsupportedRequestError(CodedError, NotImplementedError):
     """Raised when a recognized request is not supported."""
 
 
+class MissingExtraError(CodedError, ImportError):
+    """Raised when an optional extra a feature needs is not installed."""
+
+
 def _new_coded_warning(cls: type[IncrementWarning]) -> IncrementWarning:
     """Allocate a bare instance for unpickling; `__setstate__` restores
     every attribute, mirroring `_new_coded_error`."""
