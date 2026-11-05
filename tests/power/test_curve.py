@@ -4,6 +4,7 @@ import math
 from itertools import product
 from typing import Any, Literal
 
+import numpy as np
 import pytest
 
 from increment.errors import InvalidRequestError
@@ -172,6 +173,19 @@ class TestFixedPowerCurve:
             (1_000, 0.05, 0.05),
             (1_000, 0.05, 0.05),
         ]
+
+    def test_numpy_integer_sizes_match_python_ints(self):
+        """An ``np.arange`` grid, or a list of the numpy integers it holds,
+        plans exactly as the list of Python ints."""
+        kwargs: dict[str, Any] = {
+            "relative_lift": 0.05,
+            "procedure": PROCEDURE,
+            "baseline": BASELINE,
+        }
+        expected = power_curve(n_per_arm=[1_000, 2_000, 3_000], **kwargs)
+        grid = np.arange(1_000, 3_001, 1_000)
+        assert power_curve(n_per_arm=grid, **kwargs) == expected  # ty: ignore[invalid-argument-type]
+        assert power_curve(n_per_arm=list(grid), **kwargs) == expected
 
     def test_procedure_and_target_power_do_not_mutate_design(self):
         design = PowerDesign(power=0.8, allocation=0.25)
@@ -425,10 +439,17 @@ class TestPowerCurveValidation:
             )
         assert raised.value.code == code
 
-    def test_string_sample_size_is_rejected_as_a_scalar(self):
+    @pytest.mark.parametrize(
+        "n_per_arm",
+        [
+            pytest.param("1000", id="string"),
+            pytest.param(np.array([[1_000, 2_000]]), id="matrix"),
+        ],
+    )
+    def test_sample_size_must_be_a_scalar_or_sequence(self, n_per_arm: Any):
         with pytest.raises(InvalidRequestError) as raised:
             power_curve(
-                n_per_arm="1000",  # ty: ignore[invalid-argument-type]
+                n_per_arm=n_per_arm,
                 relative_lift=0.05,
                 baseline=BASELINE,
                 procedure=PROCEDURE,

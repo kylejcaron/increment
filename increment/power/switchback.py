@@ -41,6 +41,7 @@ from increment.power._search import (
     float_ordinal,
     require_reason_when_null,
 )
+from increment.power._validation import _as_count
 from increment.semantics.assignment import SwitchbackAssignment
 
 UnavailableReason = Literal[
@@ -432,8 +433,9 @@ def _prepare(
     return baseline, procedure, reason
 
 
-def _check_n(n: int) -> None:
-    if isinstance(n, bool) or not isinstance(n, int) or not 2 <= n <= 2**53:
+def _check_n(n: object) -> int:
+    count = _as_count(n)
+    if count is None or not 2 <= count <= 2**53:
         _invalid(
             "n",
             "n must be an independent unit/block integer in [2, 2**53]",
@@ -441,6 +443,7 @@ def _check_n(n: int) -> None:
             value=n,
             constraint="integer in [2, 2**53], excluding bool",
         )
+    return count
 
 
 def _check_target(target: float) -> None:
@@ -560,7 +563,7 @@ def switchback_achieved_power(
     remains positive for power calculation; only an unrepresentable SE is null.
     Effects are normalized to binary64 before calculation and recording.
     """
-    _check_n(n)
+    n = _check_n(n)
     try:
         delta = float(delta)
     except (TypeError, ValueError, OverflowError):
@@ -889,7 +892,7 @@ def switchback_minimum_detectable_effect(
     A zero-variance maximum is excluded. c=0 is a constant positive
     half-line; a=c=0 is wholly degenerate. Asymptote equality is unattained.
     """
-    _check_n(n)
+    n = _check_n(n)
     _check_target(target_power)
 
     def failed(reason: UnavailableReason) -> SwitchbackPowerResult:

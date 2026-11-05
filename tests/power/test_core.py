@@ -914,6 +914,24 @@ class TestEdgeCases:
 
         assert 0.0 < result.power < 1.0
 
+    def test_numpy_integer_sizes_match_python_ints(self):
+        """A size read from a dataframe column is a numpy integer; it plans
+        exactly as the Python int it holds."""
+        b = Baseline(mean=20.0, var=400.0)
+        expected = achieved_power(5000, 0.05, b)
+        assert achieved_power(np.int64(5000), 0.05, b) == expected  # ty: ignore[invalid-argument-type]
+        assert achieved_power(np.int32(5000), 0.05, b) == expected  # ty: ignore[invalid-argument-type]
+        mde = minimum_detectable_effect(np.int64(5000), b)  # ty: ignore[invalid-argument-type]
+        assert mde == minimum_detectable_effect(5000, b)
+        sequential = make_procedure(inference=GaussianScoreMixture(), population="assigned")
+        assert achieved_power(
+            5000,
+            0.05,
+            b,
+            sequential,
+            planned_looks=np.int64(3),  # ty: ignore[invalid-argument-type]
+        ) == achieved_power(5000, 0.05, b, sequential, planned_looks=3)
+
     def test_from_summary(self):
         """Baseline.from_summary extracts mean verbatim and inflates var
         to its own sampling-uncertainty upper confidence bound (matches
@@ -3135,10 +3153,42 @@ class TestBoundedDomain:
             achieved_power(4, math.nextafter(1.0, math.inf), baseline, procedure)
         assert refusal.value.code == "power.bounded_metric.rate_above_one"
 
+    @pytest.mark.parametrize(("p0", "lift"), [(0.8, 0.25), (0.1, 9.0), (0.5, 1.0)])
+    def test_bounded_rate_of_exactly_one_is_admissible(self, p0, lift):
+        """``p0 * (1 + lift)`` is one as written, though ``log(p0) +
+        log1p(lift)`` may round above zero. The count route answers, and the
+        closed form keeps only the control term, ``se2 = (1 - p0) / (n p0)``."""
+        baseline = Baseline.from_proportion(p0)
+        result = achieved_power(20, lift, baseline, ArmPlanningProcedure.standard("conversion"))
+        assert math.isfinite(result.power)
+        assert 0.0 < result.power <= 1.0
+        procedure = _absorbed(metric_type="conversion", alternative="greater")
+        nc = math.log1p(lift) / math.sqrt((1.0 - p0) / (20 * p0))
+        assert achieved_power(20, lift, baseline, procedure).power == pytest.approx(
+            float(norm.sf(norm.isf(0.05) - nc)), rel=1e-12
+        )
+
+    def test_bounded_rate_above_one_refuses(self):
+        with pytest.raises(InvalidRequestError) as refusal:
+            achieved_power(
+                20,
+                0.2500001,
+                Baseline.from_proportion(0.8),
+                ArmPlanningProcedure.standard("conversion"),
+            )
+        assert refusal.value.code == "power.bounded_metric.rate_above_one"
+        assert cast("float", refusal.value.context["implied_rate"]) > 1.0
+
     def test_mde_stops_at_the_rate_ceiling(self):
         """A target the ceiling rate just reaches returns the ceiling; one it
         cannot reach is unattainable with that limiting condition, and a
-        supplied-effect query there keeps its answer with a null companion."""
+        supplied-effect query there keeps its answer with a null companion.
+        The ceiling is the rate as written: a lift of 0.25 on 0.8 is exactly
+        one, and 2.333333333333333 is the last float lift on 0.3 at or below
+        one, so a minimum detectable effect is always one the supplied-effect
+        route evaluates. A ceiling effect keeps its distance from an adjacent
+        null: lift 4.0 on 0.2 sits one float above the null 3.9999999999999996,
+        so it still has a size."""
         from increment.errors import InvalidRequestError
 
         baseline = Baseline.from_proportion(0.5)
@@ -3151,6 +3201,33 @@ class TestBoundedDomain:
         assert at_ceiling.mde_relative == pytest.approx(1.0, rel=1e-15)
         assert baseline.mean * (1.0 + at_ceiling.mde_relative) <= 1.0
         assert at_ceiling.power >= ceiling_power
+
+        exactly_one = Baseline.from_proportion(0.8)
+        reached = achieved_power(4, 0.25, exactly_one, procedure).power
+        mde = minimum_detectable_effect(
+            4, exactly_one, procedure, PowerDesign(power=reached)
+        ).mde_relative
+        assert mde is not None
+        assert mde == pytest.approx(0.25, rel=1e-15)
+        assert achieved_power(4, mde, exactly_one, procedure).power >= reached
+
+        last_below = Baseline.from_proportion(0.3)
+        top = achieved_power(4, 2.333333333333333, last_below, procedure).power
+        with pytest.raises(InvalidRequestError) as beyond:
+            minimum_detectable_effect(
+                4, last_below, procedure, PowerDesign(power=math.nextafter(top, math.inf))
+            )
+        assert beyond.value.code in {
+            "power.minimum_detectable_effect.unattainable",
+            "power.minimum_detectable_effect.unrepresentable",
+        }
+
+        adjacent_null = _absorbed(
+            metric_type="conversion", alternative="greater", null_lift=3.9999999999999996
+        )
+        sized = required_sample_size(4.0, Baseline.from_proportion(0.2), adjacent_null)
+        assert math.isfinite(sized.n_per_arm)
+        assert sized.n_per_arm > 0
 
         with pytest.raises(InvalidRequestError) as refusal:
             minimum_detectable_effect(4, baseline, procedure, PowerDesign(power=0.8))
@@ -4021,11 +4098,19 @@ class TestCodedRefusals:
             required_sample_size(0.1, Baseline(mean=1.0, var=1.0), absolute)
         assert exc_info.value.code == "power.power_solvers_relative"
 
-    def test_n_per_arm_must_be_an_integer(self):
+    @pytest.mark.parametrize(
+        "n_per_arm",
+        [
+            pytest.param(1.5, id="float"),
+            pytest.param(np.float64(5000.0), id="integral-numpy-float"),
+            pytest.param(np.bool_(True), id="numpy-bool"),
+        ],
+    )
+    def test_n_per_arm_must_be_an_integer(self, n_per_arm):
         with pytest.raises(InvalidRequestError) as exc_info:
-            achieved_power(1.5, 0.1, Baseline(mean=1.0, var=1.0), make_procedure())  # ty: ignore[invalid-argument-type]
+            achieved_power(n_per_arm, 0.1, Baseline(mean=1.0, var=1.0), make_procedure())
         assert exc_info.value.code == "power.core.n_per_arm_int"
-        assert exc_info.value.context["n_per_arm"] == 1.5
+        assert exc_info.value.context["n_per_arm"] == n_per_arm
 
     def test_sequential_sample_size_gives_up_when_unresolved(self, monkeypatch):
         """With the crossing quadrature ceiled, no probed size resolves and the

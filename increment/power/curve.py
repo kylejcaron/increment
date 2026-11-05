@@ -21,6 +21,7 @@ from typing import (
 )
 
 import narwhals as nw
+import numpy as np
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -33,6 +34,7 @@ from increment.errors import (
     refusals,
 )
 from increment.estimation.arm_contract import ArmPlanningProcedure
+from increment.power._validation import _as_count
 from increment.power.core import (
     Baseline,
     MdeUnavailableReason,
@@ -207,8 +209,10 @@ class _CurveJob:
 
 
 def _as_tuple[T](name: str, value: T | Sequence[T]) -> tuple[T, ...]:
-    if isinstance(value, (str, bytes)):
+    if isinstance(value, (str, bytes)) or (isinstance(value, np.ndarray) and value.ndim > 1):
         _raise("power.scalar_numeric_sequence", name=name)
+    if isinstance(value, np.ndarray) and value.ndim == 1:
+        value = cast("np.ndarray", value).tolist()
     values = tuple(cast("Sequence[T]", value)) if isinstance(value, Sequence) else (value,)
     if not values:
         _raise("power.empty", name=name)
@@ -221,12 +225,16 @@ def _validated_design(base: PowerDesign, *, power: float) -> PowerDesign:
     return PowerDesign.model_validate(values)
 
 
-def _validate_sample_sizes(values: tuple[int, ...]) -> None:
+def _validate_sample_sizes(values: tuple[object, ...]) -> tuple[int, ...]:
+    sizes: list[int] = []
     for value in values:
-        if isinstance(value, bool) or not isinstance(value, int):
+        size = _as_count(value)
+        if size is None:
             _raise("power.curve.n_per_arm_int", value=value)
-        if value < 2:
+        if size < 2:
             _raise("power.curve.n_per_arm_min", value=value)
+        sizes.append(size)
+    return tuple(sizes)
 
 
 def _validate_units_per_week(units_per_week: float | None) -> None:
@@ -402,8 +410,7 @@ def power_curve(
         procedures += (validated_procedure,)
 
     base = PowerDesign() if design is None else PowerDesign.model_validate(design)
-    sample_sizes = _as_tuple("n_per_arm", n_per_arm)
-    _validate_sample_sizes(sample_sizes)
+    sample_sizes = _validate_sample_sizes(_as_tuple("n_per_arm", n_per_arm))
     _validate_units_per_week(units_per_week)
     _validate_max_workers(max_workers)
 

@@ -649,20 +649,20 @@ path = "increment.power.switchback"
 layer = "core"
 depends_on = [
   "increment.compatibility", "increment.errors", "increment.estimation", "increment.estimation.decision_types",
-  "increment.power._noncentral_t", "increment.power._search", "increment.semantics",
+  "increment.power._noncentral_t", "increment.power._search", "increment.power._validation", "increment.semantics",
 ]
 
 [[modules]]
 path = "increment.power.curve"
 layer = "core"
-depends_on = ["increment._literals", "increment.decision", "increment.errors", "increment.estimation", "increment.power.core"]
+depends_on = ["increment._literals", "increment.decision", "increment.errors", "increment.estimation", "increment.power._validation", "increment.power.core"]
 
 [[modules]]
 path = "increment.power.unit_cycle"
 layer = "core"
 depends_on = [
   "increment._unit_cycle", "increment.errors", "increment.estimation.decision_types",
-  "increment.power._search", "increment.semantics",
+  "increment.power._search", "increment.power._validation", "increment.semantics",
 ]
 
 [[modules]]

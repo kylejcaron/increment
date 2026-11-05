@@ -154,6 +154,7 @@ from increment.power._shared import (
     validate_relative_lift as _validate_relative_lift,
 )
 from increment.power._validation import (
+    _as_count,
     _require_finite,
     _require_relative_domain,
     _validate_planned_looks,
@@ -1327,8 +1328,33 @@ _BOUNDED_METRIC_BASELINE = RefusalSpec(
 _BOUNDED_METRIC_RATE_ABOVE_ONE = RefusalSpec(
     "power.bounded_metric.rate_above_one",
     InvalidRequestError,
-    template="{metric_type} planning at baseline rate {mean:.6g}: the {role} lift implies a rate of {implied_rate:.6g}, above one -- an alternative that cannot occur is not a conservative approximation; lower the lift or the baseline rate",
+    template="{metric_type} planning at baseline rate {mean:.6g}: the {role} lift implies a rate of {implied_rate!r}, which exceeds one -- an alternative that cannot occur is not a conservative approximation; lower the lift or the baseline rate",
 )
+
+
+def _written(value: float) -> Fraction:
+    """A float as written: the shortest decimal that reads back as it."""
+    return Fraction(repr(float(value)))
+
+
+def _refuse_rate_above_one(
+    procedure: ArmPlanningProcedure,
+    baseline: Baseline,
+    rate: Fraction,
+    *,
+    role: str,
+    **lifts: float,
+) -> NoReturn:
+    """Refuse a bounded rate above one, reported as a float above one even
+    where the float nearest the rate is one itself."""
+    refuse(
+        _BOUNDED_METRIC_RATE_ABOVE_ONE,
+        metric_type=procedure.metric.metric_type,
+        mean=baseline.mean,
+        role=role,
+        implied_rate=max(float(rate), math.nextafter(1.0, math.inf)),
+        **lifts,
+    )
 
 
 def _bounded_preflight(
@@ -1337,7 +1363,10 @@ def _bounded_preflight(
     """Whether the Bernoulli variance shape applies, refusing a bounded
     baseline outside ``(0, 1)`` or a null rate above one before any
     calculation. Invalid bounded inputs never fall through to the
-    unbounded model."""
+    unbounded model. Solvers re-derive the null's log ratio from
+    ``null_lift``, so a null whose log rate rounds above zero cannot be
+    moved onto the boundary and is refused even at a rate of one as
+    written."""
     if not _is_bounded_metric(procedure):
         return False
     if not 0.0 < baseline.mean < 1.0:
@@ -1346,24 +1375,37 @@ def _bounded_preflight(
             metric_type=procedure.metric.metric_type,
             mean=baseline.mean,
         )
-    _require_bounded_rate(procedure, baseline, theta=math.log1p(null_lift), role="null")
+    rate = _written(baseline.mean) * (1 + _written(null_lift))
+    if rate > 1 or math.log(baseline.mean) + math.log1p(null_lift) > 0.0:
+        _refuse_rate_above_one(procedure, baseline, rate, role="null")
     return True
 
 
-def _require_bounded_rate(
-    procedure: ArmPlanningProcedure, baseline: Baseline, *, theta: float, role: str, **lifts: float
-) -> None:
-    """Refuse a bounded rate ``m0 * exp(theta)`` above one, judged in log space."""
-    log_rate = math.log(baseline.mean) + theta
-    if log_rate > 0.0:
-        refuse(
-            _BOUNDED_METRIC_RATE_ABOVE_ONE,
-            metric_type=procedure.metric.metric_type,
-            mean=baseline.mean,
-            role=role,
-            implied_rate=math.exp(log_rate),
-            **lifts,
-        )
+def _written_rate(mean: float, lift: float, compliance: float, null_lift: float = 0.0) -> Fraction:
+    """The bounded rate ``mean * (1 + null_lift) * (1 + lift * compliance)``
+    computed exactly on the inputs as written. A lift of 0.25 on 0.8 is one,
+    although ``log(0.8) + log1p(0.25)`` rounds above zero; the next float lift
+    above 1.0 on 0.5 is above one. A supplied effect is absolute
+    (``null_lift = 0``); a minimum-detectable-effect candidate composes with
+    the null."""
+    return _written(mean) * (1 + _written(null_lift)) * (1 + _written(lift) * _written(compliance))
+
+
+def _bounded_point(
+    rate: Fraction, *, log_m0: float, theta: float, distance: float
+) -> tuple[float, float] | None:
+    """``(theta, distance)`` of a bounded effect whose rate as written is
+    ``rate``, or ``None`` above one. A rate of one, or a rate below one whose
+    ``log(m0) + theta`` rounds above zero, takes the boundary ``theta =
+    -log(m0)``, where the treatment rate is one exactly in log space; the
+    caller's lift-based distance is kept, since ``-log(m0) - theta0`` cancels
+    for a null adjacent to the effect. A supplied effect and a candidate
+    minimum detectable effect share this rule."""
+    if rate > 1:
+        return None
+    if rate == 1 or log_m0 + theta > 0.0:
+        return -log_m0, distance
+    return theta, distance
 
 
 _CLUSTER_TOO_FEW = RefusalSpec(
@@ -1518,18 +1560,20 @@ def _assigned_minimum_per_arm(procedure: ArmPlanningProcedure, baseline: Baselin
 
 
 def _validate_per_arm_floor(
-    n_per_arm: int, procedure: ArmPlanningProcedure, baseline: Baseline
-) -> None:
-    if isinstance(n_per_arm, bool) or not isinstance(n_per_arm, int):
+    n_per_arm: object, procedure: ArmPlanningProcedure, baseline: Baseline
+) -> int:
+    count = _as_count(n_per_arm)
+    if count is None:
         _raise("power.core.n_per_arm_int", n_per_arm=n_per_arm)
     minimum = _assigned_minimum_per_arm(procedure, baseline)
-    if n_per_arm < minimum:
+    if count < minimum:
         _raise(
             "power.core.n_per_arm_min",
             minimum=minimum,
             n_per_arm=n_per_arm,
             metric_type=procedure.metric.metric_type,
         )
+    return count
 
 
 def _quantile_search_floor(procedure: ArmPlanningProcedure, baseline: QuantileBaseline) -> int:
@@ -1698,24 +1742,36 @@ def _supplied_effect(
     """``(theta, distance)`` of a supplied complier-scale ``relative_lift``:
     its absolute effective log ratio ``log1p(relative_lift * compliance)``
     and its signed log-distance from the null. Validates the public domain
-    and, for a bounded metric, refuses an implied rate above one. Sizing
-    and achieved power share this conversion, so their supplied effect is
-    the same alternative the companion solver measures distance from.
+    and, for a bounded metric, refuses a rate above one as written and gives
+    a rate of one the boundary log ratio (``_bounded_point``) that minimum
+    detectable effect candidates share. Sizing and achieved power share this
+    conversion, so their supplied effect is the same alternative the
+    companion solver measures distance from.
     """
     decision = cast("RelativeDecisionPolicy", procedure.decision)
     _validate_relative_lift(relative_lift)
     effective_lift = relative_lift * baseline.compliance
     theta = math.log1p(effective_lift)
-    if bounded:
-        _require_bounded_rate(
+    distance = _distance_from_null(effective_lift, decision.null_lift)
+    if not bounded:
+        return theta, distance
+    rate = _written_rate(baseline.mean, relative_lift, baseline.compliance)
+    point = _bounded_point(
+        rate,
+        log_m0=math.log(baseline.mean),
+        theta=theta,
+        distance=distance,
+    )
+    if point is None:
+        _refuse_rate_above_one(
             procedure,
             baseline,
-            theta=theta,
+            rate,
             role="alternative",
             relative_lift=relative_lift,
             compliance=baseline.compliance,
         )
-    return theta, _distance_from_null(effective_lift, decision.null_lift)
+    return point
 
 
 def _sequential_side(
@@ -1870,8 +1926,9 @@ class _MdeSearch:
     its signed log-distance from the null is ``log1p(m * compliance)`` and
     its implied absolute alternative ``expm1(theta0 + distance) /
     compliance`` must itself be a representable relative lift above the
-    ``-1`` floor and, for a bounded metric, a rate at most one. The
-    admissible candidates form one interval along the direction of
+    ``-1`` floor and, for a bounded metric, a rate at most one as written,
+    judged and placed by the same ``_bounded_point`` as a supplied effect.
+    The admissible candidates form one interval along the direction of
     increasing distance; its endpoints are located by bisecting float64
     ordinals between a rejected and an accepted float, as is the first
     crossing of the target power.
@@ -1879,6 +1936,7 @@ class _MdeSearch:
 
     plan: _ArmPlan
     target: float
+    null_lift: float
     theta0: float
     sigma: float
     compliance: float
@@ -1900,6 +1958,7 @@ class _MdeSearch:
         return cls(
             plan=plan,
             target=target,
+            null_lift=null_lift,
             theta0=math.log1p(null_lift),
             sigma=-1.0 if alternative == "less" else 1.0,
             compliance=compliance,
@@ -1925,8 +1984,17 @@ class _MdeSearch:
         implied = math.expm1(theta) / self.compliance
         if not math.isfinite(implied) or implied <= -1.0:
             return None
-        if self.plan.bounded and self.log_m0 + theta > 0.0:
+        if not self.plan.bounded:
+            return distance, theta
+        point = _bounded_point(
+            _written_rate(self.plan.baseline.mean, m, self.compliance, self.null_lift),
+            log_m0=self.log_m0,
+            theta=theta,
+            distance=distance,
+        )
+        if point is None:
             return None
+        theta, distance = point
         return distance, theta
 
     def admissible(self, m: float) -> bool:
@@ -2669,6 +2737,7 @@ class _BinomialMdeSearch(_MdeSearch):
         return cls(
             plan=base.plan,
             target=base.target,
+            null_lift=base.null_lift,
             theta0=base.theta0,
             sigma=base.sigma,
             compliance=base.compliance,
@@ -4001,7 +4070,7 @@ def planned_enclosure(
     decision = cast("RelativeDecisionPolicy", procedure.decision)
     design = PowerDesign() if design is None else PowerDesign.model_validate(design)
     bounded = _bounded_preflight(procedure, baseline, null_lift=decision.null_lift)
-    _validate_per_arm_floor(n_per_arm, procedure, baseline)
+    n_per_arm = _validate_per_arm_floor(n_per_arm, procedure, baseline)
     theta, distance = _supplied_effect(procedure, baseline, relative_lift, bounded=bounded)
     if not _runtime_binomial(procedure):
         _raise("power.binomial_enclosure_requires_counts", metric_type=procedure.metric.metric_type)
@@ -4031,7 +4100,7 @@ def _achieved_power(
         design = PowerDesign.model_validate(design)
     looks = _planned_looks(procedure, planned_looks)
     bounded = _bounded_preflight(procedure, baseline, null_lift=decision.null_lift)
-    _validate_per_arm_floor(n_per_arm, procedure, baseline)
+    n_per_arm = _validate_per_arm_floor(n_per_arm, procedure, baseline)
     theta, distance = _supplied_effect(procedure, baseline, relative_lift, bounded=bounded)
     n_T, n_C = _compute_arms(
         n_per_arm, design, minimum_per_arm=_assigned_minimum_per_arm(procedure, baseline)
@@ -4170,7 +4239,7 @@ def _minimum_detectable_effect(
         design = PowerDesign.model_validate(design)
     looks = _planned_looks(procedure, planned_looks)
     bounded = _bounded_preflight(procedure, baseline, null_lift=decision.null_lift)
-    _validate_per_arm_floor(n_per_arm, procedure, baseline)
+    n_per_arm = _validate_per_arm_floor(n_per_arm, procedure, baseline)
     n_T, n_C = _compute_arms(
         n_per_arm, design, minimum_per_arm=_assigned_minimum_per_arm(procedure, baseline)
     )

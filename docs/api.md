@@ -156,6 +156,28 @@ values.
   behind each listed error, and, when loaded from YAML, `files`, the file that
   declares it; the message names that file before each error. Refusal codes
   are unchanged.
+- Release note (bug fix): power planning accepts a numpy integer wherever it
+  takes a size or count, such as a size read from a dataframe column, and plans
+  exactly as with the Python int it holds: `n_per_arm` in `achieved_power`,
+  `minimum_detectable_effect` and `power_curve` (which also takes a
+  one-dimensional array such as `np.arange(1000, 3001, 1000)`), `planned_looks`,
+  the switchback `n`, and the unit-cycle `n`, `max_n`, `repetitions`, `seed` and
+  `batch_size`. Floats, integral ones such as `5000.0` included, and bools are
+  still refused with the same codes, and a `power_curve` `n_per_arm` array with
+  more than one dimension refuses with `power.scalar_numeric_sequence`. A
+  conversion or retention rate is now judged on the baseline and lift as
+  written, each number read as its shortest decimal, so an alternative at a
+  rate of exactly one, such as a lift of 0.25 on a baseline of 0.8, is planned;
+  it used to be refused with `power.bounded_metric.rate_above_one` whenever
+  rounding put its logarithm just above zero. Any rate above one as written is
+  refused, even one as close as the next float lift above 1.0 on a baseline of
+  0.5, and the refusal prints the implied rate in full. `minimum_detectable_effect`
+  and `power_curve` judge their candidate effects by the same rule, so a target
+  that the rate-one effect reaches is no longer reported unattainable, and no
+  returned effect implies a rate above one as written. A shifted null above
+  one as written is refused too, and so, as before, is a null whose computed
+  logarithm rounds above zero. Other results and experiment identity hashes are
+  unchanged.
 - Release note (usability): reading a public submodule such as
   `increment.workflows` from the package before importing it raises an
   `AttributeError` that names the import, `from increment.workflows import ...`;

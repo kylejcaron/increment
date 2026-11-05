@@ -691,6 +691,11 @@ def test_solvers_reject_wrong_input_types(solver, input_name, value):
     assert exc.value.code == f"power.switchback.{input_name}"
 
 
+def test_numpy_integer_n_matches_python_int():
+    b, p = baseline(), procedure()
+    assert achieved(np.int64(20), 1.0, b, p) == achieved(20, 1.0, b, p)  # ty: ignore[invalid-argument-type]
+
+
 def test_solvers_consume_validated_copies(solver):
     b, p = baseline(), procedure()
     expected = solver(b, p)
