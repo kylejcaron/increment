@@ -152,6 +152,20 @@ values.
   caught, and handle the refusal where `prob_favorable()` on a sequential row
   was read as `None`. Estimates, intervals, p-values, the stored
   `posterior_prob_favorable` and experiment identity are unchanged.
+- Release note (breaking): `to_frame()`, breakout frames and readout rows
+  export `sequential_alpha` and `sequential_log_e` as `Float64` numbers instead
+  of exact-fraction strings, so they can be filtered, sorted and plotted;
+  `sequential_log_e` is `-inf` or `inf` once a boundary is certain. The exact
+  fractions stay on `row.require_sequential_result()`. Asymptotic rows keep a
+  null `sequential_log_e`, because their plug-in log evidence is not a
+  finite-sample e-value. Rows of a registered sequential e-BH or Bonferroni
+  family, including breakout rows, now report the family's member count in
+  `family_size`. The brief render names a family's procedure as its selection
+  qualification does, for example "4-member e-BH" where it printed
+  "4-member E Bh", and reads "family" for an unrecorded procedure. Migration:
+  code that parsed these columns as strings should read them as floats, or read
+  `Fraction` values from `row.require_sequential_result()`. Estimates, decisions
+  and experiment identity are unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
