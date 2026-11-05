@@ -1228,3 +1228,116 @@ def test_readout_leads_with_arm_counts_means_and_relative_decision():
     assert lines.index(decision) < lines.index(
         next(line for line in lines if line.startswith("Integrity:"))
     )
+
+
+def _methods_by_population_run(tmp_path):
+    """One metric and arm under two methods, read for its assigned and triggered populations."""
+    import datetime as dt
+
+    import ibis
+
+    from increment import from_definitions, run
+    from increment.artifacts import SourceSnapshotEvidence
+    from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
+
+    definitions = tmp_path / "methods-by-population.yaml"
+    definitions.write_text(
+        _defs_yaml()
+        .replace(
+            "      - name: saw_surface\n        column: null",
+            "      - name: saw_surface\n        column: null\n    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}",
+        )
+        .replace(
+            "    plan:\n      secondaries: [revenue]",
+            "    plan:\n      primary:\n        metric: revenue\n"
+            "        decision_method: {name: unadjusted}\n"
+            "        sensitivity_methods:\n"
+            "          - {name: region_adjusted, variance_reduction: cuped_multicovariate, "
+            "covariates: [{name: region, kind: categorical, property: region, source: events}]}",
+        )
+    )
+    connection = ibis.duckdb.connect()
+    connection.create_table(
+        "events", obj=_with_preassignment_region(_events(n_per_arm=100, trigger_rate=0.5))
+    )
+    cutoff = dt.datetime(2024, 1, 16, tzinfo=dt.UTC)
+    experiment, reader = from_definitions(
+        definitions,
+        connection,
+        experiment_name="exp",
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=cutoff, complete_through_by_feed={"events": cutoff}
+        ),
+    )
+    views = (
+        View(view="run", grain="total"),
+        View(view="run", grain="total", population="triggered"),
+    )
+    try:
+        with reader:
+            return run(experiment.with_views(views[1]), reader), views
+    finally:
+        connection.disconnect()
+
+
+@pytest.mark.integration
+def test_cell_labels_stay_distinct_across_methods_and_populations(tmp_path):
+    from increment import Encouragement, ExclusionRestriction, UptakeSpec, run
+    from tests.analysis_factory import lift_rows
+
+    result, views = _methods_by_population_run(tmp_path)
+    lines = repr(result).splitlines()
+    rows = [row for view in views for row in lift_rows(result.readout(view))]
+    assert len(rows) == len(result.cells) == 4
+    labels = set()
+    for row in rows:
+        (line,) = (
+            line
+            for line in lines
+            if f"method={row.method}" in line and f"population={row.analysis_population}" in line
+        )
+        labels.add(line.split(": ", 1)[0])
+        assert f"{row.require_lift().value * 100:.6g}%" in line
+    assert len(labels) == 4
+
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            {
+                "unit": [f"u{i}" for i in range(8)],
+                "arm": ["control"] * 4 + ["treatment"] * 4,
+                "value": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                "clicked": [0, 0, 0, 0, 0, 1, 1, 1],
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(justification="Test-only encouragement"),
+            one_sided=True,
+        ),
+        uptake="clicked",
+        metrics={"value": "mean"},
+        plan=AnalysisPlan(primary="value"),
+    )
+    with reader:
+        encouragement = run(experiment, reader)
+    estimands = [cell.identity.key.estimand for cell in encouragement.cells]
+    labels = [
+        line.split(": ", 1)[0] for line in repr(encouragement).splitlines() if "estimand=" in line
+    ]
+    assert {"itt", "late"} <= set(estimands)
+    assert len(set(labels)) == len(labels) == len(estimands)
+    for estimand in set(estimands):
+        assert sum(f"estimand={estimand}" in label for label in labels) == estimands.count(estimand)
+
+
+def test_plain_run_labels_omit_constant_coordinates():
+    from tests.test_public_run import _two_metric_run
+
+    text = repr(_two_metric_run())
+    for coordinate in ("method=", "population=", "estimand="):
+        assert coordinate not in text

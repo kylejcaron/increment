@@ -35,6 +35,16 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template="to_frame(columns=...) requires at least one projection column",
         ),
+        "results.frame.columns_string": RefusalSpec(
+            "results.frame.columns_string",
+            InvalidRequestError,
+            template="to_frame(columns={columns!r}) takes a list of column names; pass {route}",
+        ),
+        "results.frame.summary_unavailable": RefusalSpec(
+            "results.frame.summary_unavailable",
+            InvalidRequestError,
+            template="to_frame(columns='summary') is not available for {model}",
+        ),
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -332,6 +342,12 @@ def projection_columns(model: type[BaseModel], estimates: Sequence[BaseModel]) -
 
 def select_columns(columns: Sequence[str], available: Sequence[str]) -> tuple[str, ...]:
     """Return requested projection columns in canonical order, refusing unknown names."""
+    if isinstance(columns, str):
+        _refuse(
+            "results.frame.columns_string",
+            columns=columns,
+            route=f"columns=[{columns!r}], or columns='summary' on a result collection or run",
+        )
     requested = tuple(columns)
     unknown = tuple(name for name in requested if name not in available)
     if unknown:
@@ -340,6 +356,16 @@ def select_columns(columns: Sequence[str], available: Sequence[str]) -> tuple[st
         _refuse("results.frame.empty_columns")
     requested_set = frozenset(requested)
     return tuple(name for name in available if name in requested_set)
+
+
+def summary_columns(model: type) -> tuple[str, ...]:
+    """Return the ``columns="summary"`` preset of the collection registered for ``model`` rows."""
+    from increment.estimation.readout_types import registered_collection
+
+    preset = getattr(registered_collection(model), "_summary_columns", None)
+    if preset is None:
+        _refuse("results.frame.summary_unavailable", model=model.__name__)
+    return preset
 
 
 def to_frame[M: BaseModel](
@@ -655,7 +681,7 @@ def with_readout_evidence(
     return result
 
 
-def _scope_key(scope: View) -> str:
+def scope_key(scope: View) -> str:
     """Hash a row's scope without its day, segment and population, which are row columns."""
     return scope.model_copy(
         update={"through_day": None, "segment": (), "population": "assigned"}
@@ -668,7 +694,7 @@ def result_frame(
     *,
     scopes: Sequence[View | None],
     backend: Backend,
-    columns: Sequence[str] | None = None,
+    columns: Sequence[str] | Literal["summary"] | None = None,
 ) -> IntoDataFrame:
     """Project one result's consecutive same-model row groups as one native frame.
 
@@ -678,8 +704,8 @@ def result_frame(
     ``scopes`` holds each row's scope in row order: every frame leads with its
     ``view`` and ``values`` as ``scope_view`` and ``scope_values`` and its view's
     ``scope_key``, null where a row records no scope. ``columns`` selects typed
-    projection columns, as ``to_frame`` does; the scope columns and ``view_partial``
-    are always kept.
+    projection columns, as ``to_frame`` does, or ``"summary"`` selects each row
+    model's collection preset; the scope columns and ``view_partial`` are always kept.
     """
     from increment._interpretation import interpret_readout
     from increment.estimation.contrast_results import (
@@ -688,10 +714,12 @@ def result_frame(
         ContrastResults,
     )
 
+    presets = tuple(summary_columns(model) for model, _ in groups) if columns == "summary" else None
     interpretation = interpret_readout([row for _, rows in groups for row in rows], metadata)
     frames = []
     available: dict[str, None] = {}
-    for model, rows in groups:
+    summary: dict[str, None] = {}
+    for position, (model, rows) in enumerate(groups):
         if model is ContrastResult:
             native = ContrastResults(rows, metadata=metadata).to_frame(backend=backend)
             typed = CONTRAST_FRAME_COLUMNS
@@ -704,6 +732,8 @@ def result_frame(
                 backend=backend,
                 interpretation=interpretation,
             )
+        if presets is not None:
+            summary.update(dict.fromkeys(select_columns(presets[position], typed)))
         available.update(dict.fromkeys(typed))
         frames.append(nw.from_native(native, eager_only=True))
     frame = frames[0] if len(frames) == 1 else nw.concat(frames, how="diagonal")
@@ -719,19 +749,18 @@ def result_frame(
             "boolean",
         ),
         "scope_key": (
-            [None if scope is None else _scope_key(scope) for scope in scopes],
+            [None if scope is None else scope_key(scope) for scope in scopes],
             nw.String(),
             "string",
         ),
     }
-    selected = [
-        *identity,
-        *(
-            frame.columns
-            if columns is None
-            else (*select_columns(columns, tuple(available)), "view_partial")
-        ),
-    ]
+    if columns is None:
+        projected = frame.columns
+    elif presets is not None:
+        projected = [*(name for name in available if name in summary), "view_partial"]
+    else:
+        projected = [*select_columns(columns, tuple(available)), "view_partial"]
+    selected = [*identity, *projected]
     if backend == "pandas":
         import pandas as pd
 

@@ -979,14 +979,9 @@ def _decision_line(row, *, control_group: str | None, treatment_group: str | Non
         value = getattr(row, name, None)
         if value is not None:
             parts.append(f"{label}={value:.6g}" if name.startswith("mean_") else f"{label}={value}")
-    factor = 100 if projection.value_scale == "relative" else 1
-    if projection.point is not None:
-        suffix = "%" if factor == 100 else ""
-        parts.append(f"effect={projection.point * factor:.6g}{suffix}")
-        if projection.lower is not None or projection.upper is not None:
-            low = "−∞" if projection.lower is None else f"{projection.lower * factor:.6g}"
-            high = "+∞" if projection.upper is None else f"{projection.upper * factor:.6g}"
-            parts.append(f"interval=[{low}, {high}]{suffix}")
+    effect = _effect_text(projection)
+    if effect is not None:
+        parts.append(effect)
     if projection.qualification is not None:
         parts.append(f"scale qualification={projection.qualification}")
     estimand = getattr(row, "estimand", None)
@@ -1004,6 +999,20 @@ def _decision_line(row, *, control_group: str | None, treatment_group: str | Non
         verdict = row_verdict(row)
     parts.append(f"stat_sig={verdict if verdict is not None else 'unavailable'}")
     return "; ".join(parts)
+
+
+def _effect_text(projection: EffectEstimate, *, label: str = "effect") -> str | None:
+    """Format a retained point and interval at six significant digits, relative ones in percent."""
+    if projection.point is None:
+        return None
+    factor = 100 if projection.value_scale == "relative" else 1
+    suffix = "%" if factor == 100 else ""
+    text = f"{label}={projection.point * factor:.6g}{suffix}"
+    if projection.lower is not None or projection.upper is not None:
+        low = "−∞" if projection.lower is None else f"{projection.lower * factor:.6g}"
+        high = "+∞" if projection.upper is None else f"{projection.upper * factor:.6g}"
+        text += f"; interval=[{low}, {high}]{suffix}"
+    return text
 
 
 def _display_source(source_id: str | None) -> str | None:
@@ -1163,6 +1172,52 @@ def _cell_label(cell: CellKey) -> str:
     ):
         if attribute is not None:
             parts.append(f"{label}={attribute}")
+    return " / ".join(parts)
+
+
+# Coordinates a cell label shows only when they take several values among the labelled cells.
+_VARYING_COORDINATES = (
+    ("method", "method"),
+    ("method_role", "role"),
+    ("estimand", "estimand"),
+    ("aggregation", "aggregation"),
+    ("analysis_population", "population"),
+    ("value_scale", "scale"),
+    ("inference", "inference"),
+    ("alternative", "alternative"),
+    ("source", "source"),
+    ("ds_basis", "date basis"),
+)
+
+
+def _varying_fields(keys) -> frozenset[str]:
+    """Return the optional coordinates that take more than one value among ``keys``."""
+    keys = tuple(keys)
+    return frozenset(
+        name for name, _ in _VARYING_COORDINATES if len({getattr(key, name) for key in keys}) > 1
+    )
+
+
+def _cell_coordinates(key: CellKey, varying: frozenset[str]) -> str:
+    """Label a cell by metric, arm, segment and day, plus the coordinates in ``varying``.
+
+    With ``varying`` from ``_varying_fields`` over every labelled cell, distinct keys
+    get distinct labels and coordinates shared by all of them are omitted.
+    """
+    parts = [key.metric]
+    if key.kind == "contrast":
+        parts.append(f"control={key.control_group}")
+        parts.append(f"treatment={key.treatment_group}")
+    elif key.group_id is not None:
+        parts.append(f"arm={key.group_id}")
+    if key.dimension_value is not None:
+        parts.append(f"{key.dimension or 'segment'}={key.dimension_value}")
+    if key.ds is not None:
+        parts.append(f"date={key.ds}")
+    for name, label in _VARYING_COORDINATES:
+        value = getattr(key, name)
+        if name in varying and value is not None:
+            parts.append(f"{label}={value}")
     return " / ".join(parts)
 
 

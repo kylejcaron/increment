@@ -315,6 +315,8 @@ def _user_facing_python_strings(path: Path) -> list[tuple[int, str]]:
         "_render_effect",
         "_render_confidence_geometry",
         "_render_test_null",
+        "_effect_text",
+        "_cell_coordinates",
         "_readout_metadata_notes",
         "_readout_evidence_notes",
         "_integrity_notes",

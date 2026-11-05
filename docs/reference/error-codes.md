@@ -1452,8 +1452,9 @@ Retired codes and their replacements are listed below.
 | `reporting.alpha_finite` | `InvalidRequestError` | `alpha` | `increment.reporting` |
 | `reporting.metric_trend.unknown_backend` | `InvalidRequestError` | `backend` | `increment.reporting` |
 | `reporting.week_start_monday` | `InvalidRequestError` | `week_start` | `increment.reporting` |
+| `results.frame.columns_string` | `InvalidRequestError` | `columns`, `route` | `increment.breakout.projection` |
 | `results.frame.empty_columns` | `InvalidRequestError` | — | `increment.breakout.projection` |
-| `results.frame.summary_unavailable` | `InvalidRequestError` | `model` | `increment.breakout.estimates` |
+| `results.frame.summary_unavailable` | `InvalidRequestError` | `model` | `increment.breakout.projection` |
 | `results.frame.unknown_columns` | `InvalidRequestError` | `available`, `unknown` | `increment.breakout.projection` |
 | `results.readout.not_retained` | `InvalidRequestError` | `run_id` | `increment._run` |
 | `results.readout.scope_required` | `InvalidRequestError` | `run_id`, `scope_hashes` | `increment._run` |

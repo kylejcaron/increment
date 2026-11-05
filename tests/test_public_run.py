@@ -1368,6 +1368,173 @@ def test_run_frame_keys_each_row_to_its_view_through_store_and_pickle(tmp_path):
     assert selected.columns == [*identity, "lift", "view_partial"]
 
 
+def _two_metric_run():
+    import numpy as np
+
+    from increment import Randomized
+
+    rng = np.random.default_rng(2)
+    n = 400
+    arm = np.array(["control"] * n + ["treatment"] * n)
+    frame = pd.DataFrame(
+        {
+            "u": [f"u{i}" for i in range(2 * n)],
+            "arm": arm,
+            "revenue": 10 + (arm == "treatment") * 0.5 + rng.normal(0, 2, 2 * n),
+            "sessions": 4 + rng.normal(0, 1, 2 * n),
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="u",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="revenue"), MetricSpec(name="sessions")],
+        plan=AnalysisPlan(primary="revenue", secondaries=["sessions"]),
+    )
+    with reader:
+        return run(experiment, reader)
+
+
+def _sequential_panel_run():
+    import datetime as dt
+    from dataclasses import replace
+
+    from increment import InferenceSpec, Randomized
+    from increment.evidence import SequentialCaptureRequest
+
+    exposed, closed = dt.date(2025, 1, 1), dt.date(2025, 1, 10)
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"u{index}",
+                "arm": "control" if index % 2 else "treatment",
+                "day": day,
+                "exposed_on": exposed,
+                "value": value,
+            }
+            for index in range(80)
+            for day, value in ((exposed, 0.0), (dt.date(2025, 1, 2), float(index % 7 + index % 2)))
+        ]
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed_on",
+        observation_end=closed,
+        metrics=[MetricSpec(name="value", type="mean", window_days=2)],
+        design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+        plan=AnalysisPlan(primary="value", inference=InferenceSpec(kind="asymptotic_mean")),
+    )
+    views = (View(view="run", grain="total"), View(view="asof", grain="asof"))
+    with reader:
+        result = run(
+            replace(experiment, views=views),
+            reader,
+            capture=SequentialCaptureRequest(finalized=True, as_of=closed),
+        )
+    return result, views
+
+
+def test_run_result_repr_is_a_compact_readout():
+    from tests.analysis_factory import lift_rows
+
+    result = _two_metric_run()
+    text = repr(result)
+
+    assert len(text.splitlines()) <= 25
+    assert "sha256" not in text
+    assert result.run.run_id in text
+    for row in lift_rows(result.readout()):
+        assert row.metric in text
+        assert f"{row.require_lift().value * 100:.6g}%" in text
+
+
+def test_run_result_summary_frame_matches_view_summaries(tmp_path):
+    import narwhals as nw
+
+    identity = ["scope_view", "scope_values", "scope_key"]
+    result = _two_metric_run()
+    summary = nw.from_native(result.to_frame(backend="polars", columns="summary"), eager_only=True)
+    view = nw.from_native(
+        result.readout().to_frame(backend="polars", columns="summary"), eager_only=True
+    )
+    assert summary.columns == [*identity, *view.columns]
+    assert summary.select(view.columns).rows() == view.rows()
+
+    scopes = (View(view="run", grain="total"), View(view="daily", grain="daily"))
+    both, _, _ = _daily_panel_run(tmp_path, scopes)
+    frame = nw.from_native(both.to_frame(backend="polars", columns="summary"), eager_only=True)
+    views = {
+        scope.view: nw.from_native(
+            both.readout(scope).to_frame(backend="polars", columns="summary"), eager_only=True
+        )
+        for scope in scopes
+    }
+    assert frame.columns[:3] == identity
+    assert set(frame.columns) == {*identity, *(name for v in views.values() for name in v.columns)}
+    for name, view_frame in views.items():
+        rows = frame.filter(nw.col("scope_view") == name).select(view_frame.columns)
+        assert rows.rows() == view_frame.rows()
+
+
+def test_run_result_frame_refuses_a_bare_column_string():
+    from increment.errors import CodedError
+
+    result = _two_metric_run()
+    with pytest.raises(CodedError) as raised:
+        result.to_frame(columns="lift")
+    assert raised.value.code == "results.frame.columns_string"
+    assert set(raised.value.context) == {"columns", "route"}
+    assert raised.value.context["columns"] == "lift"
+
+
+def test_run_result_summary_covers_every_view_kind(tmp_path):
+    import narwhals as nw
+
+    # A sequential plan governs every view of its run and refuses daily slices and
+    # unregistered breakouts, so its whole-window and as-of cells come from a second run.
+    fixed_views = (
+        View(view="run", grain="total"),
+        View(view="breakout", grain="total"),
+        View(view="daily", grain="daily"),
+    )
+    fixed, _, _ = _daily_panel_run(tmp_path, fixed_views)
+    sequential, sequential_views = _sequential_panel_run()
+    assert {cell.identity.key.inference for cell in sequential.cells} == {"asymptotic_mean"}
+    for result, views in ((fixed, fixed_views), (sequential, sequential_views)):
+        text = repr(result)
+        assert len(text.splitlines()) <= 25
+        for cell, effect in zip(result.cells, result.effects, strict=True):
+            key = cell.identity.key
+            for coordinate in (key.metric, key.dimension_value, key.ds):
+                if coordinate is not None:
+                    assert str(coordinate) in text
+            if effect is not None and effect.point is not None:
+                factor = 100 if effect.value_scale == "relative" else 1
+                assert f"{effect.point * factor:.6g}" in text
+        frame = nw.from_native(
+            result.to_frame(backend="polars", columns="summary"), eager_only=True
+        )
+        expected = {"scope_view", "scope_values", "scope_key"}
+        for scope in views:
+            expected.update(
+                nw.from_native(
+                    result.readout(scope).to_frame(backend="polars", columns="summary"),
+                    eager_only=True,
+                ).columns
+            )
+        assert set(frame.columns) == expected
+
+
 def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
     from increment import MetricSpec, Randomized
     from increment.estimation.results import LiftEstimate
