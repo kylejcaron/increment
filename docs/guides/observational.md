@@ -59,28 +59,21 @@ df = pl.DataFrame(
     }
 )
 
-from increment import (
-    AdjustmentSet,
-    IdentificationGate,
-    Method,
-    Observational,
-    from_frame,
-    run,
-)
+import increment
 from increment.estimators import IdentificationError
 
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     df,  # one row per unit; must also carry the adjustment covariate columns
     shape="summary",
     unit="user_id",
     group="variant",
     metrics={"revenue": "mean"},
-    design=Observational(
+    design=increment.Observational(
         control_group="control",
-        adjustment=AdjustmentSet(covariates=("tenure_days", "plan_tier_rank")),
+        adjustment=increment.AdjustmentSet(covariates=("tenure_days", "plan_tier_rank")),
     ),
 )
-results = run(experiment, resolver).readout()
+results = increment.run(experiment, reader).readout()
 
 for r in results:
     print(
@@ -150,18 +143,18 @@ df2 = df.with_columns(
 )
 
 try:
-    experiment, resolver = from_frame(
+    experiment, reader = increment.from_frame(
         df2,
         shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
-        design=Observational(
+        design=increment.Observational(
             control_group="control",
-            adjustment=AdjustmentSet(covariates=("signup_score",)),
+            adjustment=increment.AdjustmentSet(covariates=("signup_score",)),
         ),
     )
-    run(experiment, resolver)
+    increment.run(experiment, reader)
 except IdentificationError as err:
     print(err)
 ```
@@ -175,12 +168,12 @@ estimating the effect on the full population, only on the subpopulation
 where both arms are represented. The result records this honestly:
 
 ```python
-design = Observational(
+design = increment.Observational(
     control_group="control",
-    adjustment=AdjustmentSet(covariates=("tenure_days", "plan_tier_rank")),
-    gate=IdentificationGate(overlap="trim", min_propensity=0.05),
+    adjustment=increment.AdjustmentSet(covariates=("tenure_days", "plan_tier_rank")),
+    gate=increment.IdentificationGate(overlap="trim", min_propensity=0.05),
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
@@ -188,7 +181,7 @@ experiment, resolver = from_frame(
     metrics={"revenue": "mean"},
     design=design,
 )
-results = run(experiment, resolver).readout()
+results = increment.run(experiment, reader).readout()
 
 for r in results:
     print(f"{r.group_id}: lift={r.lift.value:+.2%} population={r.population}")
@@ -438,7 +431,7 @@ m = 800
 x = rng2.normal(0.0, 1.0, m)
 opted = rng2.random(m) < 1 / (1 + np.exp(-0.5 * x))
 net_delta = 0.05 * x + 0.02 * opted + rng2.normal(0, 1, m)
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     pl.DataFrame(
         {
             "user_id": [f"u{i}" for i in range(m)],
@@ -451,15 +444,15 @@ experiment, resolver = from_frame(
     unit="user_id",
     group="variant",
     metrics={"net_delta": "mean"},
-    design=Observational(
+    design=increment.Observational(
         control_group="control",
-        adjustment=AdjustmentSet(covariates=("x",)),
+        adjustment=increment.AdjustmentSet(covariates=("x",)),
     ),
 )
 -->
 
 ```python
-results = run(experiment, resolver, value_scale={"net_delta": "absolute"}).readout()
+results = increment.run(experiment, reader, value_scale={"net_delta": "absolute"}).readout()
 ```
 
 The mapping keys METRICS, not methods, so one call serves a mixed source:
@@ -510,7 +503,7 @@ Three adjustment methods are available under the same design, selected via
 role-aware `run(...)`:
 
 ```python
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
@@ -518,7 +511,9 @@ experiment, resolver = from_frame(
     metrics={"revenue": "mean"},
     design=design,
 )
-results = run(experiment, resolver, decision_method=Method(name="dml")).readout()  # default: iptw
+results = increment.run(
+    experiment, reader, decision_method=increment.Method(name="dml")
+).readout()  # default: iptw
 ```
 
 - `Method(name="iptw")` (the default) fits one propensity model per
@@ -731,7 +726,7 @@ none of it. A dataframe source is immutable; a custom provider with no snapshot
 scope is trusted not to change during the call. The lower-level
 `estimate_ate()` likewise reduces each metric's evidence through the declared
 provider acquisition boundary, which validates the request before reading.
-Custom sources backing either a builder's resolver or the lower-level estimator facade
+Custom sources backing either a builder's reader or the lower-level estimator facade
 must declare `EvidenceCapabilities` or implement the typed provider requests;
 see the [custom-provider example](https://github.com/kylejcaron/increment/blob/main/examples/custom_evidence_provider.py)
 and the [migration map](../development/adding-an-estimator.md#custom-evidence-providers).
@@ -761,19 +756,19 @@ geo_df = pl.DataFrame(
     }
 )
 
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     geo_df,
     shape="summary",
     unit="user_id",
     group="variant",
     metrics={"revenue": "mean"},
     cluster="geo_id",  # the randomization-grain column
-    design=Observational(
+    design=increment.Observational(
         control_group="control",
-        adjustment=AdjustmentSet(covariates=("geo_z",)),
+        adjustment=increment.AdjustmentSet(covariates=("geo_z",)),
     ),
 )
-(geo_result,) = run(experiment, resolver).readout()
+(geo_result,) = increment.run(experiment, reader).readout()
 print(f"K={geo_result.n_clusters}, reference={geo_result.reference_kind}, dof={geo_result.dof}")
 ```
 
@@ -950,7 +945,7 @@ other types are refused, and a row carrying no metric type gives `metric_type_un
 ```python
 import numpy as np
 import polars as pl
-import increment as inc
+import increment
 from increment.estimators import confounding_sensitivity
 
 conversion_rng = np.random.default_rng(20261013)
@@ -966,22 +961,22 @@ conversion_units = pl.DataFrame(
         "converted": (conversion_rng.random(conversion_n) < risk).astype(int),
     }
 )
-experiment, resolver = inc.from_frame(
+experiment, reader = increment.from_frame(
     conversion_units,
     shape="summary",
     unit="unit",
     group="arm",
-    metrics=[inc.MetricSpec(name="converted", type="conversion")],
-    design=inc.Observational(
-        control_group="control", adjustment=inc.AdjustmentSet(covariates=("segment",))
+    metrics=[increment.MetricSpec(name="converted", type="conversion")],
+    design=increment.Observational(
+        control_group="control", adjustment=increment.AdjustmentSet(covariates=("segment",))
     ),
 )
-with resolver:
-    conversion_rows = inc.run(
+with reader:
+    conversion_rows = increment.run(
         experiment,
-        resolver,
-        decision_method=inc.Method(name="iptw"),
-        sensitivity_methods=[inc.Method(name="aipw")],
+        reader,
+        decision_method=increment.Method(name="iptw"),
+        sensitivity_methods=[increment.Method(name="aipw")],
     ).readout()
     for conversion_row in conversion_rows:
         sensitivity = confounding_sensitivity(conversion_row, threshold_risk_ratio=1.05)

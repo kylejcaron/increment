@@ -9,7 +9,7 @@ available through `run()` rather than additive moments.
 ```python
 import numpy as np
 import polars as pl
-from increment import MetricSpec, from_frame, run
+import increment
 
 rng = np.random.default_rng(12)
 n = 2000
@@ -20,15 +20,15 @@ df = pl.DataFrame(
     {"user_id": [f"u{i}" for i in range(n)], "variant": variant, "latency_ms": latency}
 )
 
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
     group="variant",
     control="control",
-    metrics=[MetricSpec(name="latency_ms", type="quantile", quantile=0.9)],
+    metrics=[increment.MetricSpec(name="latency_ms", type="quantile", quantile=0.9)],
 )
-results = run(experiment, resolver).readout()
+results = increment.run(experiment, reader).readout()
 for r in results:
     print(f"p90 relative lift: {r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}]")
 ```

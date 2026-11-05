@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 import ibis
 import polars as pl
 
-from increment import from_definitions, run
+import increment
 
 demo_rows = []
 for i, revenue in enumerate([1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0]):
@@ -65,8 +65,10 @@ experiments:
     control_group: control
     plan: {primary: revenue}
 """)
-    experiment, resolver = from_definitions(definitions_directory, demo_con, experiment_name="demo")
-    demo_results = run(experiment, resolver).readout()
+    experiment, reader = increment.from_definitions(
+        definitions_directory, demo_con, experiment_name="demo"
+    )
+    demo_results = increment.run(experiment, reader).readout()
 for row in demo_results:
     print(row.metric, row.group_id, row.lift)
 ```
@@ -77,6 +79,13 @@ Increment builds the unit-by-day panel and exposes every query it runs. If your
 data is already one row per unit or per unit-day, use
 `from_frame(..., shape="summary")` or `shape="panel"` instead
 ([Quickstart](quickstart.md)).
+
+Building with a connection writes a catalog of the bound experiments,
+`.increment-kernel-catalog.json`, and its `.lock` file into the definitions
+directory; `increment.from_definitions(definitions_directory)` reads that
+catalog to inspect an experiment without a connection. The reader reads the
+warehouse through `demo_con`; closing it, or leaving its `with` block, never
+closes `demo_con`, and a closed reader refuses every read.
 
 The [warehouse example](../examples/analysis_from_a_warehouse.md) walks through
 the full flow; [Binding a normalized warehouse](#binding-a-normalized-warehouse)
@@ -504,9 +513,9 @@ the same window. At `day_boundary: UTC-05:00`:
 
 ```python
 from datetime import date
-from increment import ExperimentDefinition
+import increment
 
-exp = ExperimentDefinition.model_validate(
+definition = increment.ExperimentDefinition.model_validate(
     {
         "name": "demo",
         "exposure": "enrolled",
@@ -518,7 +527,7 @@ exp = ExperimentDefinition.model_validate(
         "plan": {"primary": "conversion"},
     }
 )
-assert exp.start_day == date(2025, 1, 14)
+assert definition.start_day == date(2025, 1, 14)
 ```
 
 Published artifacts and sequential registrations bind these derived days, so
@@ -762,10 +771,10 @@ Definitions-backed analysis has two persistence boundaries:
 
 | Call | What it does |
 |---|---|
-| `increment.workflows.materialize(experiment, resolver)` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
-| `increment.artifacts.publish_unit_day_artifact(experiment, resolver, store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-2 context and format-4 relation digests through the store, returning a `UnitDayArtifactRef`. Obtain the trusted publication context with `increment.artifacts.artifact_context(experiment, resolver)`. A later process adopts it with `from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
+| `increment.workflows.materialize(experiment, reader)` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
+| `increment.artifacts.publish_unit_day_artifact(experiment, reader, store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-2 context and format-4 relation digests through the store, returning a `UnitDayArtifactRef`. Obtain the trusted publication context with `increment.artifacts.artifact_context(experiment, reader)`. A later process adopts it with `from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
 
-Session-local TEMP relations are removed when refreshed or when the resolver
+Session-local TEMP relations are removed when refreshed or when the reader
 closes; they are not persistent warehouse tables.
 
 Internally, query core owns the shared artifact contracts and relation schemas;
@@ -925,7 +934,7 @@ publication time, and experiment end are not completeness proofs.
     upgraded first, since older library versions ignore tombstones and are
     unsafe during incomplete cleanup. Generations dropped by an older
     in-memory-only release left no durable record; drop them again explicitly
-    if they should be retired. `resolver.close()` only releases an adopted
+    if they should be retired. `reader.close()` only releases an adopted
     snapshot handle and never deletes durable artifact data; any backend
     cleanup policy must be coordinated by the caller outside these handles.
 
@@ -1345,17 +1354,19 @@ events = pl.DataFrame(rows)
 ```python
 import ibis
 
-from increment import from_definitions, run
+import increment
 from increment.query import panel_sql, summary_sql
 
 con = ibis.duckdb.connect()  # in-memory; swap for Snowflake/BigQuery/Postgres
 con.create_database("analytics")
 con.create_table("event_log", events.to_arrow(), database="analytics")
 
-experiment, resolver = from_definitions("definitions/", con, experiment_name="new_onboarding_v2")
-panel_queries = panel_sql(experiment, resolver)
-summary_queries = summary_sql(experiment, resolver)
-results = run(experiment, resolver).readout()
+experiment, reader = increment.from_definitions(
+    "definitions/", con, experiment_name="new_onboarding_v2"
+)
+panel_queries = panel_sql(experiment, reader)
+summary_queries = summary_sql(experiment, reader)
+results = increment.run(experiment, reader).readout()
 for r in results:
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:+.2%}")
 ```
@@ -1367,12 +1378,12 @@ revenue_per_user / T: lift=+10.64%
 ```
 
 The connection is bound once, by `from_definitions`; every view `run` reads and
-every workflow operation reads it from the resolver. To
+every workflow operation reads it from the reader. To
 see the SQL a readout would execute without running it, call
-`increment.query.panel_sql(experiment, resolver)` and
-`increment.query.summary_sql(experiment, resolver)`; they return per-metric
+`increment.query.panel_sql(experiment, reader)` and
+`increment.query.summary_sql(experiment, reader)`; they return per-metric
 queries as strings. SQL previews and `build_panel_for_metric(experiment,
-resolver, ...)` return live warehouse expressions, not operation-owned TEMP
+reader, ...)` return live warehouse expressions, not operation-owned TEMP
 table references, so they remain executable after another readout refreshes
 materialization.
 
@@ -1918,15 +1929,15 @@ for name, rows in [
 
 import pyarrow.parquet as pq
 
-from increment import View, from_definitions, run
+import increment
 from increment.workflows import export_moments
 
-experiment, resolver = from_definitions(
+experiment, reader = increment.from_definitions(
     "definitions/", con, experiment_name="checkout_redesign"
 )
-whole_window = View.overall()
-breakouts = View.breakout(())
-result = run(experiment.with_views(breakouts), resolver)
+whole_window = increment.View.overall()
+breakouts = increment.View.breakout(())
+result = increment.run(experiment.with_views(breakouts), reader)
 
 for r in result.readout(whole_window):
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:+.2%}")
@@ -1946,7 +1957,7 @@ assert plan_segments == ["free"]
 # segment instead of failing, so the absence of that bucket is the check.
 assert "__null__" not in country_segments
 
-export_moments(experiment, resolver, "moments.parquet")
+export_moments(experiment, reader, "moments.parquet")
 scanned = sum(
     int(con.table(t, database="analytics").count().execute()) for t in ("fact_orders", "events")
 )

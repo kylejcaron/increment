@@ -32,8 +32,8 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
 Increment turns experiment data into decisions. Six public builder routes load
 data (`from_frame(shape="summary")`, `from_frame(shape="panel")`,
 `from_switchback_frame`, `from_definitions`, `from_unit_day_artifact`,
-`from_moments`), each returning an experiment and its resolver; `run(experiment,
-resolver)` executes them; one evidence layer answers typed requests; estimators
+`from_moments`), each returning an experiment and its reader; `run(experiment,
+reader)` executes them; one evidence layer answers typed requests; estimators
 compute from data; readouts assemble results. A new method should touch an
 estimator, the evidence request it needs, the parity matrix and a guide — not
 every loader.

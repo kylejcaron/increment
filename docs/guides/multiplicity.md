@@ -7,7 +7,7 @@ When you test many metrics, chance can produce a false positive. Assign roles in
 ```python
 import numpy as np
 import polars as pl
-from increment import AnalysisPlan, MetricSpec, Randomized, from_frame, run
+import increment
 
 rng = np.random.default_rng(9)
 n = 3000
@@ -23,22 +23,25 @@ df = pl.DataFrame(
         "signups": signups,
     }
 )
-design = Randomized(
+design = increment.Randomized(
     control_group="control",
     allocation={"control": 0.5, "treatment": 0.5},
     allocation_scheme="independent",
 )
-plan = AnalysisPlan(primary="sessions", secondaries=["signups"], q=0.10)
-experiment, resolver = from_frame(
+plan = increment.AnalysisPlan(primary="sessions", secondaries=["signups"], q=0.10)
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
     group="variant",
     design=design,
-    metrics=[MetricSpec(name="sessions", type="mean"), MetricSpec(name="signups", type="mean")],
+    metrics=[
+        increment.MetricSpec(name="sessions", type="mean"),
+        increment.MetricSpec(name="signups", type="mean"),
+    ],
     plan=plan,
 )
-results = run(experiment, resolver).readout()
+results = increment.run(experiment, reader).readout()
 print(results)
 ```
 
@@ -127,30 +130,33 @@ Sequential plans use e-BH to select secondaries. Declare the sampling and reveal
     Under `AnalysisPlan(inference=InferenceSpec(kind="asymptotic_mean"))` or `InferenceSpec(kind="always_valid")`, the secondary family uses e-BH (Wang & Ramdas 2022: ordinary BH applied to `1/e`) instead of ordinary p-value BH. e-BH controls FDR at `<= q` under arbitrary dependence and stopping time, but only when every input is a valid e-process: an e-value that remains valid at every stopping time, not just at one fixed look. `e_bh_select` assumes that property; it does not establish it. The asymptotic-mean route builds its e-process from the same delta-method sampling distribution as the fixed-horizon interval, so its time-uniform guarantee is asymptotic and empirical, not finite-sample. The exact `kind="always_valid"` route, limited to conversion and retention metrics, is the finite-sample alternative.
 
 ```python
-from increment import AnalysisPlan, InferenceSpec, Randomized
+import increment
 
-design = Randomized(
+design = increment.Randomized(
     control_group="control",
     allocation={"control": 0.5, "treatment": 0.5},
     allocation_scheme="independent",
 )
-av_plan = AnalysisPlan(
+av_plan = increment.AnalysisPlan(
     primary="sessions",
     secondaries=["signups"],
     q=0.10,
-    inference=InferenceSpec(kind="asymptotic_mean"),
+    inference=increment.InferenceSpec(kind="asymptotic_mean"),
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
     group="variant",
     design=design,
-    metrics=[MetricSpec(name="sessions", type="mean"), MetricSpec(name="signups", type="mean")],
+    metrics=[
+        increment.MetricSpec(name="sessions", type="mean"),
+        increment.MetricSpec(name="signups", type="mean"),
+    ],
     plan=av_plan,
     exposure_date="enrolled_on",
 )
-av_results = run(experiment, resolver).readout()
+av_results = increment.run(experiment, reader).readout()
 print(av_results)
 ```
 
@@ -205,7 +211,7 @@ procedures, not online FDR control across experiments.
 
 ## Two-phase stored runs
 
-`increment.run(experiment, resolver, results_store=..., decision_log=...)`
+`increment.run(experiment, reader, results_store=..., decision_log=...)`
 checks the experiment's hash-only `Registration` and portable compiled plan
 before reading any data, then creates a validated `Run` from the resulting
 cells. Passing a `ResultsStore` persists and reopens that pinned run before

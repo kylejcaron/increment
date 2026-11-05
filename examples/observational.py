@@ -12,31 +12,10 @@ def _():
     import pandas as pd
     from scipy.special import expit
 
-    from increment import (
-        AdjustmentSet,
-        IdentificationGate,
-        Method,
-        Observational,
-        from_frame,
-        run,
-    )
+    import increment
     from increment.tables import estimates_to_readout, readout_table
 
-    return (
-        AdjustmentSet,
-        IdentificationGate,
-        Method,
-        Observational,
-        ct,
-        estimates_to_readout,
-        expit,
-        from_frame,
-        mo,
-        np,
-        pd,
-        readout_table,
-        run,
-    )
+    return ct, estimates_to_readout, expit, increment, mo, np, pd, readout_table
 
 
 @app.cell
@@ -91,8 +70,8 @@ def _(mo):
 
 
 @app.cell
-def _(df, from_frame, run):
-    _experiment, _resolver = from_frame(
+def _(df, increment):
+    _experiment, _reader = increment.from_frame(
         df,
         shape="summary",
         unit="user_id",
@@ -100,7 +79,7 @@ def _(df, from_frame, run):
         control="control",
         metrics={"revenue": "mean"},
     )
-    naive_results = run(_experiment, _resolver).readout()
+    naive_results = increment.run(_experiment, _reader).readout()
     return (naive_results,)
 
 
@@ -142,21 +121,21 @@ def _(mo):
 
 
 @app.cell
-def _(AdjustmentSet, IdentificationGate, Observational, df, from_frame, run):
-    iptw_experiment, iptw_resolver = from_frame(
+def _(df, increment):
+    iptw_experiment, iptw_reader = increment.from_frame(
         df,
         shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
-        design=Observational(
+        design=increment.Observational(
             control_group="control",
-            adjustment=AdjustmentSet(covariates=("x1", "x2")),
-            gate=IdentificationGate(overlap="trim"),
+            adjustment=increment.AdjustmentSet(covariates=("x1", "x2")),
+            gate=increment.IdentificationGate(overlap="trim"),
         ),
     )
-    iptw_results = run(iptw_experiment, iptw_resolver).readout()
-    return iptw_experiment, iptw_resolver, iptw_results
+    iptw_results = increment.run(iptw_experiment, iptw_reader).readout()
+    return iptw_experiment, iptw_reader, iptw_results
 
 
 @app.cell
@@ -178,8 +157,10 @@ def _(mo):
 
 
 @app.cell
-def _(Method, iptw_experiment, iptw_resolver, run):
-    dml_results = run(iptw_experiment, iptw_resolver, decision_method=Method(name="dml")).readout()
+def _(increment, iptw_experiment, iptw_reader):
+    dml_results = increment.run(
+        iptw_experiment, iptw_reader, decision_method=increment.Method(name="dml")
+    ).readout()
     return (dml_results,)
 
 

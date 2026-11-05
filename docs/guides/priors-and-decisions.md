@@ -7,7 +7,7 @@
 ```python
 import numpy as np
 import polars as pl
-from increment import MetricSpec, from_frame, run
+import increment
 from increment.estimators import MixturePrior, Normal, StudentTPrior
 
 rng = np.random.default_rng(6)
@@ -18,15 +18,15 @@ df = pl.DataFrame({"user_id": [f"u{i}" for i in range(n)], "variant": variant, "
 
 # A skeptical prior: log-lift centered at 0, sigma=0.05 (~5% typical move).
 skeptical = Normal(mu=0.0, sigma=0.05)
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
     group="variant",
     control="control",
-    metrics=[MetricSpec(name="revenue", type="mean", preferred_direction="increase")],
+    metrics=[increment.MetricSpec(name="revenue", type="mean", preferred_direction="increase")],
 )
-results = run(experiment, resolver, prior=skeptical).readout()
+results = increment.run(experiment, reader, prior=skeptical).readout()
 for r in results:
     print(f"sampling_lift={r.lift.value:+.2%} posterior_estimate={r.posterior_estimate!r}")
 ```

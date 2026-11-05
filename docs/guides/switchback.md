@@ -22,7 +22,7 @@ step** cell. Pass the column names for `unit`, `cycle`, `period`, `step`, and
 ```python
 # The frame has columns: store_id, cycle, period, step, arm, orders.
 # `panel` is an eager pandas, polars, or pyarrow frame prepared by the caller.
-from increment import Randomized, from_switchback_frame, run
+import increment
 from increment.estimators import (
     IndependentBernoulliOrder,
     SharedScheduleOrder,
@@ -37,7 +37,7 @@ assignment = SwitchbackAssignment(
 )
 # Ordinary switchback inference selects the qualified unit-t approximation
 # from this design; no population envelope or reference declaration is needed.
-experiment, resolver = from_switchback_frame(
+experiment, reader = increment.from_switchback_frame(
     panel,
     unit="store_id",
     cycle="cycle",
@@ -45,7 +45,7 @@ experiment, resolver = from_switchback_frame(
     step="step",
     group="arm",
     metrics={"orders": "mean"},
-    identification=Randomized(
+    identification=increment.Randomized(
         control_group="control",
         allocation={
             "control": 0.5,
@@ -54,8 +54,8 @@ experiment, resolver = from_switchback_frame(
     ),
     assignment=assignment,
 )
-results = run(experiment, resolver).readout()
-diagnostics = assignment_diagnostic(experiment, resolver)
+results = increment.run(experiment, reader).readout()
+diagnostics = assignment_diagnostic(experiment, reader)
 ```
 
 ### Choose the order law
@@ -162,7 +162,7 @@ regardless of roster size.
 
 ## Results and diagnostics
 
-`run(experiment, resolver).readout()` returns `ContrastResults`, a typed list of `ContrastResult`
+`run(experiment, reader).readout()` returns `ContrastResults`, a typed list of `ContrastResult`
 objects, one per selected metric, each with `method_role="decision"` and
 `assignment="switchback"` (see [Reading results](reading-results.md) for
 contrast rows and [Multiplicity](multiplicity.md) for the status table):
@@ -176,7 +176,7 @@ contrast rows and [Multiplicity](multiplicity.md) for the status table):
 | `ct_cycles`, `tc_cycles` | Realized order draws: unit-cycle draws under `independent_bernoulli_order`, block draws under `shared_schedule`. |
 | `aggregation`, `probability_ct`, `randomization_law`, `independence_grain`, `carryover_order`, `observation_steps`, `retained_steps`, `identifying_assumption` | The declared design, echoed; `retained_steps=observation_steps-carryover_order`. |
 
-`increment.workflows.assignment_diagnostic(experiment, resolver)` returns the
+`increment.workflows.assignment_diagnostic(experiment, reader)` returns the
 validated schedule evidence for an experiment built with
 `from_switchback_frame`:
 `probability_ct`, `randomization_law`, `independence_grain`,
@@ -236,7 +236,7 @@ import math
 
 import pandas as pd
 
-from increment import Randomized, from_switchback_frame, run
+import increment
 from increment.estimators import (
     SharedScheduleOrder,
     SwitchbackAssignment,
@@ -261,7 +261,7 @@ panel = pd.DataFrame(
         for step in range(4)
     ]
 )
-experiment, resolver = from_switchback_frame(
+experiment, reader = increment.from_switchback_frame(
     panel,
     unit="unit",
     cycle="cycle",
@@ -269,7 +269,7 @@ experiment, resolver = from_switchback_frame(
     step="step",
     group="group",
     metrics={"value": "mean"},
-    identification=Randomized(
+    identification=increment.Randomized(
         control_group="control",
         allocation={"control": 0.5, "treatment": 0.5},
     ),
@@ -278,7 +278,7 @@ experiment, resolver = from_switchback_frame(
         window=SwitchbackWindow(washout_steps=1, observation_steps=3, carryover_order=1),
     ),
 )
-result = run(experiment, resolver).readout()[0]
+result = increment.run(experiment, reader).readout()[0]
 assert math.isclose(result.estimate.value, 12)
 assert math.isclose(result.standard_error, math.sqrt(40 / 12))
 assert result.n_blocks == 4 and result.n_units == 3 and result.dof == 3
@@ -338,7 +338,7 @@ Switchback construction failures expose these stable codes:
   conservative alpha splitting. Duplicate metric specifications are rejected
   by metric coercion with an uncoded `ValueError`, and duplicate plan entries
   by `AnalysisPlan` validation, not `source.frame.switchback.plan`.
-- `run(experiment, resolver)` accepts only its default role/prior arguments (`UNSET`).
+- `run(experiment, reader)` accepts only its default role/prior arguments (`UNSET`).
   The fixed `ContrastDecisionProcedure` owns the one decision method, fixed
   inference, family (`none`), alternative, null, and alpha. Passing
   `decision_method`, `sensitivity_methods`, or `prior` raises

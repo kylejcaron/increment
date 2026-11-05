@@ -26,7 +26,7 @@ below for route-specific assumptions and limitations.
     choices about when to look can invalidate a family claim. Triggered effects
     also require treatment-independent trigger membership and timing, plus
     counterfactual logging; balanced rates do not prove these assumptions.
-    [`increment.workflows.health_check(experiment, resolver)`](../api.md#diagnostics-and-robustness)
+    [`increment.workflows.health_check(experiment, reader)`](../api.md#diagnostics-and-robustness)
     is a sanity check, not proof of causal validity.
 
 ## Sequential monitoring of a conversion metric
@@ -42,12 +42,12 @@ from random import Random
 
 import polars as pl
 
-from increment import AnalysisPlan, InferenceSpec, MetricSpec, Randomized, from_frame, run
+import increment
 
 rng = Random(21)
 n = 2000
 arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(n)]
-design = Randomized(
+design = increment.Randomized(
     control_group="control",
     allocation={"control": 0.5, "treatment": 0.5},
     allocation_scheme="independent",
@@ -60,22 +60,22 @@ finalized_frame = pl.DataFrame(
         "purchase": [int(rng.random() < (0.045 if arm == "treatment" else 0.03)) for arm in arms],
     }
 )
-plan = AnalysisPlan(
+plan = increment.AnalysisPlan(
     primary="purchase",
-    inference=InferenceSpec(kind="always_valid", baseline_rate=0.03),
+    inference=increment.InferenceSpec(kind="always_valid", baseline_rate=0.03),
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     finalized_frame,
     shape="summary",
     unit="user_id",
     group="variant",
     design=design,
-    metrics=[MetricSpec(name="purchase", type="conversion")],
+    metrics=[increment.MetricSpec(name="purchase", type="conversion")],
     experiment_id="checkout-experiment",
     plan=plan,
     exposure_date="enrolled_on",
 )
-results = run(experiment, resolver).readout()
+results = increment.run(experiment, reader).readout()
 print(results)
 ```
 
@@ -219,13 +219,13 @@ mismatch refuses initial capture, not only continuation.
 Bind the registration through `AnalysisPlan(inference=InferenceSpec(
 kind="always_valid", registration=registration))`. Unit-summary frames
 supply finalized outcomes. Panel, native, and artifact sources require
-`increment.workflows.capture_sequential(experiment, resolver, finalized=True,
-as_of=...)` before a decision. The resolver's source keeps the capture, so a
-later `run(experiment, resolver)` reads it. The common window determines which
+`increment.workflows.capture_sequential(experiment, reader, finalized=True,
+as_of=...)` before a decision. The reader's source keeps the capture, so a
+later `run(experiment, reader)` reads it. The common window determines which
 units can enter. Native and artifact capture streams bounded Arrow batches
 through existing source relations.
 
-Use `increment.workflows.sequential_snapshot(experiment, resolver)` to retain
+Use `increment.workflows.sequential_snapshot(experiment, reader)` to retain
 the exact prefix. Supply it as `previous=` when continuing from a new source
 object. The same snapshot is idempotent. An append must preserve every earlier
 unit identity, assignment, value, definition, transformation, and reveal
@@ -234,34 +234,34 @@ Corrections refuse continuation; never treat them as a fresh continuation of
 the old process.
 
 ```python
-from increment import from_frame, run
+import increment
 from increment.estimators import snapshot_from_json
 from increment.workflows import capture_sequential, sequential_snapshot
 
 
 def bind(frame):
-    return from_frame(
+    return increment.from_frame(
         frame,
         shape="summary",
         unit="user_id",
         group="variant",
         design=design,
-        metrics=[MetricSpec(name="purchase", type="conversion")],
+        metrics=[increment.MetricSpec(name="purchase", type="conversion")],
         experiment_id="checkout-experiment",
         plan=plan,
         exposure_date="enrolled_on",
     )
 
 
-experiment, resolver = bind(finalized_frame.head(1000))
-with resolver:
-    saved = sequential_snapshot(experiment, resolver).model_dump_json()
+experiment, reader = bind(finalized_frame.head(1000))
+with reader:
+    saved = sequential_snapshot(experiment, reader).model_dump_json()
 
-experiment, resolver = bind(finalized_frame)
-with resolver:
+experiment, reader = bind(finalized_frame)
+with reader:
     parent = snapshot_from_json(saved)
-    continued = capture_sequential(experiment, resolver, finalized=True, previous=parent)
-    result = run(experiment, resolver)
+    continued = capture_sequential(experiment, reader, finalized=True, previous=parent)
+    result = increment.run(experiment, reader)
 print(continued.parent_id == parent.prefix_id)
 ```
 
@@ -274,10 +274,10 @@ previous=parent, append=True)` for a batch of new units. Existing unit
 identities cannot appear in that batch. Full-prefix capture checks every
 old record proof and reuses the parent's exact sufficient state.
 
-`increment.workflows.export_moments(experiment, resolver, path)` writes a
+`increment.workflows.export_moments(experiment, reader, path)` writes a
 format-10 sequential checkpoint envelope: the version-2
 registration/snapshot/checkpoint, a version-3 compiled plan, and the
-originating source identity. Export with the same resolver that captured or
+originating source identity. Export with the same reader that captured or
 adopted the finalized checkpoint; a fresh `from_definitions(...)` pair does not
 own that checkpoint. Reload its rows with `from_moments`.
 The preceding sequential format 9 remains readable; fixed-horizon format 12
@@ -316,7 +316,7 @@ remain members even when no units enroll. Missing cells contribute log
 evidence of minus infinity. Singular or zero-event prefixes retain their
 observations and may become informative later.
 
-`capture_sequential(experiment, resolver, finalized=True, freeze=["metric_name"])`
+`capture_sequential(experiment, reader, finalized=True, freeze=["metric_name"])`
 stops monitoring a metric at that capture. Every registered cell for that
 metric—each treatment arm and segment—keeps that capture's evidence at later
 looks. A cell with no observations on either arm has nothing to freeze and
@@ -325,7 +325,7 @@ Freezing is recorded in the snapshot's hashed prefix identity and carries
 forward on later appends and parent proofs. A caller cannot retroactively
 apply an earlier look's evidence. Raw-record producers call
 `declare_sequential_freeze(snapshot, ["metric_name"])` on a captured
-snapshot for the same effect. `run(experiment, resolver)` reads frozen cells
+snapshot for the same effect. `run(experiment, reader)` reads frozen cells
 from the snapshot; it has no run-time override.
 
 Freezing fixes a cell's evidence, not its family verdict. e-BH uses current
@@ -402,9 +402,9 @@ compliance path. On `from_frame` summaries and panels, declare a
 randomized segmented family before observing outcomes with ordinary frame metadata:
 
 ```python
-from increment import InferenceSpec
+import increment
 
-InferenceSpec(kind="always_valid", segments={"country": ("US", "CA", "GB")})
+increment.InferenceSpec(kind="always_valid", segments={"country": ("US", "CA", "GB")})
 ```
 
 Use a categorical column and list every level to monitor, including levels
@@ -699,15 +699,15 @@ segmentation does not preserve this assignment model.
 Declare the plan and assignment before reading outcomes:
 
 ```python
-specs = [MetricSpec(name="purchase", type="conversion")]
-plan = AnalysisPlan(
+specs = [increment.MetricSpec(name="purchase", type="conversion")]
+plan = increment.AnalysisPlan(
     primary="purchase",
-    inference=InferenceSpec(
+    inference=increment.InferenceSpec(
         kind="asymptotic_mean",
         expected_decision_sample_size=5000,
     ),
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     finalized_frame,
     shape="summary",
     unit="user_id",
@@ -718,7 +718,7 @@ experiment, resolver = from_frame(
     plan=plan,
     exposure_date="enrolled_on",
 )
-row = run(experiment, resolver).readout()[0]
+row = increment.run(experiment, reader).readout()[0]
 result = row.require_asymptotic_sequential_result()
 ```
 !!! warning "Plan targets below the calibration range raise early-look risk"
@@ -968,8 +968,8 @@ triggers depends on its arm, so that the triggered contrast is an intent-to-trea
 effect on the triggered subpopulation. This is stronger than equal trigger rates
 across arms: treatment can change *which* units trigger while leaving both arms'
 trigger rates equal, and no sample-ratio or trigger-rate diagnostic can see
-that. `srm(experiment, resolver, population="triggered")` and
-`trigger_rates(experiment, resolver)` from `increment.workflows` can reject some
+that. `srm(experiment, reader, population="triggered")` and
+`trigger_rates(experiment, reader)` from `increment.workflows` can reject some
 violations; a passing check is not evidence that `A2` holds. `A3`
 (trigger-order stationarity): among triggered units, trigger timing carries no
 information about the complete retained vector -- outcome, ratio numerator and
@@ -981,7 +981,7 @@ assigned sequence, and every calendar look is a prefix of it.
 ### A practical triggered-health review
 
 Before interpreting a triggered result, call
-`increment.workflows.health_check(experiment, resolver)` and read
+`increment.workflows.health_check(experiment, reader)` and read
 each entry by population. First review `assigned_allocation` for assignment
 integrity; then inspect `triggered_balance` and descriptive `trigger_rates` as
 separate cohort diagnostics. Check each metric's retained maturity and each

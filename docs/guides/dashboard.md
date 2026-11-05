@@ -36,7 +36,7 @@ operation, not a renderer change; the package never assumes a 50/50 allocation.
 
 ```python
 import ibis
-from increment import from_definitions
+import increment
 from increment.dashboard import (
     DashboardConfig,
     prepare_dashboard,
@@ -44,14 +44,16 @@ from increment.dashboard import (
 )
 
 con = ibis.snowflake.connect(...)
-experiment, resolver = from_definitions("definitions/", con, experiment_name="checkout_redesign")
+experiment, reader = increment.from_definitions(
+    "definitions/", con, experiment_name="checkout_redesign"
+)
 config = DashboardConfig(
     expected_allocation={"control": 0.5, "treatment": 0.5},
     source_label="Production warehouse",
     metric_units={"revenue_per_user": "USD", "checkout_latency_ms": "ms"},
 )
 
-snapshot = prepare_dashboard(experiment, resolver, config=config)
+snapshot = prepare_dashboard(experiment, reader, config=config)
 
 render_dashboard(experiment, snapshot=snapshot)
 ```
@@ -64,17 +66,17 @@ or Studio server; keep the example's host stylesheet beside the notebook.
 `prepare_dashboard` validates the experiment and config, then captures
 allocation, enrollment, headline estimates, group data, and supported Explore
 views from one pinned source snapshot into an immutable `DashboardSnapshot`.
-The snapshot retains no resolver, source, or connection. `render_dashboard`
+The snapshot retains no reader, source, or connection. `render_dashboard`
 reads captured evidence only: browser controls select prepared data and never
 query the warehouse, change the plan, or recompute confirmatory results. To
-update data or policy, bind and prepare again; you own `resolver` and its
+update data or policy, bind and prepare again; you own `reader` and its
 connection, so close them when binding a different experiment.
 
 `prepare_dashboard` is the computation boundary. It validates the experiment and
 config, then invokes one source-owned snapshot operation. Allocation, enrollment
 history, headline estimates, observed group data, and every supported Explore
 choice share its pinned inputs, including declared breakout property sources.
-The caller's resolver is not rebound or closed. Captured sequential decisions retain
+The caller's reader is not rebound or closed. Captured sequential decisions retain
 each displayed metric's checkpoint, including earlier frozen secondaries.
 These results form an immutable `DashboardSnapshot`. Preparation computes the
 temporal and breakout views as well as the headline.
@@ -148,9 +150,9 @@ Explore: every offered metric is read with the headline, so changing which
 ones are shown re-renders the same snapshot. Section-level
 renderers also accept already-prepared data. Re-executing preparation
 intentionally creates a new snapshot that reflects subsequent source changes.
-You retain ownership of `resolver` and its connection; the package does not
+You retain ownership of `reader` and its connection; the package does not
 close or replace them. When deliberately binding a different experiment,
-the caller must close the old resolver and connection.
+the caller must close the old reader and connection.
 
 The standalone `render_header` and `render_metric_details` sections use the same
 selected-population default and accept `population="assigned"` or
@@ -452,7 +454,7 @@ or not; it is never marked as a discovery and never blocks the other cells.
 ### Added exploratory metrics
 
 `DashboardConfig(exploratory_metrics=(...))` names metrics from
-`workflows.available_metrics(experiment, resolver)` to show: saved per-unit metrics on the
+`workflows.available_metrics(experiment, reader)` to show: saved per-unit metrics on the
 experiment's unit that the experiment does not declare. Report-only
 `total`/`active` metrics and other entities' metrics are not offered, and a
 name the definitions do not offer is refused with `dashboard.invalid_config`

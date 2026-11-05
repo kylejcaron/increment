@@ -13,8 +13,15 @@ def imports():
     import marimo as mo
     import pandas as pd
 
-    from increment import MetricSpec, View, from_definitions, from_moments, query, run, workflows
+    import increment
+    from increment.query import build_panel_for_metric, summary_sql
     from increment.tables import estimates_to_readout, readout_table
+    from increment.workflows import (
+        breakout_summaries,
+        experiment_definition,
+        export_moments,
+        metrics,
+    )
 
     DEFINITIONS = "examples/realistic_demo/definitions/"
     EXPERIMENT = "checkout_redesign"
@@ -22,21 +29,21 @@ def imports():
     return (
         DEFINITIONS,
         EXPERIMENT,
-        MetricSpec,
         Path,
-        View,
         WAREHOUSE,
+        breakout_summaries,
+        build_panel_for_metric,
         dt,
         estimates_to_readout,
-        from_definitions,
-        from_moments,
+        experiment_definition,
+        export_moments,
         ibis,
+        increment,
+        metrics,
         mo,
         pd,
-        query,
         readout_table,
-        run,
-        workflows,
+        summary_sql,
     )
 
 
@@ -113,15 +120,15 @@ def _(WAREHOUSE):
 
 
 @app.cell
-def _(DEFINITIONS, EXPERIMENT, con, from_definitions, warehouse_ready, workflows):
+def _(DEFINITIONS, EXPERIMENT, con, experiment_definition, increment, warehouse_ready):
     assert (warehouse_ready / "manifest.json").exists(), (
         "warehouse missing - run the generation cell above first"
     )
-    experiment, resolver = from_definitions(
+    experiment, reader = increment.from_definitions(
         DEFINITIONS, con, experiment_name=EXPERIMENT, store="always"
     )
-    definition = workflows.experiment_definition(experiment, resolver)
-    return definition, experiment, resolver
+    definition = experiment_definition(experiment, reader)
+    return definition, experiment, reader
 
 
 @app.cell(hide_code=True)
@@ -282,8 +289,8 @@ def _(mo):
 
 
 @app.cell
-def _(experiment, resolver, run):
-    estimates = run(experiment, resolver).readout()
+def _(experiment, increment, reader):
+    estimates = increment.run(experiment, reader).readout()
     return (estimates,)
 
 
@@ -305,15 +312,15 @@ def _(mo):
 
     # Pipeline: raw warehouse tables to an experiment readout
 
-    `run(experiment, resolver)` above could feel like a black box. The process below breaks down what actually happens to go from
+    `run(experiment, reader)` above could feel like a black box. The process below breaks down what actually happens to go from
     warehouse tables to a polished output.
     """)
     return
 
 
 @app.cell(hide_code=True)
-def _(experiment, resolver, workflows):
-    metric = next(m for m in workflows.metrics(experiment, resolver) if m.name == "conversion_rate")
+def _(experiment, metrics, reader):
+    metric = next(m for m in metrics(experiment, reader) if m.name == "conversion_rate")
     return (metric,)
 
 
@@ -479,7 +486,7 @@ def _(dt, mo, pd):
 
 
 @app.cell(hide_code=True)
-def _(data_as_of, definition, experiment, ibis, metric, panel, resolver, workflows):
+def _(breakout_summaries, data_as_of, definition, experiment, ibis, metric, panel, reader):
     # Match unit_totals' conversion semantics from the public dense panel:
     # bound each event to the metric window, discard immature units, then
     # reduce each unit to a binary any-event outcome.
@@ -502,7 +509,7 @@ def _(data_as_of, definition, experiment, ibis, metric, panel, resolver, workflo
         y=(bounded_panel.n_events > 0).max().cast("float64")
     )
 
-    moment_tables = workflows.breakout_summaries(experiment, resolver, metrics=[metric])
+    moment_tables = breakout_summaries(experiment, reader, metrics=[metric])
     _country_key = next(key for key in moment_tables if key.startswith(f"{metric.name}:country:"))
     breakout_moments_tbl = moment_tables[_country_key]["group_summary"].to_pandas()
     daily_moments_tbl = moment_tables[_country_key]["daily_group_summary"].to_pandas()
@@ -523,7 +530,7 @@ def _(
     metric_events,
     moment_card,
     pipeline_flow,
-    resolver,
+    reader,
     spine,
     stage_row,
     stats,
@@ -543,21 +550,21 @@ def _(
                         "metrics.yaml",
                         # Internals peek: definitions metadata has no public
                         # count property; keep this display-only tour read-only.
-                        f"{len(resolver._binding.definitions.metrics)} metrics &mdash; type, fact, window",
+                        f"{len(reader._binding.definitions.metrics)} metrics &mdash; type, fact, window",
                     ),
                     (
                         "fact_sources.yaml",
-                        f"{len(resolver._binding.definitions.fact_sources)} fact sources &mdash; "
+                        f"{len(reader._binding.definitions.fact_sources)} fact sources &mdash; "
                         "SQL, entities, facts",
                     ),
                     (
                         "dim_sources.yaml",
-                        f"{len(resolver._binding.definitions.dim_sources)} dim sources &mdash; "
+                        f"{len(reader._binding.definitions.dim_sources)} dim sources &mdash; "
                         "unit properties, joined on demand",
                     ),
                     (
                         "exposures.yaml",
-                        f"{len(resolver._binding.definitions.exposures)} exposure &mdash; {definition.exposure}",
+                        f"{len(reader._binding.definitions.exposures)} exposure &mdash; {definition.exposure}",
                     ),
                 ],
                 DEFINITIONS,
@@ -660,10 +667,10 @@ def _(mo):
 
 
 @app.cell
-def _(resolver):
+def _(reader):
     # Internals peek: the public panel builder needs this exposure relation,
-    # while run(experiment, resolver) normally keeps it behind the resolver.
-    exposures = resolver._binding.source._get_exposures()
+    # while run(experiment, reader) normally keeps it behind the reader.
+    exposures = reader._binding.source._get_exposures()
     exposures.execute().head()
     return (exposures,)
 
@@ -786,10 +793,10 @@ def _(mo):
 
 
 @app.cell
-def _(experiment, exposures, metric, query, resolver):
+def _(build_panel_for_metric, experiment, exposures, metric, reader):
     # Inspect the logical relations without retaining a readout's TEMP tables.
     panel, spine, stats, metric_events, den_events, fact_tbl, value_col, data_as_of = (
-        query.build_panel_for_metric(experiment, resolver, exposures, metric)
+        build_panel_for_metric(experiment, reader, exposures, metric)
     )
     return data_as_of, den_events, fact_tbl, metric_events, panel, spine, stats, value_col
 
@@ -907,10 +914,10 @@ def _(mo):
 
 
 @app.cell
-def _(con, definition, experiment, metric, query, resolver):
+def _(con, definition, experiment, metric, reader, summary_sql):
     # The public SQL preview returns the exact group-summary relation consumed
-    # by run(experiment, resolver); execute it only so the tour can display its rows.
-    summary = con.sql(query.summary_sql(experiment, resolver)[metric.name])
+    # by run(experiment, reader); execute it only so the tour can display its rows.
+    summary = con.sql(summary_sql(experiment, reader)[metric.name])
     cluster = definition.cluster
     return cluster, summary
 
@@ -960,34 +967,23 @@ def _(mo):
 
 
 @app.cell
-def _(
-    MetricSpec,
-    Path,
-    definition,
-    estimates,
-    experiment,
-    from_moments,
-    metric,
-    resolver,
-    run,
-    workflows,
-):
+def _(Path, definition, estimates, experiment, export_moments, increment, metric, reader):
     import tempfile
 
     import pyarrow.parquet as pq
 
     with tempfile.TemporaryDirectory() as _tmp:
         moments_path = Path(_tmp) / "moments.parquet"
-        workflows.export_moments(experiment, resolver, moments_path)
+        export_moments(experiment, reader, moments_path)
         exported_moments = pq.read_table(moments_path).to_pylist()
 
-    moments_metric = MetricSpec(
+    moments_metric = increment.MetricSpec(
         name=metric.name,
         type="conversion",
         window_days=metric.window_days,
         preferred_direction=metric.preferred_direction,
     )
-    _experiment, _resolver = from_moments(
+    _experiment, _reader = increment.from_moments(
         exported_moments,
         metrics=[moments_metric],
         control=definition.control_group,
@@ -995,7 +991,7 @@ def _(
     )
     moments_estimate = next(
         e
-        for e in run(_experiment, _resolver, metrics=[moments_metric]).readout()
+        for e in increment.run(_experiment, _reader, metrics=[moments_metric]).readout()
         if e.metric == metric.name
     )
     original_estimates = next(e for e in estimates if e.metric == metric.name)
@@ -1007,7 +1003,7 @@ def _(
 @app.cell
 def _(mo, moments_estimate, original_estimates):
     mo.md(f"""
-    | | from exported moments | `run(experiment, resolver)` |
+    | | from exported moments | `run(experiment, reader)` |
     |--|--:|--:|
     | lift | {moments_estimate.lift.value:.6f} | {original_estimates.lift.value:.6f} |
     | lift CI | [{moments_estimate.lift.lb:.4f}, {moments_estimate.lift.ub:.4f} ] | [{original_estimates.lift.lb:.4f}, {original_estimates.lift.ub:.4f} ] |
@@ -1041,8 +1037,8 @@ def _(mo):
 
 
 @app.cell
-def _(experiment, metric, resolver, workflows):
-    breakout_tables = workflows.breakout_summaries(experiment, resolver, metrics=[metric])
+def _(breakout_summaries, experiment, metric, reader):
+    breakout_tables = breakout_summaries(experiment, reader, metrics=[metric])
     for key, tables in breakout_tables.items():
         _, property_name, source_name = key.split(":", 2)
         print(f"{property_name} (resolved through fact source {source_name}):")
@@ -1087,10 +1083,10 @@ def _(mo):
 
 
 @app.cell
-def _(View, estimates_to_readout, experiment, readout_table, resolver, run):
-    breakout_scope = View.breakout(())
-    breakout_estimates = run(
-        experiment.with_views(breakout_scope), resolver, views=(breakout_scope,)
+def _(estimates_to_readout, experiment, increment, reader, readout_table):
+    breakout_scope = increment.View.breakout(())
+    breakout_estimates = increment.run(
+        experiment.with_views(breakout_scope), reader, views=(breakout_scope,)
     ).readout(breakout_scope)
     country_breakout_estimates = [
         e for e in breakout_estimates if e.metric == "conversion_rate" and e.dimension == "country"
@@ -1128,11 +1124,11 @@ def _(mo):
 
 
 @app.cell
-def _(View, estimates_to_readout, experiment, metric, pd, resolver, run):
-    asof_lift_scope = View.asof()
-    daily_estimates = run(
+def _(estimates_to_readout, experiment, increment, metric, pd, reader):
+    asof_lift_scope = increment.View.asof()
+    daily_estimates = increment.run(
         experiment.with_views(asof_lift_scope),
-        resolver,
+        reader,
         views=(asof_lift_scope,),
         metrics=[metric],
     ).readout(asof_lift_scope)

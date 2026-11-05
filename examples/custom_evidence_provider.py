@@ -8,7 +8,7 @@ from typing import cast
 
 from pydantic import TypeAdapter
 
-from increment import Metric
+import increment
 from increment.estimators import CapabilityError
 from increment.evidence import (
     BreakoutMethodMomentsRequest,
@@ -56,7 +56,7 @@ class RevenueProvider:
         available_covariates=None,
     )
     # This example exercises request dispatch only. A provider behind an
-    # experiment's resolver supplies its real SourceContext from its construction metadata.
+    # experiment's reader supplies its real SourceContext from its construction metadata.
     context = cast(SourceContext, None)
 
     def moments(self, request: MomentsRequest) -> MomentRows:
@@ -123,7 +123,7 @@ def _no_op_scope(provider: RevenueProvider) -> Iterator[RevenueProvider]:
 
 
 def run_example() -> dict[str, object]:
-    metric = TypeAdapter(Metric).validate_python(
+    metric = TypeAdapter(increment.Metric).validate_python(
         {"type": "mean", "name": "revenue", "fact": "revenue", "entity": "customer_id"}
     )
     provider: EvidenceProvider = RevenueProvider()
@@ -137,9 +137,9 @@ def run_example() -> dict[str, object]:
     else:
         raise AssertionError("Daily moments were not declared by this provider.")
 
-    from increment import Encouragement, UptakeSpec
-
-    design = Encouragement(control_group="control", uptake=UptakeSpec(fact="clicked"))
+    design = increment.Encouragement(
+        control_group="control", uptake=increment.UptakeSpec(fact="clicked")
+    )
     try:
         request_evidence(provider, ComplianceSeriesRequest(design))
     except CapabilityError as error:

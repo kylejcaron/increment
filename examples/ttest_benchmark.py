@@ -12,9 +12,9 @@ def _():
     import pandas as pd
     from scipy.stats import norm, t, ttest_ind
 
-    from increment import from_frame, run
+    import increment
 
-    return ct, from_frame, mo, norm, np, pd, run, t, ttest_ind
+    return ct, increment, mo, norm, np, pd, t, ttest_ind
 
 
 @app.cell
@@ -52,7 +52,7 @@ def effect_selection():
 
 
 @app.cell(hide_code=True)
-def _(from_frame, mo, norm, np, pd, run, sample_sizes, t, true_effects, ttest_ind):
+def _(increment, mo, norm, np, pd, sample_sizes, t, true_effects, ttest_ind):
     rows = []
     total_calculations = len(sample_sizes) * len(true_effects)
 
@@ -79,7 +79,7 @@ def _(from_frame, mo, norm, np, pd, run, sample_sizes, t, true_effects, ttest_in
                     }
                 )
 
-                experiment, resolver = from_frame(
+                experiment, reader = increment.from_frame(
                     data,
                     shape="summary",
                     unit="user_id",
@@ -87,7 +87,7 @@ def _(from_frame, mo, norm, np, pd, run, sample_sizes, t, true_effects, ttest_in
                     control="control",
                     metrics={"revenue": "mean"},
                 )
-                (increment_estimate,) = run(experiment, resolver).readout()
+                (increment_estimate,) = increment.run(experiment, reader).readout()
                 increment_lift = increment_estimate.lift
                 rows.append(
                     {

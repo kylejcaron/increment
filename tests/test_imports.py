@@ -10,8 +10,10 @@ pyarrow into ``sys.modules``.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -344,6 +346,33 @@ def test_root_import_loads_one_module():
         "import increment\n"
         "import sys\n"
         "assert len([m for m in sys.modules if m.startswith('increment')]) == 1\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_unimported_submodule_attribute_names_its_import_without_loading_it():
+    manifest = (Path(__file__).parent / "public_exports.txt").read_text()
+    submodules = re.findall(r"^\[increment\.(\w+)\]$", manifest, flags=re.MULTILINE)
+    assert submodules
+    code = (
+        "import sys\n"
+        "import increment\n"
+        f"for name in {submodules!r}:\n"
+        "    try:\n"
+        "        getattr(increment, name)\n"
+        "    except AttributeError as error:\n"
+        "        assert f'from increment.{name} import' in str(error), (name, str(error))\n"
+        "    else:\n"
+        "        raise AssertionError(name)\n"
+        "    assert f'increment.{name}' not in sys.modules, name\n"
+        "from increment import workflows\n"
+        "assert increment.workflows is workflows\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],

@@ -7,7 +7,7 @@ in warehouse YAML or in a dataframe `MetricSpec`.
 ```python
 import polars as pl
 
-from increment import from_frame, run
+import increment
 
 metric_demo = pl.DataFrame(
     {
@@ -17,7 +17,7 @@ metric_demo = pl.DataFrame(
         "converted": [0, 1, 0, 1, 1, 0, 1, 1],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     metric_demo,
     shape="summary",
     unit="user_id",
@@ -25,7 +25,7 @@ experiment, resolver = from_frame(
     control="control",
     metrics={"revenue": "mean", "converted": "conversion"},
 )
-metric_results = run(experiment, resolver).readout()
+metric_results = increment.run(experiment, reader).readout()
 for row in metric_results:
     print(row.metric, row.group_id, row.lift)
 ```
@@ -94,9 +94,9 @@ unit outcome and sums it before winsorizing.
 ```
 
 ```python
-from increment import MetricSpec
+import increment
 
-MetricSpec(
+increment.MetricSpec(
     name="revenue_per_user",
     type="mean",
     winsorization={"upper_value": 500.0},
@@ -586,7 +586,7 @@ deployment. Randomized clusters must belong to one arm; observational dependence
 clusters may contain both arms. Fitted CATE results report `n_clusters`, while
 targeting policies retain the intervention grain and required scoring columns.
 
-All four operations take the `(experiment, resolver)` pair from a builder such
+All four operations take the `(experiment, reader)` pair from a builder such
 as `from_frame` or `from_definitions`. `n_train` and `n_holdout`
 count members; validation's `n_clusters` counts independent heldout clusters.
 Selection's count describes the inner population, while `selection.rule.n_clusters`
@@ -622,7 +622,7 @@ from increment.results import TargetingRule
 
 rule = targeting_rule(
     experiment,
-    resolver,
+    reader,
     "revenue",
     control="control",
     interact=["spend"],
@@ -647,7 +647,7 @@ unit-summary sources can carry covariate columns directly.
 ??? info "Counts, covariates, and cluster policies"
     Fitted CATE results report `n_clusters`, while targeting policies retain
     the intervention grain and required scoring columns. All four entry points
-    take a builder's `(experiment, resolver)` pair. `n_train` and `n_holdout` count members;
+    take a builder's `(experiment, reader)` pair. `n_train` and `n_holdout` count members;
     validation's `n_clusters` counts independent heldout clusters. Selection's
     count describes the inner population, while `selection.rule.n_clusters`
     describes the untouched outer holdout. Repeating members under the same
@@ -750,7 +750,7 @@ import random
 
 import polars as pl
 
-from increment import MetricSpec, from_frame, run
+import increment
 
 random.seed(11)
 n = 400
@@ -766,16 +766,16 @@ df = pl.DataFrame(
     }
 )
 
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics=[
-        MetricSpec(name="revenue", type="mean"),
-        MetricSpec(name="purchase_rate", type="conversion", value_column="converted"),
-        MetricSpec(
+        increment.MetricSpec(name="revenue", type="mean"),
+        increment.MetricSpec(name="purchase_rate", type="conversion", value_column="converted"),
+        increment.MetricSpec(
             name="revenue_per_order",
             type="ratio",
             numerator="revenue",
@@ -783,7 +783,7 @@ experiment, resolver = from_frame(
         ),
     ],
 )
-results = run(experiment, resolver).readout()
+results = increment.run(experiment, reader).readout()
 
 for r in results:
     print(f"{r.metric}: lift={r.lift.value:+.2%}")

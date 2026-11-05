@@ -1,6 +1,6 @@
 # Experiment specifications
 
-`increment.Experiment` is an immutable description of a registered analysis. It records a design, metrics, source references, and selected scopes. For portable declarations, `to_json()` and `from_json()` preserve its canonical identity. In-memory analyses can also declare learner factories and fold counts: these remain usable during construction and execution. Exporting a raw learner factory refuses rather than replacing the learner. Source references can record a digest, a column-name/type schema, and a versioned `EvidenceCapabilities` declaration; a missing declaration is not evidence that a source supports a request.
+`increment.Experiment` is an immutable description of a registered analysis. It records a design, metrics, source references, and declared views. For portable declarations, `to_json()` and `from_json()` preserve its canonical identity. In-memory analyses can also declare learner factories and fold counts: these remain usable during construction and execution. Exporting a raw learner factory refuses rather than replacing the learner. Source references can record a digest, a column-name/type schema, and a versioned `EvidenceCapabilities` declaration; a missing declaration is not evidence that a source supports a request.
 
 Design mechanisms are a versioned set: an older reader refuses an unknown
 mechanism with `design.mechanism_unsupported` rather than guessing its
@@ -20,8 +20,8 @@ factory; experiments containing one remain in-memory-only. They still
 deep-copy and pickle when the factory itself pickles, such as a module-level
 function or class; unpickle only data you trust.
 
-`run(experiment, resolver)` returns one `RunResult` for all declared supported
-scopes, sharing one physical evidence capture. `views=(view, ...)` selects
+`run(experiment, reader)` returns one `RunResult` for all declared supported
+views, sharing one physical evidence capture. `views=(view, ...)` selects
 declared views by their hashes; execution follows declaration order, not
 selection order. Empty, duplicate or undeclared selections refuse before reads.
 `result.readout(view)` returns the typed collection each executed view
@@ -35,7 +35,7 @@ views; adding a view that is already declared refuses with
 
 ```python
 import pandas as pd
-from increment import View, from_frame
+import increment
 
 frame = pd.DataFrame(
     {
@@ -45,7 +45,7 @@ frame = pd.DataFrame(
         "value": [1.0, 2.0, 3.0, 4.0],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     frame,
     shape="panel",
     unit="unit",
@@ -55,20 +55,20 @@ experiment, resolver = from_frame(
     metrics={"value": "mean"},
     observation_end="2025-01-02",
 )
-daily_lift = View.daily()
-daily_values = View.daily(values=True)
+daily_lift = increment.View.daily()
+daily_values = increment.View.daily(values=True)
 experiment = experiment.with_views(daily_lift, daily_values)
 ```
 
 `values=True` requests per-arm descriptive values for daily or as-of views.
 Without it, those views request lift. Values and lift at the same time
-coordinates are separate scopes; the default lift scope keeps its existing
-canonical identity. Run, breakout and switchback scopes do not support values.
+coordinates are separate views; the default lift view keeps its existing
+canonical identity. Overall, breakout and switchback views do not support values.
 If an in-memory learner configuration cannot be serialized, `RunResult`
 remains usable in memory, while storing or serializing it refuses with
 `wire.procedure.runtime_method`.
 
-`Experiment.compile()` returns one run-wide `EvidenceScope` inventory and one `AnalysisRequest` for each selected scope. Both contain the declared metrics, with any switchback scope-specific selection applied. Each request retains its scope, registration hash, and source-reference name.
+`Experiment.compile()` returns one run-wide `EvidenceScope` inventory and one `AnalysisRequest` for each selected view. Both contain the declared metrics, with any switchback view's metric selection applied. Each request retains its view, registration hash, and source-reference name.
 
 `runnable(experiment, metric)` is an offline preflight. It does not open a source. If a source has no recorded capabilities, the returned estimator entries name those capabilities as `unknown`; known data-dependent conditions such as usable denominators and sample floors remain deferred until execution. Its `static_refusals` contain only known incompatibilities.
 
@@ -80,15 +80,15 @@ identifies the supported contrast procedure; arm estimators refuse with
 
 Builder specifications retain the compiled plan, metric configurations,
 cluster and trigger declarations, and the bound operations' accepted arguments.
-Readout operations are selected through the declared scopes: daily values and
-daily lift are separate scopes even when they share time coordinates, and have
+Readout operations are selected through the declared views: daily values and
+daily lift are separate views even when they share time coordinates, and have
 different compatibility requirements. Preflight is conservative and sound rather than complete: it reports
 known static refusals using the execution refusal code, but does not estimate
 data-dependent conditions or guarantee that an unrefused request will execute.
 
 
 The analysis specification identity includes the effective readout operation for
-each scope and saved request options, including priors and estimands. Omitting
+each view and saved request options, including priors and estimands. Omitting
 an operation and explicitly selecting its default have the same specification
 identity. These declarations also contribute to the execution identity; they
 do not change evidence identities.
@@ -104,14 +104,14 @@ as-of moments.
 
 Estimator selection retains declared method settings such as conversion
 inference and CUPED covariates where available; multicovariate CUPED requires
-its covariate configuration. Switchback scopes require a switchback experiment.
+its covariate configuration. Switchback views require a switchback experiment.
 Switchback requests reject arm-only arguments and role or prior overrides with
 the same checks as execution.
 `capture` is an execution step, not a saved request option. To capture or adopt
 a sequential checkpoint, call
-`increment.workflows.capture_sequential(experiment, resolver, ...)` with the
+`increment.workflows.capture_sequential(experiment, reader, ...)` with the
 pair returned by a module builder, then run the experiment. Pass an `as_of`
-horizon when required by the source. `run(experiment, resolver,
+horizon when required by the source. `run(experiment, reader,
 capture=SequentialCaptureRequest(...))` instead takes the capture inside the
 run's own shared evidence capture, before any view reads.
 Specifications containing `capture` refuse with
@@ -119,16 +119,15 @@ Specifications containing `capture` refuse with
 constructor, such as `View.daily(population=...)`; a request option named
 `population` refuses with
 `kernel.request.population_scope_only`, as does a `run(population=...)` that
-differs from a selected scope's population.
+differs from a selected view's population.
 
-`increment.evidence.Resolver` binds the named sources and verifies their
-recorded declarations. `increment.evidence.BoundResolver` adapts a custom
-`EvidenceProvider` for verification only.
 `run(experiment, reader)` and every function that reads data accept only the
-`ExperimentReader` a module builder returns with the experiment; anything else,
-a `BoundResolver` included, refuses with `kernel.run.reader_required`, whose
-context names the type that was passed. `run` verifies the reader's source
-declarations before reading.
+`ExperimentReader` a module builder returns with the experiment; anything else
+refuses with `kernel.run.reader_required`, whose context names the type that
+was passed. A custom evidence provider is verified, not run, with
+`increment.evidence.BoundResolver`; see the
+[provider guide](../development/adding-an-estimator.md#custom-evidence-providers).
+`run` verifies the reader's source declarations before reading.
 
 A closed reader stays closed: after `close()` or the end of a `with` block,
 every read refuses with `kernel.run.reader_closed`; build a new reader with the
@@ -137,15 +136,21 @@ the offline catalog cannot read and refuses with `kernel.run.reader_offline`;
 build it with a connection to run. `repr(reader)` names the experiment, how the
 reader reads and whether it is closed, without reading data.
 
-The specification format describes declarations; it does not itself open a warehouse or infer a source snapshot. Reproducible execution still requires the resolver and execution context to establish the actual snapshot identity.
+The specification format describes declarations; it does not itself open a warehouse or infer a source snapshot. Reproducible execution still requires the reader and execution context to establish the actual snapshot identity.
+
+An experiment's identity and its source digests cover declarations, not rows,
+so readers built with identical declarations are interchangeable: `run`
+accepts any of them with the experiment and reads whatever rows that reader
+holds. A dataframe reader keeps the rows its frame held when the builder ran;
+a warehouse reader reads live on every call.
 
 ## Building and running
 
-Each module builder returns an experiment and the resolver that reads its
+Each module builder returns an experiment and the reader that reads its
 source:
 
 ```python
-from increment import Experiment, from_frame, render, run
+import increment
 import pandas as pd
 
 units = pd.DataFrame(
@@ -156,7 +161,7 @@ units = pd.DataFrame(
     }
 )
 
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     units,
     shape="summary",
     unit="user_id",
@@ -165,9 +170,9 @@ experiment, resolver = from_frame(
     metrics={"revenue": "mean"},
 )
 saved = experiment.to_json()
-restored = Experiment.from_json(saved)
-result = run(restored, resolver)
-print(render(result, "brief"))
+restored = increment.Experiment.from_json(saved)
+result = increment.run(restored, reader)
+print(increment.render(result, "brief"))
 ```
 
 For a registered sequential definition, capture through the builder's pair
@@ -175,14 +180,14 @@ before running. Supply an `as_of` horizon when required by the source:
 
 <!-- skip: next "requires a configured warehouse and a registered sequential definition" -->
 ```python
-from increment import from_definitions, run
+import increment
 from increment.workflows import capture_sequential
 
-experiment, resolver = from_definitions(
+experiment, reader = increment.from_definitions(
     "definitions.yml", con, experiment_name="sequential_experiment"
 )
-capture_sequential(experiment, resolver, finalized=True, as_of=as_of)
-result = run(experiment, resolver)
+capture_sequential(experiment, reader, finalized=True, as_of=as_of)
+result = increment.run(experiment, reader)
 ```
 
 `from_frame` requires `shape="summary"` or `shape="panel"`. Each shape has
@@ -197,29 +202,33 @@ The definitions call is path-first:
 backend=None, store="auto", on_mixed_assignment="error",
 source_snapshot_evidence=None)`. Omit `experiment_name` only when the definitions
 or offline catalog contain exactly one experiment. Binding with a connection
-records a versioned catalog file; a no-connection call reads that catalog and
-refuses when it is missing or stale. An offline specification can be inspected
-with `runnable`, but needs a connection-bound source to execute.
+writes a versioned catalog beside the definitions: `.increment-kernel-catalog.json`
+inside a definitions directory, or `<file>.kernel.json` next to a single
+definitions file, and a lock file with `.lock` appended to that name, which
+serializes catalog updates and stays in place. Both are generated. A
+no-connection call reads that catalog and refuses when it is
+missing or stale. An offline specification can be inspected with `runnable`,
+but needs a connection-bound reader to execute.
 
 The other source builders expose only the options their data support:
 
 <!-- skip: next "requires a published artifact, exported moments, and a switchback frame" -->
 ```python
-from increment import from_unit_day_artifact, from_moments, from_switchback_frame
+import increment
 
-artifact_experiment, artifact_resolver = from_unit_day_artifact(
+artifact_experiment, artifact_reader = increment.from_unit_day_artifact(
     artifact_store,
     artifact_ref,
     expected_context=artifact_context,
     verification="lazy_digest",
 )
-moments_experiment, moments_resolver = from_moments(
+moments_experiment, moments_reader = increment.from_moments(
     moment_rows,
     metrics={"revenue": "mean"},
     control="control",
     experiment_id="checkout_redesign",
 )
-switchback_experiment, switchback_resolver = from_switchback_frame(
+switchback_experiment, switchback_reader = increment.from_switchback_frame(
     switchback_rows,
     unit="user_id",
     cycle="cycle",
@@ -233,7 +242,7 @@ switchback_experiment, switchback_resolver = from_switchback_frame(
 )
 ```
 
-Every builder returns an experiment declaration and a resolver for reading its
+Every builder returns an experiment declaration and a reader for reading its
 source. Saving and loading the declaration preserves
 its hash; it does not serialize the data or a warehouse connection. Column types
 recorded for a source are saved with the declaration (`SourceReference.schema`), and
@@ -243,7 +252,7 @@ recorded for a source are saved with the declaration (`SourceReference.schema`),
 differ between declarations that compare equal, such as `Fraction(1, 2)` and
 `0.5`.
 
-Use the resolver as a context manager when it owns temporary warehouse tables or
+Use the reader as a context manager when it owns temporary warehouse tables or
 an opened artifact snapshot. Exiting the block releases those resources; it
 does not close the warehouse connection you supplied:
 
@@ -254,7 +263,7 @@ from tempfile import TemporaryDirectory
 import ibis
 import pyarrow as pa
 
-from increment import from_definitions, run
+import increment
 
 rows = [
     {
@@ -299,31 +308,31 @@ experiments:
 """,
         encoding="utf-8",
     )
-    experiment, resolver = from_definitions(
+    experiment, reader = increment.from_definitions(
         definitions, con, experiment_name="demo", store="always"
     )
-    with resolver:
-        result = run(experiment, resolver)
+    with reader:
+        result = increment.run(experiment, reader)
 assert result
 assert con.raw_sql("SELECT 1").fetchone()[0] == 1
 con.disconnect()
 ```
 
-An offline definitions resolver can inspect a saved specification, but it has
+An offline definitions reader can inspect a saved specification, but it has
 no warehouse connection and cannot run it. Connect to the warehouse and build
-the resolver again when you are ready to run.
+the reader again when you are ready to run.
 
-The bound built-in resolver executes selected run, daily, as-of, breakout,
-or switchback scopes using each scope's declared metric selection and
+A built-in reader executes selected overall, daily, as-of, breakout
+or switchback views using each view's declared metric selection and
 population. It validates every selected operation before opening the shared
-capture. Existing source limitations still apply: combining scopes does not
+capture. Existing source limitations still apply: combining views does not
 create temporal, breakout, raw-outcome or clustering evidence.
-Whole-window `run` scopes, including the switchback contrast view, are evaluated
+Whole-window overall views, including the switchback contrast view, are evaluated
 against the registered decision plan once per result. Daily, as-of, breakout,
-compliance-only and exploratory-metric cells retain their own scope/role and
+compliance-only and exploratory-metric cells retain their own view and role and
 receive `not_evaluated` verdicts. Cells, effects and any live confidence-set rows
 stay aligned in one flat result with one run ID. Changed designs, decision
-plans, metric definitions or unsupported scope coordinates refuse with
+plans, metric definitions or unsupported view coordinates refuse with
 `kernel.run.execution_unavailable`, before reading evidence. When the experiment
 is not the one the reader was built for, its `field` context names the first
 declaration that differs (`experiment_id`, `design`, `registration`,
@@ -347,7 +356,7 @@ and daily views together:
 ```python
 import pandas as pd
 
-from increment import View, from_frame, run
+import increment
 
 panel = pd.DataFrame(
     {
@@ -357,7 +366,7 @@ panel = pd.DataFrame(
         "revenue": [float(1 + index % 7) for index in range(40)],
     }
 )
-exp, resolver = from_frame(
+experiment, reader = increment.from_frame(
     panel,
     shape="panel",
     unit="user_id",
@@ -366,11 +375,11 @@ exp, resolver = from_frame(
     control="control",
     metrics={"revenue": "mean"},
 )
-total = View.overall()
-daily = View.daily()
-exp = exp.with_views(daily)  # The builder declared `total`.
-combined = run(exp, resolver)  # One capture, both views.
-only_daily = run(exp, resolver, views=(daily,))
+total = increment.View.overall()
+daily = increment.View.daily()
+experiment = experiment.with_views(daily)  # The builder declared `total`.
+combined = increment.run(experiment, reader)  # One capture, both views.
+only_daily = increment.run(experiment, reader, views=(daily,))
 ```
 
 Pass `results_store=` to save a run and `decision_log=` to record its final
@@ -395,14 +404,14 @@ under:
 ```python
 from tempfile import TemporaryDirectory
 
-from increment import RunResult
+import increment
 from increment.store import ParquetResultsStore
 
 with TemporaryDirectory() as directory:
     store = ParquetResultsStore(directory)
-    saved = run(exp, resolver, results_store=store)
+    saved = increment.run(experiment, reader, results_store=store)
     handle = store.open_run(saved.run.experiment_id, saved.run.analysis_spec_hash, saved.run.run_id)
-    reopened = RunResult.from_handle(handle, registration=exp.registration)
+    reopened = increment.RunResult.from_handle(handle, registration=experiment.registration)
 assert reopened.cells == saved.cells
 assert reopened.decisions == saved.decisions
 ```
@@ -410,7 +419,7 @@ assert reopened.decisions == saved.decisions
 A reopened result recomputes its decisions from the saved cells; live readouts
 are not saved, so its `live_rows` holds `None` for every cell.
 
-Definitions-backed `run(experiment, resolver, exploratory_metrics=...)` also shares one
+Definitions-backed `run(experiment, reader, exploratory_metrics=...)` also shares one
 physical capture across declared and exploratory families. Each family retains
 the horizon of its original standalone declaration, including unselected
 declared metrics needed to determine a running calendar-day horizon. Such
@@ -428,8 +437,8 @@ Construction performs no additional schema query. The definitions builder takes
 the path first and the experiment name as the `experiment_name=` keyword.
 Catalog refreshes retain the definitions digest from the original bind. The
 digest covers the parsed definitions, so comment and whitespace edits do not
-change it. After any other change to those files, `run(experiment, resolver)`
-and every function that reads data through the resolver refuse with
+change it. After any other change to those files, `run(experiment, reader)`
+and every function that reads data through the reader refuse with
 `kernel.definitions.catalog_stale` before reading anything; rebind the
 definitions with a connection to continue.
 Catalog updates lock the complete read-merge-replace operation, so concurrent
@@ -445,9 +454,9 @@ Use `runnable` when a caller needs the static refusal codes, and inspect all
 three `Runnable` fields rather than treating unknown requirements as supported:
 
 ```python
-from increment import runnable
+import increment
 
-status = runnable(restored, "revenue")["randomized.unadjusted"]
+status = increment.runnable(restored, "revenue")["randomized.unadjusted"]
 if status.unknown:
     print("not established offline:", status.unknown)
 elif status.static_refusals:
@@ -458,7 +467,7 @@ else:
 
 `ResultCell` preserves one cell's identity and outcome in a stored run;
 `Decisions` records the verdicts computed from those cells. The top-level
-`run(experiment, resolver)` returns a `RunResult` containing cells and decisions;
+`run(experiment, reader)` returns a `RunResult` containing cells and decisions;
 `result.readout(view)` returns each view's estimate collection.
 
 ## Frozen-capture construction coverage

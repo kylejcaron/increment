@@ -7,3 +7,4 @@ proof obligation
 carrier
 sidecar
 substrate
+resolver	docs/development/adding-an-estimator.md

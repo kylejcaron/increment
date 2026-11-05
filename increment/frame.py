@@ -272,9 +272,8 @@ class FrameTotalsSource(SequentialSourceMixin):
     Returned by :func:`from_unit_summary` / :meth:`from_frame`. Only
     ``"total"`` grain: this shape carries no day axis.
 
-    Construction snapshots moment rows, metric metadata and raw percentile
-    outcomes. A readout scope snapshots the mutable dataframe before exposing
-    it; direct reads retain their existing backend view.
+    Construction captures the caller's rows (:func:`_owned_frame`) and reduces
+    the moment rows, so later changes to the caller's dataframe reach no read.
     """
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_summary"
@@ -349,7 +348,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         configs: Sequence[Any] | None = None,
         assignment_requests: Sequence[AssignmentRequest] = (),
     ):
-        """Pin the caller-owned dataframe as it exists at scope entry."""
+        """Enter a readout scope; the rows were captured when the source was built."""
         del (
             metrics,
             population,
@@ -359,24 +358,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             configs,
             assignment_requests,
         )
-        frame = self._frame.to_native()
-        clone = getattr(frame, "clone", None)
-        if callable(clone):
-            frame = clone()
-        else:
-            frame_copy = getattr(frame, "copy", None)
-            if callable(frame_copy):
-                try:
-                    frame = frame_copy(deep=True)
-                except TypeError:
-                    frame = frame_copy()
-            else:
-                from copy import deepcopy
-
-                frame = deepcopy(frame)
-        pinned = copy(self)
-        pinned._frame = nw.from_native(frame, eager_only=True)
-        return nullcontext(pinned)
+        return nullcontext(copy(self))
 
     # Public constructor signature is the API for frame-backed sources.
     def __init__(  # noqa: PLR0913
@@ -402,6 +384,7 @@ class FrameTotalsSource(SequentialSourceMixin):
     ) -> None:
         if intervention_grain == "cluster" and cluster is None:
             refuse(_FRAME_INTERVENTION_GRAIN, intervention_grain=intervention_grain)
+        frame = _owned_frame(frame)
         registration = getattr(plan.inference, "registration", None)
         if registration is not None:
             self.breakouts = tuple(sorted({k for c in registration.roster for k, _ in c.segment}))
@@ -1442,15 +1425,24 @@ def _preserve_empty_summary_segments(
         rows.append(empty)
 
 
-def _same_frame(left: nw.DataFrame[Any] | None, right: nw.DataFrame[Any] | None) -> bool:
-    """Compare mutable frame evidence with its readout-entry snapshot."""
-    if left is None or right is None:
-        return left is right
-    if left is right:
-        return True
-    if left.implementation.value != right.implementation.value:
-        return False
-    return bool(left.to_native().equals(right.to_native()))
+def _owned_frame(frame: nw.DataFrame[Any]) -> nw.DataFrame[Any]:
+    """Return ``frame`` detached from later in-place changes to the caller's dataframe.
+
+    Narwhals wraps the native frame without copying it. A Polars clone shares
+    the immutable column buffers, an Arrow table cannot change in place, and
+    under pandas 3 copy-on-write a shallow copy is independent; other
+    pandas-like frames are copied deeply.
+    """
+    implementation = frame.implementation
+    if implementation.is_pyarrow():
+        return frame
+    native = frame.to_native()
+    if implementation.is_polars():
+        return nw.from_native(native.clone(), eager_only=True)
+    copy_on_write = implementation.is_pandas() and (
+        int(implementation.to_native_namespace().__version__.split(".", 1)[0]) >= 3
+    )
+    return nw.from_native(native.copy(deep=not copy_on_write), eager_only=True)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1482,17 +1474,15 @@ class FramePanelSource(SequentialSourceMixin):
     """``MomentSource`` built from a one-row-per-unit-per-day frame.
 
     Returned by :func:`from_unit_panel` / :meth:`from_frame`. Construction
-    retains the validated sparse observations and enrolled identity roster.
-    A dense unit x day spine is materialized only when a day-grain consumer
-    requests one.
+    captures the caller's rows (:func:`_owned_frame`) and retains the validated
+    sparse observations and enrolled identity roster, so later changes to the
+    caller's dataframe reach no read. A dense unit x day spine is materialized
+    only when a day-grain consumer requests one.
 
     Offers whole-panel ``"total"``, independent-day ``"daily"``, and
     cumulative ``"asof"`` moments.
 
-    Construction snapshots metric metadata, group counts, and fact dates.
-    Captured readout scopes copy mutable pandas and Polars frames at scope entry;
-    immutable Arrow frames stay zero-copy. Returned moments and counts are defensive
-    copies.
+    Returned moments and counts are defensive copies.
     """
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_panel"
@@ -1560,7 +1550,7 @@ class FramePanelSource(SequentialSourceMixin):
         configs: Sequence[Any] | None = None,
         assignment_requests: Sequence[AssignmentRequest] = (),
     ):
-        """Snapshot mutable pandas and Polars panel evidence at readout start."""
+        """Read one scope from the captured panel and keep its reductions for later exports."""
         del (
             metrics,
             population,
@@ -1571,49 +1561,13 @@ class FramePanelSource(SequentialSourceMixin):
             assignment_requests,
         )
         pinned = copy(self)
-        snapshots: list[tuple[str, nw.DataFrame[Any] | None]] = []
-        for attribute in (
-            "_sparse_panel",
-            "_source_frame",
-            "_first_exposure",
-            "_exposure",
-        ):
-            frame = getattr(self, attribute)
-            if frame is None:
-                snapshots.append((attribute, None))
-                continue
-            if frame.implementation.value == "pandas":
-                frame = nw.from_native(frame.to_native().copy(deep=True), eager_only=True)
-            elif frame.implementation.value == "polars":
-                frame = nw.from_native(frame.to_native().clone(), eager_only=True)
-            setattr(pinned, attribute, frame)
-            snapshots.append((attribute, frame))
         pinned._identity = None
         pinned._moment_rows_cache = {}
         pinned._scalar_cell_failures = None
-        try:
-            yield pinned
-        except BaseException:
-            if not all(
-                _same_frame(getattr(self, attribute), snapshot) for attribute, snapshot in snapshots
-            ):
-                self._identity = None
-                self._moment_rows_cache = {}
-                self._scalar_cell_failures = None
-            raise
-        # Reuse the reduction cache for later exports only while source evidence matches
-        # the captured frames; a mutation must leave the live source cache invalidated.
-        unchanged = all(
-            _same_frame(getattr(self, attribute), snapshot) for attribute, snapshot in snapshots
-        )
-        if unchanged:
-            self._identity = pinned._identity
-            self._moment_rows_cache = pinned._moment_rows_cache
-            self._scalar_cell_failures = pinned._scalar_cell_failures
-        else:
-            self._identity = None
-            self._moment_rows_cache = {}
-            self._scalar_cell_failures = None
+        yield pinned
+        self._identity = pinned._identity
+        self._moment_rows_cache = pinned._moment_rows_cache
+        self._scalar_cell_failures = pinned._scalar_cell_failures
 
     # Public constructor signature is the API for frame-backed sources.
     def __init__(  # noqa: PLR0913
@@ -1640,6 +1594,7 @@ class FramePanelSource(SequentialSourceMixin):
         source_frame: nw.DataFrame[Any] | None = None,
         unit_column: str | None = None,
     ) -> None:
+        panel = _owned_frame(panel)
         self._sparse_panel = panel
         self._identity: nw.DataFrame[Any] | None = None
         self._identity_ordinal = _scratch_name(panel, "__unit_ordinal__")
@@ -1664,13 +1619,13 @@ class FramePanelSource(SequentialSourceMixin):
         self._experiment_id = experiment_id
         self._group_counts: Mapping[str, int] = MappingProxyType(dict(group_counts))
         self._n_filled = n_filled
-        self._source_frame = source_frame
+        self._source_frame = None if source_frame is None else _owned_frame(source_frame)
         self._unit_column = unit_column
         self.breakouts = tuple(breakouts)
         self._uptake = uptake
         self._window_days = window_days
-        self._first_exposure = first_exposure
-        self._exposure = exposure
+        self._first_exposure = None if first_exposure is None else _owned_frame(first_exposure)
+        self._exposure = None if exposure is None else _owned_frame(exposure)
         self._observation_end = observation_end
         self._fact_max_ds: Mapping[str, Any] = MappingProxyType(
             dict(fact_max_ds) if fact_max_ds else {}

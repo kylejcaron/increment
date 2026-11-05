@@ -10,17 +10,7 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import (
-        AnalysisPlan,
-        Encouragement,
-        ExclusionRestriction,
-        InferenceSpec,
-        MetricSpec,
-        UptakeSpec,
-        View,
-        from_frame,
-        run,
-    )
+    import increment
     from increment.estimators import (
         JointReveal,
         PredictivePrior,
@@ -36,27 +26,19 @@ def _():
     from increment.workflows import capture_sequential
 
     return (
-        AnalysisPlan,
-        Encouragement,
-        ExclusionRestriction,
-        InferenceSpec,
         JointReveal,
-        MetricSpec,
         PredictivePrior,
         Scenario,
-        View,
         SequentialCell,
         SequentialCompliancePolicy,
         SequentialModel,
         SequentialRegistration,
-        UptakeSpec,
         capture_sequential,
         frame_observation_mapping,
-        from_frame,
+        increment,
         mo,
         np,
         pd,
-        run,
         sequential_definition_id,
         simulate_raw_logs,
         synthesise_metric,
@@ -184,11 +166,11 @@ def _(mo):
 
 
 @app.cell
-def _(Encouragement, ExclusionRestriction, UptakeSpec, W):
-    design = Encouragement(
+def _(W, increment):
+    design = increment.Encouragement(
         control_group="control",
-        uptake=UptakeSpec(fact="clicked", window_days=W),
-        exclusion_restriction=ExclusionRestriction(
+        uptake=increment.UptakeSpec(fact="clicked", window_days=W),
+        exclusion_restriction=increment.ExclusionRestriction(
             justification="the randomized prompt affects revenue only through the click.",
         ),
         one_sided=False,
@@ -197,9 +179,9 @@ def _(Encouragement, ExclusionRestriction, UptakeSpec, W):
 
 
 @app.cell
-def _(MetricSpec, W, design, from_frame, panel):
-    metrics = [MetricSpec(name="revenue", type="mean", window_days=W)]
-    experiment, resolver = from_frame(
+def _(W, design, increment, panel):
+    metrics = [increment.MetricSpec(name="revenue", type="mean", window_days=W)]
+    experiment, reader = increment.from_frame(
         panel,
         shape="panel",
         unit="unit_id",
@@ -210,7 +192,7 @@ def _(MetricSpec, W, design, from_frame, panel):
         exposure_date="exposed_on",
         experiment_id="reengagement_email",
     )
-    return experiment, metrics, resolver
+    return experiment, metrics, reader
 
 
 @app.cell
@@ -226,10 +208,10 @@ def _(mo):
 
 
 @app.cell
-def _(View, experiment, resolver, run):
-    _daily_lift = View.daily()
+def _(experiment, increment, reader):
+    _daily_lift = increment.View.daily()
     try:
-        run(experiment.with_views(_daily_lift), resolver, views=(_daily_lift,))
+        increment.run(experiment.with_views(_daily_lift), reader, views=(_daily_lift,))
         daily_lift_message = "no error raised"
     except ValueError as daily_lift_error:
         daily_lift_message = str(daily_lift_error)
@@ -251,16 +233,16 @@ def _(mo):
 
 
 @app.cell
-def _(View, experiment, resolver, run):
-    completed_windows = View.asof(completion_policy=True)
+def _(experiment, increment, reader):
+    completed_windows = increment.View.asof(completion_policy=True)
 
     def _late_trend(results):
         return [r for r in results if r.estimand == "late" and r.value_scale == "relative"]
 
     fixed_late_trend = _late_trend(
-        run(experiment.with_views(completed_windows), resolver, views=(completed_windows,)).readout(
-            completed_windows
-        )
+        increment.run(
+            experiment.with_views(completed_windows), reader, views=(completed_windows,)
+        ).readout(completed_windows)
     )
     return completed_windows, fixed_late_trend
 
@@ -287,8 +269,6 @@ def _(mo):
 
 @app.cell
 def _(
-    AnalysisPlan,
-    InferenceSpec,
     JointReveal,
     PredictivePrior,
     SequentialCell,
@@ -301,10 +281,9 @@ def _(
     completion_rows,
     design,
     frame_observation_mapping,
-    from_frame,
+    increment,
     metrics,
     panel,
-    run,
     sequential_definition_id,
     synthesise_metric,
 ):
@@ -345,11 +324,11 @@ def _(
         ),
         roster=(SequentialCell(metric="uptake", group_id="treatment", estimand="compliance"),),
     )
-    av_plan = AnalysisPlan(
-        inference=InferenceSpec(kind="always_valid", registration=registration),
+    av_plan = increment.AnalysisPlan(
+        inference=increment.InferenceSpec(kind="always_valid", registration=registration),
         compliance=SequentialCompliancePolicy(alpha=registration.roster[0].alpha),
     )
-    av_experiment, av_resolver = from_frame(
+    av_experiment, av_reader = increment.from_frame(
         panel,
         shape="panel",
         unit="unit_id",
@@ -363,11 +342,11 @@ def _(
     )
     uptake_trend = []
     for _day in sorted(set(completion_rows["ds"])):
-        capture_sequential(av_experiment, av_resolver, finalized=True, as_of=_day)
+        capture_sequential(av_experiment, av_reader, finalized=True, as_of=_day)
         uptake_trend.extend(
-            run(
+            increment.run(
                 av_experiment.with_views(completed_windows),
-                av_resolver,
+                av_reader,
                 views=(completed_windows,),
                 estimands=("compliance",),
             ).readout(completed_windows)

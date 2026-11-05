@@ -1,7 +1,7 @@
 """Local fixture readiness for the bundled dashboard example.
 
 Example-only infrastructure. The packaged `increment.dashboard` helpers never
-import this module: they take a caller-owned experiment and resolver and never
+import this module: they take a caller-owned experiment and reader and never
 look at the working directory, a manifest, or a warehouse path.
 """
 
