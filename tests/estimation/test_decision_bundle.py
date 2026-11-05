@@ -344,7 +344,7 @@ def test_guarded_cell_failure_preserves_successful_sibling():
             "n": 100,
             "ref_y": 10.0,
             "cy1": 0.0,
-            "cy2": 100.0,
+            "cy2": 0.0,
         },
         {
             "experiment_id": "e",
@@ -424,7 +424,7 @@ def test_guarded_sensitivity_does_not_fail_decision_hypothesis(monkeypatch):
 
     def guarded(**kwargs):
         if kwargs["method"] == "cuped":
-            raise LiftGuardError("sensitivity guard", reason="delta_method_unreliable")
+            raise LiftGuardError("sensitivity guard", reason="nonfinite_se")
         return real_infer_lift(**kwargs)
 
     monkeypatch.setattr("increment.estimation.engine.infer_lift", guarded)
@@ -472,7 +472,7 @@ def test_guarded_decision_failure_keeps_the_guard_message_for_display(monkeypatc
     from tests.estimation.test_engine import _mean_metric
 
     def guarded(**kwargs):
-        raise LiftGuardError("guard diagnostic", reason="delta_method_unreliable")
+        raise LiftGuardError("guard diagnostic", reason="nonfinite_se")
 
     monkeypatch.setattr("increment.estimation.engine.infer_lift", guarded)
     arm = {"experiment_id": "e", "metric": "rev", "n": 100, "cy1": 0.0, "cy2": 100.0}
@@ -482,5 +482,5 @@ def test_guarded_decision_failure_keeps_the_guard_message_for_display(monkeypatc
     ]
     bundle = estimate_lift([_mean_metric()], rows, "control", methods=[Method(name="unadjusted")])
     (failure,) = bundle.failures.values()
-    assert failure.context["reason"] == "delta_method_unreliable"
+    assert failure.context["reason"] == "nonfinite_se"
     assert failure.display() == "guard diagnostic"

@@ -3,6 +3,7 @@
 import math
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
@@ -370,12 +371,12 @@ class TestDegenerateData:
         assert lift.lb is not None and lift.ub is not None
         assert lift.lb < 0.0 < lift.ub
 
-    def test_mean_metric_zero_variance_arm_still_emits_keyed_failure(self):
-        """A genuinely real-valued (non-binary) mean metric with an
-        all-identical-outcome arm still hits the log-scale zero-variance
-        guard: that boundary is retired ONLY for the exact binomial
-        method's eligible (conversion/retention) metrics, never for an
-        ordinary continuous mean metric.
+    def test_both_arms_constant_keeps_lift_guard_failure(self):
+        """A real-valued mean metric whose arms are both constant has no
+        uncertainty on either scale, so the cell stays a keyed lift-guard
+        failure. The boundary is retired only for the exact binomial route's
+        conversion/retention metrics, and one constant arm keeps its additive
+        row (TestRelativeScaleGuardsKeepTheAdditiveRow).
         """
         n = 100
         control = ArmStats.from_raw_sums(
@@ -398,8 +399,10 @@ class TestDegenerateData:
 
         computation = estimate_lift(metrics=[_mean_metric()], summary=df, control_group="control")
         assert computation.results == ()
-        assert len(computation.failures) == 1
-        assert next(iter(computation.failures)).group_id == "treatment"
+        (failure,) = computation.failures.values()
+        assert failure.hypothesis.group_id == "treatment"
+        assert failure.code == "estimation.engine.lift_guard"
+        assert failure.context["reason"] == "zero_variance"
 
     def test_zero_mean_control_produces_an_additive_only_row(self):
         """Zero-mean control no longer aborts estimate_lift(): log(0) is
@@ -536,13 +539,8 @@ class TestNonPositiveArmMeanFailsOneCell:
         assert refunds_row.abs_diff is not None
 
     def test_sensitivity_role_with_prior_still_yields_an_additive_only_row(self):
-        """A sensitivity-role method never drives family selection, so
-        unlike a decision-role cell under a prior (which falls back to
-        the old DecisionFailure funnel, since a prior-shrunk relative
-        posterior needs a log-scale point that doesn't exist here), a
-        sensitivity-role cell's additive difference -- always prior-free
-        regardless of role -- must still surface as a real row instead
-        of being silently dropped."""
+        """A sensitivity-role cell's additive difference is prior-free, so a
+        declared prior must not drop it: the cell is still a real row."""
         from increment.estimation.inference import Normal
 
         control = _make_arm_stats(200, mean=1.0, var=0.04, metric="refunds", group_id="control")
@@ -603,6 +601,160 @@ class TestNonPositiveArmMeanFailsOneCell:
             assert row.abs_reference_df == pytest.approx(8.0)
             assert row.abs_lb == pytest.approx(0.5 - half_width)
             assert row.abs_ub == pytest.approx(0.5 + half_width)
+
+
+def _standard_draws(n: int, seed: int) -> np.ndarray:
+    """``n`` draws with sample mean exactly 0 and sample SD exactly 1."""
+    draws = np.random.default_rng(seed).normal(size=n)
+    draws = draws - draws.mean()
+    return draws / draws.std(ddof=1)
+
+
+def _value_rows(arms: dict[str, np.ndarray], metric: str = "y") -> list[dict[str, Any]]:
+    """Centered summary rows built from each arm's unit outcomes."""
+    rows = []
+    for group_id, values in arms.items():
+        ref = float(values.mean())
+        rows.append(
+            {
+                "experiment_id": "exp1",
+                "metric": metric,
+                "group_id": group_id,
+                "n": len(values),
+                "ref_y": ref,
+                "cy1": float(np.sum(values - ref)),
+                "cy2": float(np.sum((values - ref) ** 2)),
+            }
+        )
+    return rows
+
+
+_CONTROL_DRAWS = _standard_draws(200, 20261105)
+_TREATMENT_DRAWS = _standard_draws(200, 20261106)
+# Each arm pair, keyed by the relative-unavailable reason it produces: translated
+# copies of one standardized sample whose control mean is small and positive
+# (combined log-scale SE above 0.5) or negative, and a constant control arm.
+_GUARDED_ARMS = {
+    "delta_method_unreliable": (0.1 + _CONTROL_DRAWS, 0.6 + _TREATMENT_DRAWS),
+    "nonpositive_arm_mean": (-0.05 + _CONTROL_DRAWS, 0.45 + _TREATMENT_DRAWS),
+    "zero_variance": (np.full(200, 5.0), 5.5 + _TREATMENT_DRAWS),
+}
+
+
+def _guarded_row(reason: str, **kwargs: Any):
+    control, treatment = _GUARDED_ARMS[reason]
+    computation = estimate_lift(
+        [_mean_metric("y")],
+        _value_rows({"control": control, "treatment": treatment}),
+        control_group="control",
+        **kwargs,
+    )
+    assert computation.failures == {}
+    (row,) = computation.results
+    return row
+
+
+class TestRelativeScaleGuardsKeepTheAdditiveRow:
+    """A control mean small relative to its standard error, or one constant
+    arm, blocks only the log-scale relative lift: the additive Welch row
+    survives exactly as it does for a non-positive arm mean."""
+
+    def test_small_positive_and_negative_control_means_give_identical_additive_rows(self):
+        from scipy import stats
+
+        small = _guarded_row("delta_method_unreliable")
+        negative = _guarded_row("nonpositive_arm_mean")
+        control, treatment = _GUARDED_ARMS["delta_method_unreliable"]
+        welch = stats.ttest_ind(treatment, control, equal_var=False)
+        interval = welch.confidence_interval(0.95)
+
+        assert small.relative_unavailable_reason == "delta_method_unreliable"
+        assert negative.relative_unavailable_reason == "nonpositive_arm_mean"
+        assert small.abs_lb == pytest.approx(negative.abs_lb, abs=1e-12)
+        assert small.abs_ub == pytest.approx(negative.abs_ub, abs=1e-12)
+        for row in (small, negative):
+            assert row.abs_lb == pytest.approx(interval.low, abs=1e-9)
+            assert row.abs_ub == pytest.approx(interval.high, abs=1e-9)
+            p_value = row.p_value()
+            assert p_value == pytest.approx(welch.pvalue, rel=1e-9)
+            assert row.stat_sig() == (p_value < 0.05)
+
+    def test_constant_control_arm_gives_one_sample_t_additive_row(self):
+        from scipy.stats import t
+
+        row = _guarded_row("zero_variance")
+        control, treatment = _GUARDED_ARMS["zero_variance"]
+        n_t = len(treatment)
+        se = float(np.std(treatment, ddof=1)) / math.sqrt(n_t)
+        diff = float(treatment.mean()) - float(control[0])
+        half_width = float(t.isf(0.025, n_t - 1)) * se
+
+        assert row.relative_unavailable_reason == "zero_variance"
+        assert row.abs_se == pytest.approx(se)
+        assert row.abs_reference_df == pytest.approx(n_t - 1)
+        assert row.abs_lb == pytest.approx(diff - half_width)
+        assert row.abs_ub == pytest.approx(diff + half_width)
+
+    @pytest.mark.parametrize(
+        ("arms", "guard_reason"),
+        [
+            ("delta_method_unreliable", "delta_method_unreliable"),
+            ("nonpositive_arm_mean", "non_positive_mean"),
+            ("zero_variance", "zero_variance"),
+        ],
+    )
+    def test_prior_does_not_change_additive_sampling_row(self, arms: str, guard_reason: str):
+        from increment import AnalysisPlan, MetricSpec, run
+        from increment.estimation.inference import Normal
+        from increment.estimation.results import LiftEstimate
+
+        control, treatment = _GUARDED_ARMS[arms]
+        frame = pd.DataFrame(
+            {
+                "unit": [f"u{i}" for i in range(len(control) + len(treatment))],
+                "arm": ["control"] * len(control) + ["treatment"] * len(treatment),
+                "y": np.concatenate([control, treatment]),
+            }
+        )
+        outcomes = []
+        for prior in (None, Normal(mu=0.0, sigma=0.5)):
+            experiment, reader = from_frame(
+                frame,
+                shape="summary",
+                unit="unit",
+                group="arm",
+                control="control",
+                metrics=[MetricSpec(name="y", prior=prior)],
+                plan=AnalysisPlan(primary="y"),
+            )
+            try:
+                result = run(experiment, reader)
+            finally:
+                reader.close()
+            (row,) = result.readout()
+            assert isinstance(row, LiftEstimate)
+            (verdict,) = result.decisions.cells
+            outcomes.append((row, verdict.status))
+        (flat, flat_status), (shrunk, shrunk_status) = outcomes
+
+        assert flat.relative_unavailable_reason == shrunk.relative_unavailable_reason == arms
+        for field in ("abs_diff", "abs_se", "abs_lb", "abs_ub", "abs_reference_df"):
+            assert getattr(shrunk, field) == pytest.approx(getattr(flat, field), abs=1e-12)
+        assert shrunk.abs_reference_kind == flat.abs_reference_kind
+        assert shrunk.p_value() == pytest.approx(flat.p_value(), abs=1e-12)
+        assert shrunk.stat_sig() == flat.stat_sig()
+        assert shrunk_status == flat_status
+        assert shrunk.failure_code is None
+        assert shrunk.posterior_available is False
+        assert shrunk.posterior_reason_code == "estimation.engine.lift_guard"
+        assert shrunk.posterior_reason_context is not None
+        assert shrunk.posterior_reason_context["reason"] == guard_reason
+
+    def test_relative_margin_small_mean_is_conservative_non_rejection(self):
+        row = _guarded_row("delta_method_unreliable", alternative="greater", null_lift=0.02)
+
+        assert row.stat_sig() is False
+        assert row.p_value() == 1.0
 
 
 # Method axis

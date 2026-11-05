@@ -1354,9 +1354,9 @@ def _raw_stats_evidence(
     """Fixed-horizon p-value evidence from a row's own raw (point, se): the
     fallback decision statistic once always_valid/asymptotic_mean/absolute
     margin paths don't apply. A row with no relative interval reads the
-    row's own ``p_value()``: its joint relative set, or -- for a
-    nonpositive arm mean with no declared margin -- the additive difference
-    against zero under the reference its interval was cut from."""
+    row's own ``p_value()``: its joint relative set, or -- when the arm
+    summaries block the log scale and no margin is declared -- the additive
+    difference against zero under the reference its interval was cut from."""
     from increment.estimation.decision_types import DecisionFailure, PValueEvidence
     from increment.estimation.results import _additive_zero_reference
 
@@ -1891,6 +1891,29 @@ def _infer_lift_result(
                 )
             )
     except LiftGuardError as exc:
+        if exc.reason in ("zero_variance", "delta_method_unreliable") and abs_se is not None:
+            # The guard blocks only the log scale; the additive difference keeps
+            # its uncertainty unless both arms are constant.
+            unavailable = _RelativeScaleUnavailable(
+                str(exc),
+                reason=exc.reason,
+                abs_diff=abs_diff,
+                abs_se_t=abs_se_t,
+                abs_se_c=abs_se_c,
+            )
+            return _relative_unavailable_outcome(
+                unavailable,
+                contrast,
+                strategy,
+                method,
+                method_role,
+                prior,
+                alpha,
+                alternative,
+                null_lift,
+                null_abs,
+                preferred_direction,
+            ), None
         result = None
         guard_reason = exc.reason
         guard_display = str(exc)
@@ -2536,22 +2559,33 @@ def _infer_binomial_lift_result(
     return result.model_copy(update=update), None
 
 
-class _NonPositiveMeanFailure(LiftGuardError):
-    """A per-arm non-positive mean blocks only the log-scale relative
-    lift for this contrast; the additive sidecar, computed from the same
-    arm summaries before the guard fired, rides along so the caller can
-    build a real additive-only row instead of losing the cell entirely.
+# Guard reasons that block only a contrast's log-scale relative lift, and the
+# row's relative_unavailable_reason for each.
+_RELATIVE_UNAVAILABLE_REASONS: Mapping[str, RelativeUnavailableReason] = {
+    "non_positive_mean": "nonpositive_arm_mean",
+    "zero_variance": "zero_variance",
+    "delta_method_unreliable": "delta_method_unreliable",
+}
+
+
+class _RelativeScaleUnavailable(LiftGuardError):
+    """A guard that blocks only this contrast's log-scale relative lift: a
+    non-positive arm mean, one constant arm, or an arm mean close to zero
+    relative to its standard error. The additive sidecar, computed from the
+    same arm summaries, rides along so the caller can build a real
+    additive-only row instead of losing the cell.
     """
 
     def __init__(
         self,
         message: str,
         *,
+        reason: Literal["non_positive_mean", "zero_variance", "delta_method_unreliable"],
         abs_diff: float,
         abs_se_t: float,
         abs_se_c: float,
     ) -> None:
-        super().__init__(message, reason="non_positive_mean")
+        super().__init__(message, reason=reason)
         self.abs_diff = abs_diff
         self.abs_se_t = abs_se_t
         self.abs_se_c = abs_se_c
@@ -2602,8 +2636,12 @@ def _compute_lift_arm_moments(
                 what="CUPED-adjusted arm mean",
             )
         except InvalidRequestError as exc:
-            raise _NonPositiveMeanFailure(
-                str(exc), abs_diff=abs_t - abs_c, abs_se_t=abs_se_t, abs_se_c=abs_se_c
+            raise _RelativeScaleUnavailable(
+                str(exc),
+                reason="non_positive_mean",
+                abs_diff=abs_t - abs_c,
+                abs_se_t=abs_se_t,
+                abs_se_c=abs_se_c,
             ) from exc
         log_rr = stable_log_ratio(c_summary.mean, t_summary.mean)
         # The log ratio's arm scores carry the shared pooled anchor: each arm
@@ -2628,8 +2666,12 @@ def _compute_lift_arm_moments(
             check_positive_mean(control.metric, control.group_id, c_summary.mean)
             check_positive_mean(treatment.metric, treatment.group_id, t_summary.mean)
         except InvalidRequestError as exc:
-            raise _NonPositiveMeanFailure(
-                str(exc), abs_diff=abs_t - abs_c, abs_se_t=abs_se_t, abs_se_c=abs_se_c
+            raise _RelativeScaleUnavailable(
+                str(exc),
+                reason="non_positive_mean",
+                abs_diff=abs_t - abs_c,
+                abs_se_t=abs_se_t,
+                abs_se_c=abs_se_c,
             ) from exc
         se_c = se_log_mean(c_summary.var, c_summary.mean, c_summary.n)
         se_t = se_log_mean(t_summary.var, t_summary.mean, t_summary.n)
@@ -2644,8 +2686,12 @@ def _compute_lift_arm_moments(
                 and strategy.absolute_moments is not None
             ):
                 abs_t, abs_se_t, abs_c, abs_se_c = strategy.absolute_moments
-                raise _NonPositiveMeanFailure(
-                    str(exc), abs_diff=abs_t - abs_c, abs_se_t=abs_se_t, abs_se_c=abs_se_c
+                raise _RelativeScaleUnavailable(
+                    str(exc),
+                    reason="non_positive_mean",
+                    abs_diff=abs_t - abs_c,
+                    abs_se_t=abs_se_t,
+                    abs_se_c=abs_se_c,
                 ) from exc
             raise
         if strategy.absolute_moments is None:
@@ -2714,17 +2760,7 @@ def _posterior_fields_for_contrast(
             null_abs=null_abs,
         )
     except LiftGuardError as exc:
-        return _PosteriorGuardFields(
-            posterior_available=False,
-            posterior_reason_code="estimation.engine.lift_guard",
-            posterior_reason_context={
-                "metric": treatment.metric,
-                "group_id": treatment.group_id,
-                "method": method_strategy.method.name,
-                "reason": exc.reason,
-                "display": str(exc),
-            },
-        )
+        return _lift_guard_posterior_fields(treatment, method_strategy.method.name, exc)
     except InvalidRequestError as exc:
         if exc.code != "estimation.armstats.arm_stats.least_compute_metric":
             raise
@@ -2741,7 +2777,39 @@ def _posterior_fields_for_contrast(
         )
 
 
-def _nonpositive_mean_additive_row(
+def _lift_guard_posterior_fields(
+    treatment: ArmStats, method_name: str, exc: LiftGuardError
+) -> _PosteriorGuardFields:
+    """The unavailable posterior of a contrast whose log-scale working
+    likelihood a lift guard refused."""
+    return _PosteriorGuardFields(
+        posterior_available=False,
+        posterior_reason_code="estimation.engine.lift_guard",
+        posterior_reason_context={
+            "metric": treatment.metric,
+            "group_id": treatment.group_id,
+            "method": method_name,
+            "reason": exc.reason,
+            "display": str(exc),
+        },
+    )
+
+
+# The row note naming why the relative lift is unavailable, by row reason.
+_RELATIVE_UNAVAILABLE_NOTES: Mapping[str, str] = {
+    "nonpositive_arm_mean": "Arm mean is non-positive; the log-scale relative lift is undefined.",
+    "zero_variance": (
+        "One arm's outcomes are constant; the log-scale relative lift has no "
+        "uncertainty for that arm."
+    ),
+    "delta_method_unreliable": (
+        "An arm mean is close to zero relative to its standard error; the "
+        "log-scale relative lift is unreliable."
+    ),
+}
+
+
+def _relative_unavailable_additive_row(
     contrast: tuple[ArmStats, ArmStats],
     method: Method,
     method_role: Literal["decision", "sensitivity"],
@@ -2750,29 +2818,32 @@ def _nonpositive_mean_additive_row(
     null_lift: float,
     null_abs: float | None,
     preferred_direction: PreferredDirection | None,
-    exc: _NonPositiveMeanFailure,
+    exc: _RelativeScaleUnavailable,
     *,
     welch: bool,
+    advisories: tuple[str, ...],
 ) -> LiftEstimate:
-    """The additive-scale row for a contrast whose per-arm mean blocks
-    the log-scale relative lift: the relative estimate is genuinely
-    undefined here (math.log of a non-positive number, not merely
-    numerically fragile like the clustered Fieller path's own
-    covariance-availability check), but the additive difference is a
-    real, well-defined Wald estimate from the same arm summaries --
-    reported here rather than discarded, mirroring the clustered
+    """The additive-scale row for a contrast whose arm summaries block the
+    log-scale relative lift: undefined for a non-positive arm mean, without
+    uncertainty for a constant arm, and outside the delta method's range for
+    an arm mean close to zero relative to its standard error. The additive
+    difference is a well-defined Wald estimate from the same arm summaries,
+    reported rather than discarded, in the clustered
     lift=None/relative_unavailable_reason row shape.
 
     The additive reference is the one the ordinary sidecar uses for the
     same arms: a Welch-Satterthwaite ``t`` over each arm's own SE and size
-    when ``welch`` (see ``_welch_arm_ns``), Normal otherwise. Every input is
-    a centered moment, so translating all outcomes -- which is how an arm
-    mean reaches zero or below -- changes neither the interval nor its
-    reference.
+    when ``welch`` (see ``_welch_arm_ns``), Normal otherwise. With one
+    constant arm it is the other arm's one-sample ``t`` at ``n - 1`` df.
+    Every input is a centered moment, so translating all outcomes -- which
+    is how an arm mean reaches zero or below -- changes neither the interval
+    nor its reference. ``advisories`` (a ratio metric's denominator notes)
+    lead the row's note.
     """
     from increment.estimation.inference import _joint_additive_bounds
 
     treatment, control = contrast
+    reason = _RELATIVE_UNAVAILABLE_REASONS[exc.reason]
     abs_se = math.hypot(exc.abs_se_t, exc.abs_se_c)
     abs_dof = (
         _additive_welch_df(contrast, exc.abs_se_t, exc.abs_se_c) if welch and abs_se > 0.0 else None
@@ -2791,7 +2862,7 @@ def _nonpositive_mean_additive_row(
         lift=None,
         scale="linear",
         relative_confidence_set=None,
-        relative_unavailable_reason="nonpositive_arm_mean",
+        relative_unavailable_reason=reason,
         abs_diff=exc.abs_diff,
         abs_se=abs_se if abs_se > 0.0 else None,
         abs_lb=lower,
@@ -2801,17 +2872,22 @@ def _nonpositive_mean_additive_row(
         abs_alpha=_alpha_eff_for(alternative, alpha) if lower is not None else None,
         reference_kind="normal",
         reference_df=None,
-        note="Arm mean is non-positive; the log-scale relative lift is undefined. "
-        + (
-            "Additive Welch-t working approximation."
-            if abs_dof is not None
-            else "Additive Normal working approximation."
+        note="; ".join(
+            (
+                *advisories,
+                _RELATIVE_UNAVAILABLE_NOTES[reason]
+                + (
+                    " Additive Welch-t working approximation."
+                    if abs_dof is not None
+                    else " Additive Normal working approximation."
+                ),
+            )
         ),
     )
 
 
-def _nonpositive_mean_outcome(
-    exc: _NonPositiveMeanFailure,
+def _relative_unavailable_outcome(
+    exc: _RelativeScaleUnavailable,
     contrast: tuple[ArmStats, ArmStats],
     strategy: _LiftVarianceStrategy,
     method: Method,
@@ -2822,39 +2898,27 @@ def _nonpositive_mean_outcome(
     null_lift: float,
     null_abs: float | None,
     preferred_direction: PreferredDirection | None,
-) -> tuple[LiftEstimate | None, DecisionFailure | None]:
-    """Return an additive row or the prior-backed decision's guarded failure."""
-    treatment, control = contrast
-    if prior is not None and method_role == "decision":
-        from increment.estimation.decision_types import ArmHypothesisKey, DecisionFailure
-
-        hypothesis = ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")
-        return None, DecisionFailure(
-            hypothesis,
-            "estimation.engine.lift_guard",
-            {
-                "metric": treatment.metric,
-                "group_id": treatment.group_id,
-                "method": method.name,
-                "reason": exc.reason,
-                "display": str(exc),
-            },
-        )
-    return (
-        _nonpositive_mean_additive_row(
-            contrast,
-            method,
-            method_role,
-            alpha,
-            alternative,
-            null_lift,
-            null_abs,
-            preferred_direction,
-            exc,
-            welch=_welch_arm_ns(contrast, strategy, prior) is not None,
-        ),
-        None,
+) -> LiftEstimate:
+    """The additive row of a contrast whose relative scale a guard blocked.
+    A declared prior only marks the log-scale posterior unavailable; the
+    sampling fields never read it."""
+    row = _relative_unavailable_additive_row(
+        contrast,
+        method,
+        method_role,
+        alpha,
+        alternative,
+        null_lift,
+        null_abs,
+        preferred_direction,
+        exc,
+        welch=_welch_arm_ns(contrast, strategy, prior) is not None,
+        # A ratio's denominator advisories qualify its additive difference too.
+        advisories=strategy.ratio_notes,
     )
+    if prior is None:
+        return row
+    return row.model_copy(update=_lift_guard_posterior_fields(contrast[0], method.name, exc))
 
 
 def _ratio_cuped_arm_moments(
@@ -3065,8 +3129,8 @@ def _asymptotic_lift_outcome(
             if strategy.n_clusters is None
             else None
         )
-    except _NonPositiveMeanFailure as exc:
-        return _nonpositive_mean_outcome(
+    except _RelativeScaleUnavailable as exc:
+        return _relative_unavailable_outcome(
             exc,
             contrast,
             strategy,
@@ -3078,7 +3142,7 @@ def _asymptotic_lift_outcome(
             null_lift,
             null_abs,
             preferred_direction,
-        )
+        ), None
     return _infer_lift_result(
         contrast=contrast,
         method=method_strategy.method,

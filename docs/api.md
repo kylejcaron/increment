@@ -127,6 +127,25 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking): an ordinary unclustered lift row whose arm mean is
+  close to zero relative to its standard error, or one of whose arms has
+  constant outcomes, now keeps its additive Welch result instead of failing
+  with `estimation.engine.lift_guard`. It has `lift=None` and
+  `relative_unavailable_reason` `"delta_method_unreliable"` or
+  `"zero_variance"`, the shape a non-positive arm mean already had
+  (`"nonpositive_arm_mean"`). With no declared margin, `p_value()`,
+  `stat_sig()` and family selection read the additive difference against
+  zero; a declared relative margin stays a non-rejection with p-value 1. A
+  constant arm's interval is the other arm's one-sample t. When both arms are
+  constant, the cell still fails with `estimation.engine.lift_guard`. A
+  declared prior no longer turns a non-positive-mean decision row into that
+  failure: the row keeps its sampling interval, p-value and verdict and marks
+  only its posterior unavailable (`posterior_reason_code`
+  `"estimation.engine.lift_guard"`). Breakout and daily cells that these
+  guards excluded as `zero_variance` or `extreme_ratio` are now live rows.
+  Migration: where code expected these cells to fail, read
+  `relative_unavailable_reason` and the `abs_*` fields; the row's note names
+  the condition. Experiment identity is unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
