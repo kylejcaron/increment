@@ -9,7 +9,8 @@ Must not import ibis, build queries, or touch a database.
 
 import math
 import re
-from collections.abc import Callable, Collection, Mapping, Sequence
+from bisect import bisect_right
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
@@ -2845,6 +2846,29 @@ class _DefinitionIndex:
     report_only: Mapping[str, str]
 
 
+# Where each declared (kind, name) item's consistency errors start, in detection order.
+type _ErrorOwners = list[tuple[int, tuple[str, str]]]
+
+
+def _own(owners: _ErrorOwners, errors: list[tuple[str, str]], kind: str, name: str) -> None:
+    """Attribute the consistency errors recorded from here on to the *kind* item *name*."""
+    owners.append((len(errors), (kind, name)))
+
+
+def _error_items(count: int, owners: _ErrorOwners) -> tuple[tuple[str, str] | None, ...]:
+    """The (kind, name) item each of *count* errors belongs to: the latest owner before it."""
+    starts = [start for start, _ in owners]
+    return tuple(
+        owners[at - 1][1] if (at := bisect_right(starts, position)) else None
+        for position in range(count)
+    )
+
+
+def consistency_message(messages: Iterable[str]) -> str:
+    """The refusal message listing every definition consistency error."""
+    return "Definition consistency errors:\n  - " + "\n  - ".join(messages)
+
+
 def _with_inherited_day_boundary(experiment: Experiment, day_boundary: str) -> Experiment:
     """Copy *experiment* with an inherited day boundary unless it declares its own.
 
@@ -2956,28 +2980,34 @@ class Definitions(_Base):
 
     # ── cross-reference validator ──────────────────────────────────────
 
-    def _raise_errors(self, errors: list[tuple[str, str]]) -> None:
-        """Refuse once, carrying every accumulated (code, message) pair."""
+    def _raise_errors(self, errors: list[tuple[str, str]], owners: _ErrorOwners) -> None:
+        """Refuse once, carrying every accumulated (code, message) pair and its item."""
         if errors:
-            message = "Definition consistency errors:\n  - " + "\n  - ".join(
-                msg for _, msg in errors
+            _definition_refusal(
+                "definition.invalid",
+                consistency_message(msg for _, msg in errors),
+                errors=tuple(errors),
+                items=_error_items(len(errors), owners),
             )
-            _definition_refusal("definition.invalid", message, errors=tuple(errors))
 
     @model_validator(mode="after")
     def _cross_check(self):
         errors: list[tuple[str, str]] = []
-        index = self._index_sources_and_validate_names(errors)
-        self._validate_metrics(index, errors)
-        self._validate_exposures(index, errors)
-        self._validate_experiments(index, errors)
-        self._raise_errors(errors)
+        owners: _ErrorOwners = []
+        index = self._index_sources_and_validate_names(errors, owners)
+        self._validate_metrics(index, errors, owners)
+        self._validate_exposures(index, errors, owners)
+        self._validate_experiments(index, errors, owners)
+        self._raise_errors(errors, owners)
         self._refuse_finite_sample_on_unsupported_metrics(index)
         return self
 
-    def _index_sources_and_validate_names(self, errors: list[tuple[str, str]]) -> _DefinitionIndex:
+    def _index_sources_and_validate_names(
+        self, errors: list[tuple[str, str]], owners: _ErrorOwners
+    ) -> _DefinitionIndex:
         dim_names: set[str] = set()
         for dim in self.dim_sources:
+            _own(owners, errors, "dim_source", dim.name)
             if dim.name in dim_names:
                 errors.append(
                     (
@@ -2996,6 +3026,7 @@ class Definitions(_Base):
         source_filter_properties: dict[str, dict[str, Property]] = {}
         seen_source_props: dict[str, set[str]] = {}
         for source in self.fact_sources:
+            _own(owners, errors, "fact_source", source.name)
             if source.name in source_entities:
                 _definition_refusal(
                     "definition.duplicates",
@@ -3021,6 +3052,8 @@ class Definitions(_Base):
                             f"entity '{dim.entity}', which is not in its entities {source.entities}",
                         )
                     )
+                # A reserved property name is a fault in the dim source's own declaration.
+                _own(owners, errors, "dim_source", dim_name)
                 for prop in dim.properties:
                     if prop.name in _DIM_RESERVED_COLUMNS:
                         errors.append(
@@ -3031,6 +3064,7 @@ class Definitions(_Base):
                                 f"{sorted(_DIM_RESERVED_COLUMNS)}",
                             )
                         )
+                _own(owners, errors, "fact_source", source.name)
             merged_props = list(source.properties) + [
                 prop
                 for dim_name in source.dims
@@ -3063,27 +3097,9 @@ class Definitions(_Base):
                     )
                 seen_props.add(prop.name)
 
-        for fact_name, owner in fact_to_source.items():
-            if fact_name in source_entities and owner != fact_name:
-                errors.append(
-                    (
-                        "definition.index_sources.fact_owned_by",
-                        f"fact '{fact_name}' (owned by source '{owner}') shares its "
-                        f"name with a different fact source -- fact and source names "
-                        f"share one lookup namespace (fact_source_for); rename one",
-                    )
-                )
-        for source_name, props in source_properties.items():
-            for prop_name in props:
-                if prop_name in source_entities and prop_name != source_name:
-                    errors.append(
-                        (
-                            "definition.index_sources.property_source_shares",
-                            f"property '{prop_name}' (in source '{source_name}') shares its "
-                            f"name with a different fact source -- property and source "
-                            f"names share one lookup namespace (fact_source_for); rename one",
-                        )
-                    )
+        _check_shared_lookup_names(
+            fact_to_source, source_entities, source_properties, errors, owners
+        )
 
         metric_name_set: set[str] = set()
         metric_entities: dict[str, str] = {}
@@ -3126,9 +3142,12 @@ class Definitions(_Base):
             report_only=MappingProxyType(report_only),
         )
 
-    def _validate_metrics(self, index: _DefinitionIndex, errors: list[tuple[str, str]]):
+    def _validate_metrics(
+        self, index: _DefinitionIndex, errors: list[tuple[str, str]], owners: _ErrorOwners
+    ):
         seen_metric_names: set[str] = set()
         for metric in self.metrics:
+            _own(owners, errors, "metric", metric.name)
             if metric.name in seen_metric_names:
                 errors.append(
                     (
@@ -3189,9 +3208,12 @@ class Definitions(_Base):
                     errors,
                 )
 
-    def _validate_exposures(self, index: _DefinitionIndex, errors: list[tuple[str, str]]):
+    def _validate_exposures(
+        self, index: _DefinitionIndex, errors: list[tuple[str, str]], owners: _ErrorOwners
+    ):
         seen_exposure_names: set[str] = set()
         for exposure in self.exposures:
+            _own(owners, errors, "exposure", exposure.name)
             if exposure.name in seen_exposure_names:
                 errors.append(
                     (
@@ -3217,9 +3239,12 @@ class Definitions(_Base):
                         errors,
                     )
 
-    def _validate_experiments(self, index: _DefinitionIndex, errors: list[tuple[str, str]]):
+    def _validate_experiments(
+        self, index: _DefinitionIndex, errors: list[tuple[str, str]], owners: _ErrorOwners
+    ):
         experiment_names: set[str] = set()
         for experiment in self.experiments:
+            _own(owners, errors, "experiment", experiment.name)
             if experiment.name in experiment_names:
                 errors.append(
                     (
@@ -3803,6 +3828,39 @@ class Definitions(_Base):
                         f"categorical (string) column -- a date carries no "
                         f"adjustment meaning. Derive a numeric or categorical "
                         f"pre-exposure property",
+                    )
+                )
+
+
+def _check_shared_lookup_names(
+    fact_to_source: Mapping[str, str],
+    source_entities: Mapping[str, list[str]],
+    source_properties: Mapping[str, Mapping[str, Property]],
+    errors: list[tuple[str, str]],
+    owners: _ErrorOwners,
+) -> None:
+    """Record fact and property names that are also a different fact source's name."""
+    for fact_name, owner in fact_to_source.items():
+        _own(owners, errors, "fact_source", owner)
+        if fact_name in source_entities and owner != fact_name:
+            errors.append(
+                (
+                    "definition.index_sources.fact_owned_by",
+                    f"fact '{fact_name}' (owned by source '{owner}') shares its "
+                    f"name with a different fact source -- fact and source names "
+                    f"share one lookup namespace (fact_source_for); rename one",
+                )
+            )
+    for source_name, props in source_properties.items():
+        _own(owners, errors, "fact_source", source_name)
+        for prop_name in props:
+            if prop_name in source_entities and prop_name != source_name:
+                errors.append(
+                    (
+                        "definition.index_sources.property_source_shares",
+                        f"property '{prop_name}' (in source '{source_name}') shares its "
+                        f"name with a different fact source -- property and source "
+                        f"names share one lookup namespace (fact_source_for); rename one",
                     )
                 )
 
