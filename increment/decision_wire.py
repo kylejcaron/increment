@@ -202,6 +202,11 @@ class _WireArmProcedure(_WireBase):
     alpha: float = Field(gt=0, lt=1, allow_inf_nan=False)
     family: WireFamilyMembership = WireFamilyMembership()
     inference: WireInference
+    # Absent when the metric declares no direction under a two-sided test, and from every
+    # plan compiled before favorable sides were recorded.
+    favorable_side: Literal["greater", "less"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class WireRelativeArmProcedure(_WireArmProcedure):
@@ -552,6 +557,7 @@ def _procedure_to_wire(procedure: object) -> WireProcedure:
             "alpha": procedure.alpha,
             "family": _family_to_wire(procedure.family),
             "inference": _inference_to_wire(procedure.inference),
+            "favorable_side": procedure.favorable_side,
         }
         if isinstance(procedure, RelativeArmDecisionProcedure):
             return WireRelativeArmProcedure(
@@ -615,6 +621,7 @@ def _procedure_from_wire(procedure: WireProcedure) -> DecisionProcedure:
         "alpha": procedure.alpha,
         "family": _family_from_wire(procedure.family),
         "inference": _inference_from_wire(procedure.inference),
+        "favorable_side": procedure.favorable_side,
     }
     if isinstance(procedure, WireRelativeArmProcedure):
         return RelativeArmDecisionProcedure(**common, null_lift=procedure.null_lift)
@@ -693,6 +700,18 @@ def compiled_plan_to_dict(plan: CompiledDecisionPlan) -> dict[str, object]:
     if not dto.q_explicit:
         payload.pop("q_explicit")
     return payload
+
+
+def plan_binding_version(payload: Mapping[str, object]) -> Literal[1, 2]:
+    """The lowest compiled-plan binding version that represents ``payload``: 2 once a
+    procedure records its favorable side, otherwise 1, the version every earlier plan has."""
+    procedures = payload.get("procedures")
+    if isinstance(procedures, Mapping) and any(
+        isinstance(procedure, Mapping) and "favorable_side" in procedure
+        for procedure in procedures.values()
+    ):
+        return 2
+    return 1
 
 
 def registration_payload(plan: CompiledDecisionPlan) -> dict[str, object]:
@@ -960,4 +979,5 @@ __all__ = [
     "compiled_plan_to_dict",
     "compiled_plan_to_dto",
     "compiled_plan_to_json",
+    "plan_binding_version",
 ]

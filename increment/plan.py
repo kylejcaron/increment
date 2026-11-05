@@ -299,6 +299,7 @@ def _compile_one_procedure(
         "alpha": test.alpha,
         "family": membership,
         "inference": inference,
+        "favorable_side": test.favorable_side,
     }
     if is_absolute:
         return AbsoluteArmDecisionProcedure(

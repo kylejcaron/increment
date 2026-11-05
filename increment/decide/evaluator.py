@@ -20,6 +20,20 @@ class Verdict:
     reason_codes: tuple[str, ...]
     family_id: str | None
     membership: Literal["member", "nonmember"]
+    direction: Literal["favorable", "adverse", "not_established", "unspecified"] | None = None
+
+
+def _direction(
+    side: Literal["greater", "less", "split"] | None, favorable_side: str | None
+) -> Literal["favorable", "adverse", "not_established", "unspecified"] | None:
+    """Orient a rejection against the favorable side its compiled procedure records."""
+    if side is None:
+        return None
+    if favorable_side is None:
+        return "unspecified"
+    if side == "split":
+        return "not_established"
+    return "favorable" if side == favorable_side else "adverse"
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +172,7 @@ def _contrast_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict:
         if not available
         else ()
     )
+    side = contrast.contrast_rejection_side(result) if status == "reject" else None
     return Verdict(
         cell.identity.hash(),
         str(getattr(procedure.role, "value", procedure.role)),
@@ -166,6 +181,7 @@ def _contrast_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict:
         reason_codes,
         None,
         "nonmember",
+        _direction(side, procedure.favorable_side),
     )
 
 
@@ -208,6 +224,7 @@ def _report_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict:
         reason_codes,
         cell.family.family_id if cell.family is not None else None,
         "member" if cell.family is not None else "nonmember",
+        _direction(row.rejection_side() if status == "reject" else None, procedure.favorable_side),
     )
 
 
@@ -439,6 +456,10 @@ def decide(  # noqa: PLR0915
             tuple(reasons),
             family_id,
             "nonmember" if family_id is None else "member",
+            _direction(
+                row.rejection_side() if row is not None and result == "reject" else None,
+                procedure.favorable_side,
+            ),
         )
     metadata = envelope.metadata
     families: list[FamilyVerdict] = []
@@ -478,15 +499,7 @@ def decide(  # noqa: PLR0915
                 else:
                     existing = verdicts[(match.identity.source_snapshot_id, match.identity.hash())]
                     members.append(
-                        Verdict(
-                            existing.identity_hash,
-                            existing.role,
-                            existing.status,
-                            existing.discovery,
-                            existing.reason_codes,
-                            family.family_id,
-                            "member",
-                        )
+                        replace(existing, family_id=family.family_id, membership="member")
                     )
             procedure = "none" if family.family is None else family.family.correction
             if procedure in {"bh", "e_bh"}:
@@ -634,9 +647,20 @@ def decide(  # noqa: PLR0915
         program = ProgramVerdict(
             "not_evaluated", tuple(sorted(set(reasons + ["decision.primary.not_evaluated"])))
         )
-    elif any(v.status != "reject" for v in primary):
+    elif primary_codes := (
+        {"decision.primary.adverse" for v in primary if v.direction == "adverse"}
+        | {"decision.primary.not_rejected" for v in primary if v.status == "retain"}
+        | {
+            "decision.primary.direction_not_established"
+            for v in primary
+            if v.direction == "not_established"
+        }
+    ):
+        program = ProgramVerdict("block", tuple(sorted(set(reasons) | primary_codes)))
+    elif any(v.direction == "unspecified" for v in primary):
         program = ProgramVerdict(
-            "block", tuple(sorted(set(reasons + ["decision.primary.not_rejected"])))
+            "not_evaluated",
+            tuple(sorted(set(reasons) | {"decision.primary.direction_unspecified"})),
         )
     elif "guardrail" in roles and (
         not guardrails

@@ -8,6 +8,9 @@ more at FCR selection time -- see the secondary bullet below.
 
 - primary: ``alpha / n_primaries``, split again across the metric's own
   non-control arms at estimation. Bonferroni familywise control at ``alpha``.
+  The test stays as the plan declares it; a rejection supports the primary
+  only on its favorable side, the tail its declared ``preferred_direction``
+  names (``favorable_side`` on its procedure).
 - guardrail: the full ``alpha``, never divided across guardrails, on the
   one-sided adverse tail fixed by the metric's own margin and
   ``preferred_direction`` (see ``_resolve_one``). This is a non-inferiority
@@ -25,10 +28,12 @@ more at FCR selection time -- see the secondary bullet below.
   metric -- a real cost with no offsetting benefit the IUT bound needs.
   Each guardrail result carries its own SAFE/HARM label. ``increment.run()``
   also reports an aggregate program verdict, but returns ``pass`` only when
-  every required primary and guardrail result is available and assignment
-  integrity is qualified. A caller using only the per-guardrail labels must
-  apply the ship-only-if-all-SAFE rule; otherwise the joint probability that
-  at least one label is a false SAFE has only the weaker union bound
+  every required primary rejects on its favorable side, every guardrail result
+  is available and SAFE, and assignment integrity is qualified; a primary that
+  rejects on its adverse side blocks with ``decision.primary.adverse``. A
+  caller using only the per-guardrail labels must apply the
+  ship-only-if-all-SAFE rule; otherwise the joint probability that at least
+  one label is a false SAFE has only the weaker union bound
   (``k * alpha`` across ``k`` guardrails).
 - secondary: the discovery family at ``q``. A fixed-horizon cell
   estimates at the nominal level; a sequential cell
@@ -127,6 +132,7 @@ from increment.semantics.models import (
     MetricBase,
     MultiplicitySpec,
     PlanEntry,
+    favorable_alternative,
     resolve_null_and_alternative,
 )
 from increment.semantics.sequential import SequentialCompliancePolicy
@@ -267,6 +273,11 @@ class _ArmDecisionProcedure(CodedModel, BaseModel):
     alpha: float = Field(gt=0.0, lt=1.0)
     family: FamilyMembership = FamilyMembership()
     inference: AsymptoticMean | AlwaysValid | MixedFamily | FixedInference = FixedInference()
+    # The tail on which the treatment is better, fixed from the metric's declared direction
+    # (or a one-sided plan alternative when it declares none) before any data is read.
+    favorable_side: Literal["greater", "less"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def _one_sided_alpha(self) -> _ArmDecisionProcedure:
@@ -654,6 +665,7 @@ class _ProcedureResolution:
     null_abs: float | None
     alternative: Alternative
     in_family: bool
+    favorable_side: Literal["greater", "less"] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -866,7 +878,7 @@ def _resolve_one(
     if role == "guardrail" and null_lift == 0.0 and null_abs is None:
         # A margin-less guardrail still uses the adverse side declared by
         # its metric rather than the plan-wide alternative.
-        effective_alt = "greater" if metric.preferred_direction == "increase" else "less"
+        effective_alt = favorable_alternative(metric.preferred_direction)
 
     inference_kind = (
         "asymptotic_mean"
@@ -900,6 +912,7 @@ def _resolve_one(
         null_abs=null_abs,
         alternative=cast(Alternative, effective_alt),
         in_family=in_family,
+        favorable_side=favorable_alternative(metric.declared_preferred_direction, alternative),
     )
 
 

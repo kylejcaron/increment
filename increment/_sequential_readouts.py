@@ -49,7 +49,15 @@ def sequential_readout(
     for row in rows:
         cell = row.require_sequential_result().checkpoint.cell
         procedure = source.context.plan.procedures.get(cell.metric)
-        row = row.model_copy(update={"role": procedure.role if procedure is not None else None})
+        config = by_metric.get(cell.metric)
+        row = row.model_copy(
+            update={
+                "role": procedure.role if procedure is not None else None,
+                "preferred_direction": (
+                    config.metric.declared_preferred_direction if config is not None else None
+                ),
+            }
+        )
         if not (
             _include_unrequested
             or (
@@ -58,7 +66,6 @@ def sequential_readout(
             )
         ):
             continue
-        config = by_metric.get(cell.metric)
         if config is None:
             result.append(row)
             continue

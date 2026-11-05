@@ -78,39 +78,47 @@ def test_top_level_run_returns_a_validated_in_memory_result():
     assert result.decisions.families[0].status == "reject"
 
 
-def _guardrail_case_inputs():
+_LOWER = [1.0, 1.01, 0.99, 1.0]
+_HIGHER = [2.0, 2.01, 1.99, 2.0]
+
+
+def _guardrail_case_inputs(direction="increase", alternative="two-sided"):
     from increment import ExperimentMetric
 
     plan = AnalysisPlan(
         primary="value",
         guardrails=[ExperimentMetric(metric="guard", margin_abs=0.5)],
+        alternative=alternative,
     )
-    specs = [
-        MetricSpec(name="value", type="mean"),
-        MetricSpec(name="guard", type="mean", preferred_direction="decrease"),
-    ]
+    value = (
+        MetricSpec(name="value", type="mean")
+        if direction is None
+        else MetricSpec(name="value", type="mean", preferred_direction=direction)
+    )
+    specs = [value, MetricSpec(name="guard", type="mean", preferred_direction="decrease")]
     metrics = [synthesise_metric(spec) for spec in specs]
     compiled = compile_decision_plan(plan, metrics, path="frame")
     registration = Registration.from_plan(compiled)
     return plan, specs, compiled, registration
 
 
-def _guardrail_case_frame():
+def _guardrail_case_frame(*, treatment_higher=True):
+    control, treatment = (_LOWER, _HIGHER) if treatment_higher else (_HIGHER, _LOWER)
     return pd.DataFrame(
         {
             "unit": [f"u{i}" for i in range(8)],
             "arm": ["control"] * 4 + ["treatment"] * 4,
-            "value": [1.0, 1.01, 0.99, 1.0, 2.0, 2.01, 1.99, 2.0],
+            "value": control + treatment,
             "guard": [10.0, 10.01, 9.99, 10.0, 10.0, 10.01, 9.99, 10.0],
         }
     )
 
 
-def _guardrail_case_analysis(plan, specs):
+def _guardrail_case_analysis(plan, specs, *, treatment_higher=True):
     from increment import Randomized
 
     return from_frame(
-        _guardrail_case_frame(),
+        _guardrail_case_frame(treatment_higher=treatment_higher),
         shape="summary",
         unit="unit",
         group="arm",
@@ -125,9 +133,9 @@ def _guardrail_case_analysis(plan, specs):
     )
 
 
-def _guardrail_case_result():
-    plan, specs, compiled, registration = _guardrail_case_inputs()
-    experiment, resolver = _guardrail_case_analysis(plan, specs)
+def _guardrail_case_result(direction="increase", *, treatment_higher=True, alternative="two-sided"):
+    plan, specs, compiled, registration = _guardrail_case_inputs(direction, alternative)
+    experiment, resolver = _guardrail_case_analysis(plan, specs, treatment_higher=treatment_higher)
     try:
         result = run(experiment, resolver, run_id="run-guardrail")
     finally:
@@ -281,6 +289,240 @@ def test_failed_or_unknown_integrity_blocks_program():
         program = _evaluate_guardrail_program(result, registration, compiled, integrity=integrity)
         assert program.status == "block"
         assert f"integrity.{integrity}" in program.reason_codes
+
+
+def test_primary_rejecting_on_adverse_side_blocks_program():
+    # Means 2.0 against 1.0: lift -0.5 with relative SE about 0.0023, |t| about 217.
+    result, _, _ = _guardrail_case_result("increase", treatment_higher=False)
+
+    primary = next(cell for cell in result.decisions.cells if cell.role == "primary")
+    assert (primary.status, primary.direction) == ("reject", "adverse")
+    assert result.decisions.program.status == "block"
+    assert "decision.primary.adverse" in result.decisions.program.reason_codes
+
+
+@pytest.mark.parametrize(("treatment_higher", "status"), [(False, "pass"), (True, "block")])
+def test_primary_direction_orients_program_verdict(treatment_higher, status):
+    result, _, _ = _guardrail_case_result("decrease", treatment_higher=treatment_higher)
+
+    program = result.decisions.program
+    assert program.status == status
+    assert ("decision.primary.adverse" in program.reason_codes) == (status == "block")
+
+
+@pytest.mark.parametrize(
+    ("alternative", "treatment_higher", "status", "reason"),
+    [
+        ("two-sided", True, "not_evaluated", "decision.primary.direction_unspecified"),
+        ("greater", True, "pass", None),
+        ("less", False, "pass", None),
+    ],
+)
+def test_primary_without_direction_is_not_evaluated(alternative, treatment_higher, status, reason):
+    """An undirected primary has no favorable side under a two-sided plan; a one-sided
+    alternative names it, so a rejection on that side passes."""
+    result, _, _ = _guardrail_case_result(
+        None, treatment_higher=treatment_higher, alternative=alternative
+    )
+
+    program = result.decisions.program
+    assert program.status == status
+    assert program.reason_codes == (() if reason is None else (reason,))
+
+
+def test_one_adverse_treatment_arm_blocks_program():
+    from increment import Randomized
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(16)],
+            "arm": ["control"] * 8 + ["up"] * 4 + ["down"] * 4,
+            "value": _HIGHER * 2 + [3.0, 3.01, 2.99, 3.0] + _LOWER,
+        }
+    )
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "up": 0.25, "down": 0.25},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean", preferred_direction="increase")],
+        plan=AnalysisPlan(primary="value"),
+        experiment_id="exp",
+    )
+    try:
+        result = run(experiment, resolver, run_id="run-arms")
+    finally:
+        resolver.close()
+
+    primary = [cell for cell in result.decisions.cells if cell.role == "primary"]
+    assert sorted((cell.status, cell.direction) for cell in primary) == [
+        ("reject", "adverse"),
+        ("reject", "favorable"),
+    ]
+    assert result.decisions.program.status == "block"
+    assert "decision.primary.adverse" in result.decisions.program.reason_codes
+
+
+def _sequential_harm_result(kind, *, direction="increase"):
+    import numpy as np
+
+    from increment import InferenceSpec, Randomized
+
+    n = 3000
+    arm = np.array(["control", "treatment"] * n)
+    treated = arm == "treatment"
+    if kind == "always_valid":
+        # Conversion 5% -> 1%: 150 against 30 events per 3000 units.
+        index = np.arange(2 * n) // 2
+        values = np.where(treated, index % 100 == 0, index % 20 == 0).astype(int)
+        spec = MetricSpec(name="value", type="conversion", preferred_direction=direction)
+        inference = InferenceSpec(kind="always_valid", baseline_rate=0.05)
+    else:
+        # Mean 20 -> 18 (-10%) with unit sd 5.
+        values = 20.0 + np.where(treated, -2.0, 0.0) + np.random.default_rng(3).normal(0, 5, 2 * n)
+        spec = MetricSpec(name="value", type="mean", preferred_direction=direction)
+        inference = InferenceSpec(kind="asymptotic_mean")
+    experiment, resolver = from_frame(
+        pd.DataFrame(
+            {
+                "unit": [f"u{i}" for i in range(2 * n)],
+                "arm": arm,
+                "exposed": np.arange(2 * n),
+                "value": values,
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[spec],
+        plan=AnalysisPlan(primary="value", inference=inference),
+        experiment_id="seq",
+        exposure_date="exposed",
+    )
+    try:
+        return run(experiment, resolver, run_id="run-sequential")
+    finally:
+        resolver.close()
+
+
+@pytest.mark.parametrize("kind", ["always_valid", "asymptotic_mean"])
+def test_sequential_primary_rejecting_on_adverse_side_blocks_program(kind):
+    result = _sequential_harm_result(kind)
+
+    assert result.readout()[0].preferred_direction == "increase"
+    assert result.decisions.program.status == "block"
+    assert "decision.primary.adverse" in result.decisions.program.reason_codes
+
+
+@pytest.mark.parametrize("sequential", [False, True])
+def test_row_and_procedure_direction_agree(sequential):
+    result = (
+        _sequential_harm_result("always_valid", direction="decrease")
+        if sequential
+        else _guardrail_case_result("decrease")[0]
+    )
+
+    assert result.run.decision_plan is not None
+    bound = compiled_plan_from_dict(result.run.decision_plan.plan_payload)
+    rows = [row for row in result.readout() if row.metric == "value"]
+    assert rows and {row.preferred_direction for row in rows} == {"decrease"}
+    assert cast(Any, bound.procedures["value"]).favorable_side == "less"
+
+
+def test_version_1_bound_plan_reads_direction_unspecified(tmp_path):
+    """A run saved before plans recorded favorable sides: the bound plan records the
+    one-sided test (``alternative="less"``, the adverse side of a primary declared
+    ``increase``) and no favorable side, and its rejection on that side must not pass."""
+    from dataclasses import replace
+
+    from increment import Randomized
+    from increment.decide import decide
+    from increment.kernel.contracts import CompiledPlanBinding
+    from increment.store import ParquetResultsStore
+
+    experiment, resolver = from_frame(
+        _guardrail_case_frame(treatment_higher=False),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+        plan=AnalysisPlan(primary="value", alternative="less"),
+        experiment_id="exp",
+    )
+    try:
+        result = run(experiment, resolver, run_id="run-v1")
+    finally:
+        resolver.close()
+    assert result.run.decision_plan is not None
+    payload = result.run.decision_plan.plan_payload
+    for procedure in cast(dict[str, dict[str, object]], payload["procedures"]).values():
+        procedure.pop("favorable_side", None)
+    registration = Registration.from_plan(compiled_plan_from_dict(payload))
+    saved = replace(
+        cast(Any, result.run),
+        registration_hash=registration.registration_hash,
+        decision_plan=CompiledPlanBinding(registration.registration_hash, 1, payload),
+    )
+    store = ParquetResultsStore(tmp_path)
+    store.put(saved)
+
+    handle = store.open_run(saved.experiment_id, saved.analysis_spec_hash, saved.run_id)
+    decisions = decide(handle, registration)
+
+    primary = next(cell for cell in decisions.cells if cell.role == "primary")
+    assert (primary.status, primary.direction) == ("reject", "unspecified")
+    assert decisions.program.status == "not_evaluated"
+    assert "decision.primary.direction_unspecified" in decisions.program.reason_codes
+
+
+def test_undirected_two_sided_plan_identity_unchanged():
+    """An experiment that declares no direction under a two-sided plan keeps the identity it
+    had before plans recorded favorable sides, and its run binds a version-1 plan."""
+    from increment import Randomized
+
+    experiment, resolver = from_frame(
+        _guardrail_case_frame(),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean"), MetricSpec(name="guard", type="mean")],
+        plan=AnalysisPlan(primary="value"),
+        experiment_id="exp",
+    )
+    try:
+        result = run(experiment, resolver, run_id="run-identity")
+    finally:
+        resolver.close()
+
+    assert experiment.hash() == "a6dfa22c9e36df96d652849f9d87867d5129af4f6cf70d3cc992a9c7dcf221da"
+    assert experiment.registration.registration_hash == (
+        "02ec970306c91a8236c653b22fb8aa78f96941ffc1d96eeef2fd588ccd41817c"
+    )
+    assert [cell.identity.hash() for cell in result.cells] == [
+        "2b602368814ada3a5e1951ff047563430e45217cff5c9644c6643f1ad550845f",
+        "90edcef83f55c9a5120d6ee3fcf3bf97af54a3d0d4822eac0e3252656d6f08af",
+    ]
+    assert result.run.decision_plan is not None and result.run.decision_plan.version == 1
 
 
 def test_public_run_returns_each_disjoint_family_from_its_complete_metadata_roster():
