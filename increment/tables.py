@@ -587,6 +587,8 @@ def _resolve_trend_frame(
             nest_by=nest_by,
             key_columns=key_columns,
         )
+    if nest_column == "segment":
+        frame = _literal_segments(frame)
 
     metrics = frame["metric"].to_list()
     estimands = (
@@ -655,7 +657,7 @@ def _resolve_trend_frame(
             key_columns=key_columns,
         )
 
-    return _literal_segments(frame) if nest_column == "segment" else frame
+    return frame
 
 
 # Rendered decision / metadata columns
@@ -1241,15 +1243,16 @@ def _default_nest_by(frame: Any) -> Literal["arm", "segment"]:
 
 
 def _literal_segments(frame: Any) -> Any:
-    """Escape segment labels, which are data values, so a nest cell shows each as
-    written; a row without a segment, such as a whole-window row, shows none."""
+    """Key each segment by the label its nest cell shows, so the row checks see
+    what the table shows. A segment reads as written, an empty-string segment
+    reads ``""``, and a row without a segment, such as a whole-window row, shows none."""
     import narwhals as nw
 
     return frame.with_columns(
         nw.new_series(
             "segment",
             [
-                "" if _is_missing(value) else _markdown_literal(value)
+                "" if _is_missing(value) else _markdown_literal(value) or '""'
                 for value in frame["segment"].to_list()
             ],
             backend=nw.get_native_namespace(frame),
@@ -1791,7 +1794,8 @@ def readout_table[V](
     be filtered to one method, or this raises). ``None`` (default) picks
     ``"segment"`` when rows of one method carry more than one segment and
     ``"arm"`` otherwise. Segment labels show as written, so the missing-value
-    segment reads ``__null__``. ``advisory`` explicitly
+    segment reads ``__null__`` and an empty-string segment reads ``""``.
+    ``advisory`` explicitly
     renders stored-posterior values with posterior-qualified labels;
     ``show_interval_level`` governs interval-level disclosure - an ``Interval`` column when
     levels differ across rows, or a note appended to ``subtitle`` when
@@ -1837,6 +1841,7 @@ def readout_table[V](
         nest_column, split_column = "method", "group_id"
     else:
         nest_column, split_column = "segment", "group_id"
+        frame = _literal_segments(frame)
     split_columns = split_column if frame[split_column].n_unique() > 1 else None
 
     labels, scales, identity_labels = _readout_labels(
@@ -1859,7 +1864,7 @@ def readout_table[V](
         coeftable_kwargs["collapsible_groups"] = True
 
     table = ct.CoefTable(
-        (_literal_segments(frame) if nest_column == "segment" else frame).to_native(),
+        frame.to_native(),
         rows="metric",
         nest=nest_column,
         split_columns=split_columns,

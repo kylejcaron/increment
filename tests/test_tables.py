@@ -1505,12 +1505,28 @@ def test_readout_table_breakout_nested_by_arm_refusal_routes_to_segment(country_
 
 
 def test_readout_table_shows_the_missing_segment_label_as_written(country_breakout):
+    """``__null__`` reads as written, and an empty-string segment stays
+    distinct from a whole-window row, which has no segment."""
     pytest.importorskip("coeftable")
 
     html = readout_table(country_breakout, nest_by="segment").gt().as_raw_html()
 
     assert "__null__" in html
     assert "<strong>null</strong>" not in html
+
+    rows = estimates_to_readout(
+        [
+            _estimate("revenue", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            _breakout_estimate(
+                "revenue", "T", "unadjusted", "country", "", 0.05, lb=-0.02, ub=0.12
+            ),
+        ]
+    )
+    dom = _Dom(readout_table(rows, nest_by="segment").gt().as_raw_html())
+
+    assert '""' in dom.text
+    tokens = dom.percent_tokens()
+    assert tokens["+22.0%"] == tokens["-2.0%"] == 1
 
 
 def test_readout_table_trend_renders_sparkline_column():
