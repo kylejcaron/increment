@@ -1368,7 +1368,7 @@ def test_run_frame_keys_each_row_to_its_view_through_store_and_pickle(tmp_path):
     assert selected.columns == [*identity, "lift", "view_partial"]
 
 
-def _two_metric_run():
+def _two_metric_run(*, skip_sessions=False):
     import numpy as np
 
     from increment import Randomized
@@ -1384,6 +1384,8 @@ def _two_metric_run():
             "sessions": 4 + rng.normal(0, 1, 2 * n),
         }
     )
+    if skip_sessions:
+        frame.loc[::10, "sessions"] = None
     experiment, reader = from_frame(
         frame,
         shape="summary",
@@ -1394,7 +1396,10 @@ def _two_metric_run():
             allocation={"control": 0.5, "treatment": 0.5},
             allocation_scheme="independent",
         ),
-        metrics=[MetricSpec(name="revenue"), MetricSpec(name="sessions")],
+        metrics=[
+            MetricSpec(name="revenue"),
+            MetricSpec(name="sessions", missing="skip" if skip_sessions else "error"),
+        ],
         plan=AnalysisPlan(primary="revenue", secondaries=["sessions"]),
     )
     with reader:
@@ -1461,14 +1466,21 @@ def test_run_result_repr_is_a_compact_readout():
 def test_run_result_summary_frame_matches_view_summaries(tmp_path):
     import narwhals as nw
 
+    from tests.analysis_factory import lift_rows
+
     identity = ["scope_view", "scope_values", "scope_key"]
-    result = _two_metric_run()
+    result = _two_metric_run(skip_sessions=True)
     summary = nw.from_native(result.to_frame(backend="polars", columns="summary"), eager_only=True)
     view = nw.from_native(
         result.readout().to_frame(backend="polars", columns="summary"), eager_only=True
     )
     assert summary.columns == [*identity, *view.columns]
     assert summary.select(view.columns).rows() == view.rows()
+    # Only the skipped metric's row carries its observed-population label.
+    labels = dict(summary.select("metric", "population").rows())
+    (skipped,) = (row for row in lift_rows(result.readout()) if row.metric == "sessions")
+    assert labels == {"revenue": None, "sessions": skipped.population}
+    assert skipped.population is not None
 
     scopes = (View(view="run", grain="total"), View(view="daily", grain="daily"))
     both, _, _ = _daily_panel_run(tmp_path, scopes)

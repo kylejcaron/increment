@@ -204,7 +204,10 @@ values.
   at most 20 cells per view. `RunResult.to_frame(columns="summary")` returns
   each view's compact preset with the scope columns and `view_partial`, and
   refuses with `results.frame.summary_unavailable` when a view's collection has
-  no preset. A single column name passed as a string to any `to_frame(columns=)`
+  no preset. The whole-window, breakout and daily lift `"summary"` presets, of
+  `RunResult.to_frame` and of `readout(view).to_frame`, gain a `population`
+  column: the observed-population label of a `missing="skip"` metric, null on
+  other rows. A single column name passed as a string to any `to_frame(columns=)`
   refuses with the new `results.frame.columns_string` instead of
   `results.frame.unknown_columns` listing its letters; pass a list such as
   `columns=["lift"]`. Results, saved cells and experiment identity hashes are

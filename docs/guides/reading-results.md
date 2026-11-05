@@ -451,7 +451,9 @@ string, such as `columns="lift"`, raises `results.frame.columns_string`; pass
     decision statistics (`stat_sig`, `p_value`, and `p_value_reason_code`) and
     available arm unit counts and raw means (`n_control`, `n_treat`,
     `mean_control`, and `mean_treat`), plus row identity (`estimand` and
-    `value_scale`), `decision_scope_complete`, and `multiplicity_status`; breakout
+    `value_scale`), `population`, which names the observed units a
+    `missing="skip"` metric was computed on and is null on other rows,
+    `decision_scope_complete`, and `multiplicity_status`; breakout
     and daily summaries also retain segment identity and daily unavailability
     reasons. Models without a summary preset refuse. Every view appends
     `view_partial`, including custom column sequences, so a sliced collection
