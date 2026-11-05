@@ -672,8 +672,11 @@ def test_embedded_plan_missing_metric_refuses():
             metrics=[revenue, orders],
             study_id="exp",
         )
+    assert raised.value.code == "moments.plan.invalid"
+    assert set(raised.value.context) == {"field", "value", "constraint", "reason"}
     assert raised.value.context["field"] == "decision_plan"
     assert raised.value.context["value"] == ("orders",)
+    assert raised.value.context["reason"] == "plan_missing_metric"
 
 
 def test_all_planless_v7_refuses():

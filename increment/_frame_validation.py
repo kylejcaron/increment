@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -331,7 +332,7 @@ FRAME_UNIT_FRAME_PANEL = RefusalSpec(
 _UNSUPPORTED_FRAME_INPUT = RefusalSpec(
     "source.frame.input_type",
     InvalidRequestError,
-    template="{constructor} does not accept {input_type} as an eager frame. {route}",
+    template="{constructor} does not accept {input_type} input; use {route}",
 )
 
 _REFUSALS = refusals(
@@ -374,6 +375,8 @@ _REFUSALS = refusals(
         "frame.validation.breakout_overlaps_column": "breakout {name!r} overlaps {role} column {name!r}",
         "frame.validation.breakout_overlaps_metric": "breakout {name!r} overlaps metric input column {name!r}",
         "frame.validation.breakout_unit_stable": "breakout {name!r} is not unit-stable: {count} unit(s) have several values, including {shown}{more}",
+        "frame.validation.metric_overlaps_column": "column {name!r} is the {role} column, so it cannot also be a metric value; measure the metric in its own column",
+        "source.frame.duplicate_columns": "the frame repeats column name(s) {columns!r}; rename or drop the repeated columns",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -405,6 +408,51 @@ def require_eager_frame(frame: object, *, constructor: str) -> None:
             constructor=constructor,
             input_type=input_type,
             route="a supported eager dataframe, such as pandas, Polars, or Arrow",
+        )
+
+
+def eager_frame(frame: Any) -> nw.DataFrame[Any]:
+    """The narwhals view of a caller's eager frame; repeated column names refuse first."""
+    if type(frame).__module__.startswith("pyarrow"):
+        names = getattr(getattr(frame, "schema", None), "names", ())
+    else:
+        names = getattr(frame, "columns", ())
+    repeated = sorted(str(name) for name, count in Counter(names).items() if count > 1)
+    if repeated:
+        _raise("source.frame.duplicate_columns", columns=tuple(repeated))
+    return nw.from_native(frame, eager_only=True)
+
+
+# The conversion that turns each frame kind into the row mappings `from_moments` reads.
+_ROW_CONVERSIONS: Mapping[tuple[str, str], str] = MappingProxyType(
+    {
+        ("pandas", "DataFrame"): '.to_dict("records")',
+        ("polars", "DataFrame"): ".to_dicts()",
+        ("polars", "LazyFrame"): ".collect().to_dicts()",
+        ("pyarrow", "Table"): ".to_pylist()",
+        ("pyarrow", "RecordBatch"): ".to_pylist()",
+    }
+)
+
+
+def require_moment_rows(rows: object, *, constructor: str) -> None:
+    """Refuse a frame, or anything but a sequence, where moments rows are expected."""
+    input_type = type(rows).__name__
+    for kind in type(rows).__mro__:
+        route = _ROW_CONVERSIONS.get((kind.__module__.partition(".")[0], kind.__name__))
+        if route is not None:
+            refuse(
+                _UNSUPPORTED_FRAME_INPUT,
+                constructor=constructor,
+                input_type=input_type,
+                route=route,
+            )
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+        refuse(
+            _UNSUPPORTED_FRAME_INPUT,
+            constructor=constructor,
+            input_type=input_type,
+            route="a list of row mappings, such as pyarrow.parquet.read_table(path).to_pylist()",
         )
 
 
@@ -610,6 +658,9 @@ _BREAKOUT_RESERVED_COLUMNS = frozenset(
     }
 )
 
+# Roles whose column identifies a unit, an arm or a time, never a measured value.
+_IDENTITY_ROLES = frozenset({"unit", "group", "date", "exposure_date", "cluster"})
+
 
 def _validate_columns(
     frame: nw.DataFrame[Any],
@@ -618,7 +669,8 @@ def _validate_columns(
     metrics: Sequence[MetricSpec],
     reject: Callable[..., NoReturn] | None = None,
 ) -> None:
-    """Report every missing column at once, not one per round trip.
+    """Report every missing column at once, not one per round trip, then refuse
+    a metric value read from a unit, group, date, exposure or cluster column.
 
     *roles* is ``[(role_label, column_name), ...]`` for the non-metric
     columns (``unit``/``group`` for the summary shape; ``unit``/``group``/
@@ -648,6 +700,25 @@ def _validate_columns(
                 reason="missing_column",
             )
         refuse(_METRIC_MISSING, message=message, missing=missing, available=sorted(present))
+    identity_columns: dict[str, str] = {}
+    for role, col in roles:
+        if role in _IDENTITY_ROLES:
+            identity_columns.setdefault(col, role)
+    for spec in metrics:
+        for col in (spec.y_column, spec.denominator):
+            role = None if col is None else identity_columns.get(col)
+            if role is None:
+                continue
+            if reject is not None:
+                reject(
+                    message=_REFUSALS["frame.validation.metric_overlaps_column"].render(
+                        name=col, role=role
+                    ),
+                    reason="metric_overlaps_column",
+                    name=col,
+                    role=role,
+                )
+            _raise("frame.validation.metric_overlaps_column", name=col, role=role)
     for spec in metrics:
         # Only meaningful here, where these names ARE frame columns: both sides
         # sum the same column, so the ratio is identically 1 with zero variance

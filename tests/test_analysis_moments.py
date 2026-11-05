@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1004,20 +1004,22 @@ def test_moments_from_summaries_replays_mean_and_conversion_summary(tmp_path):
         assert row["source_identity"] == source_row["source_identity"]
 
 
-def test_moments_from_summaries_refuses_n_one_mean_summary():
+@pytest.mark.parametrize(("n", "reason"), [(1, "below_two"), (30.0, "not_integer")])
+def test_moments_from_summaries_requires_an_integer_mean_count_of_at_least_two(n, reason):
     from increment.errors import CodedError
     from increment.estimators import moments_from_summaries
 
     with pytest.raises(CodedError) as raised:
         moments_from_summaries(
             [
-                {"metric": "value", "group_id": "control", "n": 1, "mean": 2.0, "var": 9.0},
+                {"metric": "value", "group_id": "control", "n": n, "mean": 2.0, "var": 9.0},
                 {"metric": "value", "group_id": "treatment", "n": 2, "mean": 3.0, "var": 7.0},
             ],
             metrics={"value": "mean"},
             control="control",
         )
     assert raised.value.code == "moments.summaries.invalid"
+    assert raised.value.context["reason"] == reason
 
 
 def test_moments_from_summaries_preserves_optional_assignment_counts():
@@ -1121,19 +1123,26 @@ def test_moments_from_summaries_without_assignment_counts_refuses_count_operatio
 
 
 @pytest.mark.parametrize(
-    "row, metric_type",
+    "row, metric_type, accepted",
     [
         (
             {"metric": "value", "group_id": "control", "n": 2, "successes": 1, "mean": 0.9},
             "conversion",
+            "successes",
         ),
         (
             {"metric": "value", "group_id": "control", "n": 2, "successes": 1, "cluster": "store"},
             "conversion",
+            "successes",
+        ),
+        (
+            {"metric": "value", "group_id": "control", "n": 30, "mean": 5.0, "sd": 1.0},
+            "mean",
+            "var",
         ),
     ],
 )
-def test_moments_from_summaries_rejects_unexpected_row_fields(row, metric_type):
+def test_moments_from_summaries_rejects_unexpected_row_fields(row, metric_type, accepted):
     from increment.errors import CodedError
     from increment.estimators import moments_from_summaries
 
@@ -1144,15 +1153,24 @@ def test_moments_from_summaries_rejects_unexpected_row_fields(row, metric_type):
             control="control",
         )
     assert raised.value.code == "moments.summaries.invalid"
+    assert raised.value.context["reason"] == "unknown_field"
+    expected = raised.value.context["expected"]
+    assert isinstance(expected, tuple) and accepted in expected
 
 
 def test_moments_from_summaries_refuses_metrics_without_control_or_rows():
     from increment.errors import CodedError
     from increment.estimators import moments_from_summaries
 
-    for rows in (
-        [{"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 0.5}],
-        [{"metric": "other", "group_id": "control", "n": 2, "mean": 1.0, "var": 0.5}],
+    for rows, reason in (
+        (
+            [{"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 0.5}],
+            "missing_control_row",
+        ),
+        (
+            [{"metric": "other", "group_id": "control", "n": 2, "mean": 1.0, "var": 0.5}],
+            "unknown_metric",
+        ),
     ):
         with pytest.raises(CodedError) as raised:
             moments_from_summaries(
@@ -1161,6 +1179,7 @@ def test_moments_from_summaries_refuses_metrics_without_control_or_rows():
                 control="control",
             )
         assert raised.value.code == "moments.summaries.invalid"
+        assert raised.value.context["reason"] == reason
 
 
 def test_moments_from_summaries_conversion_family_matches_canonicalizer():
@@ -1315,6 +1334,46 @@ def test_moments_from_summaries_refuses_unsupported_requests(metric_type):
         )
     assert raised.value.code == "moments.summaries.unsupported"
     assert raised.value.context["route"] == "from_unit_summary"
+
+
+def _two_arm_mean_rows() -> list[dict[str, object]]:
+    from increment.estimators import moments_from_summaries
+
+    return moments_from_summaries(
+        [
+            {"metric": "x", "group_id": "control", "n": 30, "mean": 5.0, "var": 1.0},
+            {"metric": "x", "group_id": "treatment", "n": 30, "mean": 5.5, "var": 1.0},
+        ],
+        metrics={"x": "mean"},
+        control="control",
+    )
+
+
+def test_from_moments_names_the_available_metrics_for_a_metric_not_in_the_rows():
+    with pytest.raises(WireFormatError) as raised:
+        from_moments(_two_arm_mean_rows(), metrics={"y": "mean"}, control="control")
+    assert raised.value.code == "moments.plan.invalid"
+    assert raised.value.context["reason"] == "metric_without_rows"
+    assert raised.value.context["available"] == ("x",)
+
+
+def test_from_moments_refuses_a_dataframe_or_table_with_its_row_conversion():
+    import pandas as pd
+    import pyarrow as pa
+
+    rows = _two_arm_mean_rows()
+    for table, input_type, route in (
+        (pd.DataFrame(rows), "DataFrame", '.to_dict("records")'),
+        (pa.Table.from_pylist(rows), "Table", ".to_pylist()"),
+    ):
+        with pytest.raises(InvalidRequestError) as raised:
+            from_moments(cast(Any, table), metrics={"x": "mean"}, control="control")
+        assert raised.value.code == "source.frame.input_type"
+        assert raised.value.context == {
+            "constructor": "from_moments",
+            "input_type": input_type,
+            "route": route,
+        }
 
 
 def test_boolean_moment_control_preserves_count_only_literal_false(tmp_path):

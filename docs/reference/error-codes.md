@@ -451,7 +451,7 @@ Retired codes and their replacements are listed below.
 | `estimation.armstats.summary_stats.mean_finite` | `InvalidRequestError` | `mean` | `increment.estimation.armstats` |
 | `estimation.armstats.summary_stats.var_finite` | `InvalidRequestError` | `var` | `increment.estimation.armstats` |
 | `estimation.binomial.binary_provenance_required` | `InvalidRequestError` | `metric_type` | `increment.estimation.armstats` |
-| `estimation.binomial.exact_counts_required` | `CapabilityError` | `group_id`, `metric` | `increment.estimation.armstats` |
+| `estimation.binomial.exact_counts_required` | `CapabilityError` | `declared_type`, `group_id`, `metric` | `increment.estimation.armstats` |
 | `estimation.binomial.finite_sample_arm_ceiling_exceeded` | `BinomialDataError` | `max_arm_size`, `n_c`, `n_t` | `increment.estimation.binomial_rr` |
 | `estimation.binomial.finite_sample_unavailable` | `InvalidRequestError` | `metric`, `reason` | `increment.estimation.conversion_route` |
 | `estimation.binomial.inconsistent_bernoulli_variance` | `BinomialDataError` | `cy2`, `expected_cy2`, `group_id`, `metric`, `n`, `tolerance` | `increment.estimation.armstats` |
@@ -1071,6 +1071,7 @@ Retired codes and their replacements are listed below.
 | `frame.validation.group_label_reserved` | `InvalidRequestError` | `group`, `labels`, `route` | `increment._frame_validation` |
 | `frame.validation.metric_covariate_column` | `InvalidRequestError` | `covariate`, `metric`, `n_missing` | `increment._frame_moments`, `increment._frame_validation`, `increment.breakout.estimates`, `increment.query.native_source`, `increment.readouts._breakout`, `increment.readouts._encouragement`, `increment.readouts._metric_rows`, `increment.readouts._passes` |
 | `frame.validation.metric_covariate_impute_all_null` | `InvalidRequestError` | `covariate`, `metric` | `increment._frame_moments`, `increment._frame_validation`, `increment.breakout.estimates`, `increment.query.native_source`, `increment.readouts._breakout`, `increment.readouts._encouragement`, `increment.readouts._metric_rows`, `increment.readouts._passes` |
+| `frame.validation.metric_overlaps_column` | `InvalidRequestError` | `name`, `role` | `increment._frame_validation` |
 | `frame.validation.metric_value_missing` | `InvalidRequestError` | `column`, `metric`, `n_missing` | `increment._frame_validation` |
 | `frame.winsorization.collapsed_bound` | `CapabilityError` | `clipped`, `date`, `lower`, `metric`, `upper` | `increment._frame_moments` |
 | `identification.encouragement.exclusion_required` | `IdentificationError` | `available_estimands`, `estimands`, `required_assumption` | `increment.estimation.encouragement` |
@@ -1161,10 +1162,10 @@ Retired codes and their replacements are listed below.
 | `moments.format.unsupported_future` | `WireFormatError` | `received`, `required` | `increment.sources` |
 | `moments.format.unsupported_legacy` | `WireFormatError` | `received`, `required` | `increment.sources` |
 | `moments.plan.conflict` | `WireFormatError` | `constraint`, `field`, `value` | `increment.sources` |
-| `moments.plan.invalid` | `WireFormatError` | `constraint`, `field`, `value` | `increment.sources` |
+| `moments.plan.invalid` | `WireFormatError` | `available`, `constraint`, `field`, `reason`, `value` | `increment.sources` |
 | `moments.rows.duplicate` | `WireFormatError` | `key` | `increment.sources` |
 | `moments.rows.experiment_conflict` | `WireFormatError` | `experiments` | `increment.sources` |
-| `moments.summaries.invalid` | `InvalidRequestError` | `field`, `group_id`, `metric`, `value` | `increment.summaries` |
+| `moments.summaries.invalid` | `InvalidRequestError` | `expected`, `field`, `group_id`, `metric`, `reason`, `route`, `value` | `increment.summaries` |
 | `moments.summaries.unsupported` | `CapabilityError` | `feature`, `route` | `increment.summaries` |
 | `moments.v7_rows_missing_winsorization_fields` | `WireFormatError` | `missing` | `increment.sources` |
 | `moments.winsorization.metadata_conflict` | `CapabilityError` | `actual_bound`, `actual_n`, `actual_percentile`, `expected_bound`, `expected_percentile`, `metric`, `side` | `increment.sources` |
@@ -1519,6 +1520,7 @@ Retired codes and their replacements are listed below.
 | `source.frame.control_invalid` | `InvalidRequestError` | `value` | `increment._frame_validation` |
 | `source.frame.control_missing` | `InvalidRequestError` | `control`, `group`, `observed`, `route` | `increment._frame_validation` |
 | `source.frame.conversion_not_binary` | `InvalidRequestError` | `column`, `metric`, `route`, `values` | `increment._frame_validation` |
+| `source.frame.duplicate_columns` | `InvalidRequestError` | `columns` | `increment._frame_validation` |
 | `source.frame.duplicate_units` | `InvalidRequestError` | `count`, `route`, `units` | `increment._frame_validation` |
 | `source.frame.input_type` | `InvalidRequestError` | `constructor`, `input_type`, `route` | `increment._frame_validation` |
 | `source.frame.intervention_grain_without_cluster` | `InvalidRequestError` | `intervention_grain` | `increment.frame` |
