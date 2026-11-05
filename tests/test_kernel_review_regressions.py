@@ -1893,7 +1893,7 @@ def test_runtime_callable_override_run_result_refuses_portable_storage(tmp_path)
 
 @pytest.mark.parametrize(("effect", "expected"), [(10.0, "reject"), (0.0, "retain")])
 def test_switchback_run_decides_from_contrast_procedure(effect, expected):
-    from increment import AnalysisPlan, from_switchback_frame
+    from increment import AnalysisPlan, MetricSpec, from_switchback_frame
     from tests.test_frame_switchback import _assignment, _identification
 
     rows = []
@@ -1924,7 +1924,7 @@ def test_switchback_run_decides_from_contrast_procedure(effect, expected):
         period="period",
         step="step",
         group="group",
-        metrics={"mean": "mean"},
+        metrics=[MetricSpec(name="mean", type="mean", preferred_direction="increase")],
         identification=_identification(),
         assignment=_assignment(p_ct=0.5),
         plan=AnalysisPlan(primary="mean"),
@@ -2026,7 +2026,7 @@ def test_switchback_partial_run_selection_cannot_pass_omitted_guardrail():
         step="step",
         group="group",
         metrics=[
-            MetricSpec(name="value", type="mean"),
+            MetricSpec(name="value", type="mean", preferred_direction="increase"),
             MetricSpec(name="guard_a", type="mean", preferred_direction="decrease"),
             MetricSpec(name="guard_b", type="mean", preferred_direction="decrease"),
         ],

@@ -2355,7 +2355,7 @@ def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
     rows = _scalar_mean_cube_rows()
     plan = {
         "two-sided": None,
-        "alternative": AnalysisPlan(alternative="greater", primary="lat"),
+        "alternative": AnalysisPlan(alternative="less", primary="lat"),
         "guardrail": AnalysisPlan(guardrails=[ExperimentMetric(metric="lat")]),
         "margin_abs": AnalysisPlan(guardrails=[ExperimentMetric(metric="lat", margin_abs=0.5)]),
         "margin": AnalysisPlan(guardrails=[ExperimentMetric(metric="lat", margin=0.02)]),
@@ -2395,7 +2395,7 @@ def test_public_observational_quantile_margin_precedence(ingress, request_kind):
     plan = {
         "margin": AnalysisPlan(guardrails=[ExperimentMetric(metric="revenue", margin=0.02)]),
         "margin_abs": AnalysisPlan(guardrails=[ExperimentMetric(metric="revenue", margin_abs=0.5)]),
-        "alternative": AnalysisPlan(alternative="greater", primary="revenue"),
+        "alternative": AnalysisPlan(alternative="less", primary="revenue"),
     }[request_kind]
     metrics = [
         MetricSpec(name="revenue", type="quantile", quantile=0.9, preferred_direction="decrease")
@@ -2922,7 +2922,7 @@ def test_native_and_artifact_observational_quantile_requests_keep_precedence(
     plan = (
         "plan: {guardrails: [{metric: revenue, margin_abs: 0.5}]}"
         if request_kind == "margin_abs"
-        else "plan: {primary: revenue, alternative: greater}"
+        else "plan: {primary: revenue, alternative: less}"
     )
     definitions.write_text(text.replace("plan: {secondaries: [revenue]}", plan))
     native: tuple[Any, Any] | None = None
