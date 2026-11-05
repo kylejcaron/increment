@@ -1446,8 +1446,8 @@ def test_unicode_daily_metadata_order_roundtrips_after_run():
 
 
 def _guarded_breakout_run():
-    """A healthy segment A beside a one-unit segment T, a control with a negative mean (N)
-    and a segment with no variance in either arm (Z), read as a BH breakout."""
+    """A healthy segment A beside a one-unit segment T, a control with a negative mean (N), a
+    segment with no variance in either arm (Z) and a null segment W, read as a BH breakout."""
     import warnings
 
     from increment.errors import IncrementWarning
@@ -1457,6 +1457,7 @@ def _guarded_breakout_run():
         "T": {"control": (10.0,), "treatment": (12.0,)},
         "N": {"control": (-3.0, 1.0) * 50, "treatment": (-1.0, 3.0) * 50},
         "Z": {"control": (5.0,) * 4, "treatment": (5.0,) * 4},
+        "W": {"control": (8.0, 12.0) * 50, "treatment": (8.0, 12.0) * 50},
     }
     frame = pd.DataFrame(
         [
@@ -1508,6 +1509,8 @@ def _bh_family(decisions):
 
 
 def test_restored_decisions_match_live_breakout_family():
+    from dataclasses import replace
+
     experiment, result, view = _guarded_breakout_run()
     live = {row.dimension_value: row for row in result.readout(view)}
     segment_of = {cell.identity.hash(): cell.identity.key.dimension_value for cell in result.cells}
@@ -1515,9 +1518,10 @@ def test_restored_decisions_match_live_breakout_family():
     family = _bh_family(result.decisions)
     members = {segment_of[member.identity_hash]: member for member in family.members}
 
-    assert set(members) == {"A", "N", "Z"}
-    # BH over m = 3: A's p of about 4e-4 is below 0.10/3; N and Z enter as p = 1.
-    assert [members[segment].discovery for segment in ("A", "N", "Z")] == [True, False, False]
+    assert set(members) == {"A", "N", "W", "Z"}
+    # BH over m = 4: A's p of about 4e-4 is below 0.10/4; N and Z enter as p = 1, W has p = 1.
+    discoveries = [True, False, False, False]
+    assert [members[segment].discovery for segment in ("A", "N", "W", "Z")] == discoveries
     assert all(member.discovery == live[segment].discovery for segment, member in members.items())
     assert "breakout.nonpositive_mean" in members["N"].reason_codes
     assert "estimation.engine.lift_guard" in members["Z"].reason_codes
@@ -1527,6 +1531,27 @@ def test_restored_decisions_match_live_breakout_family():
         "estimation.engine.lift_guard",
     )
     assert _bh_family(_decide_restored(experiment, result)) == family
+
+    # A segment row whose relative interval has zero variance and no additive margin (a
+    # clustered shape a dataframe breakout cannot read) has no p-value; the live family takes
+    # it as p = 1, and so must the stored one.
+    cells = []
+    for cell in result.cells:
+        if cell.identity.key.dimension_value == "W":
+            payload = cast("dict[str, Any]", cell.row_payload)
+            interval = ("lb", "ub", "level", "alpha", "open_side", "log_mean", "log_se")
+            lift = {**payload["data"]["lift"], **dict.fromkeys(interval)}
+            data = {
+                **payload["data"],
+                "lift": lift,
+                "relative_unavailable_reason": "zero_relative_variance",
+            }
+            cell = replace(cell, row_payload={**payload, "data": data})
+        cells.append(cell)
+    zero = _bh_family(_decide_restored(experiment, result, tuple(cells)))
+    zero_members = {segment_of[member.identity_hash]: member for member in zero.members}
+    assert [zero_members[segment].discovery for segment in ("A", "N", "W", "Z")] == discoveries
+    assert "evidence.p_value.unavailable" in zero_members["W"].reason_codes
 
 
 def test_restored_family_with_genuinely_missing_evidence_is_not_evaluated():

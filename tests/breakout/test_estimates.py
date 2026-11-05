@@ -1108,6 +1108,42 @@ class TestRunBreakoutBHCorrection:
         assert by_segment["N"].discovery is False
         assert by_segment["A"].family_size == by_segment["N"].family_size == 2
 
+    def test_bh_family_count_exclusion_wins_over_an_outcome_reason(self):
+        """A segment with no control row is excluded by count even when its treatment mean is
+        non-positive, so the family is the one without that segment."""
+        rows = [
+            _make_arm_row(100, 10.0, 4.0, country="A", group_id="control"),
+            _make_arm_row(100, 11.0, 4.0, country="A", group_id="treatment"),
+            _make_arm_row(100, 10.0, 4.0, country="B", group_id="control"),
+            _make_arm_row(100, 10.2, 4.0, country="B", group_id="treatment"),
+        ]
+        overlap = [*rows, _make_arm_row(100, -1.0, 4.0, country="X", group_id="treatment")]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            with_x, without_x = [
+                run_breakout(
+                    summary,
+                    [_mean_metric()],
+                    control_group="control",
+                    dimension="country",
+                    correction="bh",
+                )
+                for summary in (overlap, rows)
+            ]
+
+        excluded = next(row for row in with_x if row.dimension_value == "X")
+        assert (excluded.excluded, excluded.family_size, excluded.discovery) == (
+            "no_control_arm",
+            None,
+            None,
+        )
+        assert excluded.multiplicity_status == "exploratory_unadjusted"
+        family = [row for row in with_x if row.dimension_value != "X"]
+        assert [row.family_size for row in family] == [2, 2]
+        assert [(row.family_threshold, row.discovery) for row in family] == [
+            (row.family_threshold, row.discovery) for row in without_x
+        ]
+
     def test_bh_family_dedups_by_method(self):
         """2 methods x 1 metric x 2 segments: family size must count
         (metric, arm, segment) cells (2), not (metric, method, arm,

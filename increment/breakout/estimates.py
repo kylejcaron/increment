@@ -3094,10 +3094,24 @@ def _prepare_lift_slice(
         if row_group == control_group:
             control_n[row_metric] = float(row["n"])
     unestimable: dict[tuple[str, str], ExclusionReason] = {}
+    # Count eligibility comes first: a missing or one-unit control makes every contrast of its
+    # metric count-excluded, whatever outcome reason its treatment row was dropped for.
+    count_ineligible_control = {
+        str(row["metric"]) for row in rows if str(row.get("group_id")) != control_group
+    } - {str(row["metric"]) for row in rows if str(row.get("group_id")) == control_group} | {
+        str(dropped.row["metric"])
+        for dropped in part.dropped
+        if str(dropped.row.get("group_id")) == control_group and dropped.reason == "few_units"
+    }
     for dropped in part.dropped:
         group_id = str(dropped.row.get("group_id"))
         if group_id != control_group:
-            unestimable[(str(dropped.row["metric"]), group_id)] = dropped.reason
+            metric_name = str(dropped.row["metric"])
+            unestimable[(metric_name, group_id)] = (
+                "no_control_arm"
+                if dropped.reason != "few_units" and metric_name in count_ineligible_control
+                else dropped.reason
+            )
     control_drop_reason: dict[str, ExclusionReason] = {
         str(dropped.row["metric"]): dropped.reason
         for dropped in part.dropped

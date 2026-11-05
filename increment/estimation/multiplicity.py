@@ -46,6 +46,13 @@ OUTCOME_NON_REJECTIONS: frozenset[str] = frozenset(
 )
 
 
+def outcome_non_rejection(code: str | None, reason: object = None) -> bool:
+    """Whether a failure *code* (with its context *reason*) is an outcome-based non-rejection."""
+    return code in OUTCOME_NON_REJECTIONS or (
+        code == "evidence.p_value.unavailable" and reason == "zero_relative_variance"
+    )
+
+
 def design_excluded(row: object) -> bool:
     """Whether *row* is unavailable for a reason fixed by arm counts alone."""
     return getattr(row, "excluded", None) in DESIGN_EXCLUSIONS

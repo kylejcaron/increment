@@ -86,7 +86,7 @@ from increment.estimation.decision_types import (
     SegmentHypothesisKey,
     exact_fraction,
 )
-from increment.estimation.multiplicity import OUTCOME_NON_REJECTIONS, design_excluded
+from increment.estimation.multiplicity import design_excluded, outcome_non_rejection
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.semantics.sequential import SequentialRegistration
 
@@ -384,10 +384,7 @@ def _require_complete_evidence[K: Hashable](
                 if key in evidence_map or key not in computation.failures:
                     continue
                 failure = computation.failures[cast("HypothesisKey", key)]
-                if failure.code in OUTCOME_NON_REJECTIONS or (
-                    failure.code == "evidence.p_value.unavailable"
-                    and failure.context.get("reason") == "zero_relative_variance"
-                ):
+                if outcome_non_rejection(failure.code, failure.context.get("reason")):
                     evidence_map[key] = _conservative_nonrejection_pvalue(
                         cast("HypothesisKey", key), failure
                     )

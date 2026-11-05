@@ -1595,7 +1595,20 @@ def family_evidence(cell: ResultCell) -> StoredFamilyEvidence:
         return StoredFamilyEvidence(
             cell.identity.hash(), construction, scale, evidence, nominal_alpha=nominal_alpha
         )
-    p_value = row.p_value()
+    try:
+        p_value = row.p_value()
+    except CodedError:
+        if getattr(row, "relative_unavailable_reason", None) != "zero_relative_variance":
+            raise
+        # The live family reads this as an outcome-based non-rejection (p = 1).
+        return StoredFamilyEvidence(
+            cell.identity.hash(),
+            construction,
+            scale,
+            None,
+            "evidence.p_value.unavailable",
+            "zero_relative_variance",
+        )
     if p_value is None:
         return StoredFamilyEvidence(
             cell.identity.hash(),
@@ -1638,13 +1651,13 @@ def combine_family_evidence(
         PValueEvidence,
     )
     from increment.estimation.family import bh_select, e_bh_select
-    from increment.estimation.multiplicity import OUTCOME_NON_REJECTIONS
+    from increment.estimation.multiplicity import outcome_non_rejection
 
     unavailable = [
         item
         for item in evidence
         if item.evidence is None
-        and not (procedure == "bh" and item.reason_code in OUTCOME_NON_REJECTIONS)
+        and not (procedure == "bh" and outcome_non_rejection(item.reason_code, item.reason))
     ]
     if not evidence or unavailable:
         raise CodedError(
