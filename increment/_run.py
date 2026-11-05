@@ -215,6 +215,7 @@ class RunResult:
             _confidence_set_text,
             _effect_text,
             _has_sampling_result,
+            _retained_set_extent,
             _varying_fields,
         )
         from increment.breakout.projection import scope_key
@@ -256,18 +257,28 @@ class RunResult:
             for index in indexes[:_REPR_CELLS_PER_VIEW]:
                 cell = self.cells[index]
                 effect = self.effects[index]
+                row = rows[index]
+                # A set holding every value or none has no bounds to show; name it instead.
+                extent = _retained_set_extent(row)
+                if effect is not None and extent is not None:
+                    effect = replace(effect, lower=None, upper=None, intervals=(), geometry=None)
                 name = "mean" if cell.row_kind in ("daily_metric", "asof_metric") else "effect"
                 text = None if effect is None else _effect_text(effect, label=name)
                 if text is None:
                     text = f"{name} unavailable"
                     if effect is not None and effect.reason is not None:
                         text += f" ({effect.reason})"
-                confidence_set = None if effect is None else _confidence_set_text(effect)
+                confidence_set = (
+                    f"set={extent}"
+                    if extent is not None
+                    else None
+                    if effect is None
+                    else _confidence_set_text(effect)
+                )
                 if confidence_set is not None:
                     text += f"; {confidence_set}"
                 # A retained estimate or set is available whatever its portable operations;
                 # otherwise the row's own failure, then the cell's status, says why not.
-                row = rows[index]
                 if _has_sampling_result(row):
                     text += "; status=available"
                 elif getattr(row, "failure_code", None) is not None:

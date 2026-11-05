@@ -1500,6 +1500,25 @@ def test_run_result_repr_is_a_compact_readout(tmp_path):
     assert row.binomial_set.geometry in line
     assert "status=available" in line
 
+    # A one-sided sequential set that covers every ratio is printed as retained, not dropped.
+    from fractions import Fraction
+
+    from increment.estimators import SequentialCell
+    from tests.test_asymptotic_public_sources import _analysis, _frame, _plan
+
+    specs = [MetricSpec(name="outcome", type="mean")]
+    cell = SequentialCell(
+        metric="outcome", group_id="treatment", alpha=Fraction(1, 20), alternative="less"
+    )
+    plan = _plan(specs, cells=(cell,)).model_copy(update={"alternative": "less"})
+    experiment, reader = _analysis(_frame([-2, 1, 2] * 40, [10, 12] * 40), specs, plan)
+    with reader:
+        sequential = run(experiment, reader)
+    (row,) = lift_rows(sequential.readout())
+    assert row.require_asymptotic_sequential_result().bounds.status == "full"
+    (line,) = (line for line in repr(sequential).splitlines() if line.startswith("outcome"))
+    assert "set=" in line and "interval=" not in line
+
 
 def test_run_result_summary_frame_matches_view_summaries(tmp_path):
     import narwhals as nw

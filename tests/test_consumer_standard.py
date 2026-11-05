@@ -317,6 +317,7 @@ def _user_facing_python_strings(path: Path) -> list[tuple[int, str]]:
         "_render_test_null",
         "_effect_text",
         "_confidence_set_text",
+        "_retained_set_extent",
         "_cell_coordinates",
         "_readout_metadata_notes",
         "_readout_evidence_notes",

@@ -1039,6 +1039,33 @@ def _confidence_set_text(projection: EffectEstimate) -> str | None:
     return text if projection.geometry is None else f"{text} ({projection.geometry})"
 
 
+def _retained_set_extent(row) -> str | None:
+    """Name a retained confidence set that holds every value or none, which bounds cannot show.
+
+    An unavailable sequential set is also stored as the whole line; it is not named here.
+    """
+    sequential = getattr(row, "sequential_result", None)
+    if sequential is not None:
+        status = sequential.bounds.status
+        return (
+            "all values"
+            if status in ("full", "full-domain")
+            else "empty"
+            if status == "empty"
+            else None
+        )
+    relative = getattr(row, "relative_confidence_set", None)
+    if relative is not None and getattr(row, "value_scale", "relative") == "relative":
+        return (
+            "all values"
+            if relative.geometry == "all_real"
+            else "empty"
+            if relative.geometry == "empty"
+            else None
+        )
+    return None
+
+
 def _display_source(source_id: str | None) -> str | None:
     if source_id is None:
         return None
