@@ -28,7 +28,9 @@ hash the path's observation mapping, see below) and, inside a winsor confidence 
 warehouse its inclusion rule); the pool's outcome multisets, quantile, support and inference are
 compared. A field a case records an ingress cannot supply (`ParityCase.limited_fields`: a
 moments cube's skip population, which records no unit counts) is checked against that
-ingress's own form instead of equality. All other fields compare automatically, including
+ingress's own form instead of equality. A sequential row's `preferred_direction` repeats its own
+constructor's metric declaration, so it is checked against that declaration instead of across
+constructors. All other fields compare automatically, including
 interval and its `alpha`/`log_mean`/
 `log_se`, winsorization thresholds, counts and `confidence_set`, `n_clusters`, Fieller and
 binomial sets, null reasons, family and policy metadata, and a sequential row's own evidence.
@@ -99,6 +101,7 @@ from tests.warning_codes import warning_codes
 
 from .cases import UNSET, Absence, ParityCase, _capture_kwargs, _close_parity_binding
 from .comparison import nested_close
+from .expected_differences import declared_directions
 from .views import collect, view_scopes
 
 # Dropped from the compared payload only after source identity is checked against the retained
@@ -116,6 +119,7 @@ _PATH_SPECIFIC: dict[str, Any] = {
     },
     "confidence_set": {**_POOL_LABELS, "reference": _POOL_LABELS},
 }
+_SEQUENTIAL_INFERENCE = frozenset({"always_valid", "asymptotic_mean"})
 
 _BUILDERS = {
     "from_definitions": builders.from_definitions,
@@ -402,6 +406,8 @@ class CaseResult:
     advisory_counts: dict[str, int] = field(default_factory=dict)
     # Exact evidence digest per successful ingress, retained for the R12 measurement.
     source_content_digests: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Each constructor's declared preferred_direction per metric, None where it declares none.
+    declared_directions: dict[str, dict[str, str | None]] = field(default_factory=dict)
 
 
 @allow_declared_overrides
@@ -558,6 +564,7 @@ def run_case(
     sequential_state: dict[str, SequentialCapture] = {}
     advisory_counts: dict[str, int] = {}
     source_content_digests: dict[str, tuple[str, ...]] = {}
+    declared: dict[str, dict[str, str | None]] = {}
     for name, build in case.build.items():
         bound = None
         try:
@@ -577,6 +584,7 @@ def run_case(
                 _assert_names_absent_field(case.id, name, exc, absent)
                 absences[name] = absent
                 continue
+            declared[name] = declared_directions(bound[0])
             if case.sequential:
                 snapshot_kwargs = _capture_kwargs(bound)
                 snapshot = workflows.capture_sequential(*bound, finalized=True, **snapshot_kwargs)
@@ -633,7 +641,30 @@ def run_case(
         absences=absences,
         advisory_counts=advisory_counts,
         source_content_digests=source_content_digests,
+        declared_directions=declared,
     )
+
+
+def _echoes_declaration(payload: dict) -> bool:
+    """A sequential row's `preferred_direction` repeats its constructor's metric declaration."""
+    return payload.get("inference") in _SEQUENTIAL_INFERENCE and "preferred_direction" in payload
+
+
+def _assert_echoed_directions(
+    case_id: str,
+    name: str,
+    rows: dict[tuple, dict[str, dict[str, Any]]],
+    declared: dict[str, str | None],
+) -> None:
+    """Each sequential row carries the direction `name` declares for its metric, else None."""
+    for key, methods in rows.items():
+        for method, payload in methods.items():
+            if _echoes_declaration(payload):
+                assert payload["preferred_direction"] == declared.get(payload["metric"]), (
+                    f"{case_id}: {name} row {key}/{method} carries preferred_direction "
+                    f"{payload['preferred_direction']!r}, but {name} declares "
+                    f"{declared.get(payload['metric'])!r}"
+                )
 
 
 def _assert_payload_equal(
@@ -651,6 +682,8 @@ def _assert_payload_equal(
         f"{case_id}: {name} vs {oracle_name} compare different fields for {key}/{method}"
     )
     for field_name, e in expected.items():
+        if field_name == "preferred_direction" and _echoes_declaration(expected):
+            continue  # checked against each constructor's own declaration
         a = actual[field_name]
         # Exactly one side lacks the counted form; two limited sides compare directly.
         if (field_name in actual_limited) != (field_name in expected_limited):
@@ -770,6 +803,8 @@ def assert_parity(case: ParityCase, result: CaseResult) -> None:
             f"{case.id}: expected at least one selected and one unselected row on "
             f"{oracle_name}, got discovery values {discoveries}"
         )
+    for name, constructor_rows in live.items():
+        _assert_echoed_directions(case.id, name, constructor_rows, result.declared_directions[name])
     for name, other_rows in live.items():
         actual_limited = frozenset(case.limited_fields.get(name, ()))
         expected_limited = frozenset(case.limited_fields.get(oracle_name, ()))
