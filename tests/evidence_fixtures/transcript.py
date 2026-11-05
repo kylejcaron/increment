@@ -4,6 +4,8 @@ import hashlib
 import importlib.metadata
 import json
 import platform
+import re
+import subprocess
 import sys
 from collections.abc import Mapping
 from copy import deepcopy
@@ -11,6 +13,7 @@ from dataclasses import dataclass, fields
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
+from functools import cache
 from pathlib import Path
 from typing import Any, cast
 
@@ -51,6 +54,8 @@ _TYPED_DECIMAL = "$transcript_decimal"
 
 
 _SCHEMA_VERSION = 2
+_REPOSITORY = Path(__file__).resolve().parents[2]
+_FULL_REVISION = re.compile(r"[0-9a-f]{40}")
 
 _REQUEST_ANSWERS = {
     "MetricEvidenceRequest": "MetricEvidence",
@@ -866,6 +871,22 @@ def _validate_direct_provenance(
             or configuration.get("request_coordinates") != expected_coordinates
         ):
             raise ValueError("source input configuration does not match the transcript")
+
+
+@cache
+def _in_history(revision: str) -> bool:
+    completed = subprocess.run(
+        ["git", "-C", str(_REPOSITORY), "merge-base", "--is-ancestor", revision, "HEAD"],
+        capture_output=True,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def require_ancestor_revision(revision: str) -> None:
+    """Accept a recorded capture base only as a full commit in this checkout's history."""
+    if _FULL_REVISION.fullmatch(revision) is None or not _in_history(revision):
+        raise ValueError("baseline revision is not a full commit in this history")
 
 
 @dataclass(frozen=True, slots=True)

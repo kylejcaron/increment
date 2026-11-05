@@ -1850,11 +1850,21 @@ def test_frozen_capture_rejects_ingress_evidence_mismatch(field: str) -> None:
         _assert_outcome_matches(expected, actual, current_schema=False)
 
 
+_ROOT_REFUSAL = 3
+
+
 @pytest.fixture
-def qualified_capture_repository(tmp_path: Path) -> Path:
+def qualified_capture_repository(tmp_path: Path) -> tuple[Path, str]:
+    """Clone holding the committed HEAD production package, with HEAD as its declared base."""
     import shutil
 
     repository = Path(__file__).resolve().parents[1]
+    base = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     isolated = tmp_path / "qualified-capture"
     subprocess.run(
         [
@@ -1883,9 +1893,10 @@ def qualified_capture_repository(tmp_path: Path) -> Path:
             "-C",
             str(isolated),
             "checkout",
-            "7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+            base,
             "--",
             "increment",
+            ".gitignore",
         ],
         check=True,
         capture_output=True,
@@ -1896,35 +1907,39 @@ def qualified_capture_repository(tmp_path: Path) -> Path:
         repository / "scripts" / "capture_evidence_identity.py",
         isolated / "scripts" / "capture_evidence_identity.py",
     )
-    return isolated
+    return isolated, base
 
 
 @pytest.mark.integration
 def test_consumer_capture_rejects_foreign_imported_production_before_writing(
     tmp_path: Path,
-    qualified_capture_repository: Path,
+    qualified_capture_repository: tuple[Path, str],
 ) -> None:
     import shutil
 
+    qualified, base = qualified_capture_repository
     repository = Path(__file__).resolve().parents[1]
     foreign_repository = tmp_path / "foreign"
     foreign_package = foreign_repository / "increment"
-    shutil.copytree(qualified_capture_repository / "increment", foreign_package)
+    shutil.copytree(qualified / "increment", foreign_package)
     output = tmp_path / "consumer-inputs"
-    script = qualified_capture_repository / "scripts" / "capture_evidence_identity.py"
+    script = qualified / "scripts" / "capture_evidence_identity.py"
+    # The production-root refusal is a ValueError; an import or usage failure exits otherwise.
     command = (
-        "import runpy, sys; "
-        f"sys.path.insert(0, {str(repository)!r}); "
-        f"sys.path.insert(0, {str(qualified_capture_repository)!r}); "
-        "import tests; "
-        f"sys.path.insert(0, {str(foreign_repository)!r}); "
-        "import increment; "
-        f"assert increment.__file__.startswith({str(foreign_package)!r}); "
-        "print(increment.__file__); "
-        f"sys.argv = [{str(script)!r}, "
-        "'--consumer-inputs', '--scenario', 'arm-facts-parity', '--out', "
-        f"{str(output)!r}]; "
-        f"runpy.run_path({str(script)!r}, run_name='__main__')"
+        "import runpy, sys\n"
+        f"sys.path.insert(0, {str(repository)!r})\n"
+        f"sys.path.insert(0, {str(qualified)!r})\n"
+        "import tests\n"
+        f"sys.path.insert(0, {str(foreign_repository)!r})\n"
+        "import increment\n"
+        f"assert increment.__file__.startswith({str(foreign_package)!r})\n"
+        "print(increment.__file__)\n"
+        f"sys.argv = [{str(script)!r}, '--consumer-inputs', '--baseline', {base!r}, "
+        f"'--scenario', 'arm-facts-parity', '--out', {str(output)!r}]\n"
+        "try:\n"
+        f"    runpy.run_path({str(script)!r}, run_name='__main__')\n"
+        "except ValueError:\n"
+        f"    sys.exit({_ROOT_REFUSAL})\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", command],
@@ -1933,7 +1948,7 @@ def test_consumer_capture_rejects_foreign_imported_production_before_writing(
         capture_output=True,
         text=True,
     )
-    assert result.returncode != 0
+    assert result.returncode == _ROOT_REFUSAL, result.stderr
     assert result.stdout.strip() == str(foreign_package / "__init__.py")
     assert not output.exists()
 
@@ -1941,22 +1956,23 @@ def test_consumer_capture_rejects_foreign_imported_production_before_writing(
 @pytest.mark.integration
 def test_consumer_capture_accepts_valid_production_root_and_records_it(
     tmp_path: Path,
-    qualified_capture_repository: Path,
+    qualified_capture_repository: tuple[Path, str],
 ) -> None:
     import gzip
 
+    qualified, base = qualified_capture_repository
     repository = Path(__file__).resolve().parents[1]
     output = tmp_path / "consumer-inputs"
-    script = qualified_capture_repository / "scripts" / "capture_evidence_identity.py"
+    script = qualified / "scripts" / "capture_evidence_identity.py"
     command = (
         "import runpy, sys; "
         f"sys.path.insert(0, {str(repository)!r}); "
-        f"sys.path.insert(0, {str(qualified_capture_repository)!r}); "
+        f"sys.path.insert(0, {str(qualified)!r}); "
         "import tests; "
         "import increment; "
         "print(increment.__file__); "
-        f"sys.argv = [{str(script)!r}, '--consumer-inputs', '--scenario', "
-        "'arm-facts-parity', '--out', "
+        f"sys.argv = [{str(script)!r}, '--consumer-inputs', '--baseline', {base!r}, "
+        "'--scenario', 'arm-facts-parity', '--out', "
         f"{str(output)!r}]; "
         f"runpy.run_path({str(script)!r}, run_name='__main__')"
     )
@@ -1967,12 +1983,13 @@ def test_consumer_capture_accepts_valid_production_root_and_records_it(
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0
-    assert result.stdout.strip() == str(qualified_capture_repository / "increment" / "__init__.py")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(qualified / "increment" / "__init__.py")
     captured = json.loads(
         gzip.decompress((output / "arm-facts-parity--from_unit_summary.json.gz").read_bytes())
     )
-    assert captured["runtime"]["production_root"] == str(qualified_capture_repository / "increment")
+    assert captured["runtime"]["production_root"] == str(qualified / "increment")
+    assert captured["baseline_revision"] == base
 
 
 def test_frozen_capture_rejects_operation_mismatch() -> None:

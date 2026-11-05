@@ -32,7 +32,12 @@ from tests.evidence_fixtures.scenarios import (
     observe_scenario_disposition,
     scenario_roster,
 )
-from tests.evidence_fixtures.transcript import _REQUEST_CLASSES, Transcript, _digest
+from tests.evidence_fixtures.transcript import (
+    _REQUEST_CLASSES,
+    Transcript,
+    _digest,
+    require_ancestor_revision,
+)
 from tests.warning_codes import warning_codes
 
 
@@ -874,6 +879,16 @@ def test_transcript_decoder_rejects_roster_and_answer_schema_drift():
         Transcript.from_payload(unknown_field, expected_requests=(request,))
 
 
+@pytest.mark.integration
+def test_recorded_revision_must_be_a_full_commit_in_this_history():
+    root = Path(__file__).parent / "fixtures" / "evidence_identity"
+    recorded = json.loads((root / "scalar_checkpoint.json").read_text())["baseline_revision"]
+    require_ancestor_revision(recorded)
+    for revision in (recorded[:12], "f" * 40):
+        with pytest.raises(ValueError):
+            require_ancestor_revision(revision)
+
+
 def _historical_input(name):
     import hashlib
 
@@ -882,17 +897,16 @@ def _historical_input(name):
     transcript = Transcript.from_payload(
         payload,
         expected_requests=tuple(_decode_transcript_request(r) for r in payload["records"]),
-        expected_baseline_revision=_BASELINE,
         expected_scenario_id=payload["scenario_id"],
         expected_ingress=payload["ingress"],
     )
+    require_ancestor_revision(transcript.baseline_revision)
     producer_pins = {
         "tests/parity_harness/cases.py": "d161e60cd18d584f067a19ba05312e86c584f296fa641e3e24af237c0a62f8a4",
         "tests/parity_harness/matrix_cases.py": "bef4af953e44d337ef9882f1762f78d65fb0a882da95500ffd022a20c518258e",
         "tests/parity_harness/matrix_data.py": "905c57b922ae7d6681efbe086158f9f718af390d9e60ec17c54fe2d0003b11bf",
         "tests/warehouse_cuped_cases.py": "082fe5f870aebb9d0ddcfd348aebac54b243430c07aeb55f7b01f2c5edcabc7e",
     }
-    assert transcript.provenance["baseline_revision"] == _BASELINE
     for item in transcript.provenance["source_inputs"]:
         assert item["path"] in producer_pins
         digest = producer_pins[item["path"]]
@@ -906,7 +920,7 @@ def _historical_input(name):
 @pytest.mark.slow
 def test_frozen_scalar_evidence_runs_mean_conversion_ratio_consumers():
     frozen = _historical_input("scalar_checkpoint.json")
-    live = _acquired_coordinate(frozen.scenario_id, frozen.ingress)
+    live = _acquired_coordinate(frozen.scenario_id, frozen.ingress, frozen.baseline_revision)
     for record in frozen.records:
         if record["request_type"] != "MomentsRequest":
             continue
@@ -955,7 +969,7 @@ def test_frozen_cuped_and_quantile_inputs_match_independent_source_rows():
     from tests.parity_harness import matrix_data
 
     units = _historical_input("cuped_unit_panel_input.json")
-    live_units = _acquired_coordinate(units.scenario_id, units.ingress)
+    live_units = _acquired_coordinate(units.scenario_id, units.ingress, units.baseline_revision)
     unit_record = next(r for r in units.records if r["request_type"] == "UnitRowsRequest")
     live_record = next(
         r
@@ -984,7 +998,9 @@ def test_frozen_cuped_and_quantile_inputs_match_independent_source_rows():
             assert row["pre_revenue"] == raw["pre_revenue"]
 
     retained = _historical_input("cuped_fit_input.json")
-    live_fit = _acquired_coordinate(retained.scenario_id, retained.ingress)
+    live_fit = _acquired_coordinate(
+        retained.scenario_id, retained.ingress, retained.baseline_revision
+    )
     fit_record = next(r for r in retained.records if r["request_type"] == "MethodFitRequest")
     live_record = next(
         r
@@ -1072,7 +1088,9 @@ def _assert_historical_quantile_inputs():
     from tests.parity_harness.cases import _quantile_ties_event_table
 
     quantile = _historical_input("quantile_unit_summary_input.json")
-    live_quantile = _acquired_coordinate(quantile.scenario_id, quantile.ingress)
+    live_quantile = _acquired_coordinate(
+        quantile.scenario_id, quantile.ingress, quantile.baseline_revision
+    )
     unit_record = next(r for r in quantile.records if r["request_type"] == "UnitRowsRequest")
     live_record = next(
         r
@@ -1100,7 +1118,6 @@ def _assert_historical_quantile_inputs():
 
 
 _INPUT_ROOT = Path(__file__).parent / "fixtures" / "evidence_identity" / "consumer-inputs"
-_BASELINE = "7c324b66f9f758eb78298e6ecf2d1aea29c66709"
 
 
 def _input_name(scenario_id, ingress):
@@ -1119,9 +1136,9 @@ def _archived_input(coordinate):
 
 
 @cache
-def _acquired_coordinate(scenario_id, ingress):
+def _acquired_coordinate(scenario_id, ingress, baseline_revision):
     """Keep materialized data only; acquisition closes every source."""
-    return acquire_scenario(scenario_id, ingress)
+    return acquire_scenario(scenario_id, ingress, baseline_revision=baseline_revision)
 
 
 @cache
@@ -1135,10 +1152,10 @@ def _frozen_coordinate(scenario_id, ingress):
     coordinate = Transcript.from_payload(
         payload,
         expected_requests=requests,
-        expected_baseline_revision=_BASELINE,
         expected_scenario_id=scenario_id,
         expected_ingress=ingress,
     )
+    require_ancestor_revision(coordinate.baseline_revision)
     _assert_daily_consumer_inputs(coordinate)
     _audit_warehouse_input_receipts(coordinate)
     return coordinate
@@ -1167,17 +1184,18 @@ def test_declared_coordinate_acquires_exact_evidence_or_disposition(entry):
         if entry.family != "preflight"
         else ()
     )
+    if entry.disposition == "source":
+        frozen = _frozen_coordinate(entry.scenario_id, entry.ingress)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", IncrementWarning)
         if entry.disposition != "source":
             result = observe_scenario_disposition(entry.scenario_id, entry.ingress)
             assert result["observed"] == result["expected"]
         else:
-            live = _acquired_coordinate(entry.scenario_id, entry.ingress)
+            live = _acquired_coordinate(entry.scenario_id, entry.ingress, frozen.baseline_revision)
     assert set(warning_codes(caught)) <= set(expected_warnings)
     if entry.disposition != "source":
         return
-    frozen = _frozen_coordinate(entry.scenario_id, entry.ingress)
     assert not live.missing_representations
     assert live.declaration_sha256 == _digest(
         [[record["request_type"], record["request"]] for record in live.records]
@@ -5437,8 +5455,8 @@ def test_source_only_capture_rejects_relabelled_summary_units(
         "PARITY_CASES",
         tuple(replacement if case.id == scenario_id else case for case in PARITY_CASES),
     )
-    live = acquire_scenario(scenario_id, ingress)
     frozen = _frozen_coordinate(scenario_id, ingress)
+    live = acquire_scenario(scenario_id, ingress, baseline_revision=frozen.baseline_revision)
     from tests.test_evidence_identity_parity import _capture
 
     archived_identity = _capture()["scenarios"][scenario_id][ingress]["population_identity"]

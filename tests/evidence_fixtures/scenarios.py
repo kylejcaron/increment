@@ -1125,6 +1125,7 @@ def _artifact_breakout_unit_records(
     scenario_id: str,
     ingress: str,
     source_key: Any,
+    baseline_revision: str,
 ) -> dict[int, Mapping[str, Any]]:
     records = {}
     for index, request in enumerate(requests):
@@ -1136,7 +1137,7 @@ def _artifact_breakout_unit_records(
             scenario_id=scenario_id,
             ingress=ingress,
             requests=(request,),
-            baseline_revision="7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+            baseline_revision=baseline_revision,
             provenance={"source_key": source_key},
         )
         records[index] = scoped.records[0]
@@ -1493,9 +1494,17 @@ def _attach_warehouse_inputs(configuration, receipts):
 
 
 def acquire_scenario(  # noqa: PLR0915
-    scenario_id: str, ingress: str, *, observe_membership: bool = True
+    scenario_id: str,
+    ingress: str,
+    *,
+    baseline_revision: str,
+    observe_membership: bool = True,
 ) -> AcquiredScenario:
-    """Acquire typed inputs from one declared ingress without invoking a readout."""
+    """Acquire typed inputs from one declared ingress without invoking a readout.
+
+    Transcripts carry ``baseline_revision``, the base commit of the inputs they are captured
+    as or compared with.
+    """
     if _frozen_dispositions()[(scenario_id, ingress)]["kind"] != "cells":
         raise ValueError("refusals and absences require observe_scenario_disposition")
     transform_prefix = (
@@ -1795,7 +1804,7 @@ def acquire_scenario(  # noqa: PLR0915
                 scenario_id=scenario_id,
                 ingress=ingress,
                 requests=acquisition_requests,
-                baseline_revision="7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+                baseline_revision=baseline_revision,
                 warehouse_inputs=warehouse_inputs,
                 provenance={
                     "source_type": type(source).__qualname__,
@@ -1892,6 +1901,7 @@ def acquire_scenario(  # noqa: PLR0915
                         scenario_id=scenario_id,
                         ingress=ingress,
                         source_key=source_key,
+                        baseline_revision=baseline_revision,
                     )
                 breakout_record = {
                     "request_type": "BreakoutSlicesRequest",
@@ -1927,7 +1937,7 @@ def acquire_scenario(  # noqa: PLR0915
                 scenario_id=scenario_id,
                 ingress=ingress,
                 requests=acquisition_requests,
-                baseline_revision="7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+                baseline_revision=baseline_revision,
                 warehouse_inputs=warehouse_inputs,
                 provenance={
                     "source_type": type(source).__qualname__,
@@ -1980,7 +1990,7 @@ def acquire_scenario(  # noqa: PLR0915
             Transcript.from_payload(
                 payload,
                 expected_requests=requests,
-                expected_baseline_revision="7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+                expected_baseline_revision=baseline_revision,
                 expected_scenario_id=scenario_id,
                 expected_ingress=ingress,
             )
@@ -2068,7 +2078,7 @@ def acquire_scenario(  # noqa: PLR0915
                 scenario_id=scenario_id,
                 ingress=ingress,
                 requests=tuple(auxiliary),
-                baseline_revision="7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+                baseline_revision=baseline_revision,
                 warehouse_inputs=warehouse_inputs,
                 provenance={
                     "source_type": type(source).__qualname__,
@@ -2105,7 +2115,7 @@ def acquire_scenario(  # noqa: PLR0915
             "source_refusals": source_refusals,
         }
         transcript = Transcript(
-            baseline_revision="7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+            baseline_revision=baseline_revision,
             scenario_id=scenario_id,
             ingress=ingress,
             runtime=_runtime_metadata(),
@@ -2116,7 +2126,7 @@ def acquire_scenario(  # noqa: PLR0915
         Transcript.from_payload(
             payload,
             expected_requests=requests,
-            expected_baseline_revision="7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+            expected_baseline_revision=baseline_revision,
             expected_scenario_id=scenario_id,
             expected_ingress=ingress,
         )

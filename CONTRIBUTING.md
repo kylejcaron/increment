@@ -442,8 +442,11 @@ representations with their complete configurations, against unchanged historical
 outputs or independent raw references. Keep source refusals, population identity,
 nulls, row order and field ownership explicit; use a small public journey catalogue
 for end-to-end assembly rather than repeating every estimator on every loader.
-Consumer-input capture is separate from expected-output capture and must verify
-the pinned production revision before replacing input files.
+Consumer-input capture is separate from expected-output capture. It runs only when
+the committed `increment/` is identical to the capturing change's base main commit
+(`git merge-base HEAD origin/main`, or `--baseline <sha>`) and stamps each new input
+with that commit; loaders accept an input's recorded commit when it is in the
+current history.
 
 Hash receipts must own the preimage of their actual protocol, not a similarly
 named digest. Preserve complete archived metadata while independently checking

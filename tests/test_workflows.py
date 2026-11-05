@@ -805,17 +805,26 @@ def _job_test_tiers(job: dict) -> set[str]:
     return tiers
 
 
-def test_jobs_running_the_fast_or_full_tier_fetch_full_history() -> None:
-    # Integration tests in the fast and full tiers check out recorded commits
-    # (tests/test_evidence_identity_parity.py), which a shallow clone lacks.
+def test_jobs_running_integration_tests_fetch_full_history() -> None:
+    # Frozen-input loaders prove each recorded capture base is a commit of this
+    # history (tests/evidence_fixtures/transcript.py), which a shallow clone lacks.
     markers, _ = _noxfile()
+    integration_marks = (
+        ("integration",),
+        ("integration", "slow"),
+        ("integration", "slow", "exhaustive"),
+    )
     shallow: list[tuple[str, str]] = []
     for workflow in ("ci", "nightly", "weekly"):
         jobs = yaml.safe_load(Path(f".github/workflows/{workflow}.yml").read_text())["jobs"]
         running = [
             name
             for name, job in jobs.items()
-            if any(_selects(markers[tier], "integration") for tier in _job_test_tiers(job))
+            if any(
+                _selects(markers[tier], *marks)
+                for tier in _job_test_tiers(job)
+                for marks in integration_marks
+            )
         ]
         assert running, workflow
         shallow.extend(
