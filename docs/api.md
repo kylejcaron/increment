@@ -342,7 +342,13 @@ values.
   of unwindowed metrics, unbounded uptake and whole-window compliance are
   unchanged. To migrate, pass `exposure_date=<column>` naming each unit's
   exposure date; if every unit was exposed on the same day, add a column holding
-  that date. Panels that declare `exposure_date` keep their numbers, `to_json()`
+  that date. Free-form day labels such as `"2025-9"` also need an orderable day
+  axis (ISO dates such as `"2025-09-01"` or midnight timestamps such as
+  `"2025-09-01T00:00:00"`), so declaring `exposure_date` alone is not enough for
+  them. Daily compliance rows now carry the same `datetime.date` as daily outcome
+  rows, so a daily readout of `estimands=("itt", "compliance")` on string or
+  timestamp day labels no longer fails; as-of rows keep the panel's own labels.
+  Panels that declare `exposure_date` keep their numbers, `to_json()`
   and `hash()`. A panel without it now declares only the total grain, so its
   `to_json()` and `hash()` change once: the source capabilities record
   `grains=["total"]`, `compliance_axis="total"` and the new `grain_route`. An

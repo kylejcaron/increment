@@ -4555,8 +4555,8 @@ def _opt(v: Any) -> float | None:
     return float(v)
 
 
-def _coerce_date(v: Any) -> date:
-    """Coerce a ``ds`` cell to ``datetime.date``.
+def _calendar_day(v: Any) -> date | None:
+    """The ``datetime.date`` a ``ds`` cell names, or ``None`` when it names no calendar day.
 
     Its concrete Python type depends on the native frame that carried
     it: pyarrow decodes to ``date`` already, pandas commonly carries a
@@ -4568,18 +4568,27 @@ def _coerce_date(v: Any) -> date:
         return v.date()
     if isinstance(v, date):
         return v
-    if isinstance(v, str):
-        try:
-            return date.fromisoformat(v)
-        except ValueError:
-            try:
-                timestamp = datetime.fromisoformat(v)
-            except ValueError:
-                _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
-            if timestamp.tzinfo is None and timestamp.time().isoformat() == "00:00:00":
-                return timestamp.date()
-            _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
-    _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
+    if not isinstance(v, str):
+        return None
+    try:
+        return date.fromisoformat(v)
+    except ValueError:
+        pass
+    try:
+        timestamp = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None and timestamp.time().isoformat() == "00:00:00":
+        return timestamp.date()
+    return None
+
+
+def _coerce_date(v: Any) -> date:
+    """Coerce a ``ds`` cell to the calendar day it names; refuse when it names none."""
+    day = _calendar_day(v)
+    if day is None:
+        _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
+    return day
 
 
 # daily_group_summary's columns run_daily actually reads (plus `ds`,

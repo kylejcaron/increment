@@ -138,7 +138,6 @@ Retired codes and their replacements are listed below.
 | `cate.cluster.randomization_arm_purity` | `InvalidRequestError` | `caller`, `cluster`, `values` | `increment.cate` |
 | `cate.contrasts_exactly_two` | `InvalidRequestError` | `arms`, `caller`, `control`, `metric`, `n_arms`, `others` | `increment.cate` |
 | `cate.control_arm_present` | `InvalidRequestError` | `arms`, `control`, `metric` | `increment.cate` |
-| `cate.covariate.is_outcome` | `InvalidRequestError` | `caller`, `covariate`, `metric` | `increment.cate` |
 | `cate.does_support_ratio` | `UnsupportedRequestError` | `caller`, `metric` | `increment.cate` |
 | `cate.identification.randomized_only` | `InvalidRequestError` | `caller`, `mechanism` | `increment.cate` |
 | `cate.identification.unsupported_max_smd` | `InvalidRequestError` | `caller`, `max_smd` | `increment.cate` |
@@ -1014,8 +1013,7 @@ Retired codes and their replacements are listed below.
 | `facade.study.switchback_study.identification_allocation_exactly` | `InvalidRequestError` | — | `increment._study` |
 | `facade.study.switchback_study.identification_exactly_one` | `InvalidRequestError` | — | `increment._study` |
 | `facade.window.resolve_window_days` | `UnsupportedRequestError` | `metric_type` | `increment._window` |
-| `family.evidence.incomplete` | `CapabilityError` | `failed`, `invalid`, `missing` | `increment.estimation.family` |
-| `frame.asof.day_axis_unorderable` | `CapabilityError` | `labels` | `increment._day_axis_labels` |
+| `frame.asof.day_axis_unorderable` | `CapabilityError` | `labels` | `increment._day_axis`, `increment._day_axis_labels` |
 | `frame.asof.quantile_unsupported` | `CapabilityError` | `metric` | `increment._frame_moments`, `increment.frame` |
 | `frame.duplicate_metric_name` | `InvalidRequestError` | `name` | `increment._metric_specs` |
 | `frame.frame_panel.asof_moments_completed` | `InvalidRequestError` | `band`, `name` | `increment.frame` |
@@ -1079,9 +1077,7 @@ Retired codes and their replacements are listed below.
 | `impute.impute_roles_columns` | `InvalidRequestError` | `columns`, `requested` | `increment.impute` |
 | `impute.impute_roles_value` | `InvalidRequestError` | `columns` | `increment.impute` |
 | `impute.pooled_mean_outcome` | `InvalidRequestError` | `columns`, `route` | `increment.impute` |
-| `install.dashboard_extra_missing` | `MissingExtraError` | `feature`, `install` | `increment._optional` |
-| `install.tables_extra_missing` | `MissingExtraError` | `feature`, `install` | `increment._optional` |
-| `install.warehouse_extra_missing` | `MissingExtraError` | `feature`, `install` | `increment._optional` |
+| `install.warehouse_extra_missing` | `CodedError` | `feature`, `install` | `increment._optional` |
 | `integrity.allocation_missing_or_nonconstant` | `CapabilityError` | `population` | `increment.estimation.assignment_integrity`, `increment.readouts._common` |
 | `integrity.allocation_scheme_missing` | `CapabilityError` | `population` | `increment.estimation.assignment_integrity`, `increment.readouts._common` |
 | `kernel.context.closed` | `InvalidRequestError` | — | `increment.kernel.contracts` |
@@ -1188,7 +1184,6 @@ Retired codes and their replacements are listed below.
 | `plan.metric_priors_relative` | `UnsupportedRequestError` | `metric`, `prior` | `increment.plan` |
 | `plan.metrics.unknown` | `InvalidRequestError` | `declared`, `path`, `unknown` | `increment.decision` |
 | `plan.observational.relative_margin` | `UnsupportedRequestError` | `metrics` | `increment.plan` |
-| `plan.primary.alternative_direction` | `InvalidRequestError` | `alternative`, `metric`, `preferred_direction` | `increment.decision` |
 | `plan.unsupported_decision_plan` | `InvalidRequestError` | `path` | `increment.plan` |
 | `power.alpha_finite` | `InvalidRequestError` | `alpha` | `increment.power.sequential` |
 | `power.baseline.avg_cluster_size` | `InvalidRequestError` | `avg_cluster_size` | `increment.power.core` |
@@ -1258,7 +1253,6 @@ Retired codes and their replacements are listed below.
 | `power.q_b` | `InvalidRequestError` | — | `increment.power.pairwise` |
 | `power.quantile_baseline.cuped_unsupported` | `InvalidRequestError` | `cuped_rho` | `increment.power.core` |
 | `power.quantile_baseline.metric_not_quantile` | `InvalidRequestError` | `metric`, `metric_type` | `increment.power.core` |
-| `power.quantile_baseline.pilot_values_missing` | `InvalidRequestError` | `metric_name`, `n_values`, `route` | `increment.power.core` |
 | `power.quantile_size_search_unreachable` | `InvalidRequestError` | `limiting_condition`, `maximum_power`, `power` | `increment.power.core` |
 | `power.r_a_above` | `InvalidRequestError` | `r_a`, `r_b`, `theta` | `increment.power.pairwise` |
 | `power.r_a_below` | `InvalidRequestError` | `r_a`, `r_b`, `theta` | `increment.power.pairwise` |

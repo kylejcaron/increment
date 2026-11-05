@@ -2788,6 +2788,57 @@ def test_panel_daily_lift_accepts_midnight_iso_datetime_day_labels(backend):
     assert restored.ds == result[0].ds
 
 
+def test_encouragement_daily_itt_and_compliance_share_midnight_timestamp_days():
+    """Daily compliance rows name the same calendar days as the daily ITT rows."""
+    import pandas as pd
+
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    labels = ("2025-01-01T00:00:00", "2025-01-02T00:00:00")
+    rows = [
+        {
+            "unit": f"{arm}-{unit}",
+            "arm": arm,
+            "day": day,
+            "exposed_on": labels[0],
+            "revenue": float(unit + index + (3 if arm == "treatment" else 0)),
+            "clicked": float(arm == "treatment" and unit // 2 == index),
+        }
+        for arm in ("control", "treatment")
+        for unit in range(8)
+        for index, day in enumerate(labels)
+    ]
+    experiment, resolver = from_frame(
+        pd.DataFrame(rows),
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed_on",
+        metrics={"revenue": "mean"},
+        uptake="clicked",
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(justification="fixture"),
+        ),
+    )
+    days = (date(2025, 1, 1), date(2025, 1, 2))
+
+    results = view_readout(
+        experiment, resolver, View(view="daily", grain="daily"), estimands=("itt", "compliance")
+    )
+
+    assert {(row.estimand, row.ds) for row in results} == {
+        (estimand, day) for estimand in ("itt", "compliance") for day in days
+    }
+    # Treatment units 0-1 click on the first day and units 2-3 on the second; control never.
+    compliance = {
+        row.ds: row.require_lift().value for row in results if row.estimand == "compliance"
+    }
+    assert compliance == pytest.approx(dict(zip(days, (0.25, 0.5), strict=True)))
+
+
 @pytest.mark.parametrize("backend", ["pandas", "pyarrow"])
 def test_panel_refuses_non_midnight_datetime_string_day_labels(backend):
     import pandas as pd
