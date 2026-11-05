@@ -696,6 +696,9 @@ class BreakoutEstimate(_RowIdentity):
     # Historical prior-present marker; modern sampling/posterior availability fields
     # determine which inference products are available.
     prior_shrunk: bool = False
+    # Mirrors LiftEstimate.population: the observed-only population of a ``missing="skip"``
+    # metric; None = the segment's whole analysis population.
+    population: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def _lift_or_excluded(self):
@@ -1419,6 +1422,9 @@ class DailyLiftEstimate(_RowIdentity):
     family_threshold: float | None = None
     family_guarantee: Literal["finite_sample", "asymptotic_sequential"] | None = None
     family_nominal_alpha: float | None = None
+    # Mirrors LiftEstimate.population: the observed-only population of a ``missing="skip"``
+    # metric; None = the slice's whole analysis population.
+    population: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @field_serializer("ds", when_used="json")
     def _serialize_day_axis(self, value: date | datetime | str | int | float) -> object:

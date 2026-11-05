@@ -489,7 +489,7 @@ _BREAKOUT_ASSEMBLY_FIELDS = frozenset(
     }
 )
 _BREAKOUT_READOUT_FIELDS = frozenset({"metric_type", "multiplicity_status", "sampling_available"})
-_BREAKOUT_LATER_ASSEMBLY_FIELDS = frozenset({"source_snapshot_id"})
+_BREAKOUT_LATER_ASSEMBLY_FIELDS = frozenset({"population", "source_snapshot_id"})
 _BREAKOUT_FIELDS_WITHOUT_OLD_AUTHORITY = frozenset(
     {"delta_evidence", "posterior_prob_favorable_reason_code"}
 )

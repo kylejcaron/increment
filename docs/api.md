@@ -142,6 +142,16 @@ values.
   is, a pandas 3 dataframe is shallow-copied under copy-on-write, and other
   pandas-like dataframes are copied. Estimates from unchanged dataframes and
   experiment identity hashes are unchanged.
+- Release note (bug fix): a `missing="skip"` metric's breakout and daily lift
+  rows now state that they cover only the units with a value, as its
+  whole-window rows do, in a new optional `population` field on
+  `BreakoutEstimate` and `DailyLiftEstimate` (as-of lift rows included) that
+  reaches `to_frame()`, the rendered row, saved cells and pickles. No source
+  records a segment's or a day's enrolled units, so the label reads
+  `observed-only population; counts not recorded per segment` (or `per day`);
+  the row's `n_control` and `n_treat` are its observed units. Rows of other
+  metrics keep `population=None` and an unchanged saved payload; estimates,
+  source snapshots and experiment identity are unchanged.
 - Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
   spelled `missing="skip"`, with the same computation: the metric uses only the
   units with a value, and those units stay in every other metric. Estimates are

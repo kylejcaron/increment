@@ -1334,7 +1334,7 @@ def _scope_day_axis_rows(
     scope=None,
     identity_rows: Sequence[Any] | None = None,
 ):
-    """Attach source-local scope to day-axis rows before returning them."""
+    """Attach source-local scope, and a skip metric's population to its lift rows."""
     from increment._source_identity import source_identity
     from increment.breakout.estimates import DailyLiftEstimates, DailyMetricValues
     from increment.readouts._design_scope import _config_snapshot
@@ -1403,6 +1403,10 @@ def _scope_day_axis_rows(
                 ),
             }
         )
+    if collection is DailyLiftEstimates:
+        from increment.readouts._run import _DAY_LIMITED_POPULATION, _label_skipped_slices
+
+        return _label_skipped_slices(result, source, req.metrics, label=_DAY_LIMITED_POPULATION)
     return result
 
 

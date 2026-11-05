@@ -7,7 +7,7 @@ from increment._analysis_config import UNSET, _Unset, effective_methods
 from increment._evidence_types import MetricEvidence, MetricEvidenceRequest, MissingValueAccount
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
-from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
+from increment.breakout.estimates import EstimateList, LiftEstimates, reject_quantile_metrics
 from increment.declarations import Method
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
@@ -243,6 +243,9 @@ def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
 
 
 _SOURCE_LIMITED_POPULATION = "observed-only population; counts not recorded in moments"
+# No source counts a segment's or a day's enrolled units, so slice rows say so.
+_SEGMENT_LIMITED_POPULATION = "observed-only population; counts not recorded per segment"
+_DAY_LIMITED_POPULATION = "observed-only population; counts not recorded per day"
 
 
 def _observed_population_label(account: MissingValueAccount | None) -> str:
@@ -260,23 +263,24 @@ def _observed_population_label(account: MissingValueAccount | None) -> str:
     return f"observed {account.metric} only ({arms})"
 
 
-def _label_skipped_populations(
-    rows: list[LiftEstimate], src: EvidenceSource, selected: Sequence[Metric], *, by: Sequence[str]
-) -> list[LiftEstimate]:
-    """Qualify each whole-window row of a ``missing="skip"`` metric with its population.
-
-    The skip label comes first; an identification restriction already on the row
-    (complete-case or overlap trimming) follows it after ``"; "``. Assembly owns
-    the label because observational rows carry no metric evidence; segment rows
-    (``by``) and compliance rows are left as estimated.
-    """
-    if by:
-        return rows
-    labels: dict[str, str] = {}
+def _skipped_metric_accounts(
+    src: EvidenceSource, selected: Sequence[Metric]
+) -> dict[str, MissingValueAccount | None]:
+    """Each selected ``missing="skip"`` metric's account, None where the source counted none."""
+    accounts: dict[str, MissingValueAccount | None] = {}
     for metric in selected:
         account = load_missing_value_account(src, metric)
         if account is not None or src.context.metric_missingness.get(metric.name) == "skip":
-            labels[metric.name] = _observed_population_label(account)
+            accounts[metric.name] = account
+    return accounts
+
+
+def _with_population_labels[R: list[Any]](rows: R, labels: Mapping[str, str]) -> R:
+    """Qualify each non-compliance row of a labelled metric with its population.
+
+    The skip label comes first; an identification restriction already on the row
+    (complete-case or overlap trimming) follows it after ``"; "``.
+    """
     if not labels:
         return rows
     relabelled = [
@@ -287,15 +291,46 @@ def _label_skipped_populations(
         else row
         for row in rows
     ]
-    if not isinstance(rows, LiftEstimates):
-        return relabelled
-    return LiftEstimates(
-        relabelled,
-        metadata=rows.metadata,
-        source=rows.source,
-        sequential_snapshot=rows.sequential_snapshot,
-        default_backend=rows._default_backend,
+    if not isinstance(rows, EstimateList):
+        return cast("R", relabelled)
+    return cast(
+        "R",
+        type(rows)(
+            relabelled,
+            metadata=rows.metadata,
+            source=rows.source,
+            sequential_snapshot=rows.sequential_snapshot,
+            default_backend=rows._default_backend,
+        ),
     )
+
+
+def _label_skipped_populations(
+    rows: list[LiftEstimate], src: EvidenceSource, selected: Sequence[Metric], *, by: Sequence[str]
+) -> list[LiftEstimate]:
+    """Qualify each whole-window row of a ``missing="skip"`` metric with its population.
+
+    Assembly owns the label because observational rows carry no metric evidence; segment rows
+    (``by``) and compliance rows are left as estimated.
+    """
+    if by:
+        return rows
+    accounts = _skipped_metric_accounts(src, selected)
+    return _with_population_labels(
+        rows, {name: _observed_population_label(account) for name, account in accounts.items()}
+    )
+
+
+def _label_skipped_slices[R: list[Any]](
+    rows: R, src: EvidenceSource, selected: Sequence[Metric], *, label: str
+) -> R:
+    """Qualify each breakout or day row of a ``missing="skip"`` metric with *label*.
+
+    Applied after scoping, so the label stays out of the rows' source snapshot, as on
+    whole-window rows.
+    """
+    labels = dict.fromkeys(_skipped_metric_accounts(src, selected), label)
+    return _with_population_labels(rows, labels)
 
 
 def _observational_adjustment_identity(src, selected, configs, design, rows, unit_frame_memo):
