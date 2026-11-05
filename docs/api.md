@@ -152,6 +152,21 @@ values.
   caught, and handle the refusal where `prob_favorable()` on a sequential row
   was read as `None`. Estimates, intervals, p-values, the stored
   `posterior_prob_favorable` and experiment identity are unchanged.
+- Release note (breaking API cutover): `increment.query.build_panel_for_metric`
+  is `build_panel_for_metric(experiment, reader, metric, population=...)`; it
+  no longer takes an `exposures` relation, which only private state could
+  supply, and instead reads the assigned or triggered population itself, as a
+  readout does. Drop the `exposures` argument. Panel relations from
+  `panel_sql` and `build_panel_for_metric` now type `ds` as a date, where
+  DuckDB returned a timestamp, and carry `day_offset`, as the data-model guide
+  documents. `WarehouseResultsStore(backend, schema=...)` creates a missing
+  schema on demand, as `WarehouseArtifactStore` does, and refuses at
+  construction, before any analysis runs, with `store.run.schema_unavailable`
+  (`CapabilityError`, context `schema`) when the schema can be neither created
+  nor found; previously the first save failed after the analysis with an
+  uncoded backend error. On a backend without `create_database`, both stores
+  now check that the declared schema exists before use. Estimates and
+  experiment identity are unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded

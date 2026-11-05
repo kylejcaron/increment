@@ -102,6 +102,50 @@ def test_analysis_run_persists_public_cells_without_identity_rewrites():
 
 
 @pytest.mark.integration
+def test_results_store_creates_its_schema():
+    backend = ibis.duckdb.connect()
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "value": [1.0, 2.0, 2.0, 3.0],
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        experiment_id="exp",
+    )
+    try:
+        result = run(
+            experiment, reader, results_store=WarehouseResultsStore(backend, schema="results")
+        )
+        handle = WarehouseResultsStore(backend, schema="results").open_run(
+            "exp", result.run.analysis_spec_hash, result.run.run_id
+        )
+        saved = sorted(cell.identity.hash() for cell in result.run.cells)
+        assert saved
+        assert sorted(cell.identity.hash() for cell in handle.envelope().cells) == saved
+    finally:
+        reader.close()
+        backend.disconnect()
+
+
+def test_results_store_refuses_unavailable_schema_at_construction():
+    class _ReadOnlyBackend:
+        def list_tables(self, *, database=None):
+            raise RuntimeError(f"schema {database} does not exist")
+
+    with pytest.raises(CodedError) as refused:
+        WarehouseResultsStore(_ReadOnlyBackend(), schema="results")
+    assert refused.value.code == "store.run.schema_unavailable"
+    assert refused.value.context["schema"] == "results"
+
+
+@pytest.mark.integration
 def test_warehouse_store_publishes_and_pins_complete_run():
     backend = ibis.duckdb.connect()
     try:

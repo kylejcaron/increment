@@ -38,6 +38,7 @@ UNIT_DAY_PANEL = frozenset(
     {
         "unit_id",
         "ds",
+        "day_offset",
         "experiment_id",
         "group_id",
         "metric",

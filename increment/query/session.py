@@ -32,6 +32,7 @@ from ibis.backends.sql import SQLBackend
 from ibis.common.exceptions import TableNotFound
 from ibis.expr import operations as ops
 
+from increment._warehouse_namespace import ensure_schema
 from increment.errors import (
     CapabilityError,
     CodedError,
@@ -492,28 +493,15 @@ class WarehouseArtifactStore:
         return name
 
     def _ensure_namespace(self) -> None:
-        if self._schema is None:
-            return
-        create_database = getattr(self._con, "create_database", None)
-        if not callable(create_database):
-            return
-        try:
-            create_database(self._schema, catalog=self._catalog, force=False)
-        except Exception:
-            # Backends commonly report an existing schema as an error. Probe
-            # it before allowing metadata DDL to surface a real namespace error.
-            list_tables = getattr(self._con, "list_tables", None)
-            if not callable(list_tables):
-                return
-            try:
-                list_tables(database=self._database)
-            except Exception:
-                refuse(
-                    _ARTIFACT_STORE_NAMESPACE,
-                    message=f"artifact store namespace {self._database!r} does not exist",
-                    catalog=self._catalog,
-                    schema=self._schema,
-                )
+        if not ensure_schema(
+            self._con, schema=self._schema, catalog=self._catalog, database=self._database
+        ):
+            refuse(
+                _ARTIFACT_STORE_NAMESPACE,
+                message=f"artifact store namespace {self._database!r} does not exist",
+                catalog=self._catalog,
+                schema=self._schema,
+            )
 
     def _ensure_metadata_table(self) -> None:
         self._ensure_namespace()

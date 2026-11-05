@@ -10,7 +10,8 @@ from typing import cast
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from increment.kernel.program_refusals import refuse_store
+from increment._warehouse_namespace import ensure_schema
+from increment.kernel.program_refusals import refuse_store, refuse_unavailable_results_schema
 from increment.store.parquet import ParquetResultsStore
 from increment.store.types import (
     HistorySelector,
@@ -24,11 +25,19 @@ from increment.store.types import (
 
 
 class WarehouseResultsStore:
-    """Publish one immutable, generation-scoped table per completed run."""
+    """Publish one immutable, generation-scoped table per completed run.
+
+    A declared schema is created on demand. Construction refuses with
+    ``store.run.schema_unavailable`` when it can be neither created nor found.
+    """
 
     def __init__(self, backend, *, schema: str | None = None) -> None:
         self.backend = backend
         self.schema = schema
+        if schema is not None and not ensure_schema(
+            backend, schema=schema, catalog=None, database=schema
+        ):
+            refuse_unavailable_results_schema(schema)
 
     def _name(self, experiment_id: str, analysis_spec_hash: str, run_id: str) -> str:
         return f"increment_run_{run_record_key(experiment_id, analysis_spec_hash, run_id)}"
