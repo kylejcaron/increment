@@ -10,6 +10,7 @@ from the row's own captured evidence.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -24,8 +25,8 @@ class ExpectedDifference:
     scenario: str
     ingress: str
     field: str
-    frozen: str | Mapping[str, str]
-    current: str | Mapping[str, str]
+    frozen: str | Mapping[str, str] | None
+    current: str | Mapping[str, str] | None
     reason: str
     key: str | None = None
 
@@ -51,6 +52,80 @@ class ExpectedDifference:
         migrated = replace(expected)
         assert found, f"{self.scenario}/{self.ingress} no longer records {self.field} {self.frozen}"
         return migrated
+
+
+# The favorable side each declared direction names; any other declaration names none.
+_DECLARED_SIDES = {"increase": "greater", "decrease": "less"}
+
+
+def declared_directions(experiment: Any) -> dict[str, str | None]:
+    """Each metric's declared ``preferred_direction``, None where ``experiment`` declares none;
+    an experiment's metric payload holds the field only when it is declared."""
+    return {
+        name: dict(metric).get("preferred_direction") for name, metric in experiment.metrics.items()
+    }
+
+
+def with_declared_favorable_sides(expected: Any, declared: Mapping[str, str | None]) -> Any:
+    """The frozen capture with each compiled plan it records given the favorable sides its
+    metrics declare, which plans captured earlier left out.
+
+    A plan is a mapping holding ``procedures`` and ``view_policies``, or that mapping as JSON
+    under ``decision_plan``. An arm procedure gains "greater" when ``declared`` names its
+    metric's ``preferred_direction`` "increase" and "less" for "decrease"; any other
+    declaration adds none, so a side the current plan records for it fails the caller's
+    comparison. Refuses a plan that already records a side or names a metric ``declared``
+    lacks, so the rule fails once a capture records the sides itself.
+    """
+
+    def migrate_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
+        procedures = {}
+        for metric, procedure in plan["procedures"].items():
+            side = None
+            if procedure.get("kind") in {"relative", "absolute"}:
+                assert "favorable_side" not in procedure, f"{metric} already records its side"
+                assert metric in declared, f"{metric} has no recorded declaration"
+                side = _DECLARED_SIDES.get(declared[metric] or "")
+            procedures[metric] = (
+                procedure if side is None else {**procedure, "favorable_side": side}
+            )
+        return {**plan, "procedures": procedures}
+
+    def migrate(value: Any, held_under: Any = None) -> Any:
+        if held_under == "decision_plan" and isinstance(value, str):
+            return json.dumps(
+                migrate_plan(json.loads(value)), sort_keys=True, separators=(",", ":")
+            )
+        if isinstance(value, dict):
+            if "procedures" in value and "view_policies" in value:
+                return migrate_plan(value)
+            return {key: migrate(item, key) for key, item in value.items()}
+        if isinstance(value, list):
+            return [migrate(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(migrate(item) for item in value)
+        return value
+
+    return migrate(expected)
+
+
+def without_stamped_sequential_direction(
+    expected: Mapping[str, Any], actual: Mapping[str, Any], declared: Mapping[str, str | None]
+) -> dict[str, Any]:
+    """``actual`` without the ``preferred_direction`` a sequential row gained after its capture.
+
+    Only a sequential row whose captured value is null is projected, and only when its value
+    is its metric's declared direction in ``declared``; every other row is returned as is.
+    """
+    projected = dict(actual)
+    if (
+        actual.get("inference") in {"always_valid", "asymptotic_mean"}
+        and expected.get("preferred_direction") is None
+        and actual.get("preferred_direction") is not None
+        and actual["preferred_direction"] == declared.get(actual["metric"])
+    ):
+        projected["preferred_direction"] = None
+    return projected
 
 
 _RECORDS = (
@@ -86,6 +161,18 @@ _RECORDS = (
         frozen="drop",
         current="skip",
         reason="The refusal names the declared policy, now spelled missing='skip'.",
+    ),
+    ExpectedDifference(
+        scenario="sequential-mixed-quantile-catalog-checkpoint",
+        ingress="from_unit_summary",
+        field="retained_row.preferred_direction",
+        key="preferred_direction",
+        frozen=None,
+        current="increase",
+        reason=(
+            "A sequential row carries its metric's declared preferred_direction, as a "
+            "fixed-horizon row does; the captured row recorded none."
+        ),
     ),
 )
 # Typed consumer inputs are frozen separately from the outcomes above.

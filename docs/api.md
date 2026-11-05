@@ -283,8 +283,10 @@ values.
   intervals, p-values and `stat_sig()` are unchanged. The decision plan bound
   to a run now records each metric's favorable side, so an experiment that
   declares a direction or uses a one-sided plan changes its `to_json()`,
-  `hash()`, `analysis_spec_hash` and registration hash once, and its runs bind
-  a version-2 plan that an earlier release cannot read; other experiments keep
+  `hash()`, `analysis_spec_hash`, registration hash and the cell identities of
+  its runs once, and its runs bind a version-2 plan that an earlier release
+  cannot read. Its rows keep their `source_snapshot_id`, and its exported
+  moments cube records the favorable sides in its plan. Other experiments keep
   their identity and bind version 1. Such an experiment saved earlier no longer
   runs against a resolver built by this release
   (`kernel.run.execution_unavailable`, field `registration`); build it again.

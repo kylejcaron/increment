@@ -2112,15 +2112,15 @@ def test_binomial_rejection_side_is_the_smaller_one_sided_tail():
 
 
 def test_relative_set_on_both_sides_of_the_null_rejects_without_a_side():
-    from increment.estimation.inference import _joint_additive_bounds
-
     # a = 1, c = 0.1, var_a = 0.01, var_c = 1, z = 1.96: the Fieller set solves
     # 3.83 t^2 + 0.2 t - 0.9616 >= 0, so it is (-inf, -0.528] U [0.476, inf), excluding 0.
     relative = RelativeConfidenceSet(
         reference=JointContrastReference(a=1.0, c=0.1, var_a=0.01, var_c=1.0, cov_ac=0.0),
         alpha=0.05,
     )
-    abs_lb, abs_ub = _joint_additive_bounds(1.0, 0.1, 0.05, "two-sided", None)
+    # The additive sidecar is the two-sided Wald interval 1 +/- z * 0.1.
+    z = float(_norm_dist.isf(0.025))
+    abs_lb, abs_ub = 1.0 - z * 0.1, 1.0 + z * 0.1
     row = _row(
         lift=relative.estimate(),
         relative_confidence_set=relative,

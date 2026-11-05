@@ -1661,6 +1661,7 @@ def _assert_coordinate_inputs(live, frozen):
     )
     from tests.parity_harness.expected_differences import (
         CONSUMER_INPUT_DIFFERENCES,
+        with_declared_favorable_sides,
         with_expected_difference,
         without_metric_outcome_columns,
     )
@@ -1682,7 +1683,7 @@ def _assert_coordinate_inputs(live, frozen):
     )
     _assert_input_value(
         without_metric_outcome_columns(expected_inputs, _source_input_identity_projection(live)),
-        expected_inputs,
+        with_declared_favorable_sides(expected_inputs, live.declared_directions),
         path="source_input_identity",
     )
     _assert_runtime_versions(live, frozen)
@@ -4626,6 +4627,7 @@ def test_frozen_sequential_and_contrast_consumers_match_old_rows():
         assert_switchback_unit_t_reference,
         scope_contrast_records,
     )
+    from tests.parity_harness.expected_differences import without_stamped_sequential_direction
 
     for entry in scenario_roster():
         if entry.disposition != "source":
@@ -4639,6 +4641,7 @@ def test_frozen_sequential_and_contrast_consumers_match_old_rows():
         if not records:
             continue
         configuration = transcript.provenance["consumer_configuration"]
+        declared: dict[str, str | None] = {}
         if records[0]["request_type"] == "ContrastStatsRequest":
             procedures = {
                 name: ContrastDecisionProcedure.model_validate(procedure)
@@ -4683,6 +4686,9 @@ def test_frozen_sequential_and_contrast_consumers_match_old_rows():
                 "estimands": configuration["estimands"],
                 "configs": configs,
             }
+            declared = {
+                config.metric.name: config.metric.declared_preferred_direction for config in configs
+            }
             results, assembly_inputs = _consume_once(
                 "sequential_readout",
                 record["answer"],
@@ -4722,7 +4728,15 @@ def test_frozen_sequential_and_contrast_consumers_match_old_rows():
             key = _full_readout_coordinate(result.model_dump(mode="json"))
             assert key in expected_by_key, (entry.scenario_id, entry.ingress, key)
             assert key not in observed
-            _assert_old_readout_rows((result,), (expected_by_key[key],))
+            captured = expected_by_key[key]
+            _assert_old_readout_rows(
+                (
+                    without_stamped_sequential_direction(
+                        captured, result.model_dump(mode="json"), declared
+                    ),
+                ),
+                (captured,),
+            )
             observed.add(key)
         assert observed == expected_by_key.keys()
 

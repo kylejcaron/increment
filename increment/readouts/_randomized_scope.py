@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from increment.breakout.estimates import LiftEstimates
+from increment.decision import evidence_request_procedure
 from increment.estimation.assignment_integrity import assignment_integrity
 from increment.estimation.readout_types import CellKey, ReadoutScope, cell_order, freeze
 from increment.estimation.results import LiftEstimate
@@ -465,7 +466,9 @@ def _scoped_randomized_results(  # noqa: PLR0913, PLR0915
         "q": request_plan.q,
         "declared": request_plan.declared,
         "procedures": {
-            name: _request_snapshot(value.model_dump(mode="json"), field=f"procedures.{name}")
+            name: _request_snapshot(
+                evidence_request_procedure(value, mode="json"), field=f"procedures.{name}"
+            )
             for name, value in request_plan.procedures.items()
         },
         "source_identity": source_identity(request_source),

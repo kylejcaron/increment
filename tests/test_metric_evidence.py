@@ -30,6 +30,8 @@ from tests.parity_harness import dataset as ds
 from tests.parity_harness.comparison import nested_close
 from tests.parity_harness.expected_differences import (
     ExpectedDifference,
+    declared_directions,
+    with_declared_favorable_sides,
     without_binomial_arm_facts,
 )
 
@@ -277,9 +279,10 @@ def _warehouse_fit_payload(cube_path):
     ]
 
 
-def _assert_export_moment_rows_close(expected_rows, actual_rows):
+def _assert_export_moment_rows_close(expected_rows, actual_rows, declared):
     from tests.test_evidence_identity_parity import _compare_aggregate
 
+    expected_rows = with_declared_favorable_sides(expected_rows, declared)
     assert len(expected_rows) == len(actual_rows)
     for expected_row, actual_row in zip(expected_rows, actual_rows, strict=True):
         assert expected_row.keys() == actual_row.keys()
@@ -306,10 +309,11 @@ def _assert_export_moment_rows_close(expected_rows, actual_rows):
             _compare_aggregate(json.loads(expected_fit), json.loads(actual_fit))
 
 
-def _assert_export_moments_close(expected, actual):
+def _assert_export_moments_close(expected, actual, declared):
     _assert_export_moment_rows_close(
         pq.read_table(expected).to_pylist(),
         pq.read_table(actual).to_pylist(),
+        declared,
     )
 
 
@@ -343,10 +347,12 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
     _assert_export_moment_rows_close(
         pq.read_table(_FIXTURES / "exports" / "mixed_warehouse.parquet").to_pylist(),
         moment_inputs[0],
+        declared_directions(pairs["mixed_fitted_replay"][0]),
     )
     _assert_export_moment_rows_close(
         pq.read_table(_FIXTURES / "exports" / "mixed_categorical_replay.parquet").to_pylist(),
         moment_inputs[1],
+        declared_directions(pairs["mixed_categorical_replay"][0]),
     )
     from scripts.capture_evidence_identity import _rows
 
@@ -429,7 +435,11 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             _warehouse_fit_payload(_FIXTURES / "exports" / "mixed_warehouse.parquet"),
             _warehouse_fit_payload(live_cube),
         )
-        _assert_export_moments_close(_FIXTURES / "exports" / "mixed_warehouse.parquet", live_cube)
+        _assert_export_moments_close(
+            _FIXTURES / "exports" / "mixed_warehouse.parquet",
+            live_cube,
+            declared_directions(pairs["mixed_warehouse"][0]),
+        )
         replay_templates = {
             "parity_baseline": baseline,
             "mixed_warehouse": pairs["mixed_warehouse"],

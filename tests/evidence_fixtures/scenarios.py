@@ -53,6 +53,7 @@ from tests.parity_harness.cases import (
     _capture_kwargs,
     _close_parity_binding,
 )
+from tests.parity_harness.expected_differences import declared_directions
 
 TEMPORAL_IDS = frozenset(
     {
@@ -101,6 +102,8 @@ class AcquiredScenario:
     missing_representations: tuple[str, ...]
     source_input_hashes: tuple[str, ...]
     source_membership_identity: dict[str, Any] | None
+    # Each metric's declared preferred_direction, None where the experiment declares none.
+    declared_directions: Mapping[str, str | None]
 
 
 def _family(case: Any) -> str:
@@ -1532,6 +1535,7 @@ def acquire_scenario(  # noqa: PLR0915
     format_inputs = bound.moment_inputs if isinstance(bound, BoundWithMomentInputs) else ()
     stack = ExitStack()
     try:
+        declared = declared_directions(bound[0])
         binding = binding_for(*bound)
         source = readout_source(binding, population=case.population)
         provider = evidence_provider(source)
@@ -2013,6 +2017,7 @@ def acquire_scenario(  # noqa: PLR0915
                 missing,
                 tuple(source_input_hashes),
                 source_membership_identity,
+                declared,
             )
 
         if (
@@ -2152,6 +2157,7 @@ def acquire_scenario(  # noqa: PLR0915
             missing,
             tuple(source_input_hashes),
             source_membership_identity,
+            declared,
         )
     finally:
         stack.close()

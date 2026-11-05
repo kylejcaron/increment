@@ -359,6 +359,14 @@ class CompiledViewPolicies(CodedModel, BaseModel):
 DecisionProcedure = ArmDecisionProcedure | ContrastDecisionProcedure
 
 
+def evidence_request_procedure(
+    procedure: DecisionProcedure, *, mode: Literal["json", "python"]
+) -> dict[str, Any]:
+    """A procedure as an evidence request records it. The favorable side orients the
+    verdict and selects no evidence, so it stays out of every snapshot request."""
+    return procedure.model_dump(mode=mode, exclude={"favorable_side"})
+
+
 class CompiledDecisionPlan(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
 
