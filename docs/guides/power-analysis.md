@@ -632,8 +632,9 @@ assert math.isclose(
 )
 ```
 
-Passing `mde_relative` back alone plans a smaller lift than the one the design
-detects, at far lower power.
+With this positive `null_lift`, passing `mde_relative` back alone plans a
+smaller lift than the one the design detects, at far lower power; under a
+negative `null_lift` it plans a larger one.
 
 ## Switchback contrasts
 

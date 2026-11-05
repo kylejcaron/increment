@@ -132,7 +132,8 @@ values.
   and that the matching `relative_lift` is
   `(1 + null_lift) * (1 + mde_relative) - 1` at `compliance=1`; a new example
   shows that round trip. Under a nonzero `null_lift`, passing `mde_relative`
-  back alone plans a smaller lift at lower power. The `required_sample_size`
+  back alone plans a different lift, and so a different power, than the design
+  detects. The `required_sample_size`
   docstring states that a sequential procedure with a `trigger_rate < 1`
   baseline is refused with `sequential.route.unsupported`, and that a triggered
   experiment is sized at a fixed horizon, where `n_triggered_total` reports its
