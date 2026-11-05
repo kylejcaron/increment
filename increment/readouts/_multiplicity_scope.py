@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from increment._evidence_types import ArtifactProvenance
@@ -15,6 +15,7 @@ from increment.estimation.multiplicity import (
     row_multiplicity_status,
 )
 from increment.estimation.readout_types import (
+    CellAdvisories,
     CellFailure,
     CellKey,
     FamilyScope,
@@ -24,6 +25,8 @@ from increment.estimation.readout_types import (
 )
 from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._source_digest import input_evidence
+
+_NO_ADVISORIES: CellAdvisories = MappingProxyType({})
 
 
 def attach_multiplicity_scope(
@@ -405,6 +408,7 @@ def scoped_collection(  # noqa: PLR0913
     source_components: Sequence[Mapping[str, Any]] = (),
     identity_rows: Sequence[Any] | None = None,
     artifact_provenance: ArtifactProvenance | None = None,
+    advisories: CellAdvisories = _NO_ADVISORIES,
 ):
     """Return rows with a source snapshot and source-local readout metadata.
 
@@ -414,6 +418,8 @@ def scoped_collection(  # noqa: PLR0913
     route's evidence components do. ``metrics`` are the declared metrics the
     rows were read for; every non-compliance row must name one of them.
     ``artifact_provenance`` names the artifact the rows were read from.
+    ``advisories`` are the estimators' typed advisories keyed by each
+    retained cell's full identity.
     """
     from hashlib import sha256
 
@@ -594,7 +600,7 @@ def scoped_collection(  # noqa: PLR0913
                     if getattr(row, "failure_code", None) is not None and cell.method is not None
                     else None
                 ),
-                advisories=_row_advisories(row),
+                advisories=advisories.get(cell, ()),
             )
         )
     metadata = ReadoutMetadata(
@@ -606,26 +612,3 @@ def scoped_collection(  # noqa: PLR0913
         artifact_relation_digests=provenance.relation_digests,
     )
     return collection_type(stamped, metadata=metadata, sequential_snapshot=sequential_snapshot)
-
-
-_RATIO_NOTE_CODES = {
-    "ratio_denominator_precision": "estimation.engine.ratio_denominator_precision",
-    "ratio_denominator_skew": "estimation.engine.ratio_denominator_skew",
-}
-
-
-def _row_advisories(row):
-    note = getattr(row, "note", None)
-    if not isinstance(note, str):
-        return ()
-    # Ratio rows join their advisories with "; "; a skew note can itself contain "; ".
-    parts = re.split(r"; (?=ratio_denominator_(?:precision|skew):)", note)
-    return tuple(
-        ReadoutAdvisory(
-            code=_RATIO_NOTE_CODES[part.split(":", 1)[0]],
-            context={"metric_name": row.metric, "note": part},
-            message=part,
-        )
-        for part in parts
-        if part.split(":", 1)[0] in _RATIO_NOTE_CODES
-    )

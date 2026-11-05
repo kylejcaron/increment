@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from increment._analysis_config import effective_methods, validate_scalar_route
 from increment.sequential_source import population_policy, source_snapshot
 from increment.sequential_state import require_public_laws, sequential_refuse
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from increment.decision import HypothesisKey
+    from increment.estimation.advisory import ReadoutAdvisory
 
 
 def sequential_readout(
@@ -17,8 +25,12 @@ def sequential_readout(
     _include_unrequested=False,
     population="assigned",
     configs=None,
-) -> list:
-    """Run the registered decision and selection path on a source checkpoint."""
+) -> tuple[list, Mapping[HypothesisKey, tuple[ReadoutAdvisory, ...]]]:
+    """Run the registered decision and selection path on a source checkpoint.
+
+    Returns the rows and each hypothesis' advisories; the hypotheses are local
+    to this checkpoint's population.
+    """
     from increment.estimation.sequential_runtime import selected_snapshot_results
 
     inference = population_policy(source.context.plan.inference, population)
@@ -39,7 +51,7 @@ def sequential_readout(
     snapshot = (source_snapshot(source, previous=previous) if snapshot is None else snapshot).chain(
         population
     )
-    rows = selected_snapshot_results(
+    rows, advisories = selected_snapshot_results(
         snapshot,
         inference,
         nominal_alpha=source.context.plan.alpha,
@@ -78,4 +90,4 @@ def sequential_readout(
                     }
                 )
             )
-    return result
+    return result, advisories

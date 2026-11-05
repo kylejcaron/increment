@@ -25,6 +25,13 @@ from increment.errors import CodedError
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import Method, _validate_methods
 from increment.estimation.multiplicity import stamp_multiplicity_status
+from increment.estimation.readout_types import (
+    CellAdvisories,
+    CellKey,
+    carried_advisories,
+    cell_advisories,
+    collect_advisories,
+)
 from increment.estimation.sequential import SEQUENTIAL_POLICIES
 from increment.readouts._common import (
     _raise,
@@ -52,6 +59,7 @@ if TYPE_CHECKING:
 
     from increment._evidence_types import MetricEvidence
     from increment._literals import ValueScale
+    from increment.estimation.advisory import ReadoutAdvisory
     from increment.estimation.inference import Prior
     from increment.semantics.design import Encouragement
     from increment.semantics.models import Metric
@@ -117,10 +125,11 @@ def _encouragement_breakout_rows(
     estimands: Sequence[str],
     alpha: float,
     method_evidence: Mapping[str, MetricEvidence],
-) -> list[BreakoutEstimate]:
+) -> tuple[list[BreakoutEstimate], dict[CellKey, tuple[ReadoutAdvisory, ...]]]:
     for metric_methods in methods_by_metric.values():
         _validate_methods(metric_methods)
     results: list[BreakoutEstimate] = []
+    advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] = {}
     missing_cells: list[tuple[str, str, str, float, float]] = []
     compliance_scales_by_metric: dict[str, set[ValueScale]] = {
         metric.name: set() for metric in selected
@@ -175,6 +184,7 @@ def _encouragement_breakout_rows(
                 continue
             n_control_arm = n_by_group.get(design.control_group)
             lift_estimates = []
+            segment_advisories: dict[Any, tuple[ReadoutAdvisory, ...]] = {}
             diagnostic_keys = set()
             for method in metric_methods:
                 try:
@@ -213,6 +223,7 @@ def _encouragement_breakout_rows(
                     alpha=alpha,
                     method_roles=roles_by_metric[metric.name],
                 )
+                collect_advisories(segment_advisories, computation.advisories)
                 for estimate in computation.results:
                     if estimate.estimand == "compliance":
                         key = (estimate.group_id, estimate.method, estimate.value_scale)
@@ -220,6 +231,7 @@ def _encouragement_breakout_rows(
                             continue
                         diagnostic_keys.add(key)
                     lift_estimates.append(estimate)
+            segment_start = len(results)
             for lift_estimate in lift_estimates:
                 if lift_estimate.estimand == "compliance":
                     compliance_scales_by_metric[metric.name].add(lift_estimate.value_scale)
@@ -243,6 +255,7 @@ def _encouragement_breakout_rows(
                         ),
                     )
                 )
+            advisories.update(cell_advisories(results[segment_start:], segment_advisories))
     for metric_name, value, group_id, n_treat, n_control in missing_cells:
         for estimand, value_scale, method in _encouragement_cell_identities(
             estimands,
@@ -268,10 +281,10 @@ def _encouragement_breakout_rows(
                     n_control=n_control,
                 )
             )
-    return [row.model_copy(update={"policy_name": "compiled_plan"}) for row in results]
+    return [row.model_copy(update={"policy_name": "compiled_plan"}) for row in results], advisories
 
 
-def _scoped_breakout_results(
+def _scoped_breakout_results(  # noqa: PLR0913
     rows: Sequence[BreakoutEstimate],
     *,
     src: EvidenceSource,
@@ -285,6 +298,7 @@ def _scoped_breakout_results(
     source_name: str | None,
     sequential_snapshot: Any = None,
     source_components: Sequence[Mapping[str, Any]] = (),
+    advisories: CellAdvisories,
 ) -> BreakoutEstimates:
     route = day_axis_route(src)
     from increment.readouts._multiplicity_scope import scoped_collection
@@ -308,6 +322,7 @@ def _scoped_breakout_results(
         sequential_snapshot=sequential_snapshot,
         source_components=source_components,
         artifact_provenance=artifact_provenance(src),
+        advisories=carried_advisories(advisories, zip(rows, population_rows, strict=True)),
     )
     return _label_skipped_slices(scoped, src, metrics, label=_SEGMENT_LIMITED_POPULATION)
 
@@ -594,7 +609,7 @@ def _breakout_impl(
         "analysis_population": analysis_population,
     }
 
-    def scoped(rows, *, sequential_snapshot=None):
+    def scoped(rows, advisories, *, sequential_snapshot=None):
         return _scoped_breakout_results(
             rows,
             src=src,
@@ -610,6 +625,7 @@ def _breakout_impl(
             # Local fallback frames contribute their own provenance; warehouse
             # fits are bound to the source and breakout request identity.
             source_components=unit_evidence,
+            advisories=advisories,
         )
 
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
@@ -618,7 +634,7 @@ def _breakout_impl(
         from increment.sequential_state import sequential_refuse
 
         snapshot = current_source_snapshot(src)
-        rows = sequential_readout(
+        rows, row_advisories = sequential_readout(
             src,
             metrics=selected,
             estimands=estimands,
@@ -647,7 +663,11 @@ def _breakout_impl(
                     family_threshold=row.family_threshold,
                 )
             )
-        return scoped(stamp_multiplicity_status(output), sequential_snapshot=snapshot)
+        return scoped(
+            stamp_multiplicity_status(output),
+            cell_advisories(output, row_advisories),
+            sequential_snapshot=snapshot,
+        )
 
     method_evidence = {
         metric.name: _load_breakout_metric_rows(
@@ -708,7 +728,7 @@ def _breakout_impl(
                 estimands=ESTIMANDS,
                 unknown=sorted(unknown),
             )
-        encouragement_rows = _encouragement_breakout_rows(
+        encouragement_rows, encouragement_advisories = _encouragement_breakout_rows(
             selected,
             dimension=dimension,
             source_name=source_name,
@@ -720,8 +740,9 @@ def _breakout_impl(
             alpha=alpha,
             method_evidence=method_evidence,
         )
-        return scoped(stamp_multiplicity_status(encouragement_rows))
+        return scoped(stamp_multiplicity_status(encouragement_rows), encouragement_advisories)
     results: list[BreakoutEstimate] = []
+    advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] = {}
     if correction == "bh":
         # One flat family across every (metric, arm, segment) cell this
         # call produces: a single run_breakout call over every selected
@@ -748,6 +769,7 @@ def _breakout_impl(
                 policy_name="compiled_plan",
                 unit_frames_by_metric=unit_frames_by_metric,
                 covariates_by_metric=covariates_by_metric,
+                _cell_advisories=advisories,
             )
         )
     else:
@@ -771,9 +793,10 @@ def _breakout_impl(
                     policy_name="compiled_plan",
                     unit_frames_by_metric=unit_frames_by_metric,
                     covariates_by_metric=covariates_by_metric,
+                    _cell_advisories=advisories,
                 )
             )
-    return scoped(stamp_multiplicity_status(results))
+    return scoped(stamp_multiplicity_status(results), advisories)
 
 
 def breakout(

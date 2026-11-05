@@ -328,6 +328,7 @@ def scope_sequential_record(
 ) -> Any:
     """Execute registered selection and scope assembly without source acquisition."""
     from increment._sequential_readouts import sequential_readout
+    from increment.estimation.readout_types import cell_advisories
     from increment.readouts._design_scope import ResolvedRoster
     from increment.readouts._sequential_scope import scope_sequential_results
     from tests.evidence_fixtures.method_replay import ReadoutDeclaration
@@ -352,7 +353,7 @@ def scope_sequential_record(
         },
         known_arms=frozenset(roster_payload["known_arms"]),
     )
-    rows = sequential_readout(
+    rows, advisories = sequential_readout(
         declarations,
         snapshot=snapshot,
         _include_unrequested=True,
@@ -366,6 +367,7 @@ def scope_sequential_record(
         estimands=estimands,
         base_roster=roster,
         configs=configs,
+        advisories=cell_advisories(rows, advisories),
     )
 
 
@@ -392,6 +394,7 @@ def scope_sequential_breakout_record(
     from increment._sequential_readouts import sequential_readout
     from increment.breakout.estimates import BreakoutEstimates, _breakout_estimate_row
     from increment.estimation.multiplicity import stamp_multiplicity_status
+    from increment.estimation.readout_types import cell_advisories
     from increment.readouts._design_scope import _config_snapshot
     from increment.readouts._multiplicity_scope import scoped_collection
     from increment.sequential_source import registered_breakout_dimension
@@ -427,7 +430,7 @@ def scope_sequential_breakout_record(
         )
     ):
         raise ValueError("sequential breakout scope differs from its captured declarations")
-    rows = sequential_readout(
+    rows, row_advisories = sequential_readout(
         declarations, metrics=metrics, estimands=estimands, snapshot=snapshot, configs=configs
     )
     output = []
@@ -476,6 +479,7 @@ def scope_sequential_breakout_record(
         sequential_snapshot=snapshot,
         source_components=_restore(captured["source_components"]),
         artifact_provenance=_captured_artifact_provenance(captured["artifact_provenance"]),
+        advisories=cell_advisories(output, row_advisories),
     )
     return BreakoutEstimates(
         [
@@ -605,6 +609,7 @@ def estimate_day_axis_record(
     )
     from increment.breakout.estimates import run_daily, run_daily_lift
     from increment.estimation.multiplicity import stamp_multiplicity_status
+    from increment.estimation.readout_types import carried_advisories
     from increment.evidence import ComplianceSummary
     from increment.plan import with_unassigned_procedures
     from increment.readouts._evidence import DayAxisSlice
@@ -618,6 +623,7 @@ def estimate_day_axis_record(
     answer = record["answer"]
     results = []
     failure_rows = []
+    advisories = {}
     correction = None
     if lift:
         estimands, encouragement, extra, correction, effective_plan, design_compliance = (
@@ -654,6 +660,7 @@ def estimate_day_axis_record(
                     estimands,
                     effective_plan,
                     design,
+                    advisories,
                 )
             )
         else:
@@ -714,8 +721,9 @@ def estimate_day_axis_record(
         results = _stamp_triggered_cell_failures(
             results, failure_rows, request, control_group=design.control_group
         )
+    estimated = results
     results = [
-        row.model_copy(update={"analysis_population": request.population}) for row in results
+        row.model_copy(update={"analysis_population": request.population}) for row in estimated
     ]
     identity_rows = tuple(results)
     results = _fill_daily_domain_gaps(results, request)
@@ -730,6 +738,7 @@ def estimate_day_axis_record(
         design=design,
         configs=configs,
         assembly_inputs=assembly_inputs,
+        advisories=carried_advisories(advisories, zip(estimated, identity_rows, strict=True)),
     )
 
 
@@ -743,6 +752,7 @@ def scope_day_axis_record(
     design: Any,
     assembly_inputs: list[dict[str, Any]],
     configs: Sequence[Any] = (),
+    advisories: Mapping[Any, Any],
 ) -> Any:
     """Attach scope using captured request data, never a source-shaped adapter."""
     from increment.breakout.estimates import DailyLiftEstimates, DailyMetricValues
@@ -795,6 +805,7 @@ def scope_day_axis_record(
         dimension=request.dimension,
         identity_rows=identity_rows,
         artifact_provenance=_captured_artifact_provenance(record["answer"]["artifact_provenance"]),
+        advisories=advisories,
     )
 
 

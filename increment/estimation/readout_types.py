@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import date, datetime
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
@@ -226,6 +226,54 @@ class CellRecord(_ReadoutModel):
         )
         object.__setattr__(self, "advisories", ordered)
         return self
+
+
+#: Typed advisories keyed by the full retained identity of the cell they qualify.
+CellAdvisories = Mapping[CellKey, tuple[ReadoutAdvisory, ...]]
+
+
+def cell_advisories(
+    rows: Iterable[Any], advisories: Mapping[HypothesisKey, Iterable[ReadoutAdvisory]]
+) -> dict[CellKey, tuple[ReadoutAdvisory, ...]]:
+    """Key one estimator invocation's advisories by the full cell of each row it produced.
+
+    A hypothesis key is local to the invocation that produced it: a row takes the
+    advisories of every hypothesis whose fields it carries with equal values, so
+    method siblings of one cell share them.
+    """
+    produced = tuple(rows)
+    keyed: dict[CellKey, dict[str, ReadoutAdvisory]] = {}
+    for hypothesis, items in advisories.items():
+        identity = [(item.name, getattr(hypothesis, item.name)) for item in fields(hypothesis)]
+        for row in produced:
+            if all(getattr(row, name, None) == value for name, value in identity):
+                keyed.setdefault(CellKey.from_row(row), {}).update(
+                    (item.model_dump_json(), item) for item in items
+                )
+    return {cell: tuple(values.values()) for cell, values in keyed.items()}
+
+
+def collect_advisories(
+    collected: dict[HypothesisKey, tuple[ReadoutAdvisory, ...]],
+    advisories: Mapping[HypothesisKey, Iterable[ReadoutAdvisory]],
+) -> None:
+    """Add one estimator invocation's advisories to those collected for its slice."""
+    for hypothesis, items in advisories.items():
+        collected[hypothesis] = (*collected.get(hypothesis, ()), *items)
+
+
+def carried_advisories(
+    advisories: CellAdvisories, rows: Iterable[tuple[Any, Any]]
+) -> dict[CellKey, tuple[ReadoutAdvisory, ...]]:
+    """*advisories* re-keyed from each ``(row, successor)`` pair's cell to its successor's.
+
+    A row becomes its successor at a population, day or view boundary.
+    """
+    return {
+        CellKey.from_row(successor): advisories[cell]
+        for row, successor in rows
+        if (cell := CellKey.from_row(row)) in advisories
+    }
 
 
 class FamilyScope(_ReadoutModel):

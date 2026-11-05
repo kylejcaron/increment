@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import shutil
 import warnings
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, cast
 
 import numpy as np
@@ -2350,6 +2350,108 @@ def test_native_daily_lift_cuped_without_pre_period_refuses_without_fallback(
             metrics=["purchase_rate"],
         )
     assert raised.value.code == "estimation.cuped.covariate_zero_variance"
+
+
+_TRIGGERED_RATIO_DEFS = """
+dialect: duckdb
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {name: revenue, column: value}
+      - {name: session, column: null}
+      - {name: enrolled, column: null}
+      - {name: saw_surface, column: null}
+exposures:
+  - {name: assignment, fact: enrolled}
+  - {name: saw_surface, fact: saw_surface}
+metrics:
+  - name: rps
+    type: ratio
+    entity: user_id
+    numerator: {fact: revenue, aggregation: sum, window_days: 7}
+    denominator: {fact: session, aggregation: count, window_days: 7}
+experiments:
+  - name: exp
+    exposure: assignment
+    trigger: saw_surface
+    unit: user_id
+    start: 2024-01-01T00:00:00
+    control_group: C
+    plan: {secondaries: [rps]}
+"""
+
+
+def test_advisory_attaches_only_to_its_own_day_and_population(tmp_path):
+    import ibis
+    import pyarrow as pa
+
+    from increment import render, run
+    from increment.artifacts import SourceSnapshotEvidence
+    from increment.result_envelope import AnalysisEnvelope
+    from tests.analysis_factory import declare_views
+
+    first, second = datetime(2024, 1, 3, 12), datetime(2024, 1, 4, 12)
+    events = []
+    for arm in ("C", "T"):
+        for index in range(20):
+            user = f"{arm}{index}"
+            triggered = index % 2 == 0
+            event = {"user_id": user, "group_id": arm, "experiment_id": "exp", "value": 0.0}
+            events.append({**event, "event": "enrolled", "ts": datetime(2024, 1, 2)})
+            if triggered:
+                events.append({**event, "event": "saw_surface", "ts": datetime(2024, 1, 2)})
+            for day in (first, second):
+                steady = 19 if index % 4 < 2 else 21
+                # Only the untriggered units' first-day session counts swing
+                # (1 or 80), so only the assigned first-day cell has a denominator
+                # mean too noisy to resolve.
+                sessions = steady if triggered or day == second else (1 if index % 4 < 2 else 80)
+                events.extend({**event, "event": "session", "ts": day} for _ in range(sessions))
+                events.append({**event, "event": "revenue", "ts": day, "value": 10.0 + index % 3})
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.Table.from_pylist(events))
+    path = tmp_path / "defs.yml"
+    path.write_text(_TRIGGERED_RATIO_DEFS)
+    cutoff = datetime(2024, 1, 6, tzinfo=UTC)
+    experiment, resolver = from_definitions(
+        path,
+        con,
+        experiment_name="exp",
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"events": cutoff}),
+    )
+    views = (
+        View(view="daily", grain="daily"),
+        View(view="daily", grain="daily", population="triggered"),
+    )
+    code = "estimation.engine.ratio_denominator_precision"
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = run(declare_views(experiment, *views), resolver, views=views)
+    finally:
+        resolver.close()
+        con.disconnect()
+    restored = AnalysisEnvelope.from_payload(result.envelope.to_payload())
+    for metadatas in (
+        [result.readout(view).metadata for view in views],
+        [restored.metadata],
+    ):
+        flagged = {
+            (record.cell.ds, record.cell.analysis_population): advisory.context
+            for metadata in metadatas
+            for record in cast(Any, metadata).cells
+            for advisory in record.advisories
+            if advisory.code == code
+        }
+        assert set(flagged) == {(date(2024, 1, 3), "assigned")}
+        assert set(flagged[(date(2024, 1, 3), "assigned")]["relative_standard_errors"]) == {
+            "C",
+            "T",
+        }
+    assert code in render(result, "full")
 
 
 pytestmark = pytest.mark.integration

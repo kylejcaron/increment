@@ -471,9 +471,8 @@ def test_a_frozen_family_member_is_reselected_at_every_look():
         return rows
 
     def family(snapshot):
-        return {
-            r.metric: r for r in selected_snapshot_results(snapshot, policy, nominal_alpha=q / 2)
-        }
+        rows, _ = selected_snapshot_results(snapshot, policy, nominal_alpha=q / 2)
+        return {r.metric: r for r in rows}
 
     first = mean_capture(reg, records(100, 0.5, 1.0))
     before = family(first)

@@ -292,7 +292,7 @@ def test_an_unresolved_ratio_cell_withholds_only_itself_across_a_freeze():
         return rows
 
     def family(snapshot):
-        rows = selected_snapshot_results(snapshot, policy, nominal_alpha=q / 2)
+        rows, _ = selected_snapshot_results(snapshot, policy, nominal_alpha=q / 2)
         return {row.metric: row for row in rows}
 
     early = mean_capture(registration, records(20, (1, -1, 2, -1)))
@@ -347,7 +347,7 @@ def _f7_records(n=20, *, shift=0, offset=0):
 
 def _family(registration, snapshot, *, nominal=_F7_Q):
     policy = AsymptoticMean(registration=registration)
-    rows = selected_snapshot_results(snapshot, policy, nominal_alpha=nominal)
+    rows, _ = selected_snapshot_results(snapshot, policy, nominal_alpha=nominal)
     return {row.metric: row for row in rows}
 
 

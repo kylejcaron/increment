@@ -845,6 +845,55 @@ def test_run_breakout_bh_family_survives_a_tiny_segment_extreme_ratio_cell():
     )
 
 
+def test_breakout_cell_keeps_typed_advisory_through_payload_round_trip():
+    from increment import MetricSpec, render, run
+    from increment.estimation.variance import RATIO_DENOMINATOR_SKEW_THRESHOLD
+    from increment.result_envelope import AnalysisEnvelope
+    from tests.analysis_factory import declare_views
+
+    rows = [
+        {
+            "unit": f"{country}-{group}-{i}",
+            "arm": group,
+            "country": country,
+            "revenue": 2.0 + 0.1 * (i % 5) + (0.2 if group == "treatment" else 0.0),
+            # One large denominator in fifty skews the "skewed" segment's
+            # denominator mean; alternating 1/2 is symmetric.
+            "sessions": (5.0 if i == 0 else 1.0) if country == "skewed" else 1.0 + i % 2,
+        }
+        for country in ("skewed", "even")
+        for group in ("control", "treatment")
+        for i in range(50)
+    ]
+    experiment, resolver = from_frame(
+        pd.DataFrame(rows),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions")],
+        breakouts=["country"],
+    )
+    code = "estimation.engine.ratio_denominator_skew"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = run(declare_views(experiment, _BREAKOUT), resolver, views=(_BREAKOUT,))
+    restored = AnalysisEnvelope.from_payload(result.envelope.to_payload())
+    for metadata in (result.readout(_BREAKOUT).metadata, restored.metadata):
+        assert metadata is not None
+        flagged = {
+            (record.cell.dimension_value, record.cell.method): advisory.context
+            for record in metadata.cells
+            for advisory in record.advisories
+            if advisory.code == code
+        }
+        assert {segment for segment, _ in flagged} == {"skewed"}
+        assert all(
+            context["threshold"] == RATIO_DENOMINATOR_SKEW_THRESHOLD for context in flagged.values()
+        )
+    assert code in render(result, "full")
+
+
 def test_breakout_propagates_a_cuped_nonpositive_mean_row_unmodified(con):
     """The previously-caught gap: a CUPED-adjusted mean that turns
     non-positive in exactly one segment must reach breakout as a real

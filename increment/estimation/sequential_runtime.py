@@ -47,7 +47,10 @@ from increment.sequential_state import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from increment.decision import HypothesisKey
+    from increment.estimation.advisory import ReadoutAdvisory
 
 
 def evaluate_checkpoint(
@@ -395,8 +398,8 @@ def selected_snapshot_results(
     inference: AsymptoticMean | AlwaysValid | MixedFamily,
     *,
     nominal_alpha: Fraction | float,
-) -> list[LiftEstimate]:
-    """Evaluate and reinvert the family at its stopped state.
+) -> tuple[list[LiftEstimate], Mapping[HypothesisKey, tuple[ReadoutAdvisory, ...]]]:
+    """Evaluate and reinvert the family at its stopped state, with each hypothesis' advisories.
 
     Triggered family guarantees assume correct triggering and looks, stops and
     freezes adapted to the triggered joint filtration, not informed by early
@@ -414,7 +417,7 @@ def selected_snapshot_results(
         if row.require_sequential_result().checkpoint.cell.family
     ]
     if not family:
-        return list(computation.results)
+        return list(computation.results), computation.advisories
     outcome = select_sequential_family(
         family,
         inference.registration.q,
@@ -443,4 +446,4 @@ def selected_snapshot_results(
                 }
             )
         results.append(row)
-    return results
+    return results, computation.advisories

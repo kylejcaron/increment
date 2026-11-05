@@ -1904,7 +1904,7 @@ def _consumer_context(transcript):
     return configuration, context, design, configs, plan
 
 
-def _assert_current_input_scope_metadata(results, rows, receipt):
+def _assert_current_input_scope_metadata(results, rows, receipt, advisories):
     from increment.estimation.decision_types import PValueEvidence
     from increment.estimation.readout_types import (
         CellKey,
@@ -2062,6 +2062,7 @@ def _assert_current_input_scope_metadata(results, rows, receipt):
                     reason_code=row.sampling_reason_code,
                     reason_context=row.sampling_reason_context,
                 ),
+                advisories=advisories.get(cell, ()),
             )
         )
     provenance = _restore(receipt["artifact_provenance"])
@@ -5060,7 +5061,7 @@ def _breakout_readout_inputs(receipt):
     return {name: tuple(answers) for name, answers in fits.items()}, frames
 
 
-def _scope_breakout_inputs(transcript, rows, identity, source):
+def _scope_breakout_inputs(transcript, rows, identity, source, advisories):
     from increment._evidence_types import ArtifactProvenance
     from increment.breakout.estimates import BreakoutEstimates
     from increment.readouts._multiplicity_scope import scoped_collection
@@ -5084,6 +5085,7 @@ def _scope_breakout_inputs(transcript, rows, identity, source):
         source=request["source_name"],
         source_components=components,
         artifact_provenance=ArtifactProvenance(**_restore(receipt["artifact_provenance"])),
+        advisories=advisories,
     )
     _assert_common_snapshot(
         result,
@@ -5098,7 +5100,7 @@ def _scope_breakout_inputs(transcript, rows, identity, source):
     _register_readout_identities(result, artifact_provenance=receipt["artifact_provenance"])
     if _old_daily_consumer(transcript.scenario_id, transcript.ingress) is None:
         assert components
-        _assert_current_input_scope_metadata(result, rows, receipt)
+        _assert_current_input_scope_metadata(result, rows, receipt, advisories)
     return result
 
 
@@ -5222,7 +5224,18 @@ def test_frozen_breakout_consumers_match_complete_ordered_old_rows():
                         config.metric.name: config.covariates for config in configs
                     },
                 }
-                rows = _consume_once(
+
+                def consume(summary=summary, by_metric=by_metric, options=options):
+                    advisories = {}
+                    rows = run_breakout(
+                        summary,
+                        _method_evidence_by_metric=by_metric,
+                        _cell_advisories=advisories,
+                        **options,
+                    )
+                    return rows, advisories
+
+                rows, advisories = _consume_once(
                     "breakout",
                     {"summary": summary, "method_inputs": records, "scope_inputs": receipt},
                     {
@@ -5230,13 +5243,11 @@ def test_frozen_breakout_consumers_match_complete_ordered_old_rows():
                         for name, value in options.items()
                         if name != "unit_frames_by_metric"
                     },
-                    lambda summary=summary, by_metric=by_metric, options=options: run_breakout(
-                        summary,
-                        _method_evidence_by_metric=by_metric,
-                        **options,
-                    ),
+                    consume,
                 )
-                assembled = _scope_breakout_inputs(transcript, rows, identity, stamp_source)
+                assembled = _scope_breakout_inputs(
+                    transcript, rows, identity, stamp_source, advisories
+                )
                 results.extend(assembled)
                 parts.append(assembled)
         expected = _capture()["scenarios"][entry.scenario_id][entry.ingress]["daily_values"]
@@ -5341,6 +5352,7 @@ def test_frozen_day_axis_consumers_match_complete_ordered_old_rows():
 def test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows():
 
     from increment.estimation.encouragement import ESTIMANDS
+    from increment.estimation.readout_types import cell_advisories, collect_advisories
     from tests.evidence_fixtures.method_replay import (
         EncouragementReplayConfig,
         assert_encouragement_breakout_matches_old_row,
@@ -5409,6 +5421,8 @@ def test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows
         assert len(expected_by_key) == len(expected)
         observed = []
         projected_by_source = {}
+        segment_advisories = {}
+        segment_rows = {}
         for request in requests:
             source = next(
                 source
@@ -5428,6 +5442,17 @@ def test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows
                 )
                 counts.setdefault(segment, {})[str(row["group_id"])] = float(row["n"])
             for segment in sorted(value for member, value in computed if member == request):
+                segment_key = (
+                    request.breakout.property,
+                    request.breakout.source,
+                    source,
+                    request.metric.name,
+                    segment,
+                )
+                collect_advisories(
+                    segment_advisories.setdefault(segment_key, {}),
+                    computed[(request, segment)].advisories,
+                )
                 for result in computed[(request, segment)].results:
                     identity = (
                         request.metric.name,
@@ -5455,13 +5480,25 @@ def test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows
                         (request.breakout.property, request.breakout.source, source),
                         [],
                     ).append(projected)
+                    segment_rows.setdefault(segment_key, []).append(projected)
                     observed.append(identity)
         assert observed == [_full_readout_coordinate(row) for row in expected]
+        advisories_by_source = {}
+        for segment_key, rows in segment_rows.items():
+            advisories_by_source.setdefault(segment_key[:3], {}).update(
+                cell_advisories(rows, segment_advisories[segment_key])
+            )
         complete = []
         parts = []
         for (dimension, declared_source, stamp_source), rows in projected_by_source.items():
             identity = {"property": dimension, "source": declared_source}
-            assembled = _scope_breakout_inputs(transcript, rows, identity, stamp_source)
+            assembled = _scope_breakout_inputs(
+                transcript,
+                rows,
+                identity,
+                stamp_source,
+                advisories_by_source.get((dimension, declared_source, stamp_source), {}),
+            )
             parts.append(assembled)
             complete.extend(assembled)
         _assert_old_readout_rows(complete, expected, nominal_alpha=plan.alpha)

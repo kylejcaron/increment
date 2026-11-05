@@ -914,7 +914,7 @@ depends_on = [
   "increment.winsor",
   "increment._analysis_config", "increment._policy_alpha", "increment._readout_request",
   "increment._window", "increment.breakout.estimates", "increment.compatibility", "increment.decision", "increment.errors",
-  "increment._source_identity", "increment.estimation", "increment.estimation.advisory", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
+  "increment._source_identity", "increment.estimation", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
   "increment._evidence_types", "increment._trigger_integrity",
   "increment._evidence_loaders", "increment._evidence_scopes", "increment.kernel.context",
   "increment._sequential_readouts", "increment.estimation.sequential",
