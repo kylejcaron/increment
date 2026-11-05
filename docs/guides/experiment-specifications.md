@@ -350,8 +350,9 @@ declare a different population with the matching view constructor, such as
 `result.readout(view)` returns the `LiftEstimates`, `ContrastResults` or
 other typed collection one view produced.
 
-For example, a unit-panel source that supports daily data can declare whole-window
-and daily views together:
+For example, a unit panel that names each unit's exposure date with
+`exposure_date=` supports daily views, so it can declare whole-window and daily
+views together. Here every unit was exposed on the panel's one day:
 
 ```python
 import pandas as pd
@@ -372,6 +373,7 @@ experiment, reader = increment.from_frame(
     unit="user_id",
     group="variant",
     date="event_day",
+    exposure_date="event_day",
     control="control",
     metrics={"revenue": "mean"},
 )

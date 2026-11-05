@@ -731,7 +731,8 @@ Readout options such as `decision_method`, `prior`, `metrics`, `estimands`,
 selected view. A view's population, breakout selection and completed-window
 gate belong to its `View`. One `run` reads every declared view from one
 capture, so the daily, as-of and whole-window rows agree on the data they
-describe:
+describe. Daily and as-of views on a panel need its `exposure_date=` column;
+here every unit was exposed on the first day:
 
 ```python
 import polars as pl
@@ -744,6 +745,7 @@ panel = pl.DataFrame(
         "user_id": [f"u{index}" for index in range(8)] * 2,
         "variant": ["control", "treatment"] * 8,
         "day": ["2025-01-01"] * 8 + ["2025-01-02"] * 8,
+        "exposed_on": ["2025-01-01"] * 16,
         "country": ["US", "US", "GB", "GB"] * 4,
         "revenue": [float(index % 5) for index in range(16)],
     }
@@ -754,6 +756,7 @@ experiment, reader = increment.from_frame(
     unit="user_id",
     group="variant",
     date="day",
+    exposure_date="exposed_on",
     control="control",
     metrics={"revenue": "mean"},
     breakouts=["country"],
