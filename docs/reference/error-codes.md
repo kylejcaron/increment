@@ -1052,9 +1052,6 @@ Retired codes and their replacements are listed below.
 | `frame.missing_policy.panel_skip` | `UnsupportedRequestError` | `missing` | `increment._frame_validation` |
 | `frame.moments.asof_completed_requires_uptake_window` | `InvalidRequestError` | — | `increment._frame_moments` |
 | `frame.moments.asof_moments_completed` | `InvalidRequestError` | `band`, `metric` | `increment._frame_moments` |
-| `frame.moments.asof_source_uptake_needs_anchor` | `InvalidRequestError` | — | `increment._frame_moments` |
-| `frame.moments.asof_unit_rows` | `InvalidRequestError` | — | `increment._frame_moments` |
-| `frame.moments.collapse_to_unit` | `InvalidRequestError` | — | `increment._frame_moments` |
 | `frame.moments.metric_type_conversion` | `InvalidRequestError` | `metric`, `value` | `increment._frame_moments` |
 | `frame.panel.declaration_canonical_collision` | `InvalidRequestError` | `canonical_name`, `role`, `route`, `source_name` | `increment._frame_panel` |
 | `frame.panel.observable_end_dtype` | `InvalidRequestError` | `anchor_dtype`, `axis_kind`, `end_dtype`, `end_kind`, `observable_end` | `increment._frame_panel` |
