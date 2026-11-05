@@ -94,7 +94,7 @@ from increment.estimation.engine import (
 from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.inference import LiftGuardError, Prior
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
-from increment.estimation.multiplicity import stamp_multiplicity_status
+from increment.estimation.multiplicity import design_excluded, stamp_multiplicity_status
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.readout_types import register_collection_types
 from increment.estimation.results import (
@@ -245,11 +245,12 @@ _register_warning(
     IncrementWarning,
     lambda *, label, metric_name: (
         f"{label} metric={metric_name!r} lost its control arm to the "
-        "per-row estimability gate above (fewer than 2 units, or a "
-        "non-positive numerator/denominator mean) -- that metric's "
-        "cell for this slice comes back as an unavailable row with "
-        "excluded='no_control_arm', unless that arm's own row was "
-        "also dropped above, in which case its own reason wins."
+        "per-row estimability gate above -- that metric's cells for this "
+        "slice come back as unavailable rows excluded for the control's "
+        "reason: 'no_control_arm' for fewer than 2 units, "
+        "'nonpositive_mean' for a non-positive numerator/denominator mean, "
+        "or 'missing_metric_observations' when no control unit has a value. "
+        "An arm whose own row was also dropped above keeps its own reason."
     ),
 )
 _register_warning(
@@ -396,10 +397,12 @@ def _failure_exclusion_reason(failure: Any) -> ExclusionReason:
 """Why a (segment, metric, method, arm) cell in a breakout came back as unavailable.
 
 ``few_units`` (n < 2, no ddof=1 variance), ``no_control_arm`` (nothing to
-compare against -- the control row is missing, dropped, or the pair never
-appeared in this segment's raw data at all), and ``no_treatment_arm`` (the
-treatment row is missing) are DESIGN-based: they condition on arm counts,
-ancillary to the outcome, and are safe to keep in an analysis.
+compare against -- the control row is missing, has fewer than 2 units, or the
+pair never appeared in this segment's raw data at all), and ``no_treatment_arm``
+(the control row is live but the treatment row is missing) are DESIGN-based:
+they condition on arm counts, ancillary to the outcome, and are safe to keep in
+an analysis. A control row dropped for an outcome-based reason passes that
+reason to its treatment cells.
 ``nonpositive_mean`` (log(mean) undefined), ``zero_variance`` (both arms
 degenerate), and ``extreme_ratio`` (log ratio too extreme for the delta
 method) are OUTCOME-based: they truncate a tail and would bias a downstream
@@ -441,8 +444,6 @@ other ``reference_not_normal`` condition (e.g. being one-sided), is
 built fresh at the (already-matching) requested alpha on the absolute
 scale.
 """
-
-DESIGN_BASED_REASONS = frozenset({"few_units", "no_control_arm", "no_treatment_arm"})
 
 
 def _validate_flat_binomial_row(row: Any, *, refusal_code: str) -> None:
@@ -3071,10 +3072,11 @@ def _prepare_lift_slice(
 ) -> _PreparedLiftSlice:
     """Apply shared row/control-arm gates for one breakout or day slice.
 
-    With ``unobserved_control_missing`` (breakout segments, where a zero-count row is an arm
-    whose units had no value), a metric's control row with no observations makes its contrasts
-    missing observations rather than a missing control arm, as a zero-count treatment row
-    already does."""
+    A metric whose control row was dropped for an outcome-based reason passes that reason to
+    its treatment cells; ``no_control_arm`` is kept for an absent control row or one with fewer
+    than two units. With ``unobserved_control_missing`` (breakout segments, where a zero-count
+    row is an arm whose units had no value), a control row with no observations likewise makes
+    its contrasts missing observations, as a zero-count treatment row already does."""
     part = _partition_nonpositive_mean_rows(
         rows,
         control_group=control_group,
@@ -3092,20 +3094,33 @@ def _prepare_lift_slice(
         if row_group == control_group:
             control_n[row_metric] = float(row["n"])
     unestimable: dict[tuple[str, str], ExclusionReason] = {}
+    # Count eligibility comes first: a missing or one-unit control makes every contrast of its
+    # metric count-excluded, whatever outcome reason its treatment row was dropped for.
+    count_ineligible_control = {
+        str(row["metric"]) for row in rows if str(row.get("group_id")) != control_group
+    } - {str(row["metric"]) for row in rows if str(row.get("group_id")) == control_group} | {
+        str(dropped.row["metric"])
+        for dropped in part.dropped
+        if str(dropped.row.get("group_id")) == control_group and dropped.reason == "few_units"
+    }
     for dropped in part.dropped:
         group_id = str(dropped.row.get("group_id"))
         if group_id != control_group:
-            unestimable[(str(dropped.row["metric"]), group_id)] = dropped.reason
-    unobserved_control = (
-        {
-            str(dropped.row["metric"])
-            for dropped in part.dropped
-            if str(dropped.row.get("group_id")) == control_group
-            and dropped.reason == "missing_metric_observations"
-        }
-        if unobserved_control_missing
-        else set()
-    )
+            metric_name = str(dropped.row["metric"])
+            unestimable[(metric_name, group_id)] = (
+                "no_control_arm"
+                if dropped.reason != "few_units" and metric_name in count_ineligible_control
+                else dropped.reason
+            )
+    control_drop_reason: dict[str, ExclusionReason] = {
+        str(dropped.row["metric"]): dropped.reason
+        for dropped in part.dropped
+        if str(dropped.row.get("group_id")) == control_group
+        and (
+            dropped.reason == "nonpositive_mean"
+            or (unobserved_control_missing and dropped.reason == "missing_metric_observations")
+        )
+    }
     route2_pairs: set[tuple[str, str]] = set()
     for row in rows:
         group_id = str(row.get("group_id"))
@@ -3114,32 +3129,16 @@ def _prepare_lift_slice(
             pair = (metric_name, group_id)
             if pair not in unestimable and metric_name not in part.lost_control_metrics:
                 route2_pairs.add(pair)
-            unestimable.setdefault(
-                pair,
-                "missing_metric_observations"
-                if metric_name in unobserved_control
-                else "no_control_arm",
-            )
-    if not part.live_control_metrics:
-        for row in rows:
-            group_id = str(row.get("group_id"))
-            if group_id != control_group:
-                unestimable.setdefault((str(row["metric"]), group_id), "no_control_arm")
-        if warning_label is not None:
-            if part.lost_control_metrics:
-                _warn(
-                    "breakout.estimates.slice_no_live_control_dropped",
-                    warning_label=warning_label,
-                    control_group=control_group,
-                    stacklevel=3,
-                )
-            else:
-                _warn(
-                    "breakout.estimates.slice_no_control_arm",
-                    warning_label=warning_label,
-                    control_group=control_group,
-                    stacklevel=3,
-                )
+            unestimable.setdefault(pair, control_drop_reason.get(metric_name, "no_control_arm"))
+    if not part.live_control_metrics and warning_label is not None:
+        _warn(
+            "breakout.estimates.slice_no_live_control_dropped"
+            if part.lost_control_metrics
+            else "breakout.estimates.slice_no_control_arm",
+            warning_label=warning_label,
+            control_group=control_group,
+            stacklevel=3,
+        )
     return _PreparedLiftSlice(part.live, control_n, arm_n, unestimable, route2_pairs, part)
 
 
@@ -3750,7 +3749,11 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     metric_name=metric_name,
                     stacklevel=3,
                 )
-            unestimable[pair] = "no_control_arm"
+            unestimable[pair] = (
+                "no_treatment_arm"
+                if metric_name in prepared.part.live_control_metrics
+                else "no_control_arm"
+            )
     if unestimable:
         computations[(context.segment_value, "__unavailable__")] = (
             _breakout_unavailable_computation(unestimable, context, original_failures)
@@ -3959,11 +3962,19 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
     method_roles_by_metric = context.method_roles_by_metric
     from increment.decision import DecisionFailure, SegmentHypothesisKey
 
+    if correction != "bh":
+        return results
+    count_excluded = {
+        (row.dimension_value, row.metric, row.group_id)
+        for row in results
+        if row.method_role == "decision" and design_excluded(row)
+    }
     family_keys = [
         SegmentHypothesisKey(metric_name, group_id, "itt", dimension, segment_value)
         for segment_value, metric_name, group_id in _breakout_family_cells(segments, all_pairs)
+        if (segment_value, metric_name, group_id) not in count_excluded
     ]
-    if correction != "bh" or not family_keys:
+    if not family_keys:
         return results
     canonical_rows = {
         (segment_value, estimate.metric, estimate.group_id): estimate
@@ -3985,6 +3996,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
         "family_axes": ("metric", "arm", "segment"),
         "family_q": outcome.q,
         "family_threshold": outcome.realized_threshold,
+        "family_size": outcome.n_family,
     }
     for index, row in enumerate(results):
         if row.method_role != "decision" or row.lift is not None:
@@ -4021,6 +4033,9 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                     if estimate.method_role == "decision"
                     else None,
                     "family_threshold": family_record["family_threshold"]
+                    if estimate.method_role == "decision"
+                    else None,
+                    "family_size": family_record["family_size"]
                     if estimate.method_role == "decision"
                     else None,
                     "family_nominal_alpha": (
@@ -4117,6 +4132,9 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                     "family_threshold": family_record["family_threshold"]
                     if estimate.method_role == "decision"
                     else None,
+                    "family_size": family_record["family_size"]
+                    if estimate.method_role == "decision"
+                    else None,
                     "family_nominal_alpha": (
                         family_record["family_nominal_alpha"]
                         if estimate.method_role == "decision" and family_discovery(outcome, key)
@@ -4188,6 +4206,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                 low_reliability=original.low_reliability,
                 family_procedure="bh",
                 family_nominal_alpha=alpha,
+                family_size=outcome.n_family,
                 **family_fields,
             )
             continue
@@ -4201,7 +4220,13 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             low_reliability=original.low_reliability,
             role="exploratory",
             **family_fields,
-        ).model_copy(update={"family_procedure": "bh", "family_nominal_alpha": alpha})
+        ).model_copy(
+            update={
+                "family_procedure": "bh",
+                "family_nominal_alpha": alpha,
+                "family_size": outcome.n_family,
+            }
+        )
     return results
 
 
@@ -4310,9 +4335,15 @@ def run_breakout(  # noqa: PLR0913
         ``"bh"`` selects a flat family and reinverts selected intervals at
         min(q*R/m, nominal alpha). Sequential inputs use the predeclared full
         roster and current/frozen likelihood, including missing cells with
-        log evidence -infinity. Fixed-horizon inputs retain the present-row
-        family and require complete p-value evidence. Every row is exploratory.
-        Informative priors remain separate from the sampling evidence used for selection.
+        log evidence -infinity. A fixed-horizon family is every present cell
+        except design-excluded ones (a missing arm, or an arm with fewer than
+        2 units under a method that estimates its variance; an exact-binomial
+        conversion or retention cell stays eligible at 1 unit): those come back
+        as unavailable rows outside the family, and the family's
+        ``family_size`` counts the rest. Outcome-excluded cells count there and
+        are never selected, at any ``q``. Every row is
+        exploratory. Informative priors remain separate from the sampling
+        evidence used for selection.
     q : float
         FDR level for ``correction="bh"``'s family selection. Unused
         otherwise.
@@ -4338,9 +4369,10 @@ def run_breakout(  # noqa: PLR0913
         Invalid ``correction``, or an explicit ``methods=[]``.
     CapabilityError
         Under ``correction="bh"``, missing or invalid typed family evidence, or a
-        failure outside the conservative non-rejection policy (code
-        ``family.evidence.incomplete``). Eligible unavailable cells remain in the
-        family as non-rejections, with their original coded failure retained.
+        failure that is neither design-based nor an outcome-based non-rejection
+        (code ``family.evidence.incomplete``). Outcome-based unavailable cells
+        remain in the family as non-rejections, with their original coded
+        failure retained.
 
     Returns
     -------

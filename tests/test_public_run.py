@@ -1443,3 +1443,143 @@ def test_unicode_daily_metadata_order_roundtrips_after_run():
     restored = AnalysisEnvelope.from_payload(result.envelope.to_payload())
 
     assert {cell.identity.key.group_id for cell in restored.cells} == {"control", "z", "é"}
+
+
+def _guarded_breakout_run():
+    """A healthy segment A beside a one-unit segment T, a control with a negative mean (N), a
+    segment with no variance in either arm (Z) and a null segment W, read as a BH breakout."""
+    import warnings
+
+    from increment.errors import IncrementWarning
+
+    arms = {
+        "A": {"control": (8.0, 12.0) * 50, "treatment": (9.0, 13.0) * 50},
+        "T": {"control": (10.0,), "treatment": (12.0,)},
+        "N": {"control": (-3.0, 1.0) * 50, "treatment": (-1.0, 3.0) * 50},
+        "Z": {"control": (5.0,) * 4, "treatment": (5.0,) * 4},
+        "W": {"control": (8.0, 12.0) * 50, "treatment": (8.0, 12.0) * 50},
+    }
+    frame = pd.DataFrame(
+        [
+            {"unit": f"{segment}-{arm}-{index}", "arm": arm, "segment": segment, "value": value}
+            for segment, by_arm in arms.items()
+            for arm, values in by_arm.items()
+            for index, value in enumerate(values)
+        ]
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+        plan=AnalysisPlan(primary="value"),
+    )
+    view = View(view="breakout", grain="total")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            result = run(experiment.with_views(view), reader)
+    finally:
+        reader.close()
+    return experiment, result, view
+
+
+def _decide_restored(experiment, result, cells=None):
+    """Decide *result*'s run again from its cells after a portable payload round trip."""
+    from dataclasses import replace
+
+    from increment.decide import decide
+    from increment.result_envelope import AnalysisEnvelope
+    from increment.store.types import pinned_run
+
+    envelope = AnalysisEnvelope(result.cells if cells is None else cells, result.run.metadata)
+    restored = AnalysisEnvelope.from_payload(envelope.to_payload())
+    return decide(
+        pinned_run(replace(result.run, cells=restored.cells, metadata=restored.metadata)),
+        experiment.registration,
+    )
+
+
+def _bh_family(decisions):
+    (family,) = [family for family in decisions.families if family.procedure == "bh"]
+    return family
+
+
+def test_restored_decisions_match_live_breakout_family():
+    from dataclasses import replace
+
+    experiment, result, view = _guarded_breakout_run()
+    live = {row.dimension_value: row for row in result.readout(view)}
+    segment_of = {cell.identity.hash(): cell.identity.key.dimension_value for cell in result.cells}
+
+    family = _bh_family(result.decisions)
+    members = {segment_of[member.identity_hash]: member for member in family.members}
+
+    assert set(members) == {"A", "N", "W", "Z"}
+    # BH over m = 4: A's p of about 4e-4 is below 0.10/4; N and Z enter as p = 1, W has p = 1.
+    discoveries = [True, False, False, False]
+    assert [members[segment].discovery for segment in ("A", "N", "W", "Z")] == discoveries
+    assert all(member.discovery == live[segment].discovery for segment, member in members.items())
+    assert "breakout.nonpositive_mean" in members["N"].reason_codes
+    assert "estimation.engine.lift_guard" in members["Z"].reason_codes
+    assert family.reason_codes == (
+        "breakout.nonpositive_mean",
+        "decision.not_evaluated.monitoring_view",
+        "estimation.engine.lift_guard",
+    )
+    assert _bh_family(_decide_restored(experiment, result)) == family
+
+    # A segment row whose relative interval has zero variance and no additive margin (a
+    # clustered shape a dataframe breakout cannot read) has no p-value; the live family takes
+    # it as p = 1, and so must the stored one.
+    cells = []
+    for cell in result.cells:
+        if cell.identity.key.dimension_value == "W":
+            payload = cast("dict[str, Any]", cell.row_payload)
+            interval = ("lb", "ub", "level", "alpha", "open_side", "log_mean", "log_se")
+            lift = {**payload["data"]["lift"], **dict.fromkeys(interval)}
+            data = {
+                **payload["data"],
+                "lift": lift,
+                "relative_unavailable_reason": "zero_relative_variance",
+            }
+            cell = replace(cell, row_payload={**payload, "data": data})
+        cells.append(cell)
+    zero = _bh_family(_decide_restored(experiment, result, tuple(cells)))
+    zero_members = {segment_of[member.identity_hash]: member for member in zero.members}
+    assert [zero_members[segment].discovery for segment in ("A", "N", "W", "Z")] == discoveries
+    assert "evidence.p_value.unavailable" in zero_members["W"].reason_codes
+
+
+def test_restored_family_with_genuinely_missing_evidence_is_not_evaluated():
+    from dataclasses import replace
+
+    from increment.decide import decide
+    from increment.store.types import pinned_run
+
+    experiment, result, _ = _guarded_breakout_run()
+    code = "estimation.binomial.finite_sample_arm_ceiling_exceeded"
+    cells = []
+    for cell in result.cells:
+        if cell.identity.key.dimension_value == "Z":
+            payload = cast("dict[str, Any]", cell.row_payload)
+            data = {
+                **payload["data"],
+                "excluded": "estimation_failed",
+                "failure_code": code,
+                "sampling_reason_code": code,
+            }
+            cell = replace(cell, row_payload={**payload, "data": data})
+        cells.append(cell)
+
+    live = decide(pinned_run(replace(result.run, cells=tuple(cells))), experiment.registration)
+    restored = _decide_restored(experiment, result, tuple(cells))
+
+    for family in (_bh_family(live), _bh_family(restored)):
+        assert family.status == "not_evaluated"
+        assert all(member.discovery is None for member in family.members)
+        assert {"results.operation.unsupported", code} <= set(family.reason_codes)
+    assert _bh_family(restored) == _bh_family(live)

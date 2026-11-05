@@ -3024,7 +3024,7 @@ def test_qr_breakout_degenerate_segments_match_local_refusal_codes():
         results = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     by_segment = {row.dimension_value: row for row in results}
     assert set(by_segment) == {"empty-arm", "all-null"}
-    assert by_segment["empty-arm"].excluded == "no_control_arm"
+    assert by_segment["empty-arm"].excluded == "no_treatment_arm"
     null_rows = [row for row in rows if row["segment"] == "all-null"]
     with pytest.raises(CodedError) as local_error:
         fit_cuped_multicovariate(

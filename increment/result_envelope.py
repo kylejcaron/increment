@@ -1595,7 +1595,20 @@ def family_evidence(cell: ResultCell) -> StoredFamilyEvidence:
         return StoredFamilyEvidence(
             cell.identity.hash(), construction, scale, evidence, nominal_alpha=nominal_alpha
         )
-    p_value = row.p_value()
+    try:
+        p_value = row.p_value()
+    except CodedError:
+        if getattr(row, "relative_unavailable_reason", None) != "zero_relative_variance":
+            raise
+        # The live family reads this as an outcome-based non-rejection (p = 1).
+        return StoredFamilyEvidence(
+            cell.identity.hash(),
+            construction,
+            scale,
+            None,
+            "evidence.p_value.unavailable",
+            "zero_relative_variance",
+        )
     if p_value is None:
         return StoredFamilyEvidence(
             cell.identity.hash(),
@@ -1624,7 +1637,12 @@ def combine_family_evidence(
     procedure: Literal["none", "bh", "e_bh", "bonferroni"],
     level: float,
 ) -> frozenset[str]:
-    """Apply a fixed-roster family rule to typed evidence retained by ResultCells."""
+    """Apply a fixed-roster family rule to typed evidence retained by ResultCells.
+
+    Under ``"bh"`` a member without a p-value for an outcome-based reason enters as p = 1 and
+    is never selected, as the live fixed-horizon family treats it; count-excluded cells are not
+    members of that family. Any other missing evidence refuses the family.
+    """
     from fractions import Fraction
 
     from increment.estimation.decision_types import (
@@ -1632,31 +1650,36 @@ def combine_family_evidence(
         EValueEvidence,
         PValueEvidence,
     )
-    from increment.estimation.family import bh_select, e_bh_select
+    from increment.estimation.family import bh_select_with_nonrejections, e_bh_select
+    from increment.estimation.multiplicity import outcome_non_rejection
 
-    if not evidence or any(item.evidence is None for item in evidence):
+    unavailable = [
+        item
+        for item in evidence
+        if item.evidence is None
+        and not (procedure == "bh" and outcome_non_rejection(item.reason_code, item.reason))
+    ]
+    if not evidence or unavailable:
         raise CodedError(
             "Family evidence is incomplete",
             code="results.operation.unsupported",
             context={
                 "operation": Operation.COMBINE_FAMILY.value,
-                "members": tuple(item.identity_hash for item in evidence if item.evidence is None),
-                "reasons": tuple(
-                    (item.reason_code, item.reason) for item in evidence if item.evidence is None
-                ),
+                "members": tuple(item.identity_hash for item in unavailable),
+                "reasons": tuple((item.reason_code, item.reason) for item in unavailable),
             },
         )
     values = tuple(item.evidence for item in evidence)
     selected: set[int]
     if procedure == "bh":
-        if any(not isinstance(item, PValueEvidence) for item in values):
+        if any(item is not None and not isinstance(item, PValueEvidence) for item in values):
             raise CodedError(
                 "BH requires p-value evidence",
                 code="results.operation.unsupported",
                 context={"operation": Operation.COMBINE_FAMILY.value, "procedure": procedure},
             )
-        selected_indices, _threshold = bh_select(
-            [item.p_value for item in values if isinstance(item, PValueEvidence)], level
+        selected_indices, _threshold = bh_select_with_nonrejections(
+            [item.p_value if isinstance(item, PValueEvidence) else None for item in values], level
         )
         selected = set(selected_indices)
     elif procedure == "e_bh":

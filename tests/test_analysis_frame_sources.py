@@ -13,7 +13,7 @@ import pytest
 from increment import View, from_frame, from_moments, workflows
 from increment import readouts as readout_functions
 from increment.artifacts import artifact_context
-from increment.breakout.estimates import DailyLiftEstimates, DailyMetricValues
+from increment.breakout.estimates import BreakoutEstimates, DailyLiftEstimates, DailyMetricValues
 from increment.errors import (
     CapabilityError,
     IncrementWarning,
@@ -399,6 +399,100 @@ def test_unit_summary_breakout_preserves_multiple_empty_segments_as_unavailable(
         assert unavailable.sampling_available is False
         assert unavailable.sampling_reason_code == "readout.cell.missing_metric_observations"
     assert {row.dimension_value for row in rows if row.excluded is None} == {"B", "D"}
+
+
+def _segment_frame(values_by_segment):
+    import pandas as pd
+
+    return pd.DataFrame(
+        [
+            {
+                "user_id": f"{segment}-{group}-{index}",
+                "variant": group,
+                "segment": segment,
+                "value": value,
+            }
+            for segment, by_group in values_by_segment.items()
+            for group, values in by_group.items()
+            for index, value in enumerate(values)
+        ]
+    )
+
+
+def test_summary_breakout_with_sparse_segments_returns_every_cell():
+    from collections import Counter
+
+    from increment import run
+
+    control = (9.0, 10.0, 11.0, 10.0, 9.0, 10.0, 11.0, 10.0)
+    frame = _segment_frame(
+        {
+            "a": {"control": control, "treatment": tuple(value + 2.0 for value in control)},
+            "b": {"control": control, "treatment": control},
+            "c": {"control": control, "treatment": tuple(value + 1.0 for value in control)},
+            "tiny": {"control": (10.0,), "treatment": (12.0,)},
+            "only_control": {"control": (10.0, 11.0)},
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+        plan=AnalysisPlan(primary="value"),
+    )
+    view = View(view="breakout", grain="total")
+    with pytest.warns(IncrementWarning):
+        result = run(experiment.with_views(view), reader)
+
+    rows = cast("BreakoutEstimates", result.readout(view))
+    assert {(row.dimension_value, row.excluded) for row in rows} == {
+        ("a", None),
+        ("b", None),
+        ("c", None),
+        ("tiny", "few_units"),
+        ("only_control", "no_treatment_arm"),
+    }
+    assert rows.metadata is not None
+    (family,) = rows.metadata.scope.families
+    assert len(family.members) == 3
+    (decided,) = [family for family in result.decisions.families if family.procedure == "bh"]
+    assert len(decided.members) == 3
+    assert all(member.discovery is not None for member in decided.members)
+    assert Counter(member.discovery for member in decided.members) == Counter(
+        row.discovery for row in rows if row.excluded is None
+    )
+
+
+def test_bh_family_with_every_segment_excluded_returns_unavailable_rows():
+    frame = _segment_frame(
+        {
+            segment: {"control": (control,), "treatment": (control + 2.0,)}
+            for segment, control in (("a", 10.0), ("b", 11.0), ("c", 12.0))
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+    )
+    with pytest.warns(IncrementWarning):
+        rows = view_readout(experiment, reader, View(view="breakout", grain="total"))
+
+    assert sorted((row.dimension_value, row.excluded, row.lift) for row in rows) == [
+        ("a", "few_units", None),
+        ("b", "few_units", None),
+        ("c", "few_units", None),
+    ]
+    assert all((row.discovery, row.family_id) == (None, None) for row in rows)
+    assert rows.metadata.scope.families == ()
 
 
 def test_encouragement_breakout_deduplicates_multiple_empty_segments():

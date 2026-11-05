@@ -9,7 +9,11 @@ from typing import Any, Literal, cast
 from increment._evidence_types import ArtifactProvenance
 from increment.decision import MultiplicityFamily
 from increment.estimation.advisory import ReadoutAdvisory
-from increment.estimation.multiplicity import multiplicity_status, row_multiplicity_status
+from increment.estimation.multiplicity import (
+    design_excluded,
+    multiplicity_status,
+    row_multiplicity_status,
+)
 from increment.estimation.readout_types import (
     CellFailure,
     CellKey,
@@ -229,9 +233,16 @@ def _attach_breakout_scope(
     # Finite-sample Bonferroni is metric-local; asymptotic registered
     # Bonferroni retains its compiled joint family axes.
     metric_local = correction == "bonferroni" and (not registered or not asymptotic)
+    # A fixed-horizon BH family (a registered one is e-BH by now) leaves count-excluded
+    # cells out, as its selection does.
+    count_excluded = (
+        {CellKey.from_row(row) for row in rows if design_excluded(row)}
+        if correction == "bh"
+        else set()
+    )
     cells_by_family: dict[tuple[Population, str | None], list[CellKey]] = {}
     for cell in cells:
-        if cell.method_role != "decision":
+        if cell.method_role != "decision" or cell in count_excluded:
             continue
         if registered_members is not None:
             segment = (
@@ -289,7 +300,11 @@ def _attach_breakout_scope(
             row.metric if metric_local else None,
         )
         family = families_by_key.get(key)
-        belongs = family is not None and row.method_role == "decision"
+        belongs = (
+            family is not None
+            and row.method_role == "decision"
+            and CellKey.from_row(row) not in count_excluded
+        )
         output.append(
             row.model_copy(
                 update={

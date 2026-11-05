@@ -29,7 +29,6 @@ from pydantic import BaseModel, ConfigDict
 
 from increment._literals import ValueScale
 from increment.breakout.estimates import (
-    DESIGN_BASED_REASONS,
     BreakoutEstimate,
     BreakoutEstimates,
     EstimateList,
@@ -38,6 +37,7 @@ from increment.breakout.estimates import (
 )
 from increment.errors import InvalidRequestError, raiser, refusals
 from increment.estimation.meta import _TAU_PRIOR_SCALE_DEFAULT
+from increment.estimation.multiplicity import design_excluded
 from increment.estimation.rollout import segment_rollout
 from increment.semantics.models import Metric, MetricBase
 
@@ -296,9 +296,9 @@ def segment_rollout_recommendation(
         estimand,
         value_scale,
     ), rows in groups.items():
-        n_design = sum(1 for r in rows if r.excluded in DESIGN_BASED_REASONS)
+        n_design = sum(1 for r in rows if design_excluded(r))
         n_outcome_upstream = sum(
-            1 for r in rows if r.excluded is not None and r.excluded not in DESIGN_BASED_REASONS
+            1 for r in rows if r.excluded is not None and not design_excluded(r)
         )
         live = [r for r in rows if r.excluded is None]
         excluded = [r for r in rows if r.excluded is not None]

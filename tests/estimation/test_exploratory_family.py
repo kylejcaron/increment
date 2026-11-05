@@ -382,7 +382,7 @@ def test_selected_intervals_equal_run_breakout_bh(alternative, q):
     tested = sum(row.excluded is None for row in reference)
     assert tested < len(reference)  # BR carries no mean-metric cells: excluded by design
     for ours, theirs in zip(corrected, reference, strict=True):
-        _close(ours.model_dump(exclude={"family_size"}), theirs.model_dump(exclude={"family_size"}))
+        _close(ours.model_dump(), theirs.model_dump())
         assert ours.family_size == (tested if theirs.excluded is None else None)
     selected = [ours for ours in corrected if ours.discovery]
     assert bool(selected) == (alternative != "less")
@@ -462,7 +462,7 @@ def test_cuped_decision_rows_equal_run_breakout_bh():
     assert {row.method for row in corrected} == {"cuped"}
     assert any(row.discovery for row in corrected) and not all(row.discovery for row in corrected)
     for ours, theirs in zip(corrected, reference, strict=True):
-        _close(ours.model_dump(exclude={"family_size"}), theirs.model_dump(exclude={"family_size"}))
+        _close(ours.model_dump(), theirs.model_dump())
 
 
 def test_a_cell_whose_estimation_failed_refuses_the_family_as_run_breakout_does():
@@ -530,6 +530,27 @@ def test_a_cell_excluded_by_design_is_no_hypothesis_and_is_returned_unchanged():
     assert next(row for row in corrected if row.dimension_value == "MX") == mexico
     (live,) = [row for row in corrected if row.dimension_value == "US"]
     assert live.family_size == 1 and live.discovery is True
+
+
+def test_a_control_lost_to_a_nonpositive_mean_stays_in_family_size():
+    """A control dropped for its non-positive mean is an outcome-based exclusion, not a
+    missing arm: its comparison counts toward ``m`` as a non-rejection."""
+    rows = [
+        _mean_arm(100, 10.0, 4.0, metric="m_a", group_id="control", country="A"),
+        _mean_arm(100, 11.0, 4.0, metric="m_a", group_id="treatment", country="A"),
+        _mean_arm(100, -1.0, 4.0, metric="m_a", group_id="control", country="N"),
+        _mean_arm(100, 1.0, 4.0, metric="m_a", group_id="treatment", country="N"),
+    ]
+    nominal = list(_breakout(summary=pd.DataFrame(rows), metrics=[_mean_metric("m_a")]))
+
+    corrected = _segments(select_exploratory_family(nominal, q=0.1))
+
+    by_segment = {row.dimension_value: row for row in corrected}
+    assert (
+        by_segment["A"].family_size,
+        by_segment["N"].family_size,
+        by_segment["N"].discovery,
+    ) == (2, 2, False)
 
 
 def test_segment_cells_from_different_fact_sources_are_separate_hypotheses():

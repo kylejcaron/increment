@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Sequence
 from datetime import date
 from typing import Any, cast
 
@@ -31,7 +30,7 @@ from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE
 from increment.estimation.conversion_route import dense_min_count
 from increment.estimation.engine import Method, estimate_lift
-from increment.estimation.family import bh_select, e_bh_select
+from increment.estimation.family import bh_select, e_bh_select, select_exploratory_family
 from increment.estimation.inference import Normal
 from increment.estimation.results import Estimate, LiftEstimate
 from increment.estimation.sequential import AlwaysValid
@@ -1049,26 +1048,134 @@ class TestRunBreakoutBHCorrection:
             else:
                 assert lift.alpha == pytest.approx(0.05)  # nominal, default alpha=0.05
 
-    def test_bh_sparse_segment_failure_aborts_complete_family(self):
-        """A missing segment control arm is a failed family hypothesis."""
+    def test_bh_family_leaves_count_excluded_segments_out(self):
+        """A one-unit segment and a segment without a treatment row are unavailable rows
+        outside the family: BH runs over the three estimable segments, so m = 3."""
+        rows = []
+        for country, treatment_mean in (("A", 10.45), ("B", 10.17), ("C", 10.0)):
+            rows.append(_make_arm_row(1000, 10.0, 4.0, country=country, group_id="control"))
+            rows.append(
+                _make_arm_row(1000, treatment_mean, 4.0, country=country, group_id="treatment")
+            )
+        rows.append(_make_arm_row(1, 10.0, 0.0, country="T", group_id="control"))
+        rows.append(_make_arm_row(1, 11.0, 0.0, country="T", group_id="treatment"))
+        rows.append(_make_arm_row(50, 10.0, 4.0, country="O", group_id="control"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            result = run_breakout(
+                rows,
+                [_mean_metric()],
+                control_group="control",
+                dimension="country",
+                correction="bh",
+            )
+
+        by_segment = {row.dimension_value: row for row in result}
+        assert (by_segment["T"].excluded, by_segment["O"].excluded) == (
+            "few_units",
+            "no_treatment_arm",
+        )
+        for segment in ("T", "O"):
+            row = by_segment[segment]
+            assert (row.lift, row.discovery, row.family_size) == (None, None, None)
+            assert row.multiplicity_status == "exploratory_unadjusted"
+        family = [by_segment[segment] for segment in ("A", "B", "C")]
+        assert [row.family_size for row in family] == [3, 3, 3]
+        # p = 5e-7, 0.057, 1: p(2) <= 2(0.10)/3, while under m = 5 it exceeds 2(0.10)/5.
+        assert [row.discovery for row in family] == [True, True, False]
+        assert all(row.family_threshold == pytest.approx(2 * 0.10 / 3) for row in family)
+        assert all(row.require_lift().alpha == pytest.approx(0.05) for row in family[:2])
+
+    def test_bh_family_counts_a_control_lost_to_a_nonpositive_mean(self):
         rows = [
-            _make_arm_row(50, 10.0, 4.0, country="US", group_id="control"),
-            _make_arm_row(50, 11.0, 4.0, country="US", group_id="treatment"),
-            _make_arm_row(50, 12.0, 4.0, country="MX", group_id="treatment"),
+            _make_arm_row(100, 10.0, 4.0, country="A", group_id="control"),
+            _make_arm_row(100, 11.0, 4.0, country="A", group_id="treatment"),
+            _make_arm_row(100, -1.0, 4.0, country="N", group_id="control"),
+            _make_arm_row(100, 1.0, 4.0, country="N", group_id="treatment"),
         ]
-        with pytest.warns(IncrementWarning) as rec:
-            with pytest.raises(CapabilityError) as raised:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            result = run_breakout(
+                rows,
+                [_mean_metric()],
+                control_group="control",
+                dimension="country",
+                correction="bh",
+            )
+
+        by_segment = {row.dimension_value: row for row in result}
+        assert by_segment["N"].excluded == "nonpositive_mean"
+        assert by_segment["N"].discovery is False
+        assert by_segment["A"].family_size == by_segment["N"].family_size == 2
+
+    def test_bh_family_count_exclusion_wins_over_an_outcome_reason(self):
+        """A segment with no control row is excluded by count even when its treatment mean is
+        non-positive, so the family is the one without that segment."""
+        rows = [
+            _make_arm_row(100, 10.0, 4.0, country="A", group_id="control"),
+            _make_arm_row(100, 11.0, 4.0, country="A", group_id="treatment"),
+            _make_arm_row(100, 10.0, 4.0, country="B", group_id="control"),
+            _make_arm_row(100, 10.2, 4.0, country="B", group_id="treatment"),
+        ]
+        overlap = [*rows, _make_arm_row(100, -1.0, 4.0, country="X", group_id="treatment")]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            with_x, without_x = [
                 run_breakout(
-                    rows,
+                    summary,
                     [_mean_metric()],
                     control_group="control",
                     dimension="country",
                     correction="bh",
                 )
-        assert "breakout.estimates.slice_no_control_arm" in warning_codes(rec)
-        error = raised.value
-        assert error.code == "family.evidence.incomplete"
-        assert any("MX" in repr(key) for key in cast("Sequence[Any]", error.context["failed"]))
+                for summary in (overlap, rows)
+            ]
+
+        excluded = next(row for row in with_x if row.dimension_value == "X")
+        assert (excluded.excluded, excluded.family_size, excluded.discovery) == (
+            "no_control_arm",
+            None,
+            None,
+        )
+        assert excluded.multiplicity_status == "exploratory_unadjusted"
+        family = [row for row in with_x if row.dimension_value != "X"]
+        assert [row.family_size for row in family] == [2, 2]
+        assert [(row.family_threshold, row.discovery) for row in family] == [
+            (row.family_threshold, row.discovery) for row in without_x
+        ]
+
+    def test_bh_family_never_selects_an_outcome_exclusion_at_q_one(self):
+        """At q = 1 every p-value passes the k = m step; a control lost to a non-positive mean
+        still counts in m but is never selected, by the view or by select_exploratory_family."""
+        rows = [
+            _make_arm_row(100, 10.0, 4.0, country="A", group_id="control"),
+            _make_arm_row(100, 11.0, 4.0, country="A", group_id="treatment"),
+            _make_arm_row(100, -1.0, 4.0, country="N", group_id="control"),
+            _make_arm_row(100, 1.0, 4.0, country="N", group_id="treatment"),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            view, nominal = [
+                run_breakout(
+                    rows,
+                    [_mean_metric()],
+                    control_group="control",
+                    dimension="country",
+                    correction=correction,
+                    q=1.0,
+                )
+                for correction in ("bh", "none")
+            ]
+        exploratory = cast(
+            "list[BreakoutEstimate]", list(select_exploratory_family(list(nominal), q=1.0))
+        )
+
+        for result in (view, exploratory):
+            by_segment = {row.dimension_value: row for row in result}
+            assert (by_segment["N"].excluded, by_segment["N"].lift) == ("nonpositive_mean", None)
+            assert by_segment["N"].discovery is False
+            assert by_segment["A"].discovery is True
+            assert by_segment["A"].family_size == by_segment["N"].family_size == 2
 
     def test_bh_family_dedups_by_method(self):
         """2 methods x 1 metric x 2 segments: family size must count
@@ -2659,13 +2766,13 @@ class TestRunBreakoutErrorPropagation:
         )
         assert {r.metric for r in result} == {"rev", "sessions"}
         by_metric = {r.metric: r for r in result}
-        assert by_metric["rev"].excluded == "no_control_arm"
+        assert by_metric["rev"].excluded == "nonpositive_mean"
         assert by_metric["rev"].lift is None
         assert by_metric["sessions"].excluded is None
 
-    def test_zero_mean_control_row_falls_through_to_no_control_arm_skip(self):
-        """Dropping the segment's ONLY control row falls through to the
-        no-control-arm skip, distinct from a genuinely missing arm - the
+    def test_zero_mean_control_row_skips_the_segment_with_its_own_reason(self):
+        """Dropping the segment's ONLY control row skips the segment with the control's
+        non-positive-mean reason, distinct from a genuinely missing arm - the
         per-metric "lost its control arm" warning must NOT fire here."""
         rows = [
             _make_arm_row(50, 0.0, 0.0, country="US", group_id="control"),
@@ -2688,7 +2795,7 @@ class TestRunBreakoutErrorPropagation:
         assert "breakout.estimates.lost_control_metric" not in codes
         assert {r.dimension_value for r in result} == {"US", "CA"}
         by_segment = {r.dimension_value: r for r in result}
-        assert by_segment["US"].excluded == "no_control_arm"
+        assert by_segment["US"].excluded == "nonpositive_mean"
         assert by_segment["US"].lift is None
         assert by_segment["CA"].excluded is None
 
@@ -2821,7 +2928,7 @@ class TestRunBreakoutDenseGrid:
         # Union pairs: (rev, treatment_a), (rev, treatment_b) x 2 segments = 4 rows.
         assert len(result) == 4
         by_cell = {(r.dimension_value, r.group_id): r for r in result}
-        assert by_cell[("CA", "treatment_b")].excluded == "no_control_arm"
+        assert by_cell[("CA", "treatment_b")].excluded == "no_treatment_arm"
         assert by_cell[("CA", "treatment_b")].lift is None
         assert by_cell[("US", "treatment_a")].excluded is None
         assert by_cell[("US", "treatment_b")].excluded is None
@@ -3285,6 +3392,7 @@ class TestRunBreakoutBinomialGateExemption:
         by_cell = {(row.dimension_value, row.group_id): row for row in result}
         assert {by_cell[(c, "t2")].excluded for c in ("US", "CA")} == {"extreme_ratio"}
         assert all(by_cell[(c, "t1")].family_q == 0.10 for c in ("US", "CA"))
+        assert all(by_cell[(c, g)].family_size == 4 for c in ("US", "CA") for g in ("t1", "t2"))
 
     def test_mixed_method_arm_with_two_exclusions_has_one_row_per_method(self):
         """t2 fails the exact method (too large) and CUPED's preparation

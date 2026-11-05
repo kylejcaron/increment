@@ -1013,6 +1013,7 @@ Retired codes and their replacements are listed below.
 | `facade.study.switchback_study.identification_allocation_exactly` | `InvalidRequestError` | — | `increment._study` |
 | `facade.study.switchback_study.identification_exactly_one` | `InvalidRequestError` | — | `increment._study` |
 | `facade.window.resolve_window_days` | `UnsupportedRequestError` | `metric_type` | `increment._window` |
+| `family.evidence.incomplete` | `CapabilityError` | `failed`, `invalid`, `missing` | `increment.estimation.family` |
 | `frame.asof.day_axis_unorderable` | `CapabilityError` | `labels` | `increment._day_axis_labels` |
 | `frame.asof.quantile_unsupported` | `CapabilityError` | `metric` | `increment._frame_moments`, `increment.frame` |
 | `frame.duplicate_metric_name` | `InvalidRequestError` | `name` | `increment._metric_specs` |

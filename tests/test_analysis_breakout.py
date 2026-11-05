@@ -1427,8 +1427,9 @@ def _analysis_with_missing_control_segment(con):
     return analysis
 
 
-def test_run_breakout_sparse_segment_failure_aborts_complete_family(con):
-    """A treatment-only segment fails its compiled family hypothesis."""
+def test_breakout_view_keeps_segments_beside_a_segment_without_control(con):
+    """A treatment-only segment is an unavailable row outside the family; the other
+    segments keep their estimates and form the family."""
     experiment, resolver = _analysis_with_missing_control_segment(con)
 
     with pytest.warns(IncrementWarning) as rec:
@@ -1439,14 +1440,17 @@ def test_run_breakout_sparse_segment_failure_aborts_complete_family(con):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            with pytest.raises(CapabilityError) as raised:
-                view_readout(experiment, resolver, _BREAKOUT)
+            readout = view_readout(experiment, resolver, _BREAKOUT)
 
     assert "breakout.estimates.slice_no_control_arm" in warning_codes(rec)
-
-    error = raised.value
-    assert error.code == "family.evidence.incomplete"
-    assert any("MX" in repr(key) for key in error.context["failed"])  # ty: ignore[not-iterable]
+    by_segment = {row.dimension_value: row for row in readout}
+    mexico = by_segment["MX"]
+    assert (mexico.excluded, mexico.lift, mexico.family_id) == ("no_control_arm", None, None)
+    assert by_segment["US"].require_lift().value == pytest.approx(15.0 / 10.0 - 1.0)
+    assert by_segment["CA"].require_lift().value == pytest.approx(15.0 / 20.0 - 1.0)
+    assert by_segment["US"].family_size == by_segment["CA"].family_size == 2
+    (family,) = readout.metadata.scope.families
+    assert [member.dimension_value for member in family.members] == ["CA", "US"]
 
 
 def _analysis_with_encouragement_country_breakout(con):

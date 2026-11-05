@@ -86,6 +86,7 @@ from increment.estimation.decision_types import (
     SegmentHypothesisKey,
     exact_fraction,
 )
+from increment.estimation.multiplicity import design_excluded, outcome_non_rejection
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.semantics.sequential import SequentialRegistration
 
@@ -105,6 +106,20 @@ def _row_labels(rows: Sequence[str]) -> str:
     return ", ".join(rows)
 
 
+def _incomplete_evidence(*, failed, missing, invalid=()) -> str:
+    cells = ", ".join(
+        f"{name}={keys!r}"
+        for name, keys in (("failed", failed), ("missing", missing), ("invalid", invalid))
+        if keys
+    )
+    return (
+        "the multiplicity family cannot be selected because these cells have no usable test "
+        f"result: {cells}. Each cell's reason is on its row when the view is read without a "
+        'correction (AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="none")) for a '
+        "breakout or as-of view); correct the cause and rerun"
+    )
+
+
 _REFUSALS = refusals(
     InvalidRequestError,
     {
@@ -112,6 +127,9 @@ _REFUSALS = refusals(
         "estimation.family.p_values_finite": "p_values[{i}] must be finite and in [0, 1], got {p!r}",
         "estimation.family.e_values_finite": "log_e_values[{i}] must be an exact lower log bound or tagged infinity, got {e!r}",
         "estimation.family.nominal_alpha_finite": "nominal_alpha must be finite and in (0, 1), got {nominal_alpha!r}",
+        "family.evidence.incomplete": RefusalSpec(
+            "family.evidence.incomplete", CapabilityError, _incomplete_evidence
+        ),
         "estimation.family.exploratory_row": RefusalSpec(
             "estimation.family.exploratory_row",
             InvalidRequestError,
@@ -214,6 +232,18 @@ def bh_select(p_values: Sequence[float], q: float) -> tuple[list[int], float]:
     return _bh_step_up(p_values, q)
 
 
+def bh_select_with_nonrejections(
+    p_values: Sequence[float | None], q: float
+) -> tuple[list[int], float]:
+    """BH step-up where ``None`` is a sure non-rejection: it counts in ``m`` but is never
+    selected at any ``q`` (a p of 1 would otherwise pass the ``k = m`` step at ``q = 1``)."""
+    _require_q(q)
+    for i, p in enumerate(p_values):
+        if p is not None and (not math.isfinite(p) or not (0.0 <= p <= 1.0)):
+            _raise("estimation.family.p_values_finite", i=i, p=p)
+    return _bh_step_up([math.inf if p is None else p for p in p_values], q)
+
+
 def log_e_threshold(alpha: Fraction | float) -> Fraction | float:
     """Return the certified log-evidence cutoff for a one-sided level."""
     return (-log_interval(Fraction(alpha))).hi
@@ -307,31 +337,6 @@ def _unique_family_keys[K: Hashable](cells: Sequence[tuple[K, object]]) -> list[
     return keys
 
 
-#: Codes for outcome-based cell degeneracy (zero variance, unusable SE, non-positive mean), not
-#: invalid requests: a key failing only with these stays in a fixed-horizon family as a sure
-#: non-rejection. Breakout keys the same hazards so run() and run_breakout() agree; design-based
-#: Missing-observation breakout cells are retained conservatively as p=1.
-_CONSERVATIVE_NONREJECTION_CODES = frozenset(
-    {
-        "estimation.engine.lift_guard",
-        "breakout.nonpositive_mean",
-        "breakout.zero_variance",
-        "breakout.extreme_ratio",
-        "estimation.cuped_linear.level_support",
-        "estimation.cuped_linear.rank_deficiency",
-        "estimation.cuped_linear.leverage",
-        "estimation.cuped_linear.residual_df",
-        "estimation.cuped_linear.nonpositive_component",
-        "estimation.cuped_linear.nonfinite_projection",
-        "estimation.cuped_linear.missing_refused",
-        "estimation.cuped_linear.support_region",
-        "frame.validation.metric_covariate_column",
-        "frame.validation.metric_covariate_impute_all_null",
-        "readout.cell.missing_metric_observations",
-    }
-)
-
-
 def _conservative_nonrejection_pvalue(
     key: HypothesisKey, failure: DecisionFailure
 ) -> PValueEvidence:
@@ -391,10 +396,7 @@ def _require_complete_evidence[K: Hashable](
                 if key in evidence_map or key not in computation.failures:
                     continue
                 failure = computation.failures[cast("HypothesisKey", key)]
-                if failure.code in _CONSERVATIVE_NONREJECTION_CODES or (
-                    failure.code == "evidence.p_value.unavailable"
-                    and failure.context.get("reason") == "zero_relative_variance"
-                ):
+                if outcome_non_rejection(failure.code, failure.context.get("reason")):
                     evidence_map[key] = _conservative_nonrejection_pvalue(
                         cast("HypothesisKey", key), failure
                     )
@@ -415,21 +417,7 @@ def _require_complete_evidence[K: Hashable](
             if key in evidence_map and not isinstance(evidence_map[key], expected_type)
         )
     if failed or missing or invalid:
-        labels = []
-        if failed:
-            labels.append(f"failed={failed!r}")
-        if missing:
-            labels.append(f"missing={missing!r}")
-        if invalid:
-            labels.append(f"invalid={invalid!r}")
-        context: dict[str, object] = {"failed": failed, "missing": missing}
-        if invalid:
-            context["invalid"] = invalid
-        raise CapabilityError(
-            "family selection requires complete typed evidence: " + ", ".join(labels),
-            code="family.evidence.incomplete",
-            context=context,
-        )
+        _raise("family.evidence.incomplete", failed=failed, missing=missing, invalid=invalid)
     return [evidence_map[key] for key in keys]
 
 
@@ -688,18 +676,19 @@ def select_family[K: Hashable](
         )
     order = _unique_family_keys(cells)
     evidence = _require_complete_evidence(order, computation, inference=inference)
-    p_values = []
-    for value in evidence:
+    p_values: list[float | None] = []
+    for key, value in zip(order, evidence, strict=True):
         if not isinstance(value, PValueEvidence):
             from increment.sequential_state import sequential_refuse
 
             sequential_refuse("source.invalid", "fixed family requires p-value evidence")
-        p_values.append(value.p_value)
+        # A failure admitted as a sure non-rejection has no sampled p-value.
+        p_values.append(value.p_value if key in computation.evidence else None)
     canonical_method = {key: value.method for key, value in zip(order, evidence, strict=True)}
     fixed_q = float(q)
     if Fraction(fixed_q) > Fraction(q):
         fixed_q = math.nextafter(fixed_q, 0.0)
-    selected_idx, threshold = bh_select(p_values, fixed_q)
+    selected_idx, threshold = bh_select_with_nonrejections(p_values, fixed_q)
     selected = frozenset(order[i] for i in selected_idx)
     realized = _conservative_ratio(fixed_q, len(selected_idx), len(order)) if selected else None
     alpha = min(realized, nominal_alpha) if realized is not None else None
@@ -747,10 +736,6 @@ _INTERVAL_FIELDS = (
 )
 #: Each selected row is capped at its own nominal level below, so selection runs uncapped.
 _UNCAPPED = math.nextafter(1.0, 0.0)
-#: Breakout exclusions that condition only on arm counts, ancillary to the outcome: such a cell
-#: is no hypothesis, so leaving it out of the family cannot bias selection. Outcome-based
-#: exclusions (zero variance, non-positive mean, extreme ratio) stay in as non-rejections.
-_DESIGN_EXCLUSIONS = frozenset({"few_units", "no_control_arm"})
 _ADMISSION_ORDER = (
     "estimation.family.exploratory_row",
     "estimation.family.exploratory_pre_corrected",
@@ -848,7 +833,8 @@ def exploratory_family_exclusion(row: LiftEstimate | BreakoutEstimate) -> str | 
     excluded row out of the family and report the reason instead of letting one hazardous cell
     refuse every cell. The string is the reason the refusal carries in its ``reasons`` context
     (``constructions`` for an interval that cannot be reissued). A cell excluded by design
-    (too few units, no control arm) is not excluded here: the family returns it unchanged.
+    (too few units, no control arm, no treatment arm) is not excluded here: the family returns
+    it unchanged.
     """
     from increment.estimation._fcr_reinterval import classify
 
@@ -894,7 +880,7 @@ def _members(rows: Sequence[LiftEstimate | BreakoutEstimate]) -> list[_Member]:
         if construction is None:
             obstructed.append((_label(index, row), reason))
             continue
-        tested = view is not None or getattr(row, "excluded", None) not in _DESIGN_EXCLUSIONS
+        tested = view is not None or not design_excluded(row)
         members.append(_Member(row, key, scope, view, construction, tested))
     if obstructed:
         refuse(
@@ -1003,8 +989,8 @@ def select_exploratory_family(
 
     A cell excluded for an outcome-based reason (zero variance, non-positive mean, extreme
     ratio) stays in ``m`` as a non-rejection, as in ``run_breakout``. A cell excluded by design
-    (too few units, no control arm) is no hypothesis: it is returned unchanged, outside the
-    family.
+    (too few units, no control arm, no treatment arm) is no hypothesis: it is returned
+    unchanged, outside the family.
 
     The call refuses before any work, naming every offending row: rows that are not whole-window
     or segment rows (``estimation.family.exploratory_row``), rows already corrected
@@ -1013,7 +999,7 @@ def select_exploratory_family(
     (``estimation.family.exploratory_sequential``), and rows whose interval cannot be reissued
     without approximation (``estimation.family.exploratory_construction``: quantile, percentile
     winsorized, additive-scale and similar constructions, and an additive-only interval whose
-    ``abs_alpha`` was not persisted). A cell whose evidence is unavailable
+    ``abs_alpha`` was not persisted). A cell whose evidence is unavailable for any other reason
     refuses the family as ``run_breakout`` does (``family.evidence.incomplete``). An empty input
     returns ``()``.
     """
