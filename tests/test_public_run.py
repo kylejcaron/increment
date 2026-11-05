@@ -368,6 +368,76 @@ def test_one_adverse_treatment_arm_blocks_program():
     assert "decision.primary.adverse" in result.decisions.program.reason_codes
 
 
+@pytest.mark.parametrize(
+    ("direction", "effect", "verdict", "status", "primary_code"),
+    [
+        ("increase", 10.0, "favorable", "block", None),
+        ("increase", -10.0, "adverse", "block", "decision.primary.adverse"),
+        (None, 10.0, "unspecified", "not_evaluated", "decision.primary.direction_unspecified"),
+    ],
+)
+def test_switchback_primary_direction_orients_program(
+    tmp_path, direction, effect, verdict, status, primary_code
+):
+    """A switchback primary's verdict reads the direction its contrast procedure binds, both
+    in the live run and when the run is decided from its stored and reopened cells. Switchback
+    assignment integrity is never checked, so a favorable primary blocks on that code alone."""
+    from increment import from_switchback_frame
+    from increment.store import ParquetResultsStore
+    from tests.test_frame_switchback import _assignment, _identification
+
+    rows = []
+    for unit in range(12):
+        for cycle in range(4):
+            order = (
+                ("control", "treatment") if (unit + cycle) % 2 == 0 else ("treatment", "control")
+            )
+            control_value = 10.0 + 0.3 * unit + 0.1 * cycle
+            contrast = effect + (unit % 3 - 1) * 0.1 + (cycle % 2 * 2 - 1) * 0.02
+            for period, group in enumerate(order):
+                value = control_value + (contrast if group == "treatment" else 0.0)
+                rows.extend(
+                    {
+                        "unit": f"u{unit}",
+                        "cycle": cycle,
+                        "period": period,
+                        "step": step,
+                        "group": group,
+                        "value": 999.0 if step == 0 else value,
+                    }
+                    for step in range(3)
+                )
+    spec = (
+        MetricSpec(name="value", type="mean")
+        if direction is None
+        else MetricSpec(name="value", type="mean", preferred_direction=direction)
+    )
+    experiment, resolver = from_switchback_frame(
+        pd.DataFrame(rows),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics=[spec],
+        identification=_identification(),
+        assignment=_assignment(p_ct=0.5),
+        plan=AnalysisPlan(primary="value"),
+        experiment_id="switchback",
+    )
+    with resolver:
+        live = run(experiment, resolver).decisions
+        # With a results store, the run is decided from its reopened stored cells.
+        restored = run(experiment, resolver, results_store=ParquetResultsStore(tmp_path)).decisions
+
+    codes = {"integrity.unsupported_assignment"} | ({primary_code} if primary_code else set())
+    for decisions in (live, restored):
+        assert decisions.program.status == status
+        assert decisions.program.reason_codes == tuple(sorted(codes))
+        (primary,) = [cell for cell in decisions.cells if cell.role == "primary"]
+        assert (primary.status, primary.direction) == ("reject", verdict)
+
+
 def _sequential_harm_result(kind, *, direction="increase"):
     import numpy as np
 
