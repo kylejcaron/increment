@@ -1353,6 +1353,7 @@ def test_from_moments_names_the_available_metrics_for_a_metric_not_in_the_rows()
     with pytest.raises(WireFormatError) as raised:
         from_moments(_two_arm_mean_rows(), metrics={"y": "mean"}, control="control")
     assert raised.value.code == "moments.plan.invalid"
+    assert raised.value.context["reason"] == "metric_without_rows"
     assert raised.value.context["available"] == ("x",)
 
 

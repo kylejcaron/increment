@@ -1162,7 +1162,7 @@ Retired codes and their replacements are listed below.
 | `moments.format.unsupported_future` | `WireFormatError` | `received`, `required` | `increment.sources` |
 | `moments.format.unsupported_legacy` | `WireFormatError` | `received`, `required` | `increment.sources` |
 | `moments.plan.conflict` | `WireFormatError` | `constraint`, `field`, `value` | `increment.sources` |
-| `moments.plan.invalid` | `WireFormatError` | `available`, `constraint`, `field`, `value` | `increment.sources` |
+| `moments.plan.invalid` | `WireFormatError` | `available`, `constraint`, `field`, `reason`, `value` | `increment.sources` |
 | `moments.rows.duplicate` | `WireFormatError` | `key` | `increment.sources` |
 | `moments.rows.experiment_conflict` | `WireFormatError` | `experiments` | `increment.sources` |
 | `moments.summaries.invalid` | `InvalidRequestError` | `expected`, `field`, `group_id`, `metric`, `reason`, `route`, `value` | `increment.summaries` |

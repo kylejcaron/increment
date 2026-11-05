@@ -301,12 +301,24 @@ CENSOR_WARN_FRACTION = 0.10
 
 
 def _render_plan_invalid(
-    *, field: str, value: object, constraint: str, available: tuple[str, ...] | None = None
+    *,
+    field: str,
+    value: object,
+    constraint: str,
+    reason: str,
+    available: tuple[str, ...] | None = None,
 ) -> str:
-    if available is None:
-        return f"moments cube has invalid {field!r}: {value!r}; {constraint}"
-    shown = ", ".join(available) or "none"
-    return f"metric(s) {value!r} are not in these moments rows (available: {shown}); {constraint}"
+    if reason == "metric_without_rows":
+        shown = ", ".join(available or ()) or "none"
+        return (
+            f"metric(s) {value!r} are not in these moments rows (available: {shown}); {constraint}"
+        )
+    if reason == "plan_missing_metric":
+        return (
+            f"the decision plan embedded in these moments rows does not cover metric(s) "
+            f"{value!r}, which the rows carry; {constraint}"
+        )
+    return f"moments cube has invalid {field!r}: {value!r}; {constraint}"
 
 
 _MOMENTS_PLAN_INVALID = _RefusalSpec("moments.plan.invalid", _WireFormatError, _render_plan_invalid)
@@ -1053,7 +1065,40 @@ def _validate_cube_plan_payload(
             field=DECISION_PLAN_FIELD,
             value=None,
             constraint="fixed-horizon moments cubes require the decision plan on every row",
+            reason="missing_plan",
         )
+
+
+def _refuse_uncovered_metrics(
+    plan: CompiledDecisionPlan,
+    metrics: Sequence[Metric],
+    rows: Sequence[Mapping[str, object]],
+) -> None:
+    """Refuse a declared metric the embedded plan cannot analyze, naming whether
+    the rows lack the metric or only the plan does."""
+    missing = sorted(metric.name for metric in metrics if metric.name not in plan.procedures)
+    if not missing:
+        return
+    row_metrics = sorted({str(row["metric"]) for row in rows if row.get("metric") is not None})
+    without_rows = tuple(name for name in missing if name not in row_metrics)
+    if without_rows:
+        _refuse(
+            _MOMENTS_PLAN_INVALID,
+            field=DECISION_PLAN_FIELD,
+            value=without_rows,
+            constraint="declare metrics= from the available ones, or export moments "
+            "that include the others",
+            reason="metric_without_rows",
+            available=tuple(row_metrics),
+        )
+    _refuse(
+        _MOMENTS_PLAN_INVALID,
+        field=DECISION_PLAN_FIELD,
+        value=tuple(missing),
+        constraint="pass plan= covering every supplied metric, or re-export the moments "
+        "with a plan that covers them",
+        reason="plan_missing_metric",
+    )
 
 
 def _validate_winsorization_metadata(
@@ -1548,21 +1593,7 @@ class MomentsSource(SequentialSourceMixin):
             )
         if plan is None and stored_plan is not None:
             compiled = stored_plan
-            missing = [
-                metric.name for metric in metric_catalog if metric.name not in compiled.procedures
-            ]
-            if missing:
-                row_metrics = {row.get("metric") for row in stripped}
-                _refuse(
-                    _MOMENTS_PLAN_INVALID,
-                    field=DECISION_PLAN_FIELD,
-                    value=tuple(sorted(missing)),
-                    constraint="declare metrics= from the available ones, or export moments "
-                    "that include the others",
-                    available=tuple(
-                        sorted(name for name in compiled.procedures if name in row_metrics)
-                    ),
-                )
+            _refuse_uncovered_metrics(compiled, metric_catalog, stripped)
         elif isinstance(plan, CompiledDecisionPlan):
             compiled = plan
         else:

@@ -167,8 +167,10 @@ values.
   `reason`, such as `unknown_field`, `not_integer`, `below_two` or
   `missing_control_row`, and a `route`, plus `expected` (the accepted row
   fields, metric types or declared metrics) where one exists.
-  `moments.plan.invalid` for a declared metric the rows do not carry lists the
-  `available` metrics, and `estimation.binomial.exact_counts_required` names the
+  `moments.plan.invalid` carries a `reason`: `metric_without_rows` for a
+  declared metric the rows do not carry, with the `available` metrics, and
+  `plan_missing_metric` when the rows carry the metric but their embedded plan
+  does not cover it. `estimation.binomial.exact_counts_required` names the
   `declared_type`. `from_moments` refuses a pandas or Polars dataframe, or an
   Arrow table or record batch, with `source.frame.input_type`, whose `route`
   names the conversion to rows, such as `.to_pylist()`; it previously raised an
