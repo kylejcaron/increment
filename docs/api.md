@@ -127,6 +127,31 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking numerical correction): a posterior chance is reported
+  on the metric's favorable side everywhere it is shown. For a metric that
+  declares `preferred_direction`, the readout and `render(result, "full")`
+  print `chance_to_beat_favorable=` and the `posterior_chance_to_beat` column
+  of `estimates_to_readout` and `readout_table` shows the same value, read from
+  `preferred_direction` alone. Previously the readout printed the
+  direction-free chance that lift is positive under `chance_to_beat=` while the
+  table showed the favorable side under the same label, so a clearly improving
+  decrease metric read about 0 in one and 1 in the other. A metric without a
+  direction keeps `chance_to_beat=`, and under a one-sided `alternative` its
+  table column now shows `chance_to_beat()` instead of `None`.
+  `chance_to_beat_favorable()` on a decrease metric reads the posterior's lower
+  tail rather than `1 - chance_to_beat()`, so a vanishing probability keeps its
+  size (about 5e-112 where it showed 0.0). `prob_favorable()` on a sequential
+  row refuses with `CapabilityError` code `sequential.route.unsupported`, as
+  `p_value()` does, instead of returning `None`. A prior declared on a metric
+  (`MetricSpec(prior=...)` or a YAML binding) under sequential inference
+  refuses with `sequential.route.unsupported` (context `reason`, `metric`,
+  `inference`), the code a `run(prior=...)` override already raised;
+  `plan.metric_informative_priors` (`UnsupportedRequestError`) is retired and
+  `RETIRED_CODES` maps it to `sequential.route.unsupported`. To migrate, catch
+  `CapabilityError` with that code where `plan.metric_informative_priors` was
+  caught, and handle the refusal where `prob_favorable()` on a sequential row
+  was read as `None`. Estimates, intervals, p-values, the stored
+  `posterior_prob_favorable` and experiment identity are unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded

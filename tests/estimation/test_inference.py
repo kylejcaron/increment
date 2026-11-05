@@ -938,6 +938,17 @@ class TestInferLift:
         )
         assert result.prob_favorable() is None
 
+    def test_prob_favorable_refuses_sequential_row(self):
+        from increment.errors import CapabilityError
+        from tests.estimation.test_asymptotic_mean import _evaluate
+
+        row, _ = _evaluate([1, 2, 3] * 40, [8, 10, 12] * 40)
+        row = row.model_copy(update={"role": "secondary", "preferred_direction": "increase"})
+        assert row.inference == "asymptotic_mean"
+        with pytest.raises(CapabilityError) as raised:
+            row.prob_favorable()
+        assert raised.value.code == "sequential.route.unsupported"
+
 
 class TestNullAbs:
     """infer_lift's absolute-scale null boundary + additive interval

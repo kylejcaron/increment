@@ -265,6 +265,72 @@ def test_prior_backed_breakout_and_daily_rows_render_posterior_chance_to_beat(ro
     assert "chance_to_beat=0.6554217416103242" in rendered
 
 
+def test_favorable_chance_agrees_across_outputs():
+    import re
+
+    import numpy as np
+
+    from increment import render, run
+    from increment.estimators import Normal
+    from increment.results import LiftEstimate
+    from increment.tables import estimates_to_readout
+
+    rng = np.random.default_rng(11)
+    n = 1500
+    arm = np.array(["control"] * n + ["treatment"] * n)
+    treated = arm == "treatment"
+    frame = pd.DataFrame(
+        {
+            "u": [f"u{i}" for i in range(2 * n)],
+            "arm": arm,
+            "latency": 200 * np.where(treated, 0.90, 1.0) + rng.normal(0, 20, 2 * n),
+            "errors": 5 * np.where(treated, 1.15, 1.0) + rng.normal(0, 1, 2 * n),
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="u",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[
+            MetricSpec(name="latency", preferred_direction="decrease"),
+            MetricSpec(name="errors", preferred_direction="decrease"),
+        ],
+        plan=AnalysisPlan(primary="latency", secondaries=["errors"]),
+    )
+    result = run(experiment, reader, prior=Normal(mu=0.0, sigma=0.5))
+    readout = result.readout()
+    rows = {row.metric: cast(LiftEstimate, row) for row in readout}
+    favorable = {metric: row.chance_to_beat_favorable() for metric, row in rows.items()}
+
+    # abs=0: the default absolute tolerance would accept 0.0 for a 5e-112 tail.
+    errors = rows["errors"].prob_favorable()
+    assert favorable["errors"] == pytest.approx(errors, rel=1e-9, abs=0.0)
+    assert 0.0 < cast(float, favorable["errors"]) == pytest.approx(5.08e-112, rel=1e-2, abs=0.0)
+    assert favorable["latency"] == pytest.approx(1.0)
+
+    def posterior_lines(text: str) -> dict[str, float]:
+        pattern = r"^(\w+) posterior: .*chance_to_beat_favorable=(\S+)$"
+        return {metric: float(value) for metric, value in re.findall(pattern, text, re.M)}
+
+    frame_rows = cast(pd.DataFrame, result.to_frame(backend="pandas"))
+    outputs = (
+        posterior_lines(str(readout)),
+        posterior_lines(render(result, "full")),
+        {row["metric"]: row["posterior_chance_to_beat"] for row in estimates_to_readout(readout)},
+        dict(zip(frame_rows["metric"], frame_rows["posterior_prob_favorable"], strict=True)),
+    )
+    for output in outputs:
+        assert output.keys() == favorable.keys()
+        for metric, value in favorable.items():
+            assert output[metric] == pytest.approx(value, rel=1e-9, abs=0.0)
+
+
 def test_failed_declared_allocation_is_integrity_first_and_not_laundered():
     results = _run_mean(_mean_frame(n_control=900, n_treatment=100))
     interpretation = _interpret(results)
