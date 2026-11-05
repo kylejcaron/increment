@@ -1,5 +1,6 @@
 """Joint asymptotic laws: adjusted_mean, ratio_mean and adjusted_ratio_mean."""
 
+import math
 from fractions import Fraction as F
 
 import numpy as np
@@ -137,6 +138,34 @@ def test_adjusted_mean_with_an_orthogonal_covariate_is_the_scalar_set():
         alternative="two-sided",
     )
     assert joint == scalar
+
+
+def _balance_advisories(scale):
+    """Advisories of one adjusted_mean cell whose covariate difference d has
+    d^2 / V = scale * K_N, with V = S_t/n_t^2 + S_c/n_c^2 over the retained
+    covariate scatter and K_N = (1 + lambda/N)(log1p(N/lambda) - 2 log(1/1000)),
+    lambda = 1/rho^2, the count-clock boundary at the balance check's level."""
+    n, lam = 100, 100
+    k = (1 + lam / (2 * n)) * (math.log1p(2 * n / lam) - 2 * math.log(1e-3))
+    # X alternates -1, +1 in each group: S_xx = n per group, so V = 2 / n.
+    shift = F(math.sqrt(scale * k * 2 / n))
+    control = [(F(10 + i % 4), F((-1) ** i)) for i in range(n)]
+    treatment = [(y, x + shift) for y, x in control]
+    registration = mean_registration(
+        models=(mean_model("m", law="adjusted_mean"),),
+        cells=(SequentialCell(metric="m", group_id="treatment"),),
+    )
+    snapshot = mean_capture(registration, mean_records(control, treatment, metrics=("m",)))
+    computation = estimate_sequential(snapshot, AsymptoticMean(registration=registration))
+    return math.sqrt(scale * k), [a for items in computation.advisories.values() for a in items]
+
+
+def test_adjusted_law_balance_advisory_uses_count_boundary():
+    statistic, above = _balance_advisories(1 + 1e-3)
+    _, below = _balance_advisories(1 - 1e-3)
+    assert [a.code for a in above] == ["estimation.cuped.covariate_imbalance"]
+    assert above[0].context["statistic"] == pytest.approx(statistic, rel=1e-9)
+    assert below == []
 
 
 def test_ratio_metric_is_monitored_sequentially_and_an_unresolved_denominator_withholds_it():

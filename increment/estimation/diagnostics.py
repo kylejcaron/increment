@@ -8,7 +8,8 @@ observed group counts against expected allocation proportions.
 bands on allocation share over time — a descriptive complement to the SRM
 test, not a substitute for it.
 
-``covariate_balance`` compares a CUPED covariate's arm means with a Welch t test.
+``covariate_balance`` compares a CUPED covariate's arm means with a Welch t test;
+``covariate_balance_crosses_boundary`` is its time-uniform form for sequential looks.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from fractions import Fraction
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
@@ -27,6 +29,7 @@ from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation._tails import tail_isf
 from increment.estimation.armstats import welch_satterthwaite_df
+from increment.estimation.asymptotic_mean import count_boundary
 
 if TYPE_CHECKING:
     from increment._evidence_types import RowValue
@@ -438,6 +441,8 @@ def missing_by_arm_p_value(
 
 #: The automatic sample-ratio check's alpha, applied per CUPED cell to its covariate means.
 COVARIATE_BALANCE_ALPHA: Final = 0.001
+# The same level, exact, for the count-clock boundary of a sequential look.
+_COVARIATE_BALANCE_LEVEL: Final = Fraction(1, 1000)
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,6 +507,35 @@ def covariate_balance(
         p_value=p_value,
         flagged=p_value < alpha,
     )
+
+
+def covariate_balance_crosses_boundary(
+    *,
+    difference: Fraction,
+    scatter_control: Fraction,
+    n_control: int,
+    scatter_treatment: Fraction,
+    n_treatment: int,
+    count: int,
+    rho: Fraction,
+    start_count: int,
+) -> bool | None:
+    """Whether a sequential look's covariate difference crosses the count-clock boundary.
+
+    ``difference**2 > K_N * (S_t / n_t**2 + S_c / n_c**2)`` with ``S`` each arm's
+    retained covariate scatter and ``K_N = count_boundary(count, 1/1000, rho)``, the
+    boundary of the cell's own sets at ``COVARIATE_BALANCE_ALPHA``. Being
+    time-uniform, it does not accumulate false flags over repeated looks as a
+    fixed-look test would. ``None`` under inference's readiness rule (an arm below 2
+    or ``start_count`` units) or when both scatters are zero.
+    """
+    if min(n_control, n_treatment) < max(2, start_count) or not (
+        scatter_control or scatter_treatment
+    ):
+        return None
+    variance = scatter_treatment / n_treatment**2 + scatter_control / n_control**2
+    boundary = count_boundary(count, _COVARIATE_BALANCE_LEVEL, rho)
+    return difference * difference > boundary * variance
 
 
 class AllocationBand(BaseModel):

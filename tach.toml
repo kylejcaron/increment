@@ -436,6 +436,7 @@ depends_on = [
   "increment._evidence_types",
   "increment.declarations",
   "increment.estimation._sequential_likelihood",
+  "increment.estimation.asymptotic_mean",
   "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_state",
   "increment._unit_cycle",

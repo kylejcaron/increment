@@ -401,9 +401,15 @@ values.
   `adjustment_shift`, how far the adjustment moved the estimate; a
   CUPED-adjusted LATE reports `itt_adjustment_shift` and `late_adjustment_shift`
   instead. Breakout segments and daily cells are each tested on their own data.
-  Estimates, intervals and decisions are unchanged, and the advisory never
-  withholds a result. Breakout, daily, as-of and sequential cells now carry
-  every advisory their own estimate produced, for example a segment's own
+  An asymptotic sequential `adjusted_mean` or `adjusted_ratio_mean` cell carries
+  the same advisory at a look where its squared covariate difference exceeds its
+  variance times the count-clock boundary the cell's intervals use, at level
+  0.001, so repeated looks do not accumulate false flags. A look without
+  inference for the cell, such as one before `start_count`, is not checked, and
+  a predeclared pre-period adjustment retains no covariate to check. Estimates,
+  intervals, sequential evidence and decisions are unchanged, and the advisory
+  never withholds a result. Breakout, daily, as-of and sequential cells now
+  carry every advisory their own estimate produced, for example a segment's own
   mixed-covariate CUPED fit advisory; before, they carried only the two
   ratio-denominator advisories, rebuilt from row notes. Those keep their codes
   and messages, and their context now carries `threshold` (plus

@@ -501,6 +501,19 @@ Capture retains the same zero-filled pre-period total as fixed-horizon CUPED.
 Unit panels and warehouse experiments with `n_pre_periods: 0` reject these
 laws because they cannot supply the covariate.
 
+Each look also checks the covariate's balance between groups, the sequential
+form of the [fixed-horizon check](#when-cuped-misleads-a-covariate-that-differs-by-arm).
+A fixed-look test repeated at every look would flag more and more valid
+experiments as looks accumulate, so the check uses the count-clock boundary
+that the cell's own intervals use, at level 0.001: the cell carries the advisory
+`estimation.cuped.covariate_imbalance` when the squared covariate difference
+exceeds the boundary times its variance. Its context reports each group's
+covariate mean, the `difference` with its `standard_error`, the `statistic` and
+`constant_arms`. A look without inference for the cell, such as one before
+`start_count` units in each group, is not checked. The advisory changes no
+interval, evidence value or decision, so checking it at every look leaves the
+sequential guarantee unchanged.
+
 ??? info "Statistical details: the asymptotic adjusted law"
     Capture retains the joint per-unit vector $(Y, X)$ or $(N, D, X)$ and its
     full within-group scatter. At each look, Increment fits the same
@@ -528,6 +541,8 @@ center fixed from pre-period data before outcomes are read.
 `fit_predeclared_adjustment` applies `fit_cuped` to a pre-period frame;
 capture then retains the single adjusted value $Y_i - \theta (X_i - c)$
 per unit. The exact Bernoulli method does not accept this adjustment.
+Capture retains only that adjusted value, not the covariate, so the covariate
+balance check above does not apply to this form.
 
 <!-- skip: next "requires a prepared pre-period frame" -->
 ```python
@@ -828,6 +843,8 @@ automatic sample-ratio check, the cell carries the advisory
 the same code. The estimate, interval and decision are unchanged: the advisory
 never withholds a result. Breakout segments and daily cells are each tested on
 their own data, so a join that fails for one segment flags that segment.
+Sequential cells on the asymptotic route use a form that stays valid across
+looks; see [the standard coefficient on the asymptotic route](#the-standard-coefficient-on-the-asymptotic-route).
 
 The advisory's context reports each group's covariate mean (`mean_control`,
 `mean_treatment`), the `difference` with its `standard_error`, the Welch
@@ -863,7 +880,8 @@ and the adjusted standard error is $\mathrm{SE}(\Delta Y)\sqrt{1-\rho^2}$. At
 $\rho = 0.9$, a shift with $s = 2$, which the check rarely flags, still leaves
 about 4 standard errors of bias. The check catches gross pipeline errors; it
 does not certify the covariate. Mixed-covariate cells
-(`Method.cuped_multicovariate`) are not tested.
+(`Method.cuped_multicovariate`) and predeclared sequential adjustments are not
+tested.
 
 ## Mixed numeric and categorical covariates
 
