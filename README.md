@@ -5,158 +5,112 @@
 [![Python](https://img.shields.io/pypi/pyversions/increment)](https://pypi.org/project/increment/)
 [![License](https://img.shields.io/pypi/l/increment)](https://github.com/kylejcaron/increment/blob/main/LICENSE)
 
-> [!WARNING]
-> **Increment is currently in pre-release.** APIs and supported combinations may
-> change before a stable release; see the
-> [compatibility policy](https://getincrement.io/docs/api/pre-1-0-compatibility/). Review the
-> [statistical limitations](https://getincrement.io/docs/limitations/) before relying on an analysis.
-
 **A/B testing that shows its work.**
 
-Increment is an open-source Python library for A/B test analysis. Analyze
-experiments from dataframes or SQL warehouses with reusable metrics, effect
-estimates, and uncertainty intervals. Increment does not assign traffic, ship
-feature flags, or maintain a separate event store.
+Increment is an open-source Python library for analyzing A/B tests. Give it a
+dataframe or a SQL warehouse; it returns each metric's effect with a confidence
+interval, and says plainly when the data cannot support a conclusion.
 
-[Website](https://getincrement.io/) · [Documentation](https://getincrement.io/docs/) ·
-[Quickstart](#quickstart) · [Warehouse analysis](#connect-your-warehouse) ·
-[Guides](#explore-the-guides) · [Statistical limitations](https://getincrement.io/docs/limitations/)
+> [!WARNING]
+> Increment is in pre-release. Its API may change between releases; see the
+> [compatibility policy](https://getincrement.io/docs/api/#compatibility-policy).
+> Read the [statistical limitations](https://getincrement.io/docs/limitations/)
+> before relying on a result.
 
-## What you can do
+[Documentation](https://getincrement.io/docs/) ·
+[Quickstart guide](https://getincrement.io/docs/guides/quickstart/) ·
+[Examples](https://github.com/kylejcaron/increment/blob/main/examples/README.md) ·
+[Website](https://getincrement.io/)
 
-- **Analyze experiments** — estimate effects, reduce variance with CUPED, apply
-  multiple-comparison corrections, and check sample-ratio mismatch after
-  declaring `allocation_scheme="independent"` or explicitly requesting a
-  one-look `srm(inference="fixed")` diagnostic. `health_check()` reports when
-  assignment checks make SRM unavailable.
-- **Use Bayesian inference** — combine prior beliefs with experiment data to
-  estimate effects and probabilities of benefit.
-- **Plan and monitor** — calculate sample size, power, and minimum detectable
-  effect; use a sequential method for repeated looks when its assumptions fit.
-- **Estimate causal effects** — use IPTW, DML, or AIPW for observational
-  treatments, or analyze encouragement and switchback designs.
-- **Explore** — inspect breakouts, trends, and treatment-effect differences;
-  create readout tables, dashboards, and sitewide-impact estimates, and track
-  metric trends over calendar time.
-
-Methods support different metrics and designs. Use the
-[method guide](https://getincrement.io/docs/guides/choose-a-method/) to choose;
-the [compatibility matrix](https://getincrement.io/docs/guides/compatibility/)
-lists supported combinations.
-
-## Quickstart
-
-Requires **Python 3.12 or newer**. Core and dataframe analysis are tested on
-Python 3.12–3.15. DuckDB-backed extras remain tested on 3.12–3.14; Python 3.15
-needs a compatible DuckDB wheel. Install Increment's pre-release package and
-Polars for this example:
+## Install
 
 ```bash
 pip install increment polars
 ```
 
-Start with one row per randomization unit. This example declares independent
-50/50 assignment, makes revenue the primary metric, and includes complaints as
-a guardrail. It deliberately omits treatment-arm complaint values so the
-rendered result shows that missing guardrails are unavailable rather than
-treated as safe.
+Increment needs Python 3.12 or newer. It reads pandas, Polars and PyArrow
+dataframes; this example uses Polars.
+
+## Quickstart
+
+Start with one row per user: the variant they saw and what they did.
 
 ```python
 from random import Random
-import warnings
 
 import polars as pl
 
-from increment import AnalysisPlan, MetricSpec, Randomized, from_frame, render, run, runnable
-from increment.errors import IncrementWarning
+from increment import from_frame, run
 
+# Simulated data: treatment raises revenue and conversion by 8%.
 rng = Random(7)
-n = 500
-arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(2 * n)]
-revenue = [max(0.0, rng.gauss(10 + (arm == "treatment"), 4)) for arm in arms]
-complaints = [int(rng.random() < 0.04) for _ in arms]
+n = 2_000
+variant = ["treatment" if rng.random() < 0.5 else "control" for _ in range(n)]
+lift = [1.08 if v == "treatment" else 1.0 for v in variant]
 df = pl.DataFrame(
     {
-        "user_id": [f"u{i:04d}" for i in range(2 * n)],
-        "variant": arms,
-        "revenue": revenue,
-        "complaints": [
-            None if arm == "treatment" else value
-            for arm, value in zip(arms, complaints, strict=True)
-        ],
+        "user_id": range(n),
+        "variant": variant,
+        "revenue": [rng.expovariate(1 / 10) * x for x in lift],
+        "converted": [rng.random() < 0.10 * x for x in lift],
     }
 )
 
-with warnings.catch_warnings(record=True) as data_warnings:
-    warnings.simplefilter("always", IncrementWarning)
-    exp, resolver = from_frame(
-        df,
-        shape="summary",
-        unit="user_id",
-        group="variant",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[
-            "revenue",
-            MetricSpec(
-                name="complaints",
-                type="conversion",
-                missing="skip",
-                preferred_direction="decrease",
-            ),
-        ],
-        plan=AnalysisPlan(primary="revenue", guardrails=["complaints"]),
-    )
-    feasibility = runnable(exp, "revenue")
-    result = run(exp, resolver)
-for warning in data_warnings:
-    print(warning.message)
-rendered = render(result, "brief")
-print(rendered)
+experiment, reader = from_frame(
+    df,
+    shape="summary",
+    unit="user_id",
+    group="variant",
+    control="control",
+    metrics=["revenue", "converted"],
+)
+result = run(experiment, reader)
+print(result.readout())
 ```
 
-`exp` describes the experiment; `resolver` binds its dataframe when `run`
-reads the evidence. `runnable(exp, "revenue")` checks known incompatibilities
-without reading data, including for every declared view. It is sound, not
-complete: no refusal does not guarantee the run will succeed, because some
-checks need data. Top-level `run` reads every declared view, such as daily or
-breakout views added with `exp.with_views(...)`, from one capture of the data.
-The experiment can be saved with `exp.to_json()` and identified with
-`exp.hash()`. Rendering retains warnings about missing guardrails, checks that
-were not completed, and what the data can establish.
+The output starts with one line per metric (shortened here):
 
-`shape="summary"` accepts summary-specific options such as
-`intervention_grain="cluster"`. With one row per unit per day, use
-`shape="panel"`, supply `date="event_day"`, and optionally set
-`observation_end="2025-01-31"`. Editors and type checkers check the options
-for the selected shape; a summary has no `date` or `observation_end`.
-For an available guardrail and recovery, see the
-[quickstart guide](https://getincrement.io/docs/guides/quickstart/#recover-the-unavailable-guardrail).
+<!-- output -->
+```text
+assigned — treatment vs control
+converted: control → treatment; n control=970; n treatment=1030; ...; effect=-4.84426%; interval=[-39.898, 29.3026]%; estimand=itt; stat_sig=False
+...
+revenue: control → treatment; n control=970; n treatment=1030; ...; effect=10.6507%; interval=[1.45261, 20.6827]%; estimand=itt; stat_sig=True
+...
+SRM not checked; declare allocation_scheme="independent" on Randomized or Encouragement; it must describe how units were actually assigned.
+...
+```
 
-`run(exp, resolver)` returns a `RunResult` with result cells, effects, and
-decisions. `result.readout()` returns the typed `LiftEstimates` collection with
-every row field, and `result.to_frame()` and `readout_table(result)` read the
-result directly.
+Revenue rose 10.7%, with a 95% confidence interval of 1.5% to 20.7%. The
+conversion result is inconclusive: its interval, −39.9% to +29.3%, includes
+zero. Two thousand users are too few to detect an 8% change in a 10%
+conversion rate; [power analysis](https://getincrement.io/docs/guides/power-analysis/)
+tells you how many you need.
 
-The [dataframe quickstart](https://getincrement.io/docs/guides/quickstart/) continues
-with CUPED, monitoring, and other data shapes.
+- `from_frame` describes the experiment: the column that identifies users
+  (`unit`), the column that holds the variant (`group`), the control variant,
+  and the metrics. `shape="summary"` means one row per user; use
+  `shape="panel"` for one row per user per day.
+- Each metric's type comes from its column: numbers are averaged, and
+  true/false columns become conversion rates. For a 0/1 integer column, say
+  which you mean: `metrics={"converted": "conversion"}`.
+- `from_frame` also returns a reader, which reads your data when `run` needs
+  it. `run(experiment, reader)` analyzes the experiment. `result.readout()`
+  lists the estimates; `result.to_frame()` returns them as a dataframe.
+- The closing lines name checks that did not run. Here, Increment could not
+  test for a sample ratio mismatch (SRM: a traffic split different from the
+  plan) because the example did not state the planned split.
 
-Next: [add CUPED](https://getincrement.io/docs/guides/cuped/#on-the-dataframe-path) ·
-monitor sequentially ([mean or ratio](https://getincrement.io/docs/guides/sequential-inference/#ordinary-continuous-monitoring),
-[conversion or retention](https://getincrement.io/docs/guides/sequential-inference/#sequential-monitoring-of-a-conversion-metric)) ·
-[run a switchback](https://getincrement.io/docs/guides/switchback/#supported-contract) ·
-[adjust for opt-in treatment](https://getincrement.io/docs/guides/observational/) ·
-[other data shapes](https://getincrement.io/docs/guides/choose-a-method/).
+Next: [declare the split, a primary metric and guardrails](https://getincrement.io/docs/guides/quickstart/) ·
+[reduce variance with CUPED](https://getincrement.io/docs/guides/cuped/#on-the-dataframe-path) ·
+[monitor while the test runs](https://getincrement.io/docs/guides/sequential-inference/) ·
+[read every result field](https://getincrement.io/docs/guides/reading-results/)
 
-## Connect your warehouse
+## Analyze data in your warehouse
 
-Define sources, exposures, metrics, and experiments in YAML. Connect the
-definitions to an Ibis backend and build the experiment:
-
-Install warehouse support and your backend's driver, for example:
+Describe your tables, metrics and experiments once in YAML, then run the
+analysis inside your warehouse through [Ibis](https://ibis-project.org/).
+Install the `warehouse` extra and your warehouse's Ibis backend:
 
 ```bash
 pip install "increment[warehouse]" "ibis-framework[snowflake]"
@@ -166,91 +120,62 @@ pip install "increment[warehouse]" "ibis-framework[snowflake]"
 
 ```python
 import ibis
-from increment import from_definitions, render, run
+from increment import from_definitions, run
 
 con = ibis.snowflake.connect(...)
-experiment, resolver = from_definitions("definitions/", con, experiment_name="checkout_redesign")
-with resolver:
-    results = run(experiment, resolver)
-print(render(results, "brief"))
+experiment, reader = from_definitions("definitions/", con, experiment_name="checkout_redesign")
+with reader:
+    result = run(experiment, reader)
+print(result.readout())
 ```
 
-The `warehouse` extra adds Ibis and SQLGlot but no database driver. Choose the
-Ibis backend for your warehouse, such as `ibis-framework[snowflake]` above.
-DuckDB, PostgreSQL, Snowflake, and BigQuery have execution test suites; that
-does not mean every method works on every backend. Without the extra,
-warehouse entry points refuse with `install.warehouse_extra_missing` and
-name the install command.
+DuckDB, PostgreSQL, Snowflake and BigQuery have execution test suites, but not
+every method runs on every backend. The
+[data-model guide](https://getincrement.io/docs/guides/data-model/) explains
+the YAML, and the
+[warehouse example](https://github.com/kylejcaron/increment/blob/main/examples/analysis_from_a_warehouse.py)
+is a notebook that runs the whole workflow on a local DuckDB database.
 
-See the [runnable warehouse example](https://github.com/kylejcaron/increment/blob/main/examples/analysis_from_a_warehouse.py)
-and [data-model guide](https://getincrement.io/docs/guides/data-model/) for YAML,
-query inspection, portable unit-day artifacts, and moments exports.
+## What else it does
+
+- **Plan**: sample size, power and minimum detectable effect.
+- **Reduce variance**: CUPED with pre-experiment data.
+- **Monitor**: sequential tests that stay valid when you look at results repeatedly.
+- **Correct for many comparisons** across metrics and segments.
+- **Use priors**: Bayesian estimates and the probability that a variant is better.
+- **Break results down** by segment or by day.
+- **Analyze other designs**: switchback, encouragement and observational
+  (IPTW, AIPW, DML) studies.
+- **Report**: readout tables, and an HTML dashboard for warehouse experiments.
+
+The [method guide](https://getincrement.io/docs/guides/choose-a-method/) helps
+you choose; the [compatibility matrix](https://getincrement.io/docs/guides/compatibility/)
+lists which methods combine.
 
 ## Optional extras
 
 | Install | Adds |
 |---|---|
-| `increment[warehouse]` | Ibis and SQLGlot for SQL warehouses; install a backend driver separately |
-| `increment[demo]` | Warehouse support and DuckDB for local examples and simulation |
-| `increment[tables]` | CoefTable and pandas for rendered readouts |
-| `increment[dashboard]` | marimo, CoefTable, and pandas for an HTML experiment dashboard |
+| `increment[warehouse]` | Ibis and SQLGlot for SQL warehouses; add your warehouse's Ibis backend |
+| `increment[demo]` | Warehouse support and DuckDB, for local examples |
+| `increment[tables]` | Formatted readout tables (CoefTable and pandas) |
+| `increment[dashboard]` | An HTML experiment dashboard (marimo, anywidget, CoefTable and pandas) |
 
-## Explore the guides
+## Before you rely on a result
 
-| Goal | Guide |
-|---|---|
-| Choose an analysis method | [Method selection](https://getincrement.io/docs/guides/choose-a-method/) |
-| Set up dataframe inputs | [Quickstart](https://getincrement.io/docs/guides/quickstart/) |
-| Define warehouse data and experiments | [Data model](https://getincrement.io/docs/guides/data-model/) |
-| Understand metrics and supported combinations | [Metric types](https://getincrement.io/docs/guides/metric-types/) · [Compatibility](https://getincrement.io/docs/guides/compatibility/) |
-| Use priors and probability-based decisions | [Bayesian inference](https://getincrement.io/docs/guides/priors-and-decisions/) |
-| Reduce variance | [CUPED](https://getincrement.io/docs/guides/cuped/#on-the-dataframe-path) |
-| Correct multiple comparisons | [Multiplicity](https://getincrement.io/docs/guides/multiplicity/) |
-| Monitor an experiment | [Mean or ratio metrics](https://getincrement.io/docs/guides/sequential-inference/#ordinary-continuous-monitoring) · [Conversion or retention metrics](https://getincrement.io/docs/guides/sequential-inference/#sequential-monitoring-of-a-conversion-metric) |
-| Plan sample size or power | [Power analysis](https://getincrement.io/docs/guides/power-analysis/) |
-| Analyze non-randomized treatments | [Observational inference](https://getincrement.io/docs/guides/observational/) |
-| Analyze encouragement or switchback designs | [Encouragement](https://getincrement.io/docs/guides/encouragement/) · [Switchback](https://getincrement.io/docs/guides/switchback/#supported-contract) |
-| Explore treatment-effect differences | [Heterogeneity and rollout](https://getincrement.io/docs/guides/heterogeneity-and-rollout/) |
-| Build an experiment dashboard | [Dashboard](https://getincrement.io/docs/guides/dashboard/) |
-| Look up public APIs | [API reference](https://getincrement.io/docs/api/) |
+When a request is not supported, Increment stops with an error code that names
+a fix. When one estimate cannot be computed, it is reported as unavailable,
+with the reason, instead of being dropped. Methods carry assumptions: read the
+[statistical limitations](https://getincrement.io/docs/limitations/) and the
+[validation evidence](https://getincrement.io/docs/validation/).
 
-The [public manifest](https://github.com/kylejcaron/increment/blob/main/tests/public_exports.txt)
-lists the promised imports in each namespace. Guides and examples use only those
-paths; other modules and underscore names are internal.
-
-The [`examples/`](https://github.com/kylejcaron/increment/tree/main/examples)
-directory has runnable marimo notebooks for warehouse and dataframe analyses,
-power, CUPED, causal inference, and reporting. Use the
-[examples guide](https://github.com/kylejcaron/increment/blob/main/examples/README.md)
-to choose one.
-
-## Scope and statistical assumptions
-
-Increment analyzes randomized experiments from dataframes or SQL warehouses.
-It also supports observational treatments from dataframes and warehouse
-definitions, but causal conclusions require identification assumptions.
-
-Exact and approximate methods have different guarantees. Repeated looks need a
-compatible sequential procedure for frequentist error control; Bayesian
-probabilities do not provide that guarantee by themselves. Unsupported
-combinations produce coded errors or warnings. A result may include supported
-cells when others are unavailable.
-
-Before production use, read the
-[statistical limitations](https://getincrement.io/docs/limitations/),
-[compatibility matrix](https://getincrement.io/docs/guides/compatibility/), and
-[backend verification notes](https://github.com/kylejcaron/increment/blob/main/CONTRIBUTING.md#backend-verification).
-
-The [validation inventory](https://github.com/kylejcaron/increment/blob/main/docs/validation.md#reference-inventory)
-lists methods with frozen third-party references and regimes without one.
-[Evidence status](https://github.com/kylejcaron/increment/blob/main/docs/validation.md#evidence-status)
-explains each capability's guarantee and evidence, separately from software
-compatibility.
+Increment analyzes data you already have. It does not assign traffic, run
+feature flags, or store events.
 
 ## Contributing and license
 
-See [CONTRIBUTING.md](https://github.com/kylejcaron/increment/blob/main/CONTRIBUTING.md)
-for setup and contribution requirements. Contributions require a signed
+See [CONTRIBUTING.md](https://github.com/kylejcaron/increment/blob/main/CONTRIBUTING.md).
+Contributions require a signed
 [Contributor License Agreement](https://github.com/kylejcaron/increment/blob/main/.github/CLA.md).
 
 Apache License 2.0. See [LICENSE](https://github.com/kylejcaron/increment/blob/main/LICENSE)
