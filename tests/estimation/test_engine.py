@@ -372,8 +372,8 @@ class TestDegenerateData:
         assert lift.lb < 0.0 < lift.ub
 
     def test_both_arms_constant_keeps_lift_guard_failure(self):
-        """A real-valued mean metric whose arms are both constant has no
-        uncertainty on either scale, so the cell stays a keyed lift-guard
+        """A real-valued mean metric whose arms are both constant at positive means has
+        no uncertainty on either scale, so the cell stays a keyed lift-guard
         failure. The boundary is retired only for the exact binomial route's
         conversion/retention metrics, and one constant arm keeps its additive
         row (TestRelativeScaleGuardsKeepTheAdditiveRow).
@@ -680,13 +680,40 @@ class TestRelativeScaleGuardsKeepTheAdditiveRow:
             assert row.stat_sig() == (p_value < 0.05)
 
     def test_constant_control_arm_gives_one_sample_t_additive_row(self):
+        """Fixed clipping at 5.0 makes every control outcome 5.0 while the treatment
+        varies: the row's interval is the clipped treatment's one-sample t, and it keeps
+        its arm counts, arm means and clipping record."""
         from scipy.stats import t
 
-        row = _guarded_row("zero_variance")
-        control, treatment = _GUARDED_ARMS["zero_variance"]
+        from increment import MetricSpec, Winsorization, run
+        from increment.estimation.results import LiftEstimate
+
+        raw_control = 3.0 + 0.2 * _CONTROL_DRAWS
+        raw_treatment = 5.5 + _TREATMENT_DRAWS
+        treatment = np.maximum(raw_treatment, 5.0)
         n_t = len(treatment)
+        frame = pd.DataFrame(
+            {
+                "unit": [f"u{i}" for i in range(len(raw_control) + n_t)],
+                "arm": ["control"] * len(raw_control) + ["treatment"] * n_t,
+                "y": np.concatenate([raw_control, raw_treatment]),
+            }
+        )
+        experiment, reader = from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="y", winsorization=Winsorization(lower_value=5.0))],
+        )
+        try:
+            (row,) = run(experiment, reader).readout()
+        finally:
+            reader.close()
+        assert isinstance(row, LiftEstimate)
         se = float(np.std(treatment, ddof=1)) / math.sqrt(n_t)
-        diff = float(treatment.mean()) - float(control[0])
+        diff = float(treatment.mean()) - 5.0
         half_width = float(t.isf(0.025, n_t - 1)) * se
 
         assert row.relative_unavailable_reason == "zero_variance"
@@ -694,6 +721,12 @@ class TestRelativeScaleGuardsKeepTheAdditiveRow:
         assert row.abs_reference_df == pytest.approx(n_t - 1)
         assert row.abs_lb == pytest.approx(diff - half_width)
         assert row.abs_ub == pytest.approx(diff + half_width)
+        assert (row.n_control, row.n_treat) == (len(raw_control), n_t)
+        assert row.mean_control == pytest.approx(5.0)
+        assert row.mean_treat == pytest.approx(float(treatment.mean()))
+        assert row.winsor_lower_bound == pytest.approx(5.0)
+        assert row.winsor_control_n_lower == len(raw_control)
+        assert row.winsor_treatment_n_lower == int(np.sum(raw_treatment < 5.0))
 
     @pytest.mark.parametrize(
         ("arms", "guard_reason"),

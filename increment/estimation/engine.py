@@ -1893,7 +1893,8 @@ def _infer_lift_result(
     except LiftGuardError as exc:
         if exc.reason in ("zero_variance", "delta_method_unreliable") and abs_se is not None:
             # The guard blocks only the log scale; the additive difference keeps
-            # its uncertainty unless both arms are constant.
+            # its uncertainty whenever either arm varies. Its note already
+            # carries the guard and any ratio advisories.
             unavailable = _RelativeScaleUnavailable(
                 str(exc),
                 reason=exc.reason,
@@ -1901,7 +1902,7 @@ def _infer_lift_result(
                 abs_se_t=abs_se_t,
                 abs_se_c=abs_se_c,
             )
-            return _relative_unavailable_outcome(
+            result = _relative_unavailable_outcome(
                 unavailable,
                 contrast,
                 strategy,
@@ -1913,10 +1914,11 @@ def _infer_lift_result(
                 null_lift,
                 null_abs,
                 preferred_direction,
-            ), None
-        result = None
-        guard_reason = exc.reason
-        guard_display = str(exc)
+            )
+        else:
+            result = None
+            guard_reason = exc.reason
+            guard_display = str(exc)
     if result is None:
         if method_role != "decision":
             return None, None
@@ -1942,7 +1944,7 @@ def _infer_lift_result(
             mean_control=control.mean_y(),
             mean_treat=treatment.mean_y(),
         )
-    if inference is None and strategy.ratio_notes:
+    if inference is None and strategy.ratio_notes and result.relative_unavailable_reason is None:
         update["note"] = "; ".join(strategy.ratio_notes)
     return result.model_copy(update=update), None
 

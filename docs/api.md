@@ -137,7 +137,9 @@ values.
   `stat_sig()` and family selection read the additive difference against
   zero; a declared relative margin stays a non-rejection with p-value 1. A
   constant arm's interval is the other arm's one-sample t. When both arms are
-  constant, the cell still fails with `estimation.engine.lift_guard`. A
+  constant at positive means, the cell still fails with
+  `estimation.engine.lift_guard`; at a zero or negative mean it keeps its
+  unbounded additive row as before. A
   declared prior no longer turns a non-positive-mean decision row into that
   failure: the row keeps its sampling interval, p-value and verdict and marks
   only its posterior unavailable (`posterior_reason_code`

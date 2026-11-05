@@ -1003,8 +1003,10 @@ With no declared margin, the additive difference tested against zero decides the
 `p_value()`, `stat_sig()` and family selection. A declared relative margin has no additive
 counterpart, so such a row stays a conservative non-rejection with `p_value()` 1.0. A declared
 prior marks only the posterior unavailable and leaves the sampling row unchanged. When both
-arms are constant, neither scale has an uncertainty and the cell fails with
-`estimation.engine.lift_guard`.
+arms are constant, neither scale has an uncertainty. If both arm means are positive, the cell
+fails with `estimation.engine.lift_guard`; if either is zero or negative, the row keeps
+`"nonpositive_arm_mean"` and its additive difference with no bounds, a conservative
+non-rejection with `p_value()` 1.0.
 
 For an adjusted effect or a signed relative set, use a route built for it: observational
 adjusted methods, encouragement LATE, switchback contrasts, sitewide impact, or the
