@@ -42,6 +42,7 @@ from tests.source_conformance import (
     frame_summary_source,
     provider_adapters,
     sql_totals_source,
+    unit_panel_table,
     unit_summary_table,
 )
 
@@ -3449,6 +3450,47 @@ def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading()
     assert refused.value.code == "evidence.operation_unavailable"
     assert refused.value.context["requested"] == "artifact_experiment"
     assert reads == []
+
+
+def test_provider_skip_metric_labels_its_daily_rows() -> None:
+    """A provider declaring ``score`` missing="skip" qualifies each of its daily rows with an
+    observed-only population (no source counts a day's enrolled units); revenue's carry none."""
+    from increment import render
+    from increment.frame import MetricSpec, from_unit_panel
+    from increment.readouts._run import _DAY_LIMITED_POPULATION
+
+    source = from_unit_panel(
+        unit_panel_table(),
+        unit="user_id",
+        group="variant",
+        date="ds",
+        control="control",
+        metrics=[MetricSpec(name="revenue"), MetricSpec(name="score", value_column="revenue")],
+    )
+    context = replace(
+        source.context, metric_missingness={**source.context.metric_missingness, "score": "skip"}
+    )
+    experiment, resolver = bind_pair(_forwarding_provider(source, context=context))
+    result = run(experiment.with_views(View(view="daily", grain="daily")), resolver)
+
+    daily_rows = [
+        row
+        for row in _frame_rows(result.to_frame(backend="pyarrow"))
+        if row["scope_view"] == "daily" and row["group_id"] == "treatment"
+    ]
+    # The panel spans three days.
+    assert sorted((row["metric"], row["population"] or "") for row in daily_rows) == [
+        *[("revenue", "")] * 3,
+        *[("score", _DAY_LIMITED_POPULATION)] * 3,
+    ]
+    for metric, expected in (("revenue", 0), ("score", 1)):
+        lines = [
+            line
+            for line in render(result, "full").splitlines()
+            if line.startswith(f"{metric} / arm=treatment / ") and " / date=" in line
+        ]
+        assert len(lines) == 3
+        assert all(line.count(_DAY_LIMITED_POPULATION) == expected for line in lines)
 
 
 def test_analysis_unit_counts_uses_declared_typed_count_evidence() -> None:

@@ -307,8 +307,9 @@ A null or NaN needs a meaning before it can be included in an average:
 
 !!! warning "Skipping missing values can bias the result"
     The metric uses only the units with a value; they stay in every other
-    metric, and the row's `population` states how many units each group
-    observed. This is unbiased only when missingness is unrelated to the
+    metric, and the whole-window row's `population` states how many units each
+    group observed (a breakout row's says the segment's counts were not
+    recorded). This is unbiased only when missingness is unrelated to the
     values. When the share of missing values differs between groups, the
     `frame.validation.metric_missing_differs_by_arm` warning reports it.
     On clustered designs the check is not run; compare missingness across

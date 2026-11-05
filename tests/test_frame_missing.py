@@ -51,7 +51,7 @@ from increment.frame import (
     from_unit_panel,
     from_unit_summary,
 )
-from increment.readouts._run import _observed_population_label
+from increment.readouts._run import _SEGMENT_LIMITED_POPULATION, _observed_population_label
 from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
 from tests._frame_evidence_requests import _counts, _moments, _unit_rows
@@ -862,6 +862,34 @@ def test_skip_label_reaches_frame_and_render() -> None:
     ]
     assert line.count(row.population) == 1
     assert line.count("population=") == 1
+
+
+def test_skip_label_reaches_breakout_frame_and_render() -> None:
+    """A skip metric's segment rows state an observed-only population (no source counts a
+    segment's enrolled units); the other metrics' segment rows carry none."""
+    result, _whole, _segments = _family_run(_score_frame(50, 50))
+    frame = pl.DataFrame(result.to_frame(backend="polars")).filter(
+        (pl.col("scope_view") == "breakout") & (pl.col("group_id") == "treatment")
+    )
+    populations = {
+        (row["metric"], row["dimension_value"]): row["population"]
+        for row in frame.iter_rows(named=True)
+    }
+    assert populations == {
+        (metric, segment): _SEGMENT_LIMITED_POPULATION if metric == "score" else None
+        for metric in ("revenue", "score", "score2")
+        for segment in ("a", "b")
+    }
+    lines = render(result, "full").splitlines()
+    for metric, segment in populations:
+        (line,) = [
+            line
+            for line in lines
+            if line.startswith(
+                f"{metric} / arm=treatment / dimension=segment / segment={segment} / "
+            )
+        ]
+        assert line.count(_SEGMENT_LIMITED_POPULATION) == (1 if metric == "score" else 0)
 
 
 class _SaturatingWhereX:

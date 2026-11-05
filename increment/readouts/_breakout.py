@@ -288,11 +288,12 @@ def _scoped_breakout_results(
 ) -> BreakoutEstimates:
     route = day_axis_route(src)
     from increment.readouts._multiplicity_scope import scoped_collection
+    from increment.readouts._run import _SEGMENT_LIMITED_POPULATION, _label_skipped_slices
 
     population_rows = [
         row.model_copy(update={"analysis_population": analysis_population}) for row in rows
     ]
-    return scoped_collection(
+    scoped = scoped_collection(
         population_rows,
         BreakoutEstimates,
         plan,
@@ -308,6 +309,7 @@ def _scoped_breakout_results(
         source_components=source_components,
         artifact_provenance=artifact_provenance(src),
     )
+    return _label_skipped_slices(scoped, src, metrics, label=_SEGMENT_LIMITED_POPULATION)
 
 
 def _segment_unit_frames(frame: Any, column: str) -> dict[str, Any]:
