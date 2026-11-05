@@ -3182,7 +3182,11 @@ class TestBoundedDomain:
     def test_mde_stops_at_the_rate_ceiling(self):
         """A target the ceiling rate just reaches returns the ceiling; one it
         cannot reach is unattainable with that limiting condition, and a
-        supplied-effect query there keeps its answer with a null companion."""
+        supplied-effect query there keeps its answer with a null companion.
+        The ceiling is the rate as written: a lift of 0.25 on 0.8 is exactly
+        one, and 2.333333333333333 is the last float lift on 0.3 at or below
+        one, so a minimum detectable effect is always one the supplied-effect
+        route evaluates."""
         from increment.errors import InvalidRequestError
 
         baseline = Baseline.from_proportion(0.5)
@@ -3195,6 +3199,26 @@ class TestBoundedDomain:
         assert at_ceiling.mde_relative == pytest.approx(1.0, rel=1e-15)
         assert baseline.mean * (1.0 + at_ceiling.mde_relative) <= 1.0
         assert at_ceiling.power >= ceiling_power
+
+        exactly_one = Baseline.from_proportion(0.8)
+        reached = achieved_power(4, 0.25, exactly_one, procedure).power
+        mde = minimum_detectable_effect(
+            4, exactly_one, procedure, PowerDesign(power=reached)
+        ).mde_relative
+        assert mde is not None
+        assert mde == pytest.approx(0.25, rel=1e-15)
+        assert achieved_power(4, mde, exactly_one, procedure).power >= reached
+
+        last_below = Baseline.from_proportion(0.3)
+        top = achieved_power(4, 2.333333333333333, last_below, procedure).power
+        with pytest.raises(InvalidRequestError) as beyond:
+            minimum_detectable_effect(
+                4, last_below, procedure, PowerDesign(power=math.nextafter(top, math.inf))
+            )
+        assert beyond.value.code in {
+            "power.minimum_detectable_effect.unattainable",
+            "power.minimum_detectable_effect.unrepresentable",
+        }
 
         with pytest.raises(InvalidRequestError) as refusal:
             minimum_detectable_effect(4, baseline, procedure, PowerDesign(power=0.8))

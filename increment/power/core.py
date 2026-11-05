@@ -1381,28 +1381,30 @@ def _bounded_preflight(
     return True
 
 
-def _bounded_alternative_theta(
-    procedure: ArmPlanningProcedure, baseline: Baseline, relative_lift: float, theta: float
-) -> float:
-    """The admissible ``theta`` of a bounded alternative. Its rate ``m0 * (1 +
-    relative_lift * compliance)`` is computed exactly on the inputs as
-    written, so a lift of 0.25 on 0.8 is one although ``log(0.8) +
-    log1p(0.25)`` rounds above zero, and the next float lift above 1.0 on
-    0.5 is above one. A rate above one refuses. A rate of one takes the
-    boundary ``-log(m0)``, where the treatment rate is one exactly in log
-    space; so does a rate below one whose log rate rounds above zero."""
-    rate = _written(baseline.mean) * (1 + _written(relative_lift) * _written(baseline.compliance))
+def _written_rate(mean: float, lift: float, compliance: float, null_lift: float = 0.0) -> Fraction:
+    """The bounded rate ``mean * (1 + null_lift) * (1 + lift * compliance)``
+    computed exactly on the inputs as written. A lift of 0.25 on 0.8 is one,
+    although ``log(0.8) + log1p(0.25)`` rounds above zero; the next float lift
+    above 1.0 on 0.5 is above one. A supplied effect is absolute
+    (``null_lift = 0``); a minimum-detectable-effect candidate composes with
+    the null."""
+    return _written(mean) * (1 + _written(null_lift)) * (1 + _written(lift) * _written(compliance))
+
+
+def _bounded_point(
+    rate: Fraction, *, log_m0: float, theta0: float, theta: float, distance: float
+) -> tuple[float, float] | None:
+    """``(theta, distance)`` of a bounded effect whose rate as written is
+    ``rate``, or ``None`` above one. A rate of one, or a rate below one whose
+    ``log(m0) + theta`` rounds above zero, is the boundary ``theta =
+    -log(m0)`` at distance ``-log(m0) - theta0``: there the treatment rate is
+    one exactly in log space, and a supplied effect and a candidate minimum
+    detectable effect are evaluated at the same point."""
     if rate > 1:
-        _refuse_rate_above_one(
-            procedure,
-            baseline,
-            rate,
-            role="alternative",
-            relative_lift=relative_lift,
-            compliance=baseline.compliance,
-        )
-    log_m0 = math.log(baseline.mean)
-    return -log_m0 if rate == 1 or log_m0 + theta > 0.0 else theta
+        return None
+    if rate == 1 or log_m0 + theta > 0.0:
+        return -log_m0, -log_m0 - theta0
+    return theta, distance
 
 
 _CLUSTER_TOO_FEW = RefusalSpec(
@@ -1739,19 +1741,37 @@ def _supplied_effect(
     """``(theta, distance)`` of a supplied complier-scale ``relative_lift``:
     its absolute effective log ratio ``log1p(relative_lift * compliance)``
     and its signed log-distance from the null. Validates the public domain
-    and, for a bounded metric, refuses an implied rate above one; a rate of
-    one takes the boundary ``theta`` (``_bounded_alternative_theta``).
-    Sizing and achieved power share this conversion, so their supplied
-    effect is the same alternative the companion solver measures distance
-    from.
+    and, for a bounded metric, refuses a rate above one as written and puts
+    a rate of one on the boundary point (``_bounded_point``) that minimum
+    detectable effect candidates share. Sizing and achieved power share this
+    conversion, so their supplied effect is the same alternative the
+    companion solver measures distance from.
     """
     decision = cast("RelativeDecisionPolicy", procedure.decision)
     _validate_relative_lift(relative_lift)
     effective_lift = relative_lift * baseline.compliance
     theta = math.log1p(effective_lift)
-    if bounded:
-        theta = _bounded_alternative_theta(procedure, baseline, relative_lift, theta)
-    return theta, _distance_from_null(effective_lift, decision.null_lift)
+    distance = _distance_from_null(effective_lift, decision.null_lift)
+    if not bounded:
+        return theta, distance
+    rate = _written_rate(baseline.mean, relative_lift, baseline.compliance)
+    point = _bounded_point(
+        rate,
+        log_m0=math.log(baseline.mean),
+        theta0=math.log1p(decision.null_lift),
+        theta=theta,
+        distance=distance,
+    )
+    if point is None:
+        _refuse_rate_above_one(
+            procedure,
+            baseline,
+            rate,
+            role="alternative",
+            relative_lift=relative_lift,
+            compliance=baseline.compliance,
+        )
+    return point
 
 
 def _sequential_side(
@@ -1906,8 +1926,9 @@ class _MdeSearch:
     its signed log-distance from the null is ``log1p(m * compliance)`` and
     its implied absolute alternative ``expm1(theta0 + distance) /
     compliance`` must itself be a representable relative lift above the
-    ``-1`` floor and, for a bounded metric, a rate at most one. The
-    admissible candidates form one interval along the direction of
+    ``-1`` floor and, for a bounded metric, a rate at most one as written,
+    judged and placed by the same ``_bounded_point`` as a supplied effect.
+    The admissible candidates form one interval along the direction of
     increasing distance; its endpoints are located by bisecting float64
     ordinals between a rejected and an accepted float, as is the first
     crossing of the target power.
@@ -1915,6 +1936,7 @@ class _MdeSearch:
 
     plan: _ArmPlan
     target: float
+    null_lift: float
     theta0: float
     sigma: float
     compliance: float
@@ -1936,6 +1958,7 @@ class _MdeSearch:
         return cls(
             plan=plan,
             target=target,
+            null_lift=null_lift,
             theta0=math.log1p(null_lift),
             sigma=-1.0 if alternative == "less" else 1.0,
             compliance=compliance,
@@ -1961,8 +1984,18 @@ class _MdeSearch:
         implied = math.expm1(theta) / self.compliance
         if not math.isfinite(implied) or implied <= -1.0:
             return None
-        if self.plan.bounded and self.log_m0 + theta > 0.0:
+        if not self.plan.bounded:
+            return distance, theta
+        point = _bounded_point(
+            _written_rate(self.plan.baseline.mean, m, self.compliance, self.null_lift),
+            log_m0=self.log_m0,
+            theta0=self.theta0,
+            theta=theta,
+            distance=distance,
+        )
+        if point is None:
             return None
+        theta, distance = point
         return distance, theta
 
     def admissible(self, m: float) -> bool:
@@ -2705,6 +2738,7 @@ class _BinomialMdeSearch(_MdeSearch):
         return cls(
             plan=base.plan,
             target=base.target,
+            null_lift=base.null_lift,
             theta0=base.theta0,
             sigma=base.sigma,
             compliance=base.compliance,

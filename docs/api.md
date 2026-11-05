@@ -171,8 +171,11 @@ values.
   it used to be refused with `power.bounded_metric.rate_above_one` whenever
   rounding put its logarithm just above zero. Any rate above one as written is
   refused, even one as close as the next float lift above 1.0 on a baseline of
-  0.5, and the refusal prints the implied rate in full. A shifted null above one
-  as written is refused too, and so, as before, is a null whose computed
+  0.5, and the refusal prints the implied rate in full. `minimum_detectable_effect`
+  and `power_curve` judge their candidate effects by the same rule, so a target
+  that the rate-one effect reaches is no longer reported unattainable, and no
+  returned effect implies a rate above one as written. A shifted null above
+  one as written is refused too, and so, as before, is a null whose computed
   logarithm rounds above zero. Other results and experiment identity hashes are
   unchanged.
 - Release note (usability): reading a public submodule such as
