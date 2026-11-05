@@ -4915,7 +4915,10 @@ def _full_readout_coordinate(row):
 
 def _assert_old_readout_rows(actual, expected, *, nominal_alpha=None):
     from tests.evidence_fixtures.replay import _assert_projected_value
-    from tests.parity_harness.expected_differences import without_binomial_arm_facts
+    from tests.parity_harness.expected_differences import (
+        without_binomial_arm_facts,
+        without_breakout_family_size,
+    )
     from tests.test_evidence_identity_parity import _retained_capture_projection
 
     actual = [row if isinstance(row, dict) else row.model_dump(mode="json") for row in actual]
@@ -4938,7 +4941,7 @@ def _assert_old_readout_rows(actual, expected, *, nominal_alpha=None):
             assert nominal_alpha is not None
             maximum = nominal_alpha * (2.0 if left["alternative"] in {"less", "greater"} else 1.0)
             assert 0.0 < left["allocation_alpha"] <= maximum
-        left = without_binomial_arm_facts(right, left)
+        left = without_breakout_family_size(right, without_binomial_arm_facts(right, left))
         left, _compatibility_fields = _retained_capture_projection(right, left)
         extra = left.keys() - right.keys()
         if extra:

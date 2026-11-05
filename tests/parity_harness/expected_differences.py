@@ -206,3 +206,41 @@ def without_binomial_arm_facts(
         ]
         return tuple(paired) if isinstance(actual, tuple) else paired
     return actual
+
+
+def without_breakout_family_size(expected: Any, actual: Any) -> Any:
+    """``actual`` without the family size fixed-horizon BH breakout rows gained after a capture.
+
+    Only a segment row with ``family_procedure == "bh"`` and a positive integer ``family_size``
+    is projected, and only when its captured row lacks the field or holds it as null. Lists
+    and tuples pair by position, as in ``without_binomial_arm_facts``.
+    """
+    if isinstance(expected, Mapping) and isinstance(actual, Mapping):
+        projected = {
+            key: without_breakout_family_size(expected.get(key), value)
+            for key, value in actual.items()
+        }
+        size = actual.get("family_size")
+        if (
+            actual.get("dimension_value") is not None
+            and actual.get("family_procedure") == "bh"
+            and type(size) is int
+            and size >= 1
+            and expected.get("family_size") is None
+        ):
+            if "family_size" in expected:
+                projected["family_size"] = None
+            else:
+                del projected["family_size"]
+        return projected
+    if (
+        isinstance(expected, (list, tuple))
+        and isinstance(actual, (list, tuple))
+        and len(expected) == len(actual)
+    ):
+        paired = [
+            without_breakout_family_size(left, right)
+            for left, right in zip(expected, actual, strict=True)
+        ]
+        return tuple(paired) if isinstance(actual, tuple) else paired
+    return actual
