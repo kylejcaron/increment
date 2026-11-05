@@ -10,16 +10,18 @@ from integration.warehouse_execution._compile import (
     fixed_compile_cases,
 )
 
-# Each worker captures the public readouts once; shards spread rendering across workers.
+# One worker owns the module: the first shard of each dialect builds the captured
+# registry within its own timeout, and no later test waits on another worker's build.
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.slow,
     pytest.mark.compile_registry,
+    pytest.mark.xdist_group("warehouse_compile_registry"),
 ]
 _SHARDS = 8
 
 
-# The first shard on each worker also pays for capturing the public readouts.
+# The first shard of each dialect also pays for a cold registry build.
 @pytest.mark.timeout(900)
 @pytest.mark.parametrize("shard", range(_SHARDS))
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
