@@ -10,6 +10,7 @@ from typing import Any, cast
 import ibis
 import numpy as np
 import pytest
+import sqlglot
 
 from increment import View, from_definitions, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
@@ -1029,3 +1030,63 @@ def test_ratio_projection_preserves_adjustment_contrast_at_large_means(tmp_path)
     assert len(ratio_projections) == 4
     for expected, observed in ratio_projections:
         assert observed[4] == pytest.approx(expected[4], rel=1e-8, abs=1e-18)
+
+
+@backend_fixture(scope="module")
+def three_arm_ratio_fit(tmp_path_factory):
+    """A categorical three-arm ratio fit and every DuckDB statement it issued."""
+    statements: list[str] = []
+    _, declarations = _probe_covariates(categorical=True)
+    rows = _mixed_scale_rows(0, denominator=True)
+    with _QRWarehouse(tmp_path_factory.mktemp("qr_literals"), {"probe_input": rows}) as warehouse:
+        fit = warehouse.fit(
+            "probe_input",
+            ratio=True,
+            arms=THREE_ARMS,
+            declarations=declarations,
+            statement_log=statements,
+        )
+    return fit, tuple(sql for sql in statements if sql)
+
+
+def test_qr_float_literals_reach_duckdb_as_the_doubles_they_name(three_arm_ratio_fit):
+    _, statements = three_arm_ratio_fit
+    named: dict[str, float] = {}
+    for sql in statements:
+        for node in sqlglot.parse_one(sql, read="duckdb").find_all(sqlglot.exp.Literal):
+            parent = node.parent
+            if node.is_string and isinstance(parent, sqlglot.exp.Cast):
+                if parent.to.is_type("double") and math.isfinite(float(node.this)):
+                    named[parent.sql("duckdb")] = float(node.this)
+            elif node.is_number and not node.this.isdigit():
+                literal = parent if isinstance(parent, sqlglot.exp.Neg) else node
+                named[literal.sql("duckdb")] = float(literal.sql("duckdb"))
+    texts = sorted(named)
+    connection = ibis.duckdb.connect()
+    try:
+        read = {}
+        for start in range(0, len(texts), 500):
+            chunk = texts[start : start + 500]
+            row = connection.raw_sql(
+                "SELECT " + ", ".join(f"CAST(1 AS DOUBLE) * ({text})" for text in chunk)
+            ).fetchone()
+            read.update(zip(chunk, row, strict=True))
+    finally:
+        connection.disconnect()
+
+    assert named
+    assert {text: value for text, value in read.items() if value != named[text]} == {}
+
+
+def test_qr_mirrored_contrasts_have_identical_uncertainty(three_arm_ratio_fit):
+    fit, _ = three_arm_ratio_fit
+    uncertainty = {
+        (kind, scale, arm, comparison): (se, dof)
+        for kind, arm, comparison, scale, _estimate, se, dof in fit._projections
+    }
+    mirrored = {
+        (kind, scale, arm, comparison): uncertainty[(kind, scale, comparison, arm)]
+        for kind, scale, arm, comparison in uncertainty
+    }
+
+    assert mirrored == uncertainty
