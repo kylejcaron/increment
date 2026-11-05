@@ -1260,6 +1260,7 @@ def _daily_panel_run(tmp_path, scopes):
             "unit": [f"u{index}" for index in range(40)],
             "arm": ["control", "treatment"] * 20,
             "day": [days[index // 20] for index in range(40)],
+            "exposed_on": [days[0]] * 40,
             "value": [float(index % 7) for index in range(40)],
             "region": ["north", "north", "south", "south"] * 10,
         }
@@ -1276,6 +1277,7 @@ def _daily_panel_run(tmp_path, scopes):
             allocation_scheme="independent",
         ),
         metrics={"value": "mean"},
+        exposure_date="exposed_on",
         breakouts=["region"],
         plan=AnalysisPlan(primary="value"),
     )
@@ -1747,6 +1749,7 @@ def test_unicode_daily_metadata_order_roundtrips_after_run():
                         "unit": f"{arm}-{day}-{unit}",
                         "arm": arm,
                         "day": day,
+                        "exposed_on": "2025-01-01",
                         "value": float(unit) + shift,
                     }
                 )
@@ -1758,6 +1761,7 @@ def test_unicode_daily_metadata_order_roundtrips_after_run():
         date="day",
         control="control",
         metrics={"value": "mean"},
+        exposure_date="exposed_on",
     )
     scope = View(view="daily", grain="daily")
     requested = replace(

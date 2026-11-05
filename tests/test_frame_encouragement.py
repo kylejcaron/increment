@@ -355,9 +355,9 @@ def test_from_unit_panel_derives_uptake_column_alongside_the_window() -> None:
     window_days; deriving the column must not disturb the window scoping.
 
     Unlike test_from_unit_panel_uptake_window's fixture, this one has no
-    day-0 row: each unit's first observed day is day 1, so elapsed =
-    day - 1. The window is still load-bearing (u1's day-5 click is
-    elapsed 4, outside [0, 3); u2's day-2 click is elapsed 1, inside).
+    day-0 row: every unit is exposed on day 1, so elapsed = day - 1. The
+    window is still load-bearing (u1's day-5 click is elapsed 4, outside
+    [0, 3); u2's day-2 click is elapsed 1, inside).
     """
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
@@ -367,10 +367,16 @@ def test_from_unit_panel_derives_uptake_column_alongside_the_window() -> None:
     for day in (1, 2, 3, 4, 5):
         for unit in ("u1", "u2", "u3", "u4"):
             clicked = 1.0 if day == click_day[unit] else 0.0
-            rows.append((unit, group[unit], day, 1.0, clicked))
+            rows.append((unit, group[unit], day, 1, 1.0, clicked))
     cols = list(zip(*rows, strict=True))
     table = pa.table(
-        dict(zip(["user_id", "variant", "day", "revenue", "clicked"], cols, strict=True))
+        dict(
+            zip(
+                ["user_id", "variant", "day", "exposed_on", "revenue", "clicked"],
+                cols,
+                strict=True,
+            )
+        )
     )
     design = Encouragement(
         control_group="control",
@@ -386,6 +392,7 @@ def test_from_unit_panel_derives_uptake_column_alongside_the_window() -> None:
         "control": "control",
         "metrics": {"revenue": "mean"},
         "design": design,
+        "exposure_date": "exposed_on",
     }
 
     derived = from_unit_panel(table, **common)
@@ -402,11 +409,11 @@ def test_from_unit_panel_derives_uptake_column_alongside_the_window() -> None:
 def test_from_unit_panel_uptake_window() -> None:
     """window_days=3, click on day 5 -> d=0; click on day 2 -> d=1.
 
-    Both units share first exposure at day 0 (their earliest panel row), so
-    day values double as elapsed-since-exposure offsets: day 5 falls outside
-    the half-open [0, 3) window, day 2 falls inside it. Without the window
-    (design=None) both clicks count, so the aggregate contrast (sum_d=1 vs
-    sum_d=2) pins the windowed behaviour precisely.
+    Every unit is exposed on day 0, so day values double as elapsed-since-
+    exposure offsets: day 5 falls outside the half-open [0, 3) window, day 2
+    falls inside it. Without the window (design=None) both clicks count, so
+    the aggregate contrast (sum_d=1 vs sum_d=2) pins the windowed behaviour
+    precisely.
     """
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
@@ -417,10 +424,16 @@ def test_from_unit_panel_uptake_window() -> None:
     for day in days:
         for unit in ("u1", "u2", "u3", "u4"):
             clicked = 1.0 if day == click_day[unit] else 0.0
-            rows.append((unit, group[unit], day, 1.0, clicked))
+            rows.append((unit, group[unit], day, 0, 1.0, clicked))
     cols = list(zip(*rows, strict=True))
     table = pa.table(
-        dict(zip(["user_id", "variant", "day", "revenue", "clicked"], cols, strict=True))
+        dict(
+            zip(
+                ["user_id", "variant", "day", "exposed_on", "revenue", "clicked"],
+                cols,
+                strict=True,
+            )
+        )
     )
 
     design = Encouragement(
@@ -439,6 +452,7 @@ def test_from_unit_panel_uptake_window() -> None:
         metrics={"revenue": "mean"},
         uptake="clicked",
         design=design,
+        exposure_date="exposed_on",
     )
     metric = _metric(windowed, "revenue")
     windowed_treatment = {r["group_id"]: r for r in _moments(windowed, metric, grain="total")}[
@@ -463,15 +477,15 @@ def test_from_unit_panel_uptake_window() -> None:
 
 
 def test_from_unit_panel_uptake_window_anchors_to_each_units_own_entry() -> None:
-    """Staggered enrollment: window anchors to each unit's OWN first
-    observed day, never the panel's global earliest date.
+    """Staggered enrollment: the window anchors to each unit's OWN declared
+    exposure date, never the panel's global earliest date.
 
-    u1 enters at day 0 (rows for days 0-5); u2 enters at day 3 (rows only
-    from day 3 - days 0-2 are absent from the INPUT and only appear after
-    densification, zero-filled). window_days=3.
+    u1 is exposed at day 0 (rows for days 0-5); u2 is exposed at day 3 (rows
+    only from day 3 - days 0-2 are absent from the INPUT and only appear
+    after densification, zero-filled). window_days=3.
 
-    u1 clicks day 1 -> elapsed since u1's own entry (day 0) is 1, inside
-    [0, 3) -> counts. u2 clicks day 4 -> elapsed since u2's OWN entry
+    u1 clicks day 1 -> elapsed since u1's own exposure (day 0) is 1, inside
+    [0, 3) -> counts. u2 clicks day 4 -> elapsed since u2's OWN exposure
     (day 3) is 1, inside [3, 6) -> counts under correct per-unit
     anchoring. Anchoring to the panel's GLOBAL earliest date (day 0, from
     the densified spine) instead would evaluate u2's day-4 click as
@@ -483,15 +497,21 @@ def test_from_unit_panel_uptake_window_anchors_to_each_units_own_entry() -> None
     rows = []
     for day in (0, 1, 2, 3, 4, 5):
         clicked = 1.0 if day == 1 else 0.0
-        rows.append(("u1", "treatment", day, 1.0, clicked))
-    for day in (3, 4, 5):  # u1 enters at 0, u2 enters at 3 - staggered entry
+        rows.append(("u1", "treatment", day, 0, 1.0, clicked))
+    for day in (3, 4, 5):  # u1 is exposed at 0, u2 at 3 - staggered entry
         clicked = 1.0 if day == 4 else 0.0
-        rows.append(("u2", "treatment", day, 1.0, clicked))
+        rows.append(("u2", "treatment", day, 3, 1.0, clicked))
     for day in (0, 1, 2, 3, 4, 5):
-        rows.append(("u3", "control", day, 1.0, 0.0))
+        rows.append(("u3", "control", day, 0, 1.0, 0.0))
     cols = list(zip(*rows, strict=True))
     table = pa.table(
-        dict(zip(["user_id", "variant", "day", "revenue", "clicked"], cols, strict=True))
+        dict(
+            zip(
+                ["user_id", "variant", "day", "exposed_on", "revenue", "clicked"],
+                cols,
+                strict=True,
+            )
+        )
     )
 
     design = Encouragement(
@@ -510,6 +530,7 @@ def test_from_unit_panel_uptake_window_anchors_to_each_units_own_entry() -> None
         metrics={"revenue": "mean"},
         uptake="clicked",
         design=design,
+        exposure_date="exposed_on",
     )
     metric = _metric(src, "revenue")
     treatment = {r["group_id"]: r for r in _moments(src, metric, grain="total")}["treatment"]
@@ -536,11 +557,17 @@ def test_from_unit_panel_uptake_window_with_real_dates() -> None:
         day = base + timedelta(days=offset)
         for unit in ("u1", "u2"):
             clicked = 1.0 if offset == offsets[unit] else 0.0
-            rows.append((unit, group[unit], day, 1.0, clicked))
-    rows.append(("u3", "control", base, 1.0, 0.0))
+            rows.append((unit, group[unit], day, base, 1.0, clicked))
+    rows.append(("u3", "control", base, base, 1.0, 0.0))
     cols = list(zip(*rows, strict=True))
     table = pa.table(
-        dict(zip(["user_id", "variant", "day", "revenue", "clicked"], cols, strict=True))
+        dict(
+            zip(
+                ["user_id", "variant", "day", "exposed_on", "revenue", "clicked"],
+                cols,
+                strict=True,
+            )
+        )
     )
 
     design = Encouragement(
@@ -559,6 +586,7 @@ def test_from_unit_panel_uptake_window_with_real_dates() -> None:
         metrics={"revenue": "mean"},
         uptake="clicked",
         design=design,
+        exposure_date="exposed_on",
     )
     metric = _metric(src, "revenue")
     treatment = {r["group_id"]: r for r in _moments(src, metric, grain="total")}["treatment"]

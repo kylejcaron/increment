@@ -169,7 +169,7 @@ def test_day_axis_source_capability_refuses_before_scalar_admission(monkeypatch,
         group="arm",
         control="control",
         metrics=[MetricSpec(name="outcome", decision_method=scalar)],
-        **({"date": "day"} if panel else {}),
+        **({"date": "day", "exposure_date": "exposure"} if panel else {}),
     )
     reads = []
 
