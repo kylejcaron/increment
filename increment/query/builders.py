@@ -243,35 +243,36 @@ def _register_naive_utc() -> None:
 _register_naive_utc()
 
 
+def _naive_utc(ts: ir.TimestampValue) -> ir.TimestampValue:
+    """A time-zone-aware *ts* as the naive UTC timestamp of the same instant; a ``ts`` of
+    any other type is returned as it is."""
+    if getattr(ts.type(), "timezone", None) is None:
+        return ts
+    return _NaiveUtc(cast("ops.Value[ibis_dt.Timestamp]", ts.op())).to_expr()
+
+
 def _naive_utc_ts(table: ir.Table) -> ir.Table:
-    """*table* with a time-zone-aware ``ts`` rewritten as the naive UTC timestamp of the
-    same instant; a ``ts`` of any other type is kept as it is."""
+    """*table* with a time-zone-aware ``ts`` rewritten as naive UTC (see :func:`_naive_utc`)."""
     if getattr(table.ts.type(), "timezone", None) is None:
         return table
-    return table.mutate(ts=_NaiveUtc(cast("ops.Value[ibis_dt.Timestamp]", table.ts.op())).to_expr())
+    return table.mutate(ts=_naive_utc(table.ts))
 
 
 def _local_date_at_offset(ts: ir.TimestampColumn, offset: dt.timedelta) -> ir.DateColumn:
     """Event timestamp -> calendar date under a fixed UTC *offset* day
     boundary.
 
-    Timezone-naive columns shift by the fixed offset before casting to a
-    date (portable, backend-agnostic SQL). Timezone-aware columns instead
-    convert through whole seconds since the UTC epoch, since a direct date
-    cast would depend on the backend's session timezone. Not applied to
-    strict timestamp-to-timestamp comparisons, where the offset cancels on
-    both sides, or to dates already localized upstream.
+    The timestamp, read as naive UTC (a time-zone-aware one through
+    :func:`_naive_utc`, since a direct cast would depend on the backend's
+    session time zone), shifts by the fixed offset before casting to a date.
+    Not applied to strict timestamp-to-timestamp comparisons, where the offset
+    cancels on both sides, or to dates already localized upstream.
     """
-    if getattr(ts.type(), "timezone", None) is not None:
-        epoch = ibis.literal(dt.datetime(1970, 1, 1, tzinfo=dt.UTC))
-        seconds = ts.delta(epoch, unit="second") + int(offset.total_seconds())
-        days = (seconds.cast("float64") / 86400.0).floor().cast("int32")
-        local = ibis.literal(dt.date(1970, 1, 1)) + days.as_interval("D")
-        return cast("ir.DateColumn", local.cast(dt.date))
+    naive = _naive_utc(ts)
     if offset == dt.timedelta(0):
-        return cast("ir.DateColumn", ts.cast(dt.date))
+        return cast("ir.DateColumn", naive.cast(dt.date))
     minutes = int(offset.total_seconds() // 60)
-    return cast("ir.DateColumn", (ts + ibis.interval(minutes=minutes)).cast(dt.date))
+    return cast("ir.DateColumn", (naive + ibis.interval(minutes=minutes)).cast(dt.date))
 
 
 def _local_date(ts: ir.TimestampColumn, experiment: Experiment | None) -> ir.DateColumn:
