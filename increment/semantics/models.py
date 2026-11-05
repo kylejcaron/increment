@@ -1110,6 +1110,18 @@ def _measure_identity(measure: "Measure") -> tuple[object, ...]:
     return (measure.fact, measure.aggregation, measure.window_days, filters)
 
 
+def favorable_alternative(
+    preferred_direction: PreferredDirection | None, alternative: Alternative = "two-sided"
+) -> Literal["greater", "less"] | None:
+    """The tail on which the treatment is better: the declared increase/decrease;
+    for a metric declaring none (unset or neutral), a one-sided alternative; else None."""
+    if preferred_direction == "increase":
+        return "greater"
+    if preferred_direction == "decrease":
+        return "less"
+    return None if alternative == "two-sided" else alternative
+
+
 def resolve_margin(
     preferred_direction: PreferredDirection | None,
     # Direction explicitness is part of the public margin contract.
@@ -1143,7 +1155,9 @@ def resolve_margin(
             metric_name=metric_name,
             margin=margin,
         )
-    if preferred_direction == "increase":
+    tail = favorable_alternative(preferred_direction)
+    assert tail is not None
+    if tail == "greater":
         if margin >= 1.0:
             _definition_refusal(
                 "definition.metric_margin_implies_unrepresentable_null_lift",
@@ -1154,8 +1168,8 @@ def resolve_margin(
                 metric_name=metric_name,
                 margin=margin,
             )
-        return -margin, "greater"
-    return margin, "less"
+        return -margin, tail
+    return margin, tail
 
 
 def resolve_margin_abs(
@@ -1189,9 +1203,9 @@ def resolve_margin_abs(
             metric_name=metric_name,
             margin_abs=margin_abs,
         )
-    if preferred_direction == "increase":
-        return -margin_abs, "greater"
-    return margin_abs, "less"
+    tail = favorable_alternative(preferred_direction)
+    assert tail is not None
+    return (-margin_abs if tail == "greater" else margin_abs), tail
 
 
 class MetricIdentity(AliasMixin, _ExplicitOnlyFields, _Base):

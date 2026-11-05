@@ -49,7 +49,7 @@ from increment.estimation.sequential import (
     SequentialSupportRequest,
 )
 from increment.semantics.assignment import ParallelAssignment, SwitchbackAssignment
-from increment.semantics.models import InferenceSpec, MethodSpec
+from increment.semantics.models import InferenceSpec, MethodSpec, favorable_alternative
 from increment.semantics.sequential import SequentialCompliancePolicy, sequential_family_size
 
 _REFUSALS = refusals(
@@ -425,15 +425,7 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
 
         resolved_alternative = alternative
         if role == "guardrail":
-            direction_by_preference: dict[str, Literal["greater", "less"]] = {
-                "increase": "greater",
-                "decrease": "less",
-            }
-            direction_alternative = (
-                direction_by_preference.get(preferred_direction)
-                if preferred_direction is not None
-                else None
-            )
+            direction_alternative = favorable_alternative(preferred_direction)
             if direction_alternative is not None:
                 if alternative != "two-sided" and alternative != direction_alternative:
                     _raise("arm_planning.guardrail_preferred_direction_conflict")

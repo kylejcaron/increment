@@ -389,6 +389,21 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
             tail=tail,
         )
 
+    def null_rejection_tail(self, null_lift: float) -> Literal["greater", "less"]:
+        """The tail a two-sided rejection of ``H0: R = 1 + null_lift`` lies on: the
+        smaller of the two one-sided p-values the two-sided ``null_p_value`` doubles."""
+        from increment.estimation.binomial_rr import null_rejection_tail
+
+        return null_rejection_tail(
+            1.0 + null_lift,
+            self.x_c,
+            self.n_c,
+            self.x_t,
+            self.n_t,
+            self.nuisance_beta,
+            tail=self.decision_alpha / 2.0,
+        )
+
 
 class DeltaConversionEvidence(CodedModel, BaseModel):
     """The count evidence persisted on every conversion or retention row the count rule
@@ -2279,6 +2294,11 @@ class LiftEstimate(_RowIdentity):
         """
         return row_stat_sig(self)
 
+    def rejection_side(self) -> RejectionSide | None:
+        """The side of its null this row's significant result lies on; ``None``
+        exactly when ``stat_sig()`` is not True. See :func:`row_rejection_side`."""
+        return row_rejection_side(self)
+
     def p_value(self) -> float | None:
         """Return a presentation-only sampling p-value for this displayed result.
 
@@ -2305,6 +2325,98 @@ def row_chance_to_beat(row: DecisionRow) -> float | None:
     return None if posterior is None else posterior.survival(0.0)
 
 
+#: The side of the null a rejecting confidence set lies on: above it, below it, or on both
+#: sides (a set disconnected around the null, or an empty one), where no side is established.
+RejectionSide = Literal["greater", "less", "split"]
+
+
+def _interval_side(
+    lower: float | Fraction | None, upper: float | Fraction | None, null: float | Fraction
+) -> RejectionSide:
+    if lower is not None and lower > null:
+        return "greater"
+    if upper is not None and upper < null:
+        return "less"
+    return "split"
+
+
+def _set_side(
+    intervals: tuple[tuple[float | None, float | None], ...], null: float
+) -> RejectionSide:
+    if intervals and all(lo is not None and lo > null for lo, _ in intervals):
+        return "greater"
+    if intervals and all(hi is not None and hi < null for _, hi in intervals):
+        return "less"
+    return "split"
+
+
+def _sequential_decision(result: SequentialResult) -> RejectionSide | Literal[False]:
+    if not result.rejects():
+        return False
+    if isinstance(result, AsymptoticSequentialResult):
+        # The crossed tail is the sign of the contrast at the registered null.
+        contrast = result.bounds.estimator_contrast
+        assert contrast is not None
+        return "greater" if contrast > 0 else "less"
+    bounds = result.bounds
+    if bounds.empty:
+        return "split"
+    return _interval_side(bounds.lower, bounds.upper, 1 + result.checkpoint.cell.null_lift)
+
+
+def _additive_decision(row: DecisionRow, null: float) -> RejectionSide | Literal[False]:
+    if not _additive_excludes(row, null):
+        return False
+    return _interval_side(row.abs_lb, row.abs_ub, null)
+
+
+def _row_decision(row: DecisionRow) -> RejectionSide | Literal[False] | None:
+    """The row's own verdict: the side of a rejection, ``False`` for a genuine
+    non-rejection, ``None`` for no usable sampling verdict. Both
+    :func:`row_stat_sig` and :func:`row_rejection_side` project it, so a
+    rejection always names its side."""
+    if row.failure_code is not None or _sampling_availability(row) is False:
+        return None
+    if row.sequential_result is not None:
+        return _sequential_decision(row.sequential_result)
+    if getattr(row, "low_reliability", False):
+        return False
+    confidence_set = getattr(row, "confidence_set", None)
+    if confidence_set is not None:
+        null = row.null_abs if row.null_abs is not None else row.null_lift
+        interval = confidence_set.additive if row.null_abs is not None else confidence_set.relative
+        if not interval.excludes(null):
+            return False
+        return _interval_side(interval.lower.value, interval.upper.value, null)
+    if row.null_abs is not None:
+        return _additive_decision(row, row.null_abs)
+    if row.relative_unavailable_reason is not None:
+        return _additive_decision(row, 0.0) if _additive_zero_reference(row) is not None else False
+    if row.relative_confidence_set is not None:
+        if row.relative_confidence_set.contains(row.null_lift) is not False:
+            return False
+        return _set_side(row.relative_confidence_set.intervals, row.null_lift)
+    if row.reference_kind == "binomial":
+        bset = row.binomial_set
+        assert bset is not None
+        # ``p_two < alpha`` is ``min(p_+, p_-) < alpha / 2``: doubling is exact.
+        if not bset.null_p_value(row.null_lift, row.alternative) < bset.decision_alpha:
+            return False
+        if row.alternative != "two-sided":
+            return row.alternative
+        return bset.null_rejection_tail(row.null_lift)
+    lift = row.lift
+    if lift is None:
+        return None
+    if row.alternative == "greater":
+        rejected = lift.lb is not None and lift.lb > row.null_lift
+    elif row.alternative == "less":
+        rejected = lift.ub is not None and lift.ub < row.null_lift
+    else:
+        rejected = lift.excludes(row.null_lift)
+    return _interval_side(lift.lb, lift.ub, row.null_lift) if rejected else False
+
+
 def row_stat_sig(row: DecisionRow) -> bool | None:
     """Whether ``row``'s own interval excludes its own null, honoring
     ``alternative`` -- the one verdict every row type and the readout frame
@@ -2329,36 +2441,21 @@ def row_stat_sig(row: DecisionRow) -> bool | None:
     inverted from, so this is exact even when ``null_lift`` differs from the
     null the row's own ``lift``/``binomial_set`` bounds were built against.
     """
-    if row.failure_code is not None or _sampling_availability(row) is False:
-        return None
-    if row.sequential_result is not None:
-        return row.sequential_result.rejects()
-    if getattr(row, "low_reliability", False):
-        return False
-    confidence_set = getattr(row, "confidence_set", None)
-    if confidence_set is not None:
-        if row.null_abs is not None:
-            return confidence_set.additive.excludes(row.null_abs)
-        return confidence_set.relative.excludes(row.null_lift)
-    if row.null_abs is not None:
-        return _additive_excludes(row, row.null_abs)
-    if row.relative_unavailable_reason is not None:
-        return _additive_zero_reference(row) is not None and _additive_excludes(row, 0.0)
-    if row.relative_confidence_set is not None:
-        return row.relative_confidence_set.contains(row.null_lift) is False
-    if row.reference_kind == "binomial":
-        bset = row.binomial_set
-        assert bset is not None
-        # ``p_two < alpha`` is ``min(p_+, p_-) < alpha / 2``: doubling is exact.
-        return bset.null_p_value(row.null_lift, row.alternative) < bset.decision_alpha
-    lift = row.lift
-    if lift is None:
-        return None
-    if row.alternative == "greater":
-        return lift.lb is not None and lift.lb > row.null_lift
-    if row.alternative == "less":
-        return lift.ub is not None and lift.ub < row.null_lift
-    return lift.excludes(row.null_lift)
+    decision = _row_decision(row)
+    return True if isinstance(decision, str) else decision
+
+
+def row_rejection_side(row: DecisionRow) -> RejectionSide | None:
+    """The side of its own null ``row``'s rejection lies on, read from the same
+    verdict as :func:`row_stat_sig`; ``None`` exactly when that verdict is not True.
+
+    A two-sided binomial rejection lies on the tail with the smaller one-sided
+    p-value; a sequential exact set on the side of the registered null ratio its
+    bounds exclude; an asymptotic set on the sign of its contrast at that null.
+    ``"split"`` names a rejecting set that lies on both sides of the null.
+    """
+    decision = _row_decision(row)
+    return decision if isinstance(decision, str) else None
 
 
 def row_verdict(row: Any) -> bool | None:

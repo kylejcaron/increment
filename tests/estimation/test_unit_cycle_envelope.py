@@ -139,6 +139,19 @@ def test_null_is_subtracted_from_slope_not_ht_point(alternative):
     assert contrast_results_to_readout(result.results)[0]["stat_sig"] is False
 
 
+def test_envelope_rejection_side_is_the_sign_of_the_slope_scaled_residual():
+    from increment.estimation.contrast import contrast_rejection_side, contrast_stat_sig
+
+    # Retained-window effect 2 against null 1.5: residual = 1.25 - 1.5 * 0.625 = 0.3125 and
+    # p = (0.01 / 4) / 0.3125**2 = 0.0256 < 0.05. The HT point 1.25 alone sits below the null.
+    result = estimate_contrast(stats(), procedure(envelope(), null_abs=1.5)).results[0]
+    assert result.residual_p_value == pytest.approx((0.01 / 4) / 0.3125**2)
+    assert result.estimate.value < result.null_abs
+
+    assert contrast_stat_sig(result) is True
+    assert contrast_rejection_side(result) == "greater"
+
+
 def test_zero_envelope_identifies_singleton_with_nonzero_sample_variance():
     result = estimate_contrast(
         stats(m2_delta=3), procedure(envelope(variance=0), null_abs=2)
