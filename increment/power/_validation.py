@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import numbers
+
+import numpy as np
 
 from increment.errors import InvalidRequestError, raiser, refusals
 
@@ -18,11 +21,22 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 
-def _validate_planned_looks(planned_looks: object) -> None:
-    if isinstance(planned_looks, bool) or not isinstance(planned_looks, int):
+def _as_count(value: object) -> int | None:
+    """``value`` as an ``int`` when it is an integer of any integer type, such
+    as a numpy integer read from a dataframe column; ``None`` otherwise.
+    Bools and floats, integral-valued ones included, are not counts."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Integral):
+        return None
+    return int(value)
+
+
+def _validate_planned_looks(planned_looks: object) -> int:
+    looks = _as_count(planned_looks)
+    if looks is None:
         _raise("power.planned_looks_positive", planned_looks=planned_looks)
-    if planned_looks < 1:
+    if looks < 1:
         _raise("power.planned_looks", planned_looks=planned_looks)
+    return looks
 
 
 def _require_finite(name: str, value: float) -> float:

@@ -114,10 +114,10 @@ def _require_prospective(spec: object) -> SequentialPlanningSpec:
 def _resolve_looks(spec: SequentialPlanningSpec, planned_looks: int | None) -> _PlannedLooks:
     """Resolve the look schedule once, before any numerical work: equal
     batches at ``planned_looks`` (default 14)."""
-    if planned_looks is not None:
-        _validate_planned_looks(planned_looks)
+    looks = (
+        DEFAULT_PLANNED_LOOKS if planned_looks is None else _validate_planned_looks(planned_looks)
+    )
     _require_prospective(spec)
-    looks = DEFAULT_PLANNED_LOOKS if planned_looks is None else planned_looks
     fractions = tuple(k / looks for k in range(1, looks + 1))
     return _PlannedLooks(spec, fractions)
 

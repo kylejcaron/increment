@@ -52,6 +52,7 @@ from increment.power._search import (
     float_ordinal,
     require_reason_when_null,
 )
+from increment.power._validation import _as_count
 from increment.semantics.unit_cycle import (
     UnitCycleCycleLaw,
     UnitCycleInnovation,
@@ -1425,8 +1426,9 @@ def unit_cycle_variance_envelope(law: UnitCycleJointLaw) -> UnitCycleVarianceEnv
     )
 
 
-def _integer(name: str, value: int, minimum: int) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+def _integer(name: str, value: object, minimum: int) -> int:
+    count = _as_count(value)
+    if count is None or count < minimum:
         _invalid(
             "input",
             f"{name} must be an integer >= {minimum}",
@@ -1435,6 +1437,7 @@ def _integer(name: str, value: int, minimum: int) -> None:
             constraint=f"integer >= {minimum}, excluding bool",
             route=f"Pass an integer {name} >= {minimum}.",
         )
+    return count
 
 
 def _probability(name: str, value: float) -> None:
@@ -1576,7 +1579,7 @@ def unit_cycle_power_lower_bound(
     effect_delta: float,
 ) -> UnitCyclePowerLowerBoundResult:
     """Supplementary Cantelli bound; zero is not an unattainability claim."""
-    _integer("n", n, 1)
+    n = _integer("n", n, 1)
     effect_delta = _effect(effect_delta, field="effect_delta")
     envelope = _envelope(envelope)
     procedure = _procedure(procedure)
@@ -1632,11 +1635,13 @@ def unit_cycle_power_lower_bound(
     )
 
 
-def _mc_inputs(repetitions: int, seed: int, mc_error: float, batch_size: int) -> None:
-    _integer("repetitions", repetitions, 1)
-    _integer("seed", seed, 0)
+def _mc_inputs(
+    repetitions: int, seed: int, mc_error: float, batch_size: int
+) -> tuple[int, int, int]:
+    repetitions = _integer("repetitions", repetitions, 1)
+    seed = _integer("seed", seed, 0)
     _probability("mc_error", mc_error)
-    _integer("batch_size", batch_size, 1)
+    return repetitions, seed, _integer("batch_size", batch_size, 1)
 
 
 def _allocate(error: float, parts: int) -> float:
@@ -2085,9 +2090,9 @@ def unit_cycle_model_power(
             constraint="bool",
             route="Pass True or False for simultaneous_effects.",
         )
-    _integer("n", n, 1)
+    n = _integer("n", n, 1)
     effect_delta = _effect(effect_delta, field="effect_delta")
-    _mc_inputs(repetitions, seed, mc_error, batch_size)
+    repetitions, seed, batch_size = _mc_inputs(repetitions, seed, mc_error, batch_size)
     law = _law(law)
     procedure = _procedure(procedure)
     envelope = unit_cycle_variance_envelope(law)
@@ -2558,9 +2563,9 @@ def unit_cycle_model_mde(
     Ordinary MDE uses the pilot-fitted moment-t solver; this path remains for
     independent model-conditioned calibration and validation.
     """
-    _integer("n", n, 1)
+    n = _integer("n", n, 1)
     _probability("target_power", target_power)
-    _mc_inputs(repetitions, seed, mc_error, batch_size)
+    repetitions, seed, batch_size = _mc_inputs(repetitions, seed, mc_error, batch_size)
     law = _law(law)
     procedure = _procedure(procedure)
     envelope = unit_cycle_variance_envelope(law)
@@ -2940,10 +2945,10 @@ def unit_cycle_model_required_units(
     SQLite retains counters without arrays growing with max_n or repetitions.
     An exhausted admission budget excludes that N; numerical inability leaves it plausible.
     """
-    _integer("max_n", max_n, 1)
+    max_n = _integer("max_n", max_n, 1)
     effect_delta = _effect(effect_delta, field="effect_delta")
     _probability("target_power", target_power)
-    _mc_inputs(repetitions, seed, mc_error, batch_size)
+    repetitions, seed, batch_size = _mc_inputs(repetitions, seed, mc_error, batch_size)
     law = _law(law)
     procedure = _procedure(procedure)
     envelope = unit_cycle_variance_envelope(law)

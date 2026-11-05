@@ -6,6 +6,7 @@ import math
 import pickle
 from fractions import Fraction
 
+import numpy as np
 import pytest
 
 from increment._unit_cycle import unit_cycle_envelope_cutoff
@@ -411,6 +412,26 @@ def test_mismatched_procedure_refuses_before_sampling(changes, code):
             model, decision, n=2, effect_delta=1, repetitions=1, seed=1, mc_error=0.1
         )
     assert error.value.code == code
+
+
+def test_numpy_integer_sizes_match_python_ints():
+    model = law()
+    decision = procedure(model)
+    expected = unit_cycle_model_power(
+        model, decision, n=2, effect_delta=1, repetitions=64, seed=1, mc_error=0.1
+    )
+    assert (
+        unit_cycle_model_power(
+            model,
+            decision,
+            n=np.int64(2),  # ty: ignore[invalid-argument-type]
+            effect_delta=1,
+            repetitions=np.int64(64),  # ty: ignore[invalid-argument-type]
+            seed=1,
+            mc_error=0.1,
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize(

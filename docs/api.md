@@ -156,6 +156,21 @@ values.
   behind each listed error, and, when loaded from YAML, `files`, the file that
   declares it; the message names that file before each error. Refusal codes
   are unchanged.
+- Release note (bug fix): power planning accepts a numpy integer wherever it
+  takes a size or count, such as a size read from a dataframe column, and plans
+  exactly as with the Python int it holds: `n_per_arm` in `achieved_power`,
+  `minimum_detectable_effect` and `power_curve` (which also takes a
+  one-dimensional array such as `np.arange(1000, 3001, 1000)`), `planned_looks`,
+  the switchback `n`, and the unit-cycle `n`, `max_n`, `repetitions`, `seed` and
+  `batch_size`. Floats, integral ones such as `5000.0` included, and bools are
+  still refused with the same codes, and a `power_curve` `n_per_arm` array with
+  more than one dimension refuses with `power.scalar_numeric_sequence`. A
+  conversion or retention alternative at a rate of exactly one, such as a lift
+  of 0.25 on a baseline of 0.8, is now planned; it used to be refused with
+  `power.bounded_metric.rate_above_one` whenever rounding put its logarithm just
+  above zero. Any larger rate is still refused, a shifted null still has to sit
+  at or below one as computed, and the refusal prints the implied rate in full.
+  Other results and experiment identity hashes are unchanged.
 - Release note (usability): reading a public submodule such as
   `increment.workflows` from the package before importing it raises an
   `AttributeError` that names the import, `from increment.workflows import ...`;
