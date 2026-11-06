@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import importlib
 import importlib.metadata
+import inspect
 import json
 import platform
 import re
@@ -13,8 +16,10 @@ from dataclasses import dataclass, fields
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
+from fractions import Fraction
 from functools import cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, cast
 
 from pydantic import BaseModel
@@ -51,6 +56,10 @@ from increment.evidence import (
 _TYPED_MAPPING = "$transcript_mapping"
 _TYPED_TUPLE = "$transcript_tuple"
 _TYPED_DECIMAL = "$transcript_decimal"
+_TYPED_VALUE = "$transcript_typed"
+_TYPED_VALUE_FIELDS = frozenset({_TYPED_VALUE, "type", "value"})
+# Typed values name their class; decoding imports only from these packages.
+_TYPED_MODULE_ROOTS = frozenset({"increment"})
 
 
 _SCHEMA_VERSION = 2
@@ -372,6 +381,268 @@ def _canonical(value: Any) -> str:
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode()).hexdigest()
+
+
+def request_digest(request: object) -> str:
+    """The identity of one evidence request: its type and canonical plain declaration."""
+    return _digest([_request_type(request), _plain(request)])
+
+
+def _qualified_name(value: Any) -> str:
+    return f"{value.__module__}:{value.__qualname__}"
+
+
+def _resolve_typed_name(name: Any) -> Any:
+    module, separator, qualname = name.partition(":") if isinstance(name, str) else ("", "", "")
+    if not separator or module.split(".", 1)[0] not in _TYPED_MODULE_ROOTS or "<" in qualname:
+        raise ValueError(f"typed transcript name is outside the package: {name!r}")
+    value: Any = importlib.import_module(module)
+    for part in qualname.split("."):
+        value = getattr(value, part)
+    return value
+
+
+def _typed_tag(kind: str, value: Any, named: Any = None) -> dict[str, Any]:
+    return {
+        _TYPED_VALUE: kind,
+        "type": None if named is None else _qualified_name(named),
+        "value": value,
+    }
+
+
+def _typed_pairs(mapping: Mapping[Any, Any]) -> list[list[Any]]:
+    return [[_typed(key), _typed(item)] for key, item in mapping.items()]
+
+
+def _typed_frame(value: Any) -> dict[str, Any] | None:
+    """A dataframe as its Arrow schema and typed columns, tagged with its carrier."""
+    module = type(value).__module__.split(".", maxsplit=1)[0]
+    if module == "narwhals" and hasattr(value, "to_native"):
+        native = _typed_frame(value.to_native())
+        return None if native is None else _typed_tag("narwhals", native)
+    if module not in {"pyarrow", "polars", "pandas"}:
+        return None
+    import pyarrow as pa
+
+    if module == "pyarrow":
+        if not isinstance(value, pa.Table):
+            return None
+        table = value
+    elif hasattr(value, "to_arrow"):
+        table = value.to_arrow()
+    elif hasattr(value, "to_dict"):
+        table = pa.Table.from_pandas(value)
+    else:
+        return None
+    schema = base64.b64encode(table.schema.serialize().to_pybytes()).decode("ascii")
+    columns = [_typed(column.to_pylist()) for column in table.columns]
+    return _typed_tag(module, {"schema": schema, "columns": columns})
+
+
+def _typed_numpy(value: Any) -> dict[str, Any] | None:
+    if type(value).__module__.split(".", maxsplit=1)[0] != "numpy":
+        return None
+    import numpy as np
+
+    if isinstance(value, np.ndarray):
+        return _typed_tag(
+            "ndarray",
+            {
+                "dtype": value.dtype.str,
+                "shape": list(value.shape),
+                "values": _typed(value.tolist()),
+            },
+        )
+    if isinstance(value, np.generic):
+        return _typed_tag("numpy", {"dtype": value.dtype.str, "value": _typed(value.item())})
+    return None
+
+
+def _typed_object(value: Any) -> Any:
+    from increment.decision import CompiledDecisionPlan
+
+    if type(value) is CompiledDecisionPlan:
+        from increment.decision_wire import compiled_plan_to_dict
+
+        return _typed_tag("plan", compiled_plan_to_dict(value))
+    if isinstance(value, CodedError):
+        return _typed_tag("error", _typed(value.__getstate__()), type(value))
+    if isinstance(value, BaseModel):
+        if value.__pydantic_extra__:
+            raise TypeError(f"{type(value).__qualname__} holds undeclared fields")
+        # Which fields were given explicitly is declaration state: serializers omit the rest.
+        declared = {name: getattr(value, name) for name in type(value).model_fields}
+        explicit = sorted(value.model_fields_set)
+        return _typed_tag("model", {"fields": _typed_pairs(declared), "set": explicit}, type(value))
+    if hasattr(value, "__dataclass_fields__") and not isinstance(value, type):
+        if any(not field.init for field in fields(value)):
+            raise TypeError(f"{type(value).__qualname__} has fields its constructor cannot set")
+        declared = {field.name: getattr(value, field.name) for field in fields(value)}
+        return _typed_tag("dataclass", _typed_pairs(declared), type(value))
+    if isinstance(value, tuple) and hasattr(type(value), "_fields"):
+        return _typed_tag("namedtuple", [_typed(item) for item in value], type(value))
+    if isinstance(value, Mapping):
+        return _typed_tag("mapping", _typed_pairs(value), type(value))
+    if isinstance(value, type) or inspect.isfunction(value):
+        return _typed_tag("class" if isinstance(value, type) else "function", None, value)
+    encoded = _typed_frame(value) or _typed_numpy(value)
+    if encoded is None:
+        raise TypeError(f"No typed transcript encoding for {type(value).__qualname__}")
+    return encoded
+
+
+def _typed(value: Any) -> Any:
+    if value is None or type(value) in (str, bool, int):
+        return value
+    if type(value) is float:
+        return _plain(value)
+    if type(value) is Decimal:
+        return {_TYPED_DECIMAL: str(value)}
+    if type(value) is Fraction:
+        return _typed_tag("fraction", [value.numerator, value.denominator])
+    if type(value) is list:
+        return [_typed(item) for item in value]
+    if type(value) is tuple:
+        return {_TYPED_TUPLE: [_typed(item) for item in value]}
+    if type(value) is dict:
+        return {_TYPED_MAPPING: _typed_pairs(value)}
+    if type(value) is MappingProxyType:
+        return _typed_tag("proxy", _typed_pairs(value))
+    if type(value) is frozenset:
+        return _typed_tag("frozenset", sorted((_typed(item) for item in value), key=_canonical))
+    if type(value) is datetime:
+        return _typed_tag("datetime", value.isoformat())
+    if type(value) is date:
+        return _typed_tag("date", value.isoformat())
+    if isinstance(value, Enum):
+        return _typed_tag("enum", _typed(value.value), type(value))
+    return _typed_object(value)
+
+
+def _untyped_items(value: Any) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValueError("typed transcript items must be a list")
+    return [_untyped(item) for item in value]
+
+
+def _untyped_mapping(pairs: Any) -> dict[Any, Any]:
+    restored: dict[Any, Any] = {}
+    for pair in _untyped_items(pairs):
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise ValueError("typed transcript mapping entry must be a pair")
+        key, item = pair
+        if key in restored:
+            raise ValueError("duplicate typed transcript mapping key")
+        restored[key] = item
+    return restored
+
+
+def _untyped_frame(kind: str, payload: Any) -> Any:
+    import pyarrow as pa
+
+    if kind == "narwhals":
+        import narwhals as nw
+
+        return nw.from_native(_untyped(payload), eager_only=True)
+    schema = pa.ipc.read_schema(pa.py_buffer(base64.b64decode(payload["schema"])))
+    columns = _untyped_items(payload["columns"])
+    table = pa.Table.from_arrays(
+        [pa.array(column, type=field.type) for column, field in zip(columns, schema, strict=True)],
+        schema=schema,
+    )
+    if kind == "polars":
+        import polars as pl
+
+        return pl.from_arrow(table)
+    return table.to_pandas() if kind == "pandas" else table
+
+
+def _untyped_model(model: Any, payload: Any) -> Any:
+    """Validate a model from its explicit fields; every other field must rebuild as recorded."""
+    values = _untyped_mapping(payload["fields"])
+    explicit = payload["set"]
+    if not isinstance(explicit, list) or not set(explicit) <= values.keys():
+        raise ValueError("typed transcript model fields are invalid")
+    rebuilt = model.model_validate({name: values[name] for name in explicit}, by_name=True)
+    if any(getattr(rebuilt, name) != value for name, value in values.items()):
+        raise ValueError(f"{model.__qualname__} does not rebuild from its explicit fields")
+    return rebuilt
+
+
+def _untyped_tag(kind: Any, name: Any, payload: Any) -> Any:
+    if kind == "proxy":
+        return MappingProxyType(_untyped_mapping(payload))
+    if kind == "frozenset":
+        return frozenset(_untyped_items(payload))
+    if kind == "datetime":
+        return datetime.fromisoformat(payload)
+    if kind == "date":
+        return date.fromisoformat(payload)
+    if kind == "fraction":
+        return Fraction(*payload)
+    if kind == "plan":
+        from increment.decision_wire import compiled_plan_from_dict
+
+        return compiled_plan_from_dict(payload)
+    if kind in {"pyarrow", "polars", "pandas", "narwhals"}:
+        return _untyped_frame(kind, payload)
+    if kind in {"ndarray", "numpy"}:
+        import numpy as np
+
+        dtype = np.dtype(payload["dtype"])
+        if kind == "numpy":
+            return dtype.type(_untyped(payload["value"]))
+        return np.array(_untyped(payload["values"]), dtype=dtype).reshape(payload["shape"])
+    named = _resolve_typed_name(name)
+    if kind in {"class", "function"}:
+        return named
+    if kind == "enum":
+        return named(_untyped(payload))
+    if kind == "namedtuple":
+        return named(*_untyped_items(payload))
+    if kind == "mapping":
+        return named(_untyped_mapping(payload))
+    if kind == "error" and isinstance(named, type) and issubclass(named, CodedError):
+        error = named.__new__(named)
+        error.__setstate__(_untyped(payload))
+        return error
+    if kind == "model":
+        return _untyped_model(named, payload)
+    if kind == "dataclass":
+        return named(**_untyped_mapping(payload))
+    raise ValueError(f"unknown typed transcript value kind: {kind!r}")
+
+
+def _untyped(value: Any) -> Any:
+    if isinstance(value, list):
+        return _untyped_items(value)
+    if not isinstance(value, dict):
+        return value
+    if value.keys() in ({"$transcript_float"}, {_TYPED_DECIMAL}):
+        return _restore(value)
+    if value.keys() == {_TYPED_TUPLE}:
+        return tuple(_untyped_items(value[_TYPED_TUPLE]))
+    if value.keys() == {_TYPED_MAPPING}:
+        return _untyped_mapping(value[_TYPED_MAPPING])
+    if value.keys() == _TYPED_VALUE_FIELDS:
+        return _untyped_tag(value[_TYPED_VALUE], value["type"], value["value"])
+    raise ValueError("typed transcript value has unexpected fields")
+
+
+def typed_payload(value: Any) -> Any:
+    """Encode ``value`` so `typed_value` rebuilds its types; refuse one that would not."""
+    payload = _typed(value)
+    if _typed(_untyped(payload)) != payload:
+        raise TypeError(f"{type(value).__qualname__} does not survive the typed transcript codec")
+    return payload
+
+
+def typed_value(payload: Any) -> Any:
+    """Rebuild a value `typed_payload` encoded, with its original types."""
+    try:
+        return _untyped(payload)
+    except (KeyError, TypeError, AttributeError, ArithmeticError) as exc:
+        raise ValueError("payload contains malformed typed transcript data") from exc
 
 
 def _is_plain_json(value: Any) -> bool:

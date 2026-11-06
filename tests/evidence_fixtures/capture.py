@@ -132,31 +132,32 @@ class EvidenceRecord:
         }
 
 
+def assert_same_payload(left: Any, right: Any, path: str, *, rtol: float = 1e-12) -> None:
+    """Plain payloads agree: floats within ``rtol``, every other value exactly."""
+    if isinstance(left, float) or isinstance(right, float):
+        assert isinstance(left, (int, float)) and not isinstance(left, bool), path
+        assert isinstance(right, (int, float)) and not isinstance(right, bool), path
+        assert math.isclose(left, right, rel_tol=rtol, abs_tol=rtol), (path, left, right)
+    elif isinstance(left, dict):
+        assert isinstance(right, dict) and left.keys() == right.keys(), path
+        for key in left:
+            assert_same_payload(left[key], right[key], f"{path}.{key}", rtol=rtol)
+    elif isinstance(left, list):
+        assert isinstance(right, list) and len(left) == len(right), path
+        for index, (x, y) in enumerate(zip(left, right, strict=True)):
+            assert_same_payload(x, y, f"{path}[{index}]", rtol=rtol)
+    else:
+        assert type(left) is type(right) and left == right, (path, left, right)
+
+
 def assert_same_evidence(a: EvidenceRecord, b: EvidenceRecord, *, rtol: float = 1e-12) -> None:
     assert a.entries and b.entries, "Empty evidence is not a parity comparison"
     assert a.entries.keys() == b.entries.keys(), (
         a.entries.keys() - b.entries.keys(),
         b.entries.keys() - a.entries.keys(),
     )
-
-    def compare(left: Any, right: Any, path: str) -> None:
-        if isinstance(left, float) or isinstance(right, float):
-            assert isinstance(left, (int, float)) and not isinstance(left, bool), path
-            assert isinstance(right, (int, float)) and not isinstance(right, bool), path
-            assert math.isclose(left, right, rel_tol=rtol, abs_tol=rtol), (path, left, right)
-        elif isinstance(left, dict):
-            assert isinstance(right, dict) and left.keys() == right.keys(), path
-            for key in left:
-                compare(left[key], right[key], f"{path}.{key}")
-        elif isinstance(left, list):
-            assert isinstance(right, list) and len(left) == len(right), path
-            for index, (x, y) in enumerate(zip(left, right, strict=True)):
-                compare(x, y, f"{path}[{index}]")
-        else:
-            assert type(left) is type(right) and left == right, (path, left, right)
-
     for key in a.entries:
-        compare(a.entries[key], b.entries[key], str(key))
+        assert_same_payload(a.entries[key], b.entries[key], str(key), rtol=rtol)
 
 
 # The versioned fixture vocabulary is independent of the live reducer inventory.

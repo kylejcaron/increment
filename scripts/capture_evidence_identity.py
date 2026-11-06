@@ -1019,16 +1019,45 @@ def capture_consumer_inputs(
         path.write_bytes(gzip.compress(_json_bytes(payload), mtime=0))
 
 
+def capture_primitive_recordings(out: Path, *, scenarios: tuple[str, ...] = ()) -> None:
+    """Record each declared journey's primitive evidence answers through the provider seam.
+
+    Files are named by scenario, ingress and manifest digest, so a journey over other views
+    writes beside the existing recordings instead of over them. ``out`` is normally
+    ``tests/fixtures/evidence_identity/primitive-recordings``.
+    """
+    from tests.evidence_fixtures.recording import (
+        journey_manifest,
+        record_journey,
+        recorded_journeys,
+        write_recording,
+    )
+
+    for scenario_id, ingress, views in recorded_journeys():
+        if scenarios and scenario_id not in scenarios:
+            continue
+        manifest = journey_manifest(scenario_id, ingress, views)
+        print(write_recording(record_journey(manifest), out))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--cutover")
     parser.add_argument("--consumer-inputs", action="store_true")
+    parser.add_argument("--primitive-recordings", action="store_true")
     parser.add_argument("--baseline", metavar="SHA")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--replace-inputs", action="store_true")
     parser.add_argument("--scenario", action="append", default=[])
     args = parser.parse_args()
+    if args.primitive_recordings:
+        if args.consumer_inputs or args.cutover is not None:
+            parser.error("--primitive-recordings is a separate capture mode")
+        if args.baseline is not None or args.resume or args.replace_inputs:
+            parser.error("consumer-input options require --consumer-inputs")
+        capture_primitive_recordings(args.out, scenarios=tuple(args.scenario))
+        return
     if args.consumer_inputs:
         if args.cutover is not None:
             parser.error("--consumer-inputs and --cutover are separate capture modes")

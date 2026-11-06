@@ -34,8 +34,9 @@ _CERTIFICATION_TEST_MODULES = (
 )
 _ROOT_DOCS = {"README.md", "CONTRIBUTING.md", "AGENTS.md", "CHANGELOG.md"}
 _DOC_SUFFIXES = (".md", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
-# Loaders, query, the evidence layer (AGENTS.md places source declarations in it), the parity
-# harness and evidence fixtures, and the files that define how the gate selects and runs.
+# Loaders, query, the evidence layer (AGENTS.md places source declarations in it) and its
+# provider seam, the parity harness, evidence fixtures and primitive recordings, and the files
+# that define how the gate selects and runs.
 _EXHAUSTIVE_FILES = {
     "Makefile",
     "noxfile.py",
@@ -45,10 +46,17 @@ _EXHAUSTIVE_FILES = {
     ".github/workflows/ci.yml",
     "increment/sources.py",
     "increment/frame.py",
+    "increment/evidence.py",
     "increment/readouts/_evidence.py",
+    "increment/readouts/_provider.py",
     "increment/_source_types.py",
 }
-_EXHAUSTIVE_TREES = ("increment/query/", "tests/parity_harness/", "tests/evidence_fixtures/")
+_EXHAUSTIVE_TREES = (
+    "increment/query/",
+    "tests/parity_harness/",
+    "tests/evidence_fixtures/",
+    "tests/fixtures/evidence_identity/primitive-recordings/",
+)
 _EXHAUSTIVE_MODULE_PREFIXES = ("increment/_frame_", "increment/_evidence_")
 _EXHAUSTIVE_MARK = b"pytest.mark.exhaustive"
 
