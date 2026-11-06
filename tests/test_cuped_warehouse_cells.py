@@ -56,7 +56,7 @@ def test_cuped_nonfinite_parts_compile_for_supported_dialects() -> None:
     con.disconnect()
 
 
-@pytest.mark.parametrize("dialect", ["bigquery", "snowflake"])
+@pytest.mark.parametrize("dialect", ["bigquery", "snowflake", "clickhouse", "trino", "databricks"])
 def test_cell_aggregates_compile_without_filter_clause(dialect) -> None:
     from types import SimpleNamespace
 
@@ -79,7 +79,8 @@ def test_cell_aggregates_compile_without_filter_clause(dialect) -> None:
     expression = _preflight(cells, ("segment",), 1, request, metric)
 
     sql = ibis.to_sql(expression, dialect=dialect).upper()
-    assert "FILTER(" not in sql and "FILTER (" not in sql
+    if dialect in ("bigquery", "snowflake"):
+        assert "FILTER(" not in sql and "FILTER (" not in sql
 
 
 def test_cuped_nonfinite_parts_preserve_duckdb_special_value_results() -> None:

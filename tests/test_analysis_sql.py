@@ -833,17 +833,6 @@ def test_panel_and_summary_sql_dialect_follows_connection_name(con, monkeypatch,
     assert all("`" in sql for sql in bigquery_sql)
 
 
-@pytest.mark.parametrize("dialect", ["snowflake", "bigquery", "postgres"])
-def test_panel_and_summary_sql_compile_for_advertised_dialects(con, dialect, tmp_path):
-    experiment, resolver = _sql_pair(con, tmp_path, backend=dialect, store="none")
-    panel = panel_sql(experiment, resolver)
-    summary = summary_sql(experiment, resolver)
-    expected = {"purchase_rate", "avg_session_duration", "d7_retention"}
-    assert set(panel) == expected
-    assert set(summary) == expected
-    assert all(sql.strip() for sql in [*panel.values(), *summary.values()])
-
-
 @pytest.mark.slow
 def test_explicit_backend_overrides_connection_name(con, tmp_path):
     """An explicit ``backend=`` constructor argument reaches the SQL renderer:

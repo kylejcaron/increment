@@ -492,7 +492,10 @@ def test_duckdb_qr_unit_summary_preserves_leverage_refusal_witness(tmp_path):
 
 @pytest.mark.slow
 @pytest.mark.integration
-@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "snowflake", "bigquery"])
+@pytest.mark.parametrize(
+    "dialect",
+    ["duckdb", "postgres", "snowflake", "bigquery", "clickhouse", "trino", "databricks"],
+)
 def test_qr_unit_summary_statement_size_at_supported_p(dialect, tmp_path, monkeypatch):
     from increment.query._cuped_qr import QRFactor, warehouse_qr_unit_summary
 
@@ -573,7 +576,7 @@ def test_bm_feature_batches_respect_postgres_column_budget_at_p203():
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("dialect", ["bigquery", "snowflake"])
+@pytest.mark.parametrize("dialect", ["bigquery", "snowflake", "clickhouse", "trino", "databricks"])
 def test_qr_factor_aggregates_compile_without_filter(dialect, tmp_path):
     from increment.query._cuped_qr import factor_design_relation
 
@@ -601,9 +604,10 @@ def test_qr_factor_aggregates_compile_without_filter(dialect, tmp_path):
                 scratch=scratch,
             )
         assert compiled
-        assert all(
-            "FILTER(" not in sql.upper() and "FILTER (" not in sql.upper() for sql in compiled
-        )
+        if dialect in ("bigquery", "snowflake"):
+            assert all(
+                "FILTER(" not in sql.upper() and "FILTER (" not in sql.upper() for sql in compiled
+            )
     finally:
         session.drop_materialized()
         connection.disconnect()
