@@ -390,29 +390,22 @@ def test_a_failed_cuped_cell_keeps_its_own_balance_advisory():
     import numpy as np
     import pyarrow as pa
 
-    from increment.estimation.inference import Normal
-
-    # The covariate differs by arm and the outcome mean is negative, so the prior-backed
-    # relative CUPED decision fails while the unadjusted sensitivity, which never reads
-    # the covariate, reports its additive row.
+    # The covariate differs by arm and revenue is half of it plus one; integer covariates in
+    # arms of 256 units keep every mean exact, so the CUPED-adjusted revenue is constant in
+    # both arms. The CUPED decision fails while the unadjusted sensitivity, which never reads
+    # the covariate, reports its row.
     rng = np.random.default_rng(3)
     rows = []
     for arm, shift in (("control", 0.0), ("treatment", 3.0)):
-        for index in range(400):
-            pre = 30.0 + shift + rng.normal(0.0, 2.0)
+        for index in range(256):
+            pre = float(30.0 + shift + round(rng.normal(0.0, 2.0)))
             rows.append(
-                {
-                    "unit": f"{arm}-{index}",
-                    "arm": arm,
-                    "revenue": -40.0 + 0.9 * pre + rng.normal(0.0, 1.0),
-                    "pre": pre,
-                }
+                {"unit": f"{arm}-{index}", "arm": arm, "revenue": 0.5 * pre + 1.0, "pre": pre}
             )
     metric = MetricSpec(
         name="revenue",
         decision_method=Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous")),
         sensitivity_methods=[Method(name="unadjusted")],
-        prior=Normal(mu=0.0, sigma=1.0),
     )
     result = view_readout(
         *from_frame(
