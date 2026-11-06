@@ -157,6 +157,8 @@ Jupyter Notebook, JupyterLab, or ipywidgets.
 ### Tests and quality checks
 
 CI measures import reach with `uv run --no-sync python scripts/import_reach.py --summary`; run the same command locally to inspect module counts and import times for each supported entry point. Pass explicit module names to measure a subset, or use `--json PATH` to save the results as JSON.
+
+`make lint` checks deferred imports within `increment/` and runtime import cycles against `tests/deferred_imports_baseline.txt`. Imports also add edges to ancestor packages whose `__init__.py` executes, except the top-level `increment` lazy public facade. For cycle detection only, an `__init__.py` importing its own descendants is treated as structural re-export wiring rather than a runtime cycle; those imports remain in the deferred-edge check. Removing an import or cycle may shrink the baseline with `uv run python scripts/check_deferred_imports.py --update`; growing it requires a reason in the pull request.
 Policy: see AGENTS.md › Tests.
 
 #### Test categories and runtime expectations
