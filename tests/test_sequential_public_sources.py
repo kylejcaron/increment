@@ -261,12 +261,13 @@ def test_registered_whole_window_family_scope_reports_registration_q():
     )
 
 
-def _registered_uptake_family(*, panel=False, **plan_fields):
+def _registered_uptake_family(*, panel=False, inference="always_valid", **plan_fields):
     """An encouragement run whose compliance policy registers the uptake cell in the family.
 
     Uptake is 24/96 in control and 72/96 in treatment; ``s`` is 48/96 in each arm. A
     ``panel`` run exposes every unit on one day and captures its as-of checkpoint two
-    weeks later, after every two-day window has closed.
+    weeks later, after every two-day window has closed. Under ``asymptotic_mean``
+    inference ``s`` is a scalar mean beside the exact Bernoulli uptake cell.
     """
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
@@ -281,7 +282,7 @@ def _registered_uptake_family(*, panel=False, **plan_fields):
     )
     plan = AnalysisPlan(
         q=0.1,
-        inference=InferenceSpec(kind="always_valid"),
+        inference=InferenceSpec(kind=inference),
         compliance=SequentialCompliancePolicy(alpha=Fraction(1, 20), family=True),
         **plan_fields,
     )
@@ -365,8 +366,12 @@ def test_registered_uptake_cell_is_a_member_of_the_secondary_family():
     assert (uptake.discovery, s.discovery) == (True, False)
 
 
-def test_registered_uptake_cell_without_secondaries_is_a_one_member_family():
-    rows = view_readout(*_registered_uptake_family(primary="s"), estimands=("itt", "compliance"))
+@pytest.mark.parametrize("inference", ["always_valid", "asymptotic_mean"])
+def test_registered_uptake_cell_without_secondaries_is_a_one_member_family(inference):
+    rows = view_readout(
+        *_registered_uptake_family(primary="s", inference=inference),
+        estimands=("itt", "compliance"),
+    )
 
     (family,) = [scope for scope in rows.metadata.scope.families if scope.name == "secondary"]
     assert [(cell.metric, cell.estimand) for cell in family.members] == [("uptake", "compliance")]
@@ -376,6 +381,9 @@ def test_registered_uptake_cell_without_secondaries_is_a_one_member_family():
     # e-BH at q = 0.1 over m = 1: log e 20.70 clears log(1 / 0.1), so R = 1.
     assert uptake.family_threshold == pytest.approx(0.1)
     assert (uptake.family_procedure, uptake.family_q, uptake.discovery) == ("e_bh", 0.1, True)
+    # The one member is the exact Bernoulli uptake cell, whatever law the primary has.
+    assert uptake.family_guarantee == "finite_sample"
+    assert family.family is not None and family.family.validity_regime == "finite_sample"
 
 
 def test_family_with_a_registered_uptake_cell_decides_after_reopen(tmp_path):

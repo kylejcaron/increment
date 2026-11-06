@@ -140,7 +140,8 @@ values.
   carries the family's `family_id`, `family_axes`, `family_procedure`,
   `family_q` and `family_guarantee`, and its `multiplicity_status` is
   `declared_plan` instead of `undeclared_plan`; its `role` stays `None`. With
-  no secondaries, the uptake cell is the one member of a `secondary` family.
+  no secondaries, the uptake cell is the one member of a `secondary` family,
+  whose `family_guarantee` is `finite_sample`.
   A decision on a stored run selects over the same members: the uptake cell's
   own verdict stays `not_evaluated`
   (`decision.not_evaluated.monitoring_view`), its discovery counts toward the

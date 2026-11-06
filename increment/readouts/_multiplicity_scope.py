@@ -13,6 +13,7 @@ from increment._multiplicity import (
     registered_family_members,
 )
 from increment.decision import MultiplicityFamily, evidence_request_procedure
+from increment.estimation.family import sequential_family_guarantee
 from increment.estimation.multiplicity import (
     design_excluded,
     multiplicity_status,
@@ -27,7 +28,6 @@ from increment.estimation.readout_types import (
     cell_order,
     family_identity,
 )
-from increment.estimation.sequential import ASYMPTOTIC_PROCEDURE_POLICIES
 from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._source_digest import input_evidence
 
@@ -267,6 +267,10 @@ def _join_registered_family(
             family_populations is not None and population not in family_populations
         ):
             continue
+        # A registration without a family cell registers no uptake cell in one.
+        regime = sequential_family_guarantee(registration)
+        if regime is None:
+            continue
         secondary = {
             key[5]: key for key in family_cells if key[0] == population and key[1] == "secondary"
         }
@@ -292,7 +296,7 @@ def _join_registered_family(
             look = cell.ds if view == "asof" else None
             key = secondary.get(look)
             if key is None:
-                family = _registered_level(_secondary_policy(plan), registration, view)
+                family = _registered_level(_secondary_policy(plan, regime), registration, view)
                 key = secondary[look] = (population, "secondary", family.name, family, None, look)
                 family_by_key[key] = family
             family_cells.setdefault(key, []).append(cell)
@@ -301,18 +305,18 @@ def _join_registered_family(
     return frozenset(joined)
 
 
-def _secondary_policy(plan: Any) -> MultiplicityFamily:
+def _secondary_policy(
+    plan: Any, regime: Literal["asymptotic_sequential", "finite_sample"]
+) -> MultiplicityFamily:
     """The family a sequential secondary compiles under *plan*, for an uptake cell that is
-    a registered family's only member."""
+    a registered family's only member, at that family's validity *regime*."""
     return MultiplicityFamily(
         name="secondary",
         correction="e_bh",
         q=plan.q,
         axes=("metric", "arm"),
         guarantee=guarantee_for_correction("e_bh"),
-        validity_regime="asymptotic_sequential"
-        if isinstance(plan.inference, ASYMPTOTIC_PROCEDURE_POLICIES)
-        else "finite_sample",
+        validity_regime=regime,
     )
 
 
