@@ -94,6 +94,43 @@ def test_mixed_from_import_keeps_base_module_cycle(tmp_path: Path) -> None:
     assert "runtime cycle: pkg.a, pkg.p" in result.stdout
 
 
+def test_from_import_of_only_submodule_keeps_package_cycle(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    (package / "p").mkdir()
+    (package / "p" / "__init__.py").write_text("from pkg.a import marker\n")
+    (package / "p" / "child.py").write_text("")
+    (package / "a.py").write_text("from pkg.p import child\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "runtime cycle: pkg.a, pkg.p" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import importlib\ndef load():\n    importlib.import_module('pkg.b')",
+        "import importlib as loader\ndef load():\n    loader.import_module('pkg.b')",
+        "from importlib import import_module as load_module\ndef load():\n    load_module('pkg.b')",
+        "from importlib import import_module\ndef load():\n    import_module('.b', package='pkg')",
+    ],
+)
+def test_literal_import_module_call_closes_cycle(tmp_path: Path, source: str) -> None:
+    package = _package(tmp_path)
+    (package / "a.py").write_text(source)
+    (package / "b.py").write_text("import pkg.a\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\npkg.a -> pkg.b\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "runtime cycle: pkg.a, pkg.b" in result.stdout
+
+
 def test_removing_an_edge_from_the_baseline_is_allowed(tmp_path: Path) -> None:
     package = _package(tmp_path)
     baseline = tmp_path / "baseline.txt"

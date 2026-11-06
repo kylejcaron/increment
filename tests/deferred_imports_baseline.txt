@@ -158,6 +158,7 @@ increment._source_workflows -> increment._evidence_refusals
 increment._source_workflows -> increment.breakout.estimates
 increment._source_workflows -> increment.query.artifact_ports
 increment._source_workflows -> increment.query.native_contract
+increment.artifacts._query -> increment.query
 increment.artifacts._query -> increment.query.artifact_digest
 increment.artifacts._query -> increment.query.artifact_extensions
 increment.artifacts._query -> increment.query.artifact_publish
@@ -178,6 +179,8 @@ increment.breakout.estimates -> increment.estimation.multiplicity
 increment.breakout.estimates -> increment.estimation.readout_types
 increment.breakout.estimates -> increment.estimation.results
 increment.breakout.estimates -> increment.estimation.sequential_runtime
+increment.breakout.estimates -> increment.kernel.contracts
+increment.breakout.estimates -> increment.result_envelope
 increment.breakout.estimates -> increment.sequential_source
 increment.breakout.estimates -> increment.sequential_state
 increment.breakout.estimates -> increment.winsor
@@ -206,7 +209,10 @@ increment.builders -> increment.semantics.models
 increment.builders -> increment.sequential_source
 increment.builders -> increment.sources
 increment.builders -> increment.switchback
+increment.cate -> increment._source_identity
 increment.decide -> increment.plan
+increment.decide.evaluator -> increment.estimation.contrast
+increment.decide.evaluator -> increment.estimation.contrast_results
 increment.decision -> increment.sequential_source
 increment.decision -> increment.sequential_state
 increment.decision_wire -> increment._canonical
@@ -226,6 +232,7 @@ increment.estimation._adjust.common -> increment.estimation.inference
 increment.estimation._adjust.common -> increment.estimation.results
 increment.estimation._adjust.overlap -> increment.estimation._adjust.common
 increment.estimation._fcr_reinterval -> increment.errors
+increment.estimation._fcr_reinterval -> increment.estimation
 increment.estimation._fcr_reinterval -> increment.estimation.binomial_rr
 increment.estimation._fcr_reinterval -> increment.estimation.conversion_route
 increment.estimation._fcr_reinterval -> increment.estimation.engine
@@ -244,14 +251,22 @@ increment.estimation.armstats -> increment._bernoulli_moments
 increment.estimation.assignment_integrity -> increment.estimation.readout_types
 increment.estimation.assignment_integrity -> increment.semantics.assignment
 increment.estimation.cate -> increment.errors
+increment.estimation.cate -> increment.result_envelope
+increment.estimation.confounding -> increment.declarations
+increment.estimation.confounding -> increment.kernel.contracts
+increment.estimation.confounding -> increment.result_envelope
 increment.estimation.contrast -> increment.estimation.decision_types
 increment.estimation.contrast_results -> increment._canonical
 increment.estimation.contrast_results -> increment._immutable
+increment.estimation.contrast_results -> increment._interpretation
 increment.estimation.contrast_results -> increment._unit_cycle
 increment.estimation.contrast_results -> increment.estimation.readout_types
+increment.estimation.contrast_results -> increment.kernel.contracts
+increment.estimation.contrast_results -> increment.result_envelope
 increment.estimation.conversion_delta -> increment.estimation.armstats
 increment.estimation.conversion_delta -> increment.estimation.inference
 increment.estimation.conversion_delta -> increment.estimation.variance
+increment.estimation.conversion_route -> increment.estimation
 increment.estimation.conversion_route -> increment.estimation.binomial_rr
 increment.estimation.cuped.inference -> increment.estimation.cuped.multicovariate
 increment.estimation.cuped.types -> increment.estimation.cuped.cells
@@ -305,8 +320,10 @@ increment.estimation.quantile -> increment.estimation.decision_types
 increment.estimation.quantile -> increment.estimation.engine
 increment.estimation.quantile -> increment.estimation.inference
 increment.estimation.quantile -> increment.sequential_state
+increment.estimation.readout_types -> increment.breakout.estimates
 increment.estimation.readout_types -> increment.estimation.contrast_results
 increment.estimation.readout_types -> increment.estimation.cuped.encoding
+increment.estimation.readout_types -> increment.result_envelope
 increment.estimation.readout_types -> increment.sequential_state
 increment.estimation.results -> increment._canonical
 increment.estimation.results -> increment._immutable
@@ -322,6 +339,7 @@ increment.estimation.results -> increment.estimation.risk_difference
 increment.estimation.results -> increment.estimation.sequential_result
 increment.estimation.results -> increment.estimation.sequential_runtime
 increment.estimation.results -> increment.estimation.winsor
+increment.estimation.results -> increment.result_envelope
 increment.estimation.results -> increment.sequential_state
 increment.estimation.results -> increment.winsor
 increment.estimation.sequential -> increment.semantics.sequential
@@ -330,6 +348,7 @@ increment.estimation.sequential_runtime -> increment.estimation.family
 increment.estimation.sequential_runtime -> increment.estimation.results
 increment.estimation.sequential_runtime -> increment.semantics.sequential
 increment.estimation.targeting -> increment.errors
+increment.estimation.targeting -> increment.result_envelope
 increment.estimation.winsor -> increment._evidence_loaders
 increment.estimation.winsor -> increment._evidence_types
 increment.estimation.winsor -> increment.estimation._winsor_bootstrap
@@ -354,6 +373,7 @@ increment.frame -> increment.sequential_source
 increment.frame -> increment.sequential_state
 increment.frame -> increment.sources
 increment.frame -> increment.winsor
+increment.kernel.contracts -> increment.decision_wire
 increment.kernel.experiment -> increment._analysis_config
 increment.kernel.experiment -> increment._runnability
 increment.kernel.experiment -> increment.declarations
@@ -395,6 +415,7 @@ increment.query._workflows -> increment._source_types
 increment.query._workflows -> increment.errors
 increment.query.artifact_contract -> increment._analysis_config
 increment.query.artifact_contract -> increment.plan
+increment.query.artifact_contract -> increment.semantics
 increment.query.artifact_contract -> increment.semantics.artifact
 increment.query.artifact_contract -> increment.semantics.models
 increment.query.artifact_contract -> increment.sequential_source
@@ -597,11 +618,13 @@ increment.reporting -> increment.query.builders
 increment.reporting -> increment.query.calendar
 increment.reporting -> increment.query.session
 increment.result_envelope -> increment._interpretation
+increment.result_envelope -> increment.declarations
 increment.result_envelope -> increment.estimation.decision_types
 increment.result_envelope -> increment.estimation.family
 increment.result_envelope -> increment.estimation.multiplicity
 increment.result_envelope -> increment.estimation.sequential_result
 increment.result_envelope -> increment.estimation.targeting
+increment.result_envelope -> increment.kernel.contracts
 increment.semantics.assignment -> increment._assignment_refusals
 increment.semantics.loader -> increment._optional
 increment.semantics.models -> increment.errors
@@ -674,17 +697,30 @@ increment.switchback -> increment._source_types
 increment.switchback -> increment.power.switchback
 increment.tables -> increment._canonical
 increment.tables -> increment._interpretation
+increment.tables -> increment._run
 increment.tables -> increment.estimation.sequential_result
 increment.tables -> increment.estimation.sequential_runtime
+increment.tables -> increment.result_envelope
 increment.winsor -> increment._winsor_rank
 
 # cycle
+increment._analysis_config
+increment._cuped_evidence
+increment._frame_validation
+increment._interpretation
+increment._metric_specs
+increment.breakout.estimates
+increment.breakout.projection
+increment.decision
+increment.decision_wire
 increment.estimation._adjust.clustered_unadjusted
 increment.estimation._adjust.common
 increment.estimation._adjust.overlap
 increment.estimation._fcr_reinterval
 increment.estimation._winsor_permutation
 increment.estimation.adjust
+increment.estimation.cate
+increment.estimation.contrast
 increment.estimation.contrast_results
 increment.estimation.encouragement
 increment.estimation.engine
@@ -693,7 +729,13 @@ increment.estimation.inference
 increment.estimation.readout_types
 increment.estimation.results
 increment.estimation.sequential_runtime
+increment.estimation.targeting
 increment.estimation.winsor
+increment.kernel.contracts
+increment.plan
+increment.result_envelope
+increment.sequential_source
+increment.sources
 
 increment.estimation.cuped.cells
 increment.estimation.cuped.inference

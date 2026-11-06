@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import importlib.util
 from pathlib import Path
 
 
@@ -37,17 +38,11 @@ def _targets(
         else:
             base = node.module or ""
         if base == package or base.startswith(package + "."):
-            submodules: set[str] = set()
-            has_attribute = False
+            targets.add(base)
             for alias in node.names:
                 candidate = f"{base}.{alias.name}"
                 if _module_exists(candidate, root):
-                    submodules.add(candidate)
-                else:
-                    has_attribute = True
-            targets.update(submodules)
-            if has_attribute or not submodules:
-                targets.add(base)
+                    targets.add(candidate)
     return targets
 
 
@@ -65,19 +60,59 @@ class _Imports(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            if alias.name == "typing":
-                self.aliases[alias.asname or "typing"] = "typing"
+            if alias.name in {"typing", "importlib"}:
+                self.aliases[alias.asname or alias.name] = alias.name
         self._record(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module == "typing":
-            for alias in node.names:
-                if alias.name == "TYPE_CHECKING":
-                    self.aliases[alias.asname or alias.name] = "typing.TYPE_CHECKING"
+        for alias in node.names:
+            if node.module == "typing" and alias.name == "TYPE_CHECKING":
+                self.aliases[alias.asname or alias.name] = "typing.TYPE_CHECKING"
+            elif node.module == "importlib" and alias.name == "import_module":
+                self.aliases[alias.asname or alias.name] = "importlib.import_module"
         self._record(node)
 
     def _record(self, node: ast.AST) -> None:
         targets = _targets(node, self.module, self.package_context, self.package, self.root)
+        self._record_targets(targets)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        function = node.func
+        is_import_module = (
+            isinstance(function, ast.Name)
+            and self.aliases.get(function.id) == "importlib.import_module"
+        ) or (
+            isinstance(function, ast.Attribute)
+            and function.attr == "import_module"
+            and isinstance(function.value, ast.Name)
+            and self.aliases.get(function.value.id) == "importlib"
+        )
+        if is_import_module and node.args and isinstance(node.args[0], ast.Constant):
+            name = node.args[0].value
+            if isinstance(name, str):
+                package_arg = next(
+                    (
+                        keyword.value.value
+                        for keyword in node.keywords
+                        if keyword.arg == "package"
+                        and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, str)
+                    ),
+                    None,
+                )
+                try:
+                    target = (
+                        importlib.util.resolve_name(name, package_arg)
+                        if name.startswith(".")
+                        else name
+                    )
+                except ImportError:
+                    target = ""
+                if target == self.package or target.startswith(self.package + "."):
+                    self._record_targets({target})
+        self.generic_visit(node)
+
+    def _record_targets(self, targets: set[str]) -> None:
         if not self.type_checking:
             self.edges.update(targets)
             if self.deferred:
