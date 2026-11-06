@@ -1,9 +1,60 @@
-"""Warehouse schema lookup and creation shared by the results and artifact stores."""
+"""Warehouse schema lookup and creation, and identifier limits, shared by the warehouse stores."""
 
 from __future__ import annotations
 
 import inspect
 from typing import Any
+
+from increment.errors import InvalidRequestError, RefusalSpec, refuse
+
+# PostgreSQL keeps at most 63 bytes of an identifier, the fewest of the verified warehouses.
+MAX_IDENTIFIER_BYTES = 63
+
+# Documented identifier limits: PostgreSQL truncates a longer name, Snowflake and
+# BigQuery reject it. DuckDB and SQLite set none.
+_IDENTIFIER_LIMITS = {
+    "postgres": (MAX_IDENTIFIER_BYTES, "bytes"),
+    "snowflake": (255, "characters"),
+    "bigquery": (1024, "bytes"),
+}
+
+
+def _render_schema_name_too_long(*, store: str, schema: str, backend: str, limit: int) -> str:
+    return (
+        f"The {store} schema {schema!r} is longer than {backend} allows for a schema or "
+        f"catalog name ({limit} {_IDENTIFIER_LIMITS[backend][1]}). Choose a shorter name."
+    )
+
+
+_SCHEMA_NAME_TOO_LONG = RefusalSpec(
+    "store.schema_name_too_long", InvalidRequestError, render=_render_schema_name_too_long
+)
+
+
+def _name_exceeds_limit(con: Any, name: str) -> int | None:
+    """The identifier limit *name* exceeds on *con*'s backend; None within it or with no limit."""
+    entry = _IDENTIFIER_LIMITS.get(getattr(con, "name", None))
+    if entry is None:
+        return None
+    limit, unit = entry
+    length = len(name.encode()) if unit == "bytes" else len(name)
+    return limit if length > limit else None
+
+
+def check_schema_name_length(
+    con: Any, *, store: str, catalog: str | None, schema: str | None
+) -> None:
+    """Refuse a catalog or schema name longer than *con*'s warehouse allows.
+
+    Stores call this when constructed, before any read or write.
+    """
+    for name in (catalog, schema):
+        limit = None if name is None else _name_exceeds_limit(con, name)
+        if limit is not None:
+            location = ".".join(part for part in (catalog, schema) if part is not None)
+            refuse(
+                _SCHEMA_NAME_TOO_LONG, store=store, schema=location, backend=con.name, limit=limit
+            )
 
 
 def split_schema(database: str) -> tuple[str | None, str] | None:

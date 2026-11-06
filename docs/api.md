@@ -127,6 +127,29 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking bug fix): `WarehouseResultsStore` names each run's
+  table `increment_run_` plus the first 49 hex digits of its run key, 63
+  characters on every warehouse, within PostgreSQL's 63-byte identifier limit.
+  PostgreSQL cut the 78-character names written before to 63 bytes, so on
+  PostgreSQL `run(..., results_store=...)` stopped with `store.run.not_found`
+  after saving, a saved run never reopened or appeared in `history`, and saving
+  the same run again failed with an uncoded backend error instead of
+  `store.run.duplicate`. Runs PostgreSQL already saved, including those whose
+  `run` stopped with `store.run.not_found`, now reopen by ID and as the latest
+  run and appear in `history`, with no migration; a run whose `run` stopped has
+  no logged decisions. Migration: tables a development build before this change
+  saved on DuckDB, Snowflake, BigQuery or SQLite keep 78-character names, which
+  this release does not read; rename each such `increment_run_` table to its
+  first 63 characters. No release wrote them. A schema or catalog name longer
+  than the warehouse allows (63 bytes on PostgreSQL, 255 characters on
+  Snowflake, 1,024 bytes on BigQuery) now refuses when a `WarehouseResultsStore`
+  or `WarehouseArtifactStore` is created, before it reads or writes anything,
+  with `store.schema_name_too_long` (`InvalidRequestError`, context `store`,
+  `schema`, `backend`, `limit`); before, PostgreSQL shortened it, so two long
+  names sharing their first 63 bytes used one schema. An artifact store schema
+  name over the Snowflake or BigQuery limit, which refused with
+  `artifact.store.namespace`, now refuses with this code. Estimates and
+  experiment identity are unchanged.
 - Release note (feature): analyses run on any Ibis SQL backend. DuckDB,
   PostgreSQL, Snowflake and BigQuery remain the verified warehouses. The first
   time Increment uses a connection to any other backend, it shows one

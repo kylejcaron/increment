@@ -1589,6 +1589,7 @@ Retired codes and their replacements are listed below.
 | `store.run.scope_manifest_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.scope_mapping_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.timestamp_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.schema_name_too_long` | `InvalidRequestError` | `backend`, `limit`, `schema`, `store` | `increment._warehouse_namespace` |
 | `tables.readout_table_ambiguous` | `InvalidRequestError` | `key`, `route` | `increment.tables` |
 | `tables.readout_table_duplicate` | `InvalidRequestError` | — | `increment.tables` |
 | `tables.readout_table_nest` | `InvalidRequestError` | — | `increment.tables` |
