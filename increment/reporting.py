@@ -821,7 +821,14 @@ class MetricTrends:
         among the rows it reads: each ref's rows dated ``[first_day, edge]`` under the day
         boundary, within the (unit, period) rows of the trend's *population*, which leaves
         out a row without a unit. A total or active trend has no unit layer and passes none.
+
+        A range holding no day reads no row, so the trend carries no count. Its count row
+        would also be lost: DuckDB before 1.4 returns no row for a statement whose shared
+        relation it proves empty.
         """
+        if edge < first_day:
+            return trend
+
         import ibis
 
         from increment.query.builders import (
