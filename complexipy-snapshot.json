@@ -1,0 +1,636 @@
+[
+  {
+    "path": "tests/_selection.py",
+    "file_name": "_selection.py",
+    "functions": [
+      {
+        "name": "_extract_facts",
+        "complexity": 60
+      },
+      {
+        "name": "SelectionGraph::from_tree",
+        "complexity": 98
+      }
+    ]
+  },
+  {
+    "path": "tests/dashboard_snapshots.py",
+    "file_name": "dashboard_snapshots.py",
+    "functions": [
+      {
+        "name": "captured_form",
+        "complexity": 58
+      }
+    ]
+  },
+  {
+    "path": "tests/doc_evidence.py",
+    "file_name": "doc_evidence.py",
+    "functions": [
+      {
+        "name": "extract_references",
+        "complexity": 57
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/_i13_adapters.py",
+    "file_name": "_i13_adapters.py",
+    "functions": [
+      {
+        "name": "estimate_of",
+        "complexity": 49
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/_i13_calibration.py",
+    "file_name": "_i13_calibration.py",
+    "functions": [
+      {
+        "name": "run_cell",
+        "complexity": 44
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/_sequential_acceptance.py",
+    "file_name": "_sequential_acceptance.py",
+    "functions": [
+      {
+        "name": "campaign_replication",
+        "complexity": 92
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/_sequential_simulation.py",
+    "file_name": "_sequential_simulation.py",
+    "functions": [
+      {
+        "name": "replicate",
+        "complexity": 41
+      },
+      {
+        "name": "simulate_case",
+        "complexity": 63
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/test_adjust_cluster.py",
+    "file_name": "test_adjust_cluster.py",
+    "functions": [
+      {
+        "name": "_joint_oracle",
+        "complexity": 42
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/test_inference_calibration.py",
+    "file_name": "test_inference_calibration.py",
+    "functions": [
+      {
+        "name": "_winsor_shared_quantile_regions",
+        "complexity": 47
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/test_sequential_deployed_validity.py",
+    "file_name": "test_sequential_deployed_validity.py",
+    "functions": [
+      {
+        "name": "test_canonical_manifest_is_immutable_and_ordered",
+        "complexity": 47
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/test_sequential_inversion.py",
+    "file_name": "test_sequential_inversion.py",
+    "functions": [
+      {
+        "name": "_bivariate_null",
+        "complexity": 57
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/test_sequential_public_proof_acceptance.py",
+    "file_name": "test_sequential_public_proof_acceptance.py",
+    "functions": [
+      {
+        "name": "test_public_shared_control_family_retains_missing_cell_and_m3_selection",
+        "complexity": 60
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/test_sequential_simulation.py",
+    "file_name": "test_sequential_simulation.py",
+    "functions": [
+      {
+        "name": "_public_record",
+        "complexity": 58
+      }
+    ]
+  },
+  {
+    "path": "tests/estimation/test_winsor_repair.py",
+    "file_name": "test_winsor_repair.py",
+    "functions": [
+      {
+        "name": "test_joint_finite_support_projection_with_atoms_and_third_arm",
+        "complexity": 47
+      }
+    ]
+  },
+  {
+    "path": "tests/evidence_fixtures/capture.py",
+    "file_name": "capture.py",
+    "functions": [
+      {
+        "name": "_Capture::record",
+        "complexity": 47
+      },
+      {
+        "name": "_Capture::metric_records",
+        "complexity": 50
+      }
+    ]
+  },
+  {
+    "path": "tests/evidence_fixtures/replay.py",
+    "file_name": "replay.py",
+    "functions": [
+      {
+        "name": "validate_raw_moment_records",
+        "complexity": 58
+      },
+      {
+        "name": "_validate_raw_moment_rows",
+        "complexity": 79
+      }
+    ]
+  },
+  {
+    "path": "tests/evidence_fixtures/scenarios.py",
+    "file_name": "scenarios.py",
+    "functions": [
+      {
+        "name": "_requirements",
+        "complexity": 41
+      },
+      {
+        "name": "_acquire_breakout_scope_inputs",
+        "complexity": 71
+      },
+      {
+        "name": "acquire_scenario",
+        "complexity": 130
+      }
+    ]
+  },
+  {
+    "path": "tests/evidence_fixtures/temporal.py",
+    "file_name": "temporal.py",
+    "functions": [
+      {
+        "name": "estimate_day_axis_record",
+        "complexity": 44
+      }
+    ]
+  },
+  {
+    "path": "tests/evidence_fixtures/transcript.py",
+    "file_name": "transcript.py",
+    "functions": [
+      {
+        "name": "_restore",
+        "complexity": 43
+      },
+      {
+        "name": "_validate_day_axis",
+        "complexity": 44
+      },
+      {
+        "name": "_plain",
+        "complexity": 50
+      }
+    ]
+  },
+  {
+    "path": "tests/parity_harness/cases.py",
+    "file_name": "cases.py",
+    "functions": [
+      {
+        "name": "_retention_breakout_cohorts_case",
+        "complexity": 42
+      },
+      {
+        "name": "_categorical_cuped_moments_case",
+        "complexity": 54
+      },
+      {
+        "name": "_ratio_component_horizon_case",
+        "complexity": 54
+      },
+      {
+        "name": "_winsor_ingress_rows",
+        "complexity": 56
+      }
+    ]
+  },
+  {
+    "path": "tests/parity_harness/expected_differences.py",
+    "file_name": "expected_differences.py",
+    "functions": [
+      {
+        "name": "GuardrailMigration::applied_to",
+        "complexity": 46
+      },
+      {
+        "name": "without_gained_arm_facts",
+        "complexity": 58
+      }
+    ]
+  },
+  {
+    "path": "tests/parity_harness/matrix_data.py",
+    "file_name": "matrix_data.py",
+    "functions": [
+      {
+        "name": "panel_rows",
+        "complexity": 43
+      }
+    ]
+  },
+  {
+    "path": "tests/parity_harness/refusal_cases.py",
+    "file_name": "refusal_cases.py",
+    "functions": [
+      {
+        "name": "_engine_scenario",
+        "complexity": 75
+      }
+    ]
+  },
+  {
+    "path": "tests/refusal_registry.py",
+    "file_name": "refusal_registry.py",
+    "functions": [
+      {
+        "name": "resolve_literal_raise_sites",
+        "complexity": 59
+      }
+    ]
+  },
+  {
+    "path": "tests/test_analysis_asof.py",
+    "file_name": "test_analysis_asof.py",
+    "functions": [
+      {
+        "name": "_analysis_with_asof_encouragement_events",
+        "complexity": 41
+      }
+    ]
+  },
+  {
+    "path": "tests/test_analysis_breakout.py",
+    "file_name": "test_analysis_breakout.py",
+    "functions": [
+      {
+        "name": "_assert_registered_breakout_result",
+        "complexity": 57
+      }
+    ]
+  },
+  {
+    "path": "tests/test_analysis_frame_sources.py",
+    "file_name": "test_analysis_frame_sources.py",
+    "functions": [
+      {
+        "name": "test_encouragement_summary_breakout_partitions_empty_arms",
+        "complexity": 47
+      }
+    ]
+  },
+  {
+    "path": "tests/test_analysis_planning_baseline.py",
+    "file_name": "test_analysis_planning_baseline.py",
+    "functions": [
+      {
+        "name": "_triggered_experiment",
+        "complexity": 43
+      },
+      {
+        "name": "TestPlanningBaselineOnWarehouseRoutes::test_triggered_cuped_planning_uses_assignment_anchored_preperiod",
+        "complexity": 51
+      }
+    ]
+  },
+  {
+    "path": "tests/test_analysis_trigger.py",
+    "file_name": "test_analysis_trigger.py",
+    "functions": [
+      {
+        "name": "test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingresses",
+        "complexity": 47
+      }
+    ]
+  },
+  {
+    "path": "tests/test_compliance_artifacts.py",
+    "file_name": "test_compliance_artifacts.py",
+    "functions": [
+      {
+        "name": "native_fixture",
+        "complexity": 69
+      }
+    ]
+  },
+  {
+    "path": "tests/test_composition_matrix.py",
+    "file_name": "test_composition_matrix.py",
+    "functions": [
+      {
+        "name": "native",
+        "complexity": 46
+      }
+    ]
+  },
+  {
+    "path": "tests/test_consumer_standard.py",
+    "file_name": "test_consumer_standard.py",
+    "functions": [
+      {
+        "name": "_registry_template_nodes",
+        "complexity": 94
+      }
+    ]
+  },
+  {
+    "path": "tests/test_cuped_cross_route_consistency.py",
+    "file_name": "test_cuped_cross_route_consistency.py",
+    "functions": [
+      {
+        "name": "test_encouragement_breakout_preserves_refused_scalar_decision_cells",
+        "complexity": 52
+      }
+    ]
+  },
+  {
+    "path": "tests/test_evidence_boundary.py",
+    "file_name": "test_evidence_boundary.py",
+    "functions": [
+      {
+        "name": "test_loader_routes_stay_inside_acquisition_and_facades",
+        "complexity": 137
+      }
+    ]
+  },
+  {
+    "path": "tests/test_evidence_identity_parity.py",
+    "file_name": "test_evidence_identity_parity.py",
+    "functions": [
+      {
+        "name": "_assert_operation_matches",
+        "complexity": 41
+      },
+      {
+        "name": "_compare_family_selection",
+        "complexity": 42
+      },
+      {
+        "name": "_assert_outcome_matches",
+        "complexity": 51
+      }
+    ]
+  },
+  {
+    "path": "tests/test_evidence_level_parity.py",
+    "file_name": "test_evidence_level_parity.py",
+    "functions": [
+      {
+        "name": "_design_input_source",
+        "complexity": 41
+      },
+      {
+        "name": "_normalize_scope_identity_metadata",
+        "complexity": 42
+      },
+      {
+        "name": "_project_design_results",
+        "complexity": 42
+      },
+      {
+        "name": "_materialized_rows_digest",
+        "complexity": 43
+      },
+      {
+        "name": "_source_input_identity_projection",
+        "complexity": 44
+      },
+      {
+        "name": "_assert_current_input_scope_metadata",
+        "complexity": 46
+      },
+      {
+        "name": "_assert_breakout_receipt_domain",
+        "complexity": 47
+      },
+      {
+        "name": "_breakout_acquisition_projection",
+        "complexity": 48
+      },
+      {
+        "name": "test_frozen_day_axis_consumers_match_complete_ordered_old_rows",
+        "complexity": 50
+      },
+      {
+        "name": "_breakout_readout_inputs",
+        "complexity": 54
+      },
+      {
+        "name": "test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows",
+        "complexity": 54
+      },
+      {
+        "name": "_assert_input_value",
+        "complexity": 55
+      },
+      {
+        "name": "_fixed_coordinate_results",
+        "complexity": 62
+      },
+      {
+        "name": "test_frozen_raw_winsor_consumers_preserve_unavailable_sampling_and_raw_reference",
+        "complexity": 65
+      },
+      {
+        "name": "test_frozen_breakout_consumers_match_complete_ordered_old_rows",
+        "complexity": 96
+      }
+    ]
+  },
+  {
+    "path": "tests/test_frame_panel.py",
+    "file_name": "test_frame_panel.py",
+    "functions": [
+      {
+        "name": "test_panel_cuped_scratch_alias_collision_matches_ordinary_and_summary",
+        "complexity": 44
+      }
+    ]
+  },
+  {
+    "path": "tests/test_moment_plan_parity.py",
+    "file_name": "test_moment_plan_parity.py",
+    "functions": [
+      {
+        "name": "_assert_emitted_slots_agree",
+        "complexity": 47
+      }
+    ]
+  },
+  {
+    "path": "tests/test_readouts_observational.py",
+    "file_name": "test_readouts_observational.py",
+    "functions": [
+      {
+        "name": "test_clearing_bound_ratio_prior_revalidates_observational_family",
+        "complexity": 46
+      }
+    ]
+  },
+  {
+    "path": "tests/test_test_hygiene.py",
+    "file_name": "test_test_hygiene.py",
+    "functions": [
+      {
+        "name": "_collect_fanout_details",
+        "complexity": 69
+      }
+    ]
+  },
+  {
+    "path": "tests/test_unit_day_artifact_facade.py",
+    "file_name": "test_unit_day_artifact_facade.py",
+    "functions": [
+      {
+        "name": "_definitions",
+        "complexity": 68
+      }
+    ]
+  },
+  {
+    "path": "tests/test_warehouse_cuped_qr_edges.py",
+    "file_name": "test_warehouse_cuped_qr_edges.py",
+    "functions": [
+      {
+        "name": "test_qr_extreme_scales_refuse_out_of_range_rms",
+        "complexity": 52
+      }
+    ]
+  },
+  {
+    "path": "scripts/capture_evidence_identity.py",
+    "file_name": "capture_evidence_identity.py",
+    "functions": [
+      {
+        "name": "_population_identity",
+        "complexity": 44
+      },
+      {
+        "name": "_capture_operations",
+        "complexity": 56
+      }
+    ]
+  },
+  {
+    "path": "scripts/check_public_typing.py",
+    "file_name": "check_public_typing.py",
+    "functions": [
+      {
+        "name": "_Source::factory_fields",
+        "complexity": 47
+      },
+      {
+        "name": "_Source::resolve",
+        "complexity": 54
+      },
+      {
+        "name": "_Source::_bind_control",
+        "complexity": 56
+      },
+      {
+        "name": "_Source::_bind_statement",
+        "complexity": 57
+      },
+      {
+        "name": "_Source::class_sites",
+        "complexity": 66
+      },
+      {
+        "name": "_Source::sites",
+        "complexity": 69
+      }
+    ]
+  },
+  {
+    "path": "scripts/check_test_weakening.py",
+    "file_name": "check_test_weakening.py",
+    "functions": [
+      {
+        "name": "_tests",
+        "complexity": 92
+      }
+    ]
+  },
+  {
+    "path": "scripts/combine_fast_coverage.py",
+    "file_name": "combine_fast_coverage.py",
+    "functions": [
+      {
+        "name": "combine_shards",
+        "complexity": 42
+      }
+    ]
+  },
+  {
+    "path": "scripts/duration_report.py",
+    "file_name": "duration_report.py",
+    "functions": [
+      {
+        "name": "main",
+        "complexity": 46
+      }
+    ]
+  },
+  {
+    "path": "scripts/postgres_ci_changes.py",
+    "file_name": "postgres_ci_changes.py",
+    "functions": [
+      {
+        "name": "_suite_test_dependencies",
+        "complexity": 41
+      }
+    ]
+  },
+  {
+    "path": "scripts/selection_map.py",
+    "file_name": "selection_map.py",
+    "functions": [
+      {
+        "name": "misses",
+        "complexity": 47
+      },
+      {
+        "name": "build",
+        "complexity": 65
+      }
+    ]
+  }
+]
