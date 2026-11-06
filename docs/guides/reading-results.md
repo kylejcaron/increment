@@ -62,8 +62,11 @@ saved_rows = rows.model_dump_json()
 ```
 
 A table compares rows of one view, so table each view of a several-view run
-with `readout_table(result.readout(view))`. A frame of several views shares
-their common columns; a column one row type lacks is null on the other rows.
+with `readout_table(result.readout(view))`. A breakout view of one method
+gives each segment its own row under each metric, and the segment of units
+with no value reads `__null__`, as it does on the rows. A frame of several
+views shares their common columns; a column one row type lacks is null on the
+other rows.
 Every `result.to_frame()` row leads with three scope columns, null only for a
 saved cell that records no scope. `scope_view` (string) and `scope_values`
 (nullable boolean) are the `view` and `values` of the scope that produced the
@@ -326,8 +329,10 @@ assignment-law evidence.
   posterior route if a Bayesian decision is required.
 
 When a prior is supplied and the posterior is available, the readout also
-prints its posterior estimate and `chance_to_beat()` probability, including
-when no preferred direction is declared. The frame field
+prints its posterior estimate and one probability: for a metric that declares
+`preferred_direction`, `chance_to_beat_favorable()`, the posterior probability
+that the lift lies on its favorable side of zero; otherwise the direction-free
+`chance_to_beat()`. The test `alternative` never chooses the side. The frame field
 `posterior_prob_favorable_reason_code` distinguishes an absolute-margin null,
 missing direction, and a neutral direction; it is null when a favorable
 probability is available or the posterior itself is unavailable.

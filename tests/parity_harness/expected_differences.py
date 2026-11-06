@@ -26,8 +26,8 @@ class ExpectedDifference:
     scenario: str
     ingress: str
     field: str
-    frozen: str | Mapping[str, str] | None
-    current: str | Mapping[str, str] | None
+    frozen: str | Mapping[str, Any] | None
+    current: str | Mapping[str, Any] | None
     reason: str
     key: str | None = None
 
@@ -201,6 +201,61 @@ _CONSUMER_INPUT_RECORDS = (
         ),
     ),
 )
+# A whole frozen disposition the current route replaces with another one.
+_PANEL_ASOF_WITHOUT_EXPOSURE_DATE = {
+    "kind": "refusal",
+    "code": "evidence.grain_unavailable",
+    "stage": "run",
+    "context": {
+        "constructor": "FramePanelSource",
+        "offered": ["total"],
+        "requested": "asof",
+        "route": (
+            "pass exposure_date=<column> naming each unit's exposure date; if every unit was "
+            "exposed on the same day, add a column holding that date"
+        ),
+    },
+}
+_DISPOSITION_RECORDS = tuple(
+    ExpectedDifference(
+        scenario=f"{view}-{base}",
+        ingress="from_unit_panel",
+        field="disposition",
+        frozen=frozen,
+        current=_PANEL_ASOF_WITHOUT_EXPOSURE_DATE,
+        reason=(
+            "The scenario's panel declares no exposure_date, so it offers only whole-window "
+            "grains and refuses the as-of view before reading; the frozen outcome counted days "
+            "from a common start the panel never declared."
+        ),
+    )
+    for view, base, frozen in (
+        ("asof", "breakout_store_dimension", {"kind": "cells"}),
+        ("asof", "breakout_boolean_store_dimension", {"kind": "cells"}),
+        ("asof", "conversion_route_breakout_segments", {"kind": "cells"}),
+        (
+            "asof_lift",
+            "breakout_store_dimension",
+            {
+                "kind": "refusal",
+                "code": "estimation.cuped.arm_no_covariate",
+                "stage": "run",
+                "context": {"arm_group": "control", "arm_metric": "revenue_cuped"},
+            },
+        ),
+        (
+            "asof_lift",
+            "breakout_boolean_store_dimension",
+            {
+                "kind": "refusal",
+                "code": "estimation.cuped.arm_no_covariate",
+                "stage": "run",
+                "context": {"arm_group": "control", "arm_metric": "revenue_cuped"},
+            },
+        ),
+        ("asof_lift", "conversion_route_breakout_segments", {"kind": "cells"}),
+    )
+)
 
 
 def _by_case(
@@ -214,6 +269,7 @@ def _by_case(
 
 EXPECTED_DIFFERENCES = _by_case(_RECORDS)
 CONSUMER_INPUT_DIFFERENCES = _by_case(_CONSUMER_INPUT_RECORDS)
+DISPOSITION_DIFFERENCES = _by_case(_DISPOSITION_RECORDS)
 
 
 def with_expected_difference(

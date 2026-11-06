@@ -95,6 +95,14 @@ def unit_panel_table() -> Any:
     return pa.Table.from_pylist(rows)
 
 
+def exposed_unit_panel_table() -> Any:
+    """:func:`unit_panel_table` with every unit exposed on the panel's first day."""
+    import pyarrow as pa
+
+    table = unit_panel_table()
+    return table.append_column("exposed_on", pa.array([dt.date(2026, 1, 1)] * table.num_rows))
+
+
 def mean_metric() -> Any:
     from increment.semantics.models import MeanMetric
 
@@ -220,7 +228,7 @@ def frame_panel_source() -> Any:
     from increment.frame import from_unit_panel
 
     return from_unit_panel(
-        unit_panel_table(),
+        exposed_unit_panel_table(),
         unit="user_id",
         group="variant",
         date="ds",
@@ -228,12 +236,13 @@ def frame_panel_source() -> Any:
         metrics={"revenue": "mean"},
         experiment_id="panel-conformance",
         breakouts=["segment"],
+        exposure_date="exposed_on",
     )
 
 
 def frame_panel_analysis() -> tuple[Any, Any]:
     return from_frame(
-        unit_panel_table(),
+        exposed_unit_panel_table(),
         shape="panel",
         unit="user_id",
         group="variant",
@@ -242,6 +251,7 @@ def frame_panel_analysis() -> tuple[Any, Any]:
         metrics={"revenue": "mean"},
         experiment_id="panel-conformance",
         breakouts=["segment"],
+        exposure_date="exposed_on",
     )
 
 
@@ -709,13 +719,14 @@ def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any
 
     def panel_result() -> Any:
         experiment, resolver = from_frame(
-            unit_panel_table(),
+            exposed_unit_panel_table(),
             shape="panel",
             unit="user_id",
             group="variant",
             date="ds",
             control="control",
             metrics={"revenue": "mean"},
+            exposure_date="exposed_on",
         )
         return view_readout(experiment, resolver, View(view="daily", grain="daily"))
 
@@ -783,6 +794,7 @@ __all__ = [
     "provider_adapters",
     "breakout_moments_source",
     "definitions_source",
+    "exposed_unit_panel_table",
     "frame_panel_source",
     "frame_summary_source",
     "legacy_fixed10_moments_source",

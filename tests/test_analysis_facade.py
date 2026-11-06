@@ -1683,7 +1683,7 @@ def test_run_preserves_cluster_prior_refusal(informative_prior_summary_frame):
     assert exc_info.value.code == "arm.adjustment.cluster_prior"
 
 
-def _unit_summary_analysis_with_plan(plan):
+def _unit_summary_analysis_with_plan(plan, metrics=None):
     """Same shape as the ``unit_summary_analysis`` fixture, but with a
     declared plan baked into the source at construction - the only way
     a frame-backed ``Analysis`` can express ``inference=``/``alternative=``
@@ -1710,29 +1710,36 @@ def _unit_summary_analysis_with_plan(plan):
         unit="user_id",
         group="variant",
         control=None,
-        metrics={"revenue": "conversion"},
+        metrics={"revenue": "conversion"} if metrics is None else metrics,
         design=design,
         plan=plan,
         exposure_date="exposure",
     )
 
 
-def test_run_preserves_sequential_prior_refusal():
-    """A declared prior conflicts with a declared AlwaysValid plan the
-    same way it always has - inference is plan-declared now, not a
-    call-time override, but the refusal survives the cutover."""
+def test_metric_prior_and_sequential_share_one_code():
+    """A prior declared on the metric or passed to the call conflicts with a
+    declared AlwaysValid plan as one hazard with one code."""
     from increment.estimation import Normal
 
+    prior = Normal(mu=0.0, sigma=0.01)
+    declared = MetricSpec(name="revenue", type="conversion", prior=prior)
+    with pytest.raises(ValueError) as metric_prior:
+        _unit_summary_analysis_with_plan(
+            gaussian_plan([declared], law="bernoulli"), metrics=[declared]
+        )
     experiment, resolver = _unit_summary_analysis_with_plan(
         gaussian_plan([MetricSpec(name="revenue", type="conversion")], law="bernoulli")
     )
     with (
         warnings.catch_warnings(),
-        pytest.raises(ValueError) as raised,
+        pytest.raises(ValueError) as call_prior,
     ):
         warnings.simplefilter("ignore", UserWarning)
-        view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.01))
-    assert getattr(raised.value, "code", None) == "sequential.route.unsupported"
+        view_readout(experiment, resolver, prior=prior)
+    codes = {getattr(raised.value, "code", None) for raised in (metric_prior, call_prior)}
+    assert codes == {"sequential.route.unsupported"}
+    assert getattr(metric_prior.value, "context", {}).get("metric") == "revenue"
 
 
 def test_run_forwards_inference_label(unit_summary_analysis: tuple[Any, Any]):
@@ -2376,15 +2383,15 @@ def test_analysis_from_unit_panel_encouragement_staggered_entry():
     """Analysis.from_unit_panel + Encouragement + a windowed uptake, with
     staggered enrollment - doubles as a regression guard at the public
     API layer for the densified-panel anchoring bug (window must anchor
-    to each unit's OWN first observed day, never the panel's global
+    to each unit's OWN declared exposure date, never the panel's global
     earliest date; see increment/frame.py's
     test_from_unit_panel_uptake_window_anchors_to_each_units_own_entry
     for the frame-layer version of this same scenario).
 
-    u1 enters day 0 (rows for days 0-5), u2 enters day 3 (rows only from
-    day 3 - days 0-2 exist only after densification, zero-filled).
-    window_days=3. u1 clicks day 1 (elapsed since ITS OWN entry = 1,
-    inside [0,3)); u2 clicks day 4 (elapsed since ITS OWN entry = 1,
+    u1 is exposed day 0 (rows for days 0-5), u2 is exposed day 3 (rows only
+    from day 3 - days 0-2 exist only after densification, zero-filled).
+    window_days=3. u1 clicks day 1 (elapsed since ITS OWN exposure = 1,
+    inside [0,3)); u2 clicks day 4 (elapsed since ITS OWN exposure = 1,
     inside [3,6)). Both must count - a global-anchor bug would evaluate
     u2's day-4 click as elapsed=4 from day 0, outside [0,3), and drop it.
     """
@@ -2394,14 +2401,16 @@ def test_analysis_from_unit_panel_encouragement_staggered_entry():
 
     rows = []
     for day in range(6):
-        rows.append(("u1", "treatment", day, 1.0, 1.0 if day == 1 else 0.0))
+        rows.append(("u1", "treatment", day, 0, 1.0, 1.0 if day == 1 else 0.0))
     for day in range(3, 6):
-        rows.append(("u2", "treatment", day, 1.0, 1.0 if day == 4 else 0.0))
+        rows.append(("u2", "treatment", day, 3, 1.0, 1.0 if day == 4 else 0.0))
     for day in range(6):
         # Control revenues must differ across units: zero-variance arms are refused by the degenerate-arm guard.
-        rows.append(("u3", "control", day, 1.0, 0.0))
-        rows.append(("u4", "control", day, 2.0, 0.0))
-    df = pd.DataFrame(rows, columns=["user_id", "variant", "day", "revenue", "clicked"])
+        rows.append(("u3", "control", day, 0, 1.0, 0.0))
+        rows.append(("u4", "control", day, 0, 2.0, 0.0))
+    df = pd.DataFrame(
+        rows, columns=["user_id", "variant", "day", "exposed_on", "revenue", "clicked"]
+    )
 
     design = Encouragement(
         control_group="control",
@@ -2420,6 +2429,7 @@ def test_analysis_from_unit_panel_encouragement_staggered_entry():
         metrics={"revenue": "mean"},
         design=design,
         uptake="clicked",
+        exposure_date="exposed_on",
     )
     results = _lift_rows(view_readout(experiment, resolver))
     compliance = next(r for r in results if r.estimand == "compliance")
@@ -3025,8 +3035,8 @@ def test_unit_panel_daily_lift_to_frame_defaults_to_input_backend_without_pandas
 import sys
 import polars as pl
 from increment import View, from_frame, run
-frame = pl.DataFrame({"unit": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"], "arm": ["control"] * 4 + ["treatment"] * 4, "day": ["2025-01-01", "2025-01-02"] * 4, "value": [1.0, 2.0, 2.0, 3.0, 2.0, 4.0, 3.0, 5.0]})
-experiment, resolver = from_frame(frame, shape="panel", unit="unit", group="arm", date="day", control="control", metrics={"value": "mean"})
+frame = pl.DataFrame({"unit": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"], "arm": ["control"] * 4 + ["treatment"] * 4, "day": ["2025-01-01", "2025-01-02"] * 4, "exposed_on": ["2025-01-01"] * 8, "value": [1.0, 2.0, 2.0, 3.0, 2.0, 4.0, 3.0, 5.0]})
+experiment, resolver = from_frame(frame, shape="panel", unit="unit", group="arm", date="day", control="control", metrics={"value": "mean"}, exposure_date="exposed_on")
 daily = View.daily()
 results = run(experiment.with_views(daily), resolver, views=(daily,)).readout(daily)
 sys.modules["pandas"] = None
@@ -3100,6 +3110,7 @@ def test_polars_backend_survives_daily_lift_results():
             "unit": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"],
             "arm": ["control"] * 4 + ["treatment"] * 4,
             "day": ["2025-01-01", "2025-01-02"] * 4,
+            "exposed_on": ["2025-01-01"] * 8,
             "value": [1.0, 2.0, 2.0, 3.0, 2.0, 4.0, 3.0, 5.0],
         }
     )
@@ -3112,6 +3123,7 @@ def test_polars_backend_survives_daily_lift_results():
             date="day",
             control="control",
             metrics={"value": "mean"},
+            exposure_date="exposed_on",
         ),
         View(view="daily", grain="daily"),
     )

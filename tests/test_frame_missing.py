@@ -1354,17 +1354,6 @@ def test_all_null_covariate_refuses_with_actionable_message() -> None:
     assert exc_info.value.context == {"metric": "y", "covariate": "x"}
 
 
-def test_asof_source_without_first_exposure_anchor_refuses() -> None:
-    import narwhals as nw
-
-    from increment._frame_moments import _asof_source_with_indices
-
-    panel = nw.from_native(pa.table({"unit_id": ["u1"]}), eager_only=True)
-    with pytest.raises(InvalidRequestError) as exc_info:
-        _asof_source_with_indices(panel, exposure=None, first_exposure=None, uptake="clicked")
-    assert exc_info.value.code == "frame.moments.asof_source_uptake_needs_anchor"
-
-
 def test_asof_unit_rows_completed_windows_unbounded_retention_refuses() -> None:
     """``_asof_unit_rows`` carries its own completed_windows_only guard,
     independent of any caller-side pre-check."""
@@ -1376,14 +1365,16 @@ def test_asof_unit_rows_completed_windows_unbounded_retention_refuses() -> None:
     spec = MetricSpec(name="d0_plus", type="retention", value_column="revenue", threshold_days=0)
     metric = synthesise_metric(spec)
     panel = nw.from_native(pa.table({"unit_id": ["u1"]}), eager_only=True)
+    exposure = nw.from_native(
+        pa.table({"unit_id": ["u1"], "__exposure__": [date(2025, 1, 1)]}), eager_only=True
+    )
     with pytest.raises(InvalidRequestError) as exc_info:
         _asof_unit_rows(
             panel,
             spec=spec,
             metric=metric,
             by=(),
-            exposure=None,
-            first_exposure=None,
+            exposure=exposure,
             uptake=None,
             uptake_window_days=None,
             completed_windows_only=True,
@@ -1391,48 +1382,6 @@ def test_asof_unit_rows_completed_windows_unbounded_retention_refuses() -> None:
         )
     assert exc_info.value.code == "frame.moments.asof_moments_completed"
     assert exc_info.value.context["metric"] == "d0_plus"
-
-
-def test_asof_unit_rows_retention_without_exposure_refuses() -> None:
-    """Retention needs an exposure-relative day index; without one,
-    ``_asof_unit_rows`` itself refuses rather than computing a band."""
-    from increment._frame_moments import _asof_unit_rows
-    from increment.frame import synthesise_metric
-
-    spec = MetricSpec(name="y", type="retention", value_column="revenue", threshold_days=(0, 3))
-    metric = synthesise_metric(spec)
-    panel = nw.from_native(pa.table({"unit_id": ["u1"], "ds": [date(2025, 1, 1)]}), eager_only=True)
-    with pytest.raises(InvalidRequestError) as exc_info:
-        _asof_unit_rows(
-            panel,
-            spec=spec,
-            metric=metric,
-            by=(),
-            exposure=None,
-            first_exposure=None,
-            uptake=None,
-            uptake_window_days=None,
-            completed_windows_only=False,
-            identity_ordinal="__missing_ordinal__",
-        )
-    assert exc_info.value.code == "frame.moments.asof_unit_rows"
-
-
-def test_collapse_to_unit_totals_window_without_first_exposure_refuses() -> None:
-    import narwhals as nw
-
-    from increment._frame_moments import _collapse_to_unit_totals
-
-    panel = nw.from_native(
-        pa.table({"unit_id": ["u1"], "group_id": ["control"], "revenue": [1.0], "clicked": [1.0]}),
-        eager_only=True,
-    )
-    spec = MetricSpec(name="revenue")
-    with pytest.raises(InvalidRequestError) as exc_info:
-        _collapse_to_unit_totals(
-            panel, [spec], uptake="clicked", window_days=3, first_exposure=None
-        )
-    assert exc_info.value.code == "frame.moments.collapse_to_unit"
 
 
 def test_covariate_imputation_computed_before_outcome_skip() -> None:

@@ -2582,7 +2582,6 @@ def test_asof_unit_rows_emits_only_observed_rows_after_window_freezes():
         metric=metric,
         by=(),
         exposure=exposure,
-        first_exposure=None,
         uptake=None,
         uptake_window_days=None,
         completed_windows_only=False,

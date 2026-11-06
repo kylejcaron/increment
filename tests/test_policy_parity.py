@@ -78,6 +78,7 @@ def _analysis() -> Any:
                         "unit_id": unit,
                         "arm": group,
                         "day": day,
+                        "exposed_on": "2026-01-01",
                         "segment": segment,
                     }
                     for metric_index, name in enumerate(metric_names):
@@ -99,6 +100,7 @@ def _analysis() -> Any:
         date="day",
         control="control",
         metrics=_metrics(),
+        exposure_date="exposed_on",
         plan=_declared_plan(),
         breakouts=("segment",),
     )

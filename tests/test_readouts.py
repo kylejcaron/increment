@@ -1395,6 +1395,7 @@ def test_daily_allows_unwinsorized_panel_values():
                 "user_id": ["u1", "u1", "u2", "u2"],
                 "variant": ["control", "control", "treatment", "treatment"],
                 "day": [1, 2, 1, 2],
+                "exposed_on": [1, 1, 1, 1],
                 "revenue": [10.0, 12.0, 11.0, 15.0],
             }
         ),
@@ -1403,6 +1404,7 @@ def test_daily_allows_unwinsorized_panel_values():
         date="day",
         control="control",
         metrics=[MetricSpec(name="revenue")],
+        exposure_date="exposed_on",
     )
 
     assert readouts.daily(source)
@@ -1472,6 +1474,7 @@ def test_daily_skips_inferential_plan_validation():
                 "user_id": ["u1", "u1", "u2", "u2"],
                 "variant": ["control", "control", "treatment", "treatment"],
                 "day": [1, 2, 1, 2],
+                "exposed_on": [1, 1, 1, 1],
                 "revenue": [0, 0, 1, 1],
             }
         ),
@@ -1480,11 +1483,12 @@ def test_daily_skips_inferential_plan_validation():
         date="day",
         control="control",
         metrics=[MetricSpec(name="revenue", type="conversion")],
+        exposure_date="exposed_on",
         plan=gaussian_plan(
             [MetricSpec(name="revenue", type="conversion")],
             law="bernoulli",
             date="day",
-            exposure_date=None,
+            exposure_date="exposed_on",
         ),
     )
 
@@ -2468,6 +2472,7 @@ def _daily_panel(n: int = 40) -> pd.DataFrame:
                 "unit_id": f"u{i}",
                 "group_id": "control" if i < n else "treatment",
                 "ds": base + dt.timedelta(days=day),
+                "exposed_on": base,
                 "revenue": float(rng.lognormal(1.0, 0.3)),
             }
             for i in range(2 * n)
@@ -2493,7 +2498,9 @@ class TestDailyInferenceRefusalIsCoded:
             source_id="frame",
             design=design,
             transformations=[spec],
-            source_mapping=frame_observation_mapping(unit="unit_id", group="group_id", date="ds"),
+            source_mapping=frame_observation_mapping(
+                unit="unit_id", group="group_id", date="ds", exposure_date="exposed_on"
+            ),
             public_mean=True,
         )
         experiment, resolver = from_frame(
@@ -2504,6 +2511,7 @@ class TestDailyInferenceRefusalIsCoded:
             date="ds",
             control="control",
             metrics=[spec],
+            exposure_date="exposed_on",
             plan=plan,
         )
 
@@ -2522,6 +2530,7 @@ class TestDailyInferenceRefusalIsCoded:
             date="ds",
             control="control",
             metrics=[MetricSpec(name="revenue", type="mean")],
+            exposure_date="exposed_on",
             plan=AnalysisPlan(primary="revenue"),
         )
 

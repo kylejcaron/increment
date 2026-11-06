@@ -855,12 +855,13 @@ def test_quantile_end_to_end_recovers_known_shift() -> None:
 
 def test_panel_quantile_metric_refuses_asof_moments(panel_frame: pa.Table) -> None:
     src = from_unit_panel(
-        panel_frame,
+        panel_frame.append_column("exposed_on", pa.array(["d1"] * panel_frame.num_rows)),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics=[MetricSpec(name="revenue", type="quantile", quantile=0.9)],
+        exposure_date="exposed_on",
     )
 
     with pytest.raises(CapabilityError) as exc:
@@ -937,6 +938,7 @@ def test_panel_asof_winsorization_matches_total_grain() -> None:
             "user_id": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"],
             "variant": ["control"] * 4 + ["treatment"] * 4,
             "ds": [date(2026, 1, 1), date(2026, 1, 2)] * 4,
+            "exposed_on": [date(2026, 1, 1)] * 8,
             "revenue": [3.0, 50.0, 1.0, 2.0, 4.0, 60.0, 2.0, 1.0],
         }
     )
@@ -947,6 +949,7 @@ def test_panel_asof_winsorization_matches_total_grain() -> None:
         date="ds",
         control="control",
         metrics=[MetricSpec(name="revenue", winsorization={"upper_value": 10.0})],
+        exposure_date="exposed_on",
     )
     metric = source.context.metrics[0]
 
@@ -972,6 +975,7 @@ def test_panel_percentile_winsorization_is_date_local(grain) -> None:
             "user_id": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"],
             "variant": ["control"] * 4 + ["treatment"] * 4,
             "ds": days * 4,
+            "exposed_on": [days[0]] * 8,
             "revenue": [1.0, 100.0, 3.0, 100.0, 5.0, 100.0, 7.0, 100.0],
         }
     )
@@ -984,6 +988,7 @@ def test_panel_percentile_winsorization_is_date_local(grain) -> None:
             date="ds",
             control="control",
             metrics=[MetricSpec(name="revenue", winsorization={"upper_percentile": 0.5})],
+            exposure_date="exposed_on",
         )
 
     prefix = source(table.take(pa.array([0, 2, 4, 6])))
@@ -1026,6 +1031,7 @@ def test_panel_percentile_winsorization_constant_day_reports_no_cap(grain) -> No
             "user_id": ["c1", "c2", "t1", "t2"] * 2,
             "variant": ["control", "control", "treatment", "treatment"] * 2,
             "ds": [days[0]] * 4 + [days[1]] * 4,
+            "exposed_on": [days[0]] * 8,
             "revenue": [0.0, 0.0, 0.0, 0.0, 1.0, 100.0, 5.0, 50.0],
         }
     )
@@ -1041,7 +1047,13 @@ def test_panel_percentile_winsorization_constant_day_reports_no_cap(grain) -> No
             else [MetricSpec(name="revenue")]
         )
         return from_unit_panel(
-            table, unit="user_id", group="variant", date="ds", control="control", metrics=metrics
+            table,
+            unit="user_id",
+            group="variant",
+            date="ds",
+            control="control",
+            metrics=metrics,
+            exposure_date="exposed_on",
         )
 
     capped, uncapped = source(True), source(False)
@@ -1079,6 +1091,7 @@ def test_panel_percentile_winsorization_refuses_collapsed_bound_that_clips(grain
             "user_id": users,
             "variant": ["control"] * 10 + ["treatment"] * 10,
             "ds": [day] * 20,
+            "exposed_on": [day] * 20,
             "revenue": [0.0] * 19 + [500.0],
         }
     )
@@ -1093,6 +1106,7 @@ def test_panel_percentile_winsorization_refuses_collapsed_bound_that_clips(grain
                 name="revenue", winsorization={"lower_percentile": 0.1, "upper_percentile": 0.9}
             )
         ],
+        exposure_date="exposed_on",
     )
     metric = source.context.metrics[0]
     with pytest.raises(CapabilityError) as exc_info:
@@ -1118,6 +1132,7 @@ def test_panel_percentile_winsorization_collapsed_bound_isolated_to_its_metric(g
             "user_id": users,
             "variant": ["control"] * 10 + ["treatment"] * 10,
             "ds": [day] * 20,
+            "exposed_on": [day] * 20,
             "revenue": [0.0] * 19 + [500.0],
             "orders": [1.0] * 20,
         }
@@ -1134,6 +1149,7 @@ def test_panel_percentile_winsorization_collapsed_bound_isolated_to_its_metric(g
             ),
             MetricSpec(name="orders"),
         ],
+        exposure_date="exposed_on",
     )
     bad, good = _metric(source, "revenue"), _metric(source, "orders")
 
@@ -1262,13 +1278,15 @@ def _frame_retention_daily():
 
 
 def _frame_quantile_daily():
+    table = _panel_table()
     src = from_unit_panel(
-        _panel_table(),
+        table.append_column("exposed_on", pa.array(["d1"] * table.num_rows)),
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics=[MetricSpec(name="revenue", type="quantile", quantile=0.9)],
+        exposure_date="exposed_on",
     )
     _moments(src, _metric(src, "revenue"), grain="daily")
 

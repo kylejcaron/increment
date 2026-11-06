@@ -272,6 +272,7 @@ class ReadoutRequest:
     scalar_method_evidence: bool = False
     scalar_breakout_evidence: bool = False
     capabilities: frozenset[str] = frozenset({"total"})
+    grain_route: str | None = None
     source_breakouts: tuple[str, ...] = ()
     source_name: str = "source"
     shape: Shape | None = None
@@ -334,6 +335,7 @@ class ReadoutRequest:
             scalar_method_evidence=scalar.method_evidence if scalar is not None else False,
             scalar_breakout_evidence=scalar.breakout_evidence if scalar is not None else False,
             capabilities=evidence.grains,
+            grain_route=evidence.grain_route,
             source_breakouts=evidence.breakouts,
             source_name=type(source).__name__,
             shape=evidence.shape,

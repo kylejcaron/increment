@@ -153,6 +153,7 @@ def test_builder_refuses_changed_registration_and_design_before_evidence_reads()
 def test_builder_executes_declared_daily_scope_and_preflights_segment():
     frame = pd.concat([_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")])
     frame["country"] = ["US", "CA", "CA", "US"] * 20
+    frame["exposed_on"] = "2025-01-01"
     experiment, resolver = from_frame(
         frame,
         shape="panel",
@@ -162,6 +163,7 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
         control="control",
         metrics={"value": "mean"},
         breakouts=["country"],
+        exposure_date="exposed_on",
     )
     daily = replace(experiment, views=(View(view="daily", grain="daily"),))
     assert {cell.identity.key.ds for cell in run(daily, resolver).cells} == {
@@ -444,6 +446,7 @@ def test_preflight_uses_experiment_metric_selection_for_configurations():
 def test_observational_preflight_matches_execution_by_operation(operation, view, grain):
     frame = pd.concat([_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")])
     frame["pre"] = frame["unit"].str.removeprefix("u").astype(float) % 7
+    frame["exposed_on"] = "2025-01-01"
     experiment, resolver = from_frame(
         frame,
         shape="panel",
@@ -455,6 +458,7 @@ def test_observational_preflight_matches_execution_by_operation(operation, view,
             control_group="control",
             adjustment=AdjustmentSet(covariates=("pre",)),
         ),
+        exposure_date="exposed_on",
     )
     scope = View(view=view, grain=grain)
     requested = Experiment.from_json(
@@ -481,7 +485,7 @@ def test_observational_preflight_matches_execution_by_operation(operation, view,
 def test_encouragement_daily_preflight_matches_saved_estimands(estimands):
     from increment import Encouragement, ExclusionRestriction, UptakeSpec
 
-    frame = _frame().assign(day="2025-01-01", uptake=[0, 1] * 20)
+    frame = _frame().assign(day="2025-01-01", exposed_on="2025-01-01", uptake=[0, 1] * 20)
     experiment, resolver = from_frame(
         frame,
         shape="panel",
@@ -496,6 +500,7 @@ def test_encouragement_daily_preflight_matches_saved_estimands(estimands):
                 justification="assignment affects outcomes only through uptake"
             ),
         ),
+        exposure_date="exposed_on",
     )
     requested = Experiment.from_json(
         replace(
@@ -521,6 +526,7 @@ def test_compliance_cell_identity_uses_declared_uptake_fact():
 
     frame = _frame().assign(
         day="2025-01-01",
+        exposed_on="2025-01-01",
         uptake=[0, 1] * 20,
         clicked=[1, 0] * 20,
     )
@@ -540,6 +546,7 @@ def test_compliance_cell_identity_uses_declared_uptake_fact():
                     justification="assignment affects outcomes only through uptake"
                 ),
             ),
+            exposure_date="exposed_on",
         )
         result = run(experiment, resolver, estimands=("compliance",))
         cell = next(cell for cell in result.cells if cell.identity.key.estimand == "compliance")
@@ -560,6 +567,7 @@ def test_daily_lift_run_decisions_are_not_evaluated_against_registered_plan():
         ignore_index=True,
     )
     frame.loc[frame["arm"] == "treatment", "value"] += 100
+    frame["exposed_on"] = "2025-01-01"
     experiment, resolver = from_frame(
         frame,
         shape="panel",
@@ -568,6 +576,7 @@ def test_daily_lift_run_decisions_are_not_evaluated_against_registered_plan():
         date="day",
         control="control",
         metrics={"value": "mean"},
+        exposure_date="exposed_on",
     )
     result = run(replace(experiment, views=(View(view="daily", grain="daily"),)), resolver)
     assert result.cells
@@ -583,7 +592,7 @@ def test_monitoring_scope_is_not_evaluated_against_whole_experiment_plan():
     frame = pd.concat(
         [_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")],
         ignore_index=True,
-    )
+    ).assign(exposed_on="2025-01-01")
     experiment, resolver = from_frame(
         frame,
         shape="panel",
@@ -593,6 +602,7 @@ def test_monitoring_scope_is_not_evaluated_against_whole_experiment_plan():
         control="control",
         metrics={"value": "mean"},
         plan=AnalysisPlan(primary="value"),
+        exposure_date="exposed_on",
     )
     result = run(replace(experiment, views=(View(view="daily", grain="daily"),)), resolver)
 
@@ -1291,7 +1301,9 @@ def test_frozen_metric_keeps_undeclared_direction_on_day_axis(view, grain):
 
     from increment import Metric
 
-    frame = pd.concat([_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")])
+    frame = pd.concat(
+        [_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")]
+    ).assign(exposed_on="2025-01-01")
     experiment, resolver = from_frame(
         frame,
         shape="panel",
@@ -1300,6 +1312,7 @@ def test_frozen_metric_keeps_undeclared_direction_on_day_axis(view, grain):
         date="day",
         control="control",
         metrics={"value": "mean"},
+        exposure_date="exposed_on",
     )
     metric = TypeAdapter(Metric).validate_python(
         {"name": "value", "type": "mean", "entity": "unit", "fact": "value", "window_days": 1}
@@ -1725,6 +1738,7 @@ def test_daily_lift_preflight_checks_finite_sample_conversion_compatibility():
                 "unit": unit,
                 "arm": "control" if unit < 20 else "treatment",
                 "day": f"2025-01-0{day}",
+                "exposed_on": "2025-01-01",
                 "value": (unit + day) % 2,
             }
             for unit in range(40)
@@ -1745,6 +1759,7 @@ def test_daily_lift_preflight_checks_finite_sample_conversion_compatibility():
         date="day",
         control="control",
         metrics=[metric],
+        exposure_date="exposed_on",
     )
     scope = View(view="daily", grain="daily")
     requested = replace(
@@ -1776,7 +1791,9 @@ def test_daily_lift_preflight_checks_finite_sample_conversion_compatibility():
 def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scopes(
     view, grain, operation
 ):
-    frame = pd.concat([_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")])
+    frame = pd.concat(
+        [_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")]
+    ).assign(exposed_on="2025-01-01")
     experiment, resolver = from_frame(
         frame,
         shape="panel",
@@ -1785,6 +1802,7 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
         date="day",
         control="control",
         metrics={"value": "mean"},
+        exposure_date="exposed_on",
     )
     scope = View(view=view, grain=grain)
     requested = replace(
@@ -1831,6 +1849,7 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
         date="day",
         control="control",
         metrics={"value": "mean"},
+        exposure_date="exposed_on",
     )
     direct_values = view_readout(
         direct_experiment, direct_resolver, View(view=view, grain=grain, values=True)

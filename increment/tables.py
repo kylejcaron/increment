@@ -39,6 +39,7 @@ from increment.estimation.results import (
     conversion_route_label,
     row_decision_available,
     row_decision_scale,
+    row_favorable_side,
 )
 
 if TYPE_CHECKING:
@@ -100,13 +101,17 @@ _REFUSALS = refusals(
             ),
         ),
         "tables.readout_table_nest": "readout_table(nest_by='segment') needs a single method in `data` -- the 'method' column has more than one distinct value. coeftable's CoefTable is 2-axis (metric rows x nest x split); segment and arm already occupy both slots, so there is no axis left for method. Filter `data` to one method before calling readout_table(nest_by='segment').",
-        "tables.readout_table_ambiguous": "readout_table has ambiguous duplicate row keys {key}; provide distinct analysis_population values (for example 'assigned' and 'triggered').",
+        "tables.readout_table_ambiguous": "readout_table has ambiguous duplicate row keys {key}; {route}.",
         "tables.readout_table_duplicate": "readout_table has duplicate visible row keys after disambiguation; include distinct metric, estimand, value_scale, nest, split, or analysis_population values.",
         "tables.trend_table_missing": "trend_table is missing required column(s) {missing} -- pass MetricTrend.to_frame() output",
         "tables.trend_table_supports": "trend_table supports at most one dimension column; got {dims}",
     },
 )
 _raise = raiser(_REFUSALS)
+_SEGMENT_ROUTE = 'pass nest_by="segment", on rows of one method, so each segment gets its own row'
+_POPULATION_ROUTE = (
+    "provide distinct analysis_population values (for example 'assigned' and 'triggered')"
+)
 
 # LiftEstimate -> readout DataFrame adapter
 
@@ -293,11 +298,13 @@ def _liftestimate_to_row(
 def _decision_stat_columns(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
 ) -> dict[str, float | None]:
-    """Best-effort posterior-derived values, explicitly model-qualified."""
+    """Best-effort posterior-derived values, explicitly model-qualified. A metric
+    that declares a direction reports its favorable side of zero; the test
+    ``alternative`` never chooses the side."""
     if est.sequential_result is not None or getattr(est, "posterior_available", None) is not True:
         return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
     try:
-        if est.alternative == "less" or getattr(est, "preferred_direction", None) == "decrease":
+        if row_favorable_side(est) is not None:
             return {
                 "posterior_chance_to_beat": est.chance_to_beat_favorable(),  # ty: ignore[unresolved-attribute]
                 "posterior_risk_if_shipped": est.risk_if_shipped_favorable(),  # ty: ignore[unresolved-attribute]
@@ -583,6 +590,8 @@ def _resolve_trend_frame(
             nest_by=nest_by,
             key_columns=key_columns,
         )
+    if nest_column == "segment":
+        frame = _literal_segments(frame)
 
     metrics = frame["metric"].to_list()
     estimands = (
@@ -1207,20 +1216,51 @@ def _rendered_metadata_columns(
         qualifications = [_binomial_qualification_disclosure(value) for value in binomial_sets]
         if any(qualifications):
             columns["Numerical qualification"] = qualifications
-    markdown_special = set("\\`*_{}[]()#+-.!>|~")
     return {
-        label: [
-            escape_html(
-                "".join(
-                    f"\\{character}" if character in markdown_special else character
-                    for character in str(value)
-                ),
-                quote=True,
-            )
-            for value in values
-        ]
+        label: [escape_html(_markdown_literal(value), quote=True) for value in values]
         for label, values in columns.items()
     }
+
+
+# ``>`` is left out: every caller HTML-escapes it to ``&gt;``, which Markdown
+# already reads as text, and ``\&gt;`` would render the entity literally.
+_MARKDOWN_SPECIAL = frozenset("\\`*_{}[]()#+-.!|~")
+
+
+def _markdown_literal(value: Any) -> str:
+    """``value`` as Markdown source that renders as the text itself once HTML-escaped."""
+    return "".join(
+        f"\\{character}" if character in _MARKDOWN_SPECIAL else character
+        for character in str(value)
+    )
+
+
+def _distinct_segments(segments: list[Any] | None) -> set[Any]:
+    return set() if segments is None else {value for value in segments if not _is_missing(value)}
+
+
+def _default_nest_by(frame: Any) -> Literal["arm", "segment"]:
+    """Nest by segment when one method's rows span more than one, else by arm."""
+    spans_segments = len(_distinct_segments(_column_values(frame, "segment"))) > 1
+    return "segment" if spans_segments and frame["method"].n_unique() <= 1 else "arm"
+
+
+def _literal_segments(frame: Any) -> Any:
+    """Key each segment by the label its nest cell shows, so the row checks see
+    what the table shows. A segment reads as written, an empty-string segment
+    reads ``""``, and a row without a segment, such as a whole-window row, shows none."""
+    import narwhals as nw
+
+    return frame.with_columns(
+        nw.new_series(
+            "segment",
+            [
+                "" if _is_missing(value) else _markdown_literal(value) or '""'
+                for value in frame["segment"].to_list()
+            ],
+            backend=nw.get_native_namespace(frame),
+        )
+    )
 
 
 def _binomial_qualification_disclosure(value: Any) -> str:
@@ -1421,13 +1461,22 @@ def _readout_labels(
         if "analysis_population" in frame.columns
         else [None] * len(labels)
     )
+    # Rows that differ only by segment are separated by nesting on it.
+    segments = _column_values(frame, "segment") if nest_column != "segment" else None
     if collided:
         for key in collided:
             indexes = [index for index, candidate in enumerate(keys) if candidate == key]
             values = [populations[index] for index in indexes]
             distinct = {value for value in values if not _is_missing(value)}
             if len(distinct) != len(values) or len(distinct) < 2:
-                _raise("tables.readout_table_ambiguous", key=key)
+                by_segment = segments is not None and (
+                    len(_distinct_segments([segments[index] for index in indexes])) > 1
+                )
+                _raise(
+                    "tables.readout_table_ambiguous",
+                    key=key,
+                    route=_SEGMENT_ROUTE if by_segment else _POPULATION_ROUTE,
+                )
             for index in indexes:
                 labels[index] = f"{labels[index]} ({populations[index]})"
 
@@ -1704,7 +1753,7 @@ def readout_table[V](
     title: str = "Experiment Readout",
     subtitle: str = "",
     theme: Theme | None = None,
-    nest_by: Literal["arm", "method", "segment"] = "arm",
+    nest_by: Literal["arm", "method", "segment"] | None = None,
     advisory: bool = False,
     show_interval_level: bool = True,
     trend: IntoDataFrame | Sequence[DailyLiftEstimate | LiftEstimate] | None = None,
@@ -1742,10 +1791,14 @@ def readout_table[V](
     row (no plan ever declared, for any row), renders ungrouped.
 
     ``nest_by`` picks which dimension stacks under each metric row vs.
-    splits into side-by-side columns: ``"arm"`` (default) stacks
+    splits into side-by-side columns: ``"arm"`` stacks
     arms/splits by method, ``"method"`` stacks methods/splits by arm,
     ``"segment"`` stacks segments/splits by arm (``data`` must already
-    be filtered to one method, or this raises). ``advisory`` explicitly
+    be filtered to one method, or this raises). ``None`` (default) picks
+    ``"segment"`` when rows of one method carry more than one segment and
+    ``"arm"`` otherwise. Segment labels show as written, so the missing-value
+    segment reads ``__null__`` and an empty-string segment reads ``""``.
+    ``advisory`` explicitly
     renders stored-posterior values with posterior-qualified labels;
     ``show_interval_level`` governs interval-level disclosure - an ``Interval`` column when
     levels differ across rows, or a note appended to ``subtitle`` when
@@ -1760,7 +1813,9 @@ def readout_table[V](
 
     Raises ``ValueError`` if ``nest_by="segment"`` and ``data`` has more
     than one method; if visible row keys collide without distinct
-    ``analysis_population`` values; if ``trend`` is missing a required key column or
+    ``analysis_population`` values (the refusal's ``route`` names
+    ``nest_by="segment"`` when the colliding rows differ by segment);
+    if ``trend`` is missing a required key column or
     repeats a resolved readout identity at the same ``ds`` after scale/population
     label disambiguation; or if ``trend`` mixes incompatible ``ds_basis`` values.
 
@@ -1775,6 +1830,7 @@ def readout_table[V](
     data = _readout_envelope_rows(data)
 
     frame, scope_header = _readout_input_frame(data, nw, pd)
+    nest_by = _default_nest_by(frame) if nest_by is None else nest_by
     if nest_by == "segment" and not len(frame) and "segment" not in frame.columns:
         frame = frame.with_columns(
             nw.new_series("segment", [], dtype=nw.String, backend=nw.get_native_namespace(frame))
@@ -1788,6 +1844,7 @@ def readout_table[V](
         nest_column, split_column = "method", "group_id"
     else:
         nest_column, split_column = "segment", "group_id"
+        frame = _literal_segments(frame)
     split_columns = split_column if frame[split_column].n_unique() > 1 else None
 
     labels, scales, identity_labels = _readout_labels(

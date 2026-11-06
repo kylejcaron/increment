@@ -124,6 +124,7 @@ def _panel_with_breakout_rows() -> list[dict[str, object]]:
             "user_id": "u1",
             "variant": "control",
             "day": "2026-01-01",
+            "exposed_on": "2026-01-01",
             "country": "US",
             "revenue": 1.0,
         },
@@ -131,6 +132,7 @@ def _panel_with_breakout_rows() -> list[dict[str, object]]:
             "user_id": "u1",
             "variant": "control",
             "day": "2026-01-02",
+            "exposed_on": "2026-01-01",
             "country": "US",
             "revenue": 2.0,
         },
@@ -138,6 +140,7 @@ def _panel_with_breakout_rows() -> list[dict[str, object]]:
             "user_id": "u2",
             "variant": "treatment",
             "day": "2026-01-01",
+            "exposed_on": "2026-01-01",
             "country": "CA",
             "revenue": 3.0,
         },
@@ -145,6 +148,7 @@ def _panel_with_breakout_rows() -> list[dict[str, object]]:
             "user_id": "u2",
             "variant": "treatment",
             "day": "2026-01-02",
+            "exposed_on": "2026-01-01",
             "country": "CA",
             "revenue": 5.0,
         },
@@ -162,6 +166,7 @@ def test_analysis_from_unit_panel_forwards_breakouts():
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
         breakouts=["country"],
     )
     results = view_readout(
@@ -600,7 +605,7 @@ def encouragement_summary_breakout_frame():
     )
 
 
-def _encouragement_summary_breakout_analysis(frame, metrics):
+def _encouragement_summary_breakout_analysis(frame, metrics, *, uptake_window_days=None):
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
     return from_frame(
@@ -611,7 +616,7 @@ def _encouragement_summary_breakout_analysis(frame, metrics):
         metrics=metrics,
         design=Encouragement(
             control_group="control",
-            uptake=UptakeSpec(fact="clicked"),
+            uptake=UptakeSpec(fact="clicked", window_days=uptake_window_days),
             one_sided=True,
             exclusion_restriction=ExclusionRestriction(
                 justification="assignment affects y through uptake"
@@ -624,6 +629,33 @@ def _encouragement_summary_breakout_analysis(frame, metrics):
 
 def _encouragement_breakout_identity(row):
     return row.estimand, row.value_scale, row.method, row.method_role
+
+
+def test_encouragement_summary_breakout_counts_windowed_uptake_per_segment(
+    encouragement_summary_breakout_frame,
+):
+    from increment.evidence import MomentsRequest, evidence_provider, request_evidence
+    from tests.analysis_factory import held_source
+
+    frame = encouragement_summary_breakout_frame
+    _, resolver = _encouragement_summary_breakout_analysis(
+        frame, [MetricSpec(name="y")], uptake_window_days=2
+    )
+    source = cast(Any, held_source(resolver))
+    rows = cast(
+        Any,
+        request_evidence(
+            evidence_provider(source),
+            MomentsRequest(source.context.metrics[0], by=("segment",)),
+        ),
+    )
+    takers = frame[frame["clicked"] == 1.0].groupby(["segment", "arm"]).size().to_dict()
+    assert {(row["segment"], row["group_id"]): row["sum_d"] for row in rows} == {
+        (segment, arm): float(takers.get((segment, arm), 0))
+        for segment in ("A", "B")
+        for arm in ("control", "treatment_1", "treatment_2")
+    }
+    resolver.close()
 
 
 @pytest.mark.parametrize("empty_arm", ["control", "treatment_2"])
@@ -983,6 +1015,7 @@ def test_from_unit_panel_run_daily_returns_daily_metric_values():
             "user_id": ["u1", "u1", "u2", "u2"],
             "variant": ["treatment", "treatment", "control", "control"],
             "day": ["2026-01-01", "2026-01-02", "2026-01-01", "2026-01-02"],
+            "exposed_on": ["2026-01-01"] * 4,
             "revenue": [10.0, 20.0, 5.0, 7.0],
         }
     )
@@ -994,6 +1027,7 @@ def test_from_unit_panel_run_daily_returns_daily_metric_values():
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     results = view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
     assert isinstance(results, DailyMetricValues)
@@ -1012,7 +1046,13 @@ def test_day_axis_snapshot_identity_tracks_binary_input_counts():
     import pandas as pd
 
     rows = [
-        {"user_id": unit, "variant": arm, "day": "2026-01-01", "converted": value}
+        {
+            "user_id": unit,
+            "variant": arm,
+            "day": "2026-01-01",
+            "exposed_on": "2026-01-01",
+            "converted": value,
+        }
         for arm, values in (
             ("control", (0, 0, 0, 0)),
             ("treatment", (0, 0, 0, 0)),
@@ -1032,6 +1072,7 @@ def test_day_axis_snapshot_identity_tracks_binary_input_counts():
             date="day",
             control="control",
             metrics={"converted": "conversion"},
+            exposure_date="exposed_on",
             experiment_id="same-study",
         )
 
@@ -1244,6 +1285,7 @@ def panel_breakout_analysis():
                 "user_id": unit,
                 "variant": variant,
                 "day": "2026-01-01",
+                "exposed_on": "2026-01-01",
                 "country": country,
                 "plan": "all",
                 "revenue": base,
@@ -1255,6 +1297,7 @@ def panel_breakout_analysis():
                 "user_id": unit,
                 "variant": variant,
                 "day": "2026-01-02",
+                "exposed_on": "2026-01-01",
                 "country": country,
                 "plan": "all",
                 "revenue": base + (1.0 if unit.endswith("1") else 2.0),
@@ -1269,6 +1312,7 @@ def panel_breakout_analysis():
         date="day",
         control="control",
         metrics={"revenue": "mean", "orders": "mean"},
+        exposure_date="exposed_on",
         breakouts=["country", "plan"],
     )
 
@@ -1285,18 +1329,27 @@ def test_from_unit_panel_daily_lift_refuses_sequential_before_moments():
         source_id="frame",
         design=Randomized(control_group="control"),
         transformations=specs,
-        source_mapping=frame_observation_mapping(unit="user_id", group="variant", date="day"),
+        source_mapping=frame_observation_mapping(
+            unit="user_id", group="variant", date="day", exposure_date="exposed_on"
+        ),
     )
     import pandas as pd
 
     rows = [
-        {"user_id": f"c{i}", "variant": "control", "day": "2026-01-01", "revenue": float(i % 2)}
+        {
+            "user_id": f"c{i}",
+            "variant": "control",
+            "day": "2026-01-01",
+            "exposed_on": "2026-01-01",
+            "revenue": float(i % 2),
+        }
         for i in range(2)
     ] + [
         {
             "user_id": f"t{i}",
             "variant": "treatment",
             "day": "2026-01-01",
+            "exposed_on": "2026-01-01",
             "revenue": float((i + 1) % 2),
         }
         for i in range(2)
@@ -1309,6 +1362,7 @@ def test_from_unit_panel_daily_lift_refuses_sequential_before_moments():
         date="day",
         control="control",
         metrics={"revenue": "conversion"},
+        exposure_date="exposed_on",
         plan=plan,
     )
 
@@ -1558,14 +1612,17 @@ def test_from_unit_panel_run_daily_lift_default(panel_breakout_analysis: tuple[A
 def test_from_unit_panel_day_axis_winsorization_refusal_is_coded(view):
     import pandas as pd
 
+    frame = pd.DataFrame(_panel_with_breakout_rows_for_config())
+    frame["exposed_on"] = "2026-01-01"
     analysis = from_frame(
-        pd.DataFrame(_panel_with_breakout_rows_for_config()),
+        frame,
         shape="panel",
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics=[MetricSpec(name="revenue", winsorization={"upper_value": 100.0})],
+        exposure_date="exposed_on",
     )
 
     with pytest.raises(CapabilityError) as raised:
@@ -1862,6 +1919,7 @@ def test_from_unit_panel_encouragement_breakout_retains_estimands():
                 "user_id": unit,
                 "variant": variant,
                 "day": "2026-01-01",
+                "exposed_on": "2026-01-01",
                 "country": country,
                 "revenue": base,
                 "clicked": float(variant == "treatment" and unit.endswith("1")),
@@ -1884,6 +1942,7 @@ def test_from_unit_panel_encouragement_breakout_retains_estimands():
         metrics={"revenue": "mean"},
         design=design,
         uptake="clicked",
+        exposure_date="exposed_on",
         breakouts=["country"],
     )
     assert {
@@ -1906,6 +1965,7 @@ def encouragement_panel_analysis():
             "user_id": unit,
             "variant": variant,
             "day": "2026-01-01",
+            "exposed_on": "2026-01-01",
             "revenue": revenue,
             "clicked": clicked,
         }
@@ -1932,6 +1992,7 @@ def encouragement_panel_analysis():
             min_first_stage_z=0.001,
         ),
         uptake="clicked",
+        exposure_date="exposed_on",
     )
 
 
@@ -1951,6 +2012,7 @@ def test_compliance_asof_snapshot_identity_tracks_arm_counts():
                             "unit": f"{arm}-{unit}",
                             "variant": arm,
                             "day": day,
+                            "exposed_on": "2026-01-01",
                             "revenue": float(unit),
                             "clicked": clicked,
                         }
@@ -1971,6 +2033,7 @@ def test_compliance_asof_snapshot_identity_tracks_arm_counts():
                 min_first_stage_z=0.001,
             ),
             uptake="clicked",
+            exposure_date="exposed_on",
         )
 
     small_experiment, small_resolver = analysis(100)
@@ -2034,6 +2097,7 @@ def test_asof_compliance_keeps_estimable_arm_when_another_arm_is_too_small():
                     "unit": f"{group}-{index}",
                     "variant": group,
                     "day": date(2026, 1, 1),
+                    "exposed_on": date(2026, 1, 1),
                     "revenue": float(index),
                     "clicked": float(index < uptake_count),
                 }
@@ -2053,6 +2117,7 @@ def test_asof_compliance_keeps_estimable_arm_when_another_arm_is_too_small():
             ),
         ),
         uptake="clicked",
+        exposure_date="exposed_on",
     )
     try:
         result = view_readout(
@@ -2457,6 +2522,7 @@ def test_from_unit_panel_observational_daily_only():
             "user_id": f"{variant}_{country}",
             "variant": variant,
             "day": "2026-01-01",
+            "exposed_on": "2026-01-01",
             "country": country,
             "pre": float(index),
             "revenue": float(index + 1),
@@ -2472,6 +2538,7 @@ def test_from_unit_panel_observational_daily_only():
         group="variant",
         date="day",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("pre",))
         ),
@@ -2693,6 +2760,7 @@ def test_panel_daily_lift_accepts_midnight_iso_datetime_day_labels(backend):
             "unit": f"{arm}-{unit}",
             "arm": arm,
             "day": "2025-01-01T00:00:00",
+            "exposed_on": "2025-01-01T00:00:00",
             "revenue": float(unit + (10 if arm == "treatment" else 1)),
         }
         for arm in ("control", "treatment")
@@ -2707,6 +2775,7 @@ def test_panel_daily_lift_accepts_midnight_iso_datetime_day_labels(backend):
         control="control",
         date="day",
         metrics=[MetricSpec(name="revenue")],
+        exposure_date="exposed_on",
         plan=AnalysisPlan(primary="revenue"),
     )
 
@@ -2717,6 +2786,57 @@ def test_panel_daily_lift_accepts_midnight_iso_datetime_day_labels(backend):
     serialized = result[0].model_dump_json()
     restored = DailyLiftEstimate.model_validate_json(serialized)
     assert restored.ds == result[0].ds
+
+
+def test_encouragement_daily_itt_and_compliance_share_midnight_timestamp_days():
+    """Daily compliance rows name the same calendar days as the daily ITT rows."""
+    import pandas as pd
+
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    labels = ("2025-01-01T00:00:00", "2025-01-02T00:00:00")
+    rows = [
+        {
+            "unit": f"{arm}-{unit}",
+            "arm": arm,
+            "day": day,
+            "exposed_on": labels[0],
+            "revenue": float(unit + index + (3 if arm == "treatment" else 0)),
+            "clicked": float(arm == "treatment" and unit // 2 == index),
+        }
+        for arm in ("control", "treatment")
+        for unit in range(8)
+        for index, day in enumerate(labels)
+    ]
+    experiment, resolver = from_frame(
+        pd.DataFrame(rows),
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed_on",
+        metrics={"revenue": "mean"},
+        uptake="clicked",
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(justification="fixture"),
+        ),
+    )
+    days = (date(2025, 1, 1), date(2025, 1, 2))
+
+    results = view_readout(
+        experiment, resolver, View(view="daily", grain="daily"), estimands=("itt", "compliance")
+    )
+
+    assert {(row.estimand, row.ds) for row in results} == {
+        (estimand, day) for estimand in ("itt", "compliance") for day in days
+    }
+    # Treatment units 0-1 click on the first day and units 2-3 on the second; control never.
+    compliance = {
+        row.ds: row.require_lift().value for row in results if row.estimand == "compliance"
+    }
+    assert compliance == pytest.approx(dict(zip(days, (0.25, 0.5), strict=True)))
 
 
 @pytest.mark.parametrize("backend", ["pandas", "pyarrow"])

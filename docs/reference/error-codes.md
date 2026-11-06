@@ -1015,7 +1015,7 @@ Retired codes and their replacements are listed below.
 | `facade.study.switchback_study.identification_exactly_one` | `InvalidRequestError` | — | `increment._study` |
 | `facade.window.resolve_window_days` | `UnsupportedRequestError` | `metric_type` | `increment._window` |
 | `family.evidence.incomplete` | `CapabilityError` | `failed`, `invalid`, `missing` | `increment.estimation.family` |
-| `frame.asof.day_axis_unorderable` | `CapabilityError` | `labels` | `increment._day_axis_labels` |
+| `frame.asof.day_axis_unorderable` | `CapabilityError` | `labels` | `increment._day_axis`, `increment._day_axis_labels` |
 | `frame.asof.quantile_unsupported` | `CapabilityError` | `metric` | `increment._frame_moments`, `increment.frame` |
 | `frame.duplicate_metric_name` | `InvalidRequestError` | `name` | `increment._metric_specs` |
 | `frame.frame_panel.asof_moments_completed` | `InvalidRequestError` | `band`, `name` | `increment.frame` |
@@ -1052,9 +1052,6 @@ Retired codes and their replacements are listed below.
 | `frame.missing_policy.panel_skip` | `UnsupportedRequestError` | `missing` | `increment._frame_validation` |
 | `frame.moments.asof_completed_requires_uptake_window` | `InvalidRequestError` | — | `increment._frame_moments` |
 | `frame.moments.asof_moments_completed` | `InvalidRequestError` | `band`, `metric` | `increment._frame_moments` |
-| `frame.moments.asof_source_uptake_needs_anchor` | `InvalidRequestError` | — | `increment._frame_moments` |
-| `frame.moments.asof_unit_rows` | `InvalidRequestError` | — | `increment._frame_moments` |
-| `frame.moments.collapse_to_unit` | `InvalidRequestError` | — | `increment._frame_moments` |
 | `frame.moments.metric_type_conversion` | `InvalidRequestError` | `metric`, `value` | `increment._frame_moments` |
 | `frame.panel.declaration_canonical_collision` | `InvalidRequestError` | `canonical_name`, `role`, `route`, `source_name` | `increment._frame_panel` |
 | `frame.panel.observable_end_dtype` | `InvalidRequestError` | `anchor_dtype`, `axis_kind`, `end_dtype`, `end_kind`, `observable_end` | `increment._frame_panel` |
@@ -1187,7 +1184,6 @@ Retired codes and their replacements are listed below.
 | `plan.metric.report_only` | `InvalidRequestError` | `metric`, `role` | `increment.decision` |
 | `plan.metric_cuped_methods` | `UnsupportedRequestError` | `inference`, `metric` | `increment.plan` |
 | `plan.metric_frame_contrast` | `InvalidRequestError` | `metric` | `increment.plan` |
-| `plan.metric_informative_priors` | `UnsupportedRequestError` | `inference`, `metric` | `increment.plan` |
 | `plan.metric_priors_relative` | `UnsupportedRequestError` | `metric`, `prior` | `increment.plan` |
 | `plan.metrics.unknown` | `InvalidRequestError` | `declared`, `path`, `unknown` | `increment.decision` |
 | `plan.observational.relative_margin` | `UnsupportedRequestError` | `metrics` | `increment.plan` |
@@ -1584,7 +1580,7 @@ Retired codes and their replacements are listed below.
 | `store.run.scope_manifest_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.scope_mapping_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.timestamp_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
-| `tables.readout_table_ambiguous` | `InvalidRequestError` | `key` | `increment.tables` |
+| `tables.readout_table_ambiguous` | `InvalidRequestError` | `key`, `route` | `increment.tables` |
 | `tables.readout_table_duplicate` | `InvalidRequestError` | — | `increment.tables` |
 | `tables.readout_table_nest` | `InvalidRequestError` | — | `increment.tables` |
 | `tables.readout_table_trend` | `InvalidRequestError` | `columns` | `increment.tables` |
@@ -1705,6 +1701,7 @@ Retired codes and their replacements are listed below.
 | `kernel.run.resolver_missing` | `kernel.run.reader_required`, `kernel.run.reader_offline` |
 | `plan.contrast_configs_template_mismatch` | `plan.compile_configs_template_mismatch` |
 | `plan.contrast_configs_wrong_type` | `plan.compile_configs_wrong_type` |
+| `plan.metric_informative_priors` | `sequential.route.unsupported` |
 | `power.alpha` | `estimation.diagnostics.alpha` |
 | `power.segment_pairwise_minimum_n_per_arm_too_small` | `power.segment_pairwise_achieved_n_per_arm_too_small` |
 | `power.sequential_power_enclosure_se_full_finite` | `power.se_full_finite` |
