@@ -166,6 +166,19 @@ values.
   code that parsed these columns as strings should read them as floats, or read
   `Fraction` values from `row.require_sequential_result()`. Estimates, decisions
   and experiment identity are unchanged.
+- Release note (documentation): the limitations page states how conservative
+  the default conversion interval is at small arms and when it is the default.
+  At a 10% rate it covers 97.5% at 1,000 units per arm with 1.36 times the Katz
+  interval's log width, and 99.5% at 200, where its lower endpoint is a -100%
+  lift for 43% of outcomes. A row takes the delta-method route only with 2,140
+  successes and 2,140 failures per arm at a two-sided 5% level, so the
+  finite-sample route is the default below about 21,400 units per arm at a 10%
+  rate. The page also records that a mean's relative interval covered 93.5% on
+  skewed gamma outcomes at 30 units per arm, where the same rows' additive
+  Welch interval covered 95.6%. The `AnalysisPlan` docstring now says that
+  secondary families use Benjamini-Hochberg at a fixed horizon and e-BH under
+  sequential inference, including `AsymptoticMean`, not Bonferroni. Estimates,
+  refusals and experiment identity are unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded

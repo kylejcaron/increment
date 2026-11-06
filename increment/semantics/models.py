@@ -2223,12 +2223,12 @@ class AnalysisPlan(_ExplicitOnlyFields, _Base):
       the error that matters here.
     - **secondary** -- the discovery family at ``q``, a level deliberately
       looser than ``alpha`` because these verdicts are not confirmatory. The
-      procedure depends on ``inference``: BH/e-BH false-discovery control for
-      fixed-horizon and ``AlwaysValid`` inference, and fixed-roster Bonferroni
-      familywise control at ``q`` for ``AsymptoticMean``, whose look structure
-      has no established step-up composition. Familywise control at ``q``
-      implies false-discovery control at ``q``, so the weaker-procedure case
-      never promises less than the step-up ones; it is only less powerful.
+      metric-by-arm family controls the false-discovery rate at ``q`` under
+      every ``inference``: Benjamini-Hochberg over p-values at a fixed
+      horizon, and e-BH under ``AlwaysValid`` and ``AsymptoticMean``, the
+      latter with an asymptotic-sequential guarantee. Fixed per-cell
+      Bonferroni (familywise) control applies only to segmented breakout
+      views, never to this family (see ``view_multiplicity``).
     - **unassigned** -- reported at ``alpha``, no multiplicity claim.
 
     Parameters
@@ -2239,12 +2239,10 @@ class AnalysisPlan(_ExplicitOnlyFields, _Base):
         non-control arms at estimation, so the shares sum to no more than
         ``alpha``. Guardrails test at ``alpha`` unsplit.
     q : float
-        Secondary-family error level: BH/e-BH targets false discoveries for
-        fixed-horizon/exact registered inference. ``AsymptoticMean`` instead
-        uses fixed-roster Bonferroni familywise control at ``q``, allocating
-        ``q / n_secondaries`` per secondary. It is not a quantile. These
-        guarantees are distinct from confirmatory allocation at ``alpha``;
-        see ``increment.estimation.family``.
+        Secondary-family false-discovery level: Benjamini-Hochberg at a fixed
+        horizon and e-BH under sequential ``inference``. It is not a
+        quantile. These guarantees are distinct from confirmatory allocation
+        at ``alpha``; see ``increment.estimation.family``.
     view_multiplicity : MultiplicitySpec | None
         Multiplicity for segmented as-of and breakout views. ``None`` keeps
         route defaults: randomized breakout BH at ``q`` (fixed-roster
