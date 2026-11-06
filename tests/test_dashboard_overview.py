@@ -17,17 +17,18 @@ from tests.dashboard_snapshots import ADDED, COUNTRY, experiment_for, overview_s
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def _saved_added_snapshot():
     return overview_snapshot()
 
 
+@pytest.fixture(scope="module")
+def _family_presentation_snapshot(_saved_added_snapshot):
+    return _saved_added_snapshot
+
+
 def _identity(row) -> tuple:
     return (row["metric"], row["group_id"], row["lift"], row["lower"], row["higher"])
-
-
-def _family_presentation_snapshot():
-    return overview_snapshot()
 
 
 @pytest.mark.integration
@@ -45,20 +46,20 @@ def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapsh
     assert ADDED not in {row["metric"] for row in snapshot.readout_rows}
 
 
-def test_explore_tables_show_only_core_readout_columns():
+def test_explore_tables_show_only_core_readout_columns(_family_presentation_snapshot):
     from increment.dashboard._html import overview_table
 
-    snapshot = _family_presentation_snapshot()
+    snapshot = _family_presentation_snapshot
     overview_html = overview_table(snapshot, COUNTRY)
     assert "Discovery" in overview_html
     assert "Numerical qualification" not in overview_html
     assert "Selection qualification" not in overview_html
 
 
-def test_overview_qualification_footnotes_name_rows_and_family():
+def test_overview_qualification_footnotes_name_rows_and_family(_family_presentation_snapshot):
     from increment.dashboard._html import overview_table
 
-    snapshot = _family_presentation_snapshot()
+    snapshot = _family_presentation_snapshot
     rows = overview_rows(snapshot, COUNTRY)
     qualified = [row for row in rows if row.get("selection_qualification")]
     assert qualified
@@ -80,14 +81,14 @@ def test_overview_qualification_footnotes_name_rows_and_family():
     assert "Selection qualification" not in html
 
 
-def test_only_a_discovery_is_coloured_as_a_finding():
+def test_only_a_discovery_is_coloured_as_a_finding(_family_presentation_snapshot):
     import dataclasses
 
     from increment.dashboard._html import overview_table
     from increment.dashboard._theme import coeftable_theme
     from increment.estimation.results import Estimate
 
-    snapshot = _family_presentation_snapshot()
+    snapshot = _family_presentation_snapshot
     overview = snapshot.overview
     assert overview is not None
     clear = Estimate(value=0.5, lb=0.3, ub=0.7, level=0.95)
@@ -145,10 +146,12 @@ def test_an_unexpected_update_failure_rolls_the_widget_back(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_an_added_metric_with_a_display_unit_can_be_removed_and_re_added():
+def test_an_added_metric_with_a_display_unit_can_be_removed_and_re_added(
+    _family_presentation_snapshot,
+):
     from increment.dashboard._app import DashboardWidget
 
-    snapshot = overview_snapshot()
+    snapshot = _family_presentation_snapshot
     snapshot = dataclasses.replace(
         snapshot, config=dataclasses.replace(snapshot.config, metric_units={ADDED: "orders"})
     )
