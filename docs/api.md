@@ -509,6 +509,50 @@ values.
   trigger timestamps beside it already were. Experiments whose sources share
   one timestamp kind read their sources with the same SQL, and experiment
   identity is unchanged.
+- Release note (breaking bug fix): a warehouse enrollment that matches nothing
+  names its cause. When the exposure rows carry `experiment_id` keys but none
+  equals the experiment's `name`, counting enrolled units and running refuse
+  with `source.native.experiment_key_unmatched` (context `experiment`,
+  `observed_keys`: up to five keys the rows carry) instead of returning empty
+  counts and then refusing with `readout.arms.no_treatment`. A SQL exposure
+  whose `experiment_id` is NULL on every row now enrolls every row, as a
+  fact-based exposure and a SQL exposure without the column already did. A
+  run whose enrollment counts no unit refuses with the new
+  `readout.arms.none_enrolled` (context `control_group`, `counts`), for
+  example `from_moments([])` or an exposure that selects no row, with or
+  without a declared allocation; `readout.arms.no_treatment` remains for an
+  enrollment with only the control arm, and its route now names
+  `increment.workflows.srm`. Enrolled arms without usable outcomes, under any
+  design, such as a lone all-NULL `missing="skip"` metric or a panel or
+  warehouse run whose every unit is censored, return unavailable rows with
+  `readout.cell.missing_metric_observations` instead of refusing, and an
+  encouragement run still estimates compliance; such a row names the control
+  arm in `unobserved_arm` when the control arm has no observations. A fact a
+  metric reads that has no loaded rows still scores every unit zero, and now
+  warns with `source.native.fact_no_rows` (context `fact`, `fact_source`,
+  `observed_events`: up to five event labels in that source). Estimates of runs
+  that previously succeeded and experiment identity are unchanged.
+- Release note (breaking bug fix): a warehouse fact declares one rule for a
+  NULL in its value column, `missing: error | skip | zero`, and every metric on
+  the fact follows it, counts, conversion and retention included. Previously a
+  `count`, conversion or retention metric counted a NULL-valued row that `sum`
+  and the averages dropped, so revenue per order as a purchase `sum` over a
+  purchase `count` (14.5 in one case) disagreed with the mean order value
+  (29.0). Under the default, `error`, a read whose rows hold a NULL value
+  refuses with the new `source.native.fact_null_values` (context `fact`,
+  `column`, `null_rows`): an enrolled unit's rows inside a metric window or
+  retention band, counted from its trigger in a triggered read, or its CUPED
+  window, whole-site volume rows, and the rows with a unit a `MetricTrends`
+  trend reads, even when the read returns no row; a row the read leaves out,
+  such as one after the date a pinned snapshot's feed is complete through,
+  never refuses. Publishing a unit-day artifact refuses the same way for the
+  rows it stores, its triggered rows included. SQL previews (`panel_sql`,
+  `summary_sql`) and a trend's `to_table()` and `sql()` cannot refuse; under
+  `error` their SQL reads only the rows with a value. To migrate, fill the NULL
+  values or declare the fact's `missing`: `skip` leaves those rows out of every
+  aggregation, `zero` reads the value as 0 and keeps the row. Definitions
+  without `missing` keep their identity, and runs over facts without NULL
+  values keep their estimates.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra

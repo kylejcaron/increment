@@ -4,7 +4,14 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, NoReturn
 
 from increment._evidence_refusals import OPERATION_UNAVAILABLE
-from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, _safe_error_value
+from increment.errors import (
+    CapabilityError,
+    IncrementWarning,
+    InvalidRequestError,
+    RefusalSpec,
+    WarningSpec,
+    _safe_error_value,
+)
 from increment.errors import refuse as _refuse
 from increment.semantics.models import Metric
 
@@ -67,6 +74,34 @@ _NATIVE_COMPLIANCE_DESIGN_MISMATCH = RefusalSpec(
     template=(
         "compliance_summary design mismatch: expected source design {expected!r}, "
         "received {received!r}; rebuild the source for the requested design"
+    ),
+)
+_NATIVE_EXPERIMENT_KEY_UNMATCHED = RefusalSpec(
+    "source.native.experiment_key_unmatched",
+    InvalidRequestError,
+    lambda *, experiment, observed_keys: (
+        f"no exposure row carries experiment_id {experiment!r}, so no unit enrolled; the "
+        f"rows carry {list(observed_keys)!r}. Name the experiment after the key its exposure "
+        f"rows carry, or map that key to {experiment!r} in the exposure's source"
+    ),
+)
+_NATIVE_FACT_NO_ROWS = WarningSpec(
+    "source.native.fact_no_rows",
+    IncrementWarning,
+    lambda *, fact, fact_source, observed_events: (
+        f"fact {fact!r} has no loaded rows in fact source {fact_source!r}, so every unit "
+        f"scores zero on it; the source's event labels include {list(observed_events)!r}. "
+        "Check the fact name against those labels and that the source is loaded"
+    ),
+)
+_NATIVE_FACT_NULL_VALUES = RefusalSpec(
+    "source.native.fact_null_values",
+    InvalidRequestError,
+    lambda *, fact, column, null_rows: (
+        f"fact {fact!r} has {null_rows} row(s) with a NULL {column!r} among the rows this "
+        "analysis reads, and a NULL value has no declared meaning. Fill those values, or "
+        "declare the fact's missing: as 'skip' (drop those rows from every metric on the "
+        "fact, counts included) or 'zero' (read them as 0)"
     ),
 )
 

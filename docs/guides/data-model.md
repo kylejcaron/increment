@@ -123,7 +123,10 @@ is censored, not scored from partial data.
 else `end`, else the latest observed event date for a running experiment.
 Each fact also carries `data_as_of`, the latest date actually loaded. A
 window ending after that bound is censored; a warning reports material
-drops.
+drops. A fact with no loaded rows has no such date, so it bounds nothing and
+every enrolled unit scores zero on it; the run warns with
+`source.native.fact_no_rows`, listing up to five event labels the fact source
+does carry, so a fact name that matches no label is visible.
 An outcome event counts only when its timestamp is strictly after the unit's
 `first_exposure_ts`, and the CUPED window ends just before that instant. An
 event logged at the exact exposure timestamp, such as the order that enrolls
@@ -312,6 +315,7 @@ fact_sources:
 | `timestamp_column` | The event time used for every window. A timestamp without a time zone is read as UTC. When an experiment's exposure, metric, trigger, uptake and CUPED sources, and every source of a unit property taken before exposure (`as_of: pre_exposure`, whether or not the experiment declares it), mix timestamps with and without a time zone, those with one are converted to UTC before any comparison, so results never depend on the connection's session time zone. |
 | `entities` | Unit identifier columns; the experiment's `unit` must be one of them. |
 | `facts` | Event types and their values. When facts are declared, the SQL must expose `event`, the timestamp, every entity, and every fact's value column under the declared names. Property-only sources need no `event` column. `column` holds a fact's value; `column: null` marks an occurrence-only fact, usable for counts, conversion, and retention but not value aggregations. A declared column the SQL does not expose refuses with `definition.fact_source.missing_columns`, and SQL the connection cannot resolve refuses with `definition.fact_source.sql_unresolved`. |
+| `missing` (on a fact) | The one rule for a NULL in the fact's `column`, applied to every metric on the fact, counts, conversion and retention included. `error` (the default) refuses a read whose rows hold one, with `source.native.fact_null_values` naming the fact, the column and the NULL rows: an enrolled unit's rows inside a metric window or retention band (counted from its trigger in a triggered read) or its CUPED window, whole-site volume rows inside the enrollment window, and the rows with a unit a `MetricTrends` trend reads; a read that returns no row refuses all the same. A row the read leaves out, such as one after the date a pinned snapshot's feed is complete through, never refuses. `skip` leaves those rows out of every aggregation; `zero` reads the value as 0 and still counts the row. SQL previews (`panel_sql`, `summary_sql`) and a trend's `to_table()` and `sql()` execute nothing, so they cannot refuse; under `error` their SQL reads only the rows with a value, as under `skip`. The values are spelled as on a dataframe `MetricSpec(missing=...)`. |
 | `properties` | Columns for filters and breakouts; each declared `column` must be in the SQL. `as_of` states when a value applies: `event_time` (default), `pre_exposure` (latest value strictly before exposure), or `static` (asserted unchanged). |
 
 !!! warning "Event-time properties cannot be breakouts"
@@ -355,6 +359,20 @@ exposures:
 For a fact-based exposure, the fact source's rows also supply the arm: the
 enrolling row carries `experiment_id` and `group_id`, and the unit's first
 qualifying row decides both its enrollment time and its arm.
+
+A row enrolls in the experiment whose `name` equals its `experiment_id`; a
+NULL key marks a row that belongs to no experiment, such as a pre-period event.
+When the column is absent, or NULL on every row, every row enrolls, on either
+kind of exposure. When the rows carry keys but none equals the experiment's
+`name`, nothing enrolls and the run refuses with
+`source.native.experiment_key_unmatched`, listing up to five keys the rows do
+carry.
+
+An experiment whose enrollment counts no unit at all refuses with
+`readout.arms.none_enrolled`; one whose units are all in the control arm
+refuses with `readout.arms.no_treatment`. An enrolled arm whose units have no
+usable outcome for a metric, for example because every unit was censored, is
+an unavailable row with `readout.cell.missing_metric_observations`.
 
 !!! warning "SRM needs an assignment-valid population"
     `srm()` compares enrolled counts with the planned allocation. That is an

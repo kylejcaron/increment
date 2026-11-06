@@ -837,6 +837,70 @@ def test_skip_failure_names_the_arm_without_observations() -> None:
         assert message in render(result, "brief")
 
 
+@pytest.mark.parametrize("case", ["all_null_skip", "declared_allocation", "censored_panel"])
+def test_enrolled_arms_without_outcomes_are_unavailable_cells(case) -> None:
+    """Enrolled units with no usable outcome are unavailable cells, not an empty roster:
+    a lone all-null skip metric on 30/30 units (with or without a declared allocation),
+    and a panel whose observation end precedes every window's close."""
+    groups = ["control", "treatment"] * 30
+    if case == "censored_panel":
+        frame = pl.DataFrame(
+            [
+                {
+                    "u": u,
+                    "g": groups[u],
+                    "day": date(2026, 2, 1) + timedelta(days=k),
+                    "expo": date(2026, 2, 1) + timedelta(days=u % 3),
+                    "rev": float(u + k),
+                }
+                for u in range(40)
+                for k in range(6)
+            ]
+        )
+        built = from_frame(
+            frame,
+            shape="panel",
+            unit="u",
+            group="g",
+            date="day",
+            control="control",
+            exposure_date="expo",
+            metrics=[MetricSpec(name="rev", window_days=5)],
+            observation_end=date(2026, 2, 2),
+        )
+    else:
+        frame = pl.DataFrame(
+            {"u": range(60), "g": groups, "a": [None] * 60}, schema_overrides={"a": pl.Float64}
+        )
+        skip_metric = [MetricSpec(name="a", missing="skip")]
+        built = (
+            from_frame(
+                frame,
+                shape="summary",
+                unit="u",
+                group="g",
+                design=Randomized(
+                    control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+                ),
+                metrics=skip_metric,
+            )
+            if case == "declared_allocation"
+            else from_frame(
+                frame, shape="summary", unit="u", group="g", control="control", metrics=skip_metric
+            )
+        )
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        rows: Any = run(*built).readout()
+    (row,) = rows
+    assert row.group_id == "treatment"
+    assert row.failure_code == "readout.cell.missing_metric_observations"
+    if case == "censored_panel":
+        assert "frame.censoring.dropped_units" in warning_codes(record)
+    else:
+        assert row.failure_context["unobserved_arm"] == "control"
+
+
 def test_drop_is_refused_with_route_to_skip() -> None:
     with pytest.raises(CodedError) as exc_info:
         MetricSpec(name="x", missing="drop")

@@ -15,7 +15,7 @@ import pytest
 from increment import View, from_definitions, from_moments, from_unit_day_artifact
 from increment._dashboard_capture import dashboard_group_data
 from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
-from increment.errors import CapabilityError, IncrementWarning
+from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimators import sitewide
 from increment.query import panel_sql, summary_sql
 from increment.query.artifact_contract import (
@@ -44,6 +44,11 @@ from tests._evidence_requests import (
     _unit_counts,
 )
 from tests.analysis_factory import bound_source, lift_rows, view_readout
+from tests.query.test_builders import (
+    _arm_value,
+    _null_revenue_definitions,
+    _null_revenue_events,
+)
 from tests.test_unit_day_artifact_facade import (
     _definitions,
     _expected_context,
@@ -535,6 +540,54 @@ def test_calendar_day_boundary_is_preserved_across_adoption(tmp_path: Path) -> N
         adopted_source.close()
         adopted_resolver.close()
         native_resolver.close()
+
+
+@pytest.mark.parametrize("missing", ["error", "skip", "zero"])
+def test_fact_null_policy_matches_between_native_and_restored_artifact(
+    tmp_path: Path, missing: str
+) -> None:
+    """An artifact cannot be published past the default NULL refusal. Under a declared rule
+    the restored artifact reads the warehouse's order mean and revenue per order: control
+    29.0 when the NULL order is dropped, 14.5 when it reads as 0."""
+    from increment.query.session import WarehouseArtifactStore
+
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", _null_revenue_events())
+    definitions = _null_revenue_definitions(tmp_path, None if missing == "error" else missing)
+    native_experiment, native_resolver = from_definitions(
+        definitions, connection, experiment_name="x"
+    )
+    store = WarehouseArtifactStore(connection, schema_name="artifacts")
+    try:
+        if missing == "error":
+            with pytest.raises(InvalidRequestError) as refused:
+                publish_unit_day_artifact(native_experiment, native_resolver, store)
+            assert refused.value.code == "source.native.fact_null_values"
+            assert refused.value.context["null_rows"] == 40
+            assert not store.visible_manifests
+            return
+        reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
+        adopted_source = _artifact_source(store, reference, _expected_context(definitions, "x"))
+        try:
+            values = {
+                (route, name): {
+                    row["group_id"]: _arm_value(row)
+                    for row in _moments(source, _metric(source, name))
+                }
+                for route, source in (
+                    ("native", bound_source(native_resolver)),
+                    ("artifact", adopted_source),
+                )
+                for name in ("avg_order", "aov")
+            }
+        finally:
+            adopted_source.close()
+    finally:
+        native_resolver.close()
+    expected = 29.0 if missing == "skip" else 14.5
+    for name in ("avg_order", "aov"):
+        assert values["artifact", name] == pytest.approx(values["native", name], abs=1e-12)
+        assert values["native", name]["control"] == pytest.approx(expected, abs=1e-12), name
 
 
 # Missing source capabilities must refuse rather than fabricate native evidence.

@@ -2,7 +2,8 @@
 
 - yxca: a fact-based exposure's declared `filters` must narrow enrollment.
 - 43m8: a present-but-NULL `experiment_id` column must coalesce to the
-  experiment name before filtering, matching the missing-column contract.
+  experiment name before filtering, matching the missing-column contract,
+  on a fact-based and a SQL exposure; a key that matches no row refuses.
 - 7319: a query-based (sql) exposure missing the canonical unit_id/ts/
   group_id columns must refuse cleanly, not crash deep inside
   `first_exposures`.
@@ -14,6 +15,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import warnings
+from collections.abc import Mapping
 from statistics import fmean
 from typing import Any, cast
 
@@ -29,13 +32,15 @@ from increment import (
     from_definitions,
     from_frame,
     from_unit_day_artifact,
+    run,
 )
 from increment.artifacts import artifact_context, publish_unit_day_artifact
-from increment.errors import CapabilityError
+from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimators import estimate_cate
 from increment.results import LiftEstimate
 from increment.workflows import allocation_history, metrics
 from tests.analysis_factory import bound_source, held_source, view_readout
+from tests.warning_codes import warning_codes, warning_context
 
 pytestmark = pytest.mark.integration
 
@@ -313,6 +318,7 @@ experiments:
 
 
 @pytest.mark.integration
+@pytest.mark.filterwarnings("ignore:fact 'impressions' has no loaded rows")
 def test_sitewide_evidence_ratio_metric_coalesces_empty_window_to_zero(tmp_path):
     """VERIFIED repro pattern (jkvr, native-source side): a RatioMetric's
     denominator fact has zero rows in the experiment window, so the
@@ -390,13 +396,22 @@ experiments:
     assert evidence.site_total_denominator == pytest.approx(0.0)
 
 
-def test_sql_exposure_with_only_the_documented_columns_enrols(tmp_path):
+@pytest.mark.parametrize(
+    "exposure_sql",
+    [
+        "SELECT unit_id, ts, group_id FROM enrollments",
+        "SELECT unit_id, ts, group_id, CAST(NULL AS VARCHAR) AS experiment_id FROM enrollments",
+    ],
+    ids=["key_omitted", "key_all_null"],
+)
+def test_sql_exposure_all_null_key_enrolls_everyone(tmp_path, exposure_sql):
     """The guide calls `experiment_id` optional, so a query returning exactly
     `unit_id`, `ts` and `group_id` must enrol rather than crash: downstream
     reductions read `experiment_id` unconditionally, so it is synthesized from
-    the experiment name when the query omits it.
+    the experiment name when the query omits it. An all-NULL column carries no
+    key either, so it enrols the same units, as on a fact-based exposure.
     """
-    yaml = """
+    yaml = f"""
 fact_sources:
   - name: purchases
     sql: SELECT * FROM purchase_events
@@ -407,7 +422,7 @@ fact_sources:
         column: value
 exposures:
   - name: sql_enrolled
-    sql: SELECT unit_id, ts, group_id FROM enrollments
+    sql: {exposure_sql}
 metrics:
   - name: revenue
     type: mean
@@ -420,7 +435,7 @@ experiments:
     unit: user_id
     start: 2025-01-01T00:00:00
     control_group: control
-    plan: {secondaries: [revenue]}
+    plan: {{secondaries: [revenue]}}
 """
     con = ibis.duckdb.connect()
     con.create_table(
@@ -441,6 +456,111 @@ experiments:
     analysis = from_definitions(defs_path, con, experiment_name="exp")
 
     assert _enrolled_by_arm(analysis) == {"control": 1, "treatment": 1}
+
+
+def _feed_defs(
+    tmp_path, *, exposure: str = "{name: enrolled, fact: page_view}", allocation: str = ""
+):
+    return _write_defs(
+        tmp_path,
+        f"""
+fact_sources:
+  - {{name: events, sql: SELECT * FROM events, timestamp_column: ts, entities: [user_id],
+     facts: [{{name: page_view, column: null}}, {{name: purchase, column: revenue}}]}}
+exposures: [{exposure}]
+metrics:
+  - {{name: converted, type: conversion, entity: user_id, fact: purchase, window_days: 3}}
+experiments:
+  - {{name: exp, exposure: enrolled, unit: user_id, start: 2025-01-01, end: 2025-01-01,
+     n_pre_periods: 3, observation_end: 2025-01-06, control_group: control, {allocation}
+     plan: {{primary: converted}}}}
+""",
+    )
+
+
+def _feed_events(
+    *, key: str = "exp", label: str = "purchase", bought: dt.datetime = dt.datetime(2025, 1, 2)
+) -> pa.Table:
+    """Two units per arm exposed at 2025-01-01 08:00 carrying *key*, each buying once."""
+    units = {"c1": "control", "c2": "control", "t1": "treatment", "t2": "treatment"}
+    exposed = [
+        (unit, dt.datetime(2025, 1, 1, 8), "page_view", key, arm) for unit, arm in units.items()
+    ]
+    purchases = [(unit, bought, label, None, None) for unit in units]
+    rows = exposed + purchases
+    return pa.table(
+        {
+            "user_id": [row[0] for row in rows],
+            "ts": [row[1] for row in rows],
+            "event": [row[2] for row in rows],
+            "revenue": [None] * len(exposed) + [5.0] * len(purchases),
+            "experiment_id": [row[3] for row in rows],
+            "group_id": [row[4] for row in rows],
+        }
+    )
+
+
+def test_experiment_key_mismatch_refuses_before_estimation(tmp_path):
+    """Exposure rows keyed `exp-42` enrol nobody in experiment `exp`: the run refuses
+    with the keys the rows carry rather than reading outcomes for an empty roster."""
+    con = ibis.duckdb.connect()
+    con.create_table("events", _feed_events(key="exp-42"))
+    experiment, reader = from_definitions(_feed_defs(tmp_path), con, experiment_name="exp")
+    with pytest.raises(InvalidRequestError) as refused:
+        run(experiment, reader)
+    assert refused.value.code == "source.native.experiment_key_unmatched"
+    assert dict(refused.value.context) == {"experiment": "exp", "observed_keys": ("exp-42",)}
+
+
+@pytest.mark.parametrize(
+    ("feed", "expected", "absent"),
+    [
+        ({"label": "Purchase"}, "source.native.fact_no_rows", "frame.censoring.dropped_units"),
+        (
+            {"bought": dt.datetime(2024, 12, 30)},
+            "frame.censoring.dropped_units",
+            "source.native.fact_no_rows",
+        ),
+    ],
+    ids=["label_mismatch", "stale_feed"],
+)
+def test_fact_with_no_rows_warns(tmp_path, feed, expected, absent):
+    """A fact whose label matches no loaded row warns with the labels the source does
+    carry and still runs; a feed loaded only before launch is censored as before."""
+    con = ibis.duckdb.connect()
+    con.create_table("events", _feed_events(**feed))
+    experiment, reader = from_definitions(_feed_defs(tmp_path), con, experiment_name="exp")
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        run(experiment, reader)
+    codes = warning_codes(record)
+    assert expected in codes
+    assert absent not in codes
+    if expected == "source.native.fact_no_rows":
+        context = warning_context(record, expected)
+        assert (context["fact"], context["fact_source"]) == ("purchase", "events")
+        assert "Purchase" in cast("tuple[str, ...]", context["observed_events"])
+
+
+def test_empty_warehouse_enrollment_is_none_enrolled(tmp_path):
+    """A declared 50/50 allocation whose exposure selects no row has zero enrolled units
+    by count, so the run names the empty enrollment, not a missing treatment arm."""
+    con = ibis.duckdb.connect()
+    con.create_table("events", _feed_events())
+    defs = _feed_defs(
+        tmp_path,
+        exposure='{name: enrolled, sql: "SELECT user_id AS unit_id, ts, group_id '
+        'FROM events WHERE FALSE"}',
+        allocation="allocation: {control: 0.5, treatment: 0.5},",
+    )
+    experiment, reader = from_definitions(defs, con, experiment_name="exp")
+    with pytest.raises(InvalidRequestError) as refused:
+        run(experiment, reader)
+    assert refused.value.code == "readout.arms.none_enrolled"
+    assert dict(cast("Mapping[str, int]", refused.value.context["counts"])) == {
+        "control": 0,
+        "treatment": 0,
+    }
 
 
 @pytest.mark.parametrize("aware", ["fact_exposure", "sql_exposure", "covariate", "cate"])
@@ -602,6 +722,111 @@ experiments:
             assert mean == pytest.approx(means["UTC"][key], abs=1e-12)
     for observed in results.values():
         assert observed == pytest.approx(expected, rel=1e-9)
+
+
+def _feed_defect_definitions(tmp_path):
+    """Three experiments over one definitions set, each carrying one feed defect: views are
+    time-zone-aware and orders naive, every unit is exposed at 10:00Z, ``nulls`` units buy
+    once with a NULL revenue, ``unloaded`` reads a refund fact with no loaded row, and
+    ``mixed`` units buy at naive 09:00 (1.0) and 10:30 (5.0)."""
+    arms = {"c1": "control", "c2": "control", "t1": "treatment", "t2": "treatment"}
+    names = ("nulls", "unloaded", "mixed")
+    units = [(f"{name}-{unit}", name, arm) for name in names for unit, arm in arms.items()]
+    exposed = dt.datetime(2025, 7, 1, 10, tzinfo=dt.UTC)
+    views = pa.table(
+        {
+            "user_id": [unit for unit, _, _ in units],
+            "event_at": pa.array([exposed] * len(units), pa.timestamp("us", "UTC")),
+            "event": ["page_view"] * len(units),
+            "experiment_id": [name for _, name, _ in units],
+            "group_id": [arm for _, _, arm in units],
+        }
+    )
+    purchases = [(f"nulls-{unit}", dt.datetime(2025, 7, 1, 10, 30), None) for unit in arms]
+    purchases += [
+        (f"mixed-{unit}", dt.datetime(2025, 7, 1, hour, minute), value)
+        for unit in arms
+        for hour, minute, value in ((9, 0, 1.0), (10, 30, 5.0))
+    ]
+    # The unenrolled unit's later purchase shows the feed loaded through the window.
+    purchases.append(("late", dt.datetime(2025, 7, 22), 1.0))
+    orders = pa.table(
+        {
+            "user_id": [unit for unit, _, _ in purchases],
+            "event_at": pa.array([at for _, at, _ in purchases], pa.timestamp("us")),
+            "event": ["purchase"] * len(purchases),
+            "revenue": pa.array([value for _, _, value in purchases], pa.float64()),
+        }
+    )
+    experiments = "\n".join(
+        f"  - {{name: {name}, exposure: enrolled, unit: user_id, start: 2025-07-01, "
+        f"end: 2025-07-02, observation_end: 2025-07-20, control_group: control, "
+        f"plan: {{primary: {'refunded' if name == 'unloaded' else 'revenue'}}}}}"
+        for name in names
+    )
+    defs_path = _write_defs(
+        tmp_path,
+        f"""
+fact_sources:
+  - {{name: views, sql: SELECT * FROM views, timestamp_column: event_at, entities: [user_id],
+     facts: [{{name: page_view, column: null}}]}}
+  - {{name: orders, sql: SELECT * FROM orders, timestamp_column: event_at, entities: [user_id],
+     facts: [{{name: purchase, column: revenue}}, {{name: refund, column: null}}]}}
+exposures: [{{name: enrolled, fact: page_view}}]
+metrics:
+  - {{name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 7}}
+  - {{name: refunded, type: conversion, entity: user_id, fact: refund, window_days: 7}}
+experiments:
+{experiments}
+""",
+    )
+    return defs_path, {"views": views, "orders": orders}
+
+
+@pytest.mark.parametrize("experiment_name", ["nulls", "unloaded", "mixed"])
+def test_warehouse_feed_defects_report_distinct_causes(tmp_path, experiment_name):
+    """Each experiment surfaces its own feed defect beside the others: the NULL revenue
+    refuses under the default rule, the unloaded refund fact warns and still runs, and the
+    mixed timestamp kinds read each arm's as-of mean as 5.0 in a UTC and a Los Angeles
+    session alike."""
+    defs_path, tables = _feed_defect_definitions(tmp_path)
+
+    def open_reader(zone):
+        con = ibis.duckdb.connect()
+        con.raw_sql(f"SET TimeZone = '{zone}'")
+        for name, table in tables.items():
+            con.create_table(name, table)
+        return from_definitions(defs_path, con, experiment_name=experiment_name)
+
+    if experiment_name == "nulls":
+        with pytest.raises(InvalidRequestError) as refused:
+            run(*open_reader("UTC"))
+        assert refused.value.code == "source.native.fact_null_values"
+        assert dict(refused.value.context) == {
+            "fact": "purchase",
+            "column": "revenue",
+            "null_rows": 4,
+        }
+    elif experiment_name == "unloaded":
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            run(*open_reader("UTC"))
+        context = warning_context(record, "source.native.fact_no_rows")
+        assert (context["fact"], context["fact_source"]) == ("refund", "orders")
+    else:
+        means = {}
+        for zone in ("UTC", "America/Los_Angeles"):
+            experiment, reader = open_reader(zone)
+            try:
+                rows = view_readout(
+                    experiment, reader, View(view="asof", grain="asof", values=True)
+                )
+            finally:
+                reader.close()
+            means[zone] = {(row.group_id, row.ds): row.value.value for row in rows}
+        assert means["America/Los_Angeles"].keys() == means["UTC"].keys()
+        assert list(means["UTC"].values()) == pytest.approx([5.0] * len(means["UTC"]), abs=1e-12)
+        assert means["America/Los_Angeles"] == pytest.approx(means["UTC"], abs=1e-12)
 
 
 def test_definitions_assignment_ledger_uses_explicit_role_mapping(tmp_path):

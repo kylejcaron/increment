@@ -28,7 +28,12 @@ from increment.errors import (
 
 # Shared column-normalization contract with the definitions builder: both
 # must feed the query builders identically shaped tables.
-from increment.query.fact_resolution import _find_fact_source
+from increment.query.fact_resolution import (
+    _find_fact_source,
+    checked_rows,
+    null_value_count,
+    with_null_counts,
+)
 from increment.semantics.loader import admit_read_only_sql, load, resolve_execution_dialect
 from increment.semantics.models import (
     ActiveMetric,
@@ -44,12 +49,14 @@ __all__ = ["MetricTrend", "MetricTrends"]
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     import ibis.expr.types as ir
     from ibis.backends.sql import SQLBackend
 
     from increment.query.calendar import PeriodGrain, WeekStart
+    from increment.query.fact_resolution import NullValueCount
+    from increment.semantics.models import FactRef
 
 _REFUSED_TYPES: dict[str, str] = {
     "retention": (
@@ -138,6 +145,8 @@ class MetricTrend:
         self.end = end
         self.by = tuple(by)
         self.alpha = alpha
+        # NULL-value counts of the facts the trend reads that declare no `missing` rule.
+        self._null_counts: Mapping[str, NullValueCount] = {}
 
     def to_table(self) -> ir.Table:
         return self._table
@@ -148,11 +157,21 @@ class MetricTrend:
         return str(ibis_to_sql(self._table))
 
     def to_frame(self, backend: Backend | None = None):
-        """Return the trend as a frame, preferring the available native backend."""
+        """Return the trend as a frame, preferring the available native backend.
+
+        Refuses with ``source.native.fact_null_values`` when a fact without a declared
+        ``missing`` rule holds a NULL value among the rows the trend reads.
+        """
         import narwhals as nw
 
         backend = default_frame_backend(backend)
-        frame = nw.from_native(self._table.to_pyarrow(), eager_only=True)
+        counts = self._null_counts
+        result = (
+            checked_rows(with_null_counts(self._table, counts).to_pyarrow(), counts)
+            if counts
+            else self._table.to_pyarrow()
+        )
+        frame = nw.from_native(result, eager_only=True)
         if backend == "pyarrow":
             return frame.to_native()
         if backend == "pandas":
@@ -522,8 +541,9 @@ class MetricTrends:
             events = metric_events(
                 tbl,
                 m,
-                value_column=fact_def.column if isinstance(m, TotalMetric) else None,
+                value_column=fact_def.column,
                 keep=keep,
+                null_policy=fact_def.missing,
             )
             if dims:
                 events = events.rename(**dict(dims))
@@ -582,17 +602,24 @@ class MetricTrends:
                 ci_lb=null_f64,
                 ci_ub=null_f64,
             )
-            return MetricTrend(
-                self._finalize(out, dim_names),
-                metric=name,
-                grain=grain,
-                window=window,
-                week_start=week_start,
-                denominator="none",
-                start=start,
-                end=end,
-                by=by,
-                alpha=alpha,
+            # A rolling trend also reads the days its first window looks back over.
+            return self._with_null_counts(
+                MetricTrend(
+                    self._finalize(out, dim_names),
+                    metric=name,
+                    grain=grain,
+                    window=window,
+                    week_start=week_start,
+                    denominator="none",
+                    start=start,
+                    end=end,
+                    by=by,
+                    alpha=alpha,
+                ),
+                [(m, tbl)],
+                first_day=start - dt.timedelta(days=(window or 1) - 1),
+                edge=edge,
+                offset=offset,
             )
 
         denominator: Literal["active", "population"] = (
@@ -638,8 +665,20 @@ class MetricTrends:
                     )
                     .distinct()
                 )
-            num_e = metric_events(num_tbl, m, value_column=num_fact.column, part="numerator")
-            den_e = metric_events(den_tbl, m, value_column=den_fact.column, part="denominator")
+            num_e = metric_events(
+                num_tbl,
+                m,
+                value_column=num_fact.column,
+                part="numerator",
+                null_policy=num_fact.missing,
+            )
+            den_e = metric_events(
+                den_tbl,
+                m,
+                value_column=den_fact.column,
+                part="denominator",
+                null_policy=den_fact.missing,
+            )
             num = period_unit_values(
                 unit_day_stats(num_e, source_key=num_fs.name, day_boundary_offset=offset),
                 aggregation=m.numerator.aggregation,
@@ -664,17 +703,24 @@ class MetricTrends:
                 ci_lb=null_f64,
                 ci_ub=null_f64,
             )
-            return MetricTrend(
-                self._finalize(out, []),
-                metric=name,
-                grain=grain,
-                window=window,
-                week_start=week_start,
-                denominator=denominator,
-                start=start,
-                end=end,
-                by=by,
-                alpha=alpha,
+            return self._with_null_counts(
+                MetricTrend(
+                    self._finalize(out, []),
+                    metric=name,
+                    grain=grain,
+                    window=window,
+                    week_start=week_start,
+                    denominator=denominator,
+                    start=start,
+                    end=end,
+                    by=by,
+                    alpha=alpha,
+                ),
+                [(m.numerator, num_tbl), (m.denominator, den_tbl)],
+                first_day=start,
+                edge=edge,
+                offset=offset,
+                population=pop,
             )
 
         # ── mean / conversion: centered moments -> derived stats ───────
@@ -683,7 +729,7 @@ class MetricTrends:
         # `.aggregation` type-checked without an m.type string compare.
         is_conversion = not isinstance(m, MeanMetric)
         aggregation = m.aggregation if isinstance(m, MeanMetric) else "conversion"
-        events = metric_events(tbl, m, value_column=None if is_conversion else fact_def.column)
+        events = metric_events(tbl, m, value_column=fact_def.column, null_policy=fact_def.missing)
         values = period_unit_values(
             unit_day_stats(events, source_key=fs.name, day_boundary_offset=offset),
             aggregation=aggregation,
@@ -741,15 +787,78 @@ class MetricTrends:
             ci_lb=ci_lb,
             ci_ub=ci_ub,
         )
-        return MetricTrend(
-            self._finalize(out, [d for (d, _) in dims]),
-            metric=name,
-            grain=grain,
-            window=window,
-            week_start=week_start,
-            denominator=denominator,
-            start=start,
-            end=end,
-            by=by,
-            alpha=alpha,
+        return self._with_null_counts(
+            MetricTrend(
+                self._finalize(out, [d for (d, _) in dims]),
+                metric=name,
+                grain=grain,
+                window=window,
+                week_start=week_start,
+                denominator=denominator,
+                start=start,
+                end=end,
+                by=by,
+                alpha=alpha,
+            ),
+            [(m, tbl)],
+            first_day=start,
+            edge=edge,
+            offset=offset,
+            population=pop,
         )
+
+    def _with_null_counts(
+        self,
+        trend: MetricTrend,
+        reads: Sequence[tuple[FactRef, ir.Table]],
+        *,
+        first_day: dt.date,
+        edge: dt.date,
+        offset: dt.timedelta,
+        population: ir.Table | None = None,
+    ) -> MetricTrend:
+        """*trend*, counting the NULL values of facts without a declared ``missing`` rule
+        among the rows it reads: each ref's rows dated ``[first_day, edge]`` under the day
+        boundary, within the (unit, period) rows of the trend's *population*, which leaves
+        out a row without a unit. A total or active trend has no unit layer and passes none.
+        """
+        import ibis
+
+        from increment.query.builders import (
+            _local_date_at_offset,
+            measure_rows,
+            resolved_measure_key,
+        )
+        from increment.query.calendar import period_start_expr
+
+        counts: dict[str, NullValueCount] = {}
+        seen: set[tuple[object, ...]] = set()
+        for ref, table in reads:
+            fact = _find_fact_source(self._defs, ref.fact)[1]
+            key = (ref.fact, resolved_measure_key(ref, value_column=fact.column)[1])
+            if fact.column is None or fact.missing != "error" or key in seen:
+                continue
+            seen.add(key)
+            rows = measure_rows(table, ref)
+            rows = rows.mutate(_trend_day=_local_date_at_offset(rows.ts, offset))
+            rows = rows.filter(
+                (rows._trend_day >= ibis.literal(first_day))
+                & (rows._trend_day <= ibis.literal(edge))
+            )
+            if population is not None:
+                period = period_start_expr(
+                    rows._trend_day,
+                    cast("PeriodGrain", trend.grain),
+                    cast("WeekStart", trend.week_start),
+                )
+                rows = rows.mutate(_trend_period=period)
+                rows = rows.semi_join(
+                    population,
+                    [
+                        rows.unit_id == population.unit_id,
+                        rows._trend_period == population.period,
+                    ],
+                )
+            counts[f"_fact_null_rows_{len(counts)}"] = null_value_count(fact, rows)
+        trend._null_counts = counts
+        return trend

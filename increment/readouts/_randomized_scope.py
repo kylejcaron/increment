@@ -379,9 +379,10 @@ def _randomized_cell_failures(
                 "roster_source": roster_source,
             }
             if code == "readout.cell.missing_metric_observations":
-                # The cell keeps its treatment arm; the arm lacking observations may be control.
+                # The cell keeps its treatment arm; a control arm without observations
+                # blocks every cell of the metric, so it is named first.
                 context["unobserved_arm"] = (
-                    group_id if group_id not in metric_observed else control_group
+                    control_group if control_group not in metric_observed else group_id
                 )
             cell_failures[cell] = CellFailure(
                 hypothesis=cell.hypothesis(), code=code, context=context

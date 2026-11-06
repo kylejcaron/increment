@@ -549,6 +549,7 @@ def _run_prepared(  # noqa: PLR0915
                         if row.get("group_id") is not None
                     },
                     design.control_group,
+                    preflight_roster,
                 )
                 preflight_roster = _preflight_roster(
                     src,
@@ -636,15 +637,18 @@ def _run_prepared(  # noqa: PLR0915
         evidence, unit_frame_memo = acquire_observational_inputs(
             src, selected, population=population
         )
+        enrollment = None
         if selected:
-            _refuse_if_no_treatment_arm(
-                set().union(*(evidence.arms(metric) for metric in selected)),
-                design.control_group,
-            )
+            observed = set().union(*(evidence.arms(metric) for metric in selected))
+            # Without an observed contrast, enrollment counts tell an empty enrollment from
+            # enrolled arms none of whose outcomes were observed.
+            if not observed - {str(design.control_group)}:
+                enrollment = resolve_roster(src, design, population, {})
+            _refuse_if_no_treatment_arm(observed, design.control_group, enrollment)
         observed_by_metric = {m.name: set(evidence.arms(m)) for m in selected}
         # The scope's roster, resolved before estimation so a secondary family is sized by
         # every arm the scope lists, not only the arms each metric observed.
-        roster = resolve_roster(src, design, population, observed_by_metric)
+        roster = resolve_roster(src, design, population, observed_by_metric, base_roster=enrollment)
         obs_computations: list[Any] = []
         rows = _estimate_observational(
             src,
@@ -730,7 +734,7 @@ def _run_prepared(  # noqa: PLR0915
     )
     out.extend(secondary_out)
     if selected:
-        _refuse_if_no_treatment_arm(observed_arms, design.control_group)
+        _refuse_if_no_treatment_arm(observed_arms, design.control_group, preflight_roster)
     order = {metric.name: i for i, metric in enumerate(selected)}
     out.sort(key=lambda row: order[row.metric])
     identity_source = src if snapshot_source is None else snapshot_source

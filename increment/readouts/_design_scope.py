@@ -108,6 +108,7 @@ def _collect_expected_cells(
     failure_map: Mapping[tuple, Any],
     population: Literal["assigned", "triggered"],
     roster: ResolvedRoster,
+    control_group: str,
 ) -> tuple[dict[CellKey, LiftEstimate | None], dict[CellKey, CellFailure]]:
     cell_rows: dict[CellKey, LiftEstimate | None] = {}
     failures: dict[CellKey, CellFailure] = {}
@@ -165,7 +166,9 @@ def _collect_expected_cells(
             failures[cell] = CellFailure(
                 hypothesis=cell.hypothesis(), code=failure.code, context=failure.context
             )
-        elif item.group_id not in roster.arms_by_metric.get(item.metric, set()):
+        elif not {item.group_id, control_group} <= (
+            metric_observed := roster.arms_by_metric.get(item.metric, set())
+        ):
             code = (
                 "readout.cell.missing_metric_observations"
                 if item.group_id in roster.known_arms
@@ -174,11 +177,14 @@ def _collect_expected_cells(
             context = {
                 "metric": item.metric,
                 "group_id": item.group_id,
-                "observed_arms": sorted(roster.arms_by_metric.get(item.metric, set())),
+                "observed_arms": sorted(metric_observed),
                 "roster_source": roster.source,
             }
             if code == "readout.cell.missing_metric_observations":
-                context["unobserved_arm"] = item.group_id
+                # A control arm without observations blocks every cell of the metric.
+                context["unobserved_arm"] = (
+                    control_group if control_group not in metric_observed else item.group_id
+                )
             failures[cell] = CellFailure(hypothesis=cell.hypothesis(), code=code, context=context)
         else:
             failures[cell] = CellFailure(
@@ -743,6 +749,7 @@ def scope_design_results(  # noqa: PLR0913, PLR0915
         failure_map,
         population,
         roster,
+        str(design.control_group),
     )
 
     ordered = tuple(sorted(cell_rows, key=cell_order))
