@@ -136,6 +136,45 @@ def test_dotted_child_import_still_detects_ancestor_package_cycle(tmp_path: Path
     assert "runtime cycle: pkg.a, pkg.p" in result.stdout
 
 
+def test_comprehension_target_does_not_shadow_module_importlib_alias(
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path)
+    (package / "a.py").write_text(
+        "import importlib as loader\n"
+        "def load():\n    [loader for loader in ()]\n    loader.import_module('pkg.b')\n"
+    )
+    (package / "b.py").write_text("import pkg.a\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "deferred import: pkg.a -> pkg.b" in result.stdout
+    assert "runtime cycle: pkg.a, pkg.b" in result.stdout
+
+
+def test_method_body_uses_module_alias_not_class_namespace(
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path)
+    (package / "a.py").write_text(
+        "import importlib as loader\n"
+        "class C:\n    loader = None\n"
+        "    def load(self):\n        loader.import_module('pkg.b')\n"
+    )
+    (package / "b.py").write_text("import pkg.a\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "deferred import: pkg.a -> pkg.b" in result.stdout
+    assert "runtime cycle: pkg.a, pkg.b" in result.stdout
+
+
 @pytest.mark.parametrize(
     "source",
     [

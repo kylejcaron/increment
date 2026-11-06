@@ -72,6 +72,32 @@ class _BoundNames(ast.NodeVisitor):
     def visit_Lambda(self, node: ast.Lambda) -> None:
         return
 
+    def _visit_comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    ) -> None:
+        for generator in node.generators:
+            self.visit(generator.iter)
+            for condition in generator.ifs:
+                self.visit(condition)
+        if isinstance(node, ast.DictComp):
+            self.visit(node.key)
+            self.visit(node.value)
+        else:
+            self.visit(node.elt)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node)
+
 
 class _Imports(ast.NodeVisitor):
     def __init__(self, module: str, package_context: str, package: str, root: Path) -> None:
@@ -82,6 +108,7 @@ class _Imports(ast.NodeVisitor):
         self.deferred = False
         self.type_checking = False
         self.alias_scopes: list[dict[str, str | None]] = [{}]
+        self.scope_kinds = ["module"]
         self.edges: set[str] = set()
         self.deferred_edges: set[str] = set()
 
@@ -115,6 +142,40 @@ class _Imports(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Store):
             self._bind(node.id, None)
+
+    def _visit_comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    ) -> None:
+        self.alias_scopes.append(dict(self.alias_scopes[-1]))
+        self.scope_kinds.append("comprehension")
+        for generator in node.generators:
+            self.visit(generator.iter)
+            target_names = _BoundNames()
+            target_names.visit(generator.target)
+            for name in target_names.names:
+                self._bind(name, None)
+            for condition in generator.ifs:
+                self.visit(condition)
+        if isinstance(node, ast.DictComp):
+            self.visit(node.key)
+            self.visit(node.value)
+        else:
+            self.visit(node.elt)
+        self.alias_scopes.pop()
+        self.scope_kinds.pop()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node)
 
     def _record(self, node: ast.AST) -> None:
         targets = _targets(node, self.module, self.package_context, self.package, self.root)
@@ -214,17 +275,20 @@ class _Imports(ast.NodeVisitor):
         for statement in node.body:
             names.visit(statement)
         inherited: dict[str, str | None] = {}
-        for scope in self.alias_scopes:
-            inherited.update(scope)
+        for scope, kind in zip(self.alias_scopes, self.scope_kinds, strict=True):
+            if kind != "class":
+                inherited.update(scope)
         for name in names.names:
             inherited[name] = None
         self.alias_scopes.append(inherited)
+        self.scope_kinds.append("function")
         previous = self.deferred
         self.deferred = True
         for item in node.body:
             self.visit(item)
         self.deferred = previous
         self.alias_scopes.pop()
+        self.scope_kinds.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -238,9 +302,12 @@ class _Imports(ast.NodeVisitor):
         for keyword in node.keywords:
             self.visit(keyword.value)
         self.alias_scopes.append(dict(self.alias_scopes[-1]))
+        self.scope_kinds.append("class")
         for item in node.body:
             self.visit(item)
         self.alias_scopes.pop()
+
+        self.scope_kinds.pop()
 
     def visit_If(self, node: ast.If) -> None:
         test = node.test
