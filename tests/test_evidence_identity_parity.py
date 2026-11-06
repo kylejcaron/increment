@@ -21,8 +21,8 @@ from tests.parity_harness.comparison import TOLERANCE
 from tests.parity_harness.expected_differences import (
     with_declared_favorable_sides,
     with_expected_difference,
-    without_breakout_family_size,
     without_gained_arm_facts,
+    without_post_capture_family_size,
 )
 from tests.parity_harness.registrations_line2 import (
     LINE2_ASOF_PAIRS,
@@ -604,7 +604,7 @@ def _assert_payload_matches(
     canonical_expected = _with_post_capture_summary_intervals(
         ResultCell.from_payload(expected).to_payload(), actual
     )
-    actual = without_breakout_family_size(
+    actual = without_post_capture_family_size(
         canonical_expected, without_gained_arm_facts(canonical_expected, actual)
     )
     expected_payload = _comparable_payload(
@@ -1004,7 +1004,7 @@ def _assert_outcome_matches(
         ):
             if field in expected:
                 expected_value = expected[field]
-                actual_value = without_breakout_family_size(
+                actual_value = without_post_capture_family_size(
                     expected_value, without_gained_arm_facts(expected_value, actual[field])
                 )
                 if snapshotless:

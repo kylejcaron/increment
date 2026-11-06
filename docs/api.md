@@ -152,6 +152,20 @@ values.
   caught, and handle the refusal where `prob_favorable()` on a sequential row
   was read as `None`. Estimates, intervals, p-values, the stored
   `posterior_prob_favorable` and experiment identity are unchanged.
+- Release note (breaking): `to_frame()`, breakout frames and readout rows
+  export `sequential_alpha` and `sequential_log_e` as `Float64` numbers instead
+  of exact-fraction strings, so they can be filtered, sorted and plotted;
+  `sequential_log_e` is `-inf` or `inf` once a boundary is certain. The exact
+  fractions stay on `row.require_sequential_result()`. Asymptotic rows keep a
+  null `sequential_log_e`, because their plug-in log evidence is not a
+  finite-sample e-value. Rows of a registered sequential e-BH or Bonferroni
+  family, including breakout rows, now report the family's member count in
+  `family_size`. The brief render names a family's procedure as its selection
+  qualification does, for example "4-member e-BH" where it printed
+  "4-member E Bh", and reads "family" for an unrecorded procedure. Migration:
+  code that parsed these columns as strings should read them as floats, or read
+  `Fraction` values from `row.require_sequential_result()`. Estimates, decisions
+  and experiment identity are unchanged.
 - Release note (documentation): the limitations page states how conservative
   the default conversion interval is at small arms and when it is the default.
   At a 10% rate it covers 97.5% at 1,000 units per arm with 1.36 times the Katz
@@ -209,6 +223,46 @@ values.
   rows report the counts and leave the means empty. A readout holding such a
   row gets a new snapshot ID once, because snapshots digest arm counts.
   Estimates, intervals and experiment identity are unchanged.
+- Release note (breaking numerical correction): `required_sample_size` returns
+  the smallest fixed-horizon size whose power, evaluated as `achieved_power`
+  evaluates it, reaches the target. At a
+  treatment-heavy allocation sizes shrink by a few units (199,376 to 199,369
+  per arm at allocation 0.9 for a 2% lift on `Baseline(mean=20, var=400)`). A
+  triggered plan is sized in assigned units analyzed at
+  `assigned * trigger_rate`, as `achieved_power` plans it, so its size moves by
+  a few units and its reported power is `achieved_power`'s at that size; a
+  clustered size follows the same rule, and a very large size whose rounding
+  left its power a few ulps under the target now reaches it. Where the runtime
+  estimates the lift with its log-ratio delta-method contrast (fixed horizon,
+  unclustered, randomized, no absorbed factor, not decided from conversion
+  counts), planning also keeps the planned combined log-scale standard error
+  below 0.5, where the runtime refuses the estimate (`delta_method_unreliable`):
+  a noisy baseline at a large lift sizes larger (417 per arm instead of 316 for
+  a fivefold mean on `Baseline(mean=1, var=100)`), so one unit fewer fails
+  either the power target or that limit; `minimum_detectable_effect`
+  returns the smallest effect that meets both or refuses with the new
+  `power.minimum_detectable_effect.delta_method_unreliable` (context
+  `target_power`, `direction`, `log_se`, `log_se_limit`), and a companion
+  effect is `None` with reason `delta_method_unreliable`; `achieved_power`
+  still reports planned power. A companion effect at a target at or below the
+  null's own rejection probability is `None` with reason
+  `at_or_below_null_power` instead of `0.0`, including from
+  `segment_pairwise_required_sample_size` and `segment_pairwise_achieved_power`;
+  a sequential `achieved_power` or
+  `required_sample_size` at such a target used to raise
+  `power.sequential_mde.design_search_minimum`, which
+  `minimum_detectable_effect` still raises. At such a target
+  `segment_pairwise_minimum_detectable_effect` refuses with
+  `power.minimum_detectable_effect.design_search_minimum` (context `estimate`,
+  `target`) instead of returning `0.0`, and
+  `segment_pairwise_required_sample_size` returns the smallest size whose
+  segments split into two arms instead of sizing for the magnitude of a
+  negative `z_alpha + z_power`. A conversion or retention null at a
+  rate of exactly one as written, such as `null_lift=0.25` on a baseline of
+  0.8, is planned instead of refused with `power.bounded_metric.rate_above_one`.
+  Migrate code that compared a companion `mde_relative` with `0.0` to read
+  `mde_unavailable_reason`. Readout estimates and experiment identity are
+  unchanged.
 - Release note (documentation): the power guide's `PowerResult` table states
   that `mde_relative` is relative to the declared `null_lift`, not to control,
   and that the matching `relative_lift` is
@@ -284,6 +338,25 @@ values.
   instead of `results.frame.unknown_columns` listing its letters; pass a list
   such as `columns=["lift"]`. Results, saved cells and experiment identity
   hashes are unchanged.
+  unchanged.
+- Release note (bug fix): a fact source whose SQL lacks a declared fact value
+  column or property column refuses with
+  `definition.fact_source.missing_columns` before any data is read, naming the
+  source and the declared column names; SQL the connection cannot resolve, such
+  as a misspelled table, refuses with `definition.fact_source.sql_unresolved`,
+  naming the source, with the backend error chained. Both previously raised an
+  uncoded backend error when the experiment ran. When an experiment's exposure,
+  metric, trigger, uptake and CUPED sources, and every source of a unit
+  property taken before exposure, mix timestamps with and without a time zone,
+  the ones with a time zone are converted to UTC when they
+  are read, so windows and pre-exposure property values compare instants in UTC
+  rather than in the connection's session time zone. Such experiments run under
+  a non-UTC session move to their UTC-correct values (a numerical
+  correction). A published uptake extension
+  reads an uptake timestamp without a time zone as UTC, as the exposure and
+  trigger timestamps beside it already were. Experiments whose sources share
+  one timestamp kind read their sources with the same SQL, and experiment
+  identity is unchanged.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra

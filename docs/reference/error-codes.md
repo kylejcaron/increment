@@ -258,6 +258,7 @@ Retired codes and their replacements are listed below.
 | `definition.fact.source_renames_its` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.fact.source_renames_propert` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.fact_source.missing_columns` | `DefinitionError` | `fact_source`, `missing` | `increment.query.fact_resolution` |
+| `definition.fact_source.sql_unresolved` | `DefinitionError` | `fact_source` | `increment.query.fact_resolution` |
 | `definition.filter.op_between_comparable` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.filter.op_between_values` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.filter.op_exactly_value` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
@@ -1235,7 +1236,8 @@ Retired codes and their replacements are listed below.
 | `power.max_workers_positive` | `InvalidRequestError` | — | `increment.power.curve` |
 | `power.mde_relative_unavailable` | `InvalidRequestError` | — | `increment.power.core` |
 | `power.mde_unavailable_reason` | `InvalidRequestError` | `mde_relative`, `mde_unavailable_reason` | `increment.power.core` |
-| `power.minimum_detectable_effect.design_search_minimum` | `InvalidRequestError` | `estimate`, `target` | `increment.power.core` |
+| `power.minimum_detectable_effect.delta_method_unreliable` | `InvalidRequestError` | `direction`, `log_se`, `log_se_limit`, `target_power` | `increment.power.core` |
+| `power.minimum_detectable_effect.design_search_minimum` | `InvalidRequestError` | `estimate`, `target` | `increment.power.core`, `increment.power.pairwise` |
 | `power.minimum_detectable_effect.numerical_resolution` | `InvalidRequestError` | `direction`, `power_enclosure`, `stopping_reason`, `target_power`, `unresolved_interval` | `increment.power._search`, `increment.power.core`, `increment.power.sequential` |
 | `power.minimum_detectable_effect.unattainable` | `InvalidRequestError` | `direction`, `limiting_condition`, `maximum_power`, `power_basis`, `target_power` | `increment.power.core` |
 | `power.minimum_detectable_effect.unrepresentable` | `InvalidRequestError` | `direction`, `limiting_condition`, `target_power` | `increment.power.core` |
