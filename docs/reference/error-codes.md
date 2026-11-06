@@ -1437,7 +1437,7 @@ Retired codes and their replacements are listed below.
 | `readout.serialization.duplicate_cell_key` | `WireFormatError` | `cell_key`, `source_snapshot_id` | `increment.estimation.readout_types` |
 | `readout.serialization.duplicate_object_key` | `WireFormatError` | `key` | `increment.estimation.readout_types` |
 | `readout.serialization.identity_mismatch` | `WireFormatError` | `cell_key`, `reason`, `source_snapshot_id` | `increment.estimation.readout_types` |
-| `readout.serialization.model_mismatch` | `WireFormatError` | `collection`, `row_model` | `increment.estimation.readout_types` |
+| `readout.serialization.model_mismatch` | `WireFormatError` | `collection`, `route_suffix`, `row_model` | `increment.estimation.readout_types` |
 | `readout.serialization.noncanonical_order` | `WireFormatError` | `section` | `increment.estimation.readout_types` |
 | `readout.serialization.sequential_snapshot_required` | `WireFormatError` | `checkpoint_ids` | `increment.estimation.readout_types` |
 | `readout.serialization.unsupported_version` | `WireFormatError` | `kind`, `received`, `remedy`, `supported` | `increment.estimation.readout_types` |

@@ -36,6 +36,44 @@ from increment.estimation.results import (
 from tests.analysis_factory import view_readout
 
 
+@pytest.mark.integration
+def test_private_saved_collection_decode_names_promised_route_in_fresh_process():
+    import subprocess
+    import sys
+
+    payload = json.dumps(
+        {
+            "kind": "increment.readout",
+            "schema_version": 2,
+            "collection": "LiftEstimates",
+            "row_model": "LiftEstimate",
+            "rows": [],
+            "metadata": None,
+        }
+    )
+    script = """
+import json
+import sys
+from increment.errors import CodedError
+from increment.estimation.readout_types import ReadoutResults
+try:
+    ReadoutResults.model_validate_json(sys.argv[1])
+except CodedError as error:
+    print(json.dumps({"code": error.code, "context": dict(error.context), "reason": str(error)}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, payload],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    refusal = json.loads(result.stdout)
+    assert refusal["code"] == "readout.serialization.model_mismatch"
+    assert refusal["context"]["collection"] == "LiftEstimates"
+    assert refusal["context"]["route"] == "increment.results.ReadoutResults"
+    assert "increment.results.ReadoutResults" in refusal["reason"]
+
+
 def test_result_deserialization_rejects_unknown_alternative():
     from increment.estimation.inference import infer_lift
 

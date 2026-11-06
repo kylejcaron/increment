@@ -20,7 +20,16 @@ RESULT_MODULES = frozenset(
     f"increment.estimation.{name}" for name in ("results", "readout_types", "contrast_results")
 )
 # Modules whose functions a result method calls: they read rows and return leaf values.
-HELPER_MODULES = ("_fcr_reinterval", "winsor", "_winsor_permutation")
+HELPER_MODULES = (
+    "_fcr_reinterval",
+    "winsor",
+    "_winsor_permutation",
+    "_fixed_horizon",
+    "_result_types",
+    "_readout_refusals",
+    "priors",
+    "diagnostics",
+)
 
 
 def _runtime_closure(graph: dict[str, set[str]], start: str) -> set[str]:

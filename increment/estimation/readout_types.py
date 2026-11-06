@@ -134,7 +134,7 @@ _WIRE_REFUSALS = refusals(
     WireFormatError,
     {
         "readout.serialization.unsupported_version": "Unsupported envelope {kind} version {received}; supported {supported}. {remedy}",
-        "readout.serialization.model_mismatch": "Collection {collection} does not contain row model {row_model}",
+        "readout.serialization.model_mismatch": "Collection {collection} does not contain row model {row_model}{route_suffix}",
         "readout.serialization.duplicate_cell_key": "Duplicate serialized cell {cell_key} in {source_snapshot_id}",
         "readout.serialization.noncanonical_order": "Serialized {section} is not canonically ordered",
         "readout.serialization.identity_mismatch": "Serialized identity mismatch for {source_snapshot_id}: {reason} ({cell_key})",
@@ -1603,6 +1603,12 @@ class ReadoutResults:
                 "readout.serialization.model_mismatch",
                 collection=collection_name,
                 row_model=payload.get("row_model"),
+                route=("increment.results.ReadoutResults" if collection_type is None else ""),
+                route_suffix=(
+                    "; decode saved collections via increment.results.ReadoutResults"
+                    if collection_type is None
+                    else ""
+                ),
             )
         metadata = (
             None
