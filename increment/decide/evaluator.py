@@ -502,6 +502,7 @@ def decide(  # noqa: PLR0915
                         replace(existing, family_id=family.family_id, membership="member")
                     )
             procedure = "none" if family.family is None else family.family.correction
+            selection_failed = False
             if procedure in {"bh", "e_bh"}:
                 selection_evidence = ()
                 if family.family is None or family.family.q is None:
@@ -564,6 +565,7 @@ def decide(  # noqa: PLR0915
                         for member in members
                     ]
                 else:
+                    selection_failed = True
                     members = [
                         replace(
                             member,
@@ -591,9 +593,16 @@ def decide(  # noqa: PLR0915
             family_reasons = tuple(
                 sorted({code for member in members for code in member.reason_codes})
             )
+            # A registered uptake member counts toward the family's size and rejections, but
+            # its own cell stays a diagnostic, so its verdict does not hold the family back.
+            evaluated = [
+                member
+                for key, member in zip(family.members, members, strict=True)
+                if key.estimand != "compliance"
+            ]
             state = (
                 "not_evaluated"
-                if any(member.status == "not_evaluated" for member in members)
+                if selection_failed or any(member.status == "not_evaluated" for member in evaluated)
                 else "reject"
                 if (
                     any(member.status == "reject" for member in members)

@@ -1369,7 +1369,7 @@ def _day_axis_scope(req: DayAxisRequest):
     )
 
 
-def _scope_day_axis_rows(
+def _scope_day_axis_rows(  # noqa: PLR0913
     rows,
     req: DayAxisRequest,
     *,
@@ -1383,8 +1383,13 @@ def _scope_day_axis_rows(
     scope=None,
     identity_rows: Sequence[Any] | None = None,
     advisories: CellAdvisories | None = None,
+    family_cells: Sequence[CellKey] = (),
 ):
-    """Attach source-local scope, and a skip metric's population to its lift rows."""
+    """Attach source-local scope, and a skip metric's population to its lift rows.
+
+    ``family_cells`` are cells the request leaves out whose families the rows still
+    belong to; the families list them, the returned scope does not.
+    """
     from increment._source_identity import source_identity
     from increment.breakout.estimates import DailyLiftEstimates, DailyMetricValues
     from increment.readouts._design_scope import _config_snapshot
@@ -1434,6 +1439,7 @@ def _scope_day_axis_rows(
         identity_rows=identity_rows,
         artifact_provenance=artifact_provenance(source),
         advisories={} if advisories is None else advisories,
+        family_cells=family_cells,
     )
     if result.metadata is not None:
         from increment._immutable import _FrozenMapping
@@ -1741,6 +1747,7 @@ class DayAxisReadouts:
             )
             correction = normalize_display_correction(asof_policy.correction)
             checkpoint_advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] = {}
+            unrequested: list[Any] = []
             rows = readouts.asof_lift(
                 self._src,
                 metrics=[m.name for m in req.metrics],
@@ -1751,15 +1758,19 @@ class DayAxisReadouts:
                 completed_windows_only=req.completed_windows_only,
                 _population=req.population,
                 _cell_advisories=checkpoint_advisories,
+                _unrequested=unrequested,
             )
             source_by_dimension = {
                 breakout.property: breakout.source
                 for breakout in getattr(self._experiment, "breakouts", ())
             }
-            projected = daily_sequential_projection(
-                rows,
-                correction=correction,
-                source_by_dimension=source_by_dimension,
+            projected, unrequested_projected = (
+                daily_sequential_projection(
+                    selected,
+                    correction=correction,
+                    source_by_dimension=source_by_dimension,
+                )
+                for selected in (rows, unrequested)
             )
             return _scope_day_axis_rows(
                 _order_day_axis_rows(projected, req),
@@ -1771,6 +1782,7 @@ class DayAxisReadouts:
                 design=self._design,
                 execution_context=self._metadata_context,
                 scope=scope,
+                family_cells=tuple(CellKey.from_row(row) for row in unrequested_projected),
                 advisories=carried_advisories(
                     checkpoint_advisories, zip(rows, projected, strict=True)
                 ),

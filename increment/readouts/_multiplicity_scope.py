@@ -7,6 +7,11 @@ from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from increment._evidence_types import ArtifactProvenance
+from increment._multiplicity import (
+    RegisteredCell,
+    guarantee_for_correction,
+    registered_family_members,
+)
 from increment.decision import MultiplicityFamily, evidence_request_procedure
 from increment.estimation.multiplicity import (
     design_excluded,
@@ -22,6 +27,7 @@ from increment.estimation.readout_types import (
     cell_order,
     family_identity,
 )
+from increment.estimation.sequential import ASYMPTOTIC_PROCEDURE_POLICIES
 from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._source_digest import input_evidence
 
@@ -98,16 +104,9 @@ def attach_multiplicity_scope(
             candidate = membership.family
             if isinstance(candidate, MultiplicityFamily):
                 family = candidate
-        registration = getattr(getattr(plan, "inference", None), "registration", None)
-        if cell.analysis_population == "triggered":
-            registration = getattr(plan.inference, "triggered_registration", None)
-        if (
-            view == "run"
-            and family is not None
-            and registration is not None
-            and family.q is not None
-        ):
-            family = family.model_copy(update={"q": float(registration.q)})
+        registration = _population_registration(plan, cell.analysis_population)
+        if family is not None:
+            family = _registered_level(family, registration, view)
         if role is None or (role == "secondary" and family is None):
             cell_family[cell] = None
             continue
@@ -128,6 +127,19 @@ def attach_multiplicity_scope(
         family_cells.setdefault(key, []).append(cell)
         family_by_key[key] = family
         cell_family[cell] = key
+    joined = (
+        _join_registered_family(
+            cells,
+            plan,
+            cell_family,
+            family_cells,
+            family_by_key,
+            view=view,
+            family_populations=family_populations,
+        )
+        if view_policy is None and view in ("run", "asof")
+        else frozenset()
+    )
 
     family_scopes = []
     family_ids = {}
@@ -195,11 +207,113 @@ def attach_multiplicity_scope(
                     "family_nominal_alpha": None
                     if selection_excluded
                     else row.family_nominal_alpha,
-                    "multiplicity_status": multiplicity_status(role, family),
+                    "multiplicity_status": "declared_plan"
+                    if cell in joined
+                    else multiplicity_status(role, family),
                 }
             )
         )
     return output, tuple(sorted(family_scopes, key=lambda family: family.family_id))
+
+
+def _population_registration(plan: Any, population: str) -> Any | None:
+    """The sequential registration that fixes *population*'s families, if any."""
+    inference = getattr(plan, "inference", None)
+    if population == "triggered":
+        return getattr(inference, "triggered_registration", None)
+    return getattr(inference, "registration", None)
+
+
+def _registered_level(
+    family: MultiplicityFamily, registration: Any | None, view: str
+) -> MultiplicityFamily:
+    """A whole-window family is selected at its registration's ``q``."""
+    if view == "run" and registration is not None and family.q is not None:
+        return family.model_copy(update={"q": float(registration.q)})
+    return family
+
+
+def _registered_coordinates(cell: CellKey) -> RegisteredCell:
+    """An arm or segment cell's registration roster coordinates."""
+    segment = (
+        ((cell.dimension, cell.dimension_value),)
+        if cell.dimension is not None and cell.dimension_value is not None
+        else ()
+    )
+    return cell.metric, cast(str, cell.group_id), cast(str, cell.estimand), segment
+
+
+def _join_registered_family(
+    cells: Sequence[CellKey],
+    plan: Any,
+    cell_family: dict[CellKey, Any],
+    family_cells: dict[Any, list[CellKey]],
+    family_by_key: dict[Any, Any],
+    *,
+    view: Literal["run", "asof"],
+    family_populations: set[str] | None,
+) -> frozenset[CellKey]:
+    """List each registered uptake cell with its population's secondary family.
+
+    A compliance policy declared ``family=True`` registers the uptake cell in the
+    e-BH family the secondaries form, so the family's members are the
+    registration's, not only the plan's secondary roles. The cell keeps its own
+    role. Without secondaries it is the family's one member.
+    """
+    joined: set[CellKey] = set()
+    for population in ("assigned", "triggered"):
+        registration = _population_registration(plan, population)
+        if registration is None or (
+            family_populations is not None and population not in family_populations
+        ):
+            continue
+        secondary = {
+            key[5]: key for key in family_cells if key[0] == population and key[1] == "secondary"
+        }
+        members = set(
+            registered_family_members(
+                registration,
+                secondary_keys=(
+                    _registered_coordinates(cell)
+                    for key in secondary.values()
+                    for cell in family_cells[key]
+                ),
+            )
+        )
+        for cell in cells:
+            if (
+                cell.analysis_population != population
+                or cell.estimand != "compliance"
+                or cell.method_role != "decision"
+                or cell_family[cell] is not None
+                or _registered_coordinates(cell) not in members
+            ):
+                continue
+            look = cell.ds if view == "asof" else None
+            key = secondary.get(look)
+            if key is None:
+                family = _registered_level(_secondary_policy(plan), registration, view)
+                key = secondary[look] = (population, "secondary", family.name, family, None, look)
+                family_by_key[key] = family
+            family_cells.setdefault(key, []).append(cell)
+            cell_family[cell] = key
+            joined.add(cell)
+    return frozenset(joined)
+
+
+def _secondary_policy(plan: Any) -> MultiplicityFamily:
+    """The family a sequential secondary compiles under *plan*, for an uptake cell that is
+    a registered family's only member."""
+    return MultiplicityFamily(
+        name="secondary",
+        correction="e_bh",
+        q=plan.q,
+        axes=("metric", "arm"),
+        guarantee=guarantee_for_correction("e_bh"),
+        validity_regime="asymptotic_sequential"
+        if isinstance(plan.inference, ASYMPTOTIC_PROCEDURE_POLICIES)
+        else "finite_sample",
+    )
 
 
 def _attach_breakout_scope(
@@ -412,6 +526,7 @@ def scoped_collection(  # noqa: PLR0913
     identity_rows: Sequence[Any] | None = None,
     artifact_provenance: ArtifactProvenance | None = None,
     advisories: CellAdvisories = _NO_ADVISORIES,
+    family_cells: Sequence[CellKey] = (),
 ):
     """Return rows with a source snapshot and source-local readout metadata.
 
@@ -422,7 +537,9 @@ def scoped_collection(  # noqa: PLR0913
     rows were read for; every non-compliance row must name one of them.
     ``artifact_provenance`` names the artifact the rows were read from.
     ``advisories`` are the estimators' typed advisories keyed by each
-    retained cell's full identity.
+    retained cell's full identity. ``family_cells`` are cells the request
+    leaves out: the families list them, as the whole-window scope lists a
+    registered family's unrequested cells, but the returned scope does not.
     """
     from hashlib import sha256
 
@@ -501,7 +618,7 @@ def scoped_collection(  # noqa: PLR0913
     if stamped and hasattr(stamped[0], "family_id"):
         stamped, families = _attach_family_scope(
             stamped,
-            cells,
+            tuple(sorted({*cells, *family_cells}, key=cell_order)),
             plan,
             configs,
             request,

@@ -261,6 +261,177 @@ def test_registered_whole_window_family_scope_reports_registration_q():
     )
 
 
+def _registered_uptake_family(*, panel=False, **plan_fields):
+    """An encouragement run whose compliance policy registers the uptake cell in the family.
+
+    Uptake is 24/96 in control and 72/96 in treatment; ``s`` is 48/96 in each arm. A
+    ``panel`` run exposes every unit on one day and captures its as-of checkpoint two
+    weeks later, after every two-day window has closed.
+    """
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = _frame([0, 0, 0, 1] * 24, [0, 1, 1, 1] * 24).rename(columns={"outcome": "clicked"})
+    frame["s"] = frame["exposure"] % 2
+    window = 2 if panel else None
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="clicked", window_days=window),
+        exclusion_restriction=ExclusionRestriction(justification="the prompt acts through clicks"),
+        allocation={"control": 0.5, "treatment": 0.5},
+    )
+    plan = AnalysisPlan(
+        q=0.1,
+        inference=InferenceSpec(kind="always_valid"),
+        compliance=SequentialCompliancePolicy(alpha=Fraction(1, 20), family=True),
+        **plan_fields,
+    )
+    start = date(2025, 1, 1)
+    layout: dict[str, Any] = {"shape": "summary", "exposure_date": "exposure"}
+    capture: dict[str, Any] = {}
+    if panel:
+        frame["day"] = frame["exposed"] = start
+        layout = {
+            "shape": "panel",
+            "date": "day",
+            "exposure_date": "exposed",
+            "observation_end": start + timedelta(days=20),
+        }
+        capture = {"as_of": start + timedelta(days=14)}
+    experiment, resolver = from_frame(
+        frame,
+        unit="unit",
+        group="arm",
+        metrics=[MetricSpec(name="s", type="conversion", window_days=window)],
+        design=design,
+        uptake="clicked",
+        plan=plan,
+        **layout,
+    )
+    workflows.capture_sequential(experiment, resolver, finalized=True, **capture)
+    return experiment, resolver
+
+
+@pytest.mark.parametrize("estimands", [("itt",), ("compliance",)])
+def test_registered_asof_family_lists_the_members_a_request_leaves_out(estimands):
+    experiment, resolver = _registered_uptake_family(panel=True, secondaries=["s"])
+    rows = view_readout(
+        experiment,
+        resolver,
+        View(view="asof", grain="asof", completion_policy=True),
+        estimands=estimands,
+    )
+
+    (row,) = rows
+    assert row.estimand == estimands[0]
+    (family,) = [scope for scope in rows.metadata.scope.families if scope.name == "secondary"]
+    assert {(cell.metric, cell.estimand, cell.ds) for cell in family.members} == {
+        ("s", "itt", row.ds),
+        ("uptake", "compliance", row.ds),
+    }
+    assert row.family_id == family.family_id
+    # The look's e-BH at q = 0.1 over m = 2 selects R = 1, the uptake cell: q * R / m.
+    assert row.family_threshold == pytest.approx(0.1 * 1 / len(family.members))
+
+
+def test_registered_uptake_cell_is_a_member_of_the_secondary_family():
+    from math import log
+
+    from scipy.special import betaln
+
+    rows = view_readout(
+        *_registered_uptake_family(secondaries=["s"]), estimands=("itt", "compliance")
+    )
+
+    (family,) = [scope for scope in rows.metadata.scope.families if scope.name == "secondary"]
+    assert {(cell.metric, cell.group_id, cell.estimand) for cell in family.members} == {
+        ("s", "treatment", "itt"),
+        ("uptake", "treatment", "compliance"),
+    }
+    uptake, s = (next(row for row in rows if row.metric == name) for name in ("uptake", "s"))
+    # e-BH at q = 0.1 over m = 2: log e 20.70 clears log(2 / 0.1) at k = 1, and log e -4.13
+    # misses log(2 / 0.2) at k = 2, so R = 1.
+    assert float(uptake.require_exact_sequential_result().log_e) == pytest.approx(
+        betaln(25, 73) + betaln(73, 25) + 192 * log(2), abs=1e-10
+    )
+    assert float(s.require_exact_sequential_result().log_e) == pytest.approx(
+        2 * betaln(49, 49) + 192 * log(2), abs=1e-10
+    )
+    for row in (uptake, s):
+        assert row.family_id == family.family_id
+        assert row.family_size == len(family.members) == 2
+        assert row.family_threshold == pytest.approx(0.1 * 1 / 2)
+    assert (uptake.family_procedure, uptake.family_q) == ("e_bh", 0.1)
+    assert uptake.multiplicity_status == "declared_plan"
+    assert (uptake.discovery, s.discovery) == (True, False)
+
+
+def test_registered_uptake_cell_without_secondaries_is_a_one_member_family():
+    rows = view_readout(*_registered_uptake_family(primary="s"), estimands=("itt", "compliance"))
+
+    (family,) = [scope for scope in rows.metadata.scope.families if scope.name == "secondary"]
+    assert [(cell.metric, cell.estimand) for cell in family.members] == [("uptake", "compliance")]
+    uptake = next(row for row in rows if row.metric == "uptake")
+    assert uptake.family_id == family.family_id
+    assert uptake.family_size == len(family.members) == 1
+    # e-BH at q = 0.1 over m = 1: log e 20.70 clears log(1 / 0.1), so R = 1.
+    assert uptake.family_threshold == pytest.approx(0.1)
+    assert (uptake.family_procedure, uptake.family_q, uptake.discovery) == ("e_bh", 0.1, True)
+
+
+def test_family_with_a_registered_uptake_cell_decides_after_reopen(tmp_path):
+    from increment import run
+    from increment.decide import decide
+    from increment.store import ParquetResultsStore, Run
+
+    experiment, resolver = _registered_uptake_family(secondaries=["s"])
+    saved = cast(Run, run(experiment, resolver, estimands=("itt", "compliance")).run)
+    store = ParquetResultsStore(tmp_path)
+    store.put(saved)
+    handle = store.open_run(saved.experiment_id, saved.analysis_spec_hash, saved.run_id)
+
+    decisions = decide(handle, experiment.registration)
+
+    metric_of = {cell.identity.hash(): cell.identity.key.metric for cell in handle.envelope().cells}
+    (family,) = [family for family in decisions.families if family.procedure == "e_bh"]
+    members = {metric_of[member.identity_hash]: member for member in family.members}
+    assert members.keys() == {"s", "uptake"}
+    assert (members["s"].status, members["s"].discovery) == ("retain", False)
+    assert members["uptake"].status == "not_evaluated"
+    assert members["uptake"].reason_codes == ("decision.not_evaluated.monitoring_view",)
+    assert members["uptake"].discovery is True
+    # The uptake cell's discovery is one of the family's R = 1 rejections.
+    assert family.status == "reject"
+
+
+def test_explicit_view_corrections_are_unchanged():
+    from increment.decision import MultiplicityFamily
+    from increment.semantics.models import MultiplicitySpec
+
+    asof = MultiplicityFamily(name="asof", axes=("metric", "arm"))
+    unadjusted_breakout = MultiplicityFamily(name="breakout", axes=("metric", "arm", "segment"))
+    corrected_breakout = MultiplicityFamily(
+        name="breakout",
+        correction="e_bh",
+        q=0.1,
+        axes=("metric", "arm", "segment"),
+        guarantee="fdr",
+    )
+    for view_fields, expected in (
+        ({}, (asof, corrected_breakout, unadjusted_breakout)),
+        (
+            {"view_multiplicity": MultiplicitySpec(correction="none")},
+            (asof, unadjusted_breakout, unadjusted_breakout),
+        ),
+    ):
+        _, resolver = _registered_uptake_family(secondaries=["s"], **view_fields)
+        policies = cast(Any, held_source(resolver)).context.plan.view_policies
+        assert (
+            policies.asof,
+            policies.randomized_breakout,
+            policies.encouragement_breakout,
+        ) == expected
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize(
     "law,c,t",

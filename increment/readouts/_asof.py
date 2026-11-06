@@ -277,15 +277,18 @@ def _sequential_asof_rows(
     population: Literal["assigned", "triggered"],
     configs: Sequence[Any],
     advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None,
+    unrequested: list[LiftEstimate] | None = None,
 ) -> list[LiftEstimate]:
     """One population's current checkpoint rows, labelled with that chain's reveal cursor.
 
     The scoped collection accounts for every cell, so an uncommitted triggered
     chain or an unsupported triggered uptake cell is reported, not omitted.
     *advisories*, when given, receives the labelled rows' typed advisories.
+    *unrequested*, when given, receives the population's other checkpoint rows, labelled
+    the same way, so the look's families list members the request leaves out.
     """
     from increment._sequential_readouts import sequential_readout
-    from increment.estimation.readout_types import carried_advisories, cell_advisories
+    from increment.estimation.readout_types import CellKey, carried_advisories, cell_advisories
     from increment.readouts._evidence import current_source_snapshot
     from increment.readouts._sequential_scope import scope_sequential_results
     from increment.sequential_state import sequential_refuse
@@ -313,6 +316,26 @@ def _sequential_asof_rows(
     if advisories is not None and rows.metadata is not None:
         recorded = {record.cell: record.advisories for record in rows.metadata.cells}
         advisories.update(carried_advisories(recorded, zip(scoped, labelled, strict=True)))
+    if unrequested is not None:
+        population_rows = (
+            checkpoint_rows
+            if population == "assigned"
+            else []
+            if snapshot.triggered is None
+            else sequential_readout(
+                src,
+                population="triggered",
+                snapshot=snapshot,
+                _include_unrequested=True,
+                configs=configs,
+            )[0]
+        )
+        returned = {CellKey.from_row(row) for row in scoped}
+        unrequested.extend(
+            row.model_copy(update={"ds": chain.reveal_cursor})
+            for row in population_rows
+            if CellKey.from_row(row) not in returned
+        )
     return labelled
 
 
@@ -328,6 +351,7 @@ def asof_lift(
     completed_windows_only: bool = False,
     _population: Literal["assigned", "triggered"] = "assigned",
     _cell_advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None = None,
+    _unrequested: list[LiftEstimate] | None = None,
 ) -> list[LiftEstimate]:
     """As-of relative lift under the source's declared plan.
 
@@ -338,7 +362,8 @@ def asof_lift(
     intervals invert the same stopped likelihood at the exact FCR allocation.
     Segmented histories require a per-date state contract and remain
     unsupported here. A registered checkpoint's typed advisories, keyed by each
-    returned row's cell, fill ``_cell_advisories`` when it is given.
+    returned row's cell, fill ``_cell_advisories`` when it is given, and its other
+    rows in the population fill ``_unrequested``.
     """
     if src.context.cluster is not None:
         _raise_readout_request("readout.asof.cluster", cluster=src.context.cluster)
@@ -393,6 +418,7 @@ def asof_lift(
             population=_population,
             configs=resolved_configs,
             advisories=_cell_advisories,
+            unrequested=_unrequested,
         )
     if design.mechanism == "encouragement":
         refuse_encouragement_asof_margin(selected, plan)
