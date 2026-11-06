@@ -160,13 +160,22 @@ values.
   `panel_sql` and `build_panel_for_metric` now type `ds` as a date, where
   DuckDB returned a timestamp, and carry `day_offset`, as the data-model guide
   documents. `WarehouseResultsStore(backend, schema=...)` creates a missing
-  schema on demand, as `WarehouseArtifactStore` does, and refuses at
-  construction, before any analysis runs, with `store.run.schema_unavailable`
-  (`CapabilityError`, context `schema`) when the schema can be neither created
-  nor found; previously the first save failed after the analysis with an
-  uncoded backend error. On a backend without `create_database`, both stores
-  now check that the declared schema exists before use. Estimates and
-  experiment identity are unchanged.
+  schema when it first saves a run, and refuses that save, before writing
+  anything, with `store.run.schema_unavailable` (`CapabilityError`, context
+  `schema`) when the schema can be neither found nor created; previously the
+  save failed with an uncoded backend error. `run(..., results_store=...)`
+  reaches that refusal after the analysis, with nothing saved. A dotted
+  `catalog.schema` is found and created in that catalog, where the store's
+  tables are written, and on PostgreSQL a mixed-case schema is created as
+  written. Opening a run or reading history never creates a schema; a missing
+  one holds no runs, as before. `WarehouseArtifactStore` likewise no longer
+  creates its declared schema when it is constructed: its first publication
+  or `abandon_generation` creates the schema and the store's tables, and a
+  store whose schema does not exist lists no manifests and refuses
+  `open_snapshot` with `artifact.refresh.invalid_ref`. Publication still
+  refuses with `artifact.store.namespace` before the source is read when the
+  schema can be neither found nor created. Estimates and experiment identity
+  are unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded

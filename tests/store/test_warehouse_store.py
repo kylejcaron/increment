@@ -134,15 +134,119 @@ def test_results_store_creates_its_schema():
         backend.disconnect()
 
 
-def test_results_store_refuses_unavailable_schema_at_construction():
-    class _ReadOnlyBackend:
-        def list_tables(self, *, database=None):
-            raise RuntimeError(f"schema {database} does not exist")
+@pytest.mark.integration
+def test_results_store_refuses_a_schema_it_can_neither_find_nor_create(monkeypatch):
+    backend = ibis.duckdb.connect()
+    backend.raw_sql("ATTACH ':memory:' AS other")
+    backend.raw_sql("CREATE SCHEMA other.results")
 
-    with pytest.raises(CodedError) as refused:
-        WarehouseResultsStore(_ReadOnlyBackend(), schema="results")
-    assert refused.value.code == "store.run.schema_unavailable"
-    assert refused.value.context["schema"] == "results"
+    def deny_create(*args, **kwargs):
+        raise RuntimeError("permission denied to create schema")
+
+    monkeypatch.setattr(backend, "create_database", deny_create)
+    experiment, resolver = _analysis()
+    try:
+        store = WarehouseResultsStore(backend, schema="results")
+        with pytest.raises(CodedError) as refused:
+            store.put(_warehouse_run(view_readout(experiment, resolver)))
+        assert refused.value.code == "store.run.schema_unavailable"
+        assert refused.value.context["schema"] == "results"
+    finally:
+        resolver.close()
+        backend.disconnect()
+
+
+@pytest.mark.integration
+def test_results_store_saves_into_a_schema_of_another_catalog():
+    backend = ibis.duckdb.connect()
+    backend.raw_sql("ATTACH ':memory:' AS other")
+    backend.raw_sql("CREATE SCHEMA other.results")
+    experiment, resolver = _analysis()
+    try:
+        saved = _warehouse_run(view_readout(experiment, resolver))
+        store = WarehouseResultsStore(backend, schema="other.results")
+        store.put(saved)
+        assert store.open_run("exp", "spec", "one").run.manifest_hash == saved.manifest_hash
+        assert "other.results" not in backend.list_databases()
+    finally:
+        resolver.close()
+        backend.disconnect()
+
+
+class _PostgresSchemaNames:
+    """DuckDB tables behind PostgreSQL's schema naming.
+
+    Schema creation builds the statement Ibis's PostgreSQL backend builds, then
+    folds its unquoted identifiers to lower case, as PostgreSQL does.
+    """
+
+    name = "postgres"
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, attribute):
+        return getattr(self._real, attribute)
+
+    def create_database(self, name, /, *, catalog=None, force=False):
+        from sqlglot import expressions as sge
+
+        statement = sge.Create(kind="SCHEMA", this=sge.table_(name, catalog=catalog), exists=force)
+        for identifier in statement.find_all(sge.Identifier):
+            if not identifier.quoted:
+                identifier.set("this", identifier.this.lower())
+        self._real.raw_sql(statement.sql("duckdb"))
+
+
+@pytest.mark.integration
+def test_results_store_reopens_a_mixed_case_schema_it_created():
+    real = ibis.duckdb.connect()
+    backend = _PostgresSchemaNames(real)
+    experiment, resolver = _analysis()
+    try:
+        rows = view_readout(experiment, resolver)
+        WarehouseResultsStore(backend, schema="Results").put(_warehouse_run(rows))
+        later = WarehouseResultsStore(backend, schema="Results")
+        later.put(_warehouse_run(rows, run_id="two", committed_day=3))
+        assert later.open_run("exp", "spec", "one").run.run_id == "one"
+    finally:
+        resolver.close()
+        real.disconnect()
+
+
+@pytest.mark.integration
+def test_results_store_reads_a_missing_schema_without_creating_it():
+    backend = ibis.duckdb.connect()
+    try:
+        store = WarehouseResultsStore(backend, schema="typo")
+        with pytest.raises(CodedError) as missing:
+            store.open_run("exp", "spec", "one")
+        assert missing.value.code == "store.run.not_found"
+        selector = HistorySelector(
+            metric_hash="metric",
+            estimator_id="t",
+            method_config_hash="config",
+            method_instance_id="instance",
+            scope_hash=View(view="run", grain="total").hash(),
+        )
+        assert store.history("exp", selector).num_rows == 0
+        assert "typo" not in backend.list_databases()
+    finally:
+        backend.disconnect()
+
+
+@pytest.mark.integration
+def test_results_store_saves_into_an_existing_sqlite_schema():
+    backend = ibis.sqlite.connect()
+    experiment, resolver = _analysis()
+    try:
+        saved = _warehouse_run(view_readout(experiment, resolver))
+        store = WarehouseResultsStore(backend, schema="main")
+        store.put(saved)
+        assert store.open_run("exp", "spec", "one").run.manifest_hash == saved.manifest_hash
+    finally:
+        resolver.close()
+        backend.disconnect()
 
 
 @pytest.mark.integration

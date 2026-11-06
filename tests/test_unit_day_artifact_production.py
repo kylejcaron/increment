@@ -907,6 +907,7 @@ def test_store_construction_refuses_when_tombstone_table_is_missing_and_uncreata
     monkeypatch,
 ) -> None:
     con = ibis.duckdb.connect()
+    con.create_database("artifact")
     WarehouseArtifactStore(con, schema_name="artifact")
     con.con.execute("drop table artifact.ud_manifest_dropped")
 
@@ -1000,6 +1001,7 @@ def test_store_construction_refuses_when_index_table_is_missing_and_uncreatable(
     monkeypatch,
 ) -> None:
     con = ibis.duckdb.connect()
+    con.create_database("artifact")
     real_create_table = con.create_table
 
     def refuse_index_table(name, *args, **kwargs):
@@ -1012,6 +1014,23 @@ def test_store_construction_refuses_when_index_table_is_missing_and_uncreatable(
         WarehouseArtifactStore(con, schema_name="artifact")
     assert refusal.value.code == "artifact.store.namespace"
     assert refusal.value.context["table"] == "ud_manifest_index"
+
+
+def test_store_reads_a_missing_schema_without_creating_it() -> None:
+    con = ibis.duckdb.connect()
+    store = WarehouseArtifactStore(con, schema_name="typo")
+    ref = UnitDayArtifactRef(
+        artifact_id=uuid4(),
+        generation_id=uuid4(),
+        manifest=RelationLocator(schema="typo", name="ud_manifest"),
+        manifest_sha256="0" * 64,
+    )
+    assert store.visible_manifests == ()
+    with pytest.raises(ArtifactContractError) as refusal:
+        with store.open_snapshot(ref):
+            pass
+    assert refusal.value.code == "artifact.refresh.invalid_ref"
+    assert "typo" not in con.list_databases()
 
 
 def test_store_construction_adopts_index_table_created_by_a_concurrent_store(
@@ -1773,6 +1792,7 @@ def test_fresh_process_abandons_and_erases_a_persisted_generation(tmp_path) -> N
 )
 def test_abandon_generation_refuses_non_uuid_arguments(args: tuple[Any, Any]) -> None:
     con = ibis.duckdb.connect()
+    con.create_database("artifact")
     store = WarehouseArtifactStore(con, schema_name="artifact")
     with pytest.raises(ArtifactContractError) as refusal:
         store.abandon_generation(*args)

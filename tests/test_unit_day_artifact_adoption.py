@@ -1388,6 +1388,7 @@ def test_explicit_null_event_horizon_verifies_and_contributes_no_spine_edge() ->
     from tests.semantics.test_unit_day_artifact import _manifest as _bare_manifest
 
     con = ibis.duckdb.connect()
+    con.create_database("explicit_null_event_horizon_artifact")
     store = WarehouseArtifactStore(con, schema_name="explicit_null_event_horizon_artifact")
     base = _bare_manifest()
     explicit_null_measures = tuple(
@@ -1601,6 +1602,7 @@ def test_open_refuses_a_manifest_edited_in_place() -> None:
     from tests.semantics.test_unit_day_artifact import _manifest as _bare_manifest
 
     con = ibis.duckdb.connect()
+    con.create_database("tampered_manifest_artifact")
     store = WarehouseArtifactStore(con, schema_name="tampered_manifest_artifact")
     manifest = _bare_manifest()
     digest = manifest_sha256(manifest)

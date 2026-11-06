@@ -10,7 +10,7 @@ from typing import cast
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from increment._warehouse_namespace import ensure_schema
+from increment._warehouse_namespace import ensure_schema, split_schema
 from increment.kernel.program_refusals import refuse_store, refuse_unavailable_results_schema
 from increment.store.parquet import ParquetResultsStore
 from increment.store.types import (
@@ -27,17 +27,27 @@ from increment.store.types import (
 class WarehouseResultsStore:
     """Publish one immutable, generation-scoped table per completed run.
 
-    A declared schema is created on demand. Construction refuses with
-    ``store.run.schema_unavailable`` when it can be neither created nor found.
+    A declared schema, ``schema`` or ``catalog.schema``, is created when the
+    first run is saved; reading never creates it. Saving refuses with
+    ``store.run.schema_unavailable`` when the schema can be neither found nor
+    created.
     """
 
     def __init__(self, backend, *, schema: str | None = None) -> None:
         self.backend = backend
         self.schema = schema
-        if schema is not None and not ensure_schema(
-            backend, schema=schema, catalog=None, database=schema
+        self._schema_ready = schema is None
+
+    def _ensure_schema(self) -> None:
+        schema = self.schema
+        if self._schema_ready or schema is None:
+            return
+        location = split_schema(schema)
+        if location is None or not ensure_schema(
+            self.backend, schema=location[1], catalog=location[0]
         ):
             refuse_unavailable_results_schema(schema)
+        self._schema_ready = True
 
     def _name(self, experiment_id: str, analysis_spec_hash: str, run_id: str) -> str:
         return f"increment_run_{run_record_key(experiment_id, analysis_spec_hash, run_id)}"
@@ -52,6 +62,7 @@ class WarehouseResultsStore:
                 reason=run.empty_selection_reason,
             )
 
+        self._ensure_schema()
         name = self._name(run.experiment_id, run.analysis_spec_hash, run.run_id)
         if name in self.backend.list_tables(database=self.schema):
             refuse_store(
