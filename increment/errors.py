@@ -1024,6 +1024,7 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "frame.metric.finite_sample_metric_type": "conversion_inference.finite_sample.metric_type",
         "frame.missing_policy.panel_drop": "frame.missing_policy.panel_skip",
         "frame.moments.metric_covariate_column": "frame.validation.metric_covariate_impute_all_null",
+        "frame.panel.observable_end_dtype": "source.panel.observation_end",
         "frame.validation.metric_missing_drop": None,
         "kernel.resolver.capabilities_missing": "kernel.provider.capabilities_missing",
         "kernel.resolver.capability_mismatch": "kernel.provider.capability_mismatch",

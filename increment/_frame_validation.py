@@ -41,6 +41,7 @@ from increment.plan import (
 )
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import AnalysisPlan, Metric
+from increment.semantics.sequential import invalid_registration
 from increment.sources import (
     ASSIGNMENT_COUNTS_FIELD,
     COMPLIANCE_SUMMARY_FIELD,
@@ -1785,6 +1786,39 @@ def _normalized_breakout_expr(frame: nw.DataFrame[Any], name: str) -> nw.Expr:
     return (
         nw.when(_is_missing(frame, name)).then(nw.lit(_NULL_BREAKOUT)).otherwise(value).alias(name)
     )
+
+
+# The labels a Boolean segment column gives its units, in the order the refusal lists them.
+_BOOLEAN_SEGMENT_LABELS = ("false", "true", _NULL_BREAKOUT)
+
+
+def _refuse_noncanonical_boolean_levels(frame: nw.DataFrame[Any], registration: Any) -> None:
+    """Refuse a registered Boolean segment none of whose declared levels a unit can carry.
+
+    Every unit of a Boolean column is labelled ``true``, ``false`` or ``__null__``, so a
+    dimension declaring none of these would retain only permanently empty cells. Only the
+    column's dtype is read.
+    """
+    if registration is None:
+        return
+    declared: dict[str, list[str]] = {}
+    for cell in registration.roster:
+        for dimension, level in cell.segment:
+            levels = declared.setdefault(dimension, [])
+            if level not in levels:
+                levels.append(level)
+    for dimension, levels in declared.items():
+        if isinstance(frame.schema[dimension], nw.Boolean) and not (
+            set(levels) & set(_BOOLEAN_SEGMENT_LABELS)
+        ):
+            invalid_registration(
+                f"segment dimension {dimension!r} is a Boolean column, whose units are labelled "
+                f"{_BOOLEAN_SEGMENT_LABELS!r}; none of its declared levels {tuple(levels)!r} can "
+                "hold a unit. Declare the levels with those labels",
+                dimension=dimension,
+                declared=tuple(levels),
+                canonical=_BOOLEAN_SEGMENT_LABELS,
+            )
 
 
 def _unit_identity(

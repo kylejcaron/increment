@@ -784,6 +784,56 @@ def test_sequential_summary_without_exposure_refuses_before_reading_frame():
     assert raised.value.context["constructor"] == "from_unit_summary"
 
 
+def test_sequential_panel_without_exposure_refuses_before_reading_frame():
+    from tests.sequential_cases import UnreadFrame
+
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    plan = _plan(specs, "bernoulli", date="day", exposure_date=None)
+
+    with pytest.raises(InvalidRequestError) as raised:
+        from_frame(
+            UnreadFrame(),
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            metrics=specs,
+            experiment_id="experiment",
+            plan=plan,
+        )
+    assert raised.value.code == "source.frame.sequential_exposure_date"
+    assert raised.value.context["constructor"] == "from_unit_panel"
+
+
+def test_panel_run_before_capture_requires_capture():
+    """A registered panel holds no checkpoint until one is captured, so reading it first
+    refuses with the capture route."""
+    from increment import run
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
+    plan = _plan(specs, "bernoulli", date="day", exposure_date="exposed")
+    frame = _frame([0, 1] * 4, [1, 1] * 4)
+    frame["day"] = 0
+    frame["exposed"] = 0
+    experiment, reader = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=specs,
+        experiment_id="experiment",
+        plan=plan,
+    )
+    with pytest.raises(CapabilityError) as raised:
+        run(experiment, reader)
+    assert raised.value.code == "sequential.capture.required"
+    assert "route" in raised.value.context
+
+
 @pytest.mark.parametrize(
     "law,metric_type",
     [("gaussian", "mean"), ("gaussian_ratio", "ratio")],

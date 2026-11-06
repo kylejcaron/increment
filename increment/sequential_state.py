@@ -54,6 +54,11 @@ _REFUSALS = {
     )
 }
 _REFUSALS["continuation.legacy"] = _LEGACY_CONTINUATION
+_REFUSALS["capture.required"] = RefusalSpec(
+    "sequential.capture.required",
+    CapabilityError,
+    lambda *, reason, route: f"{reason}; capture one with {route}",
+)
 
 
 def sequential_refuse(code: str, reason: str, **context) -> NoReturn:
@@ -267,6 +272,64 @@ class UnitRecordProof(_State):
     unit_id: str = Field(min_length=1)
     group_id: str = Field(min_length=1)
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+_RecordChange = Literal["missing", "order", "assignment", "values_or_definitions"]
+_RECORD_CHANGES: Mapping[_RecordChange, str] = {
+    "missing": "is no longer revealed",
+    "order": "is now revealed at a later position",
+    "assignment": "changed assignment",
+    "values_or_definitions": "changed its values, segments or definitions",
+}
+
+
+def _first_record_difference(
+    previous: Sequence[UnitRecordProof],
+    current: Sequence[UnitRecordProof],
+    later_units: Iterable[object] = (),
+) -> tuple[int | None, str | None, _RecordChange]:
+    """Where *current* first stops repeating *previous*: the reveal position, the unit
+    *previous* revealed there and what changed.
+
+    *later_units* names the units revealed after *current* when it is the start of a read.
+    A unit of *previous* revealed later than before changed order; one revealed nowhere is
+    missing. Equal records give no position or unit: only the retained states differ.
+    """
+    for position, (before, after) in enumerate(zip(previous, current, strict=False)):
+        if before == after:
+            continue
+        changed: _RecordChange
+        if before.unit_id == after.unit_id:
+            changed = "assignment" if before.group_id != after.group_id else "values_or_definitions"
+        elif any(record.unit_id == before.unit_id for record in current[position + 1 :]) or any(
+            unit == before.unit_id for unit in later_units
+        ):
+            changed = "order"
+        else:
+            changed = "missing"
+        return position, before.unit_id, changed
+    if len(current) < len(previous):
+        return len(current), previous[len(current)].unit_id, "missing"
+    return None, None, "values_or_definitions"
+
+
+def _refuse_rewritten_records(
+    previous: Sequence[UnitRecordProof],
+    current: Sequence[UnitRecordProof],
+    later_units: Iterable[object] = (),
+) -> NoReturn:
+    """Refuse a continuation whose records do not extend *previous*, naming the first
+    difference."""
+    position, unit_id, changed = _first_record_difference(previous, current, later_units)
+    reason = (
+        "the retained arm states changed although every finalized record is unchanged"
+        if position is None
+        else f"the finalized record at reveal position {position} (unit {unit_id!r}) "
+        f"{_RECORD_CHANGES[changed]}"
+    )
+    sequential_refuse(
+        "continuation.rewrite", reason, position=position, unit_id=unit_id, changed=changed
+    )
 
 
 class SequentialCheckpoint(CodedModel, BaseModel):
@@ -969,7 +1032,8 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
         *(cell.group_id for cell in registration.roster),
     }
     required_dimensions = {k for cell in registration.roster for k, _ in cell.segment}
-    for record in records:
+    reveal = iter(records)
+    for record in reveal:
         unit, group = record.get("unit_id"), record.get("group_id")
         if not isinstance(unit, str) or not unit or not isinstance(group, str) or not group:
             sequential_refuse(
@@ -1030,9 +1094,10 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
             and position < len(previous.records)
             and proof != previous.records[position]
         ):
-            sequential_refuse(
-                "continuation.rewrite",
-                "prior unit identity, value, assignment or reveal order changed",
+            _refuse_rewritten_records(
+                previous.records,
+                (*proofs, proof),
+                (later.get("unit_id") for later in reveal if isinstance(later, Mapping)),
             )
         proofs.append(proof)
         if previous is not None and position < len(previous.records):
@@ -1049,7 +1114,7 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
                     GaussianState.from_rows((exact[metric],), dimension=len(state.mean))
                 )
     if previous is not None and len(proofs) < len(previous.records):
-        sequential_refuse("continuation.rewrite", "prefix removed finalized units")
+        _refuse_rewritten_records(previous.records, proofs)
     portable = tuple(
         SequentialArmState(
             metric=metric,

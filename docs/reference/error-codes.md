@@ -1016,7 +1016,7 @@ Retired codes and their replacements are listed below.
 | `facade.study.switchback_study.identification_exactly_one` | `InvalidRequestError` | — | `increment._study` |
 | `facade.window.resolve_window_days` | `UnsupportedRequestError` | `metric_type` | `increment._window` |
 | `family.evidence.incomplete` | `CapabilityError` | `failed`, `invalid`, `missing` | `increment.estimation.family` |
-| `frame.asof.day_axis_unorderable` | `CapabilityError` | `labels` | `increment._day_axis`, `increment._day_axis_labels` |
+| `frame.asof.day_axis_unorderable` | `CapabilityError` | `labels` | `increment._day_axis`, `increment._day_axis_labels`, `increment._frame_panel` |
 | `frame.asof.quantile_unsupported` | `CapabilityError` | `metric` | `increment._frame_moments`, `increment.frame` |
 | `frame.duplicate_metric_name` | `InvalidRequestError` | `name` | `increment._metric_specs` |
 | `frame.frame_panel.asof_moments_completed` | `InvalidRequestError` | `band`, `name` | `increment.frame` |
@@ -1055,7 +1055,6 @@ Retired codes and their replacements are listed below.
 | `frame.moments.asof_moments_completed` | `InvalidRequestError` | `band`, `metric` | `increment._frame_moments` |
 | `frame.moments.metric_type_conversion` | `InvalidRequestError` | `metric`, `value` | `increment._frame_moments` |
 | `frame.panel.declaration_canonical_collision` | `InvalidRequestError` | `canonical_name`, `role`, `route`, `source_name` | `increment._frame_panel` |
-| `frame.panel.observable_end_dtype` | `InvalidRequestError` | `anchor_dtype`, `axis_kind`, `end_dtype`, `end_kind`, `observable_end` | `increment._frame_panel` |
 | `frame.validation.breakout_overlaps_column` | `InvalidRequestError` | `name`, `role` | `increment._frame_validation` |
 | `frame.validation.breakout_overlaps_metric` | `InvalidRequestError` | `name` | `increment._frame_validation` |
 | `frame.validation.breakout_reserved_internal` | `InvalidRequestError` | `name` | `increment._frame_validation` |
@@ -1467,6 +1466,7 @@ Retired codes and their replacements are listed below.
 | `sensitivity.confounding.threshold_invalid` | `InvalidRequestError` | `threshold_risk_ratio` | `increment.estimation.confounding` |
 | `sequential.asymptotic_joint.invalid` | `CapabilityError` | `reason` | `increment.estimation.asymptotic_joint` |
 | `sequential.asymptotic_mean.invalid` | `CapabilityError` | `reason` | `increment.estimation.asymptotic_mean` |
+| `sequential.capture.required` | `CapabilityError` | `reason`, `route` | `increment.sequential_state` |
 | `sequential.compliance.segmented_family_unsupported` | `CapabilityError` | `alternatives`, `family`, `route`, `segments` | `increment.semantics.sequential` |
 | `sequential.continuation.legacy` | `CapabilityError` | `reason` | `increment.semantics.sequential`, `increment.sequential_state` |
 | `sequential.continuation.rewrite` | `CapabilityError` | `reason` | `increment.sequential_state` |
@@ -1560,6 +1560,7 @@ Retired codes and their replacements are listed below.
 | `source.panel.exposure_date` | `InvalidRequestError` | `column`, `count`, `examples`, `issue`, `route` | `increment._frame_validation` |
 | `source.panel.multi_group_unit` | `InvalidRequestError` | `count`, `examples`, `group`, `route`, `unit` | `increment._frame_validation` |
 | `source.panel.null_exposure` | `InvalidRequestError` | `column`, `constructor`, `count`, `route` | `increment._frame_validation` |
+| `source.panel.observation_end` | `InvalidRequestError` | `axis_kind`, `issue`, `value` | `increment._frame_panel` |
 | `store.cell.not_found` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.decision.event_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.decision.log_corrupt` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
@@ -1695,6 +1696,7 @@ Retired codes and their replacements are listed below.
 | `frame.metric.finite_sample_metric_type` | `conversion_inference.finite_sample.metric_type` |
 | `frame.missing_policy.panel_drop` | `frame.missing_policy.panel_skip` |
 | `frame.moments.metric_covariate_column` | `frame.validation.metric_covariate_impute_all_null` |
+| `frame.panel.observable_end_dtype` | `source.panel.observation_end` |
 | `frame.validation.metric_missing_drop` | Removed without replacement |
 | `kernel.resolver.capabilities_missing` | `kernel.provider.capabilities_missing` |
 | `kernel.resolver.capability_mismatch` | `kernel.provider.capability_mismatch` |

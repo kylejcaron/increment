@@ -257,13 +257,23 @@ def _validate_panel_models(source, registration) -> None:
             )
 
 
+def _labels_observed_by(source, as_of):
+    """The panel's day labels on or before *as_of* and the declared observation end, and
+    the earlier of those two days."""
+    from increment._frame_panel import _day_axis_label_order
+
+    labels = source._sparse_panel.get_column("ds").unique().to_list()
+    horizon = source._observable_through(as_of)
+    order = _day_axis_label_order([*labels, as_of, horizon])
+    return [label for label in labels if order[label] <= order[horizon]], horizon
+
+
 def capture_frame_panel(source, *, as_of, finalized, previous=None):
     """Reveal every metric only for the common longest-window unit cohort."""
     import narwhals as nw
 
     from increment._frame_moments import _collapse_to_unit_totals, _reduce_spec
     from increment._frame_panel import (
-        _day_axis_label_order,
         _observable_end_index,
         _resolve_window_days,
         _scratch_name,
@@ -272,11 +282,12 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
 
     previous = previous if previous is not None else getattr(source, "_sequential_snapshot", None)
     registration = getattr(source.context.plan.inference, "registration", None)
-    if registration is None or not finalized or source._exposure is None:
+    if registration is None or not finalized:
         sequential_refuse(
             "source.invalid",
             "panel capture needs registration, explicit finalization and exposure anchors",
         )
+    exposure = source._declared_exposure()
     require_public_laws(registration.models, "sequential panel capture")
     definitions = sequential_definition_id(
         source.context.metrics,
@@ -291,11 +302,9 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
     if previous is not None and previous.registration != registration:
         sequential_refuse("continuation.rewrite", "registration changed before panel access")
     dimensions = tuple(sorted({k for c in registration.roster for k, _ in c.segment}))
-    labels = source._sparse_panel.get_column("ds").unique().to_list()
-    order = _day_axis_label_order([*labels, as_of])
-    retained = [label for label in labels if order[label] <= order[as_of]]
+    retained, horizon = _labels_observed_by(source, as_of)
     keys = ["unit_id", "group_id", *dimensions]
-    observable = _observable_end_index(source._exposure, as_of)
+    observable = _observable_end_index(exposure, horizon)
     maturity = max(0, registration.reveal.longest_window_days - 1)
     kept = (
         source._day_identity()
@@ -304,7 +313,7 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
         .select(*keys)
     )
     retained_panel = source._sparse_panel.filter(nw.col("ds").is_in(retained))
-    indexed, day_index = _with_day_index(retained_panel, source._exposure)
+    indexed, day_index = _with_day_index(retained_panel, exposure)
     joint = kept
     columns = {}
     for i, model in enumerate(registration.models):
@@ -314,7 +323,7 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
                 (),
                 uptake=source._uptake,
                 window_days=source._window_days,
-                exposure=source._exposure,
+                exposure=exposure,
                 by=dimensions,
             ).rename({source._uptake: "__y__"})
             totals = kept.join(uptake_totals, on=keys, how="left").with_columns(
@@ -341,7 +350,7 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
         columns[model.metric] = tuple(rename.values())
     exposure_name = _scratch_name(joint, "__exposure__")
     joint = joint.join(
-        source._exposure.select("unit_id", nw.col("__exposure__").alias(exposure_name)),
+        exposure.select("unit_id", nw.col("__exposure__").alias(exposure_name)),
         on="unit_id",
         how="left",
     )

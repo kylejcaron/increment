@@ -2619,6 +2619,7 @@ def test_asof_lift_refuses_a_prior_under_sequential_inference() -> None:
                     "user_id": f"u{i}",
                     "variant": group,
                     "ds": dt.date(2024, 1, 1) + dt.timedelta(days=day),
+                    "exposed": dt.date(2024, 1, 1),
                     "revenue": int(group == "treatment"),
                 }
             )
@@ -2629,12 +2630,13 @@ def test_asof_lift_refuses_a_prior_under_sequential_inference() -> None:
         group="variant",
         date="ds",
         control="control",
+        exposure_date="exposed",
         metrics=[MetricSpec(name="revenue", type="conversion")],
         plan=gaussian_plan(
             [MetricSpec(name="revenue", type="conversion")],
             law="bernoulli",
             date="ds",
-            exposure_date=None,
+            exposure_date="exposed",
         ),
     )
     prior = Normal(mu=0.0, sigma=0.01)

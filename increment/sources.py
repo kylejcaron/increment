@@ -1418,6 +1418,11 @@ class MomentsSource(SequentialSourceMixin):
     mandatory format stamp so an old additive-sum cube cannot be misread.
     """
 
+    _capture_route = (
+        "capture_sequential(experiment, reader, finalized=True, as_of=<last finalized day>) "
+        "on the source this cube was exported from, then export_moments and from_moments again"
+    )
+
     @staticmethod
     def design_summary_design(
         rows: Sequence[Mapping[str, object]], *, control_group: str

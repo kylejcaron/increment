@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
+import numbers
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import narwhals as nw
+import numpy as np
 
-from increment._day_axis_labels import _day_axis_label_order
+from increment._day_axis_labels import _DAY_AXIS_LABEL_UNORDERABLE, _day_axis_label_order
 from increment._frame_validation import (
     CENSORING_DROPPED_UNITS,
     _day_axis_is_numeric,
@@ -19,12 +22,12 @@ from increment._frame_validation import (
 from increment._window import final_maturity_day as _final_maturity_day  # noqa: F401
 from increment._window import resolve_window_days as _resolve_window_days  # noqa: F401
 from increment.errors import (
+    CapabilityError,
     IncrementWarning,
     InvalidRequestError,
     RefusalSpec,
     WarningSpec,
-    raiser,
-    refusals,
+    _safe_error_value,
     refuse,
     warn,
 )
@@ -39,26 +42,191 @@ def _prepare_panel(
     date: str,
     value_columns: Sequence[str],
     zero_fill: bool = True,
+    exposure: nw.DataFrame[Any] | None = None,
+    observation_end: Any = None,
 ) -> tuple[nw.DataFrame[Any], dict[str, int], int]:
-    """Build sparse unit-day rows and optionally zero-fill explicit nulls."""
+    """Build sparse unit-day rows, zero-fill explicit nulls and count the cells filled.
+
+    Values dated after *observation_end* become zero; their rows stay, so a unit
+    observed only later still counts as a unit with no outcome. The count covers each
+    unit's eligible days: from its *exposure* (else the first panel day) through
+    *observation_end* (else the last panel day). Exposures cannot be placed on day labels
+    without a chronological order, so such a panel counts every day.
+    """
     observed = frame.select(
         nw.col(unit).alias("unit_id"),
         nw.col(date).alias("ds"),
         *[nw.col(c).cast(nw.Float64).alias(c) for c in value_columns],
     )
-    n_filled = identity.shape[0] * observed.get_column("ds").n_unique() - observed.shape[0]
+    labels = observed.get_column("ds").unique().to_list()
+    days = labels if observation_end is None else _labels_through(labels, observation_end)
+    window = observed if observation_end is None else observed.filter(nw.col("ds").is_in(days))
+    cells = identity.shape[0] * len(days)
+    if exposure is not None and _exposures_placeable(observed, exposure):
+        cells = _eligible_cells(window.select(nw.col("ds").alias("__exposure__")), exposure)
+        indexed, day_index = _with_day_index(window, exposure)
+        window = indexed.filter(nw.col(day_index) >= 0)
+    n_filled = cells - window.shape[0]
     if value_columns:
-        any_null = _is_missing(observed, value_columns[0])
+        any_null = _is_missing(window, value_columns[0])
         for column in value_columns[1:]:
-            any_null = any_null | _is_missing(observed, column)
-        n_filled += int(observed.select(any_null.cast(nw.Int64).sum()).item())
+            any_null = any_null | _is_missing(window, column)
+        n_filled += int(window.select(any_null.cast(nw.Int64).sum()).item())
         if zero_fill:
             observed = observed.with_columns(*[nw.col(c).fill_null(0.0) for c in value_columns])
+        if len(days) < len(labels):
+            observable = nw.col("ds").is_in(days)
+            observed = observed.with_columns(
+                nw.when(observable).then(nw.col(c)).otherwise(0.0).alias(c) for c in value_columns
+            )
     return (
         observed.join(identity, on="unit_id", how="left"),
         _group_counts(identity, "group_id"),
         n_filled,
     )
+
+
+def _exposures_placeable(panel: nw.DataFrame[Any], exposure: nw.DataFrame[Any]) -> bool:
+    """Whether every exposure date has a place on the panel's day axis."""
+    labels = panel.get_column("ds").unique().to_list()
+    try:
+        _day_axis_label_order([*labels, *exposure.get_column("__exposure__").unique().to_list()])
+    except CapabilityError as exc:
+        if exc.code != _DAY_AXIS_LABEL_UNORDERABLE.code:
+            raise
+        return False
+    return True
+
+
+def _eligible_cells(days: nw.DataFrame[Any], exposure: nw.DataFrame[Any]) -> int:
+    """Unit-days on or after each unit's exposure, over the distinct days in *days*.
+
+    Days and exposures are each placed by their whole days back from one panel day, so
+    the days at or after an exposure are those placed no further back, counted by a
+    sorted search instead of pairing every exposure with every day.
+    """
+    days = days.unique()
+    if days.is_empty():
+        return 0
+    reference = days.item(0, "__exposure__")
+    back = np.sort(
+        _observable_end_index(days, reference).get_column("__observable_days__").to_numpy()
+    )
+    count = _scratch_name(exposure, "__units__")
+    starts = _observable_end_index(
+        exposure.group_by("__exposure__").agg(nw.len().alias(count)), reference
+    )
+    eligible = np.searchsorted(
+        back, starts.get_column("__observable_days__").to_numpy(), side="right"
+    )
+    return int((eligible * starts.get_column(count).to_numpy()).sum())
+
+
+def _labels_through(labels: Sequence[Any], end: Any) -> list[Any]:
+    """The day labels on or before *end*, in their input order."""
+    order = _day_axis_label_order([*labels, end])
+    return [label for label in labels if order[label] <= order[end]]
+
+
+_OBSERVATION_END_ISSUES = {
+    "unparseable": "is not an ISO-8601 date",
+    "wrong_kind": "is not a value of the date column's kind",
+    "before_first_day": "is before the panel's first day",
+    "unknown_label": "cannot be ordered among the date column's labels",
+}
+
+_OBSERVATION_END = RefusalSpec(
+    "source.panel.observation_end",
+    InvalidRequestError,
+    lambda *, value, axis_kind, issue: (
+        f"observation_end={value!r} {_OBSERVATION_END_ISSUES[issue]} (a {axis_kind} day "
+        "axis). Pass the last observed day: a date, naive datetime or ISO-8601 string for "
+        "a calendar date column, a number for a numeric day index, or a label spelled like "
+        "the column's own for a string day column."
+    ),
+)
+
+
+def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: Any) -> Any:
+    """*value* as a day of *date*'s axis, refused when it names no day the panel can bound.
+
+    A calendar axis takes a date, a naive datetime (its calendar day) or an ISO-8601
+    string, returned as the column's own Python type; a numeric axis takes a finite
+    number; a string axis takes a label that orders with its own.
+    """
+    if value is None:
+        return None
+    dtype = frame.schema[date]
+    labels = frame.get_column(date).unique().to_list()
+    issue: Literal["unparseable", "wrong_kind", "before_first_day", "unknown_label"] | None = None
+    normalized = value
+    if isinstance(dtype, nw.String):
+        axis_kind = "label"
+        if not isinstance(value, str):
+            issue = "wrong_kind"
+        else:
+            # An axis that cannot be ordered at all refuses with its own code.
+            _day_axis_label_order(labels)
+            try:
+                order = _day_axis_label_order([*labels, value])
+            except CapabilityError as exc:
+                if exc.code != _DAY_AXIS_LABEL_UNORDERABLE.code:
+                    raise
+                issue = "unknown_label"
+            else:
+                if order[value] < min(order[label] for label in labels):
+                    issue = "before_first_day"
+    else:
+        if _day_axis_is_numeric(dtype):
+            axis_kind = "numeric"
+            if isinstance(value, bool) or not isinstance(value, numbers.Real):
+                issue = "wrong_kind"
+            elif not math.isfinite(value):
+                issue = "unparseable"
+        else:
+            axis_kind = "calendar"
+            normalized, issue = _calendar_day(value, datetime_axis=_datetime_axis(dtype, labels))
+        if issue is None and normalized < min(labels):
+            issue = "before_first_day"
+    if issue is not None:
+        refuse(
+            _OBSERVATION_END,
+            value=_safe_error_value(value),
+            axis_kind=axis_kind,
+            issue=issue,
+        )
+    return normalized
+
+
+def _datetime_axis(dtype: nw.dtypes.DType, labels: Sequence[Any]) -> bool:
+    """Whether a calendar axis holds datetimes rather than dates."""
+    if isinstance(dtype, nw.Datetime):
+        return True
+    if isinstance(dtype, nw.Date):
+        return False
+    return any(isinstance(label, dt.datetime) for label in labels)
+
+
+def _calendar_day(
+    value: Any, *, datetime_axis: bool
+) -> tuple[Any, Literal["unparseable", "wrong_kind"] | None]:
+    """The calendar day *value* names, typed like the axis, or why it names none."""
+    if isinstance(value, str):
+        try:
+            value = (
+                dt.datetime.fromisoformat(value)
+                if "T" in value or " " in value
+                else dt.date.fromisoformat(value)
+            )
+        except ValueError:
+            return None, "unparseable"
+    if not isinstance(value, dt.date):
+        return None, "wrong_kind"
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is not None:
+            return None, "wrong_kind"
+        value = value.date()
+    return (dt.datetime.combine(value, dt.time()) if datetime_axis else value), None
 
 
 def _partition_panel_days(panel: nw.DataFrame[Any]) -> dict[Any, nw.DataFrame[Any]]:
@@ -158,15 +326,6 @@ def _day_axis_elapsed(ds: nw.Expr, anchor: nw.Expr, *, numeric: bool) -> nw.Expr
 Renderer = Callable[..., str]
 
 
-_REFUSALS = refusals(
-    InvalidRequestError,
-    {
-        "frame.panel.observable_end_dtype": "observable_end {observable_end!r} (dtype {end_dtype}, {end_kind} kind) does not match the {axis_kind} day axis (exposure anchor dtype {anchor_dtype}). Pass an observable_end of the same kind as the panel's date column.",
-    },
-)
-_raise = raiser(_REFUSALS)
-
-
 _WARNINGS: dict[str, WarningSpec] = {}
 
 
@@ -252,13 +411,19 @@ def _admit_panel_totals(
     exposure: nw.DataFrame[Any] | None,
     *,
     value_columns: Sequence[str],
+    observation_end: Any = None,
 ) -> nw.DataFrame[Any]:
-    """Preserve observable zero-outcome units while excluding pre-exposure values."""
+    """Preserve observable zero-outcome units while excluding pre-exposure values.
+
+    A unit is observable once exposed by *observation_end*, else by the last panel day.
+    """
     if exposure is None or panel.is_empty():
         return panel
-    labels = panel.get_column("ds").unique().to_list()
-    order = _day_axis_label_order(labels)
-    last_day = max(labels, key=order.__getitem__)
+    last_day = observation_end
+    if last_day is None:
+        labels = panel.get_column("ds").unique().to_list()
+        order = _day_axis_label_order(labels)
+        last_day = max(labels, key=order.__getitem__)
     observable = _observable_end_index(exposure, last_day)
     units = observable.filter(nw.col("__observable_days__") >= 0).select("unit_id")
     admitted = panel.join(units, on="unit_id", how="semi")
@@ -282,32 +447,35 @@ def _observable_end_index(exposure: nw.DataFrame[Any], observable_end: Any) -> n
     metric's own fact-scoped observed extent (see
     :func:`_fact_max_observed_dates`) - never the whole panel's.
 
-    *observable_end* is validated against the exposure anchor's axis kind
-    first - a numeric axis combined with the publicly documented
-    ``datetime.date`` default otherwise reaches unsupported
-    date-minus-number backend arithmetic.
+    *observable_end* is a day of the panel's own axis: a panel label, or an
+    ``observation_end`` the builder normalized to that axis.
     """
     if isinstance(exposure.schema["__exposure__"], nw.String):
         labeled = exposure.with_columns(nw.lit(observable_end).alias("ds"))
         return labeled.with_columns(
             _uptake_day_elapsed(labeled, "__exposure__").alias("__observable_days__")
         ).drop("ds")
-    anchor_dtype = exposure.schema["__exposure__"]
-    numeric = _day_axis_is_numeric(anchor_dtype)
-    end_dtype = exposure.select(nw.lit(observable_end).alias("__end__")).schema["__end__"]
-    if _day_axis_is_numeric(end_dtype) != numeric:
-        axis_kind = "numeric" if numeric else "calendar"
-        end_kind = "numeric" if _day_axis_is_numeric(end_dtype) else "calendar"
-        _raise(
-            "frame.panel.observable_end_dtype",
-            observable_end=observable_end,
-            end_dtype=end_dtype,
-            end_kind=end_kind,
-            axis_kind=axis_kind,
-            anchor_dtype=anchor_dtype,
-        )
+    numeric = _day_axis_is_numeric(exposure.schema["__exposure__"])
     elapsed = _day_axis_elapsed(nw.lit(observable_end), nw.col("__exposure__"), numeric=numeric)
     return exposure.with_columns(elapsed.alias("__observable_days__"))
+
+
+def _exposed_through(
+    frame: nw.DataFrame[Any], *, unit: str, exposure_date: str, observation_end: Any
+) -> tuple[nw.DataFrame[Any], int]:
+    """The rows of units exposed on or before *observation_end*, and how many units left."""
+    exposure = frame.group_by(nw.col(unit).alias("unit_id")).agg(
+        nw.col(exposure_date).alias("__exposure__").min()
+    )
+    enrolled = (
+        _observable_end_index(exposure, observation_end)
+        .filter(nw.col("__observable_days__") >= 0)
+        .select(nw.col("unit_id").alias(unit))
+    )
+    excluded = exposure.shape[0] - enrolled.shape[0]
+    if not excluded:
+        return frame, 0
+    return frame.join(enrolled, on=unit, how="semi"), excluded
 
 
 def _censor_units(
