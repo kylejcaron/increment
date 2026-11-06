@@ -6,10 +6,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from hashlib import sha1
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import ibis
 import ibis.expr.datatypes as dt
+
+if TYPE_CHECKING:
+    from sqlglot import exp
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,12 +248,16 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
     return _CAPTURED_CUPED_EXPRESSIONS
 
 
+def _snowflake_nan_predicate(value_sql: str) -> exp.Expression:
+    import sqlglot.expressions as sge
+
+    return sge.Var(this=f"({value_sql}) = 'NaN'::FLOAT")
+
+
 def _transpile_captured_raw_sql(expression, dialect):
     import sqlglot
     from ibis.expr import operations as ops
     from sqlglot import exp
-
-    from increment.query._nonfinite import _is_nan_sql
 
     def transpile(query, description):
         if dialect in {"bigquery", "snowflake"}:
@@ -262,7 +270,7 @@ def _transpile_captured_raw_sql(expression, dialect):
             if dialect == "snowflake":
                 for is_nan in tuple(statement.find_all(exp.IsNan)):
                     value = is_nan.this.sql(dialect=dialect)
-                    is_nan.replace(_is_nan_sql(dialect, value))
+                    is_nan.replace(_snowflake_nan_predicate(value))
                 for is_inf in tuple(statement.find_all(exp.IsInf)):
                     infinity = exp.Cast(
                         this=exp.Literal.string("Inf"),
@@ -324,11 +332,9 @@ def _portable_nonfinite_ast(query, dialect):
 
     from sqlglot import exp
 
-    from increment.query._nonfinite import _is_nan_sql
-
     for is_nan in tuple(query.find_all(exp.IsNan)):
         value = is_nan.this.sql(dialect=dialect)
-        is_nan.replace(_is_nan_sql(dialect, value))
+        is_nan.replace(_snowflake_nan_predicate(value))
     for is_inf in tuple(query.find_all(exp.IsInf)):
         infinity = exp.Cast(this=exp.Literal.string("Inf"), to=exp.DataType.build("DOUBLE"))
         is_inf.replace(exp.EQ(this=exp.Abs(this=is_inf.this.copy()), expression=infinity))
