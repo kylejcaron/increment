@@ -6,6 +6,8 @@ import math
 from fractions import Fraction
 from typing import TYPE_CHECKING, overload
 
+from increment.estimation._sequential_likelihood import GaussianState
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.decision_types import (
     AsymptoticSequentialEvidence,
     DecisionComputation,
@@ -13,6 +15,11 @@ from increment.estimation.decision_types import (
     TestEvidence,
     exact_fraction,
     sequential_hypothesis_key,
+)
+from increment.estimation.diagnostics import (
+    COVARIATE_BALANCE_ALPHA,
+    covariate_balance_boundary,
+    covariate_balance_crosses_boundary,
 )
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
@@ -32,10 +39,12 @@ from increment.estimation.sequential_result import (
     checkpoint_mean_bounds,
 )
 from increment.semantics.sequential import (
+    ADJUSTED_LAWS,
     BINARY_METRIC_TYPES,
     RATIO_LAWS,
     SCALAR_METRIC_TYPES,
     ScalarMeanModel,
+    retained_dimension,
 )
 from increment.sequential_state import (
     SequentialSnapshot,
@@ -47,7 +56,10 @@ from increment.sequential_state import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
     from increment.decision import HypothesisKey
+    from increment.estimation.decision_types import AdvisoryKey
 
 
 def evaluate_checkpoint(
@@ -288,6 +300,96 @@ def _evaluate_sequential_diagnostic(
     return tuple(evaluated_results)
 
 
+def _binary64_sqrt(value: Fraction) -> float:
+    """``sqrt(value)`` for a nonnegative rational whose own magnitude may lie outside
+    binary64 though its root does not; ``OverflowError`` when the root does too."""
+    half = (value.numerator.bit_length() - value.denominator.bit_length()) // 2
+    return math.ldexp(math.sqrt(value / Fraction(4) ** half), half)
+
+
+def _covariate_imbalance_advisory(result: AsymptoticSequentialResult) -> ReadoutAdvisory | None:
+    """The advisory of an adjusted cell whose covariate difference crosses its
+    count-clock boundary at this look; none while the cell has no inference, or when
+    its numbers are past the float range.
+
+    The advisory feeds nothing, so the cell's sets and evidence are unchanged.
+    """
+    checkpoint, model = result.checkpoint, result.checkpoint.model
+    if not isinstance(model, ScalarMeanModel) or model.law not in ADJUSTED_LAWS:
+        return None
+    control, treatment = checkpoint.control.kernel(), checkpoint.treatment.kernel()
+    if not (
+        result.bounds.available
+        and isinstance(control, GaussianState)
+        and isinstance(treatment, GaussianState)
+    ):
+        return None
+    x = retained_dimension(model.law) - 1
+    difference = treatment.mean[x] - control.mean[x]
+    count = control.n + treatment.n
+    if not covariate_balance_crosses_boundary(
+        difference=difference,
+        scatter_control=control.scatter[x][x],
+        n_control=control.n,
+        scatter_treatment=treatment.scatter[x][x],
+        n_treatment=treatment.n,
+        count=count,
+        rho=model.rho,
+        start_count=model.start_count,
+    ):
+        return None
+    from increment.estimation.engine import _WARNINGS
+
+    # A crossing has a positive variance and a nonzero difference. The variance
+    # scales with the covariate's squared units and the boundary with 1/rho^2, so
+    # roots are taken of the exact ratios; a number past the float range abstains.
+    variance = treatment.scatter[x][x] / treatment.n**2 + control.scatter[x][x] / control.n**2
+    try:
+        magnitude = _binary64_sqrt(difference * difference / variance)
+        numbers = {
+            "mean_control": float(control.mean[x]),
+            "mean_treatment": float(treatment.mean[x]),
+            "difference": float(difference),
+            "standard_error": _binary64_sqrt(variance),
+            "statistic": magnitude if difference > 0 else -magnitude,
+            # The statistic flags past this threshold, in the same standard errors.
+            "boundary": _binary64_sqrt(covariate_balance_boundary(count, model.rho)),
+        }
+    except OverflowError:
+        return None
+    groups = (checkpoint.control.group_id, checkpoint.treatment.group_id)
+    context: dict[str, object] = {
+        "metric_name": checkpoint.cell.metric,
+        "control_group": groups[0],
+        "treatment_group": groups[1],
+        # A registration retains the covariate's values, not its name.
+        "covariate": None,
+        **numbers,
+        "count": count,
+        "alpha": COVARIATE_BALANCE_ALPHA,
+        "constant_arms": tuple(
+            group
+            for group, arm in zip(groups, (control, treatment), strict=True)
+            if not arm.scatter[x][x]
+        ),
+    }
+    spec = _WARNINGS["estimation.cuped.covariate_imbalance"]
+    return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
+
+
+def _sequential_advisories(
+    results: Iterable[SequentialResult],
+) -> dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]]:
+    """Each cell's advisories at the inversion its result reports."""
+    advisories: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]] = {}
+    for result in results:
+        if isinstance(result, AsymptoticSequentialResult):
+            advisory = _covariate_imbalance_advisory(result)
+            if advisory is not None:
+                advisories[sequential_hypothesis_key(result.checkpoint.cell)] = (advisory,)
+    return advisories
+
+
 def estimate_sequential(
     snapshot: SequentialSnapshot,
     inference: AsymptoticMean | AlwaysValid | MixedFamily,
@@ -333,7 +435,11 @@ def estimate_sequential(
             certificate=evaluated.certificate,
         )
     return DecisionComputation[LiftEstimate](
-        results=results, evidence=evidence, failures={}, sequential_snapshot=snapshot
+        results=results,
+        evidence=evidence,
+        failures={},
+        sequential_snapshot=snapshot,
+        advisories=_sequential_advisories(evaluated_results),
     )
 
 
@@ -395,9 +501,11 @@ def selected_snapshot_results(
     inference: AsymptoticMean | AlwaysValid | MixedFamily,
     *,
     nominal_alpha: Fraction | float,
-) -> list[LiftEstimate]:
-    """Evaluate and reinvert the family at its stopped state.
+) -> tuple[list[LiftEstimate], Mapping[AdvisoryKey, tuple[ReadoutAdvisory, ...]]]:
+    """Evaluate and reinvert the family at its stopped state, with each hypothesis' advisories.
 
+    The advisories are those of the reported inversion: a selected cell's set can be
+    available at its reporting level though unavailable at its registered allocation.
     Triggered family guarantees assume correct triggering and looks, stops and
     freezes adapted to the triggered joint filtration, not informed by early
     assigned results, including the same metric; see ``sequential_family_guarantee``.
@@ -414,7 +522,7 @@ def selected_snapshot_results(
         if row.require_sequential_result().checkpoint.cell.family
     ]
     if not family:
-        return list(computation.results)
+        return list(computation.results), computation.advisories
     outcome = select_sequential_family(
         family,
         inference.registration.q,
@@ -444,4 +552,4 @@ def selected_snapshot_results(
                 }
             )
         results.append(row)
-    return results
+    return results, _sequential_advisories(row.require_sequential_result() for row in results)

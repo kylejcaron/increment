@@ -50,7 +50,14 @@ def _plan(
                 exposure_date="exposed" if panel else "exposure",
             ),
         ),
-        models=tuple(mean_model(s.name, start_count=start, law=law) for s in specs),
+        models=tuple(
+            mean_model(
+                s.name,
+                start_count=start[s.name] if isinstance(start, dict) else start,
+                law=law,
+            )
+            for s in specs
+        ),
         cells=cells,
     )
     return AnalysisPlan(
@@ -523,9 +530,8 @@ def test_a_frozen_family_member_is_reselected_at_every_look():
         return rows
 
     def family(snapshot):
-        return {
-            r.metric: r for r in selected_snapshot_results(snapshot, policy, nominal_alpha=q / 2)
-        }
+        rows, _ = selected_snapshot_results(snapshot, policy, nominal_alpha=q / 2)
+        return {r.metric: r for r in rows}
 
     first = mean_capture(reg, records(100, 0.5, 1.0))
     before = family(first)
@@ -1410,3 +1416,63 @@ def test_boolean_covariate_also_declared_as_a_segment_keeps_the_adjusted_state(k
             want.point_reason,
         )
         assert rows[level].lift == expected[level].lift
+
+
+def test_balance_advisory_abstains_on_unready_checkpoint():
+    """An adjusted cell with a group below its declared start_count keeps its
+    unavailable reason and gets no covariate-balance advisory, however far apart
+    its covariate means are; its ready sibling reads as it does alone."""
+    import pandas as pd
+
+    from increment import CupedCovariate, Method
+
+    specs = [
+        MetricSpec(
+            name=name,
+            type="mean",
+            decision_method=Method.cuped(
+                covariates=CupedCovariate(name=f"{name}_pre", kind="continuous")
+            ),
+        )
+        for name in ("early", "steady")
+    ]
+    cells = tuple(
+        SequentialCell(metric=s.name, group_id="treatment", family=True, alpha=F(1, 40))
+        for s in specs
+    )
+    arms = ["control"] * 6 + ["treatment"] * 12
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i:02d}" for i in range(18)],
+            "arm": arms,
+            "exposure": range(18),
+            # Six control units are below early's start_count of 10. Its covariate
+            # means differ by 100 against a standard error of 0.25.
+            "early": [float(i % 3) for i in range(18)],
+            "early_pre": [100.0 * (arm == "treatment") + i % 2 for i, arm in enumerate(arms)],
+            "steady": [1.0 + i % 3 + 0.5 * (i % 2) for i in range(18)],
+            "steady_pre": [float(i % 2) for i in range(18)],
+        }
+    )
+    both = _plan(
+        specs, cells=cells, secondary=True, start={"early": 10, "steady": 2}, law="adjusted_mean"
+    )
+    rows = view_readout(*_analysis(frame, specs, both))
+    assert isinstance(rows, LiftEstimates) and rows.metadata is not None
+    by_metric = {row.metric: row for row in rows}
+    alone = _row(
+        _analysis(
+            frame, specs[1:], _plan(specs[1:], cells=cells[1:], secondary=True, law="adjusted_mean")
+        )
+    )
+    early = by_metric["early"].require_asymptotic_sequential_result().bounds
+    assert early.reason == "before_declared_start"
+    steady = by_metric["steady"].require_asymptotic_sequential_result().bounds
+    assert steady.available
+    assert steady == alone.require_asymptotic_sequential_result().bounds
+    assert not [
+        advisory
+        for record in rows.metadata.cells
+        for advisory in record.advisories
+        if advisory.code == "estimation.cuped.covariate_imbalance"
+    ]

@@ -16,7 +16,11 @@ from increment.semantics.artifact import UnitDayArtifactManifest
 from tests._evidence_requests import _unit_rows
 from tests._override_warnings import allow_declared_overrides
 from tests.analysis_factory import bound_source, view_readout
-from tests.covariate_cases import categorical_defs_and_con, covariate_defs_and_con
+from tests.covariate_cases import (
+    allow_tenure_imbalance,
+    categorical_defs_and_con,
+    covariate_defs_and_con,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -155,6 +159,7 @@ def test_observational_property_wins_over_same_named_measure_binding_on_replay(t
 
 
 @pytest.mark.slow
+@allow_tenure_imbalance
 def test_artifact_scalar_cuped_uses_named_property_covariate(tmp_path):
     defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=False)
     defs_path.write_text(
@@ -333,6 +338,7 @@ def test_numeric_covariate_wire_is_untouched_by_the_level_relation(tmp_path):
 @pytest.mark.slow
 @pytest.mark.parametrize("missing", ["zero", "impute", "refuse"])
 @pytest.mark.parametrize("null_value", ["null", "nan"])
+@allow_tenure_imbalance
 def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missing, null_value):
     import pyarrow as pa
 
@@ -434,6 +440,7 @@ def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missi
 @pytest.mark.slow
 @pytest.mark.parametrize("mixed", [False, True])
 @allow_declared_overrides
+@allow_tenure_imbalance
 def test_artifact_bare_property_method_catalog_publish_adopt_run(tmp_path, mixed):
     from increment.estimation.results import LiftEstimate
     from tests.test_cuped_covariate_sources import _scalar_native_case
@@ -473,6 +480,7 @@ def test_artifact_bare_property_method_catalog_publish_adopt_run(tmp_path, mixed
 
 @pytest.mark.slow
 @allow_declared_overrides
+@allow_tenure_imbalance
 def test_artifact_implicit_and_named_scalar_families_match_standalone(tmp_path):
     import json
 
@@ -562,6 +570,7 @@ def test_artifact_named_scalar_breakout_refuses_before_query(tmp_path, monkeypat
 @pytest.mark.slow
 @pytest.mark.parametrize("missing", ["zero", "impute", "refuse"])
 @allow_declared_overrides
+@allow_tenure_imbalance
 def test_artifact_scalar_override_applies_effective_missing_preparation(tmp_path, missing):
     from increment import Method
     from increment.estimation.results import LiftEstimate

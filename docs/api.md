@@ -670,6 +670,47 @@ values.
   `from_frame(shape="panel", ...)` and save it again. `EvidenceCapabilities`
   gains an optional `grain_route`, a source's route to an undeclared day axis,
   left out of saved JSON when unset.
+- Release note (feature): a fixed-horizon scalar CUPED cell whose covariate
+  means differ between groups (a two-sided Welch t test on the covariate as
+  adjusted, nominal p < 0.001, the automatic sample-ratio check's threshold)
+  carries the advisory `estimation.cuped.covariate_imbalance`, and the run emits
+  a runtime warning with the same code. Its context reports each group's
+  covariate mean, the `difference` with its `standard_error`, `statistic`, `dof`
+  and `p_value`, the fitted `theta` (`theta_numerator` and `theta_denominator`
+  for a ratio metric), the `constant_arms`, and for a mean metric
+  `adjustment_shift`, how far the adjustment moved the absolute difference (not
+  the relative lift): the unadjusted difference minus the adjusted one, `theta`
+  times the covariate `difference`. A CUPED-adjusted LATE reports
+  `itt_adjustment_shift`, that move on the ITT difference, and
+  `late_adjustment_shift`, the unadjusted LATE minus the adjusted LATE, instead.
+  Breakout segments and daily cells are each tested on their own data.
+  An asymptotic sequential `adjusted_mean` or `adjusted_ratio_mean` cell carries
+  the same advisory at a look where its squared covariate difference exceeds its
+  variance times the count-clock boundary the cell's intervals use, at nominal
+  level 0.001; like those intervals the boundary is asymptotic, so early looks
+  can flag more often (about 0.0055 at a first look of two units per group with
+  normally distributed covariates, `rho = 0.1` and `start_count = 2`). Its
+  context also reports that `boundary` in standard errors and the look's unit
+  `count`. A look without inference for the cell, such as one before
+  `start_count`, is not checked, and a predeclared pre-period adjustment
+  retains no covariate to check.
+  Estimates, intervals, sequential evidence and decisions are unchanged, and the
+  advisory never withholds a result. Breakout, daily, as-of and sequential cells
+  now carry every advisory their own estimate produced, for example a segment's
+  own mixed-covariate CUPED fit advisory; before, they carried only the two
+  ratio-denominator advisories, rebuilt from row notes. Those keep their codes
+  and messages, and their context now carries `threshold` (plus
+  `relative_standard_errors` for `estimation.engine.ratio_denominator_precision`)
+  in place of the row's `note` text. Each advisory stays with the method that
+  produced it on run, breakout, daily, as-of and encouragement cells: a
+  covariate-balance advisory reaches only the CUPED method's cells, also where
+  an unadjusted method is estimated beside it for the same day, a method whose
+  cell fails keeps its advisory on that unavailable cell, and no other method's
+  cell receives it. The covariate-imputation warning
+  `frame.validation.metric_covariate_missing_imputed` now states when the fill
+  it applied keeps the adjusted estimate unbiased, separately for a zero fill
+  and a mean fill; its code and context are unchanged. Experiment `to_json()`,
+  `hash()` and `analysis_spec_hash` are unchanged.
 - Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
   spelled `missing="skip"`, with the same computation: the metric uses only the
   units with a value, and those units stay in every other metric. Estimates are

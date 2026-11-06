@@ -267,12 +267,32 @@ class DecisionFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class MethodHypothesisKey:
+    """A hypothesis key bound to one method's rows, or to no method.
+
+    A hypothesis key is local to the estimator invocation that produced it, and
+    separate invocations of one cell share it. Advisories leave an invocation bound
+    to each method it ran, so they never reach another invocation's method rows. An
+    invocation that produced no rows binds them to no method (``None``): they qualify
+    its failure and reach only the cell that carries it.
+    """
+
+    hypothesis: HypothesisKey
+    method: str | None
+
+
+#: An advisory key: a hypothesis shared by every method of its invocation, or bound to
+#: one method or to none.
+AdvisoryKey = ArmHypothesisKey | SegmentHypothesisKey | ContrastHypothesisKey | MethodHypothesisKey
+
+
+@dataclass(frozen=True, slots=True)
 class DecisionComputation(Generic[ResultT]):  # noqa: UP046 -- preserve Generic API across supported Python versions
     results: Sequence[ResultT]
     evidence: Mapping[HypothesisKey, TestEvidence]
     failures: Mapping[HypothesisKey, DecisionFailure]
     sequential_snapshot: SequentialSnapshot | None = None
-    advisories: Mapping[HypothesisKey, tuple[ReadoutAdvisory, ...]] = field(default_factory=dict)
+    advisories: Mapping[AdvisoryKey, tuple[ReadoutAdvisory, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         results = tuple(self.results)
@@ -322,7 +342,10 @@ class DecisionComputation(Generic[ResultT]):  # noqa: UP046 -- preserve Generic 
             and isinstance((group_id := getattr(result, "group_id", None)), str)
             and isinstance((estimand := getattr(result, "estimand", None)), str)
         )
-        if not set(advisories) <= represented:
+        unbound = {
+            key.hypothesis if isinstance(key, MethodHypothesisKey) else key for key in advisories
+        }
+        if not unbound <= represented:
             raise AssertionError("decision advisory key must match a computation hypothesis")
         object.__setattr__(self, "results", results)
         object.__setattr__(self, "evidence", MappingProxyType(evidence))

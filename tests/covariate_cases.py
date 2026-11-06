@@ -14,6 +14,12 @@ from typing import Any
 
 import ibis
 
+from tests.warning_codes import allow_warning_codes
+
+#: `covariate_defs_and_con` gives control the ten lowest tenures, so tenure
+#: differs by arm and a CUPED cell adjusted by it carries the balance advisory.
+allow_tenure_imbalance = allow_warning_codes("estimation.cuped.covariate_imbalance")
+
 _OBSERVATIONAL_DESIGN = """    design:
       mechanism: observational
       covariates:

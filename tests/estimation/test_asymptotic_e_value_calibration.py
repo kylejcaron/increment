@@ -271,7 +271,7 @@ def test_registered_breakout_family_keeps_fixed_bonferroni_not_e_bh(law):
     from increment.estimation.results import _selection_qualification
     from increment.estimation.sequential_runtime import selected_snapshot_results
 
-    selected_rows = selected_snapshot_results(snapshot, policy, nominal_alpha=0.05)
+    selected_rows, _ = selected_snapshot_results(snapshot, policy, nominal_alpha=0.05)
     selected_row = next(row for row in selected_rows if row.discovery)
     assert selected_row.family_procedure == "bonferroni"
     qualification = _selection_qualification(selected_row)
@@ -300,12 +300,10 @@ def test_a_degenerate_cell_abstains_instead_of_aborting_the_family():
     records = mean_records([1, 2] * 40, [6, 10] * 40, metrics=("outcome", "other"))
     for record in records:
         record["values"]["other"] = 3.0
-    rows = {
-        row.metric: row
-        for row in selected_snapshot_results(
-            mean_capture(reg, records), AsymptoticMean(registration=reg), nominal_alpha=q / 2
-        )
-    }
+    selected, _ = selected_snapshot_results(
+        mean_capture(reg, records), AsymptoticMean(registration=reg), nominal_alpha=q / 2
+    )
+    rows = {row.metric: row for row in selected}
     degenerate = rows["other"].require_asymptotic_sequential_result()
     assert degenerate.bounds.reason == "zero_arm_variance"
     assert degenerate.log_e == float("-inf")

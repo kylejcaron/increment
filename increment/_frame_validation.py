@@ -237,7 +237,7 @@ _COVARIATE_NOT_NUMERIC = RefusalSpec(
 _METRIC_COVARIATE_MISSING = RefusalSpec(
     "frame.validation.metric_covariate_column",
     InvalidRequestError,
-    template="metric {metric!r}: covariate column {covariate!r} has {n_missing} null/NaN value(s) and its method declares missing='refuse'. Choose missing='impute' for pooled-mean imputation (unbiased under randomization), missing='zero' if null means \"no pre-period activity\", or repair upstream with increment.estimators.impute.pooled_mean.",
+    template="metric {metric!r}: covariate column {covariate!r} has {n_missing} null/NaN value(s) and its method declares missing='refuse'. Choose missing='impute' to fill with the mean of the observed values (safe when which values are missing is unrelated to their size, even if one arm lost more), missing='zero' if null means \"no pre-period activity\", or repair upstream with increment.estimators.impute.pooled_mean.",
 )
 
 Renderer = Callable[..., str]
@@ -291,13 +291,21 @@ _register_warning(
     "frame.validation.metric_covariate_missing_imputed",
     IncrementWarning,
     lambda *, name, covariate, n_missing, filled: (
-        f"metric {name!r}: covariate column {covariate!r} "
-        f"has {n_missing} null/NaN value(s); each is counted as "
-        f"{filled} -- a deterministic imputation computed without "
-        f"the arm or the outcome, so randomization keeps the "
-        f"estimate unbiased and only the imputed units' variance "
-        f"reduction is forgone. Set the method covariate's missing='refuse' "
-        f"to reject instead."
+        f"metric {name!r}: covariate column {covariate!r} has {n_missing} missing value(s), "
+        + (
+            "each counted as zero. This keeps the adjusted estimate unbiased when the values "
+            "and which of them are missing are distributed alike in both arms (for example, "
+            "units with no history before the experiment). It may not when a join or logging "
+            "step lost more values in one arm, or lost different values in each arm at the same "
+            "share. Check how the covariate was built for each arm"
+            if filled == "zero"
+            else f"each filled with {filled}. This keeps the adjusted estimate unbiased when "
+            "which values went missing is unrelated to their size, even if one arm lost more "
+            "of them. It does not when one arm lost values that differ from the ones it kept "
+            "(for example, a join that fails only for low-spending users in one arm). Check "
+            "how the covariate was built for each arm"
+        )
+        + ", or set missing='refuse' on the covariate to reject missing values."
     ),
 )
 

@@ -17,6 +17,7 @@ from increment import (
 from increment.errors import CodedError, IncrementWarning
 from increment.estimation.results import LiftEstimate
 from tests.analysis_factory import view_readout
+from tests.covariate_cases import allow_tenure_imbalance
 from tests.test_cuped_route_evidence import _records, _scalar
 
 
@@ -730,6 +731,7 @@ def test_sequential_subset_retains_unselected_declared_family_methods(override):
 
 
 @pytest.mark.integration
+@allow_tenure_imbalance
 def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
     from datetime import datetime
 
@@ -812,6 +814,7 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
 
 @pytest.mark.slow
 @pytest.mark.integration
+@allow_tenure_imbalance
 def test_open_ended_snapshot_uses_connection_sql_dialect_for_backend_override(tmp_path):
 
     import yaml

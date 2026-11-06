@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import date, datetime
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
@@ -53,8 +53,11 @@ from increment.errors import (
 from increment.estimation._sequential_likelihood import LikelihoodCertificate
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.decision_types import (
+    AdvisoryKey,
     AsymptoticSequentialEvidence,
+    DecisionComputation,
     EValueEvidence,
+    MethodHypothesisKey,
     PValueEvidence,
 )
 from increment.estimation.inference import Normal
@@ -226,6 +229,119 @@ class CellRecord(_ReadoutModel):
         )
         object.__setattr__(self, "advisories", ordered)
         return self
+
+
+#: Typed advisories keyed by the full retained identity of the cell they qualify.
+CellAdvisories = Mapping[CellKey, tuple[ReadoutAdvisory, ...]]
+
+
+def _advisory_identity(key: AdvisoryKey) -> list[tuple[str, Any]]:
+    """The row fields, with their values, that an advisory key names."""
+    if isinstance(key, MethodHypothesisKey):
+        return [*_advisory_identity(key.hypothesis), ("method", key.method)]
+    return [(item.name, getattr(key, item.name)) for item in fields(key)]
+
+
+def cell_advisories[K: AdvisoryKey](
+    rows: Iterable[Any], advisories: Mapping[K, Iterable[ReadoutAdvisory]]
+) -> dict[CellKey, tuple[ReadoutAdvisory, ...]]:
+    """Key advisories by the full cell of each row they qualify.
+
+    A row takes the advisories of every key whose fields it carries with equal
+    values: a key bound to a method reaches that method's rows, a key bound to no
+    method qualifies a failure rather than a row and reaches none, and an unbound
+    hypothesis key, local to one invocation, reaches all of its method siblings.
+    """
+    produced = tuple(rows)
+    keyed: dict[CellKey, dict[str, ReadoutAdvisory]] = {}
+    for key, items in advisories.items():
+        identity = _advisory_identity(key)
+        for row in produced:
+            if all(getattr(row, name, None) == value for name, value in identity):
+                keyed.setdefault(CellKey.from_row(row), {}).update(
+                    (item.model_dump_json(), item) for item in items
+                )
+    return {cell: tuple(values.values()) for cell, values in keyed.items()}
+
+
+def result_methods(results: Iterable[Any]) -> set[str]:
+    """The methods named by an invocation's result rows."""
+    return {method for row in results if (method := getattr(row, "method", None)) is not None}
+
+
+def collect_advisories[K: AdvisoryKey](
+    collected: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]],
+    advisories: Mapping[K, Iterable[ReadoutAdvisory]],
+    methods: Iterable[str],
+) -> None:
+    """Add one estimator invocation's advisories, bound to each of *methods*, the
+    methods it ran.
+
+    A key already bound keeps its binding. With no method named, the invocation
+    produced no rows, so its keys are bound to no method: they qualify its failure,
+    not any method's rows.
+    """
+    names: tuple[str | None, ...] = tuple(sorted(set(methods))) or (None,)
+    for key, items in advisories.items():
+        targets = (
+            [key]
+            if isinstance(key, MethodHypothesisKey)
+            else [MethodHypothesisKey(key, name) for name in names]
+        )
+        for target in targets:
+            collected[target] = (*collected.get(target, ()), *items)
+
+
+#: Advisories by cell identity ``(metric, group_id, estimand, dimension,
+#: dimension_value, method)``; a ``None`` method holds those bound to no method.
+AdvisoryIndex = dict[tuple[Any, ...], dict[str, ReadoutAdvisory]]
+
+
+def index_advisories(computations: Iterable[DecisionComputation[Any]]) -> AdvisoryIndex:
+    """Every computation's advisories by cell identity, each bound to the methods of
+    the rows its computation produced, or to no method when it produced none."""
+    index: AdvisoryIndex = {}
+    for computation in computations:
+        bound: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]] = {}
+        collect_advisories(bound, computation.advisories, result_methods(computation.results))
+        for key, items in bound.items():
+            method_key = cast(MethodHypothesisKey, key)
+            hypothesis = method_key.hypothesis
+            identity = (
+                hypothesis.metric,
+                getattr(hypothesis, "group_id", None),
+                getattr(hypothesis, "estimand", None),
+                getattr(hypothesis, "dimension", None),
+                getattr(hypothesis, "dimension_value", None),
+                method_key.method,
+            )
+            index.setdefault(identity, {}).update((item.model_dump_json(), item) for item in items)
+    return index
+
+
+def indexed_advisories(
+    index: AdvisoryIndex, cell: CellKey, *, failed: bool
+) -> tuple[ReadoutAdvisory, ...]:
+    """A cell's advisories: those bound to its own method and, when the cell is *failed*
+    (it carries a failure its computations reported), those bound to no method, which
+    qualify that failure."""
+    identity = (cell.metric, cell.group_id, cell.estimand, cell.dimension, cell.dimension_value)
+    of_failure = index.get((*identity, None), {}) if failed else {}
+    return tuple({**of_failure, **index.get((*identity, cell.method), {})}.values())
+
+
+def carried_advisories(
+    advisories: CellAdvisories, rows: Iterable[tuple[Any, Any]]
+) -> dict[CellKey, tuple[ReadoutAdvisory, ...]]:
+    """*advisories* re-keyed from each ``(row, successor)`` pair's cell to its successor's.
+
+    A row becomes its successor at a population, day or view boundary.
+    """
+    return {
+        CellKey.from_row(successor): advisories[cell]
+        for row, successor in rows
+        if (cell := CellKey.from_row(row)) in advisories
+    }
 
 
 class FamilyScope(_ReadoutModel):
