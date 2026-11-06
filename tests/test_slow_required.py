@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -81,18 +82,25 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def _two_commits(repo: Path, changed: str) -> tuple[str, str]:
+    """A repository whose second commit writes ``changed``; return both commit ids."""
+    _git(repo, "init", "-q")
+    (repo / "README.md").write_text("Increment\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / changed).parent.mkdir(parents=True, exist_ok=True)
+    (repo / changed).write_text("changed\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "change")
+    return base, _git(repo, "rev-parse", "HEAD")
+
+
 @pytest.mark.integration
 def test_unresolvable_base_requires_the_slow_tier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _git(tmp_path, "init", "-q")
-    (tmp_path / "README.md").write_text("Increment\n")
-    _git(tmp_path, "add", ".")
-    _git(tmp_path, "commit", "-qm", "base")
-    base = _git(tmp_path, "rev-parse", "HEAD")
-    (tmp_path / "README.md").write_text("Increment, revised\n")
-    _git(tmp_path, "commit", "-qam", "docs")
-    head = _git(tmp_path, "rev-parse", "HEAD")
+    base, head = _two_commits(tmp_path, "docs/guide.md")
     monkeypatch.chdir(tmp_path)
 
     main(["--base", base, "--head", head])
@@ -102,3 +110,30 @@ def test_unresolvable_base_requires_the_slow_tier(
         line for line in capsys.readouterr().out.splitlines() if line.startswith("required=")
     ]
     assert decisions == ["required=false", "required=true"]
+
+
+@pytest.mark.integration
+def test_unimportable_import_graph_still_requires_the_slow_tier(tmp_path: Path) -> None:
+    base, head = _two_commits(tmp_path, "increment/core.py")
+    # A None entry makes importing the graph module raise ImportError, as a missing file would.
+    runner = (
+        "import runpy, sys; "
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
+        "sys.modules['scripts.check_deferred_imports'] = None; "
+        "runpy.run_module('scripts.slow_required', run_name='__main__')"
+    )
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+
+    decisions = [
+        subprocess.run(
+            [sys.executable, "-c", runner, "--event", event, "--base", base, "--head", head],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout.partition("\n")[0]
+        for event in ("pull_request", "push")
+    ]
+
+    assert decisions == ["required=true", "required=true"]

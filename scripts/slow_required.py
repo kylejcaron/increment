@@ -15,8 +15,6 @@ from collections import deque
 from collections.abc import Collection, Iterable, Mapping
 from pathlib import Path
 
-from scripts.check_deferred_imports import runtime_graph
-
 _GATE_FILES = frozenset(
     {
         "pyproject.toml",
@@ -109,6 +107,9 @@ def _module_of(path: str, known: Collection[str]) -> str:
 
 
 def _warehouse_reason(paths: list[str], root: Path) -> str | None:
+    # Imported here so that a missing or broken graph module fails closed in main().
+    from scripts.check_deferred_imports import runtime_graph
+
     graph = runtime_graph(root / "increment")
     importer = _reach(graph, (module for module in graph if _is_warehouse(module)))
     for path in paths:
