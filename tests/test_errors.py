@@ -432,14 +432,14 @@ def test_every_coded_error_subclass_survives_pickle_and_deepcopy() -> None:
         "increment.estimation.engine",
     ):
         importlib.import_module(module)
-    from increment.estimation.engine import _NonPositiveMeanFailure
+    from increment.estimation.engine import _RelativeScaleUnavailable
     from increment.estimation.inference import LiftGuardError
 
     # Subclasses with their own constructor signature are built through it.
     factories = {
         LiftGuardError: lambda: LiftGuardError("probe message", reason="zero_variance"),
-        _NonPositiveMeanFailure: lambda: _NonPositiveMeanFailure(
-            "probe message", abs_diff=1.0, abs_se_t=0.5, abs_se_c=0.5
+        _RelativeScaleUnavailable: lambda: _RelativeScaleUnavailable(
+            "probe message", reason="zero_variance", abs_diff=1.0, abs_se_t=0.5, abs_se_c=0.5
         ),
     }
 

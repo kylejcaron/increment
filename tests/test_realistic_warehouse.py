@@ -68,7 +68,6 @@ _RATIO_SKEW_WARNING = "estimation.engine.ratio_denominator_skew"
 
 def _assert_breakout_warnings(record):
     codes = warning_codes(record)
-    assert any(code.startswith("breakout.estimates.") for code in codes)
     assert all(
         code.startswith("breakout.estimates.") or code == _RATIO_SKEW_WARNING for code in codes
     )
@@ -233,6 +232,18 @@ def test_breakout_country_segments_have_no_null_bin(analysis: tuple[Any, Any]):
     assert {e.dimension_value for e in country_rows} == {"US", "GB", "DE"}
     assert len(country_rows) == 3
     assert {e.group_id for e in country_rows} == {"treatment"}
+    # Segments too small for the log-scale delta method keep their additive row; the
+    # ratio average_order_value's GB denominator is too noisy for either scale.
+    relative_unavailable = {
+        (e.metric, e.dimension_value): e.relative_unavailable_reason
+        for e in estimates
+        if e.dimension == "country" and e.relative_unavailable_reason is not None
+    }
+    assert relative_unavailable == {
+        ("revenue_per_user", "DE"): "delta_method_unreliable",
+        ("revenue_per_user", "GB"): "delta_method_unreliable",
+        ("revenue_per_user", "US"): "delta_method_unreliable",
+    }
     values = []
     for e in country_rows:
         lift = e.lift

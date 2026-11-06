@@ -455,7 +455,9 @@ string, such as `columns="lift"`, raises `results.frame.columns_string`; pass
     `columns=None` remains the full projection. Each `"summary"` preset contains
     decision statistics (`stat_sig`, `p_value`, and `p_value_reason_code`) and
     available arm unit counts and raw means (`n_control`, `n_treat`,
-    `mean_control`, and `mean_treat`), plus row identity (`estimand` and
+    `mean_control`, and `mean_treat`; on an unclustered ratio row each mean is
+    the arm's ratio, its numerator total over its denominator total, and a
+    quantile row carries counts only), plus row identity (`estimand` and
     `value_scale`), `population`, a population qualification, including skipped
     outcomes and identification restrictions, null when the row covers its whole
     analysis population,
@@ -497,21 +499,30 @@ LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='d
 - A joint ratio set with no representable point. The set is
   `r.relative_confidence_set`, and `r.relative_confidence_set.point_unavailable_reason`
   names the reason.
-- A fixed-horizon mean row whose arm mean is not positive:
-  `r.relative_unavailable_reason == "nonpositive_arm_mean"`. The log-scale
-  relative lift is undefined and there is **no** relative set. The additive
-  difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`,
-  including when both arms are constant. Check the bounds before use. When the
-  additive interval is present and the row's null is the unshifted zero (no
-  absolute or relative margin declared), it is the row's decision: `r.p_value()`
-  is the additive test of the difference against zero under the row's
-  alternative, using the reference the interval was cut from (Welch `t` or
-  Normal, `r.abs_reference_kind`), and `r.stat_sig()` is whether that interval
-  excludes zero. Such a row takes part in its family on that evidence and, when
-  selected, has its additive interval reissued at the family level. A row with
-  no additive interval, or one that declares a relative margin (which has no
-  additive counterpart), keeps `r.p_value() == 1.0` and `r.stat_sig()` False: a
-  non-rejection, never a discovery.
+- A fixed-horizon mean row whose arm summaries block the log scale:
+  `r.relative_unavailable_reason` is `"nonpositive_arm_mean"` (an arm mean is
+  zero or negative), `"delta_method_unreliable"` (an arm mean is close to zero
+  relative to its standard error) or `"zero_variance"` (one arm's outcomes are
+  constant). There is **no** relative lift and **no** relative set. The additive
+  difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`
+  when both arms are constant at a non-positive mean (both arms constant at
+  positive means fail with `estimation.engine.lift_guard` instead). Check the
+  bounds before use. When the additive interval is present and the row's null
+  is the unshifted zero (no absolute or relative margin declared), it is the
+  row's decision: `r.p_value()` is the additive test of the difference against
+  zero under the row's alternative, using the reference the interval was cut
+  from (Welch `t` or Normal, `r.abs_reference_kind`), and `r.stat_sig()` is
+  whether that interval excludes zero. Such a row takes part in its family on
+  that evidence and, when selected, has its additive interval reissued at the
+  family level. A row with no additive interval, or one that declares a
+  relative margin (which has no additive counterpart), keeps
+  `r.p_value() == 1.0` and `r.stat_sig()` False: a non-rejection, never a
+  discovery. A declared prior leaves this row unchanged and marks only its
+  posterior unavailable (`r.posterior_reason_code == "estimation.engine.lift_guard"`).
+  A ratio metric's additive difference depends on its denominator means as
+  well, so when either arm's denominator mean is too noisy (the condition of
+  the `ratio_denominator_precision` note), a cell that would take any of these
+  three reasons fails with `estimation.engine.lift_guard` instead.
 - A mixed-CUPED (`cuped_linear`) row whose relative projection cannot be
   represented: `r.relative_unavailable_reason == "relative_unrepresentable"`,
   with the exact refusal in `r.relative_error_code`. The relative point lies
@@ -721,16 +732,17 @@ the row has **no** relative set, so read the additive `r.abs_diff`, plus
 |---|---|
 | Exact conversion row whose control arm has zero events | The ratio has a zero denominator, but `r.binomial_set` still bounds the lift. |
 | Joint ratio set with no representable point | `r.relative_confidence_set`; `r.relative_confidence_set.point_unavailable_reason` names the reason. |
-| Fixed-horizon mean row whose arm mean is not positive | `r.relative_unavailable_reason == "nonpositive_arm_mean"`: the log-scale relative lift is undefined and there is **no** relative set. `r.abs_diff` survives; `r.abs_lb` and `r.abs_ub` can be `None`, including when both arms are constant. |
+| Fixed-horizon mean row whose arm summaries block the log scale | `r.relative_unavailable_reason` is `"nonpositive_arm_mean"`, `"delta_method_unreliable"` or `"zero_variance"`: there is **no** relative set. `r.abs_diff` survives; `r.abs_lb` and `r.abs_ub` can be `None` when both arms are constant at a non-positive mean. |
 | Joint relative covariance unusable | `r.relative_unavailable_reason` is `"joint_covariance_unrepresentable"` (not representable as a float, extremely large scores) or `"joint_covariance_indefinite"` (not positive semidefinite; a singular one is still usable), with **no** relative set. Only `r.abs_diff` is guaranteed; `r.abs_se`, `r.abs_lb`, and `r.abs_ub` can each be `None`. |
 | Winsorized metric with a `confidence_set` | `r.confidence_set.relative` keeps a status and reason per endpoint (for example `unbounded` with `denominator_nonseparation`); the additive interval stays in `r.abs_lb` and `r.abs_ub`. |
 | Sequential row whose point is withheld | `r.sequential_result.bounds`, with `r.sequential_result.point_reason`. Check that `r.sequential_result.bounds.status` is not `"unavailable"` before reading endpoints, and read `bounds.reason` when it is. |
 
 ??? info "Statistical details: how a row without a relative set decides"
-    For a nonpositive arm mean, when the additive interval is present and
-    the row's null is the unshifted zero (no absolute or relative margin
-    declared), it is the row's decision: `r.p_value()` is the additive test
-    of the difference against zero under the row's alternative, using the
+    For a row whose arm summaries block the log scale, when the additive
+    interval is present and the row's null is the unshifted zero (no
+    absolute or relative margin declared), it is the row's decision:
+    `r.p_value()` is the additive test of the difference against zero under
+    the row's alternative, using the
     reference the interval was cut from (Welch `t` or Normal,
     `r.abs_reference_kind`), and `r.stat_sig()` is whether that interval
     excludes zero. Such a row takes part in its family on that evidence and,
@@ -1108,7 +1120,7 @@ use `abs_lb` and `abs_ub` for the additive interval.
 
 | Row | Frame columns |
 |---|---|
-| Lift row | `stat_sig`, `p_value`, `p_value_reason_code`; available arm unit counts and raw means appear as `n_control`, `n_treat`, `mean_control`, and `mean_treat`. |
+| Lift row | `stat_sig`, `p_value`, `p_value_reason_code`; available arm unit counts and raw means appear as `n_control`, `n_treat`, `mean_control`, and `mean_treat`. On an unclustered ratio row each mean is the arm's ratio, its numerator total over its denominator total; a quantile row carries counts only. |
 | Set-only exact binomial row | `set_lower`, `set_upper`, `set_level`, `set_numerical_qualification`, from `binomial_set` only. |
 | Sequential row | `sequential_lower`, `sequential_upper`, `sequential_status`, `sequential_components`. |
 

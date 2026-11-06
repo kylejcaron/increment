@@ -1209,7 +1209,7 @@ class ArtifactPublisher:
             exposures.experiment_id,
             exposures.unit_id,
             uptake=first.first_uptake_ts.notnull(),
-            first_uptake_ts=first_uptake_ts.cast("timestamp('UTC')"),
+            first_uptake_ts=_as_utc_timestamp(first_uptake_ts).cast("timestamp('UTC')"),
         )
         edge = compliance_event_horizon(exposures, events, self._experiment)
         coverage = ibis.literal(1).name("_one").as_table().select(edge=edge)

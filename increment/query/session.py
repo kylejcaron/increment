@@ -1912,7 +1912,7 @@ class WarehouseSession:
     ) -> None:
         self._con = con
         self._defs = defs
-        self._fact_tables: dict[tuple[str, str, bool], Table] = {}
+        self._fact_tables: dict[tuple[str, str, bool, bool], Table] = {}
         self._source_tables: dict[str, Table] | None = None
         self._dim_tables: dict[str, Table] = {}
         self._materialized: list[_MaterializedRelation] = []
@@ -2134,10 +2134,15 @@ class WarehouseSession:
         self, fact_source: FactSource, *, require_event: bool = True
     ) -> None:
         """Validate source columns before snapshot capability checks when introspection succeeds."""
-        from increment.query.fact_resolution import validate_fact_source_schema
+        from increment.query.fact_resolution import (
+            resolve_fact_source_sql,
+            validate_fact_source_schema,
+        )
 
         validate_fact_source_schema(
-            self.source_sql(fact_source.sql), fact_source, require_event=require_event
+            resolve_fact_source_sql(self.source_sql, fact_source),
+            fact_source,
+            require_event=require_event,
         )
 
     def _require_snapshot_temp_privilege(self) -> None:
@@ -2244,15 +2249,22 @@ class WarehouseSession:
         return pinned
 
     def fact_table(
-        self, fact_source: FactSource, unit: str, *, require_event: bool = True
+        self,
+        fact_source: FactSource,
+        unit: str,
+        *,
+        require_event: bool = True,
+        naive_utc: bool = False,
     ) -> Table:
-        """Memoize using the consumer's schema role.
+        """Memoize using the consumer's schema role and timestamp reading.
 
         Property-only sources need timestamp/entity columns but no ``event``;
         keep event and property views separately cached so one role cannot
-        weaken validation for the other.
+        weaken validation for the other. ``naive_utc`` reads a time-zone-aware
+        timestamp as naive UTC. A captured relation keeps only the requested
+        fact values, so their declared columns are checked on the live source.
         """
-        key = (fact_source.name, unit, require_event)
+        key = (fact_source.name, unit, require_event, naive_utc)
         cached = self._fact_tables.get(key)
         if cached is None:
             cached = _dim_joined_fact_table(
@@ -2263,6 +2275,8 @@ class WarehouseSession:
                 self._dim_tables,
                 resolve_sql=self.source_sql,
                 require_event=require_event,
+                require_values=self._source_tables is None,
+                naive_utc=naive_utc,
             )
             self._fact_tables[key] = cached
         return cached

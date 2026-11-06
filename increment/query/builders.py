@@ -12,7 +12,12 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from typing import Any, Literal, Never, assert_never, cast
 
 import ibis
+import ibis.expr.datatypes as ibis_dt
+import ibis.expr.operations as ops
+import ibis.expr.rules as rlz
 import ibis.expr.types as ir
+import sqlglot.expressions as sge
+from ibis.common.annotations import attribute
 
 from increment._frame_validation import CENSORING_DROPPED_UNITS
 from increment._moment_plan import (
@@ -186,27 +191,88 @@ def _utc_timestamp_literal(ts: ir.TimestampColumn, value: dt.datetime) -> ir.Sca
     return ibis.literal(normalized, type=ts.type())
 
 
+class _NaiveUtc(ops.Value):
+    """The naive UTC wall clock of a time-zone-aware instant, at the instant's precision."""
+
+    arg: ops.Value[ibis_dt.Timestamp]
+
+    shape = rlz.shape_like("arg")
+
+    @attribute
+    def dtype(self) -> ibis_dt.Timestamp:
+        return ibis_dt.Timestamp(scale=self.arg.dtype.scale)
+
+
+def _register_naive_utc() -> None:
+    """Compile :class:`_NaiveUtc` to each backend's own time-zone conversion.
+
+    Each reads the stored instant; a cast or an epoch difference would instead
+    pass through the session time zone or drop sub-microsecond digits.
+    """
+    from ibis.backends.sql.compilers.bigquery import BigQueryCompiler
+    from ibis.backends.sql.compilers.duckdb import DuckDBCompiler
+    from ibis.backends.sql.compilers.postgres import PostgresCompiler
+    from ibis.backends.sql.compilers.snowflake import SnowflakeCompiler
+
+    def duckdb(compiler: Any, _op: _NaiveUtc, *, arg: Any) -> Any:
+        return compiler.f.timezone("UTC", arg)
+
+    def postgres(_compiler: Any, _op: _NaiveUtc, *, arg: Any) -> Any:
+        return sge.paren(sge.AtTimeZone(this=arg, zone=sge.convert("UTC")), copy=False)
+
+    def snowflake(compiler: Any, op: _NaiveUtc, *, arg: Any) -> Any:
+        # Named NTZ type: plain TIMESTAMP follows the account's type mapping.
+        scale = cast("ibis_dt.Timestamp", op.dtype).scale
+        naive = "TIMESTAMP_NTZ" if scale is None else f"TIMESTAMP_NTZ({scale})"
+        to = sge.DataType.build(naive, dialect="snowflake")
+        return sge.Cast(this=compiler.f.convert_timezone("UTC", arg), to=to)
+
+    def bigquery(compiler: Any, _op: _NaiveUtc, *, arg: Any) -> Any:
+        return compiler.f.datetime(arg, "UTC")
+
+    # ibis resolves a compiler method from the op's class name; there is no public registry.
+    for compiler, visit in (
+        (DuckDBCompiler, duckdb),
+        (PostgresCompiler, postgres),
+        (SnowflakeCompiler, snowflake),
+        (BigQueryCompiler, bigquery),
+    ):
+        compiler.visit__NaiveUtc = visit  # ty: ignore[invalid-assignment]
+
+
+_register_naive_utc()
+
+
+def _naive_utc(ts: ir.TimestampValue) -> ir.TimestampValue:
+    """A time-zone-aware *ts* as the naive UTC timestamp of the same instant; a ``ts`` of
+    any other type is returned as it is."""
+    if getattr(ts.type(), "timezone", None) is None:
+        return ts
+    return _NaiveUtc(cast("ops.Value[ibis_dt.Timestamp]", ts.op())).to_expr()
+
+
+def _naive_utc_ts(table: ir.Table) -> ir.Table:
+    """*table* with a time-zone-aware ``ts`` rewritten as naive UTC (see :func:`_naive_utc`)."""
+    if getattr(table.ts.type(), "timezone", None) is None:
+        return table
+    return table.mutate(ts=_naive_utc(table.ts))
+
+
 def _local_date_at_offset(ts: ir.TimestampColumn, offset: dt.timedelta) -> ir.DateColumn:
     """Event timestamp -> calendar date under a fixed UTC *offset* day
     boundary.
 
-    Timezone-naive columns shift by the fixed offset before casting to a
-    date (portable, backend-agnostic SQL). Timezone-aware columns instead
-    convert through whole seconds since the UTC epoch, since a direct date
-    cast would depend on the backend's session timezone. Not applied to
-    strict timestamp-to-timestamp comparisons, where the offset cancels on
-    both sides, or to dates already localized upstream.
+    The timestamp, read as naive UTC (a time-zone-aware one through
+    :func:`_naive_utc`, since a direct cast would depend on the backend's
+    session time zone), shifts by the fixed offset before casting to a date.
+    Not applied to strict timestamp-to-timestamp comparisons, where the offset
+    cancels on both sides, or to dates already localized upstream.
     """
-    if getattr(ts.type(), "timezone", None) is not None:
-        epoch = ibis.literal(dt.datetime(1970, 1, 1, tzinfo=dt.UTC))
-        seconds = ts.delta(epoch, unit="second") + int(offset.total_seconds())
-        days = (seconds.cast("float64") / 86400.0).floor().cast("int32")
-        local = ibis.literal(dt.date(1970, 1, 1)) + days.as_interval("D")
-        return cast("ir.DateColumn", local.cast(dt.date))
+    naive = _naive_utc(ts)
     if offset == dt.timedelta(0):
-        return cast("ir.DateColumn", ts.cast(dt.date))
+        return cast("ir.DateColumn", naive.cast(dt.date))
     minutes = int(offset.total_seconds() // 60)
-    return cast("ir.DateColumn", (ts + ibis.interval(minutes=minutes)).cast(dt.date))
+    return cast("ir.DateColumn", (naive + ibis.interval(minutes=minutes)).cast(dt.date))
 
 
 def _local_date(ts: ir.TimestampColumn, experiment: Experiment | None) -> ir.DateColumn:
@@ -2407,7 +2473,10 @@ def asof_group_summary(
         columns = panel.columns
         while outcome_edge_column in columns:
             outcome_edge_column = "_" + outcome_edge_column
-        panel = panel.mutate(**{outcome_edge_column: _outcome_observation_end})
+        # The edge joins as a one-row relation, never as a named scalar subquery: the
+        # compiler names a projected subquery in place, so every other read of it in
+        # the statement (the filter below, the spine's end date) would carry the alias.
+        panel = panel.cross_join(_outcome_observation_end.name(outcome_edge_column).as_table())
         first_observed_day = panel.first_exposure_date
         if isinstance(metric, RetentionMetric):
             first_observed_day += _days_literal(metric.band[0]).as_interval("D")

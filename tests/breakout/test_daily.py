@@ -2131,36 +2131,45 @@ class TestRunDailyLiftNaNRowsForUnestimableSlices:
         assert frame.loc[0, "unavailable"] == "zero_variance"
 
     def test_daily_lift_partial_guard_stays_dense(self):
+        """`bad` and the control are exact linear functions of the covariate, so the CUPED
+        decision cell for `bad` has no adjusted uncertainty on either scale and is excluded,
+        while `bad`'s unadjusted cell and both of `good`'s cells still estimate."""
         control = _make_daily_row(
             n=2000, mean=10.0, var=4.0, ds=date(2025, 1, 1), group_id="control"
         )
         good = _make_daily_row(n=2000, mean=12.0, var=4.0, ds=date(2025, 1, 1), group_id="good")
-        bad = _make_daily_row(n=2000, mean=10.0, var=0.0, ds=date(2025, 1, 1), group_id="bad")
+        bad = _make_daily_row(n=2000, mean=10.0, var=4.0, ds=date(2025, 1, 1), group_id="bad")
 
-        # Supply a non-degenerate covariate so CUPED remains estimable for
-        # the guarded arm even though its unadjusted outcome variance is zero.
-        for row, covariance in ((control, 1.0), (good, 1.0), (bad, 0.0)):
+        for row, covariance in ((control, 4.0), (good, 0.0), (bad, 4.0)):
             n = int(row["n"])
             row.update(
-                ref_x=0.0, cx1=0.0, cx2=float(n - 1), cxy=covariance * (n - 1), x_role="covariate"
+                ref_x=0.0,
+                cx1=0.0,
+                cx2=4.0 * (n - 1),
+                cxy=covariance * (n - 1),
+                x_role="covariate",
             )
 
         methods = [
-            Method(name="unadjusted"),
             Method(name="cuped", variance_reduction="cuped"),
+            Method(name="unadjusted"),
         ]
         with pytest.warns(IncrementWarning) as rec:
             results = run_daily_lift(
-                [control, good, bad], [_mean_metric()], control_group="control", methods=methods
+                [control, good, bad],
+                [_mean_metric()],
+                control_group="control",
+                methods=methods,
+                method_roles={"cuped": "decision", "unadjusted": "sensitivity"},
             )
         assert "breakout.estimates.daily_partial_guarded_arms" in warning_codes(rec)
 
         by_key = {(row.group_id, row.method): row for row in results}
-        assert by_key[("good", "unadjusted")].lift is not None
         assert by_key[("good", "cuped")].lift is not None
-        assert by_key[("bad", "unadjusted")].lift is None
-        assert by_key[("bad", "unadjusted")].unavailable == "zero_variance"
-        assert by_key[("bad", "cuped")].lift is not None
+        assert by_key[("good", "unadjusted")].lift is not None
+        assert by_key[("bad", "cuped")].lift is None
+        assert by_key[("bad", "cuped")].unavailable == "zero_variance"
+        assert by_key[("bad", "unadjusted")].lift is not None
 
     def test_nan_rows_carry_dimension_fields_when_dimensioned(self):
         """A NaN row is still fully identified: dimension/dimension_value/
@@ -2296,11 +2305,10 @@ class TestRunDailyLiftNaNRowsForUnestimableSlices:
         assert by_metric["b"].unavailable == "no_control_arm"
         assert by_metric["a"].lift is not None
 
-    def test_delta_method_unreliable_returns_nan_rows(self):
-        """`estimate_lift`'s "Log delta method unreliable" guard (combined
-        log-scale SE >= 0.5) also makes the day unestimable, not absent.
-        Thin, noisy near-zero-mean arms give per-arm log-scale SE
-        0.577 / 0.481, combined 0.75 >= 0.5."""
+    def test_delta_method_unreliable_day_keeps_its_additive_row(self):
+        """Thin, noisy near-zero-mean arms (per-arm log-scale SE 0.577 / 0.481, combined
+        0.75 >= 0.5) block only the day's relative lift: the day keeps a live row whose
+        additive difference is the arm-mean difference."""
         control = _make_daily_row(n=12, mean=1.0, var=4.0, ds=date(2025, 1, 1), group_id="control")
         treatment = _make_daily_row(
             n=12, mean=1.2, var=4.0, ds=date(2025, 1, 1), group_id="treatment"
@@ -2314,8 +2322,9 @@ class TestRunDailyLiftNaNRowsForUnestimableSlices:
 
         assert len(results) == 1
         assert results[0].group_id == "treatment"
-        assert results[0].lift is None
-        assert results[0].unavailable == "extreme_ratio"
+        assert results[0].unavailable is None
+        assert results[0].relative_unavailable_reason == "delta_method_unreliable"
+        assert results[0].abs_diff == pytest.approx(0.2)
 
     def test_negative_mean_treatment_row_returns_nan_for_that_arm_only(self):
         """A negative mean (not just zero) trips the same non-positive-mean

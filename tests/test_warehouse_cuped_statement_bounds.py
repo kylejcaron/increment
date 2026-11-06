@@ -58,9 +58,10 @@ def test_qr_three_arm_ratio_fetches_at_most(tmp_path, monkeypatch):
     arms = ("control", "variant-a", "variant-b")
     names = tuple(f"x{index}" for index in range(8))
     definitions = yaml.safe_load(mixed_cuped_definitions_yaml("qr_statement_bounds"))
-    definitions["fact_sources"][0]["properties"].extend(
+    # The events carry only these covariates, so they are the source's declared properties.
+    definitions["fact_sources"][0]["properties"] = [
         {"name": name, "column": name, "dtype": "float", "as_of": "pre_exposure"} for name in names
-    )
+    ]
     experiment_data = definitions["experiments"][0]
     experiment_data["allocation"] = dict.fromkeys(arms, 1 / len(arms))
     method = experiment_data["plan"]["guardrails"][0]["decision_method"]

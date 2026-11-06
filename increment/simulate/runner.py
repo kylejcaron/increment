@@ -482,6 +482,7 @@ def _lift_outcome(
     confidence_set: WinsorConfidenceSet | None = None,
     note: str | None = None,
     winsor_scale: Literal["relative", "additive"] = "relative",
+    relative_unavailable_reason: str | None = None,
 ) -> _KeyOutcome:
     """Build the reducer outcome for one successfully produced ``LiftEstimate``/
     ``BreakoutEstimate`` row (``lift``/``binomial_set``/``note`` are that
@@ -495,7 +496,9 @@ def _lift_outcome(
     (``lift is None``: an observed zero control count, see
     ``binomial_rr.py``) instead reports only its persisted
     ``binomial_set`` -- never treated as an exclusion, since the row WAS
-    admitted, just without a finite point.
+    admitted, just without a finite point. A row whose arm summaries block
+    the relative scale (``relative_unavailable_reason``) has no relative
+    lift to score and is excluded with that reason.
     """
     if confidence_set is not None:
         endpoints = (
@@ -534,6 +537,8 @@ def _lift_outcome(
             lower_status=endpoints.lower.status,
             upper_status=endpoints.upper.status,
         )
+    if lift is None and relative_unavailable_reason is not None:
+        return _KeyOutcome(status="excluded", reason=relative_unavailable_reason)
     if lift is None:
         assert binomial_set is not None, "validated: lift=None implies a binomial_set"
         return _KeyOutcome(status="ok", set_lower=binomial_set.lower, set_upper=binomial_set.upper)
@@ -1167,6 +1172,7 @@ def run_end_to_end(
                         binomial_set=estimate.binomial_set,
                         confidence_set=estimate.confidence_set,
                         note=estimate.note,
+                        relative_unavailable_reason=estimate.relative_unavailable_reason,
                     )
                 )
                 continue
@@ -1192,7 +1198,12 @@ def run_end_to_end(
                 )
             else:
                 breakout_outcomes[key].append(
-                    _lift_outcome(row.lift, binomial_set=row.binomial_set, note=row.note)
+                    _lift_outcome(
+                        row.lift,
+                        binomial_set=row.binomial_set,
+                        note=row.note,
+                        relative_unavailable_reason=row.relative_unavailable_reason,
+                    )
                 )
 
         all_cate.append(result["cate_results"])

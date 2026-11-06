@@ -1798,7 +1798,7 @@ _REFUSALS = refusals(
         "estimation.armstats.arm_stats.cov_yden_needs_cyden": "ratio-family moments require cyden/cden1 (not None)",
         "estimation.armstats.arm_stats.needs_denominator_cross": "needs x-denominator cross moment: cxden is None",
         "estimation.armstats.arm_stats.needs_uptake_cyd": "needs uptake: cyd/cy2d is None (uptake fact not materialised)",
-        "estimation.armstats.arm_stats.least_compute_metric": "n must be at least 2 to compute {quantity} (metric {metric!r}, arm {group_id!r} has n={n})",
+        "estimation.armstats.arm_stats.least_compute_metric": "n must be at least 2 to compute {quantity} (metric {metric!r}, arm {group_id!r} has n={n}); drop or merge arm {group_id!r}",
         "estimation.armstats.arm_stats.cov_yd_needs_uptake_sum_cyd": "needs uptake: sum_d/cyd is None (uptake fact not materialised)",
         "estimation.armstats.arm_stats.needs_covariate_uptake": "needs covariate x uptake: cxd is None. Both a CUPED covariate and an uptake fact must be materialised on the same arm: from a definitions path, set n_pre_periods > 0 on the experiment; from from_unit_summary, declare the column with Method.cuped(covariates=...) alongside uptake='<column>'.",
         "estimation.armstats.centered_raw_row": "centered/raw row carries unsupported weighted ArmStats fields: {unsupported}; weighted estimands must use ScoreStats.",
