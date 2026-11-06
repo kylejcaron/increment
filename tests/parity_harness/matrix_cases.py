@@ -712,7 +712,17 @@ def linear_cuped_frame_case(
             decision_method=method,
         ),
     )
-    plan = AnalysisPlan(primary="revenue", guardrails=("rpo",), secondaries=("signups",))
+    # A breakout cannot test a guardrail's margin, so a segmented case reads the ratio as a
+    # secondary.
+    plan = (
+        AnalysisPlan(primary="revenue", secondaries=("rpo", "signups"))
+        if breakout
+        else AnalysisPlan(
+            primary="revenue",
+            guardrails=(ExperimentMetric(metric="rpo", margin=0.02),),
+            secondaries=("signups",),
+        )
+    )
     if panel:
         return builders.from_frame(
             md.frame(rows),

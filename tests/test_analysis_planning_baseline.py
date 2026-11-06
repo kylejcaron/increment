@@ -1414,7 +1414,9 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 "        - revenue_p50\n"
                 "        - metric: rps\n"
                 "          decision_method: {name: cuped, variance_reduction: cuped}\n"
-                "      guardrails: [fixed_revenue, percentile_revenue]",
+                "      guardrails:\n"
+                "        - {metric: fixed_revenue, margin: 0.02}\n"
+                "        - {metric: percentile_revenue, margin: 0.02}",
             )
         )
         path = tmp_path / "defs_triggered_cuped.yml"

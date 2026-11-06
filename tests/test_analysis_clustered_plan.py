@@ -466,7 +466,7 @@ def test_clustered_secondary_family_preserves_declaration_order(con):
                     "plan": {
                         "primary": "primary_y",
                         "secondaries": ["sec_x"],
-                        "guardrails": ["guard_z"],
+                        "guardrails": [{"metric": "guard_z", "margin": 0.02}],
                     },
                 }
             ],

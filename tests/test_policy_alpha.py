@@ -30,7 +30,7 @@ def _declared_plan(view_multiplicity: MultiplicitySpec | None = None):
         _mean("p1"),
         _mean("p2"),
         _mean("s0"),
-        _mean("g0", preferred_direction="increase"),
+        _mean("g0", preferred_direction="increase", margin=0.02),
         _mean("u0"),
     ]
     plan = AnalysisPlan(

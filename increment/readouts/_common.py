@@ -272,6 +272,23 @@ def _declared_margin_names(metrics: Sequence[object]) -> list[str]:
     ]
 
 
+def refuse_encouragement_asof_margin(metrics: Sequence[Metric], plan: CompiledDecisionPlan) -> None:
+    """Refuse a margin on the fixed-horizon as-of encouragement view.
+
+    The view builds no per-metric shifted null, so a margin declared on a metric or bound by
+    the plan would otherwise reach every estimand's row, LATE included.
+    """
+    shifted = [
+        metric.name
+        for metric in metrics
+        if getattr(plan.procedures.get(metric.name), "null_lift", 0.0) != 0.0
+        or getattr(plan.procedures.get(metric.name), "null_abs", None) is not None
+    ]
+    combined = list(dict.fromkeys([*shifted, *_declared_margin_names(metrics)]))
+    if combined:
+        _raise("readout.metric_declare_non", combined=combined)
+
+
 def _refuse_unsupported_quantile(
     metric: Metric, test: Any, *, cluster: str | None, by: Sequence[str]
 ) -> None:

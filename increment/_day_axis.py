@@ -75,6 +75,7 @@ from increment.evidence import evidence_provider, request_evidence
 from increment.readouts._common import (
     _sequential_inference,
     _validate_encouragement_asof_inference,
+    refuse_encouragement_asof_margin,
 )
 from increment.readouts._daily import _validate_daily_inference
 from increment.readouts._evidence import (
@@ -372,6 +373,8 @@ def validate_day_axis(
         correction = normalize_display_correction(policy.correction)
         if correction == "bh":
             refuse(_BH_SEGMENTED_ASOF, method=req.caller)
+        if isinstance(design, Encouragement) and _sequential_inference(plan) is None:
+            refuse_encouragement_asof_margin(req.metrics, plan)
     if (
         req.caller == "run_daily_lift"
         and isinstance(design, Encouragement)

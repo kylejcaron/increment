@@ -19,6 +19,7 @@ import ibis
 from examples._seed import seed_event_log
 from increment import Method, RunResult, View, from_definitions, run
 from increment.results import BreakoutEstimates, DailyLiftEstimates, DailyMetricValues
+from increment.workflows import experiment_definition
 
 OUT = Path("tests/fixtures/parity_baseline.json")
 DEFINITIONS = "examples/definitions"
@@ -95,8 +96,17 @@ def main() -> None:
         views=(daily_values, asof_values),
     )
     lifts = run(
-        experiment.with_views(breakout, daily_lift, asof_lift),
+        experiment.with_views(daily_lift, asof_lift),
         resolver,
+        decision_method=Method(name="unadjusted"),
+    )
+    # A breakout cannot test a guardrail's margin, so the segment view reads the other metrics.
+    roles = experiment_definition(experiment, resolver).plan.role_names()
+    segments = run(
+        experiment.with_views(breakout),
+        resolver,
+        views=(breakout,),
+        metrics=[name for name, role in roles.items() if role != "guardrail"],
         decision_method=Method(name="unadjusted"),
     )
 
@@ -126,7 +136,7 @@ def main() -> None:
     # 4. Per-segment lift, which re-derives unit_totals with a dimension join.
     baseline["run_breakout"] = {
         f"{e.metric}|{e.group_id}|{e.dimension}={e.dimension_value}": _lift_value(e)
-        for e in _view(lifts, breakout, BreakoutEstimates)
+        for e in _view(segments, breakout, BreakoutEstimates)
     }
 
     # 5. Per-day relative lift -- the estimand key matters: an encouragement

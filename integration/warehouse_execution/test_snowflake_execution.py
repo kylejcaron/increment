@@ -504,7 +504,7 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
     from increment.errors import CodedError
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate, MetricSpec
-    from increment.plan import AnalysisPlan
+    from increment.plan import AnalysisPlan, ExperimentMetric
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore, WarehouseSession
@@ -604,7 +604,9 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
                     decision_method=qr_method,
                 ),
             ],
-            plan=AnalysisPlan(primary="revenue", guardrails=("rpo",)),
+            plan=AnalysisPlan(
+                primary="revenue", guardrails=(ExperimentMetric(metric="rpo", margin=0.02),)
+            ),
             design=Randomized(control_group="control", allocation=dict.fromkeys(arms, 1 / 3)),
         )
         con.create_table(event_name, obj=events, overwrite=True)

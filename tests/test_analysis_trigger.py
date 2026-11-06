@@ -625,11 +625,7 @@ def test_empty_triggered_late_request_returns_unavailable_late_cells(tmp_path):
         )
         .replace(
             "    plan:\n      secondaries: [revenue]",
-            "    plan:\n"
-            "      alternative: greater\n"
-            "      secondaries:\n"
-            "        - metric: revenue\n"
-            "          margin: 0.25",
+            "    plan:\n      alternative: greater\n      secondaries: [revenue]",
         )
     )
     path = tmp_path / "empty-triggered-late.yml"
@@ -664,7 +660,7 @@ def test_empty_triggered_late_request_returns_unavailable_late_cells(tmp_path):
         }
         assert all(row.failure_code == "readout.cell.missing_arm" for row in rows)
         assert {row.alternative for row in rows} == {"greater"}
-        assert {row.null_lift for row in rows} == {-0.25}
+        assert {row.null_lift for row in rows} == {0.0}
         assert {row.policy_name for row in rows} == {"compiled_plan"}
     finally:
         cast(Any, resolver).close()

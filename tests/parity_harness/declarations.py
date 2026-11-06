@@ -6,6 +6,22 @@ from tests.capability_consumers_auxiliary import PARITY_DECLARATIONS as _AUXILIA
 from tests.capability_consumers_scalar import PARITY_DECLARATIONS as _SCALAR_DECLARATIONS
 from tests.capability_contracts import ParityDeclaration
 
+# Every constructor refuses a guardrail that declares no margin before reading.
+_MARGIN_LESS_GUARDRAIL_INGRESSES = (
+    "from_definitions",
+    "from_unit_day_artifact",
+    "from_unit_summary",
+    "from_unit_panel",
+    "from_moments",
+)
+_MARGIN_LESS_GUARDRAIL_WAIVERS = tuple(
+    (ingress, "CONSTRUCTION: the guardrail declares no margin")
+    for ingress in _MARGIN_LESS_GUARDRAIL_INGRESSES
+)
+_MARGIN_LESS_GUARDRAIL_REFUSALS = tuple(
+    (ingress, "plan.guardrail.margin_required") for ingress in _MARGIN_LESS_GUARDRAIL_INGRESSES
+)
+
 PARITY_DECLARATIONS = MappingProxyType(
     {
         "triggered_sequential_asymptotic_mean": ParityDeclaration(
@@ -762,7 +778,9 @@ PARITY_DECLARATIONS = MappingProxyType(
             ),
             waive=(
                 ("from_switchback_panel", "COMBINATION: no switchback schedule in this dataset"),
+                *_MARGIN_LESS_GUARDRAIL_WAIVERS,
             ),
+            refusals=_MARGIN_LESS_GUARDRAIL_REFUSALS,
         ),
         "encouragement_guardrail_late_rows": ParityDeclaration(
             attempted=(
@@ -774,7 +792,9 @@ PARITY_DECLARATIONS = MappingProxyType(
             ),
             waive=(
                 ("from_switchback_panel", "COMBINATION: no switchback schedule in this dataset"),
+                *_MARGIN_LESS_GUARDRAIL_WAIVERS,
             ),
+            refusals=_MARGIN_LESS_GUARDRAIL_REFUSALS,
         ),
         "encouragement_itt_dense_takes_the_delta_method_route": ParityDeclaration(
             attempted=(

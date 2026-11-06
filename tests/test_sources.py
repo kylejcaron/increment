@@ -436,6 +436,7 @@ def test_compiled_plan_wire_round_trips_guardrail_and_view_policy():
             entity="user",
             fact="latency",
             preferred_direction="decrease",
+            margin=0.02,
         ),
     ]
     plan = AnalysisPlan(

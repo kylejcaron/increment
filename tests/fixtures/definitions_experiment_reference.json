@@ -1,6 +1,6 @@
 {
- "provenance": "Captured 2026-11-01 at db79f30b, before the whole-window readout dropped its store keyword: from_definitions(<copy of examples/definitions>, <DuckDB seeded by examples._seed.seed_event_log>, experiment_name='new_onboarding_v2'). The experiment JSON is saved verbatim; never regenerate it. The hash is its identity with recorded column types excluded (captured as 82079d57392aded3d9a3054cca6cf0c56cdcbc7e2d22ac8f768f523eabde1570 when identity still covered them). Recaptured by the same procedure when compiled decision plans began recording each metric's favorable side, an intended identity change for experiments that declare a direction (previous hash 647ebccb8ca651d0c3c17cfba24517aa962fdb807ef0df123cf740fb3945eb6d).",
- "hash": "30613226a30fb12053f3e304c7a99cc3696662cbc7ef31b2b6c132d6149dc3c1",
+ "provenance": "Captured 2026-11-01 at db79f30b, before the whole-window readout dropped its store keyword: from_definitions(<copy of examples/definitions>, <DuckDB seeded by examples._seed.seed_event_log>, experiment_name='new_onboarding_v2'). The experiment JSON is saved verbatim; never regenerate it. The hash is its identity with recorded column types excluded (captured as 82079d57392aded3d9a3054cca6cf0c56cdcbc7e2d22ac8f768f523eabde1570 when identity still covered them). Recaptured by the same procedure when compiled decision plans began recording each metric's favorable side, an intended identity change for experiments that declare a direction (previous hash 647ebccb8ca651d0c3c17cfba24517aa962fdb807ef0df123cf740fb3945eb6d). Recaptured by the same procedure when every guardrail began requiring a margin and the example guardrail declared one, an intended identity change for experiments whose guardrails gained a margin (previous hash 30613226a30fb12053f3e304c7a99cc3696662cbc7ef31b2b6c132d6149dc3c1).",
+ "hash": "6ee9aa095eaf1ea294f7d0d84360e74dc67764a344f5ba17a6cd81030530406f",
  "experiment": {
   "analysis_context": {
    "cluster": null,
@@ -149,7 +149,7 @@
      "guardrails": [
       {
        "decision_method": null,
-       "margin": null,
+       "margin": 0.02,
        "margin_abs": null,
        "metric": "d7_retention",
        "prior": {
@@ -337,7 +337,7 @@
       },
       "methods_explicitly_empty": false,
       "metric": "d7_retention",
-      "null_lift": 0,
+      "null_lift": -0.02,
       "prior": {
        "mu": 0,
        "sigma": 5
@@ -465,7 +465,7 @@
         "guardrails": [
          {
           "decision_method": null,
-          "margin": null,
+          "margin": 0.02,
           "margin_abs": null,
           "metric": "d7_retention",
           "prior": {
@@ -513,8 +513,22 @@
         "alternative": "two-sided",
         "compliance": null,
         "guardrails": [
-         "avg_session_duration",
-         "d7_retention"
+         {
+          "decision_method": null,
+          "margin": 0.02,
+          "margin_abs": null,
+          "metric": "avg_session_duration",
+          "prior": null,
+          "sensitivity_methods": []
+         },
+         {
+          "decision_method": null,
+          "margin": 0.02,
+          "margin_abs": null,
+          "metric": "d7_retention",
+          "prior": null,
+          "sensitivity_methods": []
+         }
         ],
         "inference": null,
         "primary": null,
@@ -874,7 +888,7 @@
       "guardrails": [
        {
         "decision_method": null,
-        "margin": null,
+        "margin": 0.02,
         "margin_abs": null,
         "metric": "d7_retention",
         "prior": {
@@ -1029,7 +1043,7 @@
   "operations": {},
   "package_version": "0",
   "registration": {
-   "registration_hash": "3f786d2fa86b4fa627347f161bed7f8457f19d665a630ee44cf6ef80b8e73818"
+   "registration_hash": "160248a38d25b530f93fd7a32459073ba4b7358e78fa6cb2c69739896de6d762"
   },
   "request_options": {},
   "schema_version": 1,
@@ -1109,7 +1123,7 @@
      "unit_rows": true
     },
     "declaration_version": 1,
-    "expected_digest": "a1c56cd0bc1d7e8e80ebdaf72ed9eda31b2439ac3002ec94ea8a452580cce458",
+    "expected_digest": "350bbb4fcf6aad8e1a0b5d0c52bf9edbd91b8a58e9c8b8019f92b4da0ae94c8f",
     "name": "source",
     "schema": {},
     "uri": "definitions://new_onboarding_v2"

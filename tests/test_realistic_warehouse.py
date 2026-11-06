@@ -55,7 +55,12 @@ from increment.workflows import (
 )
 from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import make_binding, make_binding_like, view_readout
+from tests.analysis_factory import (
+    make_binding,
+    make_binding_like,
+    non_guardrail_metrics,
+    view_readout,
+)
 from tests.warning_codes import warning_codes
 
 
@@ -224,7 +229,12 @@ def test_breakout_country_segments_have_no_null_bin(analysis: tuple[Any, Any]):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            estimates = view_readout(*analysis, View(view="breakout", grain="total"))
+            # A breakout cannot test a guardrail's margin, so it reads the other metrics.
+            estimates = view_readout(
+                *analysis,
+                View(view="breakout", grain="total"),
+                metrics=non_guardrail_metrics(*analysis),
+            )
     _assert_breakout_warnings(record)
     country_rows = [
         e for e in estimates if e.metric == "conversion_rate" and e.dimension == "country"
@@ -275,7 +285,11 @@ def test_breakout_plan_segments_are_pre_exposure_free_only(analysis: tuple[Any, 
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            estimates = view_readout(*analysis, View(view="breakout", grain="total"))
+            estimates = view_readout(
+                *analysis,
+                View(view="breakout", grain="total"),
+                metrics=non_guardrail_metrics(*analysis),
+            )
     _assert_breakout_warnings(record)
     plan_segments = {e.dimension_value for e in estimates if e.dimension == "plan"}
     assert plan_segments == {"free"}

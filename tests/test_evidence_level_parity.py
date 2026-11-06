@@ -1666,6 +1666,7 @@ def _assert_coordinate_inputs(live, frozen):
     )
     from tests.parity_harness.expected_differences import (
         CONSUMER_INPUT_DIFFERENCES,
+        TYPED_INPUT_DIFFERENCES,
         through_observation_end,
         with_declared_favorable_sides,
         with_expected_difference,
@@ -1701,6 +1702,9 @@ def _assert_coordinate_inputs(live, frozen):
         ),
         with_declared_favorable_sides(expected_inputs, live.declared_directions),
         path="source_input_identity",
+    )
+    expected = with_expected_difference(
+        live.scenario_id, live.ingress, expected, differences=TYPED_INPUT_DIFFERENCES
     )
     _assert_runtime_versions(live, frozen)
     if live.scenario_id in _RAW_REFERENCE_SCENARIOS:

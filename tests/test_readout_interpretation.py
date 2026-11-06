@@ -9,6 +9,7 @@ import pytest
 
 from increment import (
     AnalysisPlan,
+    ExperimentMetric,
     MetricSpec,
     View,
     from_frame,
@@ -157,7 +158,10 @@ def _run_mean(
         allocation_scheme="independent" if allocation_scheme else None,
     )
     metrics = [MetricSpec(name="value", type="mean")]
-    plan = AnalysisPlan(primary="value", guardrails=["guard"] if guardrail else [])
+    plan = AnalysisPlan(
+        primary="value",
+        guardrails=[ExperimentMetric(metric="guard", margin=0.02)] if guardrail else [],
+    )
     if guardrail:
         metrics.append(MetricSpec(name="guard", type="mean", preferred_direction="decrease"))
     experiment, resolver = from_frame(
@@ -219,7 +223,10 @@ def test_directional_binomial_guardrail_projection_uses_its_set_alpha():
                     preferred_direction="decrease",
                 ),
             ],
-            plan=AnalysisPlan(primary="revenue", guardrails=["complaints"]),
+            plan=AnalysisPlan(
+                primary="revenue",
+                guardrails=[ExperimentMetric(metric="complaints", margin=0.02)],
+            ),
         )
     )
     guardrail = next(row for row in results if row.metric == "complaints")
@@ -508,7 +515,10 @@ def test_registered_cell_failure_renders_its_spec_explanation():
                         name="guard", type="mean", preferred_direction="decrease", missing="skip"
                     ),
                 ],
-                plan=AnalysisPlan(primary="value", guardrails=["guard"]),
+                plan=AnalysisPlan(
+                    primary="value",
+                    guardrails=[ExperimentMetric(metric="guard", margin=0.02)],
+                ),
             )
         )
     interpretation = _interpret(results)
@@ -1017,8 +1027,6 @@ def test_nonpositive_mean_keeps_sampling_available_additive_interval():
 
 
 def test_absolute_margin_renders_tested_additive_null():
-    from increment.semantics.models import ExperimentMetric
-
     frame = _mean_frame()
     results = view_readout(
         *from_frame(
@@ -1056,7 +1064,9 @@ def test_constant_sensitivity_guard_does_not_create_orphan_advisory_key():
             MetricSpec(name="value", type="mean"),
             MetricSpec(name="guard", type="mean", preferred_direction="decrease"),
         ],
-        plan=AnalysisPlan(primary="value", guardrails=["guard"]),
+        plan=AnalysisPlan(
+            primary="value", guardrails=[ExperimentMetric(metric="guard", margin=0.02)]
+        ),
     )
     with pytest.warns(Warning):
         results = view_readout(

@@ -19,8 +19,13 @@ experiments:
         - revenue_per_user
         - average_order_value
       guardrails:
-        - d7_retention
-        - checkout_latency_ms
+        # Each guardrail checks the treatment is not worse than control by its
+        # margin or more: a 2% relative loss of D7 retention, a 5% relative rise
+        # in checkout latency.
+        - metric: d7_retention
+          margin: 0.02
+        - metric: checkout_latency_ms
+          margin: 0.05
     breakouts:
       - property: country
         source: web_events

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from increment._literals import Alternative
 from increment._multiplicity import guarantee_for_correction
 from increment._plan_compatibility import Role
-from increment.decision import _PlanResolution, _resolve_declaration
+from increment.decision import _PlanResolution, _resolve_declaration, margin_less_guardrail_route
 from increment.errors import (
     InvalidRequestError,
     RefusalSpec,
@@ -489,7 +489,15 @@ def bind_automatic_sequential_plan(
         )
     from increment.sequential_source import auto_register_bernoulli, auto_register_scalar_mean
 
-    resolved = _resolve_declaration(plan.model_copy(update={"inference": None}), metrics, path=path)
+    resolved = _resolve_declaration(
+        plan.model_copy(update={"inference": None}),
+        metrics,
+        path=path,
+        margin_route=margin_less_guardrail_route(
+            sequential=True,
+            encouragement=getattr(design, "mechanism", None) == "encouragement",
+        ),
+    )
     bindings = {
         entry.metric: entry for entry in plan.entries() if isinstance(entry, ExperimentMetric)
     }
@@ -604,7 +612,15 @@ def compile_decision_plan(
         for metric in metrics:
             if metric.name in modeled:
                 validate_sequential_transform(metric)
-    resolved = _resolve_declaration(plan, metrics, path=path)
+    resolved = _resolve_declaration(
+        plan,
+        metrics,
+        path=path,
+        margin_route=margin_less_guardrail_route(
+            sequential=plan is not None and plan.inference is not None,
+            encouragement=getattr(design, "mechanism", None) == "encouragement",
+        ),
+    )
     state = _CompilationState(resolved, (), None, {}, None)
     refuse_observational_relative_margin(design, resolved)
     if path == "frame/contrast" and configs is not None:

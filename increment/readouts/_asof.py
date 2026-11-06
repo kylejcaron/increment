@@ -26,14 +26,13 @@ from increment.estimation.readout_types import serialize_day_axis
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import SEQUENTIAL_POLICIES
 from increment.readouts._common import (
-    _declared_margin_names,
-    _raise,
     _refuse_segmented_registration,
     _require_design,
     _runtime_method_roles,
     _runtime_methods,
     _sequential_inference,
     _validate_encouragement_asof_inference,
+    refuse_encouragement_asof_margin,
 )
 from increment.readouts._evidence import load_compliance_series, load_day_axis_rows
 from increment.readouts._metric_rows import _rows_digest_and_arms
@@ -396,16 +395,7 @@ def asof_lift(
             advisories=_cell_advisories,
         )
     if design.mechanism == "encouragement":
-        declared = _declared_margin_names(selected)
-        shifted = [
-            metric.name
-            for metric in selected
-            if getattr(plan.procedures[metric.name], "null_lift", 0.0) != 0.0
-            or getattr(plan.procedures[metric.name], "null_abs", None) is not None
-        ]
-        combined = list(dict.fromkeys([*shifted, *declared]))
-        if combined:
-            _raise("readout.metric_declare_non", combined=combined)
+        refuse_encouragement_asof_margin(selected, plan)
     outcome_metrics = [] if estimands is not None and set(estimands) == {"compliance"} else selected
     methods_by_metric = {
         metric.name: _runtime_methods(configs[metric.name], design) for metric in outcome_metrics

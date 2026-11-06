@@ -47,6 +47,7 @@ from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import (
     AnalysisPlan,
     Definitions,
+    ExperimentMetric,
     MeanMetric,
     RetentionMetric,
 )
@@ -58,6 +59,7 @@ from tests.analysis_factory import (
     held_source,
     make_binding,
     make_binding_like,
+    non_guardrail_metrics,
     view_readout,
 )
 from tests.sequential_cases import registration
@@ -115,7 +117,8 @@ class TestAnalysisReturnsCollectionTypes:
     """Uses new_onboarding_v2 (examples/definitions/): declares
     purchase_rate/avg_session_duration plus a d7_retention guardrail
     (excluded via metrics= for the day-axis views, which reject any
-    RetentionMetric) and a country breakout (for the breakout view and the
+    RetentionMetric, and for the breakout view, which refuses a margined
+    guardrail) and a country breakout (for the breakout view and the
     dimensioned day-axis views)."""
 
     def binding(self, con, definitions) -> tuple[Any, Any]:
@@ -143,9 +146,9 @@ class TestAnalysisReturnsCollectionTypes:
 
     @pytest.mark.slow
     def test_run_breakout_returns_breakout_estimates(self, con, example_definitions):
-        experiment, resolver = self.binding(con, example_definitions)
+        experiment, resolver, metrics = self.non_retention(con, example_definitions)
         with _ignore_ibis_deprecation():
-            results = view_readout(experiment, resolver, _BREAKOUT)
+            results = view_readout(experiment, resolver, _BREAKOUT, metrics=metrics)
         assert isinstance(results, BreakoutEstimates)
         assert isinstance(results, list)
         assert len(results) > 0
@@ -431,10 +434,15 @@ def _capture_readout(con, definitions_path, readout: str) -> dict[str, float | N
             for v in view_readout(experiment, resolver, _ASOF_VALUES)
         }
     if readout == "run_breakout":
+        # A breakout cannot test a guardrail's margin, so the segment view reads the other metrics.
         return {
             f"{e.metric}|{e.group_id}|{e.dimension}={e.dimension_value}": lift_value(e)
             for e in view_readout(
-                experiment, resolver, _BREAKOUT, decision_method=Method(name="unadjusted")
+                experiment,
+                resolver,
+                _BREAKOUT,
+                metrics=non_guardrail_metrics(experiment, resolver),
+                decision_method=Method(name="unadjusted"),
             )
         }
     if readout == "run_daily_lift":
@@ -1907,6 +1915,12 @@ def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded
     observational = Observational(
         control_group="control", adjustment=AdjustmentSet(covariates=("x",))
     )
+    # An observational design takes only an absolute margin, so the example's guardrail is
+    # restated on that axis; the relative margin under test is the added metric's own.
+    absolute_plan = AnalysisPlan(
+        secondaries=["purchase_rate", "avg_session_duration"],
+        guardrails=[ExperimentMetric(metric="d7_retention", margin_abs=0.02)],
+    )
 
     relative_guardrail = MeanMetric(
         name="revenue_relative_guardrail",
@@ -1922,6 +1936,7 @@ def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded
             a_resolver,
             metrics=[*workflows.metrics(a_experiment, a_resolver), relative_guardrail],
             design=observational,
+            plan=absolute_plan,
         )
     assert exc.value.code == "plan.observational.relative_margin"
     assert exc.value.context["metrics"] == ("revenue_relative_guardrail",)
@@ -1935,7 +1950,9 @@ def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded
     # The same refusal when the relative margin is already present and only
     # the design changes on the rebuilt source.
     a_with_margin_experiment, a_with_margin_resolver = make_binding_like(
-        a_resolver, [*workflows.metrics(a_experiment, a_resolver), relative_guardrail]
+        a_resolver,
+        [*workflows.metrics(a_experiment, a_resolver), relative_guardrail],
+        plan=absolute_plan,
     )
     with pytest.raises(UnsupportedRequestError) as exc2:
         make_binding_like(a_with_margin_resolver, design=observational)
@@ -1955,11 +1972,14 @@ def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded
         a_resolver,
         metrics=[*workflows.metrics(a_experiment, a_resolver), absolute_guardrail],
         design=observational,
+        plan=absolute_plan,
     )
     assert experiment_definition(abs_experiment, abs_resolver).control_group == "control"
 
-    # ...and no margin at all under Observational.
-    plain_obs_experiment, plain_obs_resolver = make_binding_like(a_resolver, design=observational)
+    # ...and with the example's own metrics under Observational.
+    plain_obs_experiment, plain_obs_resolver = make_binding_like(
+        a_resolver, design=observational, plan=absolute_plan
+    )
     assert (
         experiment_definition(plain_obs_experiment, plain_obs_resolver).control_group == "control"
     )
@@ -2336,7 +2356,10 @@ def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_ke
                     "unit": "user_id",
                     "start": "2025-01-01",
                     "control_group": "control",
-                    "plan": {"secondaries": ["revenue"], "guardrails": ["errors"]},
+                    "plan": {
+                        "secondaries": ["revenue"],
+                        "guardrails": [{"metric": "errors", "margin": 0.02}],
+                    },
                 }
             ],
         }
@@ -2358,7 +2381,9 @@ def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_ke
         ),
     )
 
-    results = view_readout(experiment, resolver, estimands=estimands)
+    # A LATE-only request carries no margin verdict, so it refuses the margined guardrail; the
+    # request excludes it and reads the experiment's other outcome.
+    results = view_readout(experiment, resolver, metrics=["revenue"], estimands=estimands)
 
     by_metric: defaultdict[str, set[str]] = defaultdict(set)
     for row in _lift_rows(results):
@@ -2366,7 +2391,7 @@ def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_ke
 
     # Scope completion retains each requested weak-LATE cell as an unavailable
     # result carrying its cohort's first stage; compliance stays design-wide.
-    expected = {"errors": {"late"}, "revenue": {"late"}}
+    expected = {"revenue": {"late"}}
     if "compliance" in estimands:
         expected["uptake"] = {"compliance"}
     assert dict(by_metric) == expected
@@ -3152,7 +3177,13 @@ def test_polars_backend_survives_exploratory_run_and_breakout(seeded_defs, seede
         exploratory_metrics=[exploratory],
         decision_method=Method(name="unadjusted"),
     )
-    breakout = view_readout(experiment, resolver, View(view="breakout", grain="total"))
+    # A breakout cannot test the guardrail's margin, so it reads the other declared metrics.
+    breakout = view_readout(
+        experiment,
+        resolver,
+        View(view="breakout", grain="total"),
+        metrics=non_guardrail_metrics(experiment, resolver),
+    )
 
     assert any(row.metric == exploratory and row.role == "exploratory" for row in results)
     assert isinstance(results.to_frame(), pl.DataFrame)

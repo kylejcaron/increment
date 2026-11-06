@@ -17,7 +17,7 @@ from increment.evidence import BreakoutIdentity
 from increment.frame import MetricSpec, synthesise_metric
 from increment.plan import compile_decision_plan
 from increment.semantics.design import Randomized
-from increment.semantics.models import AnalysisPlan, MultiplicitySpec
+from increment.semantics.models import AnalysisPlan, ExperimentMetric, MultiplicitySpec
 from tests.analysis_factory import view_readout
 
 _P = 3
@@ -41,7 +41,7 @@ def _declared_plan() -> AnalysisPlan:
     return AnalysisPlan(
         alpha=_ALPHA,
         primary=("primary_a", "primary_b", "primary_c"),
-        guardrails=("guardrail",),
+        guardrails=(ExperimentMetric(metric="guardrail", margin=0.02),),
         view_multiplicity=MultiplicitySpec(correction="bonferroni"),
     )
 
@@ -192,7 +192,7 @@ def test_every_confirmatory_path_matches_the_policy_resolver():
             alpha=_ALPHA,
             primary=("primary_a", "primary_b", "primary_c"),
             secondaries=("secondary",),
-            guardrails=("guardrail",),
+            guardrails=(ExperimentMetric(metric="guardrail", margin=0.02),),
         ),
         warehouse_metrics,
         path="warehouse",

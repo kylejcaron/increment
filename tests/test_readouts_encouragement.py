@@ -54,7 +54,13 @@ from increment.frame import MetricSpec, from_unit_summary
 from increment.readouts._common import _validate_encouragement_asof_inference
 from increment.readouts._encouragement import encouragement_rows
 from increment.semantics.design import Encouragement, ExclusionRestriction, Randomized, UptakeSpec
-from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec, MeanMetric
+from increment.semantics.models import (
+    AnalysisPlan,
+    Definitions,
+    ExperimentMetric,
+    InferenceSpec,
+    MeanMetric,
+)
 from increment.sources import EvidenceSource, SourceContext, SourceOperation
 from increment.workflows import experiment_definition
 from tests._unit_boundary import backend_fixture
@@ -1852,7 +1858,10 @@ def _guardrail_analysis(con):
                     "unit": "user_id",
                     "start": "2025-01-01",
                     "control_group": "control",
-                    "plan": {"secondaries": ["revenue"], "guardrails": ["errors"]},
+                    "plan": {
+                        "secondaries": ["revenue"],
+                        "guardrails": [{"metric": "errors", "margin": 0.02}],
+                    },
                 }
             ],
         }
@@ -2010,7 +2019,10 @@ def _multi_arm_guardrail_analysis(con):
                     "unit": "user_id",
                     "start": "2025-01-01",
                     "control_group": "control",
-                    "plan": {"secondaries": ["revenue"], "guardrails": ["errors"]},
+                    "plan": {
+                        "secondaries": ["revenue"],
+                        "guardrails": [{"metric": "errors", "margin": 0.02}],
+                    },
                 }
             ],
         }
@@ -2041,7 +2053,12 @@ def test_analysis_run_native_encouragement_declared_plan_primary_splits_alpha_by
     bound = make_binding_like(
         bound[1],
         experiment=experiment_definition(*bound).model_copy(
-            update={"plan": AnalysisPlan(primary="revenue", guardrails=["errors"])}
+            update={
+                "plan": AnalysisPlan(
+                    primary="revenue",
+                    guardrails=[ExperimentMetric(metric="errors", margin=0.02)],
+                )
+            }
         ),
     )
 
@@ -2390,7 +2407,7 @@ def test_analysis_run_native_groups_encouragement_dispatch_by_declared_methods(c
                             decision_method=MethodSpec(name="unadjusted"),
                         )
                     ],
-                    guardrails=["errors"],
+                    guardrails=[ExperimentMetric(metric="errors", margin=0.02)],
                 ),
             }
         ),
@@ -2428,7 +2445,7 @@ def test_analysis_run_native_grouped_encouragement_reports_one_uptake_row_per_ar
                             decision_method=MethodSpec(name="unadjusted"),
                         )
                     ],
-                    guardrails=["errors"],
+                    guardrails=[ExperimentMetric(metric="errors", margin=0.02)],
                 ),
             }
         ),
@@ -2445,10 +2462,13 @@ def test_guardrail_estimands_narrowing_never_returns_unrequested_estimand(con):
     did not ask for, for a guardrail or any other metric."""
     experiment, resolver = _guardrail_analysis(con)
 
-    results = lift_rows(view_readout(experiment, resolver, metrics=["errors"], estimands=("late",)))
+    # LATE alone carries no margin verdict, so a margined guardrail's narrowed request keeps ITT.
+    results = lift_rows(
+        view_readout(experiment, resolver, metrics=["errors"], estimands=("itt", "late"))
+    )
 
-    assert results, "a late-only request for a guardrail still returns its late row"
-    assert {r.estimand for r in results} == {"late"}
+    assert results, "a narrowed request for a guardrail still returns its requested rows"
+    assert {r.estimand for r in results} == {"itt", "late"}
 
 
 def _uptake_named_secondary_analysis(con):
@@ -2841,7 +2861,10 @@ def _uptake_guardrail_analysis(con, *, guardrail_metric_name="uptake"):
                     "unit": "user_id",
                     "start": "2025-01-01",
                     "control_group": "control",
-                    "plan": {"secondaries": ["revenue"], "guardrails": [guardrail_metric_name]},
+                    "plan": {
+                        "secondaries": ["revenue"],
+                        "guardrails": [{"metric": guardrail_metric_name, "margin": 0.02}],
+                    },
                 }
             ],
         }
@@ -2875,17 +2898,18 @@ def test_guardrail_metric_colliding_with_compliance_name_reports_requested_estim
         con, guardrail_metric_name=guardrail_metric_name
     )
 
-    results = lift_rows(view_readout(experiment, resolver, estimands=("late", "compliance")))
+    # LATE alone carries no margin verdict, so the margined guardrail's request keeps ITT.
+    results = lift_rows(view_readout(experiment, resolver, estimands=("itt", "late", "compliance")))
 
     by_metric_estimand: defaultdict[str, set[str]] = defaultdict(set)
     for r in results:
         by_metric_estimand[r.metric].add(r.estimand)
 
-    expected_guardrail_estimands = {"late"} | (
+    expected_guardrail_estimands = {"itt", "late"} | (
         {"compliance"} if guardrail_metric_name == "uptake" else set()
     )
     assert by_metric_estimand[guardrail_metric_name] == expected_guardrail_estimands
-    assert by_metric_estimand["revenue"] == {"late"}
+    assert by_metric_estimand["revenue"] == {"itt", "late"}
     guardrail_late = [
         r for r in results if r.metric == guardrail_metric_name and r.estimand == "late"
     ]
@@ -2955,7 +2979,12 @@ def test_analysis_run_native_encouragement_declared_plan_stamps_roles_and_guardr
     bound = make_binding_like(
         bound[1],
         experiment=experiment_definition(*bound).model_copy(
-            update={"plan": AnalysisPlan(primary="revenue", guardrails=["errors"])}
+            update={
+                "plan": AnalysisPlan(
+                    primary="revenue",
+                    guardrails=[ExperimentMetric(metric="errors", margin=0.02)],
+                )
+            }
         ),
     )
 
@@ -3058,7 +3087,12 @@ def test_analysis_run_native_encouragement_declared_plan_refuses_call_time_alter
     experiment, resolver = make_binding_like(
         guardrail_resolver,
         experiment=experiment_definition(guardrail_experiment, guardrail_resolver).model_copy(
-            update={"plan": AnalysisPlan(primary="revenue", guardrails=["errors"])}
+            update={
+                "plan": AnalysisPlan(
+                    primary="revenue",
+                    guardrails=[ExperimentMetric(metric="errors", margin=0.02)],
+                )
+            }
         ),
     )
 
@@ -3157,6 +3191,33 @@ def test_asof_lift_encouragement_declared_margin_refused(declaration):
         readouts.asof_lift(src)
     assert exc.value.code == "readout.metric_declare_non"
     assert cast("tuple[str, ...]", exc.value.context["combined"]) == ("rev",)
+
+
+def test_asof_view_refuses_a_margined_encouragement_guardrail():
+    """run()'s as-of encouragement view builds no shifted null for LATE rows either, so a
+    margined guardrail refuses as asof_lift does instead of testing LATE against its margin."""
+    table = _two_metric_uptake_table()
+    experiment, reader = from_frame(
+        table.append_column("ds", pa.array([date(2025, 1, 1)] * table.num_rows)),
+        shape="panel",
+        unit="user_id",
+        group="variant",
+        date="ds",
+        exposure_date="ds",
+        uptake="clicked",
+        design=_frame_encouragement_design(),
+        metrics=[
+            MetricSpec(name="revenue", type="mean", preferred_direction="increase"),
+            MetricSpec(name="visits", type="mean", preferred_direction="decrease"),
+        ],
+        plan=AnalysisPlan(
+            primary="revenue", guardrails=[ExperimentMetric(metric="visits", margin=0.02)]
+        ),
+    )
+    with pytest.raises(UnsupportedRequestError) as exc:
+        view_readout(experiment, reader, View(view="asof", grain="asof"))
+    assert exc.value.code == "readout.metric_declare_non"
+    assert cast("tuple[str, ...]", exc.value.context["combined"]) == ("visits",)
 
 
 def test_asof_lift_compliance_rows_carry_drift_caveat_when_late_suppressed():

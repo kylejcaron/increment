@@ -313,9 +313,13 @@ def _(mo):
 
 @app.cell
 def _(estimates_to_readout, experiment, increment, reader, readout_table):
+    # A breakout cannot test a guardrail's margin, so the view reads the metric it shows.
     breakout_scope = increment.View.breakout(())
     breakout_estimates = increment.run(
-        experiment.with_views(breakout_scope), reader, views=(breakout_scope,)
+        experiment.with_views(breakout_scope),
+        reader,
+        views=(breakout_scope,),
+        metrics=["conversion_rate"],
     ).readout(breakout_scope)
     country_breakout_estimates = [
         estimate

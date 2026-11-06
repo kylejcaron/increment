@@ -504,35 +504,40 @@ registered tighter, never looser.
 A guardrail asks, "did this get materially worse?" It is a one-sided
 non-inferiority test on the adverse side implied by the metric's
 `preferred_direction` and margin, never the plan's `alternative`, which is
-scoped to primaries and secondaries. A margin-less guardrail still tests
-the declared adverse tail. Rejecting the null (harm at least as large as
-the margin) certifies the metric SAFE.
+scoped to primaries and secondaries. "Materially" is the margin, so every
+guardrail declares one: `margin` or `margin_abs` on the metric, or on its
+`ExperimentMetric` plan entry. A guardrail with neither refuses before any
+data is read, with `plan.guardrail.margin_required`. Rejecting the null (harm
+at least as large as the margin) certifies the guardrail.
 
 `alpha` is **not** divided across guardrails. Each guardrail's type-I error
-(falsely certifying SAFE) is bounded by `alpha` regardless of guardrail
-count because the allocation is per test. The compound decision "ship only
-if every declared guardrail is SAFE" is an intersection-union test (Berger
-1982): the probability of shipping while any guardrail is truly harmful is
-bounded by that same `alpha`. Dividing `alpha` by the guardrail count would
-tighten the compound bound to `alpha / k`, but would make each individual
-test harder to reject, reducing power without improving the IUT bound at
-plain `alpha`.
+(certifying a guardrail that is harmed by at least its margin) is bounded by
+`alpha` regardless of guardrail count because the allocation is per test. The
+compound decision "ship only if every declared guardrail is certified" is an
+intersection-union test (Berger 1982): the probability of shipping while any
+guardrail is truly harmful is bounded by that same `alpha`. Dividing `alpha`
+by the guardrail count would tighten the compound bound to `alpha / k`, but
+would make each individual test harder to reject, reducing power without
+improving the IUT bound at plain `alpha`.
 
 Those finite-sample bounds require exact-law guardrails. Asymptotic guardrails
 inherit the approximation and one-sided both-tails qualification below; the
 intersection-union argument does not remove either qualification.
 
-Each guardrail row reports its own SAFE/HARM label. `run()` also reports an
-aggregate program verdict in `result.decisions`, but returns `pass` only when
-every required primary rejects on its favorable side, every guardrail result
-is available and SAFE, and assignment integrity is qualified; a primary that
-rejects on its adverse side blocks with `decision.primary.adverse` (see
-[Program verdict](reading-results.md#program-verdict)). A caller using only
-the per-row labels must apply the compound "ship only if every guardrail is
-SAFE" rule. Reading several guardrail labels without applying that rule (for
-example, shipping when most, but not all, guardrails are SAFE) has only the
-weaker union bound (`k * alpha` across `k` guardrails) on the joint
-probability that at least one label is a false SAFE, not the tighter
+Each guardrail row reports its own verdict: it rejects (certified) or it does
+not. `run()` also reports an aggregate program verdict in `result.decisions`,
+but returns `pass` only when every required primary rejects on its favorable
+side, every guardrail result is available and certified, and assignment
+integrity is qualified. A primary that rejects on its adverse side blocks with
+`decision.primary.adverse`, and a guardrail that is not certified blocks with
+`decision.guardrail.not_certified` (see
+[Program verdict](reading-results.md#program-verdict)). The test is one-sided,
+so a guardrail that is not certified is not a finding of harm. A caller using
+only the per-row verdicts must apply the compound "ship only if every guardrail
+is certified" rule. Reading several guardrail verdicts without applying that
+rule (for example, shipping when most, but not all, guardrails are certified)
+has only the weaker union bound (`k * alpha` across `k` guardrails) on the
+joint probability that at least one is falsely certified, not the tighter
 single-`alpha` IUT bound.
 
 ### Secondaries: false discovery rate control at `q` for every in-family secondary

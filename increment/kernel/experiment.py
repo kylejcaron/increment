@@ -375,6 +375,11 @@ class Experiment:
             from increment.semantics.design import _refuse_unsupported_design_mechanism
 
             _refuse_unsupported_design_mechanism(design.get("mechanism"))
+        analysis_context = payload.get("analysis_context", {})
+        if isinstance(analysis_context, Mapping):
+            from increment._runnability import refuse_recorded_margin_less_guardrail
+
+            refuse_recorded_margin_less_guardrail(analysis_context, design)
         implementations = {
             (
                 str(item["method_instance_id"]),
@@ -395,7 +400,7 @@ class Experiment:
             views=views,
             implementation_refs=implementations,
             package_version=str(payload["package_version"]),
-            analysis_context=payload.get("analysis_context", {}),
+            analysis_context=analysis_context,
             operations=operations,
             request_options=payload.get("request_options", {}),
         )
