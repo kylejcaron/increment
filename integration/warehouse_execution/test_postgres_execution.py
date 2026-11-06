@@ -1107,7 +1107,9 @@ def test_postgres_mixed_cuped_definitions_and_artifact_match_local_and_duckdb(  
                 decision_method=method,
             ),
         ],
-        plan=AnalysisPlan(primary="revenue", guardrails=("rpo",)),
+        # Mirrors the breakout definitions: a breakout cannot test a guardrail's margin, so the
+        # ratio is a secondary.
+        plan=AnalysisPlan(primary="revenue", secondaries=("rpo",)),
         design=Randomized(
             control_group="control",
             allocation={"control": 1 / 3, "treatment": 1 / 3, "withheld": 1 / 3},
