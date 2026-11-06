@@ -1235,7 +1235,8 @@ Retired codes and their replacements are listed below.
 | `power.max_workers_positive` | `InvalidRequestError` | — | `increment.power.curve` |
 | `power.mde_relative_unavailable` | `InvalidRequestError` | — | `increment.power.core` |
 | `power.mde_unavailable_reason` | `InvalidRequestError` | `mde_relative`, `mde_unavailable_reason` | `increment.power.core` |
-| `power.minimum_detectable_effect.design_search_minimum` | `InvalidRequestError` | `estimate`, `target` | `increment.power.core` |
+| `power.minimum_detectable_effect.delta_method_unreliable` | `InvalidRequestError` | `direction`, `log_se`, `log_se_limit`, `target_power` | `increment.power.core` |
+| `power.minimum_detectable_effect.design_search_minimum` | `InvalidRequestError` | `estimate`, `target` | `increment.power.core`, `increment.power.pairwise` |
 | `power.minimum_detectable_effect.numerical_resolution` | `InvalidRequestError` | `direction`, `power_enclosure`, `stopping_reason`, `target_power`, `unresolved_interval` | `increment.power._search`, `increment.power.core`, `increment.power.sequential` |
 | `power.minimum_detectable_effect.unattainable` | `InvalidRequestError` | `direction`, `limiting_condition`, `maximum_power`, `power_basis`, `target_power` | `increment.power.core` |
 | `power.minimum_detectable_effect.unrepresentable` | `InvalidRequestError` | `direction`, `limiting_condition`, `target_power` | `increment.power.core` |

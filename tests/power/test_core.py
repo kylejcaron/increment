@@ -54,7 +54,7 @@ from increment.power.core import (
     required_sample_size,
 )
 from increment.power.pairwise import _segment_arm_sizes
-from increment.semantics.models import MethodSpec, QuantileMetric
+from increment.semantics.models import InferenceSpec, MethodSpec, QuantileMetric
 
 from ._procedures import make_procedure
 from ._results import available_mde
@@ -1221,6 +1221,20 @@ class TestPowerResultInvariants:
         assert 0.0 < maximum < 0.8
 
 
+_LOW_TARGET = Baseline(mean=20.0, var=400.0)
+_LOW_TARGET_CONVERSION = Baseline.from_proportion(0.1)
+
+
+def _arm_solvers(procedure: Any) -> tuple[Any, Any, Any]:
+    """Achieved power and the minimum detectable effect at 1000 per arm, and the
+    size, for a 5% lift on ``_LOW_TARGET``."""
+    return (
+        lambda design: achieved_power(1000, 0.05, _LOW_TARGET, procedure, design),
+        lambda design: required_sample_size(0.05, _LOW_TARGET, procedure, design),
+        lambda design: minimum_detectable_effect(1000, _LOW_TARGET, procedure, design),
+    )
+
+
 class TestMDEDomainEdges:
     """A test's own null-boundary power (2*tail_alpha two-sided,
     tail_alpha one-sided) already exceeds any target power at or below
@@ -1272,28 +1286,92 @@ class TestMDEDomainEdges:
             )
         assert refusal.value.code == "power.minimum_detectable_effect.design_search_minimum"
 
-    def test_achieved_power_keeps_zero_companion_at_low_target(self):
-        result = achieved_power(
-            100,
-            0.1,
-            Baseline(mean=1.0, var=2.0),
-            make_procedure(),
-            PowerDesign(power=0.01),
-        )
-        assert result.power > 0.01
-        assert result.mde_relative == 0.0
-        assert result.mde_unavailable_reason is None
-
-    def test_required_sample_size_keeps_zero_companion_at_low_target(self):
-        result = required_sample_size(
-            0.1,
-            Baseline(mean=1.0, var=2.0),
-            make_procedure(),
-            PowerDesign(power=0.01),
-        )
-        assert result.power >= 0.01
-        assert result.mde_relative == 0.0
-        assert result.mde_unavailable_reason is None
+    @pytest.mark.parametrize(
+        ("target", "supplied", "sized", "bare", "floor", "code"),
+        [
+            pytest.param(
+                0.01,
+                *_arm_solvers(ArmPlanningProcedure.standard("mean")),
+                8,
+                "power.minimum_detectable_effect.design_search_minimum",
+                id="closed_form",
+            ),
+            pytest.param(
+                0.001,
+                *_arm_solvers(
+                    ArmPlanningProcedure.standard(
+                        "mean", inference=InferenceSpec(kind="asymptotic_mean")
+                    )
+                ),
+                2,
+                "power.sequential_mde.design_search_minimum",
+                id="sequential",
+            ),
+            pytest.param(
+                0.01,
+                lambda design: achieved_power(
+                    1000,
+                    0.2,
+                    _LOW_TARGET_CONVERSION,
+                    ArmPlanningProcedure.standard("conversion"),
+                    design,
+                ),
+                None,
+                lambda design: minimum_detectable_effect(
+                    1000,
+                    _LOW_TARGET_CONVERSION,
+                    ArmPlanningProcedure.standard("conversion"),
+                    design,
+                ),
+                None,
+                "power.minimum_detectable_effect.design_search_minimum",
+                id="binomial",
+            ),
+            pytest.param(
+                0.01,
+                lambda design: segment_pairwise_achieved_power(
+                    10_000, 0.3, 0.05, 0.2, 0.2, _LOW_TARGET, make_procedure(), design=design
+                ),
+                lambda design: segment_pairwise_required_sample_size(
+                    0.3, 0.05, 0.2, 0.2, _LOW_TARGET, make_procedure(), design=design
+                ),
+                lambda design: segment_pairwise_minimum_detectable_effect(
+                    10_000, 0.2, 0.2, _LOW_TARGET, make_procedure(), design=design
+                ),
+                10,
+                "power.minimum_detectable_effect.design_search_minimum",
+                id="segment_pairwise",
+            ),
+        ],
+    )
+    def test_target_at_or_below_null_power_has_no_companion_mde(
+        self, target, supplied, sized, bare, floor, code
+    ):
+        """Zero distance already reaches such a target, so every solver
+        agrees: a supplied-effect answer keeps its power and reports its
+        companion as unavailable rather than as an effect of zero, the bare
+        minimum detectable effect refuses, and a size is the smallest the
+        solver admits. That is 8 per arm on the closed form, where the
+        runtime's log-scale guard needs ``(1 + 1 / 1.05^2) / n < 0.25``; the
+        two-unit floor sequentially; and 10 per arm for the segment contrast,
+        the first size giving each 20% segment the four units a two-arm split
+        needs. The sequential boundary's own null crossing is about 0.0099,
+        below the fixed-horizon 0.05. The exact binomial decision rejects the
+        null less often at small sizes, so a binomial plan sized for such a
+        target lands where a nonzero companion exists and is not sized here."""
+        design = PowerDesign(power=target)
+        answers = [supplied(design)]
+        if sized is not None:
+            answers.append(sized(design))
+            assert answers[-1].n_per_arm == floor
+        for answer in answers:
+            assert answer.power >= target
+            assert answer.mde_relative is None
+            assert answer.mde_unavailable_reason == "at_or_below_null_power"
+        with pytest.raises(InvalidRequestError) as refusal:
+            bare(design)
+        assert refusal.value.code == code
+        assert refusal.value.context["target"] == target
 
     def test_minimum_detectable_effect_refuses_at_or_below_null_power(self):
         """Stable refusal code/context parity with the sequential twin
@@ -2544,17 +2622,6 @@ class TestSequentialMdeUsesTheBoundarysOwnNullPower:
             null = search.point(0.0, search.doubled(null))
         return null
 
-    def _solve(self, target_power: float):
-        from ._sequential import sequential_solve
-
-        return sequential_solve(
-            5000,
-            Baseline(mean=1.0, var=2.0),
-            self._procedure(),
-            PowerDesign(power=target_power),
-            14,
-        )
-
     @pytest.mark.parametrize("power", [0.05, 0.03, 0.02, 0.0125, 0.0116])
     def test_a_target_between_the_boundary_null_power_and_alpha_solves(self, power):
         # This boundary's zero-drift crossing probability is ~0.00995, well
@@ -2617,7 +2684,7 @@ class TestSequentialMdeUsesTheBoundarysOwnNullPower:
     def test_below_the_null_enclosure_is_refused_as_a_null_crossing(self):
         null = self._null_enclosure()
         with pytest.raises(InvalidRequestError) as exc_info:
-            self._solve(math.nextafter(null.lower, 0.0))
+            self._mde(math.nextafter(null.lower, 0.0))
         assert exc_info.value.code == "power.sequential_mde.design_search_minimum"
 
 
@@ -3090,6 +3157,122 @@ class TestIndependentArmVariance:
         assert abs(sized.n_per_arm - math.ceil(expected_total * allocation)) <= 1
 
 
+class TestSmallestAdmissibleSize:
+    """A fixed-horizon size is the smallest whose power, evaluated as
+    ``achieved_power`` evaluates it, reaches the target. At a treatment-heavy
+    allocation the ceiled control arm over-provisions the closed-form seed, and
+    a triggered plan is analyzed at ``assigned * trigger_rate`` units."""
+
+    @pytest.mark.parametrize(
+        ("allocation", "relative_lift", "trigger_rate"),
+        [(0.8, 0.02, 1.0), (0.8, 0.3, 1.0), (0.9, 0.02, 1.0), (0.9, 0.3, 1.0), (0.8, 0.05, 0.3)],
+    )
+    def test_required_size_is_smallest_reaching_target(
+        self, allocation, relative_lift, trigger_rate
+    ):
+        baseline = Baseline(mean=20.0, var=400.0, trigger_rate=trigger_rate)
+        design = PowerDesign(power=0.8, allocation=allocation)
+        sized = required_sample_size(relative_lift, baseline, design=design)
+        assert sized.power >= 0.8
+        at_size = achieved_power(sized.n_per_arm, relative_lift, baseline, design=design)
+        assert at_size.power == sized.power
+        below = achieved_power(sized.n_per_arm - 1, relative_lift, baseline, design=design)
+        assert below.power < 0.8
+
+
+class TestRuntimeLogSeGuard:
+    """The runtime's log-ratio lift estimate refuses a combined log-scale SE
+    of 0.5 or more (``delta_method_unreliable``), so planning sizes and detects
+    only below it. ``Baseline(mean=1, var=100)`` at equal allocation with a
+    lift of 4.0 puts the treatment mean at 5, so the planned combined log SE^2
+    is ``100 / n + 100 / (25 n) = 104 / n``."""
+
+    _BASELINE = Baseline(mean=1.0, var=100.0)
+
+    def test_required_size_respects_the_runtime_log_se_guard(self):
+        """``104 / n < 0.25`` first holds at n = 417, past the 316 units the
+        power target alone needs. At that size the companion effect is the
+        guard's own boundary, ``100 / 417 * (1 + (1 + m)^-2) = 0.25``, so
+        ``1 + m = 1 / sqrt(0.0425)``."""
+        sized = required_sample_size(4.0, self._BASELINE)
+        assert sized.n_per_arm == 417
+        assert sized.power >= 0.8
+        assert sized.mde_relative == pytest.approx(1.0 / math.sqrt(0.0425) - 1.0, rel=1e-9)
+
+    def test_mde_past_the_guard_is_unavailable(self):
+        """At n = 50 the control term alone gives SE^2 = 100 / 50 = 2, so no
+        effect is one the runtime can estimate: the direct solve refuses, and a
+        supplied-effect query keeps its model power with a null companion."""
+        with pytest.raises(InvalidRequestError) as refusal:
+            minimum_detectable_effect(50, self._BASELINE)
+        assert refusal.value.code == "power.minimum_detectable_effect.delta_method_unreliable"
+        assert refusal.value.context["log_se"] == pytest.approx(math.sqrt(2.0), rel=1e-9)
+        assert refusal.value.context["log_se_limit"] == 0.5
+        companion = achieved_power(50, 0.5, self._BASELINE)
+        assert companion.mde_relative is None
+        assert companion.mde_unavailable_reason == "delta_method_unreliable"
+        expected = _independent_h1_power(
+            50, 50, self._BASELINE, ArmPlanningProcedure.standard("mean"), 0.5
+        )
+        assert companion.power == pytest.approx(expected, rel=1e-12)
+
+    def test_prior_carrying_conversion_plan_keeps_its_count_route(self):
+        """A prior does not change the count-based route the runtime takes for
+        a conversion plan under ``conversion_inference="auto"``: sparse counts
+        take the finite-sample test, which has no log-scale guard. At 20 per
+        arm on a 10% rate the control term alone is ``0.9 / (0.1 * 20) = 0.45``
+        on the log SE^2 scale, past the guard's 0.25, yet the plan detects an
+        effect whose planned power reaches the target."""
+        baseline = Baseline.from_proportion(0.1)
+        procedure = ArmPlanningProcedure.standard("conversion").model_copy(
+            update={"prior_present": True}
+        )
+        mde = minimum_detectable_effect(20, baseline, procedure).mde_relative
+        assert mde is not None
+        assert _independent_h1_power(
+            20, 20, baseline, procedure, mde, bounded=True
+        ) == pytest.approx(0.8, abs=1e-9)
+
+    @pytest.mark.parametrize(
+        ("mean", "var", "lift", "refused_n"),
+        [
+            pytest.param(1.0, 100.0, 4.0, 416, id="unit_mean"),
+            pytest.param(1e4, 1.225e8, 6.0, 5, id="large_mean"),
+        ],
+    )
+    def test_planner_guard_matches_infer_lift(self, mean, var, lift, refused_n):
+        """At matched moments (control mean ``mean``, treatment mean
+        ``mean * (1 + lift)``, variance ``var`` and n units in each arm) the
+        combined log SE^2 is exactly 0.25 at ``refused_n``: ``104 / 416`` at
+        unit mean, and ``1.225e8 / 5 * (1 / 1e8 + 1 / 4.9e9) = 0.25`` at the
+        large mean, where the log of the treatment mean must be taken as the
+        runtime takes it to round to the same side. Planning and the runtime
+        both refuse that size and admit the next, which is the size planned."""
+        from increment.estimation.inference import LiftGuardError, infer_lift
+        from increment.estimation.variance import se_log_mean
+
+        baseline = Baseline(mean=mean, var=var)
+        mean_t = mean * (1.0 + lift)
+
+        def runtime(n: int) -> None:
+            se_t, se_c = se_log_mean(var, mean_t, n), se_log_mean(var, mean, n)
+            infer_lift(
+                "m", "treatment", "unadjusted", math.log1p(lift), se_t, se_c, method_role="decision"
+            )
+
+        def planner(n: int) -> bool:
+            procedure = ArmPlanningProcedure.standard("mean")
+            return _ArmPlan(procedure, baseline, n, n, None, False).passes_log_guard(mean_t)
+
+        with pytest.raises(LiftGuardError) as refused:
+            runtime(refused_n)
+        assert refused.value.reason == "delta_method_unreliable"
+        runtime(refused_n + 1)
+        assert required_sample_size(lift, baseline).n_per_arm == refused_n + 1
+        assert not planner(refused_n)
+        assert planner(refused_n + 1)
+
+
 class TestBoundedDomain:
     """A conversion or retention rate lives in ``(0, 1]``: planning refuses a
     rate above one for the null or the supplied alternative, allows exactly
@@ -3179,6 +3362,23 @@ class TestBoundedDomain:
         assert refusal.value.code == "power.bounded_metric.rate_above_one"
         assert cast("float", refusal.value.context["implied_rate"]) > 1.0
 
+    def test_bounded_null_rate_of_exactly_one_is_admissible(self):
+        """A null of 0.25 on 0.8 is a rate of exactly one as written, though
+        ``log(0.8) + log1p(0.25)`` rounds above zero. A decrease from it is
+        planned at its own rate: lift -0.2 gives 0.64, so ``se2 = 0.64 * 0.36 /
+        (20 * 0.64^2) + 0.16 / (20 * 0.8^2)`` against the distance
+        ``log(0.64)``, and the companion effect reaches the target."""
+        baseline = Baseline.from_proportion(0.8)
+        procedure = _absorbed(metric_type="conversion", alternative="less", null_lift=0.25)
+        result = achieved_power(20, -0.2, baseline, procedure)
+        expected = _independent_h1_power(20, 20, baseline, procedure, -0.2, bounded=True)
+        assert result.power == pytest.approx(expected, rel=1e-12)
+        assert result.mde_relative is not None
+        implied = _implied_complier_lift(result.mde_relative, null_lift=0.25, compliance=1.0)
+        assert _independent_h1_power(20, 20, baseline, procedure, implied, bounded=True) == (
+            pytest.approx(0.8, abs=1e-9)
+        )
+
     def test_mde_stops_at_the_rate_ceiling(self):
         """A target the ceiling rate just reaches returns the ceiling; one it
         cannot reach is unattainable with that limiting condition, and a
@@ -3188,7 +3388,8 @@ class TestBoundedDomain:
         one, so a minimum detectable effect is always one the supplied-effect
         route evaluates. A ceiling effect keeps its distance from an adjacent
         null: lift 4.0 on 0.2 sits one float above the null 3.9999999999999996,
-        so it still has a size."""
+        so it still has a size, and that astronomically large size reaches the
+        target."""
         from increment.errors import InvalidRequestError
 
         baseline = Baseline.from_proportion(0.5)
@@ -3228,6 +3429,7 @@ class TestBoundedDomain:
         sized = required_sample_size(4.0, Baseline.from_proportion(0.2), adjacent_null)
         assert math.isfinite(sized.n_per_arm)
         assert sized.n_per_arm > 0
+        assert sized.power >= 0.8
 
         with pytest.raises(InvalidRequestError) as refusal:
             minimum_detectable_effect(4, baseline, procedure, PowerDesign(power=0.8))
