@@ -2505,4 +2505,133 @@ def test_advisory_attaches_only_to_its_own_day_and_population(tmp_path):
     assert code in render(result, "full")
 
 
+def _daily_revenue_run(*, days=3, treatment_from=0, zero_on=None, values=True, unobserved=()):
+    """Run daily lift (and values) views on 80 units per arm with declared exposure dates.
+
+    Treatment units are exposed from day ``treatment_from``; ``zero_on`` zeroes their revenue.
+    The design also declares each arm in ``unobserved``, which has no units.
+    """
+    import polars as pl
+
+    from increment import MetricSpec, Randomized, from_frame, run
+
+    rng = np.random.default_rng(3)
+    axis = [date(2026, 2, day) for day in range(1, days + 1)]
+    arms = ("control", "treatment", *unobserved)
+    rows = [
+        {
+            "user_id": f"{arm[0]}{unit}",
+            "variant": arm,
+            "day": day,
+            "exposed": axis[start],
+            "revenue": 0.0
+            if arm == "treatment" and day == zero_on
+            else float(5 + (arm == "treatment") * 0.5 + rng.normal(0, 1)),
+        }
+        for arm, start in (("control", 0), ("treatment", treatment_from))
+        for unit in range(80)
+        for day in axis[start:]
+    ]
+    experiment, reader = from_frame(
+        pl.DataFrame(rows),
+        shape="panel",
+        unit="user_id",
+        group="variant",
+        date="day",
+        exposure_date="exposed",
+        design=Randomized(
+            control_group="control",
+            allocation=dict.fromkeys(arms, 1 / len(arms)),
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="revenue")],
+        plan=AnalysisPlan(primary="revenue"),
+    )
+    views = (View.daily(), View.daily(values=True)) if values else (View.daily(),)
+    with reader:
+        return run(experiment.with_views(*views), reader), views
+
+
+def test_readout_unavailable_line_names_the_cell():
+    from tests.test_result_envelope import _missing_and_constant_metric_run
+
+    readout = str(_missing_and_constant_metric_run().readout()).splitlines()
+    assert not any('{"' in line for line in readout)
+
+    result, (lift, _values) = _daily_revenue_run(zero_on=date(2026, 2, 2))
+    (line,) = (
+        line for line in str(result.readout(lift)).splitlines() if line.startswith("Unavailable ")
+    )
+    assert "2026-02-02" in line
+    assert "treatment" in line
+
+
+def test_daily_lift_keeps_days_without_treatment_units():
+    result, (lift, _values) = _daily_revenue_run(days=5, treatment_from=2)
+    rows = result.readout(lift)
+    treatment = [row for row in rows if row.group_id == "treatment"]
+    assert len(treatment) == 5
+    missing = [row for row in treatment if row.lift is None]
+    assert [row.ds for row in missing] == [date(2026, 2, 1), date(2026, 2, 2)]
+    assert {row.unavailable for row in missing} == {"no_treatment_arm"}
+    counts = rows.to_frame(backend="polars").select(
+        ["required_cell_count", "available_cell_count", "unavailable_cell_count"]
+    )
+    assert set(counts.iter_rows()) == {(5, 3, 2)}
+
+
+def test_daily_lift_lists_each_declared_arm_on_every_day():
+    result, (lift,) = _daily_revenue_run(values=False, unobserved=("treatment_b",))
+    rows = result.readout(lift)
+    absent = [row for row in rows if row.group_id == "treatment_b"]
+    assert [row.ds for row in absent] == [date(2026, 2, day) for day in (1, 2, 3)]
+    assert all(row.lift is None for row in absent)
+    assert {row.unavailable for row in absent} == {"no_treatment_arm"}
+    counts = rows.to_frame(backend="polars").select(
+        ["group_id", "required_cell_count", "available_cell_count", "unavailable_cell_count"]
+    )
+    assert set(counts.iter_rows()) == {("treatment", 3, 3, 0), ("treatment_b", 3, 0, 3)}
+
+
+def test_daily_values_pickled_without_value_scale_load_as_absolute():
+    """A values collection pickled before ``value_scale`` was a field has rows with no entry
+    for it and metadata keying their cells with no scale; it loads on the absolute scale every
+    daily value is on."""
+    import io
+    import pickle
+
+    from increment.breakout.estimates import DailyMetricValues
+    from increment.declarations import CellKey
+    from increment.estimation.readout_types import ReadoutMetadata
+
+    result, (_lift, values_view) = _daily_revenue_run()
+    values = result.readout(values_view)
+    assert values.metadata is not None
+    earlier_metadata = ReadoutMetadata.model_validate_json(
+        values.metadata.model_dump_json().replace('"value_scale":"absolute"', '"value_scale":null')
+    )
+
+    class EarlierRelease(pickle.Pickler):
+        """Writes what a release before ``value_scale`` wrote for the same collection."""
+
+        def reducer_override(self, obj):
+            if isinstance(obj, DailyMetricValue):
+                restore, arguments, state, *rest = obj.__reduce_ex__(pickle.DEFAULT_PROTOCOL)
+                fields = {k: v for k, v in state["__dict__"].items() if k != "value_scale"}
+                fields_set = state["__pydantic_fields_set__"] - {"value_scale"}
+                earlier = {**state, "__dict__": fields, "__pydantic_fields_set__": fields_set}
+                return restore, arguments, earlier, *rest
+            if isinstance(obj, DailyMetricValues):
+                restore, (kind, rows, _metadata, *rest) = obj.__reduce_ex__(pickle.DEFAULT_PROTOCOL)
+                return restore, (kind, rows, earlier_metadata, *rest)
+            return NotImplemented
+
+    saved = io.BytesIO()
+    EarlierRelease(saved).dump(values)
+    restored = pickle.loads(saved.getvalue())
+    assert [CellKey.from_row(row).value_scale for row in restored] == ["absolute"] * len(values)
+    assert restored.metadata == values.metadata
+    assert restored.to_frame(backend="polars").equals(values.to_frame(backend="polars"))
+
+
 pytestmark = pytest.mark.integration

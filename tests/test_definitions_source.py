@@ -570,9 +570,10 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_daily_lift(cros
     assert {e.source for e in results} == {"src_a", "src_b"}
     for source in ("src_a", "src_b"):
         assert {e.metric for e in results if e.source == source} == {"visit_rate", "checkout"}
-    # dimension_value differs by source (src_a: US=control-only so no lift
-    # row, CA=treatment; src_b: MX); cross-source mixups would still pass above.
-    assert {e.dimension_value for e in results if e.source == "src_a"} == {"CA"}
+    # dimension_value differs by source (src_a: US=control-only so an unavailable
+    # no_treatment_arm row, CA=treatment; src_b: MX); cross-source mixups would still pass above.
+    assert {e.dimension_value for e in results if e.source == "src_a"} == {"US", "CA"}
+    assert {e.unavailable for e in results if e.dimension_value == "US"} == {"no_treatment_arm"}
     assert {e.dimension_value for e in results if e.source == "src_b"} == {"MX"}
 
 
@@ -621,9 +622,10 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_asof_lift(cross
     assert {e.source for e in results} == {"src_a", "src_b"}
     for source in ("src_a", "src_b"):
         assert {e.metric for e in results if e.source == source} == {"visit_rate", "checkout"}
-    # dimension_value differs by source (src_a: US=control-only so no lift
-    # row, CA=treatment; src_b: MX); cross-source mixups would still pass above.
-    assert {e.dimension_value for e in results if e.source == "src_a"} == {"CA"}
+    # dimension_value differs by source (src_a: US=control-only so an unavailable
+    # no_treatment_arm row, CA=treatment; src_b: MX); cross-source mixups would still pass above.
+    assert {e.dimension_value for e in results if e.source == "src_a"} == {"US", "CA"}
+    assert {e.unavailable for e in results if e.dimension_value == "US"} == {"no_treatment_arm"}
     assert {e.dimension_value for e in results if e.source == "src_b"} == {"MX"}
 
 

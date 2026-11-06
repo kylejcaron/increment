@@ -41,14 +41,17 @@ are complementary representations, not competing choices for one format.
 The version-2 envelope adds a tagged report-only row payload for result classes
 that are not `LiftEstimate` rows. These payloads are not deserialized as
 `LiftEstimate` and have no portable operations unless a construction-specific
-adapter retains the required state. Version-1 JSON and Arrow result cells
-continue to decode as `lift_estimate`.
+adapter retains the required state. That is a property of the row kind, not of
+the result: a report cell's sampling status is `available` when its row carries
+usable inference evidence, and otherwise `unavailable` with the row's own code
+and context. Version-1 JSON and Arrow result cells continue to decode as
+`lift_estimate`.
 
 | Public result row or collection | Retained state and identity | Portable operation ruling |
 |---|---|---|
 | `BreakoutEstimate` / `BreakoutEstimates` | Full typed row, including segment identity, population, source, raw and prior-shrunken result fields, relative/additive references, confidence-set geometry, counts, exclusion/unavailable status, multiplicity and posterior fields. | Report-only; no lift cast or relevel inference. Segment identity remains distinct from total rows. |
 | `DailyLiftEstimate` / `DailyLiftEstimates` | Full typed row, including `ds`, `ds_basis`, segment identity, source, set geometry, unavailable reason and sequential state. Daily and as-of rows have distinct row-kind and scope identities. | Construction-specific margin comparison and fixed-family evidence adaptation use retained state; no lift cast or relevel inference. |
-| `DailyMetricValue` / `DailyMetricValues` | Full typed row, including absolute arm mean or its exact unavailable reason, `ds`, `ds_basis`, segment and source. Daily and as-of values have distinct row-kind and scope identities. Both identity and summary explicitly use absolute scale. | Report-only; arm-level absolute values are not treatment contrasts. |
+| `DailyMetricValue` / `DailyMetricValues` | Full typed row, including absolute arm mean or its exact unavailable reason, `ds`, `ds_basis`, segment and source. Daily and as-of values have distinct row-kind and scope identities. The row's fixed `value_scale="absolute"` gives its identity and summary the absolute scale. | Report-only; arm-level absolute values are not treatment contrasts. |
 | `CateResult` | Versioned report-only payload contains only fields in its public serialized form. The producing facade captures metric, control, treatment, scope and canonical source identity; an explicit source snapshot ID is retained when available. Omitted fit state is not reconstructed. | No fit-dependent operations. `cate`, `contrast` and `score` remain on the live result. |
 | Honest CATE / targeting outputs (`GroupEffect`, `CateValidation`, `TargetingRule`, `TargetingSelection`) | Typed report payload retains held-out group effects, gate/qualification, selected fraction and policy readout with numeric-null reasons. The selection estimand follows the outer targeting rule population; the inner selection population stays in the report payload. Withheld policy values remain null. | Report-only; no replay or policy mutation. |
 | `ConfoundingSensitivity` | Typed payload preserves the observed ratio, derived bounds and exact interval-null reason. The cell summary projects the ratio and both bounds to relative lift; table display formats those summaries as percentages. | Report-only; sensitivity is not a second sampling interval. |

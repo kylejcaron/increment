@@ -131,6 +131,10 @@ def without_stamped_sequential_direction(
     return projected
 
 
+VALUE_SCALE_SNAPSHOT_REASON = (
+    "A values snapshot digests each emitted row, and a daily or as-of value row now records "
+    "value_scale='absolute'; the values are unchanged."
+)
 _RECORDS = (
     ExpectedDifference(
         scenario="triggered_encouragement_compliance_asof",
@@ -198,6 +202,29 @@ _RECORDS = (
         frozen="sha256:020683b7c4135af28e830fa95ecc26a1be457017b8a35ec14550f603bf28022e",
         current="sha256:fd2bc5d54f902f2d2daa1c0f8c18079b9f139218e47f508d75fbac5bb7849f36",
         reason="The breakout family ID digests the snapshot ID above.",
+    ),
+    *(
+        ExpectedDifference(
+            scenario=scenario,
+            ingress="from_definitions",
+            # Cell and row `source_snapshot_id`, `scope.snapshot_id` and the `scope.by_source` key.
+            field="source_snapshot_id",
+            frozen=frozen,
+            current=current,
+            reason=VALUE_SCALE_SNAPSHOT_REASON,
+        )
+        for scenario, frozen, current in (
+            (
+                "triggered_daily",
+                "sha256:26a5b7884c72bcee1a286281f2c5b0044a02fa96ebbfd7c5ce4b7220ad9c16a3",
+                "sha256:6df2055343e38762994c98bdb8c82fadbd87fb11867dd9e554751623c19107d8",
+            ),
+            (
+                "triggered_asof",
+                "sha256:b5c8643bfd5b02f42eff25575d68ac638a323dad4902e8b5ec44f995b0040557",
+                "sha256:5216ff36ab506d2521c8e926c49109f9a9231f7aa19a5d29f3b4a510f94bdea0",
+            ),
+        )
     ),
 )
 # A breakout view on an experiment that declares no breakout, or a triggered view no source
@@ -283,6 +310,37 @@ _RECORDS += tuple(
             ["from_definitions", "from_unit_day_artifact", "from_moments"],
         ),
         ("from_switchback_panel", "switchback", ["from_definitions", "from_unit_day_artifact"]),
+    )
+)
+# Each recorded cell key of a frozen day-axis values readout.
+_CELL_KEY_RECORDS = tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress=ingress,
+        field="metadata cells[].cell.value_scale",
+        key="value_scale",
+        frozen=None,
+        current="absolute",
+        reason=(
+            "A daily or as-of value row records value_scale='absolute', so its cell key "
+            "carries the scale its result cell already named; the values are unchanged."
+        ),
+    )
+    for scenario, ingress in (
+        ("triggered_daily", "from_definitions"),
+        ("triggered_daily", "from_unit_day_artifact"),
+        ("triggered_asof", "from_definitions"),
+        ("triggered_asof", "from_unit_day_artifact"),
+        *(
+            (f"asof-{base}", ingress)
+            for base in (
+                "breakout_store_dimension",
+                "breakout_boolean_store_dimension",
+                "conversion_route_breakout_segments",
+                "audit-retention-breakout-cohorts",
+            )
+            for ingress in ("from_definitions", "from_unit_panel")
+        ),
     )
 )
 # Typed consumer inputs are frozen separately from the outcomes above.
@@ -430,6 +488,7 @@ def _by_case(
 
 EXPECTED_DIFFERENCES = _by_case(_RECORDS)
 CONSUMER_INPUT_DIFFERENCES = _by_case(_CONSUMER_INPUT_RECORDS)
+CELL_KEY_DIFFERENCES = _by_case(_CELL_KEY_RECORDS)
 DISPOSITION_DIFFERENCES = _by_case(_DISPOSITION_RECORDS)
 
 
@@ -705,6 +764,35 @@ def without_post_capture_family_size(expected: Any, actual: Any) -> Any:
     ):
         paired = [
             without_post_capture_family_size(left, right)
+            for left, right in zip(expected, actual, strict=True)
+        ]
+        return tuple(paired) if isinstance(actual, tuple) else paired
+    return actual
+
+
+def without_value_row_scale(expected: Any, actual: Any) -> Any:
+    """``actual`` without the fixed ``value_scale`` daily and as-of value rows gained after a
+    capture.
+
+    Only a row holding a day's (``ds``) arm ``value`` whose captured row lacks the field is
+    projected, and only when it holds ``"absolute"``, the one scale such a row records. Lists
+    and tuples pair by position, as in ``without_gained_arm_facts``.
+    """
+    if isinstance(expected, Mapping) and isinstance(actual, Mapping):
+        projected = {
+            key: without_value_row_scale(expected.get(key), value) for key, value in actual.items()
+        }
+        if {"ds", "value", "value_scale"} <= actual.keys() and "value_scale" not in expected:
+            assert actual["value_scale"] == "absolute", actual["value_scale"]
+            del projected["value_scale"]
+        return projected
+    if (
+        isinstance(expected, (list, tuple))
+        and isinstance(actual, (list, tuple))
+        and len(expected) == len(actual)
+    ):
+        paired = [
+            without_value_row_scale(left, right)
             for left, right in zip(expected, actual, strict=True)
         ]
         return tuple(paired) if isinstance(actual, tuple) else paired

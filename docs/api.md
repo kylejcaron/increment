@@ -373,6 +373,45 @@ values.
   `source.frame.sequential_exposure_date`, as the summary shape does, instead of
   failing at `run`. Experiment `to_json()` and `hash()` are unchanged. To
   migrate, set `observation_end` to the last day whose data should count.
+- Release note (breaking bug fix): breakout, daily, as-of, contrast,
+  sensitivity and other report cells now report the sampling status of their
+  own row. In `envelope.to_payload()`, `render(result)` and a saved run's
+  `reason_code`, a report cell is `available` when its row carries usable
+  inference evidence (a point, a confidence set, including an exact conversion
+  row with zero control events, or additive bounds; for a CATE, targeting or
+  sensitivity report, its retained estimate, such as the average effect, the
+  policy value or the observed risk ratio), and otherwise `unavailable`
+  with the row's failure code, or `results.component.unavailable` with its
+  exclusion as `context["reason"]` (for example `few_units`). Every such cell
+  was `unavailable` with `results.operation.unsupported` before; that no
+  portable operation is registered remains a property of the row kind and its
+  `supports`. A saved run's `reason_code` column is the sampling status code,
+  as the history table's already is, so it is null for every available cell,
+  including an available lift cell, which stored its posterior's code (such as
+  `"posterior state is not retained"`). `DailyMetricValue` gains a fixed
+  `value_scale="absolute"` field, so a daily-values row's identity matches its
+  cell and render no longer lists those cells as hidden; a values collection
+  pickled or saved as JSON by an earlier release loads with that scale. A daily
+  or as-of lift view now has a row for each treatment arm on each day,
+  including every arm the design's allocation declares: a day with no units in
+  an arm is an unavailable row with `no_treatment_arm` and counts among the
+  required cells, where it was left out. To migrate, read a report cell's
+  availability from its status rather than from `row_kind`, and a saved cell's
+  missing posterior from its `posterior` status rather than from
+  `reason_code`. Estimates and experiment identity are unchanged.
+- Release note (usability): `render(result)` prints each cell's effect and
+  interval at six significant digits (percent for relative effects) instead of
+  raw floats, labels each cell as `print(result)` does, and no longer prints an
+  empty `reason={}`. `Warning:` marks only a qualification that weakens the
+  claim: a disclosed code, live or provider-owned evidence, a failed integrity
+  check, an incomplete decision scope or population roster, or a partial view;
+  the other qualifications print without it. The payload
+  `components.sampling.status.reason` of a failed cell is its failure text, the
+  registered explanation or else the failure context's `display`, instead of a
+  description of its interval construction. In a collection's readout, each
+  `Unavailable` line names the cell's arm, segment and day, and explains a
+  failure without a registered explanation by its `display` text before its raw
+  context. Codes, estimates and experiment identity are unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
