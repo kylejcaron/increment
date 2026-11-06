@@ -1309,6 +1309,7 @@ Retired codes and their replacements are listed below.
 | `query.artifact_reader.artifact_moment.manifest_no_metric` | `InvalidRequestError` | — | `increment.query.artifact_reader` |
 | `query.artifact_reader.artifact_moment.verification_lazy_digest` | `InvalidRequestError` | — | `increment.query.artifact_reader` |
 | `query.artifact_reader.snapshot_execution_returned` | `InvalidRequestError` | `type_name` | `increment.query.artifact_reader` |
+| `query.backend.compiler_unavailable` | `CapabilityError` | `backend`, `route` | `increment._compile_gaps` |
 | `query.backend.operation_unsupported` | `CapabilityError` | `backend`, `detail`, `route` | `increment._compile_gaps` |
 | `query.builders.asof_group_summary` | `InvalidRequestError` | `name`, `threshold_days` | `increment.query.builders` |
 | `query.builders.asof_group_summary_completed_requires_uptake_window` | `InvalidRequestError` | — | `increment.query.builders` |
@@ -1589,6 +1590,7 @@ Retired codes and their replacements are listed below.
 | `store.run.scope_manifest_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.scope_mapping_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.timestamp_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.schema_name_too_long` | `InvalidRequestError` | `backend`, `limit`, `schema`, `store` | `increment._warehouse_namespace` |
 | `tables.readout_table_ambiguous` | `InvalidRequestError` | `key`, `route` | `increment.tables` |
 | `tables.readout_table_duplicate` | `InvalidRequestError` | — | `increment.tables` |
 | `tables.readout_table_nest` | `InvalidRequestError` | — | `increment.tables` |

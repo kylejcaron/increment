@@ -28,7 +28,7 @@ from increment._analysis_config import (
     overlay_configs,
     resolve_configs,
 )
-from increment._compile_gaps import translating_compile_gaps
+from increment._compile_gaps import load_dialect_compiler, translating_compile_gaps
 from increment._cuped_evidence import (
     CUPED_EVIDENCE_FORMAT,
     method_key,
@@ -4549,11 +4549,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def panel_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]:
         """Return panel SQL for every declared metric and requested breakout."""
+        load_dialect_compiler(self._backend or self._con.name)
         with translating_compile_gaps():
             return self._panel_sql_for_metrics(breakouts=list(breakouts))
 
     def summary_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]:
         """Return group-summary SQL for every declared metric and breakout."""
+        load_dialect_compiler(self._backend or self._con.name)
         with translating_compile_gaps():
             return self._summary_sql_for_metrics(breakouts=list(breakouts))
 

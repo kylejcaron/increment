@@ -2120,6 +2120,26 @@ the rule to [Ibis](https://github.com/ibis-project/ibis) so it ships with the
 backend. TEMP-table support is the backend's own behavior and cannot be added
 this way.
 
+### Event times with a time zone
+
+Increment reads event times that carry a time zone in UTC. On the four verified
+backends it converts them to UTC timestamps without a time zone with the
+backend's own time-zone conversion, both to bucket events into days and to
+compare them with sources whose event times have no time zone. Ibis has no
+conversion that keeps the instant and its full precision on every backend, so
+on any other backend an analysis whose event times carry a time zone stops with
+`query.backend.operation_unsupported`, and the refusal's `detail` reads
+`converting event times that carry a time zone to UTC (convert them to UTC
+timestamps without a time zone in the source SQL)`. Ibis reads a plain
+Databricks `TIMESTAMP` column as carrying a time zone, so ordinary Databricks
+tables stop here too; a `TIMESTAMP_NTZ` column has none.
+
+To analyze such sources on that backend, convert the `timestamp_column` in the
+source SQL to a timestamp without a time zone that holds the UTC time, using the
+warehouse's own conversion. Increment then reads it as UTC, like any timestamp
+without a time zone. A `visit_<Operation>` rule, as in the previous section,
+does not help here: the conversion is Increment's own, not an Ibis operation.
+
 ## Next step
 
 Choose an estimator with [Which experiment analysis method should I use?](choose-a-method.md), or continue to the [warehouse analysis example](../examples/analysis_from_a_warehouse.md).
