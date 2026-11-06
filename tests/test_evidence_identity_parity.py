@@ -1611,6 +1611,8 @@ def test_subtolerance_moment_mutation_preserves_parity_but_changes_identity() ->
     assert baseline_categorical == changed_categorical
 
 
+# Two hash-seeded interpreters each need all three real snapshot acquisitions.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_readout_snapshot_identity_is_hash_seed_independent() -> None:
     script = """
