@@ -801,6 +801,19 @@ def test_failed_insert_during_temp_materialization_is_cleaned_up():
         con.disconnect()
 
 
+def test_connection_without_temp_tables_refuses_with_a_dataframe_route(monkeypatch):
+    con, session = _session()
+
+    def no_temp_tables(*args, **kwargs):
+        raise NotImplementedError("Temporary tables are not supported")
+
+    monkeypatch.setattr(con, "create_table", no_temp_tables)
+    with pytest.raises(CapabilityError) as raised:
+        session.materialize_table(session.temp_name("snapshot"), con.table("t"), required=True)
+    assert raised.value.code == "query.session.snapshot.materialization_failed"
+    assert "from_frame" in str(raised.value)
+
+
 @pytest.mark.parametrize("owner_kind", ["session", "artifact_qr"])
 def test_temp_catalog_probe_failure_retains_locator_for_retry(monkeypatch, owner_kind):
     from contextlib import nullcontext

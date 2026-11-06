@@ -919,10 +919,10 @@ def _check_sql(dialect: str | None, sql: Any, label: str, path: Path, *, advise:
             raise error from exc
 
 
-# Importing an ibis SQL backend registers its sqlglot dialect, so `con.name`
+# Importing an ibis SQL backend registers its sqlglot dialect, so a backend name
 # resolves directly for nearly every backend. Map the exceptions: ibis registers
 # `singlestoredb` as `singlestore`; sqlglot names `mssql`/`pyspark` `tsql`/`spark`.
-# Unregistered names make `resolve_execution_dialect` return None, not refuse.
+# Unregistered names make `sqlglot_dialect_name` return None, not refuse.
 _IBIS_TO_SQLGLOT_DIALECT = {
     "mssql": "tsql",
     "pyspark": "spark",
@@ -930,16 +930,24 @@ _IBIS_TO_SQLGLOT_DIALECT = {
 }
 
 
+def sqlglot_dialect_name(backend_name: str) -> str | None:
+    """The sqlglot dialect name for an ibis backend name, or `None` when sqlglot
+    has no dialect for it. Ibis calls take the ibis name; sqlglot calls take this one.
+    """
+    import sqlglot
+
+    candidate = _IBIS_TO_SQLGLOT_DIALECT.get(backend_name, backend_name)
+    return candidate if candidate in sqlglot.Dialect.classes else None
+
+
 def resolve_execution_dialect(defs: Definitions, con: Any) -> str | None:
     """The sqlglot dialect name matching *con*'s own SQL dialect, or `None`
     when sqlglot has no dialect for it at all. Returns `defs.dialect`
     unchanged when declared (already validated at `load()` time; this is a
-    no-op read, not a re-resolution). When undeclared, resolves to the
-    connection's own backend name -- mapped through
-    `_IBIS_TO_SQLGLOT_DIALECT` for the three confirmed ibis/sqlglot name
-    mismatches -- or `None` if that name is not a sqlglot dialect at all:
-    never a refusal, so a backend sqlglot has never heard of keeps admitting
-    SQL exactly as it does today (the generic-dialect fallback
+    no-op read, not a re-resolution). When undeclared, resolves the
+    connection's own backend name through `sqlglot_dialect_name`: never a
+    refusal, so a backend sqlglot has never heard of keeps admitting SQL
+    exactly as it does today (the generic-dialect fallback
     `verify_sql_admission_matches_execution` and `load()` both already use
     for `dialect=None`).
     """
@@ -949,10 +957,7 @@ def resolve_execution_dialect(defs: Definitions, con: Any) -> str | None:
     from increment._optional import require_warehouse
 
     require_warehouse("SQL execution dialect")
-    import sqlglot
-
-    candidate = _IBIS_TO_SQLGLOT_DIALECT.get(con.name, con.name)
-    return candidate if candidate in sqlglot.Dialect.classes else None
+    return sqlglot_dialect_name(con.name)
 
 
 def verify_sql_admission_matches_execution(defs: Definitions, con: Any) -> None:

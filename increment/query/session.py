@@ -134,8 +134,9 @@ _REFUSALS = refusals(
             "query.session.snapshot.materialization_failed",
             CapabilityError,
             template=(
-                "source snapshot requires warehouse TEMP tables; use coherence='live' "
-                "when a live read is acceptable"
+                "this analysis needs warehouse TEMP tables, which this connection cannot "
+                "create; when only the source snapshot needs them, coherence='live' runs "
+                "without one, otherwise analyze from a dataframe with from_frame"
             ),
         ),
         "query.session.qr_scratch_cleanup_failed": RefusalSpec(
