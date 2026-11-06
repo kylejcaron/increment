@@ -1573,10 +1573,13 @@ class ReadoutResults:
     @staticmethod
     def model_validate_json(text):
         import json
+        from importlib import import_module
 
         # Upward: the saved-result boundary returns ContrastResults, whose concat and
         # validation build this module's ReadoutMetadata.
-        from increment.estimation.contrast_results import ContrastResult, ContrastResults
+        contrast_results = import_module("increment.estimation.contrast_results")
+        ContrastResult = contrast_results.ContrastResult
+        ContrastResults = contrast_results.ContrastResults
 
         payload = json.loads(text, object_pairs_hook=_unique_object)
         if payload.get("kind") != "increment.readout" or payload.get("schema_version") != 2:
@@ -1660,8 +1663,6 @@ class ReadoutResults:
         collection = collection_type(rows, **kwargs)
         persisted = payload.get("persisted_cells")
         if persisted is not None:
-            from importlib import import_module
-
             # Upward: persisted cells decode through ResultCell, which rebuilds this metadata.
             ResultCell = import_module("increment.result_envelope").ResultCell
             persisted_cells = tuple(ResultCell.from_payload(cell) for cell in persisted)
