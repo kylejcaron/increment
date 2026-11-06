@@ -8,7 +8,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from increment.estimation.armstats import ArmStats
-from increment.estimation.cuped._numeric import _arm_mean, _arm_offset, _fail, _two_product
+from increment.estimation.cuped._numeric import _arm_mean, _arm_offset, _fail
 from increment.estimation.cuped.encoding import _categorical_values, _encode_covariates
 from increment.estimation.cuped.inference import _mean_covariance, finalize_fit
 from increment.estimation.cuped.multicovariate import (
@@ -22,23 +22,10 @@ from increment.estimation.cuped.types import (
     FitState,
     MulticovariateCupedFit,
     _freeze_payload,
-    _incompatible_evidence,
     _invalid_evidence,
+    _pattern_key,
 )
 from increment.estimation.variance import ratio_denominator_precision
-
-# Partition centering, unpartitioned centering, stored roundings and merge
-# arithmetic together stay within a conservative multiple of machine epsilon.
-_MERGE_ERROR = 2.0**-49
-_MERGE_TOLERANCE = 2.0**-36
-_MERGE_ROUTE = (
-    "Fit from the unpartitioned cells, or explicitly supplied per-unit data, "
-    "instead of merging these partitions."
-)
-
-
-def _pattern_key(pattern):
-    return tuple((value is None, "" if value is None else value) for value in pattern)
 
 
 def categorical_cells(
@@ -158,201 +145,6 @@ def categorical_cells(
         symmetric_cross_moments=_freeze_payload(scatter),
         covariate_names=tuple(covariates),
     )
-
-
-def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> CategoricalCells:
-    left_key = (
-        left.identity,
-        left.arms,
-        left.covariate_names,
-        tuple(row[0] for row in left.null_metadata),
-        len(left.outcome_references),
-    )
-    right_key = (
-        right.identity,
-        right.arms,
-        right.covariate_names,
-        tuple(row[0] for row in right.null_metadata),
-        len(right.outcome_references),
-    )
-    if left_key != right_key:
-        _incompatible_evidence(
-            "cannot merge categorical cells with incompatible source or method identities"
-        )
-    patterns = tuple(sorted(set(left.patterns) | set(right.patterns), key=_pattern_key))
-    lookups = [{pattern: k for k, pattern in enumerate(part.patterns)} for part in (left, right)]
-    cross_moments = [
-        np.asarray(part.symmetric_cross_moments, dtype=float) for part in (left, right)
-    ]
-    components = len(left.outcome_references)
-    arm_count = len(left.arms)
-    exponents = [
-        [
-            max(
-                (
-                    part.outcome_exponents[f][a]
-                    for part in (left, right)
-                    if part.outcome_references[f][a]
-                    or any(part.centered_first_moments[a][f])
-                    or any(part.symmetric_cross_moments[a][f][f])
-                ),
-                default=0,
-            )
-            for a in range(arm_count)
-        ]
-        for f in range(components)
-    ]
-    counts = np.zeros((arm_count, len(patterns)), dtype=np.int64)
-    references = np.zeros((components, arm_count))
-    first = np.zeros((arm_count, components, len(patterns)))
-    scatter = np.zeros((arm_count, components, components, len(patterns)))
-    labels = ("numerator", "denominator") if components == 2 else ("outcome",)
-    for a in range(arm_count):
-        parts = [part for part in (left, right) if sum(part.counts[a])]
-        if not parts:
-            continue
-        units = sum(sum(part.counts[a]) for part in parts)
-        means = []
-        for f in range(components):
-            exponent = exponents[f][a]
-            total = math.fsum(_arm_sum_terms(parts, a, f, exponent))
-            uncertainty, bound = _merge_error_bound(parts, a, f, exponent, units)
-            if uncertainty > _MERGE_TOLERANCE * abs(total):
-                _fail(
-                    "estimation.cuped_linear.merge_precision",
-                    arm=left.arms[a],
-                    component=labels[f],
-                    bound=bound,
-                    mean=math.ldexp(total / units, exponent),
-                    route=_MERGE_ROUTE,
-                )
-            means.append(total / units)
-            references[f, a] = math.ldexp(means[f], exponent)
-        for k, pattern in enumerate(patterns):
-            entries = []
-            for part, lookup, part_cross in zip((left, right), lookups, cross_moments, strict=True):
-                old = lookup.get(pattern)
-                if old is None or not part.counts[a][old]:
-                    continue
-                count = part.counts[a][old]
-                shifts = [part.outcome_exponents[f][a] - exponents[f][a] for f in range(components)]
-                offset = np.array(
-                    [
-                        math.fsum(
-                            (
-                                math.ldexp(part.outcome_references[f][a], -exponents[f][a]),
-                                -means[f],
-                                math.ldexp(
-                                    part.centered_first_moments[a][f][old] / count, shifts[f]
-                                ),
-                            )
-                        )
-                        for f in range(components)
-                    ]
-                )
-                scale = np.asarray(shifts)
-                cross = np.ldexp(part_cross[a, :, :, old], scale[:, None] + scale[None, :])
-                entries.append((part, old, count, offset, cross))
-            if not entries:
-                continue
-            counts[a, k] = sum(entry[2] for entry in entries)
-            for f in range(components):
-                terms = []
-                for part, old, count, _offset, _cross in entries:
-                    reference = math.ldexp(part.outcome_references[f][a], -exponents[f][a])
-                    terms.extend(_two_product(count, reference))
-                    terms.append(
-                        math.ldexp(
-                            part.centered_first_moments[a][f][old],
-                            part.outcome_exponents[f][a] - exponents[f][a],
-                        )
-                    )
-                terms.extend(_two_product(-int(counts[a, k]), means[f]))
-                first[a, f, k] = math.fsum(terms)
-            cross = entries[0][4]
-            if len(entries) == 2:
-                (_, _, left_count, left_offset, left_cross) = entries[0]
-                (_, _, right_count, right_offset, right_cross) = entries[1]
-                share = math.sqrt(left_count * (right_count / (left_count + right_count)))
-                weighted = share * (right_offset - left_offset)
-                cross = left_cross + right_cross + np.outer(weighted, weighted)
-            scatter[a, :, :, k] = cross
-    levels = tuple(
-        tuple(sorted(set(a) | set(b), key=lambda value: (value is None, value or "")))
-        for a, b in zip(left.levels, right.levels, strict=True)
-    )
-    return CategoricalCells(
-        identity=left.identity,
-        arms=left.arms,
-        patterns=patterns,
-        counts=_freeze_payload(counts),
-        levels=levels,
-        null_metadata=tuple(
-            (metadata[0], None in level)
-            for metadata, level in zip(left.null_metadata, levels, strict=True)
-        ),
-        outcome_references=_freeze_payload(references),
-        centered_first_moments=_freeze_payload(first),
-        symmetric_cross_moments=_freeze_payload(scatter),
-        covariate_names=left.covariate_names,
-        outcome_exponents=_freeze_payload(exponents),
-    )
-
-
-def _arm_sum_terms(parts, arm, component, exponent):
-    """Exact terms whose sum is an arm's component total at the merged scale."""
-    terms = []
-    for part in parts:
-        reference = math.ldexp(part.outcome_references[component][arm], -exponent)
-        shift = part.outcome_exponents[component][arm] - exponent
-        for old, count in enumerate(part.counts[arm]):
-            if count:
-                terms.extend(_two_product(count, reference))
-                terms.append(math.ldexp(part.centered_first_moments[arm][component][old], shift))
-    return terms
-
-
-def _arm_square_terms(parts, arm, component, exponent):
-    """Reconstruct squared outcome sums from the retained arm moments."""
-    terms = []
-    for part in parts:
-        shift = part.outcome_exponents[component][arm] - exponent
-        reference = math.ldexp(part.outcome_references[component][arm], -exponent)
-        for k, count in enumerate(part.counts[arm]):
-            if not count:
-                continue
-            first = math.ldexp(part.centered_first_moments[arm][component][k], shift)
-            scatter = math.ldexp(
-                part.symmetric_cross_moments[arm][component][component][k],
-                2 * shift,
-            )
-            terms.extend(
-                (
-                    count * reference * reference,
-                    2.0 * reference * first,
-                    first * first / count,
-                    scatter,
-                )
-            )
-    return terms
-
-
-def _merge_error_bound(parts, arm, component, exponent, units):
-    if len(parts) != 2:
-        return 0.0, 0.0
-    square_terms = _arm_square_terms(parts, arm, component, exponent)
-    square_sum = math.fsum(square_terms)
-    operations = 128.0 * units * 2.0**-53
-    if operations >= 0.5:
-        return math.inf, math.inf
-    # The Cauchy bound uses reconstructed second moments; inflate their sum for
-    # rounding in every retained reference, first-moment and scatter term.
-    rounding_slack = (operations / (1.0 - operations)) * math.fsum(
-        abs(term) for term in square_terms
-    )
-    magnitude = math.sqrt(units * max(0.0, square_sum + rounding_slack))
-    uncertainty = _MERGE_ERROR * magnitude
-    return uncertainty, math.ldexp(uncertainty / units, exponent)
 
 
 def select_cell_arms(cells: CategoricalCells, arms: Sequence[object]) -> CategoricalCells:

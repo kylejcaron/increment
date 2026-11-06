@@ -17,7 +17,7 @@ from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean
 from increment.readouts._common import _raise
 from increment.readouts._metric_type import declared_metric_type, declared_metric_types
-from increment.readouts._multiplicity_scope import attach_multiplicity_scope
+from increment.readouts._multiplicity_scope import _request_snapshot, attach_multiplicity_scope
 
 
 def _randomized_source(
@@ -435,7 +435,7 @@ def _scoped_randomized_results(  # noqa: PLR0913, PLR0915
         ReadoutMetadata,
         SourceReadoutScope,
     )
-    from increment.readouts._design_scope import _config_snapshot, _request_snapshot, resolve_roster
+    from increment.readouts._design_scope import _config_snapshot, resolve_roster
 
     roster = resolve_roster(src, design, population, observed_by_metric, base_roster=base_roster)
     roster_arms = roster.arms

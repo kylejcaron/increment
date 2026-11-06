@@ -12,14 +12,19 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import numpy as np
 
-from increment.errors import refuse
-from increment.simulate.cluster_dgp import _INVALID, _EvaluationRoster, _rank_truth
+from increment.errors import InvalidRequestError, RefusalSpec, refuse
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from increment.estimation.targeting import TargetingRule
+    from increment.simulate.cluster_dgp import _EvaluationRoster
 
+_INVALID = RefusalSpec(
+    "simulate.cluster_dgp.invalid_scenario",
+    InvalidRequestError,
+    template="invalid clustered CATE request: {reason}",
+)
 _REASON = "estimation.targeting."
 
 
@@ -221,6 +226,45 @@ def _support(ids, d, observational, *, bootstrap=False):
 def _weights(ids, weighting):
     _, inverse, counts = np.unique(ids, return_inverse=True, return_counts=True)
     return np.ones(len(ids)) if weighting == "member_count" else 1 / counts[inverse]
+
+
+def _rank_truth(
+    score: np.ndarray, tau: np.ndarray, weights: np.ndarray, *, clustered: bool
+) -> tuple[float, float]:
+    """Integrate top-share causal contrasts, without calling inference helpers.
+
+    For a tied block with mass h and mean effect t, cumulative mass a and
+    cumulative effect R, TOC(q)=t-ATE+(R-a*t)/q on (a,a+h]. Integrate TOC
+    The unclustered statistic uses a discrete right-endpoint Riemann sum,
+    averaging rank coefficients within ties.
+    """
+    order = np.argsort(-score, kind="stable")
+    score, tau, weights = score[order], tau[order], weights[order]
+    if not clustered:
+        n = len(tau)
+        rank = np.arange(1, n + 1, dtype=float)
+        autoc_weights = (np.cumsum((1 / rank)[::-1])[::-1] - 1) / n
+        qini_weights = ((n + 1) / 2 - rank) / n**2
+        starts = np.r_[0, np.flatnonzero(score[1:] != score[:-1]) + 1]
+        counts = np.diff(np.r_[starts, n])
+        autoc_weights = np.repeat(np.add.reduceat(autoc_weights, starts) / counts, counts)
+        qini_weights = np.repeat(np.add.reduceat(qini_weights, starts) / counts, counts)
+        return float(autoc_weights @ tau), float(qini_weights @ tau)
+    overall = float(np.average(tau, weights=weights))
+    a, response, autoc, qini = 0.0, 0.0, 0.0, 0.0
+    starts = np.r_[0, np.flatnonzero(score[1:] != score[:-1]) + 1]
+    block_mass = np.add.reduceat(weights, starts)
+    block_effect = np.add.reduceat(weights * tau, starts) / block_mass
+    block_mass /= weights.sum()
+    for mass, effect in zip(block_mass, block_effect, strict=True):
+        correction = response - a * effect
+        autoc += (effect - overall) * mass
+        if a:
+            autoc += correction * math.log1p(mass / a)
+        qini += (effect - overall) * (a * mass + mass * mass / 2) + correction * mass
+        response += mass * effect
+        a += mass
+    return autoc, qini
 
 
 def _rank_reference(score, psi, weights):

@@ -17,6 +17,12 @@ from increment.estimation.cuped.types import (
     MulticovariateCupedFit,
 )
 
+M1_MAX_ENCODED_COVARIATES = 203
+M1_MAX_CATEGORICAL_LEVELS = 200
+M1_MAX_LEVERAGE_RATIO = 0.20
+M1_MAX_LEVERAGE = 0.45
+M1_MAX_RATIO_DENOMINATOR_PRECISION = 0.15
+
 
 def _invalid_evidence(reason: str) -> NoReturn:
     _fail("estimation.cuped_linear.invalid_evidence", reason=reason)
@@ -154,14 +160,6 @@ def _validate_finalization_evidence(state: FitState, summary: InferenceSummary) 
 
 
 def _validate_m1_support(state: FitState, summary: InferenceSummary) -> None:
-    from increment.estimation.cuped.multicovariate import (
-        M1_MAX_CATEGORICAL_LEVELS,
-        M1_MAX_ENCODED_COVARIATES,
-        M1_MAX_LEVERAGE,
-        M1_MAX_LEVERAGE_RATIO,
-        M1_MAX_RATIO_DENOMINATOR_PRECISION,
-    )
-
     violations: list[tuple[object, ...]] = list(summary.refusal_witness)
     existing = {entry[0] for entry in violations}
     categorical_levels = max(

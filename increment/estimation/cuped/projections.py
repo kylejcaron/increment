@@ -7,9 +7,6 @@ import math
 import numpy as np
 
 from increment.errors import InvalidRequestError
-from increment.estimation._tails import student_t_isf, two_sided_critical_value
-from increment.estimation.cuped._numeric import _fail, _projection_statistics
-from increment.estimation.cuped.types import MulticovariateCupedProjection
 
 
 def _cache_projections(calculator, outcomes, order):
@@ -80,18 +77,3 @@ def _append_projection(cached, kind, treatment, control, scale, calculate, *, re
     cached.append(entry)
     if reverse:
         cached.append((kind, control, treatment, scale, -entry[4], entry[5], entry[6]))
-
-
-def _interval(value: float, se: float, dof: float, alpha: float) -> MulticovariateCupedProjection:
-    value, se, dof = _projection_statistics(value, se, dof)
-    critical = two_sided_critical_value(student_t_isf, alpha, dof, what="linear CUPED projection")
-    half_width = critical * se
-    lower, upper = value - half_width, value + half_width
-    if not np.isfinite((half_width, lower, upper)).all():
-        _fail(
-            "estimation.cuped_linear.nonfinite_projection",
-            value=float(value),
-            se=float(se),
-            dof=float(dof),
-        )
-    return MulticovariateCupedProjection(value, se, dof, lower, upper)

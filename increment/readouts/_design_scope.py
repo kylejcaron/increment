@@ -42,7 +42,7 @@ from increment.readouts._common import _raise, _runtime_method_roles, _runtime_m
 from increment.readouts._evidence import load_counts
 from increment.readouts._metric_rows import _rows_digest
 from increment.readouts._metric_type import declared_metric_type, declared_metric_types
-from increment.readouts._multiplicity_scope import attach_multiplicity_scope
+from increment.readouts._multiplicity_scope import _request_snapshot, attach_multiplicity_scope
 from increment.readouts._source_digest import component, composite_source
 
 if TYPE_CHECKING:
@@ -419,50 +419,6 @@ def compliance_component(summary, population, *, source=None, dimension=None):
         source=source,
         dimension=dimension,
     )
-
-
-def _request_snapshot(value: Any, *, field: str = "request") -> Any:
-    """Make request data canonical, rejecting callables without stable import identity."""
-    if callable(value):
-        from importlib import import_module
-
-        from increment.estimation.readout_types import refuse_readout
-
-        module = getattr(value, "__module__", None)
-        qualname = getattr(value, "__qualname__", None)
-        if (
-            not isinstance(module, str)
-            or not module
-            or not isinstance(qualname, str)
-            or not qualname
-            or "<lambda>" in qualname
-            or "<locals>" in qualname
-        ):
-            refuse_readout("readout.scope.request_not_canonical", fields=[field])
-        try:
-            resolved = import_module(module)
-            for name in qualname.split("."):
-                resolved = getattr(resolved, name)
-        except (ImportError, AttributeError):
-            refuse_readout("readout.scope.request_not_canonical", fields=[field])
-        if resolved is not value:
-            refuse_readout("readout.scope.request_not_canonical", fields=[field])
-        return {"kind": "callable", "module": module, "qualname": qualname}
-    if isinstance(value, dict):
-        # Empty covariates and sequential procedure tags are not fixed-horizon
-        # estimator inputs; preserve the established request identity.
-        if {"name", "variance_reduction"} <= value.keys():
-            value = {
-                key: item
-                for key, item in value.items()
-                if key != "procedure" and (key != "covariates" or item is not None)
-            }
-        return {key: _request_snapshot(item, field=f"{field}.{key}") for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [
-            _request_snapshot(item, field=f"{field}[{index}]") for index, item in enumerate(value)
-        ]
-    return value
 
 
 def _config_snapshot(config, design):
