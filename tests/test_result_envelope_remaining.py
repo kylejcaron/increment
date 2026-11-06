@@ -5,7 +5,17 @@ from typing import Any, cast
 import pytest
 
 from increment import View, from_definitions, from_frame, from_switchback_frame
-from tests.analysis_factory import view_readout
+from tests.analysis_factory import non_guardrail_metrics, view_readout
+
+
+def _breakout(experiment: Any, resolver: Any) -> Any:
+    """The breakout view over the declared metrics: it cannot test a guardrail's margin."""
+    return view_readout(
+        experiment,
+        resolver,
+        View(view="breakout", grain="total"),
+        metrics=non_guardrail_metrics(experiment, resolver),
+    )
 
 
 def test_envelope_codec_has_versioned_row_kind_and_component_state_tags():
@@ -169,7 +179,7 @@ def test_breakout_and_day_axis_producers_round_trip_tagged_rows(seeded_con, seed
     )
     try:
         outputs = (
-            ("breakout", view_readout(experiment, resolver, View(view="breakout", grain="total"))),
+            ("breakout", _breakout(experiment, resolver)),
             (
                 "daily_metric",
                 view_readout(experiment, resolver, View(view="daily", grain="daily", values=True)),
@@ -401,7 +411,7 @@ def test_mixed_lift_and_report_cells_render_and_project_to_table(seeded_con, see
     )
     try:
         lift_rows = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
-        breakout_rows = view_readout(experiment, resolver, View(view="breakout", grain="total"))
+        breakout_rows = _breakout(experiment, resolver)
         cells = (*lift_rows.as_cells(), *breakout_rows.as_cells())
         decoded = tuple(
             ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))) for cell in cells
@@ -435,7 +445,7 @@ def test_filtered_breakout_cell_retains_full_family_scope(seeded_con, seeded_def
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
     )
     try:
-        rows = view_readout(experiment, resolver, View(view="breakout", grain="total"))
+        rows = _breakout(experiment, resolver)
         row = rows[0]
         assert rows.metadata is not None
         family = rows.metadata.family_of(row.source_snapshot_id, CellKey.from_row(row))

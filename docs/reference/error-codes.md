@@ -1183,6 +1183,7 @@ Retired codes and their replacements are listed below.
 | `plan.frame.secondaries` | `InvalidRequestError` | `derived`, `explicit` | `increment.decision` |
 | `plan.frame_contrast_does` | `UnsupportedRequestError` | — | `increment.plan` |
 | `plan.guardrail.direction` | `InvalidRequestError` | `metric` | `increment.decision` |
+| `plan.guardrail.margin_required` | `InvalidRequestError` | `metric`, `route` | `increment.decision` |
 | `plan.metric.report_only` | `InvalidRequestError` | `metric`, `role` | `increment.decision` |
 | `plan.metric_cuped_methods` | `UnsupportedRequestError` | `inference`, `metric` | `increment.plan` |
 | `plan.metric_frame_contrast` | `InvalidRequestError` | `metric` | `increment.plan` |

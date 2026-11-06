@@ -175,7 +175,7 @@ def test_compile_rejects_sensitivity_only_plan_entry_with_field_context():
     assert raised.value.context["fields"] == ("sensitivity_methods",)  # ty: ignore[unresolved-attribute]
 
 
-def test_compile_uses_metric_direction_for_marginless_guardrail():
+def test_compile_refuses_marginless_guardrail():
     guardrail = MeanMetric(
         name="revenue",
         entity="user",
@@ -183,11 +183,10 @@ def test_compile_uses_metric_direction_for_marginless_guardrail():
         aggregation="sum",
         preferred_direction="decrease",
     )
-    procedure = compile_contrast_procedures(
-        AnalysisPlan(guardrails=["revenue"]),
-        (guardrail,),
-    )["revenue"]
-    assert procedure.alternative == "less"
+    with pytest.raises(InvalidRequestError) as raised:
+        compile_contrast_procedures(AnalysisPlan(guardrails=["revenue"]), (guardrail,))
+    assert raised.value.code == "plan.guardrail.margin_required"
+    assert raised.value.context["metric"] == "revenue"
 
 
 def test_compile_guardrail_ignores_plan_wide_alternative():

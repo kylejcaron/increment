@@ -81,14 +81,16 @@ def _(mo):
 @app.cell
 def _(BreakoutIdentity, estimates_to_readout, experiment, increment, reader, readout_table):
     # new_onboarding_v2 declares Bonferroni segmented views in
-    # examples/definitions/experiments.yaml; its plan keeps fixed-horizon
-    # inference because the declared retention guardrail carries a prior.
+    # examples/definitions/experiments.yaml; its plan stays fixed-horizon because the
+    # retention guardrail carries a prior. A breakout cannot test that guardrail's
+    # margin, so these views read the other declared metrics.
     by_country = increment.View.breakout(())
     asof_lift_by_country = increment.View.asof(segment=(BreakoutIdentity("country", None),))
     segment_result = increment.run(
         experiment.with_views(by_country, asof_lift_by_country),
         reader,
         views=(by_country, asof_lift_by_country),
+        metrics=["purchase_rate", "avg_session_duration"],
         decision_method=increment.Method(name="unadjusted"),
     )
     breakout_table = readout_table(

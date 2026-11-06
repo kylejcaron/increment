@@ -33,7 +33,10 @@ experiments:
         - purchase_rate
         - avg_session_duration
       guardrails:
+        # A guardrail checks the treatment is not worse than control by its margin
+        # or more: here, a 2% relative loss of D7 retention.
         - metric: d7_retention
+          margin: 0.02
           prior:
             mu: 0.0
             sigma: 5.0  # weakly informative -- documents the binding form
@@ -58,8 +61,10 @@ experiments:
         - purchase_rate
         - revenue_per_session
       guardrails:
-        - avg_session_duration
-        - d7_retention
+        - metric: avg_session_duration
+          margin: 0.02
+        - metric: d7_retention
+          margin: 0.02
     n_pre_periods: 0  # no CUPED; includes ratio metrics
     control_group: control
 

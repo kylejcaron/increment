@@ -55,7 +55,12 @@ from increment.dashboard import (
 from increment.dashboard._app import DashboardWidget, build_payload, document, health_status
 from increment.dashboard._data import enriched_rows, show_exploratory_metrics
 from increment.dashboard._html import overview_notes, overview_rows, overview_table
-from increment.errors import CapabilityError, CodedError, InvalidRequestError
+from increment.errors import (
+    CapabilityError,
+    CodedError,
+    InvalidRequestError,
+    UnsupportedRequestError,
+)
 from increment.evidence import BreakoutIdentity
 from increment.workflows import capture_sequential
 from tests._unit_boundary import backend_fixture
@@ -196,7 +201,8 @@ _PLAN = """
         - revenue_per_user
         - ever_purchased_again
       guardrails:
-        - session_seconds
+        - metric: session_seconds
+          margin: 0.02
 """
 
 
@@ -570,7 +576,8 @@ experiments:
       secondaries:
         - revenue_per_user
       guardrails:
-        - session_seconds
+        - metric: session_seconds
+          margin: 0.02
     breakouts:
       - property: country
         source: event_log
@@ -662,8 +669,12 @@ _CLUSTERED_METRICS = (
 _CLUSTERED_EXPERIMENTS = (
     EXPERIMENTS.replace("    unit: user_id\n", "    unit: user_id\n    cluster: store_id\n", 1)
     .replace(
-        "      guardrails:\n        - session_seconds\n",
-        "      guardrails:\n        - session_seconds\n        - empty_guardrail\n",
+        "      guardrails:\n        - metric: session_seconds\n          margin: 0.02\n",
+        "      guardrails:\n"
+        "        - metric: session_seconds\n"
+        "          margin: 0.02\n"
+        "        - metric: empty_guardrail\n"
+        "          margin: 0.02\n",
         1,
     )
     .replace("    breakouts:\n      - property: country\n        source: event_log\n", "")
@@ -1502,8 +1513,13 @@ def test_a_non_randomized_design_is_refused_before_any_read(tmp_path, monkeypatc
     import tests.test_dashboard_capture as capture
 
     declared = capture._experiments
+    # An observational design refuses a relative margin when it compiles, before the dashboard.
     monkeypatch.setattr(
-        capture, "_experiments", lambda **options: declared(**options) + _OBSERVATIONAL
+        capture,
+        "_experiments",
+        lambda **options: (
+            declared(**options).replace("margin: 0.02", "margin_abs: 1.0") + _OBSERVATIONAL
+        ),
     )
     with _workspace(tmp_path) as (con, experiment, resolver):
         con.disconnect()
@@ -1656,7 +1672,7 @@ def test_rows_carry_the_tested_alternative() -> None:
     tails = {row["metric"]: row["alternative"] for row in snapshot.readout_rows}
     alternatives = {estimate.metric: estimate.alternative for estimate in snapshot.estimates}
     assert tails == alternatives
-    # A margin-less guardrail is tested on one side only.
+    # A guardrail's non-inferiority test is one-sided.
     assert tails["session_seconds"] == "less"
     assert tails["checkout_conversion"] == "two-sided"
 
@@ -1912,23 +1928,21 @@ def test_load_explore_segments_filter_by_dimension_source_and_method_without_lea
     assert {e.method_role for e in filtered} == {"decision"}
 
 
-def test_load_explore_segments_with_no_metric_returns_every_declared_metric() -> None:
-    """``metric=None`` covers every declared metric via one real breakout call."""
+def test_load_explore_segments_with_no_metric_reads_every_declared_metric() -> None:
+    """``metric=None`` is one real breakout call over every declared metric, so the declared
+    guardrail's margin, which a breakout cannot test, refuses that read by name."""
     saved = frozen("explore")
-    result = load_explore(
-        saved.experiment,
-        snapshot=saved.snapshot,
-        metric=None,
-        view="segments",
-        breakout=COUNTRY,
-    )
-    assert isinstance(result, BreakoutEstimates)
-    declared = tuple(metric.name for metric in saved.snapshot.metrics)
-    assert declared == _NAMES
-    assert {e.metric for e in result} == set(declared)
-    # Exactly one non-control arm x two segments (US, CA) per declared metric.
-    for metric in declared:
-        assert sum(1 for e in result if e.metric == metric) == 2
+    assert tuple(metric.name for metric in saved.snapshot.metrics) == _NAMES
+    with pytest.raises(UnsupportedRequestError) as caught:
+        load_explore(
+            saved.experiment,
+            snapshot=saved.snapshot,
+            metric=None,
+            view="segments",
+            breakout=COUNTRY,
+        )
+    assert caught.value.code == "readout.margin.breakout"
+    assert caught.value.context["names"] == ("session_seconds",)
 
 
 @pytest.mark.integration
@@ -2249,7 +2263,11 @@ def test_each_metrics_segments_are_its_own_bh_step_up():
     snapshot = _offered_shown(saved.snapshot)
     close = partial(pytest.approx, rel=TOLERANCE, abs=TOLERANCE)
     selected = rejected = reissued = 0
+    # A breakout cannot test the guardrail's margin, so its segment view refuses.
+    guardrails = {row.metric for row in snapshot.estimates if row.role == "guardrail"}
     for model in (*snapshot.metrics, *snapshot.offered_metrics):
+        if model.name in guardrails:
+            continue
         rows = load_explore(
             saved.experiment,
             snapshot=snapshot,

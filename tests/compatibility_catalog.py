@@ -329,7 +329,7 @@ MATRIX: dict[str, dict[str, Cell]] = {
         "mean": S(),
         "conversion": S(),
         "ratio": S(),
-        "retention": S(note="guardrail rows ride the export"),
+        "retention": S(note="retention rows ride the export"),
         "quantile": R(
             "no moments representation", CapabilityError, code="source.frame.quantile_no_moments"
         ),

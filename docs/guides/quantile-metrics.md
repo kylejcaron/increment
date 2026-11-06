@@ -121,10 +121,11 @@ design). Where `readout.observational.quantile` is reached, it is the same on
 panels, and fixed-horizon inference does not lift it. It is the
 refusal for a two-sided, zero-null request. Any one-sided or shifted-null
 request is refused first by `readout.metric.quantile_alternative` -- a plan
-`alternative="greater"`/`"less"`, a guardrail without a margin (its adverse
-tail is one-sided), or an absolute `margin_abs`. A relative margin never
-reaches a readout: the observational constructors refuse it at construction
-with `plan.observational.relative_margin`.
+`alternative="greater"`/`"less"` or an absolute `margin_abs`, including a
+guardrail's. A relative margin never reaches a readout: the observational
+constructors refuse it at construction with `plan.observational.relative_margin`,
+and a guardrail with no margin refuses at construction with
+`plan.guardrail.margin_required`.
 
 A quantile metric also refuses a one-sided `alternative` and a shifted
 null under the single code `readout.metric.quantile_alternative`
@@ -173,10 +174,11 @@ order statistic needs, and two different requests reach it:
   | Design and request | `run()` raises |
   |---|---|
   | randomized, two-sided zero null | `evidence.unit_rows_unavailable` (a moments cube holds no per-unit outcomes) |
-  | randomized, one-sided `alternative`, marginless guardrail, or relative or absolute margin | `readout.metric.quantile_alternative` (refused first) |
+  | randomized, one-sided `alternative`, or relative or absolute margin | `readout.metric.quantile_alternative` (refused first) |
   | `Observational`, two-sided zero null | `readout.observational.quantile` (the estimator refusal takes precedence over the source limit, because no source could supply it an input) |
-  | `Observational`, one-sided `alternative`, marginless guardrail, or absolute margin (`margin_abs`) | `readout.metric.quantile_alternative` (the one-sided check precedes the observational refusal) |
+  | `Observational`, one-sided `alternative` or absolute margin (`margin_abs`) | `readout.metric.quantile_alternative` (the one-sided check precedes the observational refusal) |
   | `Observational`, relative margin | `plan.observational.relative_margin`, at construction, before any read |
+  | either design, a guardrail with no margin | `plan.guardrail.margin_required`, at construction, before any read |
 
   A breakout view raises `evidence.breakout_unavailable`, the daily and as-of
   views (values or lift) raise

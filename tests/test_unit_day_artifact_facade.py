@@ -113,6 +113,26 @@ _PUBLICATION_GOLDEN_FORMAT_1 = (
 _SITE_VOLUME_CONTROL_PRECHANGE = (
     Path(__file__).parent / "fixtures" / "unit_day_artifact_site_volume_control_prechange.json"
 )
+# The publication golden's guardrail without a margin, and each digest over its context,
+# against the same publication with the margin the example definitions now declare.
+_GOLDEN_GUARDRAIL_MARGIN = (
+    (
+        '\\"margin\\":null,\\"margin_abs\\":null,\\"metric\\":\\"d7_retention\\"',
+        '\\"margin\\":0.02,\\"margin_abs\\":null,\\"metric\\":\\"d7_retention\\"',
+    ),
+    (
+        "dfe28bba9887ccbadf2ffb48962902d4cfdb25386b24c38a8409be193238224c",
+        "f510f611ac234401e7edc5a2b9e1f3883012ef9c80546b18c8742e657a4ad9a2",
+    ),
+    (
+        "4133efcd16850671af55b18d04c5e6904ef0e51c0d248cd323e3532c5d618025",
+        "df573f90b4545777db8d8e85f6aa9831397591ae31c23319f2c7530e2ca40e7b",
+    ),
+    (
+        "b806df8531990a01064c882e309754080cd4e4b7c9961ec7d1ce5aa6c4475939",
+        "3a2dd5d43e2b158c9afebbf36d44ea4ddf59b9402c8e3c709381373b581f4842",
+    ),
+)
 
 
 class _FixedUUID:
@@ -567,9 +587,13 @@ def test_representative_publication_matches_golden_manifest(
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
     assert all(extension.relation.digest_format == 4 for extension in manifest.extensions)
-    assert _normalized_manifest_bytes(manifest) == _normalized_saved_bytes(
-        canonical_json(expected_manifest)
-    )
+    saved = canonical_json(expected_manifest)
+    # The golden records the d7_retention guardrail without a margin, which refuses on read;
+    # the publication declares margin 0.02, which moves each digest over the context.
+    for frozen, current in _GOLDEN_GUARDRAIL_MARGIN:
+        assert frozen in saved, frozen
+        saved = saved.replace(frozen, current)
+    assert _normalized_manifest_bytes(manifest) == _normalized_saved_bytes(saved)
     assert [
         {
             "role": role,
@@ -607,14 +631,17 @@ def test_legacy_format_two_golden_changes_only_by_the_bound_window_days() -> Non
     new_payload = json.loads(new_manifest["context"]["canonical_json"])
 
     # This format-2 publication predates the explicit-q marker but includes all
-    # currently required context fields, so it still validates and rehydrates.
+    # currently required context fields, so it still validates. Its plan records a
+    # guardrail without a margin, so rehydrating it refuses.
     legacy = UnitDayArtifactManifest.model_validate(new_manifest)
     validate_artifact_context(legacy.context)
     assert "plan_q_explicit" not in new_payload
     from increment.query.source import _artifact_source_context
 
-    _experiment, legacy_source = _artifact_source_context(legacy.context)
-    assert not legacy_source.plan.q_explicit
+    with pytest.raises(CodedError) as refused:
+        _artifact_source_context(legacy.context)
+    assert refused.value.code == "plan.guardrail.margin_required"
+    assert refused.value.context["metric"] == "d7_retention"
     assert set(new_payload) - set(old_payload) == {"window_days"}
     assert set(old_payload) <= set(new_payload)
     assert (

@@ -12,28 +12,32 @@ more at FCR selection time -- see the secondary bullet below.
   only on its favorable side, the tail its declared ``preferred_direction``
   names (``favorable_side`` on its procedure).
 - guardrail: the full ``alpha``, never divided across guardrails, on the
-  one-sided adverse tail fixed by the metric's own margin and
-  ``preferred_direction`` (see ``_resolve_one``). This is a non-inferiority
-  test: rejecting the null (harm at least as large as the margin)
-  certifies the metric SAFE. Individually, each guardrail's type-I error
-  (falsely certifying SAFE) is bounded by ``alpha``. The compound decision
-  "ship only if every declared guardrail is SAFE" is then an
-  intersection-union test: its probability of shipping while at least one
-  guardrail is truly harmful is bounded by the same ``alpha``, regardless
-  of how many guardrails are declared -- so no per-guardrail correction is
-  needed for that compound decision's error rate. Dividing ``alpha`` by
-  the guardrail count would tighten the compound bound further (to
-  ``alpha / k``), but at the cost of making each individual guardrail's
-  own test harder to reject, i.e. less power to certify a genuinely safe
-  metric -- a real cost with no offsetting benefit the IUT bound needs.
-  Each guardrail result carries its own SAFE/HARM label. ``increment.run()``
-  also reports an aggregate program verdict, but returns ``pass`` only when
-  every required primary rejects on its favorable side, every guardrail result
-  is available and SAFE, and assignment integrity is qualified; a primary that
-  rejects on its adverse side blocks with ``decision.primary.adverse``. A
-  caller using only the per-guardrail labels must apply the
-  ship-only-if-all-SAFE rule; otherwise the joint probability that at least
-  one label is a false SAFE has only the weaker union bound
+  one-sided tail fixed by the metric's margin and ``preferred_direction``
+  (see ``_resolve_one``). This is a non-inferiority test, so a guardrail
+  needs a margin (``margin`` or ``margin_abs``, on the metric or its plan
+  binding); one without refuses at compile with
+  ``plan.guardrail.margin_required``. Rejecting the null (harm at least as
+  large as the margin) certifies the guardrail. Individually, each
+  guardrail's type-I error (certifying a guardrail that is harmed by at least
+  its margin) is bounded by ``alpha``. The compound decision "ship only if
+  every declared guardrail is certified" is then an intersection-union test:
+  its probability of shipping while at least one guardrail is truly harmful
+  is bounded by the same ``alpha``, regardless of how many guardrails are
+  declared -- so no per-guardrail correction is needed for that compound
+  decision's error rate. Dividing ``alpha`` by the guardrail count would
+  tighten the compound bound further (to ``alpha / k``), but at the cost of
+  making each individual guardrail's own test harder to reject, i.e. less
+  power to certify a genuinely safe metric -- a real cost with no offsetting
+  benefit the IUT bound needs. ``increment.run()`` reports an aggregate
+  program verdict that returns ``pass`` only when every required primary
+  rejects on its favorable side, every guardrail result is available and
+  certified, and assignment integrity is qualified; a primary that rejects on
+  its adverse side blocks with ``decision.primary.adverse``, and a guardrail
+  that does not reject blocks with ``decision.guardrail.not_certified``. The
+  test is one-sided, so a guardrail that is not certified has no evidence of
+  harm either way. A caller reading guardrail verdicts one at a time must
+  apply the ship-only-if-all-certified rule; otherwise the joint probability
+  that at least one is falsely certified has only the weaker union bound
   (``k * alpha`` across ``k`` guardrails).
 - secondary: the discovery family at ``q``. A fixed-horizon cell
   estimates at the nominal level; a sequential cell
@@ -180,6 +184,7 @@ _REFUSALS = refusals(
             ),
         ),
         "plan.guardrail.direction": "metric {metric!r}: a guardrail role requires an explicitly-set, non-neutral preferred_direction (increase|decrease) on the metric -- a guardrail's non-inferiority margin has no adverse side to test against otherwise, and 'neutral' names no side",
+        "plan.guardrail.margin_required": "metric {metric!r}: a guardrail tests that the treatment is not worse than control by more than a margin, and this guardrail declares no margin -- {route}",
         "plan.primary.alternative_direction": "metric {metric!r}: the plan tests alternative={alternative!r}, but the metric declares preferred_direction={preferred_direction!r}, so this primary could only ever show a worse result -- use alternative='two-sided' (each primary's verdict reads its own preferred_direction) or the one-sided alternative on its favorable side",
         "plan.frame.override": RefusalSpec(
             "plan.frame.override",
@@ -212,6 +217,54 @@ _REFUSALS = refusals(
 
 _REFUSALS["decision.arm_decision.one_sided_alpha"] = DECISION_ARM_DECISION_ONE_SIDED_ALPHA
 _raise = raiser(_REFUSALS)
+
+_GUARDRAIL_MARGIN_ROUTE = "declare ExperimentMetric(metric=..., margin=...) or margin_abs=..."
+# Sequential inference tests no additive null (``decision.absolute_arm.procedures_fixed_inference``).
+_SEQUENTIAL_GUARDRAIL_MARGIN_ROUTE = "declare ExperimentMetric(metric=..., margin=...)"
+# Sequential encouragement builds no shifted null (``plan.encouragement.margin``), so a margin
+# is no route there.
+_SEQUENTIAL_ENCOURAGEMENT_GUARDRAIL_ROUTE = (
+    "list the metric as a secondary, or use a fixed-horizon plan (inference=None)"
+)
+
+
+def margin_less_guardrail_route(*, sequential: bool, encouragement: bool) -> str:
+    """The declaration that gives a margin-less guardrail a supported plan under its design
+    and inference."""
+    if not sequential:
+        return _GUARDRAIL_MARGIN_ROUTE
+    return (
+        _SEQUENTIAL_ENCOURAGEMENT_GUARDRAIL_ROUTE
+        if encouragement
+        else _SEQUENTIAL_GUARDRAIL_MARGIN_ROUTE
+    )
+
+
+def refuse_margin_less_guardrail(metric: str, *, route: str = _GUARDRAIL_MARGIN_ROUTE) -> NoReturn:
+    """Refuse a guardrail with no margin: without one, rejecting its null would certify only a
+    significant improvement, not that the treatment is no worse than the margin allows."""
+    _raise("plan.guardrail.margin_required", metric=metric, route=route)
+
+
+def refuse_margin_less_procedures(
+    procedures: object, *, route: str = _GUARDRAIL_MARGIN_ROUTE
+) -> None:
+    """Refuse a recorded guardrail procedure that compiling its plan now refuses for lacking a
+    margin; ``procedures`` is a recorded plan's ``procedures`` mapping in JSON form.
+
+    Both margins are positive, so a recorded guardrail that had one carries a nonzero null on
+    its scale; a zero null on every scale means it had none.
+    """
+    if not isinstance(procedures, Mapping):
+        return
+    for name, procedure in procedures.items():
+        if (
+            isinstance(procedure, Mapping)
+            and procedure.get("role") == "guardrail"
+            and not procedure.get("null_lift")
+            and not procedure.get("null_abs")
+        ):
+            refuse_margin_less_guardrail(str(name), route=route)
 
 
 _WARNINGS: dict[str, WarningSpec] = {}
@@ -723,6 +776,7 @@ def _resolve_declaration(
     metrics: Sequence[Metric],
     *,
     path: Literal["warehouse", "frame", "frame/contrast"],
+    margin_route: str = _GUARDRAIL_MARGIN_ROUTE,
 ) -> _PlanResolution:
     """Resolve declaration roles and nulls before building runtime procedures.
 
@@ -846,6 +900,7 @@ def _resolve_declaration(
             alternative=plan.alternative,
             binding=binding_by_name.get(name),
             inference=inference,
+            margin_route=margin_route,
         )
         for name, metric in metrics_by_name.items()
     }
@@ -868,6 +923,7 @@ def _resolve_one(
     alternative: Alternative,
     binding: ExperimentMetric | None,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
+    margin_route: str = _GUARDRAIL_MARGIN_ROUTE,
 ) -> _ProcedureResolution:
     if isinstance(metric, MetricBase):
         margins = (
@@ -880,8 +936,7 @@ def _resolve_one(
         )
         # A guardrail's tail follows its own margin and preferred_direction; the
         # plan `alternative` applies only to primaries and secondaries. Passing
-        # "two-sided" makes `resolve_null_and_alternative` use the margin tail;
-        # the guardrail block below handles the margin-less case.
+        # "two-sided" makes `resolve_null_and_alternative` use the margin tail.
         null_lift, null_abs, effective_alt = resolve_null_and_alternative(
             metric,
             margins,
@@ -898,9 +953,7 @@ def _resolve_one(
             _raise("plan.metric.report_only", metric=name, role=role)
         null_lift, null_abs, effective_alt = 0.0, None, alternative
     if role == "guardrail" and null_lift == 0.0 and null_abs is None:
-        # A margin-less guardrail still uses the adverse side declared by
-        # its metric rather than the plan-wide alternative.
-        effective_alt = favorable_alternative(metric.preferred_direction)
+        refuse_margin_less_guardrail(name, route=margin_route)
 
     inference_kind = (
         "asymptotic_mean"

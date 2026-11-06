@@ -213,7 +213,7 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
                         },
                     )
                 for role in ("primary", "guardrails", "secondaries"):
-                    entries = experiment["plan"][role]
+                    entries = experiment["plan"].get(role, [])
                     if isinstance(entries, dict):
                         entries = [entries]
                     for entry in entries:

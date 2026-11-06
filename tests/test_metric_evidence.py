@@ -29,10 +29,14 @@ from tests.analysis_factory import view_readout
 from tests.parity_harness import dataset as ds
 from tests.parity_harness.comparison import nested_close
 from tests.parity_harness.expected_differences import (
+    EXPORT_DIFFERENCES,
+    READOUT_IDENTITY_DIFFERENCES,
+    REPLAY_DIFFERENCES,
     ExpectedDifference,
     declared_directions,
     with_declared_favorable_sides,
     without_gained_arm_facts,
+    without_guardrail_segments,
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "evidence_identity"
@@ -309,12 +313,37 @@ def _assert_export_moment_rows_close(expected_rows, actual_rows, declared):
             _compare_aggregate(json.loads(expected_fit), json.loads(actual_fit))
 
 
-def _assert_export_moments_close(expected, actual, declared):
-    _assert_export_moment_rows_close(
-        pq.read_table(expected).to_pylist(),
-        pq.read_table(actual).to_pylist(),
-        declared,
-    )
+def _frozen_export_rows(name):
+    """A frozen export's rows, its guardrail given the margin its scenario now declares."""
+    rows = pq.read_table(_FIXTURES / "exports" / f"{name}.parquet").to_pylist()
+    return EXPORT_DIFFERENCES[name].applied_to(rows)
+
+
+def _migrated_identity(name, rows):
+    """The frozen identity rows of ``name``, with the snapshots a guardrail's margin moves."""
+    for difference in READOUT_IDENTITY_DIFFERENCES:
+        if difference.scenario == name:
+            rows = difference.applied_to(rows)
+    return rows
+
+
+def _migrated_replay_rows(name, rows):
+    """The frozen replay rows of ``name``, with what its guardrail's margin moves. The records
+    reach the ids inside each row's retained families, which a readout lists by family id."""
+    decoded = [{**row, "retained_family": json.loads(row["retained_family"])} for row in rows]
+    for difference in REPLAY_DIFFERENCES[name]:
+        decoded = difference.applied_to(decoded)
+    return [
+        {
+            **row,
+            "retained_family": json.dumps(
+                sorted(row["retained_family"], key=lambda family: family["family_id"]),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        }
+        for row in decoded
+    ]
 
 
 @pytest.mark.slow
@@ -345,12 +374,12 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
         pairs = build_pairs()
     assert len(moment_inputs) == 2
     _assert_export_moment_rows_close(
-        pq.read_table(_FIXTURES / "exports" / "mixed_warehouse.parquet").to_pylist(),
+        _frozen_export_rows("mixed_warehouse"),
         moment_inputs[0],
         declared_directions(pairs["mixed_fitted_replay"][0]),
     )
     _assert_export_moment_rows_close(
-        pq.read_table(_FIXTURES / "exports" / "mixed_categorical_replay.parquet").to_pylist(),
+        _frozen_export_rows("mixed_categorical_replay"),
         moment_inputs[1],
         declared_directions(pairs["mixed_categorical_replay"][0]),
     )
@@ -401,6 +430,10 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
         expected_baseline = fixture["parity_baseline"]["rows"]
         for difference in _BINOMIAL_ARM_COUNT_SNAPSHOTS:
             expected_baseline = difference.applied_to(expected_baseline)
+        expected_baseline = _migrated_identity("parity_baseline", expected_baseline)
+        expected_baseline["run_breakout"] = without_guardrail_segments(
+            expected_baseline["run_breakout"], "d7_retention", dropped=4
+        )
         _assert_identity_equal(baseline_identity, expected_baseline)
         for name in pairs:
             if name in raw_moment_cases:
@@ -414,7 +447,7 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
                 _assert_raw_moment_fingerprints_match(components, live_raw_inputs[name])
             _assert_identity_equal(
                 {"run": _rows(original_results[name])},
-                fixture[name]["rows"],
+                _migrated_identity(name, fixture[name]["rows"]),
                 allow_raw_moments=name in raw_moment_cases,
             )
 
@@ -435,9 +468,9 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             _warehouse_fit_payload(_FIXTURES / "exports" / "mixed_warehouse.parquet"),
             _warehouse_fit_payload(live_cube),
         )
-        _assert_export_moments_close(
-            _FIXTURES / "exports" / "mixed_warehouse.parquet",
-            live_cube,
+        _assert_export_moment_rows_close(
+            _frozen_export_rows("mixed_warehouse"),
+            pq.read_table(live_cube).to_pylist(),
             declared_directions(pairs["mixed_warehouse"][0]),
         )
         replay_templates = {
@@ -451,11 +484,11 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             for name in replay_templates
         }
         for name, original in replay_templates.items():
-            payload = pq.read_table(
-                _FIXTURES / "exports" / f"{cube_names[name]}.parquet"
-            ).to_pylist()
+            # A replay refuses a recorded guardrail without a margin, so each export's plan
+            # carries the margin its scenario now declares.
+            payload = _frozen_export_rows(cube_names[name])
             replay_rows = replay_export(original, payload)
-            expected_rows = fixture[name]["replay_rows"]
+            expected_rows = _migrated_replay_rows(name, fixture[name]["replay_rows"])
             if name in {"mixed_warehouse", "mixed_fitted_replay"}:
                 expected_rows = _normalize_warehouse_replay_rows(expected_rows)
                 replay_rows = _normalize_warehouse_replay_rows(replay_rows)

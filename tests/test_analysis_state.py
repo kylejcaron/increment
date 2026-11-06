@@ -169,7 +169,8 @@ experiments:
       secondaries:
         - click_rate
       guardrails:
-        - error_rate
+        - metric: error_rate
+          margin: 0.02
 """
     )
     roles = _run_roles(

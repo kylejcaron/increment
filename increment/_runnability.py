@@ -21,7 +21,11 @@ from increment._canonical import declaration_value
 from increment._evidence_types import SourceContext
 from increment._readout_request import ReadoutRequest, validate_request
 from increment._source_types import EvidenceCapabilities
-from increment.decision import CompiledDecisionPlan
+from increment.decision import (
+    CompiledDecisionPlan,
+    margin_less_guardrail_route,
+    refuse_margin_less_procedures,
+)
 from increment.declarations import VARIANCE_REDUCTION, estimator_refs, thaw
 from increment.errors import CapabilityError, CodedError, RefusalSpec, refuse
 from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
@@ -330,6 +334,27 @@ def context_payload(source: Any) -> dict[str, Any]:
         "source_name": type(source).__name__,
         "experiment": None if experiment is None else experiment.model_dump(mode="json"),
     }
+
+
+def refuse_recorded_margin_less_guardrail(
+    analysis_context: Mapping[str, Any], design: object
+) -> None:
+    """Refuse a recorded guardrail that compiling its plan now refuses for lacking a margin,
+    with the route compiling the saved design and inference names."""
+    recorded = analysis_context.get(
+        "context" if analysis_context.get("family") == "contrast" else "plan"
+    )
+    if not isinstance(recorded, Mapping):
+        return
+    inference = recorded.get("inference")
+    refuse_margin_less_procedures(
+        recorded.get("procedures"),
+        route=margin_less_guardrail_route(
+            sequential=isinstance(inference, Mapping) and inference.get("kind") != "fixed",
+            encouragement=isinstance(design, Mapping)
+            and design.get("mechanism") == "encouragement",
+        ),
+    )
 
 
 def _validate_artifact_metrics(declaration: Mapping[str, Any]) -> None:

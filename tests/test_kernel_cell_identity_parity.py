@@ -7,7 +7,7 @@ import pytest
 from increment import Method, View, from_definitions, from_switchback_frame
 from increment.declarations import CellKey
 from increment.kernel.contracts import CellIdentity
-from tests.analysis_factory import view_readout
+from tests.analysis_factory import non_guardrail_metrics, view_readout
 
 
 def _contrast_analysis() -> Any:
@@ -81,10 +81,12 @@ def test_cell_identity_from_row_agrees_with_cell_key_for_readout_rows(
         "daily": view_readout(
             analysis_experiment, analysis_resolver, View(view="daily", grain="daily", values=True)
         ),
+        # A breakout cannot test the guardrail's margin, so it reads the other declared metrics.
         "breakout": view_readout(
             analysis_experiment,
             analysis_resolver,
             View(view="breakout", grain="total"),
+            metrics=non_guardrail_metrics(analysis_experiment, analysis_resolver),
             decision_method=Method(name="unadjusted"),
         ),
         "contrast": view_readout(contrast_experiment, contrast_resolver),

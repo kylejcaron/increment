@@ -616,7 +616,7 @@ def test_monitoring_scope_is_not_evaluated_against_whole_experiment_plan():
 
 
 def test_partial_run_selection_cannot_pass_omitted_registered_guardrail():
-    from increment import AnalysisPlan
+    from increment import AnalysisPlan, ExperimentMetric
 
     frame = _frame()
     for metric in ("primary", "guard_a", "guard_b"):
@@ -632,7 +632,13 @@ def test_partial_run_selection_cannot_pass_omitted_registered_guardrail():
             MetricSpec(name="guard_a", type="mean", preferred_direction="increase"),
             MetricSpec(name="guard_b", type="mean", preferred_direction="increase"),
         ],
-        plan=AnalysisPlan(primary="primary", guardrails=("guard_a", "guard_b")),
+        plan=AnalysisPlan(
+            primary="primary",
+            guardrails=(
+                ExperimentMetric(metric="guard_a", margin=0.02),
+                ExperimentMetric(metric="guard_b", margin=0.02),
+            ),
+        ),
     )
 
     result = run(experiment, resolver, metrics=["primary", "guard_a"])

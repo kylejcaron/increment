@@ -890,59 +890,6 @@ def test_guardrail_one_sided_at_margin():
         assert r.require_lift().level == pytest.approx(1.0 - 2 * test.alpha)
 
 
-def test_guardrail_one_sided_without_margin():
-    """A decrease-guardrail declared with no margin/margin_abs still tests
-    one-sided against zero (alternative="less"), never the plan's default
-    two-sided at full alpha -- the interval-width machinery (alpha-doubling,
-    unsplit across arms) is identical to the margin-declared case, just
-    against a zero null instead of a shifted one."""
-    n = 800
-    table = pa.table(
-        {
-            "user_id": [f"u{i}" for i in range(3 * n)],
-            "variant": ["control"] * n + ["treatment_a"] * n + ["treatment_b"] * n,
-            "loss_metric": np.concatenate(
-                [
-                    _normal_column(5.0, 1.0, n, 31),
-                    _normal_column(5.02, 1.0, n, 32),
-                    _normal_column(4.9, 1.0, n, 33),
-                ]
-            ),
-        }
-    )
-    src = FrameTotalsSource.from_frame(
-        table,
-        unit="user_id",
-        group="variant",
-        control="control",
-        metrics=[MetricSpec(name="loss_metric", preferred_direction="decrease")],
-        plan=AnalysisPlan(guardrails=["loss_metric"]),
-    )
-    test = src.context.plan.procedures["loss_metric"]
-    assert test.role == "guardrail"
-    assert test.null_lift == 0.0  # ty: ignore[unresolved-attribute]
-    assert test.alternative == "less"
-    assert test.alpha == pytest.approx(0.05)  # unsplit at plan-resolution time
-
-    results = readouts.run(src)
-    assert {r.group_id for r in results} == {"treatment_a", "treatment_b"}
-    by_group = {r.group_id: r for r in results}
-    for r in results:
-        assert r.role == "guardrail"
-        assert r.null_lift == 0.0
-        assert r.alternative == "less"
-        # one-sided alpha-doubling identity, unsplit by n_arms=2
-        assert r.require_lift().level == pytest.approx(1.0 - 2 * test.alpha)
-    # treatment_a's latency rose (worse, for a decrease-preferred metric):
-    # the one-sided "less" upper bound stays above the zero null.
-    ub_a = by_group["treatment_a"].require_lift().ub
-    assert ub_a is not None and ub_a > 0.0
-    # treatment_b's latency fell enough that the one-sided upper bound
-    # clears zero too -- the interval excludes the null on the tested side.
-    ub_b = by_group["treatment_b"].require_lift().ub
-    assert ub_b is not None and ub_b < 0.0
-
-
 @pytest.mark.slow
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.integration
@@ -2442,6 +2389,7 @@ def test_asof_lift_primary_guardrail_unassigned_role_dispatch():
         fact="B",
         aggregation="avg_event",
         preferred_direction="decrease",
+        margin=0.02,
     )
     metric_c = MeanMetric(name="C", entity="user_id", fact="C", aggregation="avg_event")
     plan = AnalysisPlan(primary="A", guardrails=["B"])

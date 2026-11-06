@@ -703,14 +703,14 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
             ),
             _expectation(
                 "observational_quantile_guardrail_refused",
-                "run() quantile guardrail",
+                "from_moments(..., quantile guardrail without a margin)",
                 "from_moments",
                 "Observational quantile request declares a marginless guardrail",
                 "refused",
                 "tests.test_readouts_observational::test_quantile_over_scalar_moments_refuses_in_the_documented_precedence",
-                codes=("readout.metric.quantile_alternative",),
-                reason="Quantile guardrails require unsupported one-sided inference.",
-                stage="read",
+                codes=("plan.guardrail.margin_required",),
+                reason="A guardrail without a margin is refused when its plan compiles, before quantile readout dispatch.",
+                stage="construction",
             ),
             _expectation(
                 "observational_quantile_absolute_margin_refused",

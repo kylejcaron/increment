@@ -22,7 +22,7 @@ from increment.estimators import SequentialCompliancePolicy, SequentialRegistrat
 from increment.frame import MetricSpec, synthesise_metric
 from increment.results import LiftEstimate
 from increment.semantics.design import Randomized
-from increment.semantics.models import AnalysisPlan, InferenceSpec
+from increment.semantics.models import AnalysisPlan, ExperimentMetric, InferenceSpec
 from increment.sequential_source import (
     frame_observation_mapping,
     native_observation_mapping,
@@ -2322,7 +2322,11 @@ def _role_plan(specs, *, alpha, q):
                 metric="sessions", group_id="treatment", alpha=Fraction(alpha), family=True
             ),
             SequentialCell(
-                metric="refunds", group_id="treatment", alpha=Fraction(alpha), alternative="less"
+                metric="refunds",
+                group_id="treatment",
+                alpha=Fraction(alpha),
+                alternative="less",
+                null_lift=Fraction(1, 50),
             ),
         ),
         q=Fraction(q),
@@ -2332,7 +2336,7 @@ def _role_plan(specs, *, alpha, q):
         q=q,
         primary="checkout",
         secondaries=["signups", "sessions"],
-        guardrails=["refunds"],
+        guardrails=[ExperimentMetric(metric="refunds", margin=0.02)],
         inference=InferenceSpec(kind="always_valid", registration=reg),
     )
 

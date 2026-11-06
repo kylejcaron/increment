@@ -4312,7 +4312,8 @@ def _encouragement_guardrail_case(
     same rows, on every constructor. `margin_abs`, when given, declares a
     non-inferiority margin on the guardrail -- its verdict rides the ITT
     row (`_encouragement_margin_guardrail_case`); without it (the plain
-    `latency` string form) the guardrail is an ordinary unmargined test."""
+    `latency` string form) every constructor refuses the guardrail before
+    reading, since a guardrail needs a margin."""
     rows = _encouragement_rows_for_parity()
     control = [f"c{i}" for i in range(1, _ENCOURAGEMENT_N_PER_ARM + 1)]
     treat = [f"t{i}" for i in range(1, _ENCOURAGEMENT_N_PER_ARM + 1)]
@@ -4427,6 +4428,7 @@ def _encouragement_guardrail_case(
             "from_moments": build_moments,
         },
         estimands=estimands,
+        refusal_only=margin_abs is None,
         slow=True,
     )
 
@@ -5575,7 +5577,9 @@ def _observational_quantile_case() -> ParityCase:
 
 
 _OBSERVATIONAL_MULTIPLICITY_PLAN = AnalysisPlan(
-    primary="revenue", secondaries=["signups"], guardrails=["errors"]
+    primary="revenue",
+    secondaries=["signups"],
+    guardrails=[ExperimentMetric(metric="errors", margin_abs=1.0)],
 )
 
 
@@ -5646,7 +5650,7 @@ def _observational_multiplicity_case() -> ParityCase:
                 "plan": {
                     "primary": "revenue",
                     "secondaries": ["signups"],
-                    "guardrails": ["errors"],
+                    "guardrails": [{"metric": "errors", "margin_abs": 1.0}],
                 },
                 "design": {
                     "mechanism": "observational",
@@ -9421,7 +9425,11 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
             decision_method=method(),
         ),
     ]
-    plan = AnalysisPlan(primary="revenue", guardrails=("rpo",), secondaries=("signups",))
+    plan = AnalysisPlan(
+        primary="revenue",
+        guardrails=(ExperimentMetric(metric="rpo", margin=0.02),),
+        secondaries=("signups",),
+    )
     design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
 
     def definition_analysis(*, artifact: bool) -> Bound:
@@ -9584,7 +9592,7 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
         ),
     )
     plan = AnalysisPlan(
-        primary="revenue", guardrails=(ExperimentMetric(metric="revenue_per_spend"),)
+        primary="revenue", guardrails=(ExperimentMetric(metric="revenue_per_spend", margin=0.02),)
     )
     design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
     events = mixed_cuped_event_rows(rows)
@@ -9655,7 +9663,7 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
         configured_plan = experiment["plan"]
         configured_plan["primary"]["decision_method"] = method_data
         configured_plan["guardrails"] = [
-            {"metric": "revenue_per_spend", "decision_method": method_data}
+            {"metric": "revenue_per_spend", "decision_method": method_data, "margin": 0.02}
         ]
         configured_plan.pop("secondaries")
         try:
@@ -9722,12 +9730,11 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
         from increment.errors import CodedError
         from tests.parity_harness.comparison import nested_close
 
+        # A breakout cannot test the ratio guardrail's margin, so the segments read the mean.
         if name in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
-            breakout_rows = read(analysis, "breakout")
+            breakout_rows = read(analysis, "breakout", metrics=["revenue"])
             assert {(row.metric, row.dimension_value) for row in breakout_rows} == {
-                (metric, region)
-                for metric in ("revenue", "revenue_per_spend")
-                for region in ("east", "west")
+                ("revenue", region) for region in ("east", "west")
             }
             current = {
                 (row.metric, row.dimension_value): {
@@ -9759,7 +9766,7 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
                 )
             return
         with pytest.raises(CodedError) as raised:
-            read(analysis, "breakout")
+            read(analysis, "breakout", metrics=["revenue"])
         assert raised.value.code == "evidence.breakout_unavailable"
 
     return ParityCase(

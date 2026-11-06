@@ -2218,9 +2218,10 @@ class AnalysisPlan(_ExplicitOnlyFields, _Base):
     - **guardrail** -- a one-sided non-inferiority test at the full ``alpha``,
       never divided across guardrails, on the adverse side implied by the
       metric's ``preferred_direction`` and margin. A guardrail asks "is this
-      materially worse", not "is this better": dividing ``alpha`` across
-      guardrails would raise the false-negative rate for real harm, which is
-      the error that matters here.
+      materially worse", not "is this better", so it needs a margin naming
+      how much worse is material. Dividing ``alpha`` across guardrails would
+      raise the false-negative rate for real harm, which is the error that
+      matters here.
     - **secondary** -- the discovery family at ``q``, a level deliberately
       looser than ``alpha`` because these verdicts are not confirmatory. The
       metric-by-arm family controls the false-discovery rate at ``q`` under
@@ -2265,9 +2266,11 @@ class AnalysisPlan(_ExplicitOnlyFields, _Base):
         Metrics judged as a discovery family at ``q`` rather than against
         ``alpha``. A prior changes posterior state, not the sampling evidence of a declared member.
     guardrails : tuple[PlanEntry, ...]
-        Metrics that must not move adversely. A guardrail needs an
-        explicit non-neutral ``preferred_direction`` on the metric, since
-        a non-inferiority margin has no adverse side otherwise.
+        Metrics that must not move adversely by more than their margin. A
+        guardrail needs an explicit non-neutral ``preferred_direction`` and a
+        margin: ``margin`` or ``margin_abs`` on the metric, or on its
+        ``ExperimentMetric`` entry here. One without a margin refuses with
+        ``plan.guardrail.margin_required``.
     inference : InferenceSpec | None
         Look policy. ``None`` means fixed-horizon: one analysis, no
         peeking guarantee.

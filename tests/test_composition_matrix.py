@@ -486,10 +486,9 @@ def native(tmp_path_factory):
                 "end": "2026-01-01",
                 "observation_end": "2026-01-05",
                 "control_group": "control",
-                "plan": {
-                    "secondaries": ["revenue", "purchase_rate", "rev_per_order"],
-                    "guardrails": ["d1"],
-                },
+                # The breakout view reads every metric type, and a breakout refuses a
+                # margined guardrail, so the retention metric is a secondary here.
+                "plan": {"secondaries": ["revenue", "purchase_rate", "rev_per_order", "d1"]},
                 "breakouts": [{"property": "country"}],
             },
             {
@@ -501,7 +500,10 @@ def native(tmp_path_factory):
                 "observation_end": "2026-01-05",
                 "control_group": "control",
                 "n_pre_periods": 7,
-                "plan": {"secondaries": ["revenue", "purchase_rate"], "guardrails": ["d1"]},
+                "plan": {
+                    "secondaries": ["revenue", "purchase_rate"],
+                    "guardrails": [{"metric": "d1", "margin": 0.02}],
+                },
             },
             {
                 "name": "exp_cluster",
@@ -512,7 +514,10 @@ def native(tmp_path_factory):
                 "end": "2026-01-01",
                 "observation_end": "2026-01-05",
                 "control_group": "control",
-                "plan": {"secondaries": ["revenue", "purchase_rate"], "guardrails": ["d1"]},
+                "plan": {
+                    "secondaries": ["revenue", "purchase_rate"],
+                    "guardrails": [{"metric": "d1", "margin": 0.02}],
+                },
             },
         ],
     }

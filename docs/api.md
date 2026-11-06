@@ -183,6 +183,38 @@ values.
   the condition. Where code read a noisy-denominator ratio's
   `"nonpositive_arm_mean"` row, handle the `estimation.engine.lift_guard`
   failure instead. Experiment identity is unchanged.
+- Release note (breaking): every guardrail needs a margin. A guardrail asks
+  whether the treatment is worse than control by its margin or more, so one with
+  no `margin` or `margin_abs` on the metric or its `ExperimentMetric` plan entry
+  refuses before any data is read with `plan.guardrail.margin_required`
+  (`InvalidRequestError`, context `metric`, `route`). Under a sequential
+  encouragement plan, which builds no shifted null, the route names the
+  secondary role or a fixed-horizon plan instead of a margin; under another
+  sequential plan it names only the relative `margin`, because sequential
+  inference refuses `margin_abs`. Previously such a
+  guardrail tested against zero and could pass only on a significant
+  improvement. An experiment saved by an earlier release with a margin-less
+  guardrail refuses the same way when `Experiment.from_json` reads it back, with
+  the route its saved design and inference compile to, and so does a moments
+  cube exported with one when `from_moments` replays its recorded plan; its
+  route names a new export with the margin, or a `plan=` that declares it, and
+  for a sequential checkpoint cube, which replays only its registered plan, a
+  new export with a relative margin or, under encouragement, a secondary role
+  or a fixed-horizon plan. Migrate with
+  `guardrails=[ExperimentMetric(metric="latency", margin=0.02)]`,
+  or `- metric: latency` with `margin: 0.02` in definitions. The program reason
+  for a guardrail that does not reject is renamed from `decision.guardrail.unsafe`
+  to `decision.guardrail.not_certified`: the test is one-sided, so it is not a
+  finding of harm, and the guides no longer promise a SAFE/HARM label. A
+  guardrail's LATE rows carry no margin verdict and no longer decide the
+  program; its ITT row does. Views that build no shifted null now refuse a
+  guardrail, because every guardrail declares a margin: a fixed-horizon
+  breakout (`readout.margin.breakout`), an encouragement LATE-only request
+  (`readout.encouragement.margin`) and an encouragement as-of view
+  (`readout.metric_declare_non`). Exclude the guardrail with `metrics=` to read
+  those views. A saved segmented run of an experiment with a guardrail has no
+  route yet. Experiment identity changes only for experiments whose guardrails
+  gained a margin.
 - Release note (breaking numerical correction): a posterior chance is reported
   on the metric's favorable side everywhere it is shown. For a metric that
   declares `preferred_direction`, the readout and `render(result, "full")`

@@ -630,10 +630,17 @@ def decide(  # noqa: PLR0915
         for verdict in verdicts.values()
         if verdict.role == "primary" and verdict.identity_hash in decision_hashes
     ]
+    # A LATE row carries no margin verdict (the margin applies to the ITT row), so it does not
+    # certify a guardrail and is not evaluated for the guardrail decision.
+    late_hashes = {
+        cell.identity.hash() for cell in envelope.cells if cell.identity.key.estimand == "late"
+    }
     guardrails = [
         verdict
         for verdict in verdicts.values()
-        if verdict.role == "guardrail" and verdict.identity_hash in decision_hashes
+        if verdict.role == "guardrail"
+        and verdict.identity_hash in decision_hashes
+        and verdict.identity_hash not in late_hashes
     ]
     missing_roles = _missing_decision_roles(metadata, envelope.cells, plan.procedures)
     integrity_reasons = _decision_integrity_reasons(metadata, envelope.cells, verdicts)
@@ -672,7 +679,7 @@ def decide(  # noqa: PLR0915
         )
     elif any(v.status != "reject" for v in guardrails):
         program = ProgramVerdict(
-            "block", tuple(sorted(set(reasons + ["decision.guardrail.unsafe"])))
+            "block", tuple(sorted(set(reasons + ["decision.guardrail.not_certified"])))
         )
     elif reasons:
         program = ProgramVerdict("block", tuple(sorted(set(reasons))))

@@ -21,6 +21,7 @@ from scipy.special import expit
 
 from increment import (
     AdjustmentSet,
+    ExperimentMetric,
     IdentificationGate,
     Method,
     Observational,
@@ -1952,7 +1953,9 @@ def test_observational_guardrail_keeps_full_alpha_outside_any_family():
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("tenure",))
         ),
-        plan=AnalysisPlan(primary="revenue", guardrails=["errors"]),
+        plan=AnalysisPlan(
+            primary="revenue", guardrails=[ExperimentMetric(metric="errors", margin_abs=1.0)]
+        ),
     )
     rows = lift_rows(view_readout(experiment, resolver))
     guardrail_row = next(r for r in rows if r.metric == "errors")
@@ -2308,12 +2311,12 @@ def _scalar_mean_cube_rows():
     [
         (_OBS, "two-sided", "run", "readout.observational.quantile"),
         (_OBS, "alternative", "run", "readout.metric.quantile_alternative"),
-        (_OBS, "guardrail", "run", "readout.metric.quantile_alternative"),
+        (_OBS, "guardrail", "construct", "plan.guardrail.margin_required"),
         (_OBS, "margin_abs", "run", "readout.metric.quantile_alternative"),
         (_OBS, "margin", "construct", "plan.observational.relative_margin"),
         (None, "two-sided", "run", "evidence.unit_rows_unavailable"),
         (None, "alternative", "run", "readout.metric.quantile_alternative"),
-        (None, "guardrail", "run", "readout.metric.quantile_alternative"),
+        (None, "guardrail", "construct", "plan.guardrail.margin_required"),
         (None, "margin_abs", "run", "readout.metric.quantile_alternative"),
         (None, "margin", "run", "readout.metric.quantile_alternative"),
     ],
@@ -2334,10 +2337,9 @@ def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
     design, request_kind, stage, code
 ):
     """A quantile declared over a real scalar-moments cube is refused by whichever gate the
-    request reaches first: the plan's relative-margin construction guard (observational), the
-    engine's one-sided/shifted-null check (any one-sided request: a standalone alternative, a
-    marginless guardrail's adverse tail, or a margin), the observational estimator seam, then
-    the cube's missing unit grain."""
+    request reaches first: the plan's guardrail-margin and relative-margin construction guards,
+    the engine's one-sided/shifted-null check (any one-sided request: a standalone alternative
+    or a margin), the observational estimator seam, then the cube's missing unit grain."""
     from increment.errors import CodedError
     from increment.frame import MetricSpec
     from increment.semantics.models import AnalysisPlan, ExperimentMetric

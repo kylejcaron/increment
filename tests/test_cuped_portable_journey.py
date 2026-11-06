@@ -154,7 +154,9 @@ def _definitions(tmp_path, *, fixed_caps: bool):
     plan["primary"]["decision_method"] = decision
     plan["primary"]["sensitivity_methods"] = [companion, explicit_companion]
     guardrail = dict(decision)
-    plan["guardrails"] = [{"metric": "revenue_per_spend", "decision_method": guardrail}]
+    plan["guardrails"] = [
+        {"metric": "revenue_per_spend", "margin": 0.02, "decision_method": guardrail}
+    ]
     plan.pop("secondaries")
     path = tmp_path / "portable.yaml"
     path.write_text(yaml.safe_dump(data))

@@ -177,7 +177,11 @@ class TestWarehouseMembership:
     catalog refuses rather than silently dropping a role."""
 
     def test_membership_is_union_of_roles_rest_unassigned(self):
-        metrics = [_mean("rev"), _mean("cost", preferred_direction="decrease"), _mean("extra")]
+        metrics = [
+            _mean("rev"),
+            _mean("cost", preferred_direction="decrease", margin=0.02),
+            _mean("extra"),
+        ]
         plan = AnalysisPlan(primary="rev", guardrails=["cost"])
         resolved = compile_decision_plan(plan, metrics, path="warehouse")
 
@@ -194,8 +198,8 @@ class TestWarehouseMembership:
 
 
 class TestGuardrailDirection:
-    """Rule: a guardrail without an explicitly-set preferred_direction refuses,
-    naming the metric."""
+    """Rule: a guardrail without an explicitly-set preferred_direction, or without a
+    margin, refuses, naming the metric."""
 
     def test_guardrail_without_explicit_direction_refuses(self):
         metrics = [_mean("rev"), _mean("cost")]  # cost: preferred_direction not set
@@ -219,30 +223,63 @@ class TestGuardrailDirection:
             compile_decision_plan(plan, [metrics[0], reloaded_cost], path="warehouse")
         assert raised.value.code == "plan.guardrail.direction"
 
-    def test_guardrail_with_explicit_direction_succeeds(self):
-        metrics = [_mean("rev"), _mean("cost", preferred_direction="decrease")]
-        plan = AnalysisPlan(primary="rev", guardrails=["cost"])
-        resolved = compile_decision_plan(plan, metrics, path="warehouse")
-        assert resolved.procedures["cost"].role == "guardrail"
-
-    def test_margin_less_guardrail_decrease_is_one_sided_less(self):
-        """A guardrail with no declared margin/margin_abs still tests
-        one-sided against zero, on its declared adverse side -- it must
-        never fall back to the plan's two-sided default."""
-        metrics = [_mean("rev"), _mean("cost", preferred_direction="decrease")]
-        plan = AnalysisPlan(primary="rev", guardrails=["cost"])
-        resolved = compile_decision_plan(plan, metrics, path="warehouse")
-        test = resolved.procedures["cost"]
+    @pytest.mark.parametrize(
+        ("declared", "null_field"),
+        [({"margin": 0.02}, "null_lift"), ({"margin_abs": 5.0}, "null_abs")],
+        ids=["margin", "margin_abs"],
+    )
+    def test_bare_guardrail_with_metric_margin_compiles(self, declared, null_field):
+        """The margin requirement reads the resolved null, so a margin the metric declares
+        satisfies a bare-name guardrail. For a decrease metric the adverse side is the
+        increase: the null sits at +margin and the test is one-sided "less"."""
+        metrics = [_mean("revenue"), _mean("latency", preferred_direction="decrease", **declared)]
+        plan = AnalysisPlan(primary="revenue", guardrails=["latency"])
+        test = compile_decision_plan(plan, metrics, path="warehouse").procedures["latency"]
+        assert test.role == "guardrail"
         assert test.alternative == "less"
-        assert test.null_lift == 0.0  # ty: ignore[unresolved-attribute] -- plan variant is fixed by test fixture
+        assert getattr(test, null_field) == pytest.approx(next(iter(declared.values())))
 
-    def test_margin_less_guardrail_increase_is_one_sided_greater(self):
-        metrics = [_mean("rev"), _mean("cost", preferred_direction="increase")]
-        plan = AnalysisPlan(primary="rev", guardrails=["cost"])
-        resolved = compile_decision_plan(plan, metrics, path="warehouse")
-        test = resolved.procedures["cost"]
-        assert test.alternative == "greater"
-        assert test.null_lift == 0.0  # ty: ignore[unresolved-attribute] -- plan variant is fixed by test fixture
+    def test_margin_less_guardrail_refuses(self):
+        """A guardrail asks whether the treatment is materially worse, which needs a margin.
+        A builder compiles its plan before it returns an experiment, so neither runnable()
+        nor run() ever receives an experiment carrying this plan."""
+        import pandas as pd
+
+        from increment import MetricSpec, from_frame
+
+        plan = AnalysisPlan(primary="revenue", guardrails=["latency"])
+        with pytest.raises(InvalidRequestError) as compiled:
+            compile_decision_plan(
+                plan,
+                [_mean("revenue"), _mean("latency", preferred_direction="decrease")],
+                path="warehouse",
+            )
+        with pytest.raises(InvalidRequestError) as built:
+            from_frame(
+                pd.DataFrame(
+                    {
+                        "unit": ["c1", "c2", "t1", "t2"],
+                        "arm": ["control", "control", "treatment", "treatment"],
+                        "revenue": [1.0, 2.0, 3.0, 4.0],
+                        "latency": [1.0, 2.0, 3.0, 4.0],
+                    }
+                ),
+                shape="summary",
+                unit="unit",
+                group="arm",
+                control="control",
+                metrics=[
+                    MetricSpec(name="revenue", type="mean"),
+                    MetricSpec(name="latency", type="mean", preferred_direction="decrease"),
+                ],
+                plan=plan,
+            )
+        for raised in (compiled, built):
+            assert raised.value.code == "plan.guardrail.margin_required"
+            assert dict(raised.value.context) == {
+                "metric": "latency",
+                "route": "declare ExperimentMetric(metric=..., margin=...) or margin_abs=...",
+            }
 
     def test_guardrail_neutral_direction_refuses(self):
         """A guardrail with an explicitly-set but neutral preferred_direction
@@ -255,36 +292,13 @@ class TestGuardrailDirection:
             compile_decision_plan(plan, metrics, path="warehouse")
         assert raised.value.code == "plan.guardrail.direction"
 
-    def test_margin_less_guardrail_tail_ignores_plans_alternative_decrease(self):
-        """A margin-less guardrail's tail is a pure function of its own
-        preferred_direction, never of the plan's own `alternative` (scoped
-        to primaries/secondaries only) -- here the plan's alternative
-        ('greater') is the opposite tail from what the guardrail resolves
-        to, so a leak would be caught."""
-        metrics = [_mean("rev"), _mean("cost", preferred_direction="decrease")]
-        plan = AnalysisPlan(primary="rev", guardrails=["cost"], alternative="greater")
-        resolved = compile_decision_plan(plan, metrics, path="warehouse")
-        test = resolved.procedures["cost"]
-        assert test.alternative == "less"
-        assert test.null_lift == 0.0  # ty: ignore[unresolved-attribute] -- plan variant is fixed by test fixture
-
-    def test_margin_less_guardrail_tail_ignores_plans_alternative_increase(self):
-        metrics = [_mean("rev"), _mean("cost", preferred_direction="increase")]
-        plan = AnalysisPlan(primary="rev", guardrails=["cost"], alternative="less")
-        resolved = compile_decision_plan(plan, metrics, path="warehouse")
-        test = resolved.procedures["cost"]
-        assert test.alternative == "greater"
-        assert test.null_lift == 0.0  # ty: ignore[unresolved-attribute] -- plan variant is fixed by test fixture
-
     def test_margin_declared_guardrail_tail_ignores_plans_alternative(self):
-        """A margin-DECLARED guardrail's tail must also be a pure function
+        """A margin-DECLARED guardrail's tail must be a pure function
         of its own margin/preferred_direction, never of the plan's own
         `alternative` -- resolve_null_and_alternative forwards the plan's
         alternative through untouched whenever it is not "two-sided"
         (correct for primary/secondary, wrong here), so the guardrail
-        branch must force alternative="two-sided" into that call rather
-        than trusting its own default gate (which only fires when no
-        margin resolved)."""
+        branch must force alternative="two-sided" into that call."""
         metrics = [_mean("rev"), _mean("cost", preferred_direction="decrease")]
         plan = AnalysisPlan(
             primary="rev",
@@ -541,7 +555,7 @@ class TestReportOnlyMetricNullResolution:
     def test_total_metric_alongside_mean_metrics_resolves_without_raising(self):
         metrics = [
             _mean("rev"),
-            _mean("cost", preferred_direction="decrease"),
+            _mean("cost", preferred_direction="decrease", margin=0.02),
             TotalMetric(name="gmv", fact="gmv"),
         ]
         plan = AnalysisPlan(primary="rev", guardrails=["cost"])
@@ -797,6 +811,33 @@ class TestEncouragementSeamRefusals:
         with pytest.raises(CodedError) as raised:
             compile_decision_plan(plan, [self._metric()], design=self._design())
         assert raised.value.code == "plan.encouragement.margin"
+
+    @pytest.mark.parametrize(
+        ("encouragement", "route"),
+        [
+            pytest.param(
+                True,
+                "list the metric as a secondary, or use a fixed-horizon plan (inference=None)",
+                id="encouragement",
+            ),
+            pytest.param(
+                False, "declare ExperimentMetric(metric=..., margin=...)", id="randomized"
+            ),
+        ],
+    )
+    def test_marginless_guardrail_route_under_sequential_inference(self, encouragement, route):
+        """Sequential inference takes no additive margin, and under encouragement no margin at
+        all (plan.encouragement.margin), so the route names only what the design can use."""
+        from increment.errors import CodedError
+        from increment.plan import compile_decision_plan
+
+        plan = AnalysisPlan(guardrails=["revenue"], inference=registered_spec())
+        metric = self._metric().model_copy(update={"margin": None})
+        design = self._design() if encouragement else Randomized(control_group="control")
+        with pytest.raises(CodedError) as raised:
+            compile_decision_plan(plan, [metric], design=design)
+        assert raised.value.code == "plan.guardrail.margin_required"
+        assert dict(raised.value.context) == {"metric": "revenue", "route": route}
 
     def test_compiler_refuses_encouragement_sequential_cuped(self):
         from increment.errors import CodedError

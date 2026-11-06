@@ -64,8 +64,10 @@ contract and existing source and persistence limitations.
 
 This example samples assignment independently with probability 0.5, then
 declares the same assignment law. Revenue is the primary metric; complaints
-are a guardrail. Treatment-arm complaint values are missing to show how the
-result reports a guardrail that cannot be checked.
+are a guardrail. A guardrail checks that the treatment is not worse than
+control by more than a margin, here two percentage points of complaint rate
+(`margin_abs=0.02`). Treatment-arm complaint values are missing to show how
+the result reports a guardrail that cannot be checked.
 
 ```python
 from random import Random
@@ -115,7 +117,10 @@ with warnings.catch_warnings(record=True) as data_warnings:
                 preferred_direction="decrease",
             ),
         ],
-        plan=increment.AnalysisPlan(primary="revenue", guardrails=["complaints"]),
+        plan=increment.AnalysisPlan(
+            primary="revenue",
+            guardrails=[increment.ExperimentMetric(metric="complaints", margin_abs=0.02)],
+        ),
     )
     result = increment.run(experiment, reader)
 for warning in data_warnings:
@@ -162,15 +167,20 @@ recovered_experiment, recovered_reader = increment.from_frame(
             preferred_direction="decrease",
         ),
     ],
-    plan=increment.AnalysisPlan(primary="revenue", guardrails=["complaints"]),
+    plan=increment.AnalysisPlan(
+        primary="revenue",
+        guardrails=[increment.ExperimentMetric(metric="complaints", margin_abs=0.02)],
+    ),
 )
 recovered = increment.run(recovered_experiment, recovered_reader)
 print(increment.render(recovered, "brief"))
 ```
 
-The repaired result has a complaint estimate, but its uncertainty still
-matters: an interval including zero is inconclusive, not proof of safety or
-no effect. Keep the rendered qualifications when sharing the result.
+The repaired result has a complaint estimate, and the guardrail's test
+rejects: the data show the treatment's complaint rate is not two percentage
+points or more above control's. That is all a certified guardrail shows; it is
+not proof of no effect. Keep the rendered qualifications when sharing the
+result.
 
 ## Read experiment definitions
 

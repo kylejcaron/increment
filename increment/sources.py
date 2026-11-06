@@ -327,6 +327,19 @@ _MOMENTS_PLAN_CONFLICT = _RefusalSpec(
     _WireFormatError,
     template="moments cube has conflicting {field!r}: {value!r}; {constraint}",
 )
+# A cube replays the plan it was exported with, so a margin arrives with a new export or plan=.
+_MOMENTS_GUARDRAIL_MARGIN_ROUTE = (
+    "re-export the moments with a declared margin, or rebuild with plan= declaring "
+    "ExperimentMetric(metric=..., margin=...) or margin_abs=..."
+)
+# A checkpoint cube replays only the plan it registered, so a margin arrives only with a new
+# export, where sequential inference takes a relative margin; an encouragement design, which
+# the cube does not record, builds no shifted null under sequential inference.
+_MOMENTS_SEQUENTIAL_GUARDRAIL_ROUTE = (
+    "rebuild the experiment and re-export the moments with "
+    "ExperimentMetric(metric=..., margin=...), or, under an encouragement design, with the "
+    "metric listed as a secondary or a fixed-horizon plan (inference=None)"
+)
 _MOMENTS_DUPLICATE_KEY = _RefusalSpec(
     "moments.duplicate_key", _WireFormatError, template="duplicate key {key!r}"
 )
@@ -1574,7 +1587,7 @@ class MomentsSource(SequentialSourceMixin):
         if missing:
             _refuse(_MOMENTS_WINSORIZATION_FIELDS_MISSING, missing=missing)
         _validate_winsorization_metadata(stripped, metrics)
-        from increment.decision import CompiledDecisionPlan
+        from increment.decision import CompiledDecisionPlan, refuse_margin_less_procedures
         from increment.plan import (
             compile_decision_plan,
             refuse_observational_relative_margin,
@@ -1591,6 +1604,15 @@ class MomentsSource(SequentialSourceMixin):
                 plan_payload,
                 metric_types={metric.name: metric.type for metric in metric_catalog},
             )
+            if plan is None:
+                from increment.estimation.decision_types import FixedInference
+
+                refuse_margin_less_procedures(
+                    json.loads(plan_payload).get("procedures"),
+                    route=_MOMENTS_GUARDRAIL_MARGIN_ROUTE
+                    if isinstance(stored_plan.inference, FixedInference)
+                    else _MOMENTS_SEQUENTIAL_GUARDRAIL_ROUTE,
+                )
         if plan is None and stored_plan is not None:
             compiled = stored_plan
             _refuse_uncovered_metrics(compiled, metric_catalog, stripped)

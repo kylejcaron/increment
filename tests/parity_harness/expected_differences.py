@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from tests.parity_harness.comparison import nested_close
@@ -26,8 +26,8 @@ class ExpectedDifference:
     scenario: str
     ingress: str
     field: str
-    frozen: str | Mapping[str, Any] | None
-    current: str | Mapping[str, Any] | None
+    frozen: str | float | Mapping[str, Any] | None
+    current: str | float | Mapping[str, Any] | None
     reason: str
     key: str | None = None
 
@@ -54,6 +54,94 @@ class ExpectedDifference:
         assert found, f"{self.scenario}/{self.ingress} no longer records {self.field} {self.frozen}"
         return migrated
 
+
+# A compiled field the current route no longer records.
+REMOVED = object()
+# The fields of a plan entry a capture recorded as a bare metric name.
+_PLAN_ENTRY = {
+    "decision_method": None,
+    "margin": None,
+    "margin_abs": None,
+    "prior": None,
+    "sensitivity_methods": [],
+}
+
+
+@dataclass(frozen=True, slots=True)
+class GuardrailMigration:
+    """A guardrail the frozen capture recorded without a margin, which every constructor now
+    refuses, migrated to the margin the scenario now declares.
+
+    Every mapping naming ``metric`` that holds each ``frozen`` value -- a compiled procedure,
+    in a plan or its ``decision_plan`` JSON, a retained row, or the projection fields of that
+    row's cell -- takes the ``current`` values (``REMOVED`` deletes a field). A plan
+    declaration's guardrail entry for ``metric``, a bare name or an entry without a margin,
+    gains ``declared``. Refuses an outcome holding no compiled match, or, when the record
+    declares a margin, no such entry.
+    """
+
+    scenario: str
+    ingress: str
+    metric: str
+    frozen: Mapping[str, Any]
+    current: Mapping[str, Any]
+    reason: str
+    declared: Mapping[str, Any] = field(default_factory=dict)
+
+    def applied_to(self, expected: Any) -> Any:
+        found = {"compiled": False, "declared": False}
+
+        def declaration(plan: dict[str, Any]) -> dict[str, Any]:
+            guardrails: list[Any] = list(plan.get("guardrails") or ())
+            names: list[Any] = [
+                item if isinstance(item, str) else item.get("metric") for item in guardrails
+            ]
+            if self.metric not in names:
+                return plan
+            index = names.index(self.metric)
+            entry = guardrails[index]
+            entry = {**_PLAN_ENTRY, "metric": entry} if isinstance(entry, str) else dict(entry)
+            assert entry["margin"] is None and entry["margin_abs"] is None, entry
+            found["declared"] = True
+            guardrails[index] = {**entry, **self.declared}
+            return {**plan, "guardrails": guardrails}
+
+        def migrate(value: Any, held_under: Any = None, *, in_cell: bool = False) -> Any:
+            if held_under == "decision_plan" and isinstance(value, str):
+                return json.dumps(migrate(json.loads(value)), sort_keys=True, separators=(",", ":"))
+            if isinstance(value, dict):
+                row = value.get("retained_row")
+                cell = isinstance(row, dict) and row.get("metric") == self.metric
+                migrated = {key: migrate(item, key, in_cell=cell) for key, item in value.items()}
+                names = migrated.get("metric") == self.metric or (
+                    in_cell and held_under == "projection_fields"
+                )
+                if names and all(
+                    key in migrated and migrated[key] == item for key, item in self.frozen.items()
+                ):
+                    found["compiled"] = True
+                    migrated.update(self.current)
+                    migrated = {key: item for key, item in migrated.items() if item is not REMOVED}
+                if "guardrails" in migrated and "primary" in migrated:
+                    migrated = declaration(migrated)
+                return migrated
+            if isinstance(value, list):
+                return [migrate(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(migrate(item) for item in value)
+            return value
+
+        migrated = migrate(expected)
+        assert found["compiled"], (
+            f"{self.scenario}/{self.ingress} no longer records {self.metric} as {self.frozen}"
+        )
+        assert found["declared"] or not self.declared, (
+            f"{self.scenario}/{self.ingress} no longer declares {self.metric} without a margin"
+        )
+        return migrated
+
+
+Difference = ExpectedDifference | GuardrailMigration
 
 # The favorable side each declared direction names; any other declaration names none.
 _DECLARED_SIDES = {"increase": "greater", "decrease": "less"}
@@ -129,7 +217,7 @@ def without_stamped_sequential_direction(
     return projected
 
 
-_RECORDS = (
+_RECORDS: tuple[Difference, ...] = (
     ExpectedDifference(
         scenario="triggered_encouragement_compliance_asof",
         ingress="from_definitions",
@@ -261,8 +349,84 @@ _RECORDS += tuple(
         ("from_switchback_panel", "switchback", ["from_definitions", "from_unit_day_artifact"]),
     )
 )
+
+
+def _rpo_margin(ingress: str, *, declared: bool) -> GuardrailMigration:
+    return GuardrailMigration(
+        scenario="mixed-cuped-multicovariate-fixed-horizon",
+        ingress=ingress,
+        metric="rpo",
+        frozen={"null_lift": 0.0},
+        current={"null_lift": -0.02},
+        declared={"margin": 0.02} if declared else {},
+        reason=(
+            "The rpo guardrail declares margin=0.02, since a guardrail needs a margin, so its "
+            "null on this increase metric is a 2% decrease; the capture tested it against zero."
+        ),
+    )
+
+
+def _errors_margin(ingress: str, *, declared: float | None) -> GuardrailMigration:
+    return GuardrailMigration(
+        scenario="observational_multiplicity_primary_secondary_guardrail",
+        ingress=ingress,
+        metric="errors",
+        frozen={"null_lift": 0.0, "kind": "relative", "axis": "relative", "scale": "relative"},
+        current={
+            "null_lift": REMOVED,
+            "null_abs": 1.0,
+            "kind": "absolute",
+            "axis": "absolute",
+            "scale": "absolute",
+        },
+        declared={} if declared is None else {"margin_abs": declared},
+        reason=(
+            "The errors guardrail declares margin_abs=1.0, since a guardrail needs a margin and "
+            "an observational design tests only an absolute one, so its procedure is absolute "
+            "with a null one error above control; the capture tested a relative lift of zero."
+        ),
+    )
+
+
+def _ratio_margin(ingress: str, *, declared: bool) -> GuardrailMigration:
+    return GuardrailMigration(
+        scenario="categorical-cuped-moments-format-13",
+        ingress=ingress,
+        metric="revenue_per_spend",
+        frozen={"null_lift": 0.0},
+        current={"null_lift": -0.02},
+        declared={"margin": 0.02} if declared else {},
+        reason=(
+            "The ratio guardrail declares margin=0.02, since a guardrail needs a margin, so its "
+            "null on this increase metric is a 2% decrease; the capture tested it against zero."
+        ),
+    )
+
+
+_RECORDS += (
+    _rpo_margin("from_unit_day_artifact", declared=False),
+    ExpectedDifference(
+        scenario="mixed-cuped-multicovariate-fixed-horizon",
+        ingress="from_unit_day_artifact",
+        field="rpo p_value",
+        key="p_value",
+        frozen=0.004322126574,
+        current=0.0016885046464289928,
+        reason="The rpo guardrail's one-sided test is against its 2% margin, not zero.",
+    ),
+    _ratio_margin("from_moments", declared=False),
+    ExpectedDifference(
+        scenario="categorical-cuped-moments-format-13",
+        ingress="from_moments",
+        field="revenue_per_spend p_value",
+        key="p_value",
+        frozen=1.48663558e-06,
+        current=8.485173020721271e-08,
+        reason="The ratio guardrail's one-sided test is against its 2% margin, not zero.",
+    ),
+)
 # Typed consumer inputs are frozen separately from the outcomes above.
-_CONSUMER_INPUT_RECORDS = (
+_CONSUMER_INPUT_RECORDS: tuple[Difference, ...] = (
     ExpectedDifference(
         scenario="audit-compliance-only-outcome-missingness",
         ingress="from_unit_summary",
@@ -284,6 +448,112 @@ _CONSUMER_INPUT_RECORDS = (
             "A moments source records each metric declared missing='skip', which qualifies "
             "its rows' population; the captured source recorded none."
         ),
+    ),
+)
+_INGRESSES = (
+    "from_definitions",
+    "from_moments",
+    "from_unit_day_artifact",
+    "from_unit_panel",
+    "from_unit_summary",
+)
+# Ingresses whose consumer inputs record the plan declaration, not only its compiled form.
+_DECLARING = frozenset({"from_definitions", "from_unit_day_artifact"})
+
+
+def _artifact_digest(scenario: str, name: str, frozen: str, current: str) -> ExpectedDifference:
+    return ExpectedDifference(
+        scenario=scenario,
+        ingress="from_unit_day_artifact",
+        field=name,
+        frozen=frozen,
+        current=current,
+        reason="The published context records the guardrail's margin, so each digest over it moves.",
+    )
+
+
+_CONSUMER_INPUT_RECORDS += (
+    *(_rpo_margin(ingress, declared=ingress in _DECLARING) for ingress in _INGRESSES),
+    _artifact_digest(
+        "mixed-cuped-multicovariate-fixed-horizon",
+        "context_sha256",
+        "e8bfcd6bb30b18b90550e27e2c0a3d807849283e413518e6b5c3539918efe11b",
+        "239e8fdc6cfa4d84fa981310cd1ea5f73da030a1b27d8b878e8eecdd1f1a820e",
+    ),
+    _artifact_digest(
+        "mixed-cuped-multicovariate-fixed-horizon",
+        "canonical_source_recipe_json",
+        '{"recipe_sha256":"28000a70d60daf8355f0d350ec056ef5a42a88fa838724774d16defca8743c0e",'
+        '"source_recipe_format":2}',
+        '{"recipe_sha256":"3a21ea631b88996c190d73333050cfe5527c9e3796f1735e23f89ef1bf3c37cf",'
+        '"source_recipe_format":2}',
+    ),
+    _artifact_digest(
+        "mixed-cuped-multicovariate-fixed-horizon",
+        "source_provenance_sha256",
+        "599637a75aba64f2f5e5fa41893b35a479b8a349049e91eb6f57012ec75fd7d9",
+        "d99e6eee29444e1bdc311df7d8a24effbd5aa443aa71357317aeaff653a07b75",
+    ),
+    _errors_margin("from_definitions", declared=1.0),
+    # The artifact context's canonical JSON writes the integral margin as an integer.
+    _errors_margin("from_unit_day_artifact", declared=1),
+    _errors_margin("from_unit_panel", declared=None),
+    _errors_margin("from_unit_summary", declared=None),
+    _artifact_digest(
+        "observational_multiplicity_primary_secondary_guardrail",
+        "context_sha256",
+        "d3918218fee95d52a0f61e956744c26f00fefdf2be97219a328855856c2a198b",
+        "205f58117b0ebe14d997c6deb2550e4f39fb7fa4a1e4b334220a06ce55185294",
+    ),
+    _artifact_digest(
+        "observational_multiplicity_primary_secondary_guardrail",
+        "canonical_source_recipe_json",
+        '{"recipe_sha256":"04bfa333ecdfd550c658869304bb5ff1282f4f159b417a850debffe42c5720da",'
+        '"source_recipe_format":2}',
+        '{"recipe_sha256":"cea071a54c5af791fe3e4063978b11a58e8604c9de189da4a5f9202bdedd7560",'
+        '"source_recipe_format":2}',
+    ),
+    _artifact_digest(
+        "observational_multiplicity_primary_secondary_guardrail",
+        "source_provenance_sha256",
+        "15f5add124d2cdbd1ceb06ba85215bfb5df5ebbf01a642db48ce9924696dcd6f",
+        "8aa6920277ebdef00bb5dd8f1a57c07bb9de2686ef90f1aaf04bbaf5e08c6073",
+    ),
+    *(_ratio_margin(ingress, declared=ingress in _DECLARING) for ingress in _INGRESSES),
+    _artifact_digest(
+        "categorical-cuped-moments-format-13",
+        "context_sha256",
+        "9af7380106e977018cb523d70c132212c5ee88d6c78276d93bd89038eccfd46e",
+        "0d4bf8c70eceb016860bad056fd756941a66299c22d79467749fe6073659a140",
+    ),
+    _artifact_digest(
+        "categorical-cuped-moments-format-13",
+        "canonical_source_recipe_json",
+        '{"recipe_sha256":"75692b0744a585230ee65ccb21df51a6c7bd8f823cb08d063f13854a8a92d1c6",'
+        '"source_recipe_format":2}',
+        '{"recipe_sha256":"0b70761dc104485b8a6a97a360a289f147765895ff49d7b13cf6b200add40338",'
+        '"source_recipe_format":2}',
+    ),
+    _artifact_digest(
+        "categorical-cuped-moments-format-13",
+        "source_provenance_sha256",
+        "42e84e6064ef492986126d002a6e5db58c1c3beb31b838387cff1d635f580ce5",
+        "0b7786c8796a24d479746ddf996180d1a906216e46a30fa24c3e2be710f2869a",
+    ),
+)
+# Typed records digest the published context too, apart from the identity records above.
+_TYPED_INPUT_RECORDS: tuple[Difference, ...] = (
+    _artifact_digest(
+        "mixed-cuped-multicovariate-fixed-horizon",
+        "context_sha256",
+        "e8bfcd6bb30b18b90550e27e2c0a3d807849283e413518e6b5c3539918efe11b",
+        "239e8fdc6cfa4d84fa981310cd1ea5f73da030a1b27d8b878e8eecdd1f1a820e",
+    ),
+    _artifact_digest(
+        "categorical-cuped-moments-format-13",
+        "context_sha256",
+        "9af7380106e977018cb523d70c132212c5ee88d6c78276d93bd89038eccfd46e",
+        "0d4bf8c70eceb016860bad056fd756941a66299c22d79467749fe6073659a140",
     ),
 )
 # A whole frozen disposition the current route replaces with another one.
@@ -335,7 +605,7 @@ _ALL_CELLS_FAILED = (
         },
     ),
 )
-_DISPOSITION_RECORDS = tuple(
+_DISPOSITION_RECORDS: tuple[Difference, ...] = tuple(
     ExpectedDifference(
         scenario=f"{view}-{base}",
         ingress="from_unit_panel",
@@ -393,11 +663,44 @@ _DISPOSITION_RECORDS = tuple(
     )
     for scenario, failure in _ALL_CELLS_FAILED
 )
+_MARGIN_LESS_GUARDRAIL_REFUSAL = {
+    "kind": "refusal",
+    "code": "plan.guardrail.margin_required",
+    "stage": "construct",
+    "context": {
+        "metric": "latency",
+        "route": "declare ExperimentMetric(metric=..., margin=...) or margin_abs=...",
+    },
+}
+_DISPOSITION_RECORDS += tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress=ingress,
+        field="disposition",
+        frozen={"kind": "cells"},
+        current=_MARGIN_LESS_GUARDRAIL_REFUSAL,
+        reason=(
+            "The scenario's latency guardrail declares no margin, which every constructor now "
+            "refuses before reading; the frozen outcome tested it against zero."
+        ),
+    )
+    for scenario in (
+        "encouragement_guardrail_late_rows",
+        "encouragement_guardrail_late_only_request",
+    )
+    for ingress in (
+        "from_definitions",
+        "from_unit_day_artifact",
+        "from_unit_summary",
+        "from_unit_panel",
+        "from_moments",
+    )
+)
 
 
 def _by_case(
-    records: tuple[ExpectedDifference, ...],
-) -> dict[tuple[str, str], tuple[ExpectedDifference, ...]]:
+    records: tuple[Difference, ...],
+) -> dict[tuple[str, str], tuple[Difference, ...]]:
     return {
         pair: tuple(record for record in records if (record.scenario, record.ingress) == pair)
         for pair in dict.fromkeys((record.scenario, record.ingress) for record in records)
@@ -406,7 +709,178 @@ def _by_case(
 
 EXPECTED_DIFFERENCES = _by_case(_RECORDS)
 CONSUMER_INPUT_DIFFERENCES = _by_case(_CONSUMER_INPUT_RECORDS)
+TYPED_INPUT_DIFFERENCES = _by_case(_TYPED_INPUT_RECORDS)
 DISPOSITION_DIFFERENCES = _by_case(_DISPOSITION_RECORDS)
+
+
+def _d7_retention_margin(ingress: str) -> GuardrailMigration:
+    return GuardrailMigration(
+        scenario="parity_baseline",
+        ingress=ingress,
+        metric="d7_retention",
+        frozen={"null_lift": 0.0},
+        current={"null_lift": -0.02},
+        reason=(
+            "The example d7_retention guardrail declares margin=0.02, since a guardrail needs a "
+            "margin, so its null on this increase metric is a 2% decrease; the capture tested it "
+            "against zero."
+        ),
+    )
+
+
+# The root readout fixture and its exports, frozen while these guardrails declared no margin.
+EXPORT_DIFFERENCES = {
+    "parity_baseline": _d7_retention_margin("from_definitions"),
+    "mixed_warehouse": _rpo_margin("from_definitions", declared=False),
+    "mixed_categorical_replay": _ratio_margin("from_moments", declared=False),
+}
+
+
+def _replayed(scenario: str, field: str, frozen: str | float, current: str | float) -> Difference:
+    return ExpectedDifference(
+        scenario=scenario,
+        ingress="from_moments",
+        field=field,
+        key=field,
+        frozen=frozen,
+        current=current,
+        reason=(
+            "The replayed export's guardrail carries its margin, so its one-sided test is against "
+            "the margin, not zero, and each snapshot and family id that digests its procedure "
+            "moves."
+        ),
+    )
+
+
+# Each export's frozen replay, its recorded plan given the margin above.
+REPLAY_DIFFERENCES: dict[str, tuple[Difference, ...]] = {
+    "parity_baseline": (
+        _d7_retention_margin("from_moments"),
+        _replayed("parity_baseline", "p_value", 3.65387567e-06, 1.962906411e-06),
+        _replayed(
+            "parity_baseline",
+            "source_snapshot_id",
+            "sha256:ab2a6e33bc818afba62cb99f14b3cec6e5c032a49c7ba4f3e7950a1b89eb60d0",
+            "sha256:7baac129d5fbefb861252df41482fce0980b79044fc6fe95eb6ecd8eb02cf560",
+        ),
+        _replayed(
+            "parity_baseline",
+            "family_id",
+            "sha256:24abdf725e68129f3eac1c346dbc2153e2776046e7fc1fca25fbe565f3345d39",
+            "sha256:774eb11bc9776bf4114215b749058817ccf3ac2ea072b7f1f2a414f41473959a",
+        ),
+        _replayed(
+            "parity_baseline",
+            "family_id",
+            "sha256:d3185e13450d0baae047ffb1f2291540dfb4c2077026ad69efdbfd6d5e48ad30",
+            "sha256:bec6c86a15183f59773e763e6797149a5d7e7287de0409f7a0a2e2675c5aaf3e",
+        ),
+    ),
+    **{
+        name: (
+            _rpo_margin("from_moments", declared=False),
+            _replayed(name, "p_value", 0.004322126573866, 0.001688504646429),
+        )
+        for name in ("mixed_warehouse", "mixed_fitted_replay")
+    },
+    "mixed_categorical_replay": (
+        _ratio_margin("from_moments", declared=False),
+        _replayed("mixed_categorical_replay", "p_value", 1.48663558e-06, 8.485173e-08),
+        _replayed(
+            "mixed_categorical_replay",
+            "source_snapshot_id",
+            "sha256:42a91378ea3f0f723cbdf30f4b3c22c6e55ce0dd02087e2c6a4990fdb61aa76b",
+            "sha256:5de0cac0113fa38cc26ba2e8b84cb4f3d5a8dd8cf70aa8fad23535955f702920",
+        ),
+        _replayed(
+            "mixed_categorical_replay",
+            "family_id",
+            "sha256:0dd5ccc05702e246d291afe845d04e62f5b54e4dc9020f77dca5b18967693567",
+            "sha256:8267e5954fe947a5b6eaa03f42deaba9b90f48d39515c1df38ea917fe376a072",
+        ),
+        _replayed(
+            "mixed_categorical_replay",
+            "family_id",
+            "sha256:8b164da095832eb816f95add98f81b0c044489184cb5d0f1c780d6fd4dd7acbe",
+            "sha256:7eb542b21701f5045cd93555a6e7731d760cf08b81b611e3d60c9c055f4f1da2",
+        ),
+    ),
+}
+_MARGIN_SNAPSHOT_REASON = (
+    "Each procedure enters the snapshot request with its null, so a guardrail's margin moves "
+    "the snapshot of every view that reads it; the rows are otherwise unchanged."
+)
+READOUT_IDENTITY_DIFFERENCES = tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress=ingress,
+        field=f"{view} source_snapshot_id",
+        frozen=f"sha256:{frozen}",
+        current=f"sha256:{current}",
+        reason=_MARGIN_SNAPSHOT_REASON,
+    )
+    for scenario, ingress, view, frozen, current in (
+        (
+            "parity_baseline",
+            "from_definitions",
+            "run",
+            "8996dea490ae6485b7c28afcb1428a7fcf1ac31078cb832489b52e6cf2f61c40",
+            "f14ed77328bfb9959e8338058aea9d1ba05fbafca6a715786f8e465b9a810d5c",
+        ),
+        (
+            "parity_baseline",
+            "from_definitions",
+            "run_daily",
+            "d737e1d938dd0245134cc197e12db74ad54c4b71e37dfc410eb42963d10893d1",
+            "172311ff62820f44bec0e3babecaf384d4f58f93d8a017b77217d355437677e3",
+        ),
+        (
+            "parity_baseline",
+            "from_definitions",
+            "run_asof",
+            "4e6e2192a9de3be3bed8ba57db4411bb59e88ef51345eab44a8473f2d8eb327f",
+            "8592296a039dfd20f1a3d0b36c2d61be2f1d35171c02cb474a3a464652f87509",
+        ),
+        # The lift views' frozen snapshots were migrated once already, for arm counts.
+        (
+            "parity_baseline",
+            "from_definitions",
+            "run_daily_lift",
+            "7b55c2d488d499e6f3516966ac974f59ff14d7109d74121d0ba5939ed6bd08c8",
+            "47b5acdd17923c231f0a576955212a67c72df4c966cfaae1bf93161c0d8bbace",
+        ),
+        (
+            "parity_baseline",
+            "from_definitions",
+            "run_asof_lift",
+            "02edf0b3c1ed107ca16529618b79d2dc3ecd80ced791fccd8d498bbb1c4fc0d8",
+            "fc796a87b94f29fe6dfd072d4eb5b54078012d92f77017452422e1f6a2c73d1c",
+        ),
+        (
+            "parity_baseline",
+            "from_definitions",
+            "run_breakout",
+            "b32d44bd49090d4117809297638467edae035acf61e657243b67e724d6291f7d",
+            "b82c98b43ed2dc4ddc1b287e6e5a06449de9f2355e7d73adb0334af812ff34f5",
+        ),
+        (
+            "mixed_local",
+            "from_unit_summary",
+            "run",
+            "aed46124b71363a2ac2497ab0272919b6c15f437bb9e8d4db330c6e80154c1ec",
+            "7b8283b81486fedb3b7a55ae9725c6ab446b3ed22138cee48acc5daf967f34c8",
+        ),
+    )
+)
+
+
+def without_guardrail_segments(rows: Any, metric: str, *, dropped: int) -> Any:
+    """The frozen breakout identity rows without ``metric``'s segments: a breakout cannot test
+    a guardrail's margin, so the segment view reads every other metric. Refuses a capture that
+    no longer holds exactly ``dropped`` such rows."""
+    kept = [item for item in rows if item["row"]["metric"] != metric]
+    assert len(rows) - len(kept) == dropped, f"{metric}: {len(rows) - len(kept)} segment rows"
+    return kept
 
 
 def with_expected_difference(
@@ -414,7 +888,7 @@ def with_expected_difference(
     ingress: str,
     expected: Any,
     *,
-    differences: Mapping[tuple[str, str], tuple[ExpectedDifference, ...]] = EXPECTED_DIFFERENCES,
+    differences: Mapping[tuple[str, str], tuple[Difference, ...]] = EXPECTED_DIFFERENCES,
 ) -> Any:
     """The frozen capture of one case, migrated by each of its recorded differences."""
     for difference in differences.get((scenario, ingress), ()):
@@ -440,22 +914,22 @@ def _without_gained_unit_arm_facts(
         gained = ("n_control", "n_treat", "mean_control", "mean_treat")
     else:
         return projected
-    for field in gained:
-        value = actual.get(field)
-        if value is None or expected.get(field) is not None:
+    for name in gained:
+        value = actual.get(name)
+        if value is None or expected.get(name) is not None:
             continue
-        if field in ("n_control", "n_treat"):
+        if name in ("n_control", "n_treat"):
             # A frame holds counts in a float column; a typed row holds integers.
             assert type(value) in (int, float) and value >= 1 and float(value).is_integer(), (
-                field,
+                name,
                 value,
             )
         else:
-            assert type(value) is float and math.isfinite(value), (field, value)
-        if field in expected:
-            projected[field] = None
+            assert type(value) is float and math.isfinite(value), (name, value)
+        if name in expected:
+            projected[name] = None
         else:
-            del projected[field]
+            del projected[name]
     return projected
 
 

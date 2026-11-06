@@ -525,6 +525,14 @@ def mixed_cuped_definitions_yaml(
     breakout_section = (
         "    breakouts:\n      - property: region\n        source: events\n" if breakout else ""
     )
+    # A breakout cannot test a guardrail's margin, so a segmented experiment reads the ratio as a
+    # secondary.
+    ratio_role = (
+        ""
+        if breakout
+        else f"      guardrails:\n        - metric: rpo\n          margin: 0.02\n          {method}\n"
+    )
+    ratio_secondary = f"        - metric: rpo\n          {method}\n" if breakout else ""
     return f"""
 dialect: duckdb
 fact_sources:
@@ -576,10 +584,7 @@ experiments:
       primary:
         metric: revenue
         {method}
-{scalar_sensitivity}      guardrails:
-        - metric: rpo
-          {method}
-      secondaries:
-        - metric: signups
+{scalar_sensitivity}{ratio_role}      secondaries:
+{ratio_secondary}        - metric: signups
           {method}
 """

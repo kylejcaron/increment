@@ -10,7 +10,7 @@ import pytest
 
 from increment import View, from_definitions, from_frame, workflows
 from increment.workflows import available_metrics
-from tests.analysis_factory import make_binding_like, view_readout
+from tests.analysis_factory import make_binding_like, non_guardrail_metrics, view_readout
 
 
 def test_stored_margin_comparison_survives_json_and_arrow():
@@ -1983,7 +1983,13 @@ def test_arrow_ipc_bytes_are_stable_across_fresh_processes(seeded_con, seeded_de
     )
     rows = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
     assert isinstance(rows, LiftEstimates)
-    breakout_rows = view_readout(experiment, resolver, View(view="breakout", grain="total"))
+    # A breakout cannot test the guardrail's margin, so it reads the other declared metrics.
+    breakout_rows = view_readout(
+        experiment,
+        resolver,
+        View(view="breakout", grain="total"),
+        metrics=non_guardrail_metrics(experiment, resolver),
+    )
     envelope = AnalysisEnvelope(
         cells=(*rows.as_cells(), *breakout_rows.as_cells()),
         metadata=None,
@@ -2080,7 +2086,7 @@ def test_composite_readout_metadata_survives_arrow_and_brief_render():
 
     import pandas as pd
 
-    from increment import AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, ExperimentMetric, MetricSpec
     from increment.result_envelope import AnalysisEnvelope, render
     from increment.semantics.design import Randomized
 
@@ -2110,7 +2116,10 @@ def test_composite_readout_metadata_survives_arrow_and_brief_render():
             allocation_scheme="independent" if allocation else None,
         )
         metrics = [MetricSpec(name="value", type="mean")]
-        plan = AnalysisPlan(primary="value", guardrails=["guard"] if guardrail else [])
+        plan = AnalysisPlan(
+            primary="value",
+            guardrails=[ExperimentMetric(metric="guard", margin=0.02)] if guardrail else [],
+        )
         if guardrail:
             metrics.append(MetricSpec(name="guard", type="mean", preferred_direction="decrease"))
         return view_readout(

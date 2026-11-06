@@ -272,15 +272,66 @@ def test_unavailable_primary_or_guardrail_is_not_evaluated():
         assert reason in program.reason_codes
 
 
-def test_primary_nonrejection_or_unsafe_guardrail_blocks_program():
+def test_primary_nonrejection_or_uncertified_guardrail_blocks_program():
     result, registration, compiled = _guardrail_case_result()
     for metric, reason in (
         ("value", "decision.primary.not_rejected"),
-        ("guard", "decision.guardrail.unsafe"),
+        ("guard", "decision.guardrail.not_certified"),
     ):
         program = _evaluate_guardrail_program(result, registration, compiled, nonreject=metric)
         assert program.status == "block"
         assert reason in program.reason_codes
+
+
+def test_late_rows_do_not_decide_a_margined_guardrail():
+    # The margin applies to the ITT row; a LATE row has no margin verdict, so a flat guardrail
+    # certified on ITT does not block on its LATE rows tested against zero.
+    from increment import ExperimentMetric
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    rows = [
+        (arm, i, int(i % 2 == 0) if arm == "treatment" else int(i % 10 == 0))
+        for arm in ("control", "treatment")
+        for i in range(200)
+    ]
+    frame = pd.DataFrame(
+        {
+            "unit": [f"{arm}-{i}" for arm, i, _ in rows],
+            "arm": [arm for arm, _, _ in rows],
+            "clicked": [clicked for _, _, clicked in rows],
+            "revenue": [10.0 + i % 5 + 4.0 * clicked for _, i, clicked in rows],
+            "latency": [200.0 + i % 7 for _, i, _ in rows],
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(justification="uptake carries the effect"),
+        ),
+        uptake="clicked",
+        metrics=[
+            MetricSpec(name="revenue", type="mean", preferred_direction="increase"),
+            MetricSpec(name="latency", type="mean", preferred_direction="decrease"),
+        ],
+        plan=AnalysisPlan(
+            primary="revenue", guardrails=[ExperimentMetric(metric="latency", margin=0.02)]
+        ),
+    )
+    with reader:
+        result = run(experiment, reader)
+    by_hash = {cell.identity.hash(): cell.identity.key.estimand for cell in result.cells}
+    guardrail = {
+        by_hash[verdict.identity_hash]: verdict.status
+        for verdict in result.decisions.cells
+        if verdict.role == "guardrail"
+    }
+    assert guardrail["itt"] == "reject" and "late" in guardrail
+    assert "decision.guardrail.not_certified" not in result.decisions.program.reason_codes
 
 
 def test_failed_or_unknown_integrity_blocks_program():

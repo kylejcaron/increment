@@ -12,7 +12,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import AnalysisPlan, CupedCovariate, Method, MetricSpec, from_frame, from_moments
+from increment import (
+    AnalysisPlan,
+    CupedCovariate,
+    ExperimentMetric,
+    Method,
+    MetricSpec,
+    from_frame,
+    from_moments,
+)
 from increment.breakout.estimates import (
     BreakoutEstimate,
     DailyLiftEstimate,
@@ -60,7 +68,10 @@ def _frame(*, guard_constant=True, drop_guard_treatment=False):
     return pd.DataFrame(rows)
 
 
-def _analysis(frame, *, drop_missing_guard=False, design=None):
+_GUARD = ExperimentMetric(metric="guard", margin=0.02)
+
+
+def _analysis(frame, *, drop_missing_guard=False, design=None, guardrail=_GUARD):
     return from_frame(
         frame,
         shape="summary",
@@ -89,9 +100,9 @@ def _analysis(frame, *, drop_missing_guard=False, design=None):
             ),
         ],
         plan=(
-            AnalysisPlan(primary="rev", guardrails=["guard"])
+            AnalysisPlan(primary="rev", guardrails=[guardrail])
             if "secondary" not in frame
-            else AnalysisPlan(primary="rev", guardrails=["guard"], secondaries=["secondary"])
+            else AnalysisPlan(primary="rev", guardrails=[guardrail], secondaries=["secondary"])
         ),
     )
 
@@ -106,6 +117,9 @@ def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
                 control_group="control",
                 allocation={"control": 0.5, "treatment": 0.5},
             ),
+            # A margin well inside the guard's interval keeps its row non-rejecting, the
+            # qualification this repr spells out.
+            guardrail=ExperimentMetric(metric="guard", margin=0.005),
         )
     )
     rendered = repr(results)
@@ -186,7 +200,6 @@ def test_readout_table_preserves_title_and_subtitle_without_notes():
 
 
 def test_absolute_margin_repr_matches_exported_additive_interpretation():
-    from increment.semantics.models import ExperimentMetric
     from increment.tables import estimates_to_readout
 
     records = []
@@ -507,7 +520,9 @@ def test_failure_passthrough_is_escaped_in_complete_html_table():
                 preferred_direction="decrease",
             ),
         ],
-        plan=AnalysisPlan(primary="rev", guardrails=[payload]),
+        plan=AnalysisPlan(
+            primary="rev", guardrails=[ExperimentMetric(metric=payload, margin=0.02)]
+        ),
     )
     with resolver:
         results = view_readout(experiment, resolver)
@@ -1423,7 +1438,9 @@ def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
             MetricSpec(name="rev", type="mean", preferred_direction="increase"),
             MetricSpec(name="guard", type="mean", preferred_direction="decrease"),
         ],
-        plan=AnalysisPlan(primary="rev", guardrails=["guard"]),
+        plan=AnalysisPlan(
+            primary="rev", guardrails=[ExperimentMetric(metric="guard", margin=0.02)]
+        ),
     )
     result = run(experiment, resolver)
     results = result.readout()

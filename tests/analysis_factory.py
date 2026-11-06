@@ -54,6 +54,14 @@ def view_readout(
     return run(declare_views(experiment, scope), resolver, views=(scope,), **options).readout(scope)
 
 
+def non_guardrail_metrics(experiment: Any, resolver: Any) -> list[str]:
+    """The declared metrics other than guardrails, for a view that cannot test a margin."""
+    from increment.workflows import experiment_definition
+
+    roles = experiment_definition(experiment, resolver).plan.role_names()
+    return [name for name, role in roles.items() if role != "guardrail"]
+
+
 def held_source(resolver: Any) -> object:
     """The source a reader holds, read without the reader's acquisition checks."""
     return resolver._binding.state.source

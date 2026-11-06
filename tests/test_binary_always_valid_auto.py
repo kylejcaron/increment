@@ -119,6 +119,7 @@ def test_segment_free_plans_keep_their_stored_registration_identity():
 def test_always_valid_multi_arm_registers_every_arm_at_its_role_allocation():
     from increment.estimators import SequentialCell
     from increment.semantics.design import Randomized
+    from increment.semantics.models import ExperimentMetric
     from increment.sequential_source import registration_id
 
     specs = [
@@ -133,7 +134,7 @@ def test_always_valid_multi_arm_registers_every_arm_at_its_role_allocation():
         InferenceSpec(kind="always_valid"),
         design=design,
         secondaries=["signups", "sessions"],
-        guardrails=["refunds"],
+        guardrails=[ExperimentMetric(metric="refunds", margin=0.02)],
         q=0.08,
     )
     assert inference.segments == {}
@@ -157,6 +158,7 @@ def test_always_valid_multi_arm_registers_every_arm_at_its_role_allocation():
                 alpha=cells[s.name, arm].alpha,
                 family=cells[s.name, arm].family,
                 alternative=cells[s.name, arm].alternative,
+                null_lift=cells[s.name, arm].null_lift,
             )
             for s in specs
             for arm in ("a", "b")

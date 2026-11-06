@@ -365,11 +365,14 @@ def _frame_rows(results) -> list[dict[str, Any]]:
 
 def _views(bound: Bound) -> tuple[dict[str, Any], dict[str, Any]]:
     unadjusted = Method(name="unadjusted")
+    # A breakout cannot test a guardrail's margin, so the segment view reads the other metrics.
+    roles = workflows.experiment_definition(*bound).plan.role_names()
+    segmented = [name for name, role in roles.items() if role != "guardrail"]
     results = {
         "run": read(bound, decision_method=unadjusted),
         "run_daily": read(bound, "daily"),
         "run_asof": read(bound, "asof"),
-        "run_breakout": read(bound, "breakout", decision_method=unadjusted),
+        "run_breakout": read(bound, "breakout", decision_method=unadjusted, metrics=segmented),
         "run_daily_lift": read(bound, "daily_lift", decision_method=unadjusted),
         "run_asof_lift": read(bound, "asof_lift", decision_method=unadjusted),
     }
