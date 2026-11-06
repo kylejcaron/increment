@@ -169,14 +169,17 @@ class TestSparsePlansAreTheReplay:
 
 class TestExplicitFiniteSamplePlans:
     @pytest.mark.slow
-    def test_a_dense_plan_pinned_to_finite_sample_is_replayed_not_closed_form(self):
+    @pytest.mark.numerical_certification
+    def test_a_dense_plan_pinned_to_finite_sample_is_replayed_not_closed_form(self, n=2_000):
         p = 0.1
-        n = 2_000
         baseline = Baseline.from_proportion(p)
         result = achieved_power(n, 0.5, baseline, _plan("finite_sample"))
         assert result.power_basis == "exact"
         assert result.numerical_qualification == "scipy_special_function_error_model_conditional_v1"
         assert type(result).model_validate_json(result.model_dump_json()) == result
+
+    def test_a_dense_plan_pinned_to_finite_sample_is_replayed_not_closed_form_smoke(self):
+        self.test_a_dense_plan_pinned_to_finite_sample_is_replayed_not_closed_form(n=200)
 
     def test_a_clustered_plan_cannot_plan_finite_sample(self):
         with pytest.raises(CodedError) as raised:

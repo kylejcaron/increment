@@ -817,13 +817,17 @@ class TestCompositeNoncoverageDecidesPairsByTheRuntime:
 
     @pytest.mark.parametrize("lift", [0.0, 0.13])
     @pytest.mark.slow
-    def test_a_pair_dense_only_at_the_nominal_tail(self, monkeypatch, lift):
-        counts = (1_500, 3_000, 1_700, 3_000)
-        assert dense_min_count(self.NOMINAL_TAIL) <= 1_300 < dense_min_count(self.TAIL)
+    @pytest.mark.numerical_certification
+    def test_a_pair_dense_only_at_the_nominal_tail(
+        self, monkeypatch, lift, counts=(1_500, 3_000, 1_700, 3_000)
+    ):
+        x_c, n, x_t, n_t = counts
+        count = min(x_c, n - x_c, x_t, n_t - x_t)
+        assert dense_min_count(self.NOMINAL_TAIL) <= count < dense_min_count(self.TAIL)
         result = self._composite(monkeypatch, counts, lift)
         exact = lift_row(counts, alpha=2.0 * self.TAIL, null_lift=lift, mode="finite_sample")
         assert exact.reference_kind == "binomial"
-        own = cr.dense_level_tail(1_300)
+        own = cr.dense_level_tail(count)
         assert own is not None
         delta_at_own = lift_row(counts, alpha=2.0 * own, null_lift=lift)
         assert delta_at_own.reference_kind == "t"
@@ -836,6 +840,11 @@ class TestCompositeNoncoverageDecidesPairsByTheRuntime:
         p_value = nominal_row.p_value()
         assert p_value is not None
         assert result.escalated == float(p_value < 2.0 * own)
+
+    def test_a_pair_dense_only_at_the_nominal_tail_smoke(self, monkeypatch):
+        self.test_a_pair_dense_only_at_the_nominal_tail(
+            monkeypatch, 0.0, counts=(600, 1_200, 700, 1_200)
+        )
 
     @pytest.mark.slow
     @pytest.mark.numerical_certification

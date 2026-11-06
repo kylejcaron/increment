@@ -393,6 +393,7 @@ class TestRoutedAsymptoticCellsNeverHitAGuard:
         tail=st.sampled_from([0.025, 0.05, 0.1]),
     )
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_no_count_pair_raises_a_guard_and_every_row_is_labelled_by_the_rule(
         self, n_c, n_t, frac_c, frac_t, tail
     ):
@@ -406,6 +407,22 @@ class TestRoutedAsymptoticCellsNeverHitAGuard:
         else:
             # Finite-sample rows may carry a typed failure (a tail the evaluator cannot
             # resolve), never a delta-method guard.
+            for failure in computation.failures.values():
+                assert failure.code.startswith("estimation.binomial.")
+            for row in computation.results:
+                assert row.reference_kind == "binomial"
+
+    def test_count_pairs_are_labelled_by_the_route_smoke(self):
+        n_c = n_t = 20
+        x_c = x_t = 10
+        tail = 0.05
+        computation = lift_computation((x_c, n_c, x_t, n_t), alpha=2.0 * tail)
+        route = route_for_counts(x_c, n_c, x_t, n_t, tail_alpha=tail, mode="auto")
+        if route == "asymptotic":
+            assert computation.failures == {}
+            (row,) = computation.results
+            assert row.reference_kind == "t"
+        else:
             for failure in computation.failures.values():
                 assert failure.code.startswith("estimation.binomial.")
             for row in computation.results:

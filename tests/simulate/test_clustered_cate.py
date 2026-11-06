@@ -479,7 +479,7 @@ def _policy_value_witness(grain, weight):
             marks=[pytest.mark.slow, pytest.mark.parameter_recovery],
             id="recovery",
         ),
-        pytest.param(5, id="smoke"),
+        pytest.param(50, id="smoke"),
     ],
 )
 def test_public_policy_and_selection_values_match_nonzero_causal_targets(
@@ -1337,9 +1337,13 @@ def _homogeneous_calibration_cell():
 @pytest.mark.integration
 @pytest.mark.parameter_recovery
 def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null(
-    attempts_count=2,
+    attempts_count=2, n_clusters=200
 ):
     cell = _homogeneous_calibration_cell()
+    cell = replace(
+        cell,
+        scenario=cell.scenario.model_copy(update={"n_clusters": n_clusters}),
+    )
     registration = ClusteredRegistration((cell,), 2, 99, 57, 12)
     attempts = [
         evaluate_clustered_replication(registration, cell.name, r) for r in range(attempts_count)
@@ -1365,7 +1369,9 @@ def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all
 
 
 def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null_smoke():
-    test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null(1)
+    test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null(
+        attempts_count=2, n_clusters=40
+    )
 
 
 def _accounting_evidence_table():
