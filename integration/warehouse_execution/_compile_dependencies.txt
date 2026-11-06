@@ -1,4 +1,4 @@
-# Traced on commit: e3b894e8a4d069fb199e8dd63d8cf0bd661477e8
+# Traced on commit: ea5dd3734287986ff927382003fd7ac65b79644f
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -6,6 +6,7 @@ increment._assignment_refusals
 increment._binding
 increment._breakout_readouts
 increment._canonical
+increment._compile_gaps
 increment._cuped_evidence
 increment._day_axis
 increment._day_axis_labels
