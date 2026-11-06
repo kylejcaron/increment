@@ -3733,6 +3733,7 @@ def _method_family_results(
     from increment.estimation.quantile import quantile_lift_from_rows
     from tests.evidence_fixtures.method_replay import (
         ObservationalReplayConfig,
+        _project_consumer_row,
         estimate_observational_transcript,
     )
     from tests.evidence_fixtures.transcript import _restore
@@ -3785,11 +3786,8 @@ def _method_family_results(
             ),
         )
         _record_fixed_computation(transcript, population, computation)
-        from increment.readouts._design_scope import _project_scoped_row
-
         yield from (
-            (_project_scoped_row(row, None, {}), "scalar", population)
-            for row in computation.results
+            (_project_consumer_row(row), "scalar", population) for row in computation.results
         )
         return
     unit_record = next(
@@ -3876,7 +3874,7 @@ def _method_family_results(
 def _compliance_results(transcript):
     from increment.estimation.encouragement import estimate_compliance
     from increment.evidence import ComplianceSummary
-    from increment.readouts._design_scope import _project_scoped_row
+    from tests.evidence_fixtures.method_replay import _project_consumer_row
     from tests.evidence_fixtures.transcript import _restore
 
     configuration, _context, design, _configs, plan = _consumer_context(transcript)
@@ -3903,7 +3901,7 @@ def _compliance_results(transcript):
         )
         _record_fixed_computation(transcript, record["request"]["population"], computation)
         yield from (
-            (_project_scoped_row(row, None, {}), "scalar", record["request"]["population"])
+            (_project_consumer_row(row), "scalar", record["request"]["population"])
             for row in computation.results
         )
 
@@ -4230,6 +4228,7 @@ def _project_design_results(
         ResolvedRoster,
         encouragement_expected,
         observational_expected,
+        resolve_roster,
         scope_design_results,
     )
     from increment.readouts._run import _observational_adjustment_identity
@@ -4239,6 +4238,23 @@ def _project_design_results(
     selected = tuple(config.metric for config in configs)
     rows = [row for row, _consumer in items]
     observed = {name: set(value.observed_arms) for name, value in evidence.items()}
+    roster = configuration["assembly"]["rosters"][population]
+    assert design.mechanism == "observational" or roster is not None
+    base_roster = (
+        ResolvedRoster(**roster)
+        if roster is not None
+        # A frozen observational capture resolved its arms without the source's counts, which
+        # its transcript does not hold; the replay keeps that roster.
+        else ResolvedRoster(
+            arms=(),
+            source="unknown",
+            complete=False,
+            counts=None,
+            integrity_counts=None,
+            arms_by_metric={},
+            known_arms=frozenset(),
+        )
+    )
     summary = None
     extra = {
         "metrics": [
@@ -4337,6 +4353,9 @@ def _project_design_results(
                         declaration.context.cluster,
                     ),
                     unit_frame_memo=unit_frame,
+                    arms=resolve_roster(
+                        declaration, design, population, observed, base_roster=base_roster
+                    ).arms,
                     computations=computations,
                 )
                 return family_rows, computations
@@ -4387,8 +4406,6 @@ def _project_design_results(
                 selected, configs, design, plan, value_scale=None, arms=arms
             )
 
-    roster = configuration["assembly"]["rosters"][population]
-    assert design.mechanism == "observational" or roster is not None
     result = scope_design_results(
         declaration,
         design,
@@ -4402,8 +4419,7 @@ def _project_design_results(
         observed_by_metric=observed,
         compliance_summary=summary,
         estimands=configuration["estimands"],
-        use_counts=design.mechanism != "observational",
-        base_roster=None if roster is None else ResolvedRoster(**roster),
+        base_roster=base_roster,
         request_extra=extra,
         method_evidence=evidence if design.mechanism == "encouragement" else None,
     )

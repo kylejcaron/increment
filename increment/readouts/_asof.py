@@ -195,7 +195,7 @@ def _estimate_asof_metric_date(
         ]
 
     if test.role == "secondary":
-        nominal, _refused, _computation = _estimate_pass(
+        nominal, _computation = _estimate_pass(
             src,
             metric,
             evidence,
@@ -231,7 +231,7 @@ def _estimate_asof_metric_date(
     if test.role == "primary" and n_arms == 0:
         return []
     cell_alpha = resolve_cell_alpha(plan, test, n_arms=n_arms, view=None)
-    rows_est, _refused, _computation = _estimate_pass(
+    rows_est, _computation = _estimate_pass(
         src,
         metric,
         evidence,

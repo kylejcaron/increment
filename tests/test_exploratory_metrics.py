@@ -420,18 +420,21 @@ def zero_denominator_warehouse():
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_all_failed_methods_still_refuse_the_readout(zero_denominator_warehouse):
+def test_all_failed_methods_return_unavailable_rows(zero_denominator_warehouse):
     experiment, resolver = _analysis(zero_denominator_warehouse, AnalysisPlan(primary="revenue"))
     with pytest.warns(IncrementWarning):
-        with pytest.raises(CodedError) as refused:
-            view_readout(
-                experiment,
-                resolver,
-                metrics=[],
-                exploratory_metrics=["rps"],
-                sensitivity_methods=[CUPED],
-            )
-    assert refused.value.code == "readout.estimate_lift_every"
+        rows = view_readout(
+            experiment,
+            resolver,
+            metrics=[],
+            exploratory_metrics=["rps"],
+            sensitivity_methods=[CUPED],
+        )
+    assert rows
+    assert {row.metric for row in rows} == {"rps"}
+    assert {row.failure_code for row in rows} == {
+        "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+    }
 
 
 @pytest.mark.slow

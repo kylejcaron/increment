@@ -9998,12 +9998,16 @@ def _edge_cases() -> tuple[ParityCase, ...]:
             id="edge-empty-arm", rows=empty_arm, metric=MetricSpec(name="revenue")
         ),
         _edge_unit_summary_case(
-            id="edge-zero-variance-arm", rows=zero_variance, metric=MetricSpec(name="revenue")
+            id="edge-zero-variance-arm",
+            rows=zero_variance,
+            metric=MetricSpec(name="revenue"),
+            refusal_only=False,
         ),
         _edge_unit_summary_case(
             id="edge-near-zero-ratio-denominator",
             rows=ratio_rows,
             metric=MetricSpec(name="r", type="ratio", numerator="revenue", denominator="sessions"),
+            refusal_only=False,
         ),
         _edge_unit_summary_case(
             id="edge-near-zero-positive-ratio-denominator",

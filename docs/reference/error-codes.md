@@ -1404,7 +1404,6 @@ Retired codes and their replacements are listed below.
 | `readout.encouragement.retention` | `CapabilityError` | `names` | `increment.estimation.encouragement`, `increment.semantics.design` |
 | `readout.encouragement.value_scale` | `UnsupportedRequestError` | — | `increment.estimation.encouragement`, `increment.readouts._common` |
 | `readout.estimands.unknown` | `InvalidRequestError` | `supported`, `unknown` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
-| `readout.estimate_lift_every` | `UnsupportedRequestError` | `failures` | `increment.readouts._common` |
 | `readout.failure.hypothesis_key_collision` | `InvalidRequestError` | `cell_keys`, `hypothesis` | `increment.estimation.readout_types` |
 | `readout.inference.disjoint_slices` | `UnsupportedRequestError` | `inference`, `view` | `increment.breakout.estimates` |
 | `readout.inference.observational_run` | `UnsupportedRequestError` | `route` | `increment.plan` |
@@ -1721,6 +1720,7 @@ Retired codes and their replacements are listed below.
 | `query.session.warehouse_artifact.write_relation_sealed` | `query.session.warehouse_artifact.publication_handle_sealed` |
 | `query.source.artifact_facade.verification_lazy_digest` | `query.artifact_reader.artifact_moment.verification_lazy_digest` |
 | `readout.estimate_ate_every` | `estimation.adjust.estimate_ate_every` |
+| `readout.estimate_lift_every` | Removed without replacement |
 | `readout.inference.encouragement_run` | Removed without replacement |
 | `readout.metric.daily_winsorization` | `evidence.operation_unavailable` |
 | `readout.source.dimension` | `evidence.breakout_unavailable` |
