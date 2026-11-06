@@ -346,8 +346,10 @@ A missing relative point estimate does not erase the confidence set. The
 `sequential_lower` and `sequential_upper` frame columns hold those endpoints on
 the lift scale (ratio minus one), rounded outward to numeric floats or nulls;
 see [Reading results](reading-results.md#sequential-inference-two-coordinate-systems).
-`sequential_log_e` remains available when
-exponentiating evidence would overflow. `row.stat_sig()` uses the registered
+On exact Bernoulli (`always_valid`) rows, `sequential_log_e` is the log e-value as a float,
+so it stays usable where the e-value itself would overflow; `sequential_alpha`
+is the decision alpha as a float, and the exact fractions stay on
+`row.require_sequential_result()`. `row.stat_sig()` uses the registered
 null and exact allocated alpha. No equivalent-normal-score p-value is reported.
 A two-sided confidence sequence compares each tail's e-process with the same
 `1 / alpha` the decision uses; there is no central halving. At the true ratio
@@ -796,8 +798,9 @@ establish that nobody examined the outcomes elsewhere beforehand.
     denominator stability as described below; family selection also masks ratios
     unresolved at its nominal reporting ceiling. It has no finite-sample p-value.
     Frame/readout exports include
-    `sequential_validity_regime`, `sequential_alpha`, `sequential_components`, and
-    numeric-null `sequential_log_e`. JSON replay recomputes geometry and rejects
+    `sequential_validity_regime`, `sequential_alpha` (a float), `sequential_components`, and
+    a numeric-null `sequential_log_e`: the plug-in value is not a finite-sample
+    e-value, so it is not exported as one. JSON replay recomputes geometry and rejects
     changed evidence. Identical capture is idempotent; frozen results require a
     verified ancestor prefix. The same model follows the existing frame, panel,
     native, artifact, moments-export, current as-of and registered breakout paths.
@@ -810,7 +813,8 @@ plan's `q`, labeled `asymptotic_sequential` whenever any member is asymptotic
 (`finite_sample` only if every member is exact -- see Secondaries above).
 Register every member with `family=True` and its nominal `alpha`; a selected
 member's interval is reinverted at `min(q * R / m, nominal_alpha)`, and every
-row in the family reports the same `family_guarantee`/`family_nominal_alpha`.
+row in the family reports the same `family_guarantee`/`family_nominal_alpha`
+and its member count `m` as `family_size`.
 A member without usable evidence contributes log evidence of minus infinity
 and is never selected; a recorded failure in place of evidence refuses the
 whole family.

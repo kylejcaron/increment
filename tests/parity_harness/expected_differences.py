@@ -351,26 +351,33 @@ def without_binomial_arm_facts(
     return actual
 
 
-def without_breakout_family_size(expected: Any, actual: Any) -> Any:
-    """``actual`` without the family size fixed-horizon BH breakout rows gained after a capture.
+def _registered_family_cell(row: Mapping[str, Any]) -> bool:
+    """Whether ``row``'s own sequential evidence registers its cell in a family."""
+    result = row.get("sequential_result")
+    checkpoint = result.get("checkpoint") if isinstance(result, Mapping) else None
+    cell = checkpoint.get("cell") if isinstance(checkpoint, Mapping) else None
+    return isinstance(cell, Mapping) and cell.get("family") is True
 
-    Only a segment row with ``family_procedure == "bh"`` and a positive integer ``family_size``
-    is projected, and only when its captured row lacks the field or holds it as null. Lists
-    and tuples pair by position, as in ``without_binomial_arm_facts``.
+
+def without_post_capture_family_size(expected: Any, actual: Any) -> Any:
+    """``actual`` without the ``family_size`` a family row gained after its capture.
+
+    Two kinds of row gained it: a fixed-horizon BH segment row, and a row whose own
+    ``sequential_result`` registers its cell in a sequential family. Only such a row with a
+    positive integer ``family_size`` is projected, and only when its captured row lacks the
+    field or holds it as null. Lists and tuples pair by position, as in
+    ``without_binomial_arm_facts``.
     """
     if isinstance(expected, Mapping) and isinstance(actual, Mapping):
         projected = {
-            key: without_breakout_family_size(expected.get(key), value)
+            key: without_post_capture_family_size(expected.get(key), value)
             for key, value in actual.items()
         }
         size = actual.get("family_size")
-        if (
-            actual.get("dimension_value") is not None
-            and actual.get("family_procedure") == "bh"
-            and type(size) is int
-            and size >= 1
-            and expected.get("family_size") is None
-        ):
+        gained = (
+            actual.get("family_procedure") == "bh" and actual.get("dimension_value") is not None
+        ) or _registered_family_cell(actual)
+        if gained and type(size) is int and size >= 1 and expected.get("family_size") is None:
             if "family_size" in expected:
                 projected["family_size"] = None
             else:
@@ -382,7 +389,7 @@ def without_breakout_family_size(expected: Any, actual: Any) -> Any:
         and len(expected) == len(actual)
     ):
         paired = [
-            without_breakout_family_size(left, right)
+            without_post_capture_family_size(left, right)
             for left, right in zip(expected, actual, strict=True)
         ]
         return tuple(paired) if isinstance(actual, tuple) else paired

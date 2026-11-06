@@ -15,6 +15,7 @@ from increment.estimation.readout_types import (
     render_readout_failure,
 )
 from increment.estimation.results import (
+    _FAMILY_PROCEDURE_LABELS,
     _selection_qualification,
     row_chance_to_beat,
     row_chance_to_beat_favorable,
@@ -627,9 +628,7 @@ def render_brief_qualification(row, family=None, *, alpha=None) -> str | None:
     if display_alpha is not None:
         labels.append(f"{1 - display_alpha:.1%} confidence")
     if family_size is not None:
-        procedure_label = (
-            str(procedure).replace("_", " ").title() if procedure is not None else "family"
-        )
+        procedure_label = _FAMILY_PROCEDURE_LABELS.get(procedure, "family")
         labels.append(f"{family_size}-member {procedure_label}")
     if getattr(getattr(row, "sequential_result", None), "validity_regime", None) == (
         "asymptotic_sequential"
