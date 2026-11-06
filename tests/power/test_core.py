@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import sys
+import warnings
 from dataclasses import replace
 from typing import Any, cast
 
@@ -23,10 +24,19 @@ from scipy.stats import chi2 as scipy_chi2
 from scipy.stats import norm
 
 from increment import from_frame
-from increment.errors import CapabilityError, InvalidRequestError, UnsupportedRequestError
+from increment.errors import (
+    CapabilityError,
+    IncrementWarning,
+    InvalidRequestError,
+    UnsupportedRequestError,
+)
 from increment.estimation.arm_contract import AbsoluteDecisionPolicy, ArmPlanningProcedure
 from increment.estimation.armstats import SummaryStats
-from increment.estimation.quantile import _log_quantile_se_impl, log_quantile_se
+from increment.estimation.quantile import (
+    _log_quantile_se_impl,
+    log_quantile_se,
+    quantile_lift_from_rows,
+)
 from increment.estimation.sequential import GaussianScoreMixture
 from increment.frame import MetricSpec, synthesise_metric
 from increment.power import (
@@ -54,7 +64,9 @@ from increment.power.core import (
     required_sample_size,
 )
 from increment.power.pairwise import _segment_arm_sizes
+from increment.semantics.design import Randomized
 from increment.semantics.models import InferenceSpec, MethodSpec, QuantileMetric
+from tests.warning_codes import allow_warning_codes, warning_codes, warning_context
 
 from ._procedures import make_procedure
 from ._results import available_mde
@@ -1221,17 +1233,34 @@ class TestPowerResultInvariants:
         assert 0.0 < maximum < 0.8
 
 
+def _quantile_baseline(name: str, q: float, values: np.ndarray) -> QuantileBaseline:
+    metric = synthesise_metric(MetricSpec(name=name, type="quantile", quantile=q))
+    return QuantileBaseline.from_control_values(cast("QuantileMetric", metric), values)
+
+
 _LOW_TARGET = Baseline(mean=20.0, var=400.0)
 _LOW_TARGET_CONVERSION = Baseline.from_proportion(0.1)
+# Continuous, so its median bracket holds no tie and the planned arm SE at n
+# units is ``c * sqrt(1000 / n)``, ``c`` the pilot's classical SE (0.0744).
+_HEAVY_TAILED_PILOT = np.random.default_rng(0).lognormal(0.0, 2.0, 1000)
+_HEAVY_TAILED = _quantile_baseline("latency", 0.5, _HEAVY_TAILED_PILOT)
+# Planning warns when the readout's log-scale guard, not power, sets a quantile size.
+_QUANTILE_GUARD_SIZE = "power.quantile_size_at_delta_method_limit"
 
 
-def _arm_solvers(procedure: Any) -> tuple[Any, Any, Any]:
+def _heavy_tailed_combined_se(n: int) -> float:
+    """The planned combined log SE at n units in each arm, ``sqrt(2 c^2 m / n)``."""
+    _, _, c = _log_quantile_se_impl(np.sort(_HEAVY_TAILED_PILOT), 0.5, 0.05)
+    return math.sqrt(2.0 * c**2 * _HEAVY_TAILED_PILOT.size / n)
+
+
+def _arm_solvers(procedure: Any, baseline: Any = _LOW_TARGET) -> tuple[Any, Any, Any]:
     """Achieved power and the minimum detectable effect at 1000 per arm, and the
-    size, for a 5% lift on ``_LOW_TARGET``."""
+    size, for a 5% lift on ``baseline``."""
     return (
-        lambda design: achieved_power(1000, 0.05, _LOW_TARGET, procedure, design),
-        lambda design: required_sample_size(0.05, _LOW_TARGET, procedure, design),
-        lambda design: minimum_detectable_effect(1000, _LOW_TARGET, procedure, design),
+        lambda design: achieved_power(1000, 0.05, baseline, procedure, design),
+        lambda design: required_sample_size(0.05, baseline, procedure, design),
+        lambda design: minimum_detectable_effect(1000, baseline, procedure, design),
     )
 
 
@@ -1342,8 +1371,16 @@ class TestMDEDomainEdges:
                 "power.minimum_detectable_effect.design_search_minimum",
                 id="segment_pairwise",
             ),
+            pytest.param(
+                0.01,
+                *_arm_solvers(ArmPlanningProcedure.standard("quantile"), _HEAVY_TAILED),
+                45,
+                "power.minimum_detectable_effect.design_search_minimum",
+                id="quantile",
+            ),
         ],
     )
+    @allow_warning_codes(_QUANTILE_GUARD_SIZE)
     def test_target_at_or_below_null_power_has_no_companion_mde(
         self, target, supplied, sized, bare, floor, code
     ):
@@ -1353,12 +1390,14 @@ class TestMDEDomainEdges:
         minimum detectable effect refuses, and a size is the smallest the
         solver admits. That is 8 per arm on the closed form, where the
         runtime's log-scale guard needs ``(1 + 1 / 1.05^2) / n < 0.25``; the
-        two-unit floor sequentially; and 10 per arm for the segment contrast,
+        two-unit floor sequentially; 10 per arm for the segment contrast,
         the first size giving each 20% segment the four units a two-arm split
-        needs. The sequential boundary's own null crossing is about 0.0099,
-        below the fixed-horizon 0.05. The exact binomial decision rejects the
-        null less often at small sizes, so a binomial plan sized for such a
-        target lands where a nonzero companion exists and is not sized here."""
+        needs; and 45 per arm for the heavy-tailed quantile pilot, where the
+        readout's guard needs ``2 c^2 1000 / n < 0.25``. The sequential
+        boundary's own null crossing is about 0.0099, below the fixed-horizon
+        0.05. The exact binomial decision rejects the null less often at small
+        sizes, so a binomial plan sized for such a target lands where a
+        nonzero companion exists and is not sized here."""
         design = PowerDesign(power=target)
         answers = [supplied(design)]
         if sized is not None:
@@ -3157,6 +3196,15 @@ class TestIndependentArmVariance:
         assert abs(sized.n_per_arm - math.ceil(expected_total * allocation)) <= 1
 
 
+def _assert_smallest_reaching_target(relative_lift: float, baseline: Any, design: Any) -> None:
+    sized = required_sample_size(relative_lift, baseline, design=design)
+    assert sized.power >= 0.8
+    at_size = achieved_power(sized.n_per_arm, relative_lift, baseline, design=design)
+    assert at_size.power == sized.power
+    below = achieved_power(sized.n_per_arm - 1, relative_lift, baseline, design=design)
+    assert below.power < 0.8
+
+
 class TestSmallestAdmissibleSize:
     """A fixed-horizon size is the smallest whose power, evaluated as
     ``achieved_power`` evaluates it, reaches the target. At a treatment-heavy
@@ -3172,12 +3220,39 @@ class TestSmallestAdmissibleSize:
     ):
         baseline = Baseline(mean=20.0, var=400.0, trigger_rate=trigger_rate)
         design = PowerDesign(power=0.8, allocation=allocation)
-        sized = required_sample_size(relative_lift, baseline, design=design)
-        assert sized.power >= 0.8
-        at_size = achieved_power(sized.n_per_arm, relative_lift, baseline, design=design)
-        assert at_size.power == sized.power
-        below = achieved_power(sized.n_per_arm - 1, relative_lift, baseline, design=design)
-        assert below.power < 0.8
+        _assert_smallest_reaching_target(relative_lift, baseline, design)
+
+    @pytest.mark.parametrize(
+        ("allocation", "relative_lift", "trigger_rate"), [(0.5, 0.03, 0.3), (0.8, 0.05, 0.3)]
+    )
+    def test_quantile_required_size_is_smallest_reaching_target(
+        self, allocation, relative_lift, trigger_rate
+    ):
+        """The quantile size search keeps the same contract: a triggered plan
+        is searched in assigned units, each analyzed at ``assigned *
+        trigger_rate`` as ``achieved_power`` plans it."""
+        pilot = np.random.default_rng(0).lognormal(5.0, 0.6, 5000)
+        baseline = _quantile_baseline("latency", 0.5, pilot).model_copy(
+            update={"trigger_rate": trigger_rate}
+        )
+        design = PowerDesign(power=0.8, allocation=allocation)
+        _assert_smallest_reaching_target(relative_lift, baseline, design)
+
+    def test_extreme_quantile_unequal_allocation_plan_is_evaluable(self):
+        """A 1st-percentile bracket needs 368 units in each arm at alpha 0.05.
+        At allocation 0.8 ``achieved_power`` allocates ``ceil(n / 4)`` control
+        units to ``n`` treatment units, so the smallest size it can evaluate is
+        the first whose quarter rounds up to 368, ``4 * 367 + 1``; a threefold
+        lift reaches the target there, and the planned size evaluates to the
+        planned answer."""
+        assert _quantile_n_min(0.01, 0.05) == 368
+        pilot = np.random.default_rng(0).lognormal(5.0, 0.6, 5000)
+        baseline = _quantile_baseline("latency_p1", 0.01, pilot)
+        design = PowerDesign(allocation=0.8)
+        sized = required_sample_size(2.0, baseline, design=design)
+        at_size = achieved_power(sized.n_per_arm, 2.0, baseline, design=design)
+        assert (at_size.n_total, at_size.power) == (sized.n_total, sized.power)
+        assert (sized.n_per_arm, sized.n_total) == (4 * 367 + 1, 4 * 367 + 1 + 368)
 
 
 class TestRuntimeLogSeGuard:
@@ -4561,11 +4636,6 @@ def _pilot_baseline(metric_name: str, values: np.ndarray, *, quantile: float) ->
     return baseline
 
 
-def _quantile_baseline(name: str, q: float, values: np.ndarray) -> QuantileBaseline:
-    metric = synthesise_metric(MetricSpec(name=name, type="quantile", quantile=q))
-    return QuantileBaseline.from_control_values(cast("QuantileMetric", metric), values)
-
-
 class TestQuantileBaseline:
     """A mismatch (reusing one metric's baseline to plan another) must be
     visible in the answer, not silent; cuped_rho has no runtime route to
@@ -5123,6 +5193,42 @@ class TestQuantileSizeSearchOnAPriceGrid:
 _LATENCY_PILOT = np.random.default_rng(5).lognormal(5.0, 0.6, 5000)
 
 
+def _geometric_pilot(delta: float) -> np.ndarray:
+    """``y_k = exp(delta k)`` for k = 1..40: untied, so the readout's median SE
+    on it is ``(b - a) delta / (2 z)`` for its bracket ranks (14, 27)."""
+    return np.exp(delta * np.arange(1, 41))
+
+
+def _plan_at_pilot_size(pilot: np.ndarray) -> tuple[Any, float]:
+    """The median plan with both arms at the pilot's own size, where the
+    projection is the readout's SE on the pilot, and its treatment quantile."""
+    procedure, baseline = _prepare_solver(
+        ArmPlanningProcedure.standard("quantile"), _quantile_baseline("latency", 0.5, pilot)
+    )
+    return _ArmPlan(procedure, baseline, pilot.size, pilot.size, None, False), baseline.mean
+
+
+def _readout_reports_lift(pilot: np.ndarray) -> bool:
+    """Whether the median readout, with the pilot as both its control and
+    treatment arm, reports a relative lift; a cell it cannot report is the
+    readout's lift-guard failure for ``delta_method_unreliable``."""
+    n = pilot.size
+    rows = pd.DataFrame(
+        {"group_id": ["control"] * n + ["treatment"] * n, "y": np.concatenate([pilot, pilot])}
+    )
+    metric = synthesise_metric(MetricSpec(name="latency", type="quantile", quantile=0.5))
+    (cell,) = quantile_lift_from_rows(
+        rows, metric, "control", design=Randomized(control_group="control")
+    )
+    if cell.lift is not None:
+        return True
+    assert (cell.failure_code, cell.reason) == (
+        "estimation.engine.lift_guard",
+        "delta_method_unreliable",
+    )
+    return False
+
+
 class TestQuantilePlanningMatchesReadoutRefusals:
     """Planning refuses what the quantile readout refuses, by the readout's
     own code, so no plan is sized for a test that cannot be read out."""
@@ -5218,6 +5324,105 @@ class TestQuantilePlanningMatchesReadoutRefusals:
                 0.05, baseline, ArmPlanningProcedure.standard("quantile", alternative="greater")
             )
         assert planning.value.code == readout.value.code
+
+    @allow_warning_codes(_QUANTILE_GUARD_SIZE)
+    def test_required_size_respects_the_readout_log_se_guard(self):
+        """Power alone needs ``2 c^2 m (z_.975 + z_.8)^2 / log(6)^2 = 27.06``
+        units per arm for a sixfold median, but the readout refuses a combined
+        log-scale SE of 0.5 or more, so the size is the first past ``8 c^2 m =
+        44.28``, where ``2 c^2 m / n`` falls below 0.25. Its companion effect
+        reaches the target at its own power."""
+        _, _, c = _log_quantile_se_impl(np.sort(_HEAVY_TAILED_PILOT), 0.5, 0.05)
+        sized = required_sample_size(5.0, _HEAVY_TAILED)
+        assert sized.n_per_arm == math.floor(8.0 * c**2 * _HEAVY_TAILED_PILOT.size) + 1 == 45
+        assert sized.power >= 0.8
+        companion = achieved_power(45, available_mde(sized), _HEAVY_TAILED)
+        assert companion.power == pytest.approx(0.8, abs=1e-9)
+
+    def test_mde_past_the_readout_guard_is_unavailable(self):
+        """At 25 per arm the planned combined log SE is ``sqrt(2 c^2 m / 25) =
+        0.6654`` whatever the effect, so no effect is one the readout can
+        estimate: the direct solve refuses, and a supplied-effect query keeps
+        its model power with a null companion."""
+        log_se = _heavy_tailed_combined_se(25)
+        with pytest.raises(InvalidRequestError) as refusal:
+            minimum_detectable_effect(25, _HEAVY_TAILED)
+        assert refusal.value.code == "power.minimum_detectable_effect.delta_method_unreliable"
+        assert refusal.value.context["log_se"] == pytest.approx(log_se, rel=1e-12)
+        assert refusal.value.context["log_se_limit"] == 0.5
+        companion = achieved_power(25, 5.0, _HEAVY_TAILED)
+        assert companion.mde_relative is None
+        assert companion.mde_unavailable_reason == "delta_method_unreliable"
+        z, nc = norm.isf(0.025), math.log(6.0) / log_se
+        assert companion.power == pytest.approx(norm.cdf(nc - z) + norm.cdf(-nc - z), rel=1e-9)
+
+    @pytest.mark.parametrize(("scale", "admitted"), [(0.99, True), (1.01, False)])
+    def test_planner_guard_matches_the_readout(self, scale, admitted):
+        """Quantities computed twice (AGENTS.md): the geometric pilot's spacing
+        ``delta = scale * 0.5 * 2 z / (sqrt(2) * 13)`` puts the readout's
+        combined log SE at ``scale * 0.5``, and planning at the pilot's own
+        size admits exactly the arms the readout estimates."""
+        pilot = _geometric_pilot(scale * 0.5 * 2.0 * norm.isf(0.025) / (math.sqrt(2.0) * 13))
+        plan, treatment_quantile = _plan_at_pilot_size(pilot)
+        assert plan.passes_log_guard(treatment_quantile) is admitted
+        assert _readout_reports_lift(pilot) is admitted
+
+    def test_guard_equality_is_not_admitted(self):
+        """The readout refuses a combined log SE of exactly 0.5, so planning
+        does too: among the floats nearest the boundary spacing, the pilot whose
+        readout SE combines to 0.5 exactly is refused by both."""
+
+        def readout_combined_se(pilot: np.ndarray) -> float:
+            _, se = log_quantile_se(pilot, 0.5)
+            return math.hypot(se, se)
+
+        delta = 0.5 * 2.0 * norm.isf(0.025) / (math.sqrt(2.0) * 13)
+        candidates = [delta]
+        below = above = delta
+        for _ in range(32):
+            below, above = float(np.nextafter(below, 0.0)), float(np.nextafter(above, 1.0))
+            candidates += [below, above]
+        boundary = [
+            pilot
+            for pilot in map(_geometric_pilot, candidates)
+            if readout_combined_se(pilot) == 0.5
+        ]
+        assert boundary, "no spacing within 32 floats puts the combined SE at 0.5"
+        plan, treatment_quantile = _plan_at_pilot_size(boundary[0])
+        assert not plan.passes_log_guard(treatment_quantile)
+        assert not _readout_reports_lift(boundary[0])
+
+    def test_quantile_plan_refuses_when_no_size_passes_the_guard(self):
+        """On a pilot recorded only as 1 and 3 the readout's median half-width
+        never falls below the log gap to the next recorded value, ``log 3``, so
+        every size's planned combined SE is at least ``hypot(log 3 / z, log 3 /
+        z) = 0.7927`` though power reaches the target. The bounded search
+        refuses rather than sizing a test no readout can estimate."""
+        baseline = _quantile_baseline("visits", 0.5, np.array([1.0] * 700 + [3.0] * 300))
+        with pytest.raises(InvalidRequestError) as refusal:
+            required_sample_size(10.0, baseline)
+        assert refusal.value.code == "power.quantile_size_search_delta_method_unreliable"
+        assert refusal.value.context["power"] == 0.8
+        floor = math.log(3.0) / norm.isf(0.025)
+        assert refusal.value.context["log_se"] == pytest.approx(math.hypot(floor, floor), rel=1e-9)
+        assert refusal.value.context["log_se_limit"] == 0.5
+
+    def test_guard_bound_plan_warns(self):
+        """Where the guard, not power, sets the size (45 per arm for a sixfold
+        median, where power alone needs 28), planning warns that the size sits
+        at the readout's limit; where power sets it (46 per arm for a fourfold
+        median, past the guard's 44.28), it does not."""
+        with pytest.warns(IncrementWarning) as record:
+            guard_set = required_sample_size(5.0, _HEAVY_TAILED)
+        context = warning_context(record, _QUANTILE_GUARD_SIZE)
+        assert context["n_per_arm"] == guard_set.n_per_arm == 45
+        assert context["log_se"] == pytest.approx(_heavy_tailed_combined_se(45), rel=1e-12)
+        assert context["log_se_limit"] == 0.5
+        with warnings.catch_warnings(record=True) as unbound:
+            warnings.simplefilter("always")
+            power_set = required_sample_size(3.0, _HEAVY_TAILED)
+        assert power_set.n_per_arm == 46
+        assert _QUANTILE_GUARD_SIZE not in warning_codes(unbound)
 
 
 pytestmark = pytest.mark.integration

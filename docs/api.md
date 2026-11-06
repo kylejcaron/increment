@@ -127,6 +127,54 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking): a quantile cell whose combined log-scale standard
+  error is 0.5 or more is now an unavailable row instead of refusing the whole
+  `run` with the estimator's internal `LiftGuardError`. The row keeps its
+  `metric` and `group_id`, with `failure_code` `estimation.engine.lift_guard`
+  and reason `delta_method_unreliable`, as a mean cell refused by the same
+  limit has, and the run warns with `readouts.run.cell_refused`; the other
+  cells of the run, including other arms of the same quantile metric, are
+  estimated. Migration: where code caught that exception from a quantile run,
+  read each row's `failure_code` and `reason`. Experiment identity is
+  unchanged.
+- Release note (breaking numerical correction): quantile
+  `required_sample_size` searches assigned units and evaluates each candidate
+  as `achieved_power` does, with the allocation's control size and both arms
+  analyzed at `assigned * trigger_rate`, so `achieved_power` at the planned
+  size reports the planned power. A triggered quantile plan moves by a few
+  units (34,427 to 34,425 per arm for a 3% lift on a log-normal median pilot
+  at a 30% trigger rate) and no longer reports a power `achieved_power` puts
+  below the target. At an extreme quantile and unequal allocation the search
+  starts at the first size whose two arms each have the readout's
+  order-statistic bracket, instead of planning a control arm `achieved_power`
+  refused with `estimation.quantile.too_small_bound`: a 1st percentile at
+  allocation 0.8 plans 1,469 treatment and 368 control units instead of 368
+  and 368. Readout estimates and experiment identity are unchanged.
+- Release note (breaking numerical correction): quantile
+  `required_sample_size` now keeps the planned combined log-scale standard
+  error below 0.5, the level at which the quantile readout reports no relative
+  lift (`delta_method_unreliable`), as mean plans already did. Where that limit
+  binds, quantile plans grow: a heavy-tailed median planned for a sixfold lift
+  sizes 45 per arm instead of 28, and one planned for a target at or below the
+  null's own rejection probability 45 instead of 20. When the limit, not the
+  target power, sets the size, `required_sample_size` warns with an
+  `IncrementRuntimeWarning`, code `power.quantile_size_at_delta_method_limit`
+  (context `n_per_arm`, `log_se`, `log_se_limit`): at such sizes the projected
+  standard error can understate the readout's, so many readouts can still report
+  no lift, and
+  [Checking a quantile plan against the readout](guides/power-analysis.md#checking-a-quantile-plan-against-the-readout)
+  shows how to check a size against the pilot. A pilot on a recording grid as
+  coarse as the quantile itself, where no size passes the limit, is refused with
+  the new `power.quantile_size_search_delta_method_unreliable`
+  (`InvalidRequestError`, context `power`, `log_se`, `log_se_limit`) instead of
+  sized. Quantile `minimum_detectable_effect` refuses with
+  `power.minimum_detectable_effect.delta_method_unreliable` at a size the limit
+  refuses, and a companion effect there is `None` with reason
+  `delta_method_unreliable`; `achieved_power` still reports planned power.
+  Quantile plans the limit does not bind are unchanged. Migrate code that sized
+  quantile metrics for large lifts or small samples to expect the larger sizes,
+  the warning and the refusal. Readout estimates and experiment identity are
+  unchanged.
 - Release note (feature): analyses run on any Ibis SQL backend. DuckDB,
   PostgreSQL, Snowflake and BigQuery remain the verified warehouses. The first
   time Increment uses a connection to any other backend, it shows one

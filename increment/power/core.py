@@ -74,12 +74,16 @@ from increment._literals import Alternative, ConversionInference
 from increment.compatibility import PowerDesign, Unsupported, refuse_unsupported
 from increment.decision import FixedInference
 from increment.errors import (
+    PACKAGE_FRAMES,
     CodedModel,
+    IncrementRuntimeWarning,
     InvalidRequestError,
     RefusalSpec,
+    WarningSpec,
     raiser,
     refusals,
     refuse,
+    warn,
 )
 from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.arm_contract import (
@@ -302,6 +306,11 @@ _REFUSALS = refusals(
                     "larger relative_lift"
                 )
             ),
+        ),
+        "power.quantile_size_search_delta_method_unreliable": RefusalSpec(
+            "power.quantile_size_search_delta_method_unreliable",
+            InvalidRequestError,
+            template="no sample size gives this quantile metric a lift the readout can report: wherever power reaches {power}, the pilot's recording grid keeps the planned combined log-scale standard error at {log_se:.4g} or more, and the readout refuses a relative lift whose log-scale standard error is {log_se_limit} or more (delta_method_unreliable) -- record the metric at a finer resolution",
         ),
         "power.power.check": "power must be in [0, 1], got {power}",
         "power.power.effective_var": "effective_var must be > 0, got {effective_var}",
@@ -1381,6 +1390,18 @@ def _deterministic_quantile_se(
     return _QuantileProjection.of(pilot_sorted, q, alpha).se(n_candidate)
 
 
+def _quantile_arm_log_ses(
+    baseline: QuantileBaseline, n_T: float, n_C: float, alpha: float
+) -> tuple[float, float]:
+    """``(se_t, se_c)``: each arm's log-scale quantile SE, the pilot's
+    projection at that arm's ANALYZED count, read by both the power model and
+    the planned log-scale guard. Control is evaluated first, so where neither
+    arm has a bracket the refusal names the control arm's size."""
+    projection = baseline._projection(alpha)
+    se_c = projection.se(int(round(n_C)))
+    return projection.se(int(round(n_T))), se_c
+
+
 def _arm_log_se_sq(
     n_T: float, n_C: float, baseline: Baseline, *, theta: float, bounded: bool, alpha: float = 0.05
 ) -> float:
@@ -1412,9 +1433,7 @@ def _arm_log_se_sq(
     that instrument's construction resolves to for treatment).
     """
     if isinstance(baseline, QuantileBaseline):
-        projection = baseline._projection(alpha)
-        se_c = projection.se(int(round(n_C)))
-        se_t = projection.se(int(round(n_T)))
+        se_t, se_c = _quantile_arm_log_ses(baseline, n_T, n_C, alpha)
         return float(np.logaddexp(2.0 * math.log(se_t), 2.0 * math.log(se_c)))
     log_v = math.log(baseline.effective_var)
     log_m0 = math.log(baseline.mean)
@@ -1720,33 +1739,41 @@ def _quantile_search_floor(procedure: ArmPlanningProcedure, baseline: QuantileBa
 _QUANTILE_GRID_STEPS_PER_DOUBLING = 4
 
 
-def _quantile_size_search(
+def _quantile_size_search(  # noqa: PLR0915
     procedure: ArmPlanningProcedure,
     baseline: QuantileBaseline,
     design: PowerDesign,
     *,
     theta: float,
     distance: float,
+    mean_t: float,
     bounded: bool,
-) -> tuple[int, int]:
-    """The smallest treatment-arm size reaching target power for a quantile
-    metric. Its per-arm variance (the pilot's projection) is a function of
-    the candidate n itself, so it cannot be solved in the single closed-form
-    step a fixed-variance baseline uses -- the search re-evaluates it at
-    each candidate n it probes.
+) -> tuple[int, int, bool]:
+    """The smallest ASSIGNED treatment-arm size for a quantile metric whose
+    power reaches the target and whose planned arms the readout's log-scale
+    guard admits (``_ArmPlan.passes_log_guard``), its control size, and
+    whether the guard rather than power set it: one unit fewer reaches the
+    target power but not the guard. A candidate is planned as
+    ``achieved_power`` plans it: the allocation's control size and analyzed
+    counts ``assigned * trigger_rate``. Its per-arm variance (the pilot's
+    projection) is a function of each arm's analyzed count, so it cannot be
+    solved in the single closed-form step a fixed-variance baseline uses --
+    the search re-evaluates it at each candidate it probes.
 
     Power is not monotone in n: it passes through the pilot's own power at
     the pilot's size, drops where an arm's bracket stops spanning enough
     repeated values to be resolved (the runtime switches to its wider tied
     interval), and on a coarse grid wavers with the runtime's own bracket
     ranks. The search therefore evaluates a grid of sizes in increasing
-    order -- the bracket-existence floor, the pilot's size, the last size
-    each arm stays resolved at and the one after, and a geometric ladder of
-    ``_QUANTILE_GRID_STEPS_PER_DOUBLING`` steps per doubling up to
-    ``_MAX_QUANTILE_ARM`` -- and bisects between the first grid size reaching
-    the target and the one before it, so the answer's predecessor falls
-    short of the target and no coarser feature hides a smaller size; only a
-    rank-level waver within one grid step can.
+    order -- the first size whose two analyzed arms both have the readout's
+    order-statistic bracket, the size whose treatment arm analyzes the
+    pilot's size, the last size each arm stays resolved at and the one
+    after, and a geometric ladder of ``_QUANTILE_GRID_STEPS_PER_DOUBLING``
+    steps per doubling up to ``_MAX_QUANTILE_ARM`` analyzed units -- and
+    bisects between the first grid size meeting both conditions and the one
+    before it. Both are thresholds on the same projected arm SEs, so the
+    answer's predecessor fails one of them and no coarser feature hides a
+    smaller size; only a rank-level waver within one grid step can.
 
     A size at which the projected bracket reaches a non-positive value has
     no log-scale interval, as at the runtime; the search passes over it. On
@@ -1754,28 +1781,45 @@ def _quantile_size_search(
     (``_QuantileProjection.se_floor``), so power has a ceiling below one; a
     target never reached is refused naming the largest power found on the
     grid or in that limit, or the count limit when the target lies below it.
+    A target reached only at sizes the guard refuses, as on a recording grid
+    whose step from the quantile keeps the SE past the guard's limit, is
+    refused naming the smallest such combined SE.
     """
-    floor = _quantile_search_floor(procedure, baseline)
+    trigger = baseline.trigger_rate
     q, alpha = baseline.quantile_q, procedure.compiled_alpha
     projection = baseline._projection(alpha)
+    minimum = _assigned_minimum_per_arm(procedure, baseline)
+    bracket = _quantile_search_floor(procedure, baseline)
+    limit = math.ceil(_MAX_QUANTILE_ARM / trigger)
     unanswerable: list[InvalidRequestError] = []
     # Sizes per turn of the slower arm's bracket-rank rounding: an arm's ranks
-    # advance by about q times its share of a treatment unit per size.
+    # advance by about q times its analyzed share of a treatment unit per size.
     share = min(1.0, (1.0 - design.allocation) / design.allocation)
-    turn = math.ceil(1.0 / (min(q, 1.0 - q) * share))
+    turn = math.ceil(1.0 / (min(q, 1.0 - q) * share * trigger))
 
     def _arms(n_t: int) -> tuple[int, int]:
-        return _compute_arms(n_t, design, minimum_per_arm=floor)
+        return _compute_arms(n_t, design, minimum_per_arm=minimum)
 
-    def _reaches(n_t: int) -> bool:
-        power = _power_at_n(n_t)
-        return power is not None and power >= design.power
+    def _analyzed(n_t: int, arm: int) -> int:
+        """One arm's analyzed count at ``n_t``, as its projection reads it."""
+        return int(round(_arms(n_t)[arm] * trigger))
 
-    def _power_at_n(n_t: int) -> float | None:
-        n_t2, n_c2 = _arms(n_t)
-        plan = _ArmPlan(procedure, baseline, n_t2, n_c2, None, bounded)
+    def _bracketed(n_t: int) -> bool:
+        return min(_analyzed(n_t, 0), _analyzed(n_t, 1)) >= bracket
+
+    # An allocation within rounding of one can leave the smaller arm without a
+    # bracket at every size; the search then evaluates the limit alone, which
+    # refuses with the readout's own code.
+    floor = bisect_first_true(minimum, limit, _bracketed) if _bracketed(limit) else limit
+
+    def _evaluate(n_t: int) -> tuple[float, _ArmPlan] | None:
+        """``(power, plan)`` at ``n_t``, or ``None`` where no interval exists."""
+        assigned_t, assigned_c = _arms(n_t)
+        plan = _ArmPlan(
+            procedure, baseline, assigned_t * trigger, assigned_c * trigger, None, bounded
+        )
         try:
-            return plan.power(distance, theta)
+            return plan.power(distance, theta), plan
         except InvalidRequestError as refusal:
             # The runtime's two "no log-scale interval at this size" refusals.
             if refusal.code not in (
@@ -1786,7 +1830,15 @@ def _quantile_size_search(
             unanswerable.append(refusal)
             return None
 
-    def _first_reaching(lo: int, hi: int) -> tuple[int, int]:
+    def _reaches(n_t: int) -> bool:
+        evaluated = _evaluate(n_t)
+        return (
+            evaluated is not None
+            and evaluated[0] >= design.power
+            and evaluated[1].passes_log_guard(mean_t)
+        )
+
+    def _first_reaching(lo: int, hi: int) -> tuple[int, int, bool]:
         lo = bisect_first_true(lo, hi, _reaches)
         # Below a crossing, power wavers with the runtime's bracket ranks:
         # walk down until a whole turn of sizes past the last reaching one falls short.
@@ -1798,20 +1850,24 @@ def _quantile_size_search(
                 first, misses = n_t, 0
             else:
                 misses += 1
-        return _arms(first)
+        # The walk-down rejected ``first - 1``; reaching the target there, it
+        # failed the guard alone.
+        below = _evaluate(first - 1) if first > floor else None
+        return (*_arms(first), below is not None and below[0] >= design.power)
 
     def _last_resolved(arm: int) -> int | None:
         def resolved(n_t: int) -> bool:
-            return projection.arm_at(_arms(n_t)[arm]).resolved
+            return projection.arm_at(_analyzed(n_t, arm)).resolved
 
-        if not resolved(floor) or resolved(_MAX_QUANTILE_ARM):
+        if not resolved(floor) or resolved(limit):
             return None
-        first_unresolved = bisect_first_true(floor, _MAX_QUANTILE_ARM, lambda n: not resolved(n))
+        first_unresolved = bisect_first_true(floor, limit, lambda n: not resolved(n))
         return first_unresolved - 1
 
+    m = projection.pilot.size
     steps = _QUANTILE_GRID_STEPS_PER_DOUBLING
-    doublings = math.ceil(steps * math.log2(_MAX_QUANTILE_ARM / floor))
-    grid = {floor, projection.pilot.size, _MAX_QUANTILE_ARM}
+    doublings = math.ceil(steps * math.log2(limit / floor))
+    grid = {floor, math.floor(m / trigger), math.ceil(m / trigger), limit}
     grid.update(math.ceil(floor * 2.0 ** (k / steps)) for k in range(doublings))
     for end in (_last_resolved(0), _last_resolved(1)):
         if end is not None:
@@ -1820,17 +1876,29 @@ def _quantile_size_search(
     peak = 0.0
     previous = floor - 1
     answered = False
-    for n_t in sorted(n for n in grid if floor <= n <= _MAX_QUANTILE_ARM):
-        power = _power_at_n(n_t)
-        if power is not None and power >= design.power:
-            return _first_reaching(previous + 1, n_t)
-        if power is not None:
+    # The smallest combined log SE among sizes reaching the target that the guard refuses.
+    guarded_log_se = math.inf
+    for n_t in sorted(n for n in grid if floor <= n <= limit):
+        evaluated = _evaluate(n_t)
+        if evaluated is not None:
+            power, plan = evaluated
+            if power >= design.power:
+                if plan.passes_log_guard(mean_t):
+                    return _first_reaching(previous + 1, n_t)
+                guarded_log_se = min(guarded_log_se, plan.runtime_log_se(mean_t))
             answered = True
             peak = max(peak, power)
         previous = n_t
     if not answered:
         # No size up to the count limit has a log-scale interval.
         raise unanswerable[-1]
+    if math.isfinite(guarded_log_se):
+        _raise(
+            "power.quantile_size_search_delta_method_unreliable",
+            power=design.power,
+            log_se=guarded_log_se,
+            log_se_limit=LOG_DELTA_METHOD_MAX_SE,
+        )
     _refuse_unreached_quantile_power(projection.se_floor, peak, distance, procedure, design)
 
 
@@ -1974,25 +2042,39 @@ _MDE_DELTA_METHOD_UNRELIABLE = RefusalSpec(
     InvalidRequestError,
     template="no effect that reaches power={target_power} in the {direction} direction is one the runtime can estimate: each has a planned combined log-scale standard error of at least {log_se:.4g}, and the runtime refuses a relative lift whose log-scale standard error is {log_se_limit} or more (delta_method_unreliable) -- raise n_per_arm",
 )
+# Context: n_per_arm (the planned treatment size), log_se (its planned combined
+# log-scale SE) and log_se_limit (the readout's refusal threshold).
+_QUANTILE_SIZE_AT_GUARD = WarningSpec(
+    "power.quantile_size_at_delta_method_limit",
+    IncrementRuntimeWarning,
+    lambda *, n_per_arm, log_se, log_se_limit: (
+        f"{n_per_arm} per arm is the smallest size the quantile readout's reliability limit "
+        "admits, not the size the target power needs: its planned combined log-scale "
+        f"standard error, {log_se:.4g}, is just below {log_se_limit}, where the readout "
+        "reports no relative lift (delta_method_unreliable). At sizes this small the "
+        "readout's own standard error is often larger than planned, so many readouts at "
+        "this size can still report no lift -- check the size against the pilot as in "
+        "'Checking a quantile plan against the readout' in the power analysis guide"
+    ),
+)
 
 
 def _runtime_log_guarded(procedure: ArmPlanningProcedure) -> bool:
     """Whether the runtime decides this plan with ``infer_lift``'s log-ratio
     contrast, which refuses a combined log-scale SE of
     ``LOG_DELTA_METHOD_MAX_SE`` or more: a fixed-horizon, unclustered,
-    randomized, unabsorbed, non-quantile plan the runtime does not route by
-    its counts. Clustered, encouragement and absorbed-factor estimates use
-    other constructions, a count-routed plan's delta-method region lies inside
-    the guard by construction (with or without a prior), sequential plans have
-    no such guard, and a quantile plan keeps its own pilot-projected size
-    search."""
+    randomized, unabsorbed plan the runtime does not route by its counts,
+    including every quantile plan, whose readout passes its order-statistic
+    arm SEs to the same contrast. Clustered, encouragement and absorbed-factor
+    estimates use other constructions, a count-routed plan's delta-method
+    region lies inside the guard by construction (with or without a prior),
+    and sequential plans have no such guard."""
     analysis = procedure.analysis
     return (
         isinstance(procedure.inference, FixedInference)
         and procedure.dependence == "iid"
         and analysis.identification == "randomized"
         and analysis.variance_adjustment == "none"
-        and procedure.metric.metric_type != "quantile"
         and not _runtime_count_routed(procedure)
     )
 
@@ -2045,8 +2127,14 @@ class _ArmPlan:
         runtime receives, ``mean_t = m0 * (1 + effective_lift)`` as written
         (``log(m0) + log1p(lift)`` can round to the other side of the guard),
         and its variance (the Bernoulli shape when bounded, at a rate of at
-        most one)."""
+        most one). A quantile plan's arm SEs are the pilot projections its
+        power reads; under the multiplicative effect they do not depend on
+        ``mean_t``."""
         baseline = self.baseline
+        if isinstance(baseline, QuantileBaseline):
+            return math.hypot(
+                *_quantile_arm_log_ses(baseline, self.n_T, self.n_C, self.procedure.compiled_alpha)
+            )
         var = baseline.effective_var
         var_t = var
         if self.bounded:
@@ -2258,7 +2346,9 @@ class _MdeSearch:
         Growing an effect shrinks only the treatment arm's log SE, so in the
         increasing direction the answer is the first admitted effect past ``m``
         (at most the last admissible one); in the decreasing direction it
-        only grows, so ``m`` is admitted or nothing is."""
+        only grows, so ``m`` is admitted or nothing is. A quantile plan's log
+        SEs do not depend on the effect, so there too ``m`` is admitted or
+        nothing is."""
         plan = self.plan
         if plan.passes_log_guard(self.treatment_mean(m)):
             return m, power
@@ -4088,11 +4178,17 @@ def required_sample_size(  # noqa: PLR0915
     size whose power, evaluated as ``achieved_power`` evaluates it, reaches
     the target. Where the runtime estimates the lift with its log-scale
     delta-method contrast (unclustered, randomized, unabsorbed and not routed
-    by counts), that size must also keep the planned combined log-scale
-    standard error below 0.5, the level at which the runtime refuses the
-    estimate (``delta_method_unreliable``), so a high-variance baseline at a
-    large lift can size above the power target. One unit fewer either falls
-    short of the target or fails that guard.
+    by counts, which includes every quantile metric), that size must also
+    keep the planned combined log-scale standard error below 0.5, the level
+    at which the runtime refuses the estimate (``delta_method_unreliable``),
+    so a high-variance baseline at a large lift can size above the power
+    target. One unit fewer either falls short of the target or fails that
+    guard. A quantile plan whose size the guard sets warns with
+    ``power.quantile_size_at_delta_method_limit``: the projected standard
+    error can understate the readout's own at small sizes, so many readouts
+    at that size can still refuse. A quantile target reached only at sizes the
+    guard refuses is refused with
+    ``power.quantile_size_search_delta_method_unreliable``.
     A runtime-binomial plan sizes from its computed enclosure: a size reaches the target
     when the enclosure's lower end does, and the result states the point when the enclosure
     resolves to ``1e-6`` or that lower end otherwise (``power_basis="lower_bound"``), with
@@ -4166,6 +4262,9 @@ def required_sample_size(  # noqa: PLR0915
     model: _BinomialPlan | None = None
     binomial_power: BinomialPower | None = None
     searched_assigned = False
+    # Set when the readout's log-scale guard, not power, sets a quantile size.
+    guard_set = False
+    mean_t = baseline.mean * (1.0 + relative_lift * baseline.compliance)
     if distance == 0.0:
         _raise(
             "power.size_design_relative",
@@ -4173,12 +4272,20 @@ def required_sample_size(  # noqa: PLR0915
             null_lift=decision.null_lift,
         )
     elif isinstance(baseline, QuantileBaseline):
-        # A QuantileBaseline's per-arm variance depends on the arm's analyzed count, so bisect
-        # instead of taking the closed-form step below. Quantile metrics refuse clustering and
-        # sequential inference upstream (arm_planning_support): looks is None and clustered false.
-        n_T, n_C = _quantile_size_search(
-            procedure, baseline, design, theta=theta, distance=distance, bounded=bounded
+        # A QuantileBaseline's per-arm variance depends on the arm's analyzed count, so search
+        # ASSIGNED sizes instead of taking the closed-form step below. Quantile metrics refuse
+        # clustering and sequential inference upstream (arm_planning_support): looks is None and
+        # clustered false.
+        n_T, n_C, guard_set = _quantile_size_search(
+            procedure,
+            baseline,
+            design,
+            theta=theta,
+            distance=distance,
+            mean_t=mean_t,
+            bounded=bounded,
         )
+        searched_assigned = True
     else:
         # Normal seed: the per-unit H1 variance coefficient at the allocation
         # fractions times the dimensionless quantile sum, over the squared distance,
@@ -4267,7 +4374,7 @@ def required_sample_size(  # noqa: PLR0915
                 design,
                 theta=theta,
                 distance=distance,
-                mean_t=baseline.mean * (1.0 + relative_lift * baseline.compliance),
+                mean_t=mean_t,
                 bounded=bounded,
                 seed=math.ceil(n_T / baseline.trigger_rate),
                 clustered=clustered,
@@ -4335,6 +4442,16 @@ def required_sample_size(  # noqa: PLR0915
     k_per_arm, k_total = _cluster_counts(assigned_T, assigned_C, baseline)
     planned_metric_name, planned_quantile = _planned_quantile_fields(baseline)
     basis, power_lower, power_upper = _enclosure_fields(binomial_power)
+    if guard_set:
+        warn(
+            _QUANTILE_SIZE_AT_GUARD,
+            skip_file_prefixes=PACKAGE_FRAMES,
+            context={
+                "n_per_arm": assigned_T,
+                "log_se": plan.runtime_log_se(mean_t),
+                "log_se_limit": LOG_DELTA_METHOD_MAX_SE,
+            },
+        )
     return PowerResult(
         n_per_arm=assigned_T,
         n_total=n_total,

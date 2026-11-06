@@ -66,7 +66,7 @@ resolved exactly; an undecided large count rounds outward.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_FLOOR, Context, Decimal
 from fractions import Fraction
@@ -90,6 +90,7 @@ from increment.errors import (
     raiser,
     refusals,
 )
+from increment.estimation.results import failed_cell_row
 from increment.estimation.variance import stable_log_ratio
 
 # Quantile Welch references remain disabled until independently calibrated.
@@ -673,8 +674,8 @@ def quantile_lift_from_rows(
     """Compute quantile lift rows from already materialized unit data."""
     import narwhals as nw
 
-    from increment.estimation.engine import Method
-    from increment.estimation.inference import infer_lift
+    from increment.estimation.engine import Method, _lift_guard_failure
+    from increment.estimation.inference import LiftGuardError, infer_lift
 
     methods = [Method(name="unadjusted")] if methods is None else methods
     quantile_preflight(
@@ -742,6 +743,9 @@ def quantile_lift_from_rows(
     control, se_c, classical_se_c = _for_arm(arms[control_group], control_group)
     q_c = control.arm.point
     out = []
+    # A cell the log-scale guard refuses is kept as the lift-guard failure a
+    # moments cell gets; a sensitivity cell is omitted.
+    guarded: dict[Any, Any] = {}
     for g, values in sorted((g, v) for g, v in arms.items() if g != control_group):
         treatment, se_t, classical_se_t = _for_arm(values, g)
         q_t = treatment.arm.point
@@ -757,21 +761,28 @@ def quantile_lift_from_rows(
         # of the separately stored posterior.
         p_value = _inverted_p_value(control, treatment, null=0.0)
         for m in methods:
-            est = infer_lift(
-                metric=metric.name,
-                group_id=str(g),
-                method_role=resolved_method_roles.get(m.name, "decision"),
-                method=m.name,
-                log_rr=log_rr,
-                se_t=se_t,
-                se_c=se_c,
-                prior=prior,
-                alpha=alpha,
-                inference_spec=inference,
-                n_comparison=n_comparison,
-                arm_ns=arm_ns,
-                preferred_direction=metric.declared_preferred_direction,
-            )
+            method_role = resolved_method_roles.get(m.name, "decision")
+            try:
+                est = infer_lift(
+                    metric=metric.name,
+                    group_id=str(g),
+                    method_role=method_role,
+                    method=m.name,
+                    log_rr=log_rr,
+                    se_t=se_t,
+                    se_c=se_c,
+                    prior=prior,
+                    alpha=alpha,
+                    inference_spec=inference,
+                    n_comparison=n_comparison,
+                    arm_ns=arm_ns,
+                    preferred_direction=metric.declared_preferred_direction,
+                )
+            except LiftGuardError as exc:
+                _, failure = _lift_guard_failure(metric.name, str(g), m.name, method_role, exc)
+                if failure is not None:
+                    guarded[failure.hypothesis] = failure
+                continue
             updates: dict[str, Any] = {
                 "quantile_p_value": p_value,
                 "n_control": int(arms[control_group].shape[0]),
@@ -780,14 +791,50 @@ def quantile_lift_from_rows(
             if widened:
                 updates["note"] = _wider_interval_note(se_c, se_t, classical_se_c, classical_se_t)
             out.append(est.model_copy(update=updates))
-    if _return_computation:
-        from increment.estimation.engine import _lift_decision_bundle
+    return _with_guarded_cells(
+        out, guarded, metric, prior, inference=inference, computation=_return_computation
+    )
 
-        return _lift_decision_bundle(
-            out,
-            inference=inference,
+
+def _with_guarded_cells(
+    out: list[LiftEstimate],
+    guarded: Mapping[Any, Any],
+    metric: Any,
+    prior: Any,
+    *,
+    inference: Any,
+    computation: bool,
+) -> list[LiftEstimate] | DecisionComputation[LiftEstimate]:
+    """The estimated rows with each guarded decision cell kept: as a keyed
+    failure in a decision bundle, or as its unavailable row in a row list."""
+    from increment.estimation.decision_types import DecisionComputation
+    from increment.estimation.engine import _lift_decision_bundle, merge_decision_computations
+
+    if computation:
+        bundle = _lift_decision_bundle(out, inference=inference)
+        if not guarded:
+            return bundle
+        return merge_decision_computations(
+            [bundle, DecisionComputation(results=(), evidence={}, failures=dict(guarded))]
         )
-    return out
+    return [
+        *out,
+        *(
+            failed_cell_row(
+                metric=metric.name,
+                group_id=failure.hypothesis.group_id,
+                method=str(failure.context["method"]),
+                method_role="decision",
+                estimand="itt",
+                alternative="two-sided",
+                code=failure.code,
+                context=failure.context,
+                prior_declared=prior is not None,
+                preferred_direction=metric.declared_preferred_direction,
+            )
+            for failure in guarded.values()
+        ),
+    ]
 
 
 @overload

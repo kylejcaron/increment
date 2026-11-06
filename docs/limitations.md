@@ -54,7 +54,7 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 | [Conversion and retention follow count-based inference routes](#conversion-and-retention-arms-dense-counts-use-the-delta-method-sparse-counts-are-estimated-exactly-not-refused) | scope of guarantee | Reading a conversion or retention interval's route, size limits, or extreme alpha. |
 | [Signed effects require a suitable scale and reference](#signed-effects-require-a-suitable-scale-and-reference) | assumption | A control mean can be zero, negative or close to zero, or one arm's outcomes are constant. |
 | [A quantile's reported interval depends on the alpha you asked for](#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for) | scope of guarantee | Comparing quantile intervals across analyses that used different alpha. |
-| [A quantile metric's planned variance is a projection from the pilot, not a certified bound](#a-quantile-metrics-planned-variance-is-a-projection-from-the-pilot-not-a-certified-bound) | approximation | Sizing a quantile experiment from a pilot, especially far past the pilot's size. |
+| [A quantile metric's planned variance is a projection from the pilot, not a certified bound](#a-quantile-metrics-planned-variance-is-a-projection-from-the-pilot-not-a-certified-bound) | approximation | Sizing a quantile experiment from a pilot, especially far past the pilot's size or at a few dozen units per arm. |
 | [Switchback carryover is assumed away, not tested](#switchback-carryover-is-assumed-away-not-tested) | assumption | Choosing a switchback washout; nothing checks that carryover has faded. |
 | [Switchback inference requires independent units or blocks](#switchback-inference-requires-independent-units-or-blocks) | assumption | Switchback units share a seed or schedule, or can affect each other. |
 | [Sequential information fractions are unit counts, not Fisher information](#sequential-information-fractions-are-unit-counts-not-fisher-information) | approximation | Allocation or variance drifts while you monitor. |
@@ -1104,11 +1104,15 @@ construction and does not move with the allocation.
 Quantile sample-size planning projects the pilot's own order-statistic variance to each
 candidate size. The projection is close when the candidate is a modest multiple of the
 pilot's size and can fall several points short far past it or at an extreme quantile
-(measured: a 90th-percentile plan targeting power 0.80 achieved 0.73 on one draw). On
-rounded data power has a ceiling below one, and `required_sample_size` refuses a target
-above it with `power.quantile_size_search_unreachable`.
+(measured: a 90th-percentile plan targeting power 0.80 achieved 0.73 on one draw). At a
+few dozen units per arm it can understate the readout's own standard error, so a size set
+by the readout's 0.5 log-scale limit, which `required_sample_size` flags with
+`power.quantile_size_at_delta_method_limit`, still leaves many readouts reporting no
+relative lift (measured: four in five at a planned 45 per arm). On rounded data power has
+a ceiling below one, and `required_sample_size` refuses a target above it with
+`power.quantile_size_search_unreachable`.
 
-??? info "Statistical details: the pilot projection and the recording-grid ceiling"
+??? info "Statistical details: the pilot projection, the recording-grid ceiling and the log-scale limit"
     `increment.workflows.planning_baseline(experiment, reader, metric)` builds a `QuantileBaseline` from the pilot's own
     control-arm values; at each candidate sample size the solver applies the runtime's own
     half-width rule to a bracket projected from the pilot -- on continuous data the pilot's
@@ -1133,6 +1137,24 @@ above it with `power.quantile_size_search_unreachable`.
     `power.quantile_size_search_unreachable`, naming in `maximum_power` the largest power any
     size reaches (`limiting_condition="recording_grid"`). This is a property of the SOURCE's
     recording resolution; recording the metric more finely raises the ceiling.
+
+    The projection scales the pilot's bracket by the asymptotic `1/sqrt(n)` rate; at a few
+    dozen units the readout's own order-statistic bracket is on average wider than that.
+    Measured directly (fresh two-arm samples from the pilot's population): a heavy-tailed
+    median (a log-normal with log-scale standard deviation 2, 1,000-unit pilot) planned for a
+    sixfold lift needs 28 units per arm for power and 45 to keep the projected combined
+    log-scale standard error below 0.5. At 45 per arm that projection is 0.496, readouts
+    average 0.580 and 79% of them refuse the relative lift (`delta_method_unreliable`); at
+    60 per arm 62% refuse, and at 100 per arm 2%. A size that passes the projected limit is
+    therefore not one most readouts can report; the
+    [power guide](guides/power-analysis.md#checking-a-quantile-plan-against-the-readout)
+    shows how to check a size by running the readout on draws from the pilot. On rounded
+    data whose nearest other recorded value lies about a factor of two or more from the
+    quantile, the readout's half-width never falls below the log gap to it, so no size
+    keeps the combined standard error below 0.5; `required_sample_size` refuses such a plan
+    with `power.quantile_size_search_delta_method_unreliable`, naming in `log_se` the
+    smallest combined standard error it planned at a size reaching the target power. This
+    too is a property of the SOURCE's recording resolution.
 
 ## Design assumptions
 

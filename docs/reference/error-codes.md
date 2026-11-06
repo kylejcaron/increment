@@ -1261,6 +1261,7 @@ Retired codes and their replacements are listed below.
 | `power.quantile_baseline.cuped_unsupported` | `InvalidRequestError` | `cuped_rho` | `increment.power.core` |
 | `power.quantile_baseline.metric_not_quantile` | `InvalidRequestError` | `metric`, `metric_type` | `increment.power.core` |
 | `power.quantile_baseline.pilot_values_missing` | `InvalidRequestError` | `metric_name`, `n_values`, `route` | `increment.power.core` |
+| `power.quantile_size_search_delta_method_unreliable` | `InvalidRequestError` | `log_se`, `log_se_limit`, `power` | `increment.power.core` |
 | `power.quantile_size_search_unreachable` | `InvalidRequestError` | `limiting_condition`, `maximum_power`, `power` | `increment.power.core` |
 | `power.r_a_above` | `InvalidRequestError` | `r_a`, `r_b`, `theta` | `increment.power.pairwise` |
 | `power.r_a_below` | `InvalidRequestError` | `r_a`, `r_b`, `theta` | `increment.power.pairwise` |

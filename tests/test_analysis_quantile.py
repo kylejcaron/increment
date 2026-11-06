@@ -21,6 +21,7 @@ from increment.query import panel_sql, summary_sql
 from increment.workflows import factor_summaries, metrics
 from tests.analysis_factory import lift_rows, make_binding_like, view_readout
 from tests.sequential_cases import registration
+from tests.warning_codes import allow_warning_codes
 
 
 def _defs_yaml() -> str:
@@ -688,3 +689,40 @@ def test_equal_quantiles_are_not_selected_at_the_largest_family_threshold():
     assert row.lift.lb < 0.0 < row.lift.ub
     assert row.p_value() == 1.0
     assert row.discovery is False
+
+
+@allow_warning_codes("readouts.run.cell_refused")
+def test_a_quantile_cell_past_the_log_scale_guard_is_an_unavailable_row():
+    """The readout refuses a relative lift whose combined log-scale SE is 0.5
+    or more. A 40-unit arm spaced ``exp(0.2 k)`` has median SE ``13 * 0.2 /
+    (2 * 1.96) = 0.663`` (bracket ranks 14 and 27), past the guard on its own;
+    a 200-unit arm spaced ``exp(0.01 k)`` like control combines with it to
+    about 0.1. Each cell is kept: the wide arm as an unavailable row with the
+    moments path's own lift-guard code and reason, the narrow arm estimated."""
+    import pyarrow as pa
+
+    narrow = np.exp(0.01 * np.arange(1, 201))
+    wide = np.exp(0.2 * np.arange(1, 41))
+    experiment, reader = inc.from_frame(
+        pa.table(
+            {
+                "unit": list(range(440)),
+                "arm": ["C"] * 200 + ["narrow"] * 200 + ["wide"] * 40,
+                "outcome": np.concatenate([narrow, narrow, wide]),
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="C",
+        metrics=[
+            inc.MetricSpec(name="median", type="quantile", value_column="outcome", quantile=0.5)
+        ],
+    )
+    rows = {row.group_id: row for row in lift_rows(view_readout(experiment, reader))}
+    assert set(rows) == {"narrow", "wide"}
+    assert rows["narrow"].lift is not None
+    assert rows["narrow"].failure_code is None
+    assert rows["wide"].lift is None
+    assert rows["wide"].failure_code == "estimation.engine.lift_guard"
+    assert rows["wide"].reason == "delta_method_unreliable"

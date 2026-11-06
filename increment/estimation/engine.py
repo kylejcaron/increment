@@ -2173,7 +2173,9 @@ def _infer_lift_result(
                 preferred_direction,
             )
         else:
-            return _lift_guard_failure(treatment, method.name, method_role, exc)
+            return _lift_guard_failure(
+                treatment.metric, treatment.group_id, method.name, method_role, exc
+            )
     update: dict[str, Any] = dict(_winsorization_result_fields(control, treatment))
     if strategy.n_clusters is None:
         if strategy.metric_type == "ratio":
@@ -2872,7 +2874,8 @@ def _ratio_denominator_unresolved(
 
 
 def _lift_guard_failure(
-    treatment: ArmStats,
+    metric: str,
+    group_id: str,
     method_name: str,
     method_role: Literal["decision", "sensitivity"],
     exc: LiftGuardError,
@@ -2884,11 +2887,11 @@ def _lift_guard_failure(
     from increment.estimation.decision_types import ArmHypothesisKey, DecisionFailure
 
     return None, DecisionFailure(
-        ArmHypothesisKey(treatment.metric, treatment.group_id, "itt"),
+        ArmHypothesisKey(metric, group_id, "itt"),
         "estimation.engine.lift_guard",
         {
-            "metric": treatment.metric,
-            "group_id": treatment.group_id,
+            "metric": metric,
+            "group_id": group_id,
             "method": method_name,
             "reason": exc.reason,
             "display": str(exc),
@@ -3436,7 +3439,13 @@ def _asymptotic_lift_outcome(
         )
     except _RelativeScaleUnavailable as exc:
         if _ratio_denominator_unresolved(contrast, strategy):
-            return _lift_guard_failure(treatment, method_strategy.method.name, method_role, exc)
+            return _lift_guard_failure(
+                treatment.metric,
+                treatment.group_id,
+                method_strategy.method.name,
+                method_role,
+                exc,
+            )
         row = _relative_unavailable_outcome(
             exc,
             contrast,

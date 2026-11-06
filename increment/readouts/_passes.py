@@ -132,6 +132,21 @@ def _lift_cells_missing_control(  # noqa: PLR0913
         return fallback, computation
 
 
+def _warn_guarded_cells(metric: Metric, computation: DecisionComputation[LiftEstimate]) -> None:
+    """Warn once per cell the estimator kept as a lift-guard failure, as a
+    moments cell refused by the same guard warns."""
+    for failure in computation.failures.values():
+        if failure.code == "estimation.engine.lift_guard":
+            _warn(
+                "readouts.run.cell_refused",
+                metric_name=metric.name,
+                group_id=str(failure.context["group_id"]),
+                method_name=str(failure.context["method"]),
+                reason=failure.display(),
+                stacklevel=4,
+            )
+
+
 def _append_lift_cell_failure(  # noqa: PLR0913
     *,
     results: list[LiftEstimate],
@@ -509,6 +524,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
             inference=inference,
             _return_computation=True,
         )
+        _warn_guarded_cells(metric, computation)
         return [row.model_copy(update={"role": role}) for row in computation.results], computation
 
     if isinstance(evidence, MetricEvidence) and any(
