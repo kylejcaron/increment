@@ -15,8 +15,11 @@ from increment.estimation.readout_types import (
     render_readout_failure,
 )
 from increment.estimation.results import (
+    _FAMILY_PROCEDURE_LABELS,
     _selection_qualification,
     row_chance_to_beat,
+    row_chance_to_beat_favorable,
+    row_favorable_side,
     row_verdict,
 )
 
@@ -625,9 +628,7 @@ def render_brief_qualification(row, family=None, *, alpha=None) -> str | None:
     if display_alpha is not None:
         labels.append(f"{1 - display_alpha:.1%} confidence")
     if family_size is not None:
-        procedure_label = (
-            str(procedure).replace("_", " ").title() if procedure is not None else "family"
-        )
+        procedure_label = _FAMILY_PROCEDURE_LABELS.get(procedure, "family")
         labels.append(f"{family_size}-member {procedure_label}")
     if getattr(getattr(row, "sequential_result", None), "validity_regime", None) == (
         "asymptotic_sequential"
@@ -927,11 +928,11 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             )
         if getattr(row, "posterior_available", False) is True:
             posterior_estimate = getattr(row, "posterior_estimate", None)
-            chance_to_beat = row_chance_to_beat(row)
-            lines.append(
-                f"{row.metric} posterior: estimate={posterior_estimate!r}; "
-                f"chance_to_beat={chance_to_beat!r}"
-            )
+            if row_favorable_side(row) is None:
+                chance = f"chance_to_beat={row_chance_to_beat(row)!r}"
+            else:
+                chance = f"chance_to_beat_favorable={row_chance_to_beat_favorable(row)!r}"
+            lines.append(f"{row.metric} posterior: estimate={posterior_estimate!r}; {chance}")
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(

@@ -152,11 +152,12 @@ def _clustered_table(n: int = 80) -> pa.Table:
 
 
 def _panel_table(n: int = 8, days: int = 3) -> pa.Table:
-    """One row per unit per day, for the day-axis probes."""
+    """One row per unit per day, every unit exposed on the first day, for the day-axis probes."""
     rows: dict[str, list[Any]] = {
         "user_id": [],
         "variant": [],
         "ds": [],
+        "exposure_date": [],
         "revenue": [],
         "converted": [],
         "orders": [],
@@ -169,6 +170,7 @@ def _panel_table(n: int = 8, days: int = 3) -> pa.Table:
             rows["user_id"].append(f"u{i:02d}")
             rows["variant"].append(g)
             rows["ds"].append(d0 + dt.timedelta(days=d))
+            rows["exposure_date"].append(d0)
             rows["revenue"].append(5.0 + (i % 3) + (1.0 if g == "treatment" else 0.0) + 0.1 * d)
             rows["converted"].append(1.0 if i % 2 else 0.0)
             rows["orders"].append(1.0)
@@ -958,6 +960,7 @@ def test_daily_asof(metric_type, request):
         control="control",
         date="ds",
         metrics=[spec],
+        exposure_date="exposure_date",
     )
     if cell.status == "refused":
         # Named refusal at the moments seam (quantile daily); the fragment
@@ -1228,6 +1231,7 @@ def test_capability_pairs(pair, request):
             date="ds",
             metrics=[mean],
             cluster="seg",
+            exposure_date="exposure_date",
         ),
         ("cluster", "export"): cluster_export_probe,
         ("cluster", "sitewide"): cluster_sitewide_probe,

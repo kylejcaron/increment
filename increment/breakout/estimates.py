@@ -2841,7 +2841,7 @@ def _breakout_estimate_row(
     FCR re-estimation pass, and readouts' encouragement branch, so every
     real row carries exactly the same field set. ``estimand``/
     ``value_scale``/``note`` and a registered sequential family's
-    ``family_guarantee``/``family_nominal_alpha`` come from the
+    ``family_guarantee``/``family_nominal_alpha``/``family_size`` come from the
     ``LiftEstimate`` itself (model defaults ``"itt"``/``"relative"``/``None``
     on the randomized path, which never sets them).
     """
@@ -2858,8 +2858,8 @@ def _breakout_estimate_row(
                 else None
             ),
             prior_shrunk=lift_estimate.prior_shrunk or lift_estimate.prior_spec is not None,
-            # BreakoutEstimate-only sidecar: _copy_common_fields doesn't
-            # carry it (DailyLiftEstimate has no winsor_* fields).
+            # BreakoutEstimate-only sidecars: _copy_common_fields doesn't
+            # carry them (DailyLiftEstimate has no winsor_* or family_size fields).
             winsor_lower_percentile=lift_estimate.winsor_lower_percentile,
             winsor_upper_percentile=lift_estimate.winsor_upper_percentile,
             winsor_lower_bound=lift_estimate.winsor_lower_bound,
@@ -2870,6 +2870,7 @@ def _breakout_estimate_row(
             winsor_treatment_n=lift_estimate.winsor_treatment_n,
             winsor_treatment_n_lower=lift_estimate.winsor_treatment_n_lower,
             winsor_treatment_n_upper=lift_estimate.winsor_treatment_n_upper,
+            family_size=lift_estimate.family_size,
             low_reliability=low_reliability,
             n_treat=n_treat,
             n_control=n_control,
@@ -4547,8 +4548,8 @@ def _opt(v: Any) -> float | None:
     return float(v)
 
 
-def _coerce_date(v: Any) -> date:
-    """Coerce a ``ds`` cell to ``datetime.date``.
+def _calendar_day(v: Any) -> date | None:
+    """The ``datetime.date`` a ``ds`` cell names, or ``None`` when it names no calendar day.
 
     Its concrete Python type depends on the native frame that carried
     it: pyarrow decodes to ``date`` already, pandas commonly carries a
@@ -4560,18 +4561,27 @@ def _coerce_date(v: Any) -> date:
         return v.date()
     if isinstance(v, date):
         return v
-    if isinstance(v, str):
-        try:
-            return date.fromisoformat(v)
-        except ValueError:
-            try:
-                timestamp = datetime.fromisoformat(v)
-            except ValueError:
-                _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
-            if timestamp.tzinfo is None and timestamp.time().isoformat() == "00:00:00":
-                return timestamp.date()
-            _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
-    _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
+    if not isinstance(v, str):
+        return None
+    try:
+        return date.fromisoformat(v)
+    except ValueError:
+        pass
+    try:
+        timestamp = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None and timestamp.time().isoformat() == "00:00:00":
+        return timestamp.date()
+    return None
+
+
+def _coerce_date(v: Any) -> date:
+    """Coerce a ``ds`` cell to the calendar day it names; refuse when it names none."""
+    day = _calendar_day(v)
+    if day is None:
+        _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
+    return day
 
 
 # daily_group_summary's columns run_daily actually reads (plus `ds`,

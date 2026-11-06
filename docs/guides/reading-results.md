@@ -329,8 +329,10 @@ assignment-law evidence.
   posterior route if a Bayesian decision is required.
 
 When a prior is supplied and the posterior is available, the readout also
-prints its posterior estimate and `chance_to_beat()` probability, including
-when no preferred direction is declared. The frame field
+prints its posterior estimate and one probability: for a metric that declares
+`preferred_direction`, `chance_to_beat_favorable()`, the posterior probability
+that the lift lies on its favorable side of zero; otherwise the direction-free
+`chance_to_beat()`. The test `alternative` never chooses the side. The frame field
 `posterior_prob_favorable_reason_code` distinguishes an absolute-margin null,
 missing direction, and a neutral direction; it is null when a favorable
 probability is available or the posterior itself is unavailable.
@@ -453,7 +455,9 @@ string, such as `columns="lift"`, raises `results.frame.columns_string`; pass
     `columns=None` remains the full projection. Each `"summary"` preset contains
     decision statistics (`stat_sig`, `p_value`, and `p_value_reason_code`) and
     available arm unit counts and raw means (`n_control`, `n_treat`,
-    `mean_control`, and `mean_treat`), plus row identity (`estimand` and
+    `mean_control`, and `mean_treat`; on an unclustered ratio row each mean is
+    the arm's ratio, its numerator total over its denominator total, and a
+    quantile row carries counts only), plus row identity (`estimand` and
     `value_scale`), `population`, a population qualification, including skipped
     outcomes and identification restrictions, null when the row covers its whole
     analysis population,
@@ -1116,7 +1120,7 @@ use `abs_lb` and `abs_ub` for the additive interval.
 
 | Row | Frame columns |
 |---|---|
-| Lift row | `stat_sig`, `p_value`, `p_value_reason_code`; available arm unit counts and raw means appear as `n_control`, `n_treat`, `mean_control`, and `mean_treat`. |
+| Lift row | `stat_sig`, `p_value`, `p_value_reason_code`; available arm unit counts and raw means appear as `n_control`, `n_treat`, `mean_control`, and `mean_treat`. On an unclustered ratio row each mean is the arm's ratio, its numerator total over its denominator total; a quantile row carries counts only. |
 | Set-only exact binomial row | `set_lower`, `set_upper`, `set_level`, `set_numerical_qualification`, from `binomial_set` only. |
 | Sequential row | `sequential_lower`, `sequential_upper`, `sequential_status`, `sequential_components`. |
 

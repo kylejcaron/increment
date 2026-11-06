@@ -231,13 +231,13 @@ def test_from_unit_summary_observational_design_round_trips(arrow_frame: pa.Tabl
 def test_from_unit_panel_encouragement_design_round_trips() -> None:
     design = _encouragement_design(window_days=3)
     rows = [
-        ("u1", "treatment", 1, 5.0, 0.0),
-        ("u2", "control", 1, 3.0, 0.0),
+        ("u1", "treatment", 1, 1, 5.0, 0.0),
+        ("u2", "control", 1, 1, 3.0, 0.0),
     ]
     table = pa.table(
         dict(
             zip(
-                ["user_id", "variant", "day", "revenue", "clicked"],
+                ["user_id", "variant", "day", "exposed_on", "revenue", "clicked"],
                 zip(*rows, strict=True),
                 strict=True,
             )
@@ -250,6 +250,7 @@ def test_from_unit_panel_encouragement_design_round_trips() -> None:
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
         design=design,
     )
     assert src.context.design is design

@@ -32,7 +32,7 @@ from tests.parity_harness.expected_differences import (
     ExpectedDifference,
     declared_directions,
     with_declared_favorable_sides,
-    without_binomial_arm_facts,
+    without_gained_arm_facts,
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "evidence_identity"
@@ -459,7 +459,7 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             if name in {"mixed_warehouse", "mixed_fitted_replay"}:
                 expected_rows = _normalize_warehouse_replay_rows(expected_rows)
                 replay_rows = _normalize_warehouse_replay_rows(replay_rows)
-            replay_rows = without_binomial_arm_facts(
+            replay_rows = without_gained_arm_facts(
                 expected_rows, replay_rows, _replayed_binomial_counts(payload, replay_rows)
             )
             expected_rows, replay_rows = _normalize_step8_replay_rows(expected_rows, replay_rows)

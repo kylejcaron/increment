@@ -17,6 +17,7 @@ from increment.estimation.cuped._numeric import _fail
 from increment.estimation.cuped.multicovariate import M1_MAX_LEVERAGE
 from increment.estimation.cuped.types import FitState, InferenceSummary, ProjectionSpec
 from increment.query._cuped_cells import _rows
+from increment.query._float_literals import exact_double
 from increment.query._nonfinite import nonfinite_parts
 
 FloatMatrix = tuple[tuple[float, ...], ...]
@@ -481,11 +482,11 @@ def warehouse_qr_unit_summary(  # noqa: PLR0913
         for arm_index, arm in enumerate(arms):
             exponent = int(outcome_arm_exponents[component][arm_index])
             prediction = _binary_normalize(
-                ibis.literal(float(centered_outcome_means[component][arm_index])), exponent
+                exact_double(centered_outcome_means[component][arm_index]), exponent
             ) + _sum_sql(
                 working[name]
                 * design_scales[index]
-                * _binary_normalize(ibis.literal(float(coefficients[component][index])), exponent)
+                * _binary_normalize(exact_double(coefficients[component][index]), exponent)
                 / working[sqrt_weight_column]
                 for index, name in enumerate(design_columns)
                 if index >= len(arms)
@@ -804,7 +805,7 @@ def _warehouse_hc2_scores(
                 _sum_sql(
                     relation[covariate_columns[index]]
                     * _binary_normalize(
-                        ibis.literal(float(slopes[family, index])),
+                        exact_double(slopes[family, index]),
                         int(outcome_arm_exponents[family][arm_index]),
                     )
                     for index in range(state.p)
@@ -833,11 +834,11 @@ def _warehouse_hc2_scores(
                 check_finite=False,
             )
             influence = sqrt_weight * _sum_sql(
-                q[index] * float(coefficient[index]) for index in range(width)
+                q[index] * exact_double(coefficient[index]) for index in range(width)
             )
             score_values[score_names[family][arm]] = (
                 influence * normalized_residual / root_residual
-                + float(jacobian.sum() / sum(counts)) * covariate_fitted[family]
+                + exact_double(jacobian.sum() / sum(counts)) * covariate_fitted[family]
             )
     scored = cast(ir.Table, scratch.materialize_next(relation.mutate(**score_values)))
     flat_scores = tuple(scored[name] for family in score_names for name in family)
@@ -881,7 +882,7 @@ def _bm_component_score(
     root_residual = (ibis.literal(1.0) - relation._qr_h).sqrt()
     return (
         sqrt_weight
-        * _sum_sql(q[index] * float(coefficient[index]) for index in range(width))
+        * _sum_sql(q[index] * exact_double(coefficient[index]) for index in range(width))
         / root_residual
     )
 
@@ -1097,7 +1098,10 @@ def _warehouse_projection_reductions(
         component_count = 2 if spec.kind == "ratio" else 1
         for source_index, source_arm in enumerate(arms):
             term_parts = []
-            for (family, target_arm), (mantissa, derivative_exponent) in coefficients.items():
+            # A fixed term order makes a mirrored contrast's score the exact negation.
+            for (family, target_arm), (mantissa, derivative_exponent) in sorted(
+                coefficients.items()
+            ):
                 if family >= component_count or mantissa == 0.0:
                     continue
                 name = score_names[family][target_arm]
@@ -1120,7 +1124,8 @@ def _warehouse_projection_reductions(
             common_exponent = max(item[2] for item in term_parts)
             score_name = f"_qr_projection_score_{spec_index}_{source_index}"
             score = _sum_sql(
-                (current[name] / component_scale) * math.ldexp(mantissa, exponent - common_exponent)
+                (current[name] / component_scale)
+                * exact_double(math.ldexp(mantissa, exponent - common_exponent))
                 for name, mantissa, exponent, component_scale in term_parts
             )
             projection_fields[score_name] = ibis.ifelse(
@@ -1782,7 +1787,7 @@ class _QRDesignEncoder:
         centered: list[Any] = [
             ibis.ifelse(nulls[index], 0.0, numerics[index])
             - _sum_sql(
-                ibis.ifelse(relation["group_id"] == arm, offset, 0.0)
+                ibis.ifelse(relation["group_id"] == arm, exact_double(offset), 0.0)
                 for arm, offset in zip(self.arms, offsets[index], strict=True)
             )
             for index in members
@@ -2114,7 +2119,7 @@ def prepare_qr_factor_input(  # noqa: PLR0915
     sqrt_weight = _sum_sql(
         ibis.ifelse(
             relation["group_id"] == arm,
-            math.sqrt(1.0 / (count_lookup[arm] * (count_lookup[arm] - 1))),
+            exact_double(math.sqrt(1.0 / (count_lookup[arm] * (count_lookup[arm] - 1)))),
             0.0,
         )
         for arm in arms
@@ -2142,7 +2147,7 @@ def prepare_qr_factor_input(  # noqa: PLR0915
         arm_mean = _sum_sql(
             ibis.ifelse(
                 relation["group_id"] == arm,
-                float(encoded.centered_means[index][arm_index]),
+                exact_double(encoded.centered_means[index][arm_index]),
                 0.0,
             )
             for arm_index, arm in enumerate(arms)
@@ -2160,7 +2165,8 @@ def prepare_qr_factor_input(  # noqa: PLR0915
     centered_values = [
         value
         - _sum_sql(
-            ibis.ifelse(relation["group_id"] == arm, anchor_by_arm[arm], 0.0) for arm in arms
+            ibis.ifelse(relation["group_id"] == arm, exact_double(anchor_by_arm[arm]), 0.0)
+            for arm in arms
         )
         for value, anchor_by_arm in zip(values, anchors, strict=True)
     ]

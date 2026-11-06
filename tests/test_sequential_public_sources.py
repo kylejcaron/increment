@@ -316,11 +316,52 @@ def test_frame_current_wire_and_moments_replay_same_actual_decision(tmp_path, la
         previous_replay[1].close()
     projected = view_readout(*replay).to_frame(backend="pandas")
     assert isinstance(projected, pd.DataFrame)
-    assert projected["sequential_log_e"].iloc[0] == str(
-        original.require_exact_sequential_result().log_e
+    assert projected["sequential_log_e"].iloc[0] == pytest.approx(
+        float(original.require_exact_sequential_result().log_e), rel=1e-15
     )
     assert projected["sequential_lower"].iloc[0] > 0
     assert projected["lift"].iloc[0] > 0
+
+
+def test_sequential_frame_columns_are_numeric():
+    import polars as pl
+
+    from increment import run
+
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
+    frame = _frame([0, 0, 0, 1] * 24, [0, 1, 1, 1] * 24)
+    frame["segment"] = ["x", "x", "y", "y"] * (len(frame) // 4)
+
+    def build(inference):
+        return from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=design,
+            metrics=specs,
+            plan=AnalysisPlan(primary="outcome", inference=inference),
+            exposure_date="exposure",
+        )
+
+    result = run(*build(InferenceSpec(kind="always_valid")))
+    projected = result.to_frame(backend="polars")
+    rows = result.readout()
+    assert isinstance(projected, pl.DataFrame) and isinstance(rows, LiftEstimates)
+    sequential = rows[0].require_exact_sequential_result()
+    assert projected.schema["sequential_log_e"] == pl.Float64
+    assert projected.schema["sequential_alpha"] == pl.Float64
+    assert projected["sequential_log_e"][0] == pytest.approx(float(sequential.log_e), rel=1e-15)
+    assert projected["sequential_alpha"][0] == pytest.approx(float(sequential.bounds.alpha))
+
+    experiment, reader = build(InferenceSpec(kind="always_valid", segments={"segment": ("x", "y")}))
+    breakout = View(view="breakout", grain="total")
+    segmented = run(experiment.with_views(breakout), reader, views=[breakout])
+    projected = segmented.to_frame(backend="polars")
+    assert isinstance(projected, pl.DataFrame)
+    assert projected.schema["sequential_log_e"] == pl.Float64
+    assert projected.schema["sequential_alpha"] == pl.Float64
 
 
 def test_checkpoint_export_preserves_captured_assignment_counts_and_omits_legacy_counts(
@@ -480,7 +521,9 @@ def test_frame_zero_event_prefix_append_and_rewrite_do_not_reset_process():
     displayed = estimates_to_readout([first_row])[0]
     assert displayed["lift"] is None
     assert displayed["sequential_point_reason"]
-    assert displayed["sequential_log_e"] == str(first_row.require_exact_sequential_result().log_e)
+    assert displayed["sequential_log_e"] == pytest.approx(
+        float(first_row.require_exact_sequential_result().log_e), rel=1e-15
+    )
     assert displayed["posterior_prob_favorable"] is None
     assert displayed["stat_sig"] is False
     from increment.result_envelope import ResultCell

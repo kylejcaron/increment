@@ -2264,6 +2264,7 @@ def test_asof_lift_fixed_horizon_secondary_never_discovers_and_notes_run():
                     "user_id": f"{arm}_{i}",
                     "variant": arm,
                     "ds": day1,
+                    "exposed_on": day1,
                     "revenue": float(rng.normal(10.0 + bump, 2.0)),
                 }
             )
@@ -2272,6 +2273,7 @@ def test_asof_lift_fixed_horizon_secondary_never_discovers_and_notes_run():
                     "user_id": f"{arm}_{i}",
                     "variant": arm,
                     "ds": day2,
+                    "exposed_on": day1,
                     "revenue": float(rng.normal(10.0 + bump, 2.0)),
                 }
             )
@@ -2284,6 +2286,7 @@ def test_asof_lift_fixed_horizon_secondary_never_discovers_and_notes_run():
         date="ds",
         control="control",
         metrics=[MetricSpec(name="revenue")],
+        exposure_date="exposed_on",
         design=Randomized(control_group="control"),
         plan=plan,
     )

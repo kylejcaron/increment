@@ -155,6 +155,58 @@ values.
   the condition. Where code read a noisy-denominator ratio's
   `"nonpositive_arm_mean"` row, handle the `estimation.engine.lift_guard`
   failure instead. Experiment identity is unchanged.
+- Release note (breaking numerical correction): a posterior chance is reported
+  on the metric's favorable side everywhere it is shown. For a metric that
+  declares `preferred_direction`, the readout and `render(result, "full")`
+  print `chance_to_beat_favorable=` and the `posterior_chance_to_beat` column
+  of `estimates_to_readout` and `readout_table` shows the same value, read from
+  `preferred_direction` alone. Previously the readout printed the
+  direction-free chance that lift is positive under `chance_to_beat=` while the
+  table showed the favorable side under the same label, so a clearly improving
+  decrease metric read about 0 in one and 1 in the other. A metric without a
+  direction keeps `chance_to_beat=`, and under a one-sided `alternative` its
+  table column now shows `chance_to_beat()` instead of `None`.
+  `chance_to_beat_favorable()` on a decrease metric reads the posterior's lower
+  tail rather than `1 - chance_to_beat()`, so a vanishing probability keeps its
+  size (about 5e-112 where it showed 0.0). `prob_favorable()` on a sequential
+  row refuses with `CapabilityError` code `sequential.route.unsupported`, as
+  `p_value()` does, instead of returning `None`. A prior declared on a metric
+  (`MetricSpec(prior=...)` or a YAML binding) under sequential inference
+  refuses with `sequential.route.unsupported` (context `reason`, `metric`,
+  `inference`), the code a `run(prior=...)` override already raised;
+  `plan.metric_informative_priors` (`UnsupportedRequestError`) is retired and
+  `RETIRED_CODES` maps it to `sequential.route.unsupported`. To migrate, catch
+  `CapabilityError` with that code where `plan.metric_informative_priors` was
+  caught, and handle the refusal where `prob_favorable()` on a sequential row
+  was read as `None`. Estimates, intervals, p-values, the stored
+  `posterior_prob_favorable` and experiment identity are unchanged.
+- Release note (breaking): `to_frame()`, breakout frames and readout rows
+  export `sequential_alpha` and `sequential_log_e` as `Float64` numbers instead
+  of exact-fraction strings, so they can be filtered, sorted and plotted;
+  `sequential_log_e` is `-inf` or `inf` once a boundary is certain. The exact
+  fractions stay on `row.require_sequential_result()`. Asymptotic rows keep a
+  null `sequential_log_e`, because their plug-in log evidence is not a
+  finite-sample e-value. Rows of a registered sequential e-BH or Bonferroni
+  family, including breakout rows, now report the family's member count in
+  `family_size`. The brief render names a family's procedure as its selection
+  qualification does, for example "4-member e-BH" where it printed
+  "4-member E Bh", and reads "family" for an unrecorded procedure. Migration:
+  code that parsed these columns as strings should read them as floats, or read
+  `Fraction` values from `row.require_sequential_result()`. Estimates, decisions
+  and experiment identity are unchanged.
+- Release note (documentation): the limitations page states how conservative
+  the default conversion interval is at small arms and when it is the default.
+  At a 10% rate it covers 97.5% at 1,000 units per arm with 1.36 times the Katz
+  interval's log width, and 99.5% at 200, where its lower endpoint is a -100%
+  lift for 43% of outcomes. A row takes the delta-method route only with 2,140
+  successes and 2,140 failures per arm at a two-sided 5% level, so the
+  finite-sample route is the default below about 21,400 units per arm at a 10%
+  rate. The page also records that a mean's relative interval covered 93.5% on
+  skewed gamma outcomes at 30 units per arm, where the same rows' additive
+  Welch interval covered 95.6%. The `AnalysisPlan` docstring now says that
+  secondary families use Benjamini-Hochberg at a fixed horizon and e-BH under
+  sequential inference, including `AsymptoticMean`, not Bonferroni. Estimates,
+  refusals and experiment identity are unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
@@ -182,6 +234,63 @@ values.
   a blank segment label rather than `nan`, so the two stay distinct rows.
   Table qualification cells show `>` as written rather than `&gt;`.
   Readout estimates and experiment identity are unchanged.
+- Release note (usability): an arm with one unit no longer aborts the run.
+  Each of its cells comes back as an unavailable row carrying
+  `estimation.armstats.arm_stats.least_compute_metric`, or
+  `estimation.variance.ratio_moments_least_two_units` for a ratio metric, with
+  context `group_id`, `metric` and `n`, and the other arms are still
+  estimated. A one-unit control arm leaves no cell to estimate, so the run
+  refuses with `readout.estimate_lift_every`, whose `failures` carry the same
+  code for every cell. Both messages name the route "drop or merge arm".
+  An unavailable sensitivity row carries its metric's declared margin and
+  direction (`null_lift`, `null_abs`, `preferred_direction`), as its decision
+  row does. Unclustered ratio rows now report `n_control` and `n_treat` as
+  arm unit counts and `mean_control` and `mean_treat` as each arm's ratio, its
+  numerator total over its denominator total, including a row whose numerator
+  total is zero or negative and so reports only the additive effect; quantile
+  rows report the counts and leave the means empty. A readout holding such a
+  row gets a new snapshot ID once, because snapshots digest arm counts.
+  Estimates, intervals and experiment identity are unchanged.
+- Release note (breaking numerical correction): `required_sample_size` returns
+  the smallest fixed-horizon size whose power, evaluated as `achieved_power`
+  evaluates it, reaches the target. At a
+  treatment-heavy allocation sizes shrink by a few units (199,376 to 199,369
+  per arm at allocation 0.9 for a 2% lift on `Baseline(mean=20, var=400)`). A
+  triggered plan is sized in assigned units analyzed at
+  `assigned * trigger_rate`, as `achieved_power` plans it, so its size moves by
+  a few units and its reported power is `achieved_power`'s at that size; a
+  clustered size follows the same rule, and a very large size whose rounding
+  left its power a few ulps under the target now reaches it. Where the runtime
+  estimates the lift with its log-ratio delta-method contrast (fixed horizon,
+  unclustered, randomized, no absorbed factor, not decided from conversion
+  counts), planning also keeps the planned combined log-scale standard error
+  below 0.5, where the runtime refuses the estimate (`delta_method_unreliable`):
+  a noisy baseline at a large lift sizes larger (417 per arm instead of 316 for
+  a fivefold mean on `Baseline(mean=1, var=100)`), so one unit fewer fails
+  either the power target or that limit; `minimum_detectable_effect`
+  returns the smallest effect that meets both or refuses with the new
+  `power.minimum_detectable_effect.delta_method_unreliable` (context
+  `target_power`, `direction`, `log_se`, `log_se_limit`), and a companion
+  effect is `None` with reason `delta_method_unreliable`; `achieved_power`
+  still reports planned power. A companion effect at a target at or below the
+  null's own rejection probability is `None` with reason
+  `at_or_below_null_power` instead of `0.0`, including from
+  `segment_pairwise_required_sample_size` and `segment_pairwise_achieved_power`;
+  a sequential `achieved_power` or
+  `required_sample_size` at such a target used to raise
+  `power.sequential_mde.design_search_minimum`, which
+  `minimum_detectable_effect` still raises. At such a target
+  `segment_pairwise_minimum_detectable_effect` refuses with
+  `power.minimum_detectable_effect.design_search_minimum` (context `estimate`,
+  `target`) instead of returning `0.0`, and
+  `segment_pairwise_required_sample_size` returns the smallest size whose
+  segments split into two arms instead of sizing for the magnitude of a
+  negative `z_alpha + z_power`. A conversion or retention null at a
+  rate of exactly one as written, such as `null_lift=0.25` on a baseline of
+  0.8, is planned instead of refused with `power.bounded_metric.rate_above_one`.
+  Migrate code that compared a companion `mde_relative` with `0.0` to read
+  `mde_unavailable_reason`. Readout estimates and experiment identity are
+  unchanged.
 - Release note (documentation): the power guide's `PowerResult` table states
   that `mde_relative` is relative to the declared `null_lift`, not to control,
   and that the matching `relative_lift` is
@@ -257,6 +366,25 @@ values.
   instead of `results.frame.unknown_columns` listing its letters; pass a list
   such as `columns=["lift"]`. Results, saved cells and experiment identity
   hashes are unchanged.
+  unchanged.
+- Release note (bug fix): a fact source whose SQL lacks a declared fact value
+  column or property column refuses with
+  `definition.fact_source.missing_columns` before any data is read, naming the
+  source and the declared column names; SQL the connection cannot resolve, such
+  as a misspelled table, refuses with `definition.fact_source.sql_unresolved`,
+  naming the source, with the backend error chained. Both previously raised an
+  uncoded backend error when the experiment ran. When an experiment's exposure,
+  metric, trigger, uptake and CUPED sources, and every source of a unit
+  property taken before exposure, mix timestamps with and without a time zone,
+  the ones with a time zone are converted to UTC when they
+  are read, so windows and pre-exposure property values compare instants in UTC
+  rather than in the connection's session time zone. Such experiments run under
+  a non-UTC session move to their UTC-correct values (a numerical
+  correction). A published uptake extension
+  reads an uptake timestamp without a time zone as UTC, as the exposure and
+  trigger timestamps beside it already were. Experiments whose sources share
+  one timestamp kind read their sources with the same SQL, and experiment
+  identity is unchanged.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra
@@ -388,6 +516,36 @@ values.
   A run saved earlier still reopens, and deciding it again reads
   `decision.primary.direction_unspecified` for a rejecting primary, as does
   `from_moments` on a cube exported by an earlier release.
+- Release note (breaking bug fix): a `from_frame(shape="panel")` or
+  `increment.frame.from_unit_panel` panel without `exposure_date=` no longer
+  guesses when each unit's days start. Its daily and as-of views, including
+  daily and as-of breakouts, treated every unit as exposed on the panel's first
+  date, so a treatment arm with late enrollees read low: on a panel whose true
+  lift is about +12%, a third of the treatment units enrolling three days late
+  gave about −25% on the first day. These views now refuse before any read,
+  alike in `runnable()` and `run()`, with `evidence.grain_unavailable`,
+  `offered=("total",)` and a `route` naming `exposure_date`. An encouragement
+  uptake window (`UptakeSpec(window_days=...)`) counted from each unit's first
+  row and now refuses at construction with `source.panel.exposure_date`; as-of
+  compliance refuses with `evidence.operation_unavailable`. Whole-window results
+  of unwindowed metrics, unbounded uptake and whole-window compliance are
+  unchanged. To migrate, pass `exposure_date=<column>` naming each unit's
+  exposure date; if every unit was exposed on the same day, add a column holding
+  that date. Free-form day labels such as `"2025-9"` also need an orderable day
+  axis (ISO dates such as `"2025-09-01"` or midnight timestamps such as
+  `"2025-09-01T00:00:00"`), so declaring `exposure_date` alone is not enough for
+  them. Daily compliance rows now carry the same `datetime.date` as daily outcome
+  rows, so a daily readout of `estimands=("itt", "compliance")` on string or
+  timestamp day labels no longer fails; as-of rows keep the panel's own labels.
+  Panels that declare `exposure_date` keep their numbers, `to_json()`
+  and `hash()`. A panel without it now declares only the total grain, so its
+  `to_json()` and `hash()` change once: the source capabilities record
+  `grains=["total"]`, `compliance_axis="total"` and the new `grain_route`. An
+  experiment saved before this release refuses a freshly built reader with
+  `kernel.provider.capability_mismatch`; rebuild it with
+  `from_frame(shape="panel", ...)` and save it again. `EvidenceCapabilities`
+  gains an optional `grain_route`, a source's route to an undeclared day axis,
+  left out of saved JSON when unset.
 - Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
   spelled `missing="skip"`, with the same computation: the metric uses only the
   units with a value, and those units stay in every other metric. Estimates are
@@ -768,7 +926,8 @@ Readout options such as `decision_method`, `prior`, `metrics`, `estimands`,
 selected view. A view's population, breakout selection and completed-window
 gate belong to its `View`. One `run` reads every declared view from one
 capture, so the daily, as-of and whole-window rows agree on the data they
-describe:
+describe. Daily and as-of views on a panel need its `exposure_date=` column;
+here every unit was exposed on the first day:
 
 ```python
 import polars as pl
@@ -781,6 +940,7 @@ panel = pl.DataFrame(
         "user_id": [f"u{index}" for index in range(8)] * 2,
         "variant": ["control", "treatment"] * 8,
         "day": ["2025-01-01"] * 8 + ["2025-01-02"] * 8,
+        "exposed_on": ["2025-01-01"] * 16,
         "country": ["US", "US", "GB", "GB"] * 4,
         "revenue": [float(index % 5) for index in range(16)],
     }
@@ -791,6 +951,7 @@ experiment, reader = increment.from_frame(
     unit="user_id",
     group="variant",
     date="day",
+    exposure_date="exposed_on",
     control="control",
     metrics={"revenue": "mean"},
     breakouts=["country"],

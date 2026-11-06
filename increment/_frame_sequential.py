@@ -314,7 +314,7 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
                 (),
                 uptake=source._uptake,
                 window_days=source._window_days,
-                first_exposure=source._first_exposure,
+                exposure=source._exposure,
                 by=dimensions,
             ).rename({source._uptake: "__y__"})
             totals = kept.join(uptake_totals, on=keys, how="left").with_columns(

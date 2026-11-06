@@ -822,6 +822,7 @@ def test_daily_readout_skips_custom_estimator_needs_but_run_checks_them():
                     "unit": [f"u{i}" for i in range(8) for _day in (1, 2)],
                     "arm": ["control"] * 8 + ["treatment"] * 8,
                     "day": [1, 2] * 8,
+                    "exposed_on": [1] * 16,
                     "outcome": [float(i + day) for i in range(8) for day in (1, 2)],
                     "x": [float(i % 2) for i in range(8) for _day in (1, 2)],
                 }
@@ -831,6 +832,7 @@ def test_daily_readout_skips_custom_estimator_needs_but_run_checks_them():
             date="day",
             control="control",
             metrics={"outcome": "mean"},
+            exposure_date="exposed_on",
             design=Observational(
                 control_group="control",
                 adjustment=AdjustmentSet(covariates=("x",)),

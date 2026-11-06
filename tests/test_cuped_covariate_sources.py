@@ -1614,8 +1614,8 @@ def test_direct_native_readout_does_not_acquire_removed_scalar_binding(tmp_path)
         ),
     )
     try:
-        con.raw_sql("ALTER TABLE cov_events DROP COLUMN tenure")
-        con.raw_sql("ALTER TABLE cov_events DROP COLUMN history_b")
+        # Acquiring the removed binding would refuse its missing="refuse" covariate.
+        con.raw_sql("UPDATE cov_events SET tenure = NULL, history_b = NULL")
         (row,) = readouts.run(source, decision_method=Method.unadjusted(), sensitivity_methods=())
         assert row.method == "naive"
         assert row.require_lift().value is not None
@@ -1826,13 +1826,14 @@ def test_breakout_and_daily_lift_covariates_use_frame_refusals(route, column, co
         else:
             view_readout(
                 *from_frame(
-                    frame,
+                    frame.append_column("exposed_on", pa.array([1] * 8)),
                     shape="panel",
                     unit="unit",
                     group="arm",
                     date="day",
                     control="control",
                     metrics=[metric],
+                    exposure_date="exposed_on",
                 ),
                 View(view="daily", grain="daily"),
                 decision_method=method,

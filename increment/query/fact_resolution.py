@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from increment.errors import DefinitionError, InvalidRequestError, raiser, refusals
+from increment.errors import CodedError, DefinitionError, InvalidRequestError, raiser, refusals
 from increment.semantics.models import Breakout, Definitions, Experiment, Fact, Factor, FactSource
 
 if TYPE_CHECKING:
@@ -41,14 +41,43 @@ _DEFINITION_REFUSALS = refusals(
             "fact source '{fact_source}' SQL is missing required column alias(es) {missing!r}; "
             "add those aliases to the source SELECT list"
         ),
+        "definition.fact_source.sql_unresolved": (
+            "fact source '{fact_source}' SQL could not be resolved by the connection; "
+            "check that every relation it reads exists and this connection can read it"
+        ),
     },
 )
 _raise_definition = raiser(_DEFINITION_REFUSALS)
 
 
-def validate_fact_source_schema(tbl: Table, fs: FactSource, *, require_event: bool = True) -> None:
-    """Require timestamp/entity aliases and an event alias when consumed as events."""
-    required = {fs.timestamp_column, *fs.entities}
+def resolve_fact_source_sql(resolve_sql: Callable[[str], Table], fs: FactSource) -> Table:
+    """Resolve *fs*'s SQL, refusing with the source's name when the backend cannot."""
+    try:
+        return resolve_sql(fs.sql)
+    except CodedError:
+        raise
+    except Exception as exc:
+        try:
+            _raise_definition("definition.fact_source.sql_unresolved", fact_source=fs.name)
+        except DefinitionError as error:
+            raise error from exc
+
+
+def validate_fact_source_schema(
+    tbl: Table, fs: FactSource, *, require_event: bool = True, require_values: bool = True
+) -> None:
+    """Require every declared column alias, plus an event alias when consumed as events.
+
+    ``require_values=False`` skips the fact value columns, for a captured relation: its
+    live source is checked in full before capture, which keeps only requested values.
+    """
+    required = {
+        fs.timestamp_column,
+        *fs.entities,
+        *(prop.column for prop in fs.properties),
+    }
+    if require_values:
+        required.update(fact.column for fact in fs.facts if fact.column is not None)
     if require_event:
         required.add("event")
     missing = tuple(sorted(required - set(tbl.columns)))
@@ -202,7 +231,9 @@ def _reject_property_rename_collisions(fs: FactSource, entity_source: str | None
             )
 
 
-def _rename_to_builder_cols(tbl: Table, fs: FactSource, unit: str) -> Table:
+def _rename_to_builder_cols(
+    tbl: Table, fs: FactSource, unit: str, *, naive_utc: bool = False
+) -> Table:
     """Rename entity->unit_id and timestamp->ts so the builders can consume.
 
     The semantic layer names entities/timestamps by their physical
@@ -213,8 +244,13 @@ def _rename_to_builder_cols(tbl: Table, fs: FactSource, unit: str) -> Table:
     ``unit_id`` - a fact source can declare several (e.g.
     ``[session_id, user_id]``), and picking the wrong one silently
     aggregates at the wrong grain with no error.
+
+    ``naive_utc`` reads a time-zone-aware ``ts`` as naive UTC, for an
+    experiment whose relations mix timestamp kinds.
     """
     import ibis
+
+    from increment.query.builders import _naive_utc_ts
 
     entity_source = _resolve_entity_source(fs, unit)
     _reject_property_rename_collisions(fs, entity_source)
@@ -232,7 +268,7 @@ def _rename_to_builder_cols(tbl: Table, fs: FactSource, unit: str) -> Table:
         tbl = tbl.mutate(experiment_id=ibis.null().cast("string"))
     if kw:
         tbl = tbl.rename(**kw)
-    return tbl
+    return _naive_utc_ts(tbl) if naive_utc else tbl
 
 
 def _dim_joined_fact_table(
@@ -244,6 +280,8 @@ def _dim_joined_fact_table(
     *,
     resolve_sql: Callable[[str], Table] | None = None,
     require_event: bool = True,
+    require_values: bool = True,
+    naive_utc: bool = False,
 ) -> Table:
     """Fact-source SQL -> declared dim joins -> builder column renames.
 
@@ -258,8 +296,8 @@ def _dim_joined_fact_table(
         return con.sql(sql, dialect=defs.dialect)
 
     resolve_sql = resolve_sql or default_resolver
-    tbl = resolve_sql(fs.sql)
-    validate_fact_source_schema(tbl, fs, require_event=require_event)
+    tbl = resolve_fact_source_sql(resolve_sql, fs)
+    validate_fact_source_schema(tbl, fs, require_event=require_event, require_values=require_values)
     if fs.dims:
         dim_by_name = {d.name: d for d in defs.dim_sources}
         pairs = []
@@ -271,7 +309,7 @@ def _dim_joined_fact_table(
                 dim_cache[name] = cached
             pairs.append((dim, cached))
         tbl = join_dims(tbl, ts_column=fs.timestamp_column, dims=pairs, execute=con.execute)
-    return _rename_to_builder_cols(tbl, fs, unit)
+    return _rename_to_builder_cols(tbl, fs, unit, naive_utc=naive_utc)
 
 
 def _resolve_value_column(fs: FactSource, fact: Fact) -> str | None:

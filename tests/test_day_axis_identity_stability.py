@@ -25,19 +25,19 @@ ARM_COUNT_SNAPSHOT_DIFFERENCES = tuple(
         current=current,
         reason=(
             "Lift snapshots digest arm counts, which the pre-kernel route left off exact "
-            "binomial rows; every other snapshot ID is unchanged."
+            "binomial and unclustered ratio rows; every other snapshot ID is unchanged."
         ),
     )
     for view, frozen, current in (
         (
             "daily_lift",
             "sha256:ed34e487c261b462afc2663879586ddb9a0317d4d2feb0f94fd1049778f54678",
-            "sha256:1a0d99b5bda0e711c1d810ea5e7f99a981eb20f94e518ea99ec2b72afeb93651",
+            "sha256:ea6d414d523d07754282af65f8f0b7998d701485ddd2377f5549762f31c236ec",
         ),
         (
             "asof_lift",
             "sha256:e85a35071b539ee939d5d29fb3e5f31c526aa2241f9617323539c8c52d1139dd",
-            "sha256:36131f8f91f411dcc8fb459c7ccb38664729046acff35f6456dd829fb7a21b23",
+            "sha256:04714fe731f23aad5e8436b6074e52f5cbad75817efc1157e930a18ed5e52b55",
         ),
     )
 )

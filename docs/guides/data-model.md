@@ -132,9 +132,14 @@ counts in neither the outcome nor the CUPED window. Encouragement uptake is the
 one exception: uptake at the exposure instant qualifies.
 
 **Dataframe.** `from_frame(..., shape="panel")` accepts sparse input and treats absent eligible
-unit-days as zero. Small inputs may be densified temporarily; larger ones
-use a sparse day-at-a-time reduction. `densified_cells` counts cells that
-needed zero fill, not physical rows.
+unit-days as zero. A unit becomes eligible on its `exposure_date`. Without that
+column the rows cannot say whether a unit's absent days came before its exposure
+or after it with no activity, so only whole-window results of unwindowed metrics
+are available. Daily and as-of views, windowed and retention metrics, a windowed
+uptake, as-of compliance and sequential inference need `exposure_date=`; if every
+unit was exposed on the same day, add a column holding that date. Small inputs
+may be densified temporarily; larger ones use a sparse day-at-a-time reduction.
+`densified_cells` counts cells that needed zero fill, not physical rows.
 
 ??? info "Dataframe zero-fill route and memory limits"
     For small inputs, zero filling may use a temporary date spine when a scratch
@@ -304,10 +309,10 @@ fact_sources:
 | Field | What to declare |
 |---|---|
 | `dialect` | The SQL dialect. Prefer the warehouse's native dialect: Ibis translation is best-effort and can change meaning silently. If omitted, SQL is checked against the connection's dialect. |
-| `timestamp_column` | The event time used for every window. |
+| `timestamp_column` | The event time used for every window. A timestamp without a time zone is read as UTC. When an experiment's exposure, metric, trigger, uptake and CUPED sources, and every source of a unit property taken before exposure (`as_of: pre_exposure`, whether or not the experiment declares it), mix timestamps with and without a time zone, those with one are converted to UTC before any comparison, so results never depend on the connection's session time zone. |
 | `entities` | Unit identifier columns; the experiment's `unit` must be one of them. |
-| `facts` | Event types and their values. When facts are declared, the SQL must expose `event`, the timestamp, and every entity under the declared names. Property-only sources need no `event` column. `column` holds a fact's value; `column: null` marks an occurrence-only fact, usable for counts, conversion, and retention but not value aggregations. |
-| `properties` | Columns for filters and breakouts. `as_of` states when a value applies: `event_time` (default), `pre_exposure` (latest value strictly before exposure), or `static` (asserted unchanged). |
+| `facts` | Event types and their values. When facts are declared, the SQL must expose `event`, the timestamp, every entity, and every fact's value column under the declared names. Property-only sources need no `event` column. `column` holds a fact's value; `column: null` marks an occurrence-only fact, usable for counts, conversion, and retention but not value aggregations. A declared column the SQL does not expose refuses with `definition.fact_source.missing_columns`, and SQL the connection cannot resolve refuses with `definition.fact_source.sql_unresolved`. |
+| `properties` | Columns for filters and breakouts; each declared `column` must be in the SQL. `as_of` states when a value applies: `event_time` (default), `pre_exposure` (latest value strictly before exposure), or `static` (asserted unchanged). |
 
 !!! warning "Event-time properties cannot be breakouts"
     Segmenting outcomes by a value observed after exposure can bias results,

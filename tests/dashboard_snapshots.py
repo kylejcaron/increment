@@ -51,7 +51,7 @@ from increment.results import (
 )
 from increment.semantics.models import ConversionMetric, MeanMetric
 from tests.parity_harness.comparison import nested_close
-from tests.parity_harness.expected_differences import without_binomial_arm_facts
+from tests.parity_harness.expected_differences import without_gained_arm_facts
 
 COUNTRY = ("event_log", "country")
 ADDED = "purchases_per_user"
@@ -594,8 +594,8 @@ def capture_differences(
 
     Floats agree to ``tests/parity_harness/comparison.py::TOLERANCE``, the tolerance for public
     readout values from different executions; every other leaf is compared exactly. Arm counts
-    and rates an exact binomial row gained after ``expected`` was captured are accepted only
-    when they follow from the row's own counts (``without_binomial_arm_facts``).
+    and values a row gained after ``expected`` was captured are accepted only when they follow
+    from that row's own evidence (``without_gained_arm_facts``).
     """
     found: list[str] = []
 
@@ -622,7 +622,7 @@ def capture_differences(
 
     expected_form = captured_form(expected, without=without, by_type=by_type)
     compare(
-        without_binomial_arm_facts(
+        without_gained_arm_facts(
             expected_form, captured_form(actual, without=without, by_type=by_type)
         ),
         expected_form,

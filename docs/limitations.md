@@ -134,6 +134,14 @@ the binomial rows' additive `abs_lb`/`abs_ub` sidecar remains approximate.
     at small n, for heavy-tailed outcomes, and for ratio metrics, where a first-order
     approximation is furthest from the truth.
 
+    On a mean metric the relative interval (a log-ratio delta method) can be the weaker of a
+    row's two intervals at small n on a skewed outcome. With gamma(0.5) outcomes (skewness
+    2.8) and a true ratio of 1.1, it covered 93.5% at 30 units per arm and 94.3% at 100, while
+    the same rows' additive Welch interval (`abs_lb`/`abs_ub`) covered 95.6% and 95.0%
+    (`campaign-module:calibration.small_arm_intervals mean`: 20,000 draws per cell, seed 77,
+    Monte Carlo standard error at most 0.18 points; the 0.65% of 30-unit draws that the
+    log-scale admission guard refuses are not counted).
+
     Absolute effects on the switchback and observational paths are estimated natively on the
     additive scale rather than reconstructed from a log-scale estimate, so they carry their own
     path's approximation and not an additional one.
@@ -568,10 +576,14 @@ otherwise. Only finite-sample rows carry a finite-sample guarantee; the default
 than degrading, above a billion units per arm or at an alpha below about `3.2e-8` (higher
 at very large arms), and its cost grows with arm size.
 
-The finite-sample interval is wider than necessary at moderate counts: on the log scale it
-is about 1.07–1.45× the Katz (log-scale Wald) interval at the measured shapes, because it
-orders candidates by the `r = 1` difference for every candidate. A tighter candidate-ordered
-construction that removes the gap at exact coverage is being evaluated.
+The finite-sample interval is wider than necessary: on the log scale it is about
+1.07–1.45× the Katz (log-scale Wald) interval at 2,000–20,000 units per arm, and wider at
+smaller arms. At a 10% rate it covers 97.5% at 1,000 units per arm and an 8% lift (Katz
+95.0%) with 1.36× Katz's log width, and 99.5% at 200 units with no effect (Katz 95.6%),
+where its lower endpoint is a -100% lift for 43% of outcomes and its log width is otherwise
+2.0× Katz's. The gap comes from ordering candidates by the `r = 1` difference for every
+candidate. A tighter candidate-ordered construction that removes the gap at exact coverage
+is being evaluated.
 
 !!! warning "Neither conversion route supports repeated peeking"
     Both routes are fixed-horizon: neither proves validity under optional stopping or
@@ -579,10 +591,13 @@ construction that removes the gap at exact coverage is being evaluated.
     [sequential inference](guides/sequential-inference.md) before reading outcomes.
 
 !!! warning "Choose the route by the guarantee you need, not by width"
-    Expect a wider interval on the finite-sample route when counts are moderate, and a null
-    p-value 1.7–4× the pivotal exact p-value at those shapes. A BH-selected row is
-    re-estimated at its corrected level and routed there, so its label can differ from the
-    nominal row's.
+    The finite-sample route is the default below about 21,400 units per arm at a 10% rate
+    (10,700 at 20%): at a two-sided 5% level a row takes the delta-method route only when
+    each arm has at least 2,140 successes and 2,140 failures (`dense_min_count(0.025)`).
+    `conversion_inference="finite_sample"` forces the finite-sample route; nothing forces the
+    delta method. Expect a wider interval on the finite-sample route, and a null p-value
+    1.7–4× the pivotal exact p-value at moderate counts. A BH-selected row is re-estimated at
+    its corrected level and routed there, so its label can differ from the nominal row's.
 
 !!! tip "Latency on the finite-sample route"
     One finite-sample interval takes seconds at millions of units per arm and minutes at
@@ -619,16 +634,26 @@ that needs an absolute-scale estimand)
     audit's earlier measurement of the same shapes: 1.07×, 1.16×, 1.24× and 1.45×), and its
     null p-value is 1.7–4× the pivotal (score-ordered) exact p-value at those shapes
     (500/5000 vs 600/5000: 2.38e-3 against 1.39e-3; 50/500 vs 75/500: 4.35e-2 against
-    1.69e-2; 20/200 vs 40/200: 2.19e-2 against 5.18e-3). A candidate-ordered construction
-    that removes the gap at exact coverage was measured against the shipped ordering on the
-    same Berger-Boos frame: exact-lattice coverage at or above nominal on all 372 grid cells
-    (worst one-sided miss `2.0e-6` below `alpha / 2`), log width 1.000–1.004× Katz at those
-    shapes, eligibility unchanged. It is held back by the cost of certifying its nuisance
-    supremum (1.8–15× the shipped runtime at the shipped endpoint tolerance, 0.7–4.2× at an
-    eight-times coarser one) and by a threshold-monotonicity lemma that is measured
-    (0 violations in 6,000 candidate steps per count pair) but unproven. Adopting it would
-    change the stored-set construction token, so persisted sets would be refused by
-    `estimation.results.binomial.obsolete_construction` and re-run.
+    1.69e-2; 20/200 vs 40/200: 2.19e-2 against 5.18e-3). Smaller arms widen the gap. On the
+    exact count lattice of the default row at two-sided 95%, where every count pair takes the
+    finite-sample route (`campaign-module:calibration.small_arm_intervals conversion`, under
+    `1e-8` of probability omitted), the set covers 97.47% at 1,000 units per arm, a 10%
+    control rate and r = 1.08 (Katz 95.04%), with 1.355× Katz's expected log width. At 200
+    units per arm, 10% and r = 1 it covers 99.47% (Katz 95.64%), and its lower endpoint is a
+    ratio of zero (a -100% lift) with probability 0.43 although treatment has events: a
+    candidate near zero is tested at the lowest control rate the nuisance range admits, where
+    a control count as small as the observed difference between the arms is not surprising.
+    Over the other outcomes its expected log width is 2.04× Katz's. A candidate-ordered
+    construction that removes the gap at exact coverage was measured against the shipped
+    ordering on the same Berger-Boos frame: exact-lattice coverage at or above nominal on all
+    372 grid cells (worst one-sided miss `2.0e-6` below `alpha / 2`), log width 1.000–1.004×
+    Katz at the moderate-count shapes above, eligibility unchanged. It is held back by the
+    cost of certifying its nuisance supremum (1.8–15× the shipped runtime at the shipped
+    endpoint tolerance, 0.7–4.2× at an eight-times coarser one) and by a
+    threshold-monotonicity lemma that is measured (0 violations in 6,000 candidate steps per
+    count pair) but unproven. Adopting it would change the stored-set construction token, so
+    persisted sets would be refused by `estimation.results.binomial.obsolete_construction` and
+    re-run.
 
 ??? info "Statistical details: route selection and labels"
     An unadjusted (no CUPED, no declared cluster), unit-grain conversion or retention arm pair

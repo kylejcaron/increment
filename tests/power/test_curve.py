@@ -147,7 +147,7 @@ class TestFixedPowerCurve:
             assert point.mde_relative == pytest.approx(expected.mde_relative)
             assert point.effective_var == pytest.approx(expected.effective_var)
 
-    def test_power_mode_keeps_zero_companion_at_low_target(self):
+    def test_power_mode_has_no_companion_at_low_target(self):
         curve = power_curve(
             n_per_arm=100,
             relative_lift=0.1,
@@ -158,8 +158,8 @@ class TestFixedPowerCurve:
 
         assert len(curve) == 1
         assert curve[0].power > 0.01
-        assert curve[0].mde_relative == 0.0
-        assert curve[0].mde_unavailable_reason is None
+        assert curve[0].mde_relative is None
+        assert curve[0].mde_unavailable_reason == "at_or_below_null_power"
 
     def test_scalar_inputs_and_duplicate_order_are_preserved(self):
         curve = power_curve(

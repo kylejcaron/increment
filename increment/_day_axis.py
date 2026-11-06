@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset, normalize_display_correction
+from increment._day_axis_labels import _DAY_AXIS_LABEL_UNORDERABLE
 from increment._evidence_refusals import check_method_covariates
 from increment._evidence_types import (
     ComplianceSeriesRequest,
@@ -41,6 +42,7 @@ from increment.breakout.estimates import (
     DailyMetricValue,
     DailyMetricValues,
     _asof_monitoring_note,
+    _calendar_day,
     _slice_reference_kind,
     reject_quantile_metrics,
     reject_retention_under_encouragement,
@@ -306,7 +308,7 @@ def validate_day_axis(
             src,
             req.grain,
             tuple(sorted(declared_evidence(src).grains)),
-            route="use a source with the requested day axis",
+            route=declared_evidence(src).grain_route or "use a source with the requested day axis",
         )
     if route == NATIVE_ROUTE and "day_source" not in declared_evidence(src).operations:
         from increment._evidence_refusals import refuse_grain
@@ -315,7 +317,7 @@ def validate_day_axis(
             src,
             req.grain,
             tuple(sorted(declared_evidence(src).grains)),
-            route="use a source with the requested day axis",
+            route=declared_evidence(src).grain_route or "use a source with the requested day axis",
         )
     reject_winsorized_day_axis(list(req.metrics), req.caller, grain=req.grain)
     if route == NATIVE_ROUTE:
@@ -808,6 +810,29 @@ def _build_compliance_day_rows(
     ]
 
 
+def _key_by_calendar_day(
+    compliance_by_date: Mapping[Any, ComplianceSummary],
+) -> dict[Any, ComplianceSummary]:
+    """Key daily compliance by the ``datetime.date`` the daily outcome rows carry.
+
+    The daily outcome reduction reads each label as the calendar day it names,
+    while the compliance series keeps the source's own label. A label that names
+    no calendar day keeps its spelling; two labels naming one day refuse rather
+    than merge.
+    """
+    labels_by_day: dict[Any, list[Any]] = {}
+    for label in compliance_by_date:
+        day = _calendar_day(label)
+        labels_by_day.setdefault(label if day is None else day, []).append(label)
+    collisions = [labels for labels in labels_by_day.values() if len(labels) > 1]
+    if collisions:
+        refuse(
+            _DAY_AXIS_LABEL_UNORDERABLE,
+            labels=tuple(sorted(str(label) for labels in collisions for label in labels)),
+        )
+    return {day: compliance_by_date[labels[0]] for day, labels in labels_by_day.items()}
+
+
 def _append_compliance_rows(
     results: list[DailyLiftEstimate],
     compliance_by_date: dict[Any, ComplianceSummary],
@@ -828,6 +853,8 @@ def _append_compliance_rows(
             {arm.group_id for summary in compliance_by_date.values() for arm in summary.arms}
             | {control_group}
         )
+    if req.grain == "daily":
+        compliance_by_date = _key_by_calendar_day(compliance_by_date)
     day_order = _day_axis_label_order([*compliance_by_date, *(row.ds for row in results)])
     inference = _sequential_inference(plan)
     for ds in sorted(compliance_by_date, key=day_order.__getitem__):

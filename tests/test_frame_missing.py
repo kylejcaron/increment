@@ -12,7 +12,7 @@ import importlib.util
 import math
 import warnings
 from datetime import date, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import narwhals as nw
 import numpy as np
@@ -1354,17 +1354,6 @@ def test_all_null_covariate_refuses_with_actionable_message() -> None:
     assert exc_info.value.context == {"metric": "y", "covariate": "x"}
 
 
-def test_asof_source_without_first_exposure_anchor_refuses() -> None:
-    import narwhals as nw
-
-    from increment._frame_moments import _asof_source_with_indices
-
-    panel = nw.from_native(pa.table({"unit_id": ["u1"]}), eager_only=True)
-    with pytest.raises(InvalidRequestError) as exc_info:
-        _asof_source_with_indices(panel, exposure=None, first_exposure=None, uptake="clicked")
-    assert exc_info.value.code == "frame.moments.asof_source_uptake_needs_anchor"
-
-
 def test_asof_unit_rows_completed_windows_unbounded_retention_refuses() -> None:
     """``_asof_unit_rows`` carries its own completed_windows_only guard,
     independent of any caller-side pre-check."""
@@ -1376,14 +1365,16 @@ def test_asof_unit_rows_completed_windows_unbounded_retention_refuses() -> None:
     spec = MetricSpec(name="d0_plus", type="retention", value_column="revenue", threshold_days=0)
     metric = synthesise_metric(spec)
     panel = nw.from_native(pa.table({"unit_id": ["u1"]}), eager_only=True)
+    exposure = nw.from_native(
+        pa.table({"unit_id": ["u1"], "__exposure__": [date(2025, 1, 1)]}), eager_only=True
+    )
     with pytest.raises(InvalidRequestError) as exc_info:
         _asof_unit_rows(
             panel,
             spec=spec,
             metric=metric,
             by=(),
-            exposure=None,
-            first_exposure=None,
+            exposure=exposure,
             uptake=None,
             uptake_window_days=None,
             completed_windows_only=True,
@@ -1391,48 +1382,6 @@ def test_asof_unit_rows_completed_windows_unbounded_retention_refuses() -> None:
         )
     assert exc_info.value.code == "frame.moments.asof_moments_completed"
     assert exc_info.value.context["metric"] == "d0_plus"
-
-
-def test_asof_unit_rows_retention_without_exposure_refuses() -> None:
-    """Retention needs an exposure-relative day index; without one,
-    ``_asof_unit_rows`` itself refuses rather than computing a band."""
-    from increment._frame_moments import _asof_unit_rows
-    from increment.frame import synthesise_metric
-
-    spec = MetricSpec(name="y", type="retention", value_column="revenue", threshold_days=(0, 3))
-    metric = synthesise_metric(spec)
-    panel = nw.from_native(pa.table({"unit_id": ["u1"], "ds": [date(2025, 1, 1)]}), eager_only=True)
-    with pytest.raises(InvalidRequestError) as exc_info:
-        _asof_unit_rows(
-            panel,
-            spec=spec,
-            metric=metric,
-            by=(),
-            exposure=None,
-            first_exposure=None,
-            uptake=None,
-            uptake_window_days=None,
-            completed_windows_only=False,
-            identity_ordinal="__missing_ordinal__",
-        )
-    assert exc_info.value.code == "frame.moments.asof_unit_rows"
-
-
-def test_collapse_to_unit_totals_window_without_first_exposure_refuses() -> None:
-    import narwhals as nw
-
-    from increment._frame_moments import _collapse_to_unit_totals
-
-    panel = nw.from_native(
-        pa.table({"unit_id": ["u1"], "group_id": ["control"], "revenue": [1.0], "clicked": [1.0]}),
-        eager_only=True,
-    )
-    spec = MetricSpec(name="revenue")
-    with pytest.raises(InvalidRequestError) as exc_info:
-        _collapse_to_unit_totals(
-            panel, [spec], uptake="clicked", window_days=3, first_exposure=None
-        )
-    assert exc_info.value.code == "frame.moments.collapse_to_unit"
 
 
 def test_covariate_imputation_computed_before_outcome_skip() -> None:
@@ -2067,9 +2016,9 @@ def test_densified_cells_counts_declared_zero_null_fills() -> None:
 
 
 def test_single_unit_arm_error_names_metric_and_arm() -> None:
-    """A one-unit treatment arm within the declared roster refuses at estimation time.
-    The moment-grain read is legitimate, and the error must name the metric
-    and arm instead of surfacing a bare ddof=1 complaint."""
+    """A one-unit treatment arm within the declared roster is refused at estimation time.
+    The moment-grain read is legitimate; with no other cell left, the run refuses and
+    its failure evidence names the metric and arm."""
     rows = [
         *(row for row in _ROWS if row[1] == "control"),
         next(row for row in _ROWS if row[1] == "treatment"),
@@ -2084,9 +2033,13 @@ def test_single_unit_arm_error_names_metric_and_arm() -> None:
         metrics={"revenue": "mean"},
         design=_DESIGN,
     )
-    with pytest.raises(InvalidRequestError) as error:
+    with pytest.warns(IncrementWarning), pytest.raises(UnsupportedRequestError) as error:
         readouts.run(src)
-    assert error.value.code == "estimation.armstats.arm_stats.least_compute_metric"
+    assert error.value.code == "readout.estimate_lift_every"
+    (failure,) = cast(list[dict[str, Any]], error.value.context["failures"])
+    assert failure["code"] == "estimation.armstats.arm_stats.least_compute_metric"
+    assert failure["context"]["metric"] == "revenue"
+    assert failure["context"]["group_id"] == "treatment"
 
 
 def test_windowed_encouragement_panel_offers_asof_but_refuses_total() -> None:

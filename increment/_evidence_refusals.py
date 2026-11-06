@@ -18,7 +18,7 @@ from increment._source_types import PROVIDER_UNAVAILABLE
 from increment.errors import CapabilityError, CodedError, InvalidRequestError, RefusalSpec, refuse
 
 if TYPE_CHECKING:
-    from increment._source_types import Grain
+    from increment._source_types import EvidenceCapabilities, Grain
     from increment.semantics.models import Metric
 
 
@@ -369,6 +369,13 @@ def _require_assignment_capability(src: object, request: object) -> bool:
     return True
 
 
+def _compliance_route(declaration: EvidenceCapabilities) -> str:
+    """A source with whole-window compliance names its own route to the as-of axis."""
+    if declaration.compliance_axis == "total" and declaration.grain_route is not None:
+        return declaration.grain_route
+    return "use a source with the requested compliance axis and population"
+
+
 def _request_requirements(  # noqa: PLR0915
     src: object, request: object
 ) -> tuple[Grain | None, Sequence[str], bool, bool, Sequence[str], str | None]:
@@ -460,7 +467,7 @@ def _request_requirements(  # noqa: PLR0915
                 src,
                 "compliance",
                 ("asof",) if request.as_of is not None else ("total", "asof"),
-                route="use a source with the requested compliance axis and population",
+                route=_compliance_route(declaration),
             )
     elif isinstance(request, ComplianceSeriesRequest):
         population = request.population
@@ -469,7 +476,7 @@ def _request_requirements(  # noqa: PLR0915
                 src,
                 "compliance_series",
                 ("asof",),
-                route="use a source with the requested compliance axis and population",
+                route=_compliance_route(declaration),
             )
     elif isinstance(request, CountsRequest):
         population = "triggered" if request.kind == "triggered" else request.population
@@ -657,7 +664,7 @@ def _require_evidence(
                 src,
                 requested,
                 sorted(offered),
-                route="use a source that retains the requested evidence",
+                route=evidence.grain_route or "use a source that retains the requested evidence",
             )
     if by and not set(by).issubset(evidence.breakouts):
         refuse_breakout(
