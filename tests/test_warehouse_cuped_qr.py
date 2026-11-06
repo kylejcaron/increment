@@ -1670,7 +1670,8 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
 
     definitions = yaml.safe_load(mixed_cuped_definitions_yaml("qr_many_covariates"))
     fact_source = definitions["fact_sources"][0]
-    fact_source["properties"].extend(
+    # The events carry only these covariates, so they are the source's declared properties.
+    fact_source["properties"] = [
         {
             "name": name,
             "column": name,
@@ -1678,7 +1679,7 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
             "as_of": "pre_exposure",
         }
         for name in covariate_names
-    )
+    ]
     experiment = definitions["experiments"][0]
     experiment["allocation"] = dict.fromkeys(arms, 1 / len(arms))
     declarations = [

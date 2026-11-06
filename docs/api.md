@@ -127,6 +127,34 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking): an ordinary unclustered lift row whose arm mean is
+  close to zero relative to its standard error, or one of whose arms has
+  constant outcomes, now keeps its additive Welch result instead of failing
+  with `estimation.engine.lift_guard`. It has `lift=None` and
+  `relative_unavailable_reason` `"delta_method_unreliable"` or
+  `"zero_variance"`, the shape a non-positive arm mean already had
+  (`"nonpositive_arm_mean"`). With no declared margin, `p_value()`,
+  `stat_sig()` and family selection read the additive difference against
+  zero; a declared relative margin stays a non-rejection with p-value 1. A
+  constant arm's interval is the other arm's one-sample t. When both arms are
+  constant at positive means, the cell still fails with
+  `estimation.engine.lift_guard`; at a zero or negative mean it keeps its
+  unbounded additive row as before. A ratio metric whose denominator mean is
+  too noisy in either arm (relative standard error above 0.15, where the
+  `ratio_denominator_precision` note applies) still fails with these guards.
+  With such a denominator, a ratio row with a zero or negative numerator mean,
+  which kept an additive row, now fails the same way (`reason`
+  `"non_positive_mean"`): its additive difference shares that denominator. A
+  declared prior no longer turns a non-positive-mean decision row into that
+  failure: the row keeps its sampling interval, p-value and verdict and marks
+  only its posterior unavailable (`posterior_reason_code`
+  `"estimation.engine.lift_guard"`). Breakout and daily cells that these
+  guards excluded as `zero_variance` or `extreme_ratio` are now live rows.
+  Migration: where code expected these cells to fail, read
+  `relative_unavailable_reason` and the `abs_*` fields; the row's note names
+  the condition. Where code read a noisy-denominator ratio's
+  `"nonpositive_arm_mean"` row, handle the `estimation.engine.lift_guard`
+  failure instead. Experiment identity is unchanged.
 - Release note (breaking numerical correction): a posterior chance is reported
   on the metric's favorable side everywhere it is shown. For a metric that
   declares `preferred_direction`, the readout and `render(result, "full")`
@@ -206,6 +234,23 @@ values.
   a blank segment label rather than `nan`, so the two stay distinct rows.
   Table qualification cells show `>` as written rather than `&gt;`.
   Readout estimates and experiment identity are unchanged.
+- Release note (usability): an arm with one unit no longer aborts the run.
+  Each of its cells comes back as an unavailable row carrying
+  `estimation.armstats.arm_stats.least_compute_metric`, or
+  `estimation.variance.ratio_moments_least_two_units` for a ratio metric, with
+  context `group_id`, `metric` and `n`, and the other arms are still
+  estimated. A one-unit control arm leaves no cell to estimate, so the run
+  refuses with `readout.estimate_lift_every`, whose `failures` carry the same
+  code for every cell. Both messages name the route "drop or merge arm".
+  An unavailable sensitivity row carries its metric's declared margin and
+  direction (`null_lift`, `null_abs`, `preferred_direction`), as its decision
+  row does. Unclustered ratio rows now report `n_control` and `n_treat` as
+  arm unit counts and `mean_control` and `mean_treat` as each arm's ratio, its
+  numerator total over its denominator total, including a row whose numerator
+  total is zero or negative and so reports only the additive effect; quantile
+  rows report the counts and leave the means empty. A readout holding such a
+  row gets a new snapshot ID once, because snapshots digest arm counts.
+  Estimates, intervals and experiment identity are unchanged.
 - Release note (breaking numerical correction): `required_sample_size` returns
   the smallest fixed-horizon size whose power, evaluated as `achieved_power`
   evaluates it, reaches the target. At a
@@ -321,6 +366,25 @@ values.
   instead of `results.frame.unknown_columns` listing its letters; pass a list
   such as `columns=["lift"]`. Results, saved cells and experiment identity
   hashes are unchanged.
+  unchanged.
+- Release note (bug fix): a fact source whose SQL lacks a declared fact value
+  column or property column refuses with
+  `definition.fact_source.missing_columns` before any data is read, naming the
+  source and the declared column names; SQL the connection cannot resolve, such
+  as a misspelled table, refuses with `definition.fact_source.sql_unresolved`,
+  naming the source, with the backend error chained. Both previously raised an
+  uncoded backend error when the experiment ran. When an experiment's exposure,
+  metric, trigger, uptake and CUPED sources, and every source of a unit
+  property taken before exposure, mix timestamps with and without a time zone,
+  the ones with a time zone are converted to UTC when they
+  are read, so windows and pre-exposure property values compare instants in UTC
+  rather than in the connection's session time zone. Such experiments run under
+  a non-UTC session move to their UTC-correct values (a numerical
+  correction). A published uptake extension
+  reads an uptake timestamp without a time zone as UTC, as the exposure and
+  trigger timestamps beside it already were. Experiments whose sources share
+  one timestamp kind read their sources with the same SQL, and experiment
+  identity is unchanged.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra

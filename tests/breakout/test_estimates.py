@@ -2648,27 +2648,26 @@ class TestRunBreakoutErrorPropagation:
         assert math.isfinite(orders_lift.value)
         assert orders_lift.value == pytest.approx(0.125, rel=0.05)
 
-    def test_extreme_ratio_metric_does_not_exclude_sibling_metric(self):
-        """Same per-metric isolation for the delta-method precision guard ("Log delta method
-        unreliable"): only the offending metric is typed `extreme_ratio`; the sibling keeps its
-        estimate."""
+    def test_delta_method_guarded_metric_keeps_its_additive_row(self):
+        """A control mean close to zero relative to its standard error ("Log delta method
+        unreliable") blocks only that metric's relative lift: it keeps a live additive row and
+        the sibling keeps its estimate."""
         rows = [
             _make_arm_row(50, 0.5, 4.0, country="US", group_id="control", metric="rev"),
             _make_arm_row(50, 12.0, 4.0, country="US", group_id="treatment", metric="rev"),
             _make_arm_row(50, 8.0, 4.0, country="US", group_id="control", metric="orders"),
             _make_arm_row(50, 9.0, 4.0, country="US", group_id="treatment", metric="orders"),
         ]
-        with pytest.warns(IncrementWarning) as rec:
-            result = run_breakout(
-                rows,
-                [_mean_metric("rev"), _mean_metric("orders")],
-                control_group="control",
-                dimension="country",
-            )
-        assert "breakout.estimates.metric_guarded_excluded" in warning_codes(rec)
+        result = run_breakout(
+            rows,
+            [_mean_metric("rev"), _mean_metric("orders")],
+            control_group="control",
+            dimension="country",
+        )
         by_metric = {r.metric: r for r in result}
-        assert by_metric["rev"].excluded == "extreme_ratio"
-        assert by_metric["rev"].lift is None
+        assert by_metric["rev"].excluded is None
+        assert by_metric["rev"].relative_unavailable_reason == "delta_method_unreliable"
+        assert by_metric["rev"].abs_diff == pytest.approx(11.5)
         assert by_metric["orders"].excluded is None
         orders_lift = by_metric["orders"].lift
         assert orders_lift is not None
@@ -2824,28 +2823,31 @@ class TestRunBreakoutErrorPropagation:
         assert by_segment["US"].lift is None
         assert by_segment["CA"].excluded is None
 
-    def test_delta_method_unreliable_segment_is_skipped_with_warning(self):
-        """``infer_lift``'s sparse-slice guard ("Log delta method unreliable", combined log-scale
-        SE >= 0.5) is reachable per segment too - caught by exception type and skipped whole."""
+    def test_constant_control_segment_keeps_its_additive_row(self):
+        """One constant arm blocks only the segment's relative lift: the segment keeps a
+        live row whose additive interval is the one-sample t on the other arm."""
+        from scipy.stats import t
+
         rows = [
-            # US: log-scale SE = sqrt(var/(n*mean^2)) = 0.577 (control) /
-            # 0.481 (treatment); combined 0.75 >= 0.5, unreliable.
-            _make_arm_row(12, 1.0, 4.0, country="US", group_id="control"),
-            _make_arm_row(12, 1.2, 4.0, country="US", group_id="treatment"),
+            # US: a constant control arm beside a treatment arm with real spread.
+            _make_arm_row(50, 5.0, 0.0, country="US", group_id="control"),
+            _make_arm_row(50, 6.0, 4.0, country="US", group_id="treatment"),
             # CA: ordinary segment, real spread, precise arms.
             _make_arm_row(50, 10.0, 4.0, country="CA", group_id="control"),
             _make_arm_row(50, 12.0, 4.0, country="CA", group_id="treatment"),
         ]
-        with pytest.warns(IncrementWarning) as rec:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
             result = run_breakout(
                 rows, [_mean_metric("rev")], control_group="control", dimension="country"
             )
-        assert "breakout.estimates.metric_guarded_excluded" in warning_codes(rec)
-        assert {r.dimension_value for r in result} == {"US", "CA"}
         by_segment = {r.dimension_value: r for r in result}
-        assert by_segment["US"].excluded == "extreme_ratio"
-        assert by_segment["US"].lift is None
-        assert by_segment["CA"].excluded is None
+        us = by_segment["US"]
+        half_width = float(t.isf(0.025, 49)) * math.sqrt(4.0 / 50)
+        assert us.excluded is None
+        assert us.relative_unavailable_reason == "zero_variance"
+        assert us.abs_lb == pytest.approx(1.0 - half_width)
+        assert us.abs_ub == pytest.approx(1.0 + half_width)
 
 
 # Dense breakout rows: every (segment, metric, method, arm) cell appears
@@ -3373,8 +3375,8 @@ class TestRunBreakoutBinomialGateExemption:
         assert raised.value.code == "family.evidence.incomplete"
 
     def test_one_guarded_arm_beside_an_estimated_arm_stays_in_a_bh_family(self):
-        """A lift guard on t2 while t1 estimates is a conservative
-        non-rejection, so the BH family proceeds instead of refusing."""
+        """t2's arm mean is close to zero relative to its standard error, so only its relative
+        lift is unavailable: its additive row joins the BH family beside t1."""
         rows = []
         for country in ("US", "CA"):
             rows += [
@@ -3392,7 +3394,10 @@ class TestRunBreakoutBinomialGateExemption:
                 correction="bh",
             )
         by_cell = {(row.dimension_value, row.group_id): row for row in result}
-        assert {by_cell[(c, "t2")].excluded for c in ("US", "CA")} == {"extreme_ratio"}
+        assert {by_cell[(c, "t2")].excluded for c in ("US", "CA")} == {None}
+        assert {by_cell[(c, "t2")].relative_unavailable_reason for c in ("US", "CA")} == {
+            "delta_method_unreliable"
+        }
         assert all(by_cell[(c, "t1")].family_q == 0.10 for c in ("US", "CA"))
         assert all(by_cell[(c, g)].family_size == 4 for c in ("US", "CA") for g in ("t1", "t2"))
 

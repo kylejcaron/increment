@@ -789,11 +789,10 @@ def test_unit_panel_breakout_refuses_triggered_population_before_relabeling():
     assert refused.value.code == "facade.analysis.trigger_unsupported"
 
 
-def test_run_breakout_bh_family_survives_a_tiny_segment_extreme_ratio_cell():
+def test_run_breakout_bh_family_keeps_a_tiny_segment_additive_row():
     """A tiny segment trips estimate_lift's delta-method guard (combined
-    log-scale SE >= 0.5), which breakout keys as
-    excluded='extreme_ratio'. run() treats the same LiftGuardError as a
-    non-rejection; run_breakout must too, not abort the BH family."""
+    log-scale SE >= 0.5), which blocks only its relative lift: the segment
+    keeps its additive row and the BH family runs over it."""
     rng = np.random.default_rng(12)
     rows = []
     for country in ("US", "CA"):
@@ -839,7 +838,10 @@ def test_run_breakout_bh_family_survives_a_tiny_segment_extreme_ratio_cell():
         warnings.simplefilter("ignore", UserWarning)
         results = view_readout(experiment, resolver, _BREAKOUT)
     gb = [r for r in results if r.dimension_value == "GB"]
-    assert gb and all(r.excluded == "extreme_ratio" for r in gb)
+    assert gb and all(
+        r.excluded is None and r.relative_unavailable_reason == "delta_method_unreliable"
+        for r in gb
+    )
     assert any(
         r.dimension_value == "US" and r.excluded is None and r.family_q is not None for r in results
     )
