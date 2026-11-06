@@ -841,6 +841,7 @@ class TestCompositeNoncoverageDecidesPairsByTheRuntime:
         assert p_value is not None
         assert result.escalated == float(p_value < 2.0 * own)
 
+    @pytest.mark.slow
     def test_a_pair_dense_only_at_the_nominal_tail_smoke(self, monkeypatch):
         self.test_a_pair_dense_only_at_the_nominal_tail(
             monkeypatch, 0.0, counts=(600, 1_200, 700, 1_200)

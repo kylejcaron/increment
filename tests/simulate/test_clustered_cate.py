@@ -479,7 +479,7 @@ def _policy_value_witness(grain, weight):
             marks=[pytest.mark.slow, pytest.mark.parameter_recovery],
             id="recovery",
         ),
-        pytest.param(50, id="smoke"),
+        pytest.param(50, marks=pytest.mark.slow, id="smoke"),
     ],
 )
 def test_public_policy_and_selection_values_match_nonzero_causal_targets(
@@ -1368,6 +1368,7 @@ def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all
     assert all(run.policy_oracles for run in attempts)
 
 
+@pytest.mark.slow
 def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null_smoke():
     test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null(
         attempts_count=2, n_clusters=40
