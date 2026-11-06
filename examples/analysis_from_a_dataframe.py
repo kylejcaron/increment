@@ -352,7 +352,8 @@ def _(mo):
     `from_frame(..., shape="panel")` takes the same experiment used above at user-day grain.
     The unit-summary examples aggregate this panel to one row per user, so their
     whole-window effects match exactly. `country` is a stable per-user dimension
-    carried on every daily row.
+    carried on every daily row. Daily views need `exposure_date=...`, each unit's
+    day 0; without it a panel offers only whole-window views.
     """)
     return
 
@@ -365,14 +366,19 @@ def _(panel_df):
 
 @app.cell
 def _(estimates_to_readout, increment, mo, panel_df, readout_table):
+    # Every unit in this synthetic panel enrolled on the same day; a real
+    # dataset would carry its own per-unit exposure_date column instead.
+    panel_df_exposed = panel_df.assign(exposure_date="2026-02-01")
+
     _experiment, _reader = increment.from_frame(
-        panel_df,
+        panel_df_exposed,
         shape="panel",
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposure_date",
     )
     # One run reads the whole-window readout and the per-day values together.
     _whole_window = increment.View.overall()
@@ -390,7 +396,7 @@ def _(estimates_to_readout, increment, mo, panel_df, readout_table):
             mo.md(f"`daily_values` produced **{len(daily_values)}** per-day metric values."),
         ]
     )
-    return
+    return (panel_df_exposed,)
 
 
 @app.cell
@@ -413,11 +419,7 @@ def _(mo):
 
 
 @app.cell
-def _(estimates_to_readout, increment, panel_df, readout_table):
-    # Every unit in this synthetic panel enrolled on the same day; a real
-    # dataset would carry its own per-unit exposure_date column instead.
-    panel_df_exposed = panel_df.assign(exposure_date="2026-02-01")
-
+def _(estimates_to_readout, increment, panel_df_exposed, readout_table):
     _experiment, _reader = increment.from_frame(
         panel_df_exposed,
         shape="panel",
@@ -440,7 +442,7 @@ def _(estimates_to_readout, increment, panel_df, readout_table):
         title="Windowed Lift",
         # nest_by='method'
     )
-    return (panel_df_exposed,)
+    return
 
 
 @app.cell

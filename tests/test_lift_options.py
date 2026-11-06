@@ -19,6 +19,7 @@ def _daily_lift(pair: tuple[Any, Any], **options: Any) -> Any:
 
 
 def _panel_analysis(**overrides):
+    """A one-day panel whose units are all exposed on that day."""
     import polars as pl
 
     rows = [
@@ -38,6 +39,7 @@ def _panel_analysis(**overrides):
         group="group",
         date="ds",
         control="control",
+        exposure_date="ds",
         metrics=overrides.pop("metric_specs", {"y": "mean"}),
         **overrides,
     )

@@ -246,7 +246,7 @@ tests/test_exploratory_metrics.py 2
 tests/test_frame_exact_successes.py 4
 # The skip tests compare a row's population with the one private label formatter applied to
 # per-arm counts written from the specification.
-tests/test_frame_missing.py 8
+tests/test_frame_missing.py 5
 tests/test_frame_panel.py 2
 tests/test_frame_specs.py 2
 tests/test_frame_switchback.py 3
@@ -324,7 +324,7 @@ tests/test_cate_calibration.py::test_cluster_fit_covariance_moments_and_coverage
 tests/test_certification_ci_changes.py::test_relevant_change_requires_certification 17
 tests/test_compliance_artifacts.py::test_native_artifact_completed_compliance_staggered_enrollment 16
 tests/test_compliance_summary.py::test_completed_compliance_excludes_open_staggered_cohorts 16
-tests/test_compliance_summary.py::test_panel_asof_compliance_preserves_day_axis_identity_and_order 60
+tests/test_compliance_summary.py::test_panel_asof_compliance_preserves_day_axis_identity_and_order 30
 tests/test_cuped_identity.py::test_decision_family_ignores_companion_evidence 24
 tests/test_dashboard_theme.py::test_unusable_visual_configuration_has_portable_structured_refusal 14
 tests/test_definitions_source.py::test_definitions_and_adopted_public_views_match 14
@@ -332,7 +332,7 @@ tests/test_frame_switchback.py::test_finite_history_matrix_recovers_only_bounded
 tests/test_mutation_campaign.py::test_worker_outcomes 14
 tests/test_next_version.py::test_selected_bump_and_stage_produce_the_next_version 22
 tests/test_parity_harness.py::test_nonfinite_evidence_does_not_compare_close_to_anything_but_itself 14
-tests/test_plan_resolver.py::test_plan_refusal_carries_code 14
+tests/test_plan_resolver.py::test_plan_refusal_carries_code 13
 tests/test_reporting.py::test_invalid_alpha_rejected_before_build 14
 tests/test_sequential_wire_security.py::test_bounded_spellings_are_admitted_exactly 13
 tests/test_sequential_wire_security.py::test_unbounded_or_foreign_spellings_refuse_before_conversion 30

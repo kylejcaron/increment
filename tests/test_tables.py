@@ -878,6 +878,25 @@ def test_estimates_to_readout_preserves_direction_aware_stored_posterior():
     assert row["posterior_prob_favorable"] == pytest.approx(est.prob_favorable())
 
 
+def test_neutral_metric_with_one_sided_alternative_keeps_chance_to_beat():
+    from increment.estimation.inference import Normal, infer_lift
+
+    est = infer_lift(
+        metric="latency",
+        group_id="T",
+        method="unadjusted",
+        method_role="decision",
+        log_rr=-0.10,
+        se_t=0.03,
+        se_c=0.04,
+        alternative="less",
+        prior=Normal(mu=0.0, sigma=0.1),
+    )
+    (row,) = estimates_to_readout([est])
+    assert row["posterior_chance_to_beat"] == pytest.approx(est.chance_to_beat())
+    assert row["posterior_risk_if_shipped"] == pytest.approx(est.risk_if_shipped())
+
+
 def test_estimates_to_readout_preserves_persisted_favorable_probability_at_shifted_null():
     from increment.estimation.inference import Normal, infer_lift
 

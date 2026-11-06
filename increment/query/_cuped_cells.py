@@ -16,6 +16,7 @@ from increment.errors import CapabilityError, RefusalSpec, refuse
 from increment.estimation.cuped._numeric import _fail
 from increment.estimation.cuped.cells import _pattern_key
 from increment.estimation.cuped.types import CategoricalCells, _freeze_payload
+from increment.query._float_literals import exact_double
 from increment.query._nonfinite import nonfinite_parts
 
 if TYPE_CHECKING:
@@ -149,11 +150,11 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
         ]
         decision_fields[f"_magnitude_low_{index}"] = valid & (
             (exponent < minimum_exponent)
-            | ((exponent == minimum_exponent) & (mantissa < minimum_mantissa))
+            | ((exponent == minimum_exponent) & (mantissa < exact_double(minimum_mantissa)))
         )
         decision_fields[f"_magnitude_high_{index}"] = valid & (
             (exponent > maximum_bound_exponent)
-            | ((exponent == maximum_bound_exponent) & (mantissa > maximum_mantissa))
+            | ((exponent == maximum_bound_exponent) & (mantissa > exact_double(maximum_mantissa)))
         )
     decisions = normalized.select("group_id", **decision_fields)
 

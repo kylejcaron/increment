@@ -66,11 +66,8 @@ _WINSOR_COLLAPSED_BOUND = RefusalSpec(
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "frame.moments.asof_source_uptake_needs_anchor": "_asof_unit_rows: uptake needs the constructor's per-unit first-observed-date anchor",
-        "frame.moments.asof_unit_rows": "_asof_unit_rows: retention requires the constructor-validated exposure-date index",
         "frame.moments.asof_moments_completed": "asof moments: completed_windows_only=True is contradictory for retention metric {metric!r} with unbounded band {band!r}",
         "frame.moments.asof_completed_requires_uptake_window": "asof moments: completed_windows_only=True under an encouragement design requires bounded outcome and uptake windows",
-        "frame.moments.collapse_to_unit": "_collapse_to_unit_totals: window_days is set but first_exposure was not provided -- it must be computed from the observed (pre-densification) rows, never from the densified panel",
         "frame.moments.metric_type_conversion": "metric {metric!r}: type='conversion' collapsed to a per-unit value of {value:g} (> 1) -- summing per-day rows yields a day count, not a 0/1 conversion flag. If you want the number of converting days, declare a mean metric with a count aggregation instead; for any-occurrence conversion, set window_days on this metric or pre-reduce the column to one 0/1 row per unit.",
     },
 )
@@ -693,17 +690,20 @@ def _daily_moment_rows(
     metrics: Sequence[MetricSpec],
     synthesised: Sequence[Metric],
     experiment_id: str,
-    exposure: nw.DataFrame[Any] | None,
+    exposure: nw.DataFrame[Any],
     by: Sequence[str] = (),
 ) -> tuple[list[dict[str, Any]], dict[str, _DeferredRefusal]]:
-    """Reduce bounded dense workspaces at once and larger panels one day at a time."""
+    """Reduce bounded dense workspaces at once and larger panels one day at a time.
+
+    Each day's population is the units exposed by that day.
+    """
     from increment._frame_panel import _day_population
 
     labels = panel.get_column("ds").unique().to_list()
 
     axis_labels = (
         [*labels, *exposure.get_column("__exposure__").unique().to_list()]
-        if exposure is not None and isinstance(panel.schema["ds"], nw.String)
+        if isinstance(panel.schema["ds"], nw.String)
         else None
     )
     day_slices = _partition_panel_days(panel) if not bounded_dense else None
@@ -734,11 +734,10 @@ def _daily_moment_rows(
                         ordinal=identity_ordinal,
                         day_slices=day_slices,
                     )
-                if exposure is not None:
-                    indexed, day_index = _with_day_index(population, exposure)
-                    population = indexed.filter(nw.col(day_index) >= 0)
-                    if right_edge is not None:
-                        population = population.filter(nw.col(day_index) < right_edge)
+                indexed, day_index = _with_day_index(population, exposure)
+                population = indexed.filter(nw.col(day_index) >= 0)
+                if right_edge is not None:
+                    population = population.filter(nw.col(day_index) < right_edge)
                 long = population.select(
                     nw.col("ds"),
                     *[nw.col(name) for name in by],
@@ -771,33 +770,6 @@ def _daily_moment_rows(
             continue
         rows.extend(spec_rows)
     return rows, failures
-
-
-def _asof_source_with_indices(
-    panel: nw.DataFrame[Any],
-    *,
-    exposure: nw.DataFrame[Any] | None,
-    first_exposure: nw.DataFrame[Any] | None,
-    uptake: str | None,
-) -> tuple[nw.DataFrame[Any], str | None, str | None]:
-    """Build the as-of source with collision-free exposure-relative indices."""
-    if exposure is not None:
-        source, day_index = _with_day_index(panel, exposure)
-    else:
-        source, day_index = panel, None
-    uptake_index_name = None
-    if uptake is not None and exposure is None:
-        if first_exposure is None:
-            _raise("frame.moments.asof_source_uptake_needs_anchor")
-        anchor = _scratch_name(panel, "__exposure__")
-        uptake_index_name = _scratch_name(panel, "__uptake_day_idx__")
-        uptake_anchor = first_exposure.select("unit_id", nw.col("__first_exposure__").alias(anchor))
-        anchored = panel.select("unit_id", "ds").join(uptake_anchor, on="unit_id", how="left")
-        uptake_index = anchored.with_columns(
-            _uptake_day_elapsed(anchored, anchor).alias(uptake_index_name)
-        ).select("unit_id", "ds", uptake_index_name)
-        source = source.join(uptake_index, on=["unit_id", "ds"], how="left")
-    return source, day_index, uptake_index_name
 
 
 def _asof_day_rank(ds: nw.Series[Any]) -> tuple[np.ndarray, int]:
@@ -869,7 +841,7 @@ def _asof_outcome_state(
     source: nw.DataFrame[Any],
     cells: np.ndarray,
     admitted: np.ndarray,
-    day_index: np.ndarray | None,
+    day_index: np.ndarray,
     *,
     spec: MetricSpec,
     is_retention: bool,
@@ -880,11 +852,10 @@ def _asof_outcome_state(
     """The outcome-open gate for each cell, and the resulting cumulative ``y`` state."""
     y = _asof_grid(source, cells, spec.y_column)
     if is_retention:
-        assert day_index is not None
         outcome_open = admitted & (day_index >= band_start)
         if band_end is not None:
             outcome_open &= day_index < band_end
-    elif right_edge is None or day_index is None:
+    elif right_edge is None:
         outcome_open = admitted
     else:
         outcome_open = admitted & (day_index < right_edge)
@@ -899,26 +870,17 @@ def _asof_uptake_state(
     source: nw.DataFrame[Any],
     cells: np.ndarray,
     admitted: np.ndarray,
-    day_index: np.ndarray | None,
+    day_index: np.ndarray,
     *,
     uptake: str,
-    exposure: nw.DataFrame[Any] | None,
-    uptake_index_name: str | None,
     uptake_window_days: int | None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """The exposure-or-uptake-relative day index uptake gated on, and its cumulative ratchet."""
-    if exposure is not None:
-        assert day_index is not None
-        uptake_day_index = day_index
-    else:
-        assert uptake_index_name is not None
-        uptake_day_index = _asof_grid(source, cells, uptake_index_name)
-    uptake_open = admitted & (uptake_day_index >= 0)
+) -> np.ndarray:
+    """The cumulative uptake ratchet, gated on the exposure-relative day index."""
+    uptake_open = admitted & (day_index >= 0)
     if uptake_window_days is not None:
-        uptake_open &= uptake_day_index < uptake_window_days
+        uptake_open &= day_index < uptake_window_days
     taken = _asof_grid(source, cells, uptake) != 0.0
-    d_state = np.maximum.accumulate(uptake_open & taken, axis=1).astype(np.float64)
-    return uptake_day_index, d_state
+    return np.maximum.accumulate(uptake_open & taken, axis=1).astype(np.float64)
 
 
 def _asof_unit_rows(
@@ -927,8 +889,7 @@ def _asof_unit_rows(
     spec: MetricSpec,
     metric: Metric,
     by: Sequence[str],
-    exposure: nw.DataFrame[Any] | None,
-    first_exposure: nw.DataFrame[Any] | None,
+    exposure: nw.DataFrame[Any],
     uptake: str | None,
     uptake_window_days: int | None,
     completed_windows_only: bool,
@@ -951,12 +912,8 @@ def _asof_unit_rows(
     band_start, band_end = metric.band if is_retention else (0, None)
     if is_retention and completed_windows_only and band_end is None:
         _raise("frame.moments.asof_moments_completed", metric=metric.name, band=metric.band)
-    if is_retention and exposure is None:
-        _raise("frame.moments.asof_unit_rows")
 
-    source, day_index_name, uptake_index_name = _asof_source_with_indices(
-        panel, exposure=exposure, first_exposure=first_exposure, uptake=uptake
-    )
+    source, day_index_name = _with_day_index(panel, exposure)
     right_edge = _resolve_window_days(metric)
     completion_days: int | None = None
     if completed_windows_only:
@@ -978,8 +935,8 @@ def _asof_unit_rows(
     unit_code, n_units = _asof_unit_code(source.get_column(identity_ordinal))
     cells, filled = _asof_spine_cells(day_rank, unit_code, n_days=n_days, n_units=n_units)
 
-    day_index = _asof_grid(source, cells, day_index_name) if day_index_name is not None else None
-    admitted = filled if day_index is None else (filled & ~(day_index < 0))
+    day_index = _asof_grid(source, cells, day_index_name)
+    admitted = filled & ~(day_index < 0)
     outcome_open, y_state = _asof_outcome_state(
         source,
         cells,
@@ -995,26 +952,21 @@ def _asof_unit_rows(
     if spec.denominator is not None:
         den = _asof_grid(source, cells, spec.denominator)
         values["y_den"] = _asof_running_sum(np.where(outcome_open, den, 0.0))
-    uptake_day_index: np.ndarray | None = None
     if uptake is not None:
-        uptake_day_index, values["d"] = _asof_uptake_state(
+        values["d"] = _asof_uptake_state(
             source,
             cells,
             admitted,
             day_index,
             uptake=uptake,
-            exposure=exposure,
-            uptake_index_name=uptake_index_name,
             uptake_window_days=uptake_window_days,
         )
 
     keep = admitted
     if completion_days is not None:
-        completion_index = day_index if day_index is not None else uptake_day_index
-        assert completion_index is not None
-        keep = keep & ~(completion_index < completion_days)
+        keep = keep & ~(day_index < completion_days)
     if is_retention:
-        assert day_index is not None and gate is not None
+        assert gate is not None
         keep = keep & ~(day_index < gate)
 
     # Day-major emission (ds rank, then identity ordinal), the order the row loop sorted in.
@@ -1058,8 +1010,7 @@ class _AsOfSettings:
     experiment_id: str
     uptake: str | None
     uptake_window_days: int | None
-    first_exposure: nw.DataFrame[Any] | None
-    exposure: nw.DataFrame[Any] | None
+    exposure: nw.DataFrame[Any]
     completed_windows_only: bool
     observation_end: dt.date | dt.datetime | str | int | float | None
     fact_max_ds: Mapping[str, Any]
@@ -1091,34 +1042,16 @@ def _asof_update_uptake(
     population: nw.DataFrame[Any],
     settings: _AsOfSettings,
     admitted: np.ndarray,
-    day_index_values: np.ndarray | None,
+    day_index_values: np.ndarray,
     state: _AsOfState,
-) -> np.ndarray | None:
+) -> None:
     if settings.uptake is None:
-        return None
-    if day_index_values is not None:
-        uptake_day_values = day_index_values
-    else:
-        if settings.first_exposure is None:
-            _raise("frame.moments.asof_source_uptake_needs_anchor")
-        anchor = _scratch_name(population, "__exposure__")
-        anchored = population.join(
-            settings.first_exposure.select("unit_id", nw.col("__first_exposure__").alias(anchor)),
-            on="unit_id",
-            how="left",
-        ).sort(settings.identity_ordinal)
-        uptake_day_values = (
-            anchored.with_columns(_uptake_day_elapsed(anchored, anchor).alias("__uptake_day__"))
-            .get_column("__uptake_day__")
-            .to_numpy()
-            .astype(np.float64, copy=False)
-        )
-    uptake_open = admitted & (uptake_day_values >= 0)
+        return
+    uptake_open = admitted & (day_index_values >= 0)
     if settings.uptake_window_days is not None:
-        uptake_open &= uptake_day_values < settings.uptake_window_days
+        uptake_open &= day_index_values < settings.uptake_window_days
     taken = _asof_float_column(population, settings.uptake) != 0.0
     state.uptake = np.maximum(state.uptake, (uptake_open & taken).astype(np.float64))
-    return uptake_day_values
 
 
 def _asof_stream_day(
@@ -1154,24 +1087,17 @@ def _asof_stream_day(
         ordinal=settings.identity_ordinal,
         day_slices=day_slices,
     )
-    day_index_values = None
-    if settings.exposure is not None:
-        population, day_index = _with_day_index(population, settings.exposure)
-        population = population.sort(settings.identity_ordinal)
-        day_index_values = (
-            population.get_column(day_index).to_numpy().astype(np.float64, copy=False)
-        )
-        admitted = day_index_values >= 0
-    else:
-        admitted = np.ones(identity.shape[0], dtype=bool)
+    population, day_index = _with_day_index(population, settings.exposure)
+    population = population.sort(settings.identity_ordinal)
+    day_index_values = population.get_column(day_index).to_numpy().astype(np.float64, copy=False)
+    admitted = day_index_values >= 0
 
     y = _asof_float_column(population, spec.y_column)
     if is_retention:
-        assert day_index_values is not None
         outcome_open = admitted & (day_index_values >= band_start)
         if band_end is not None:
             outcome_open &= day_index_values < band_end
-    elif right_edge is None or day_index_values is None:
+    elif right_edge is None:
         outcome_open = admitted
     else:
         outcome_open = admitted & (day_index_values < right_edge)
@@ -1183,14 +1109,11 @@ def _asof_stream_day(
         den = _asof_float_column(population, spec.denominator)
         state.denominator += np.where(outcome_open, den, 0.0)
 
-    uptake_day_values = _asof_update_uptake(population, settings, admitted, day_index_values, state)
+    _asof_update_uptake(population, settings, admitted, day_index_values, state)
     keep = admitted.copy()
     if completion_days is not None:
-        completion_index = day_index_values if day_index_values is not None else uptake_day_values
-        assert completion_index is not None
-        keep &= completion_index >= completion_days
+        keep &= day_index_values >= completion_days
     if is_retention:
-        assert day_index_values is not None
         gate = band_end if settings.completed_windows_only else band_start
         assert gate is not None
         keep &= day_index_values >= gate
@@ -1285,7 +1208,6 @@ def _asof_dense_rows(
         metric=metric,
         by=settings.by,
         exposure=settings.exposure,
-        first_exposure=settings.first_exposure,
         uptake=settings.uptake,
         uptake_window_days=settings.uptake_window_days,
         completed_windows_only=settings.completed_windows_only,
@@ -1317,8 +1239,6 @@ def _asof_moment_rows(
             and metric.band[1] is None
         ):
             continue
-        if isinstance(metric, RetentionMetric) and settings.exposure is None:
-            _raise("frame.moments.asof_unit_rows")
         metric_identity = settings.identity
         maturity = _final_maturity_day(metric)
         if (
@@ -1326,7 +1246,6 @@ def _asof_moment_rows(
             and spec.denominator is not None
             and maturity is not None
         ):
-            assert settings.exposure is not None
             observable_end = _effective_observable_end(
                 spec,
                 panel_ds_max=panel_ds_max,
@@ -1369,12 +1288,14 @@ def _collapse_to_unit_totals(
     *,
     uptake: str | None = None,
     window_days: int | None = None,
-    first_exposure: nw.DataFrame[Any] | None = None,
+    exposure: nw.DataFrame[Any] | None = None,
     by: Sequence[str] = (),
 ) -> nw.DataFrame[Any]:
     """Sum sparse or dense daily values; collapse uptake with MAX.
-    Uptake uses [exposure, exposure + window_days), with no end if unbounded.
-    Anchors come from declared exposure or original observations, never padding.
+
+    With a declared *exposure*, uptake counts on ``[exposure, exposure +
+    window_days)``, with no end if unbounded. Without one, every observed uptake
+    row counts; a bounded uptake window always comes with its exposure anchor.
     """
     sum_cols = sorted({c for s in specs for c in (s.y_column, s.denominator) if c})
     aggs = [nw.col(c).sum().alias(c) for c in sum_cols]
@@ -1383,19 +1304,16 @@ def _collapse_to_unit_totals(
     if uptake is None:
         return panel.group_by(unit_keys).agg(*aggs)
 
+    assert window_days is None or exposure is not None
     scoped = panel
-    if window_days is not None and first_exposure is None:
-        _raise("frame.moments.collapse_to_unit")
-    if first_exposure is not None:
-        first_exposure_name = _scratch_name(panel, "__first_exposure__")
+    if exposure is not None:
+        anchor = _scratch_name(panel, "__exposure__")
         scoped = panel.join(
-            first_exposure.select(
-                "unit_id", nw.col("__first_exposure__").alias(first_exposure_name)
-            ),
+            exposure.select("unit_id", nw.col("__exposure__").alias(anchor)),
             on="unit_id",
             how="left",
         )
-        elapsed = _uptake_day_elapsed(scoped, first_exposure_name)
+        elapsed = _uptake_day_elapsed(scoped, anchor)
         # Uptake is only read on or after the unit's own exposure (the
         # band's left edge).
         in_band = elapsed >= 0
@@ -1576,7 +1494,6 @@ def _total_moment_rows(
     experiment_id: str,
     uptake: str | None,
     uptake_window_days: int | None,
-    first_exposure: nw.DataFrame[Any] | None,
     exposure: nw.DataFrame[Any] | None,
     observation_end: dt.date | dt.datetime | str | int | float | None,
     fact_max_ds: Mapping[str, Any],
@@ -1614,7 +1531,7 @@ def _total_moment_rows(
             plain,
             uptake=uptake,
             window_days=uptake_window_days,
-            first_exposure=first_exposure,
+            exposure=exposure,
             by=by,
         )
         # Join caller-resolved per-unit covariates onto the collapsed totals that
@@ -1757,22 +1674,20 @@ def _compliance_arm_rows_panel(
     *,
     uptake: str,
     window_days: int | None,
-    first_exposure: nw.DataFrame[Any] | None,
+    exposure: nw.DataFrame[Any] | None,
     as_of: object | None,
     completed_windows_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Metric-independent uptake totals from sparse or dense panel rows.
-    A snapshot filters enrollment and zeros future uptake, retaining enrolled
-    units with no earlier observations; completion further filters whole units.
+    A snapshot admits units exposed by *as_of* and zeros later uptake, retaining
+    exposed units with no earlier observations; completion further filters whole
+    units. A snapshot needs the declared *exposure*.
     """
     scoped = panel
     if as_of is not None:
+        assert exposure is not None
         labels = panel.get_column("ds").unique().to_list()
-        enrollment = (
-            first_exposure.get_column("__first_exposure__").unique().to_list()
-            if first_exposure is not None
-            else []
-        )
+        enrollment = exposure.get_column("__exposure__").unique().to_list()
         order = _day_axis_label_order([*labels, *enrollment, as_of])
         admitted = [label for label in order if order[label] <= order[as_of]]
         if not any(order[label] <= order[as_of] for label in labels):
@@ -1780,16 +1695,13 @@ def _compliance_arm_rows_panel(
         scoped = panel.with_columns(
             nw.when(nw.col("ds").is_in(admitted)).then(nw.col(uptake)).otherwise(0.0).alias(uptake)
         )
-        if first_exposure is not None:
-            enrolled = first_exposure.filter(nw.col("__first_exposure__").is_in(admitted)).select(
-                "unit_id"
-            )
-            scoped = scoped.join(enrolled, on="unit_id", how="inner")
+        enrolled = exposure.filter(nw.col("__exposure__").is_in(admitted)).select("unit_id")
+        scoped = scoped.join(enrolled, on="unit_id", how="inner")
     if completed_windows_only:
-        assert first_exposure is not None and window_days is not None and as_of is not None
-        anchors = first_exposure.with_columns(nw.lit(cast(Any, as_of)).alias("ds"))
+        assert exposure is not None and window_days is not None and as_of is not None
+        anchors = exposure.with_columns(nw.lit(cast(Any, as_of)).alias("ds"))
         completed = anchors.filter(
-            _uptake_day_elapsed(anchors, "__first_exposure__") >= window_days
+            _uptake_day_elapsed(anchors, "__exposure__") >= window_days
         ).select("unit_id")
         scoped = scoped.join(completed, on="unit_id", how="inner")
     if scoped.is_empty():
@@ -1799,7 +1711,7 @@ def _compliance_arm_rows_panel(
         (),
         uptake=uptake,
         window_days=window_days,
-        first_exposure=first_exposure,
+        exposure=exposure,
     )
     totals = collapsed.group_by("group_id").agg(
         nw.len().alias("n_units"), nw.col(uptake).sum().alias("uptake_total")

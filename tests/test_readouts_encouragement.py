@@ -1105,6 +1105,7 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
         unit="unit",
         group="arm",
         date="day",
+        exposure_date="day",
         design=_design(one_sided=True),
         metrics={"y": "mean", "z": "mean"},
         breakouts=["segment"],

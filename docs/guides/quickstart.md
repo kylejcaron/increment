@@ -389,6 +389,9 @@ experiment, reader = increment.from_frame(
 print(increment.render(increment.run(experiment, reader), "brief"))
 ```
 
+Pass `exposure_date=` naming each unit's exposure date to read daily or as-of
+views; without it a panel answers only the whole-window run.
+
 !!! warning "Daily indicators become counts"
     Summing a daily 0/1 indicator counts days with an event, not whether
     the event ever occurred. Prepare the metric's intended aggregation

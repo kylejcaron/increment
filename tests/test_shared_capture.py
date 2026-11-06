@@ -476,7 +476,8 @@ def _encouragement_panel_analysis(frame: Any) -> tuple[Any, Any]:
     encouraged_frame = frame.assign(
         help_click=[
             0 if arm == "control" else int(index % 3 == 0) for index, arm in enumerate(frame["arm"])
-        ]
+        ],
+        exposed_on=datetime(2025, 1, 1).date(),
     )
     return from_frame(
         encouraged_frame,
@@ -491,6 +492,7 @@ def _encouragement_panel_analysis(frame: Any) -> tuple[Any, Any]:
         ),
         metrics={"value": "mean"},
         breakouts=["country"],
+        exposure_date="exposed_on",
     )
 
 

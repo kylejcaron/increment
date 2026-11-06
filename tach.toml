@@ -943,7 +943,7 @@ depends_on = []
 path = "increment._day_axis"
 layer = "core"
 depends_on = [
-  "increment._frame_panel", "increment._immutable",
+  "increment._day_axis_labels", "increment._frame_panel", "increment._immutable",
   "increment.kernel.contracts",
   "increment._analysis_config", "increment._lift_options", "increment._readout_request", "increment._source_types",
   "increment._exploratory", "increment._source_admission",

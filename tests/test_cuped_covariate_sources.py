@@ -1826,13 +1826,14 @@ def test_breakout_and_daily_lift_covariates_use_frame_refusals(route, column, co
         else:
             view_readout(
                 *from_frame(
-                    frame,
+                    frame.append_column("exposed_on", pa.array([1] * 8)),
                     shape="panel",
                     unit="unit",
                     group="arm",
                     date="day",
                     control="control",
                     metrics=[metric],
+                    exposure_date="exposed_on",
                 ),
                 View(view="daily", grain="daily"),
                 decision_method=method,

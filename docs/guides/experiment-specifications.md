@@ -31,7 +31,8 @@ Declare the result views on the experiment with `with_views`; it returns a new
 experiment with the supplied views added, in order, after the ones already
 declared. A builder declares the overall view, so this experiment runs three
 views; adding a view that is already declared refuses with
-`kernel.request.invalid`:
+`kernel.request.invalid`. Every unit was exposed on 2025-01-01, so the frame
+holds that date in a constant `exposure_date` column, which daily views need:
 
 ```python
 import pandas as pd
@@ -42,6 +43,7 @@ frame = pd.DataFrame(
         "unit": ["u1", "u2", "u3", "u4"],
         "arm": ["control", "treatment", "control", "treatment"],
         "day": ["2025-01-01"] * 4,
+        "exposed_on": ["2025-01-01"] * 4,
         "value": [1.0, 2.0, 3.0, 4.0],
     }
 )
@@ -53,6 +55,7 @@ experiment, reader = increment.from_frame(
     date="day",
     control="control",
     metrics={"value": "mean"},
+    exposure_date="exposed_on",
     observation_end="2025-01-02",
 )
 daily_lift = increment.View.daily()
@@ -350,8 +353,9 @@ declare a different population with the matching view constructor, such as
 `result.readout(view)` returns the `LiftEstimates`, `ContrastResults` or
 other typed collection one view produced.
 
-For example, a unit-panel source that supports daily data can declare whole-window
-and daily views together:
+For example, a unit panel that names each unit's exposure date with
+`exposure_date=` supports daily views, so it can declare whole-window and daily
+views together. Here every unit was exposed on the panel's one day:
 
 ```python
 import pandas as pd
@@ -372,6 +376,7 @@ experiment, reader = increment.from_frame(
     unit="user_id",
     group="variant",
     date="event_day",
+    exposure_date="event_day",
     control="control",
     metrics={"revenue": "mean"},
 )

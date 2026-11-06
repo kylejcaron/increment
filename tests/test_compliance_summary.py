@@ -827,11 +827,8 @@ def test_asof_identity_survives_standalone_wire(as_of):
 )
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
 @pytest.mark.parametrize("path", ["analysis", "readouts"])
-@pytest.mark.parametrize("explicit_anchor", [False, True])
 @pytest.mark.integration
-def test_panel_asof_compliance_preserves_day_axis_identity_and_order(
-    labels, backend, path, explicit_anchor
-):
+def test_panel_asof_compliance_preserves_day_axis_identity_and_order(labels, backend, path):
     rows = [
         {
             "unit": f"{group}{unit}",
@@ -855,7 +852,7 @@ def test_panel_asof_compliance_preserves_day_axis_identity_and_order(
         control="control",
         design=design(),
         metrics={"y": "mean"},
-        exposure_date="exposed" if explicit_anchor else None,
+        exposure_date="exposed",
     )
     experiment, resolver = from_frame(
         native,
@@ -865,7 +862,7 @@ def test_panel_asof_compliance_preserves_day_axis_identity_and_order(
         date="ds",
         design=design(),
         metrics={"y": "mean"},
-        exposure_date="exposed" if explicit_anchor else None,
+        exposure_date="exposed",
     )
     estimands = ["compliance", "itt"]
     results = (
@@ -940,6 +937,7 @@ def test_panel_compliance_day_axis_respects_staggered_enrollment_and_window(labe
             "unit": f"{group}{unit}",
             "arm": group,
             "ds": day,
+            "exposed": labels[0] if unit < 2 else labels[1],
             "clicked": float(
                 group == "treatment" and index == (0 if unit == 0 else 2 if unit == 1 else 1)
             ),
@@ -958,6 +956,7 @@ def test_panel_compliance_day_axis_respects_staggered_enrollment_and_window(labe
         control="control",
         design=design(9),
         metrics={"y": "mean"},
+        exposure_date="exposed",
     )
     for day, count, uptake in zip(labels, (2, 4, 4), (1, 3, 3), strict=True):
         arm = _compliance(source, design(9), as_of=day).arm("treatment")
@@ -1053,7 +1052,7 @@ def test_completed_compliance_requires_bounded_window_and_asof(window, as_of):
     source = from_unit_panel(
         pa.Table.from_pylist(
             [
-                {"unit": group, "arm": group, "ds": 0, "clicked": 0.0, "y": 1.0}
+                {"unit": group, "arm": group, "ds": 0, "exposed": 0, "clicked": 0.0, "y": 1.0}
                 for group in ("control", "treatment")
             ]
         ),
@@ -1063,6 +1062,7 @@ def test_completed_compliance_requires_bounded_window_and_asof(window, as_of):
         control="control",
         design=design(window),
         metrics={"y": "mean"},
+        exposure_date="exposed",
     )
     with pytest.raises(CodedError) as error:
         _compliance(source, design(window), as_of=as_of, completed_windows_only=True)

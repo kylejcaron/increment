@@ -773,6 +773,7 @@ def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability
             "user_id": ["c1", "c2", "t1", "t2"] * 2,
             "variant": ["C", "C", "T", "T"] * 2,
             "day": ["2025-01-01"] * 4 + ["2025-01-02"] * 4,
+            "exposed_on": ["2025-01-01"] * 8,
             "revenue": [1.0, 2.0, 3.0, 4.0, 2.0, 4.0, 6.0, 8.0],
             "sessions": [1.0] * 8,
             "x1": [0.0, 1.0, 0.5, 1.5] * 2,
@@ -784,6 +785,7 @@ def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability
         unit="user_id",
         group="variant",
         date="day",
+        exposure_date="exposed_on",
         metrics=[
             MetricSpec(
                 name="revenue_per_session",

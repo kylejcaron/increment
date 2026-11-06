@@ -571,6 +571,21 @@ def _frozen_dispositions() -> Mapping[tuple[str, str], Mapping[str, Any]]:
     return outcomes
 
 
+def current_disposition(scenario_id: str, ingress: str) -> Mapping[str, Any]:
+    """The frozen disposition of one coordinate, migrated by its recorded disposition change."""
+    from tests.parity_harness.expected_differences import (
+        DISPOSITION_DIFFERENCES,
+        with_expected_difference,
+    )
+
+    return with_expected_difference(
+        scenario_id,
+        ingress,
+        _frozen_dispositions()[(scenario_id, ingress)],
+        differences=DISPOSITION_DIFFERENCES,
+    )
+
+
 def _scenario_case(scenario_id: str) -> Any:
     prefix = next((value for value in ("asof_lift-", "asof-") if scenario_id.startswith(value)), "")
     base_id = scenario_id.removeprefix(prefix) if prefix else scenario_id
@@ -702,7 +717,7 @@ def observe_scenario_disposition(scenario_id: str, ingress: str) -> Mapping[str,
     from tests.parity_harness.refusal_cases import REFUSAL_SCENARIOS, Unreachable
     from tests.parity_harness.runner import _read
 
-    expected = _frozen_dispositions()[(scenario_id, ingress)]
+    expected = current_disposition(scenario_id, ingress)
     if expected["kind"] == "cells":
         raise ValueError("successful scenarios require typed input acquisition")
     expected = with_expected_difference(scenario_id, ingress, expected)

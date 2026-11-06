@@ -1177,24 +1177,25 @@ def _coordinate_param(entry):
 @pytest.mark.grid("Complete declared scenario/source disposition and typed-input inventory")
 @pytest.mark.parametrize("entry", [_coordinate_param(entry) for entry in scenario_roster()])
 def test_declared_coordinate_acquires_exact_evidence_or_disposition(entry):
-    from tests.evidence_fixtures.scenarios import _scenario_case
+    from tests.evidence_fixtures.scenarios import _scenario_case, current_disposition
 
     expected_warnings = (
         _scenario_case(entry.scenario_id).expected_warning_codes.get(entry.ingress, ())
         if entry.family != "preflight"
         else ()
     )
-    if entry.disposition == "source":
+    acquires = current_disposition(entry.scenario_id, entry.ingress)["kind"] == "cells"
+    if acquires:
         frozen = _frozen_coordinate(entry.scenario_id, entry.ingress)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", IncrementWarning)
-        if entry.disposition != "source":
+        if not acquires:
             result = observe_scenario_disposition(entry.scenario_id, entry.ingress)
             assert result["observed"] == result["expected"]
         else:
             live = _acquired_coordinate(entry.scenario_id, entry.ingress, frozen.baseline_revision)
     assert set(warning_codes(caught)) <= set(expected_warnings)
-    if entry.disposition != "source":
+    if not acquires:
         return
     assert not live.missing_representations
     assert live.declaration_sha256 == _digest(
@@ -4933,7 +4934,7 @@ def _assert_old_readout_rows(actual, expected, *, nominal_alpha=None):
     from tests.evidence_fixtures.replay import _assert_projected_value
     from tests.parity_harness.expected_differences import (
         without_binomial_arm_facts,
-        without_breakout_family_size,
+        without_post_capture_family_size,
     )
     from tests.test_evidence_identity_parity import _retained_capture_projection
 
@@ -4957,7 +4958,7 @@ def _assert_old_readout_rows(actual, expected, *, nominal_alpha=None):
             assert nominal_alpha is not None
             maximum = nominal_alpha * (2.0 if left["alternative"] in {"less", "greater"} else 1.0)
             assert 0.0 < left["allocation_alpha"] <= maximum
-        left = without_breakout_family_size(right, without_binomial_arm_facts(right, left))
+        left = without_post_capture_family_size(right, without_binomial_arm_facts(right, left))
         left, _compatibility_fields = _retained_capture_projection(right, left)
         extra = left.keys() - right.keys()
         if extra:

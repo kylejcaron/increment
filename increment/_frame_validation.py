@@ -1809,30 +1809,43 @@ def _unit_identity(
 
 
 def _validate_exposure_date(
-    frame: nw.DataFrame[Any], *, unit: str, exposure_date: str | None, specs: Sequence[MetricSpec]
+    frame: nw.DataFrame[Any],
+    *,
+    unit: str,
+    exposure_date: str | None,
+    specs: Sequence[MetricSpec],
+    design: Randomized | Encouragement | Observational | None,
 ) -> None:
-    """A windowed or retention metric's day-0 anchor must be an explicit,
-    per-unit-constant exposure date.
+    """A unit's day 0 must be an explicit, per-unit-constant exposure date
+    whenever a quantity counts days from it: a metric with ``window_days`` or
+    ``type="retention"``, or an encouragement uptake window.
 
-    Deriving it from a unit's first OBSERVED row (as the encouragement
-    design's uptake window used to, before this task) would let a
-    densified zero-fill row or the frame's own row order silently define
-    the window - required whenever any spec carries ``window_days`` or
-    ``type="retention"``. When given (whether or not it is required),
-    every unit must map to exactly one distinct value - a unit whose
-    exposure date varies by row has no single day 0 to window against.
+    Rows cannot supply that anchor: a unit's first observed row is itself an
+    outcome, and its absent days may fall before exposure or after it with no
+    activity. When given (whether or not it is required), every unit must map
+    to exactly one distinct value - a unit whose exposure date varies by row
+    has no single day 0 to window against.
     """
-    needs_exposure = any(s.window_days is not None or s.type == "retention" for s in specs)
     if exposure_date is None:
-        if needs_exposure:
+        windowed = tuple(
+            s.name for s in specs if s.window_days is not None or s.type == "retention"
+        )
+        if windowed:
             refuse(
                 _EXPOSURE_DATE,
                 issue="missing required declaration for windowed/retention metrics",
                 column=None,
                 count=0,
-                examples=tuple(
-                    s.name for s in specs if s.window_days is not None or s.type == "retention"
-                ),
+                examples=windowed,
+                route="pass exposure_date=<column name>",
+            )
+        if isinstance(design, Encouragement) and design.uptake.window_days is not None:
+            refuse(
+                _EXPOSURE_DATE,
+                issue="missing required declaration for windowed uptake",
+                column=None,
+                count=0,
+                examples=(design.uptake.fact,),
                 route="pass exposure_date=<column name>",
             )
         return

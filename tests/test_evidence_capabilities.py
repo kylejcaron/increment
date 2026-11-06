@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import pickle
 from contextlib import contextmanager
 from typing import Any, cast
 
+import pyarrow as pa
 import pytest
 
 from increment import (
@@ -19,6 +21,7 @@ from increment import (
 from increment.artifacts import publish_unit_day_artifact
 from increment.evidence import (
     ComplianceRequest,
+    ComplianceSeriesRequest,
     ComplianceSummary,
     CountEvidence,
     CountsRequest,
@@ -32,6 +35,7 @@ from increment.evidence import (
 from increment.workflows import export_moments, metrics
 from tests.analysis_factory import held_source, view_readout
 from tests.source_conformance import (
+    exposed_unit_panel_table,
     switchback_analysis,
     unit_day_artifact_analysis,
     unit_panel_table,
@@ -199,6 +203,28 @@ def test_switchback_declares_no_arm_moment_grains() -> None:
                 "sequential_capture": "asof",
                 "scalar_covariate_grains": frozenset({"total"}),
                 "available_covariates": frozenset(
+                    {"user_id", "segment", "ds", "variant", "revenue", "exposed_on"}
+                ),
+            },
+        ),
+        (
+            "panel_without_exposure_date",
+            {
+                "kind": "unit_panel",
+                "capture": "snapshot",
+                "grains": frozenset({"total"}),
+                "breakouts": ("segment",),
+                "shape": "unit_panel",
+                "operations": frozenset({"export_moments", "unit_counts", "readout_snapshot"}),
+                "unit_rows": True,
+                "raw_outcomes": False,
+                "method_fit": "local",
+                "compliance_axis": "total",
+                "count_grains": frozenset({"unit"}),
+                "populations": frozenset({"assigned"}),
+                "sequential_capture": "asof",
+                "scalar_covariate_grains": frozenset({"total"}),
+                "available_covariates": frozenset(
                     {"user_id", "segment", "ds", "variant", "revenue"}
                 ),
             },
@@ -217,8 +243,15 @@ def test_frame_evidence_matches_baseline(constructor, expected) -> None:
             breakouts=(),
         )
     else:
+        table = unit_panel_table()
+        options: dict[str, Any] = {}
+        if constructor == "panel":
+            table = table.append_column(
+                "exposed_on", pa.array([dt.date(2026, 1, 1)] * table.num_rows)
+            )
+            options["exposure_date"] = "exposed_on"
         analysis = from_frame(
-            unit_panel_table(),
+            table,
             shape="panel",
             unit="user_id",
             group="variant",
@@ -226,6 +259,7 @@ def test_frame_evidence_matches_baseline(constructor, expected) -> None:
             control="control",
             metrics={"revenue": "mean"},
             breakouts=("segment",),
+            **options,
         )
     source = cast("Any", held_source(analysis[1]))
     evidence = source.evidence
@@ -259,7 +293,7 @@ def test_frame_evidence_matches_baseline(constructor, expected) -> None:
 
 def test_declared_panel_grains_match_moment_behavior() -> None:
     experiment, resolver = from_frame(
-        unit_panel_table(),
+        exposed_unit_panel_table(),
         shape="panel",
         unit="user_id",
         group="variant",
@@ -267,6 +301,7 @@ def test_declared_panel_grains_match_moment_behavior() -> None:
         control="control",
         metrics={"revenue": "mean"},
         breakouts=("segment",),
+        exposure_date="exposed_on",
     )
     source = cast("Any", held_source(resolver))
     metric = source.context.metrics[0]
@@ -625,7 +660,7 @@ def test_call_time_covariate_preflight_keeps_its_code(constructor) -> None:
             breakouts=("segment",),
         )
     else:
-        table = unit_panel_table()
+        table = exposed_unit_panel_table()
         frame = table.append_column("pre", pa.array(["not numeric"] * table.num_rows))
         analysis = from_frame(
             frame,
@@ -636,6 +671,7 @@ def test_call_time_covariate_preflight_keeps_its_code(constructor) -> None:
             control="control",
             metrics={"revenue": "mean"},
             breakouts=("segment",),
+            exposure_date="exposed_on",
         )
 
     method = Method.cuped(covariates="pre")
@@ -718,7 +754,7 @@ def test_scalar_covariate_grain_declaration_matches_day_axis_behavior() -> None:
     from increment.estimation.engine import Method
     from increment.estimators import InvalidRequestError
 
-    rows = unit_panel_table().to_pylist()
+    rows = exposed_unit_panel_table().to_pylist()
     frame = pa.Table.from_pylist([{**row, "pre": float(int(row["user_id"][1:]))} for row in rows])
     experiment, resolver = from_frame(
         frame,
@@ -728,6 +764,7 @@ def test_scalar_covariate_grain_declaration_matches_day_axis_behavior() -> None:
         date="ds",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     source = cast("Any", held_source(resolver))
     evidence = source.evidence
@@ -870,13 +907,14 @@ def test_frame_counts_and_compliance_axes_match_methods() -> None:
     summary_resolver.close()
 
     panel_experiment, panel_resolver = from_frame(
-        unit_panel_table(),
+        exposed_unit_panel_table(),
         shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
         control="control",
         metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
     )
     panel_source = cast("Any", held_source(panel_resolver))
     assert panel_source.evidence.count_grains == frozenset({"unit"})
@@ -975,6 +1013,7 @@ def test_breakout_moments_declares_no_unit_or_count_rows() -> None:
     [
         "summary",
         "panel",
+        "panel_without_exposure_date",
         "restricted_breakout",
         "moments",
         "definitions",
@@ -1002,9 +1041,11 @@ def test_declared_capabilities_match_public_method_behavior(
             metrics={"revenue": "mean"},
         )
         source = cast("Any", held_source(analysis[1]))
-    elif constructor == "panel":
-        analysis = _encouragement_panel_analysis()
+    elif constructor in {"panel", "panel_without_exposure_date"}:
+        analysis = _encouragement_panel_analysis(exposed=constructor == "panel")
         source = cast("Any", held_source(analysis[1]))
+        if constructor == "panel_without_exposure_date":
+            _assert_compliance_dates_refuse_as_declared(source, CodedError)
     elif constructor == "restricted_breakout":
         analysis = from_frame(
             unit_summary_table(),
@@ -1080,6 +1121,18 @@ def test_declared_capabilities_match_public_method_behavior(
         source.close()
     else:
         analysis[1].close()
+
+
+def _assert_compliance_dates_refuse_as_declared(source, error_type) -> None:
+    """The direct dates read refuses exactly as the declared compliance series does."""
+    with pytest.raises(error_type) as declared:
+        request_evidence(evidence_provider(source), ComplianceSeriesRequest(source.context.design))
+    with pytest.raises(error_type) as direct:
+        source.compliance_dates()
+    assert (direct.value.code, dict(direct.value.context)) == (
+        declared.value.code,
+        dict(declared.value.context),
+    )
 
 
 def _assert_capability_methods_match_behavior(
@@ -1370,12 +1423,12 @@ def _encouragement_summary_analysis():
     return analysis, design
 
 
-def _encouragement_panel_analysis():
+def _encouragement_panel_analysis(*, exposed: bool = True):
     import pyarrow as pa
 
     from increment import Encouragement, ExclusionRestriction, UptakeSpec
 
-    rows = unit_panel_table().to_pylist()
+    rows = (exposed_unit_panel_table() if exposed else unit_panel_table()).to_pylist()
     frame = pa.Table.from_pylist(
         [{**row, "clicked": int(row["variant"] == "treatment")} for row in rows]
     )
@@ -1396,6 +1449,7 @@ def _encouragement_panel_analysis():
         uptake="clicked",
         design=design,
         breakouts=("segment",),
+        exposure_date="exposed_on" if exposed else None,
     )
 
 

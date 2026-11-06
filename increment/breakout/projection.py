@@ -208,13 +208,13 @@ def _append_frame_value(
         )
         data["sequential_status"].append(None if value is None else value.bounds.status)
         data["sequential_log_e"].append(
-            str(value.log_e) if isinstance(value, SequentialInferenceResult) else None
+            float(value.log_e) if isinstance(value, SequentialInferenceResult) else None
         )
         data["sequential_point_reason"].append(None if value is None else value.point_reason)
         data["sequential_validity_regime"].append(
             None if value is None else getattr(value, "validity_regime", "finite_sample")
         )
-        data["sequential_alpha"].append(None if value is None else str(value.decision_alpha))
+        data["sequential_alpha"].append(None if value is None else float(value.decision_alpha))
         data["sequential_components"].append(
             None
             if value is None or isinstance(value, SequentialInferenceResult)
@@ -464,16 +464,16 @@ def to_frame[M: BaseModel](
                 "set_level",
                 "sequential_lower",
                 "sequential_upper",
+                "sequential_log_e",
+                "sequential_alpha",
             )
             else nw.String()
             if name
             in (
                 "open_side",
                 "sequential_status",
-                "sequential_log_e",
                 "sequential_point_reason",
                 "sequential_validity_regime",
-                "sequential_alpha",
                 "sequential_components",
                 "posterior_components",
                 "set_numerical_qualification",
@@ -515,10 +515,8 @@ def to_frame[M: BaseModel](
         nullable_strings.extend(
             (
                 "sequential_status",
-                "sequential_log_e",
                 "sequential_point_reason",
                 "sequential_validity_regime",
-                "sequential_alpha",
                 "sequential_components",
             )
         )
