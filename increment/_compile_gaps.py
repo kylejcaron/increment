@@ -2,13 +2,15 @@
 
 A translation failure is recognised by where it was raised, never by backend
 name: an Ibis SQL compiler had no rule for an operation, or SQLGlot could not
-write the compiled query in the backend's dialect. Ibis and SQLGlot are read
-from ``sys.modules`` and never imported here, so a run that did not load them
-keeps its original exception.
+write the compiled query in the backend's dialect. The classifier reads Ibis and
+SQLGlot from ``sys.modules`` and never imports them, so a run that did not load
+them keeps its original exception. Only :func:`load_dialect_compiler`, called
+before compiling for a named dialect, imports an Ibis module.
 """
 
 from __future__ import annotations
 
+import importlib
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,6 +24,9 @@ _REFUSALS = refusals(
         "query.backend.operation_unsupported": (
             "the {backend} SQL dialect cannot express this analysis: {detail}; {route}"
         ),
+        "query.backend.compiler_unavailable": (
+            "the installed Ibis cannot write SQL for {backend!r}; {route}"
+        ),
     },
 )
 _raise = raiser(_REFUSALS)
@@ -29,6 +34,26 @@ _raise = raiser(_REFUSALS)
 _ROUTE = (
     "analyze from a dataframe with from_frame, or see 'Other warehouses' in the data-model guide"
 )
+_COMPILER_ROUTE = (
+    "pass backend= the name of an Ibis SQL backend, such as 'trino', "
+    "or install an Ibis release that supports this one"
+)
+
+
+def load_dialect_compiler(dialect: str) -> None:
+    """Load Ibis's SQL compiler for ``dialect``, as connecting to that backend does.
+
+    Ibis compiles for a dialect by name only once its compiler module is imported.
+    """
+    package = "ibis.backends.sql.compilers"
+    try:
+        module = importlib.import_module(f"{package}.{dialect}")
+    except ModuleNotFoundError as exc:
+        if not (exc.name or "").startswith(f"{package}."):
+            raise
+        module = None
+    if getattr(module, "compiler", None) is None:
+        _raise("query.backend.compiler_unavailable", backend=dialect, route=_COMPILER_ROUTE)
 
 
 def _innermost_self(exc: BaseException, owner: type) -> Any:

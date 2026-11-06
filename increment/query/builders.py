@@ -204,16 +204,25 @@ class _NaiveUtc(ops.Value):
         return ibis_dt.Timestamp(scale=self.arg.dtype.scale)
 
 
+_NAIVE_UTC_UNTRANSLATED = (
+    "converting event times that carry a time zone to UTC "
+    "(convert them to UTC timestamps without a time zone in the source SQL)"
+)
+
+
 def _register_naive_utc() -> None:
     """Compile :class:`_NaiveUtc` to each backend's own time-zone conversion.
 
     Each reads the stored instant; a cast or an epoch difference would instead
-    pass through the session time zone or drop sub-microsecond digits.
+    pass through the session time zone or drop sub-microsecond digits. Every
+    other SQL compiler, including one loaded later, refuses in the analyst's terms.
     """
+    from ibis.backends.sql.compilers.base import SQLGlotCompiler
     from ibis.backends.sql.compilers.bigquery import BigQueryCompiler
     from ibis.backends.sql.compilers.duckdb import DuckDBCompiler
     from ibis.backends.sql.compilers.postgres import PostgresCompiler
     from ibis.backends.sql.compilers.snowflake import SnowflakeCompiler
+    from ibis.common.exceptions import OperationNotDefinedError
 
     def duckdb(compiler: Any, _op: _NaiveUtc, *, arg: Any) -> Any:
         return compiler.f.timezone("UTC", arg)
@@ -231,13 +240,27 @@ def _register_naive_utc() -> None:
     def bigquery(compiler: Any, _op: _NaiveUtc, *, arg: Any) -> Any:
         return compiler.f.datetime(arg, "UTC")
 
-    # ibis resolves a compiler method from the op's class name; there is no public registry.
-    for compiler, visit in (
-        (DuckDBCompiler, duckdb),
-        (PostgresCompiler, postgres),
-        (SnowflakeCompiler, snowflake),
-        (BigQueryCompiler, bigquery),
-    ):
+    def untranslated(_compiler: Any, _op: _NaiveUtc, **_: Any) -> Never:
+        raise OperationNotDefinedError(_NAIVE_UTC_UNTRANSLATED)
+
+    native = {
+        DuckDBCompiler: duckdb,
+        PostgresCompiler: postgres,
+        SnowflakeCompiler: snowflake,
+        BigQueryCompiler: bigquery,
+    }
+    # Ibis finds a rule as the compiler attribute `visit_<op class name>`, with no public
+    # registry. `SQLGlotCompiler.__init_subclass__` gives a new subclass Ibis's undefined-rule
+    # method for each operation known when Ibis first loaded its compilers, unless one is
+    # inherited: existing subclasses may hold it, so the walk replaces it; later ones inherit.
+    SQLGlotCompiler.visit__NaiveUtc = untranslated  # ty: ignore[unresolved-attribute]
+    pending = list(SQLGlotCompiler.__subclasses__())
+    while pending:
+        compiler = pending.pop()
+        pending.extend(compiler.__subclasses__())
+        if not issubclass(compiler, tuple(native)):
+            compiler.visit__NaiveUtc = untranslated  # ty: ignore[unresolved-attribute]
+    for compiler, visit in native.items():
         compiler.visit__NaiveUtc = visit  # ty: ignore[invalid-assignment]
 
 
