@@ -39,12 +39,12 @@ from tests.dashboard_snapshots import (
 from tests.dashboard_snapshots import snapshot as make_snapshot
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def storefront() -> DashboardSnapshot:
     return make_snapshot()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def pricing() -> DashboardSnapshot:
     return pricing_snapshot()
 
