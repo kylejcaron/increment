@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Protocol, cast
 
+from increment._compile_gaps import raise_if_compile_gap
 from increment._optional import require_warehouse
 
 require_warehouse("increment.query.session")
@@ -1873,7 +1874,8 @@ class _WarehouseArtifactQrSession:
             locator = _MaterializedRelation(name, operation.name, catalog, schema)
             self._materialized.append(locator)
             return created
-        except Exception:
+        except Exception as exc:
+            raise_if_compile_gap(exc)
             if cleanup is not None and not _cleanup_failed_temporary_relation(
                 self._con, cleanup, created=created is not None
             ):
@@ -2328,6 +2330,7 @@ class WarehouseSession:
 
         Optional materialization warns and falls back on failure. Required
         snapshots refuse instead: a second live read would change the evidence.
+        A query the backend's SQL dialect cannot express refuses either way.
         Never falls back to ``create_view`` either - an auto-created
         view is a persistent object this class can't clean up, and on
         backends with owner's-rights views could leak a lower-privileged
@@ -2368,8 +2371,8 @@ class WarehouseSession:
             if physical is not None:
                 self._materialized.append(physical)
                 return created
-        except Exception:  # degrade, never propagate a privilege error
-            pass
+        except Exception as exc:  # degrade, never propagate a privilege error
+            raise_if_compile_gap(exc)
         if cleanup is not None and not _cleanup_failed_temporary_relation(
             self._con, cleanup, created=created is not None
         ):
