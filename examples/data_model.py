@@ -667,10 +667,10 @@ def _(mo):
 
 
 @app.cell
-def _(reader):
-    # Internals peek: the public panel builder needs this exposure relation,
-    # while run(experiment, reader) normally keeps it behind the reader.
-    exposures = reader._binding.source._get_exposures()
+def _(spine):
+    # One row per enrolled unit: its arm and first exposure, read off the panel spine
+    # that build_panel_for_metric returns below.
+    exposures = spine.select("unit_id", "experiment_id", "group_id", "first_exposure_ts").distinct()
     exposures.execute().head()
     return (exposures,)
 
@@ -793,10 +793,10 @@ def _(mo):
 
 
 @app.cell
-def _(build_panel_for_metric, experiment, exposures, metric, reader):
+def _(build_panel_for_metric, experiment, metric, reader):
     # Inspect the logical relations without retaining a readout's TEMP tables.
     panel, spine, stats, metric_events, den_events, fact_tbl, value_col, data_as_of = (
-        build_panel_for_metric(experiment, reader, exposures, metric)
+        build_panel_for_metric(experiment, reader, metric)
     )
     return data_as_of, den_events, fact_tbl, metric_events, panel, spine, stats, value_col
 

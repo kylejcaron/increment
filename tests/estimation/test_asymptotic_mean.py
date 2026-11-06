@@ -265,7 +265,7 @@ def test_fixed_roster_missing_segment_keeps_budget_and_frozen_stopping_state():
     outcome = select_sequential_family([], reg.q, policy, F(1, 20), computation=computation)
     assert outcome.n_family == 2
     assert outcome.fcr_alpha is None
-    rows = selected_snapshot_results(full, policy, nominal_alpha=F(1, 20))
+    rows, _ = selected_snapshot_results(full, policy, nominal_alpha=F(1, 20))
     observed = next(
         row for row in rows if row.require_asymptotic_sequential_result().bounds.available
     )

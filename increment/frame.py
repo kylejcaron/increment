@@ -55,8 +55,12 @@ from increment._frame_moments import (
 )
 from increment._frame_panel import (
     _admit_panel_totals,
+    _day_axis_label_order,
     _densify_panel,
+    _exposed_through,
     _fact_max_observed_dates,
+    _labels_through,
+    _normalize_observation_end,
     _prepare_panel,
     _scratch_name,
     _validate_panel_declarations,
@@ -71,6 +75,7 @@ from increment._frame_validation import (  # noqa: F401
     _group_counts,
     _normalize_breakout_names,
     _normalized_breakout_expr,
+    _refuse_noncanonical_boolean_levels,
     _reject_cluster_request,
     _reject_covariates,
     _reject_duplicate_unit_days,
@@ -893,7 +898,7 @@ class FrameTotalsSource(SequentialSourceMixin):
 
     @classmethod
     # Public constructor signature is the API for summary-backed sources.
-    def from_frame(  # noqa: PLR0913
+    def from_frame(  # noqa: PLR0913, PLR0915
         cls,
         frame: IntoDataFrame,
         *,
@@ -991,6 +996,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         if uptake is not None:
             roles.append((uptake_role, uptake))
         _validate_columns(nwf, roles=roles, metrics=specs)
+        _refuse_noncanonical_boolean_levels(nwf, registration)
         # Labels are read from the original typed columns, before group or
         # metric coercion can rewrite a column that also serves another role.
         segment_columns: dict[str, str] = {}
@@ -1703,10 +1709,28 @@ class FramePanelSource(SequentialSourceMixin):
         assert self._exposure is not None
         return self._exposure
 
+    def _observed_days_panel(self) -> nw.DataFrame[Any]:
+        """The sparse rows dated on or before the declared observation end."""
+        if self._observation_end is None:
+            return self._sparse_panel
+        labels = self._sparse_panel.get_column("ds").unique().to_list()
+        return self._sparse_panel.filter(
+            nw.col("ds").is_in(_labels_through(labels, self._observation_end))
+        )
+
+    def _observable_through(self, as_of: object) -> object:
+        """*as_of*, or the declared observation end when that comes first."""
+        end = self._observation_end
+        if end is None:
+            return as_of
+        order = _day_axis_label_order([as_of, end])
+        return end if order[end] < order[as_of] else as_of
+
     def _bounded_day_panel(self) -> tuple[nw.DataFrame[Any], bool]:
         """Select the dense kernel using cell and variable-width identity estimates."""
         identity = self._day_identity()
-        days = self._sparse_panel.get_column("ds").n_unique()
+        panel = self._observed_days_panel()
+        days = panel.get_column("ds").n_unique()
         cells = identity.shape[0] * days
         identity_bytes = identity.estimated_size()
         estimated_bytes = cells * (192 + 16 * len(self._value_columns)) + identity_bytes * (
@@ -1715,13 +1739,13 @@ class FramePanelSource(SequentialSourceMixin):
         if estimated_bytes <= _DAY_PANEL_SCRATCH_BUDGET_BYTES:
             return (
                 _densify_panel(
-                    self._sparse_panel,
+                    panel,
                     identity=identity,
                     value_columns=self._value_columns,
                 ),
                 True,
             )
-        return self._sparse_panel, False
+        return panel, False
 
     def capture_sequential(self, *, as_of, finalized: bool, previous=None):
         from increment._frame_sequential import capture_frame_panel
@@ -2120,6 +2144,7 @@ class FramePanelSource(SequentialSourceMixin):
             self._sparse_panel,
             self._exposure,
             value_columns=[name for name in (spec.y_column, spec.denominator) if name],
+            observation_end=self._observation_end,
         )
         collapsed = _collapse_to_unit_totals(
             admitted,
@@ -2202,6 +2227,7 @@ class FramePanelSource(SequentialSourceMixin):
             self._sparse_panel,
             self._exposure,
             value_columns=[c for c in (spec.y_column, spec.denominator) if c],
+            observation_end=self._observation_end,
         )
         collapsed = _collapse_to_unit_totals(admitted, [spec])
         has_den = spec.denominator is not None
@@ -2304,7 +2330,7 @@ class FramePanelSource(SequentialSourceMixin):
             from increment._evidence_refusals import refuse_operation
 
             refuse_operation(self, "compliance_series", ("asof",), route=_PANEL_EXPOSURE_DATE_ROUTE)
-        return self._sparse_panel.get_column("ds").unique().to_list()
+        return self._observed_days_panel().get_column("ds").unique().to_list()
 
     def compliance_summary(
         self,
@@ -2352,7 +2378,7 @@ class FramePanelSource(SequentialSourceMixin):
             uptake=self._uptake,
             window_days=self._window_days,
             exposure=self._exposure,
-            as_of=as_of,
+            as_of=None if as_of is None else self._observable_through(as_of),
             completed_windows_only=completed_windows_only,
         )
         return ComplianceSummary(
@@ -2458,6 +2484,12 @@ class FramePanelSource(SequentialSourceMixin):
             transformations=specs,
         )
         registration = getattr(compiled_plan.inference, "registration", None)
+        if registration is not None and exposure_date is None:
+            refuse(
+                _FRAME_SEQUENTIAL_EXPOSURE,
+                constructor="from_unit_panel",
+                route="pass exposure_date=<column> naming each unit's exposure date or day index",
+            )
 
         validate_frame_registration(
             registration,
@@ -2489,6 +2521,7 @@ class FramePanelSource(SequentialSourceMixin):
             roles.append(("exposure_date", exposure_date))
         roles.extend((f"breakout {name!r}", name) for name in breakouts)
         _validate_columns(nwf, roles=roles, metrics=specs)
+        _refuse_noncanonical_boolean_levels(nwf, registration)
         if not _summary_reducer:
             declarations = [("metric value", spec.y_column) for spec in specs]
             declarations.extend(
@@ -2514,6 +2547,7 @@ class FramePanelSource(SequentialSourceMixin):
             [("date", date)]
             + ([("exposure_date", exposure_date)] if exposure_date is not None else []),
         )
+        observation_end = _normalize_observation_end(nwf, date=date, value=observation_end)
         nwf, unassigned = _resolve_unassigned(
             nwf,
             unit=unit,
@@ -2541,6 +2575,13 @@ class FramePanelSource(SequentialSourceMixin):
                 # The exclusion may have removed an arm entirely - the
                 # control check must hold on what is actually analysed.
                 _validate_control(nwf, group, control)
+            if observation_end is not None:
+                # A unit exposed after the observation end is not enrolled.
+                nwf, late = _exposed_through(
+                    nwf, unit=unit, exposure_date=exposure_date, observation_end=observation_end
+                )
+                if late and registration is None:
+                    _validate_control(nwf, group, control)
         if uptake is not None:
             _validate_uptake_binary(nwf, uptake)
         if not _summary_reducer:
@@ -2584,6 +2625,8 @@ class FramePanelSource(SequentialSourceMixin):
             date=date,
             value_columns=value_columns,
             zero_fill=not _summary_reducer,
+            exposure=exposure,
+            observation_end=observation_end,
         )
 
         window_days = design.uptake.window_days if isinstance(design, Encouragement) else None
@@ -2676,10 +2719,12 @@ def from_unit_panel(  # noqa: PLR0913
     exposure_date : str | None
         Each unit's day-0 date, the panel's only unit clock. Required for daily
         and as-of grains, a windowed or retention metric, an encouragement
-        uptake window, and as-of compliance; a panel whose units were all
-        exposed on one day declares a column holding that date.
+        uptake window, as-of compliance and sequential inference; a panel whose
+        units were all exposed on one day declares a column holding that date.
     observation_end : datetime.date | datetime.datetime | str | int | float | None
-        Last observed date; bounds whole-unit censoring, else per-metric.
+        Last observed day, in the date column's form (an ISO-8601 string names a
+        calendar day). Values dated after it are ignored and units exposed after
+        it are not analysed; windowed metrics censor units not mature by it.
     on_unassigned : {"error", "exclude"}
         Null-*group*/exposure-date policy: refuse (default) or exclude.
 
@@ -2697,7 +2742,10 @@ def from_unit_panel(  # noqa: PLR0913
         ``control_group`` disagrees with *control*.
     InvalidRequestError
         A windowed or retention metric, or an encouragement uptake window,
-        without *exposure_date* (``source.panel.exposure_date``); or a metric
+        without *exposure_date* (``source.panel.exposure_date``); a sequential
+        plan without it (``source.frame.sequential_exposure_date``); an
+        *observation_end* that names no day of the date column
+        (``source.panel.observation_end``); or a metric
         value, ratio denominator or uptake column is named ``unit_id``,
         ``group_id`` or ``ds`` (``frame.panel.declaration_canonical_collision``).
         Rename that value column. These names remain valid for the unit/group/date

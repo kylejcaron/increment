@@ -23,7 +23,7 @@ _ANY = cast(Any, None)
 # Each call needs the warehouse install; its arguments are never read.
 WAREHOUSE_CALLS: dict[str, Callable[[], object]] = {
     "from_unit_day_artifact": lambda: from_unit_day_artifact(_ANY, _ANY, expected_context=_ANY),
-    "build_panel_for_metric": lambda: query.build_panel_for_metric(_ANY, _ANY, _ANY, _ANY),
+    "build_panel_for_metric": lambda: query.build_panel_for_metric(_ANY, _ANY, _ANY),
     "panel_sql": lambda: query.panel_sql(_ANY, _ANY),
     "summary_sql": lambda: query.summary_sql(_ANY, _ANY),
     "artifact_context": lambda: artifacts.artifact_context(_ANY, _ANY),

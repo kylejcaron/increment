@@ -43,10 +43,16 @@ layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
+path = "increment._warehouse_namespace"
+layer = "core"
+depends_on = []
+
+[[modules]]
 path = "increment.store"
 layer = "program"
 depends_on = [
   "increment._canonical",
+  "increment._warehouse_namespace",
   "increment.errors",
   "increment.estimation",
   "increment.kernel.contracts",
@@ -409,6 +415,11 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment.estimation.risk_difference"
+layer = "core"
+depends_on = []
+
+[[modules]]
 path = "increment._bernoulli_moments"
 layer = "core"
 depends_on = []
@@ -436,10 +447,11 @@ depends_on = [
   "increment._evidence_types",
   "increment.declarations",
   "increment.estimation._sequential_likelihood",
+  "increment.estimation.asymptotic_mean",
   "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_state",
   "increment._unit_cycle",
-  "increment.estimation._score_design",
+  "increment.estimation._score_design", "increment.estimation.risk_difference",
 ]
 
 [[modules]]
@@ -518,6 +530,7 @@ depends_on = [
   "increment._analysis_config", "increment._canonical", "increment._cuped_evidence", "increment._evidence_types", "increment._immutable", "increment._labels", "increment._frame_validation", "increment._metric_specs", "increment._moment_plan",
   "increment._evidence_refusals",
   "increment._optional",
+  "increment._warehouse_namespace",
   "increment._source_operations", "increment._source_types",
   "increment.winsor",
   "increment.breakout.estimates",
@@ -914,7 +927,7 @@ depends_on = [
   "increment.winsor",
   "increment._analysis_config", "increment._policy_alpha", "increment._readout_request",
   "increment._window", "increment.breakout.estimates", "increment.compatibility", "increment.decision", "increment.errors",
-  "increment._source_identity", "increment.estimation", "increment.estimation.advisory", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
+  "increment._source_identity", "increment.estimation", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
   "increment._evidence_types", "increment._trigger_integrity",
   "increment._evidence_loaders", "increment._evidence_scopes", "increment.kernel.context",
   "increment._sequential_readouts", "increment.estimation.sequential",
@@ -1132,6 +1145,7 @@ expose = [
 [[interfaces]]
 from = ["increment.estimation.decision_types"]
 expose = [
+  "AdvisoryKey",
   "ArmHypothesisKey",
   "DECISION_ARM_DECISION_ONE_SIDED_ALPHA",
   "exact_fraction",
@@ -1142,6 +1156,7 @@ expose = [
   "DecisionFailure",
   "EValueEvidence",
   "FixedInference",
+  "MethodHypothesisKey",
   "NoFamily",
   "PValueEvidence",
   "SegmentHypothesisKey",

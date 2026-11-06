@@ -220,18 +220,24 @@ Bind the registration through `AnalysisPlan(inference=InferenceSpec(
 kind="always_valid", registration=registration))`. Unit-summary frames
 supply finalized outcomes. Panel, native, and artifact sources require
 `increment.workflows.capture_sequential(experiment, reader, finalized=True,
-as_of=...)` before a decision. The reader's source keeps the capture, so a
-later `run(experiment, reader)` reads it. The common window determines which
-units can enter. Native and artifact capture streams bounded Arrow batches
-through existing source relations.
+as_of=...)` before a decision; reading one first refuses with
+`sequential.capture.required`, whose `route` context names that call. The
+reader's source keeps the capture, so a later `run(experiment, reader)` reads
+it. The common window determines which units can enter. Native and artifact
+capture streams bounded Arrow batches through existing source relations.
 
 Use `increment.workflows.sequential_snapshot(experiment, reader)` to retain
 the exact prefix. Supply it as `previous=` when continuing from a new source
 object. The same snapshot is idempotent. An append must preserve every earlier
 unit identity, assignment, value, definition, transformation, and reveal
 position. A changed generation hash alone proves nothing about an append.
-Corrections refuse continuation; never treat them as a fresh continuation of
-the old process.
+Corrections refuse continuation with `sequential.continuation.rewrite`, whose
+context names the first reveal `position` (counted from 0) whose record differs,
+the `unit_id` the earlier capture revealed there, and what `changed`: `missing`
+(that unit is no longer revealed), `order` (it is revealed later, for example
+after a late-arriving unit), `assignment`, or `values_or_definitions`. When every
+record is unchanged but the retained states differ, `position` and `unit_id`
+are `None`. Never treat a correction as a fresh continuation of the old process.
 
 ```python
 import increment
@@ -414,17 +420,22 @@ with no observations yet. Only the declared levels enter this family; other
 values join no cell. Membership must be determined before assignment for
 asymptotic monitoring, not chosen from outcomes. The package derives the
 registration and retains empty cells; read it with a breakout view, not the
-whole-window or as-of lift view. Exact monitoring uses the declared
-breakout correction (e-BH by default); asymptotic monitoring uses fixed-roster
-Bonferroni by default and still refuses BH. Both retain the existing explicit
-uncorrected option. A manually built registration remains available but cannot
-be combined with `InferenceSpec.segments`.
+whole-window or as-of lift view, which refuses with `sequential.source.invalid`
+and a `route` naming `View.breakout(...)` over the declared dimension. Exact
+monitoring uses the declared breakout correction (e-BH by default); asymptotic
+monitoring uses fixed-roster Bonferroni by default and still refuses BH. Both
+retain the existing explicit uncorrected option. A manually built registration
+remains available but cannot be combined with `InferenceSpec.segments`.
 
 Segment labels are canonical strings on both frame routes: Boolean values are
 `true`/`false`, missing values are `__null__`, string labels keep their exact
 case and content (`"True"` is not `"true"`), and numeric labels follow the
 existing string conversion. Declare Boolean levels as `"true"` and `"false"`
-and a missing level as `"__null__"`. Unit-summary, unit-panel and
+and a missing level as `"__null__"`. A Boolean column whose declared levels
+include none of these could never fill a cell, so building the experiment refuses
+with `sequential.registration.invalid`, naming the `dimension`, the `declared`
+levels and the `canonical` ones; string columns are not checked, because their
+undeclared and unseen levels are legal. Unit-summary, unit-panel and
 fixed-horizon breakouts read the same labels, so a Boolean column and its
 string equivalent give identical cells, counts and readouts on pandas, Polars
 and Arrow. A declared level with no observations stays a retained empty cell.

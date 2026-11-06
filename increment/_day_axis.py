@@ -64,7 +64,12 @@ from increment.estimation.engine import (
     reject_unbounded_retention,
 )
 from increment.estimation.inference import validate_readout_inference
-from increment.estimation.readout_types import CellFailure, CellKey
+from increment.estimation.readout_types import (
+    CellAdvisories,
+    CellFailure,
+    CellKey,
+    carried_advisories,
+)
 from increment.estimation.results import DEFAULT_RELIABILITY_FLOOR
 from increment.evidence import evidence_provider, request_evidence
 from increment.readouts._common import (
@@ -97,6 +102,7 @@ if TYPE_CHECKING:
     from increment._binding import SourceBinding
     from increment._evidence_types import SourceContext
     from increment.decision import CompiledDecisionPlan
+    from increment.estimation.advisory import ReadoutAdvisory
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
     from increment.semantics.models import Experiment, Metric
@@ -995,6 +1001,7 @@ def _estimate_day_axis_lift_slice(
     requested_estimands,
     plan,
     design,
+    advisories,
 ):
     triggered = req.population == "triggered"
     if triggered:
@@ -1033,6 +1040,7 @@ def _estimate_day_axis_lift_slice(
                 segment_roster_by_metric=segment_roster_by_metric,
                 _policy_by_cell=policy_by_cell,
                 **kwargs,
+                _cell_advisories=advisories,
                 **extra,
             )
         )
@@ -1363,6 +1371,7 @@ def _scope_day_axis_rows(
     execution_context=None,
     scope=None,
     identity_rows: Sequence[Any] | None = None,
+    advisories: CellAdvisories | None = None,
 ):
     """Attach source-local scope, and a skip metric's population to its lift rows."""
     from increment._source_identity import source_identity
@@ -1413,6 +1422,7 @@ def _scope_day_axis_rows(
         family_populations=family_populations,
         identity_rows=identity_rows,
         artifact_provenance=artifact_provenance(source),
+        advisories={} if advisories is None else advisories,
     )
     if result.metadata is not None:
         from increment._immutable import _FrozenMapping
@@ -1719,6 +1729,7 @@ class DayAxisReadouts:
                 "asof", mechanism=getattr(self._design, "mechanism", None), segmented=False
             )
             correction = normalize_display_correction(asof_policy.correction)
+            checkpoint_advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] = {}
             rows = readouts.asof_lift(
                 self._src,
                 metrics=[m.name for m in req.metrics],
@@ -1728,20 +1739,19 @@ class DayAxisReadouts:
                 prior=prior,
                 completed_windows_only=req.completed_windows_only,
                 _population=req.population,
+                _cell_advisories=checkpoint_advisories,
             )
             source_by_dimension = {
                 breakout.property: breakout.source
                 for breakout in getattr(self._experiment, "breakouts", ())
             }
+            projected = daily_sequential_projection(
+                rows,
+                correction=correction,
+                source_by_dimension=source_by_dimension,
+            )
             return _scope_day_axis_rows(
-                _order_day_axis_rows(
-                    daily_sequential_projection(
-                        rows,
-                        correction=correction,
-                        source_by_dimension=source_by_dimension,
-                    ),
-                    req,
-                ),
+                _order_day_axis_rows(projected, req),
                 req,
                 source=self._src,
                 route=route,
@@ -1750,6 +1760,9 @@ class DayAxisReadouts:
                 design=self._design,
                 execution_context=self._metadata_context,
                 scope=scope,
+                advisories=carried_advisories(
+                    checkpoint_advisories, zip(rows, projected, strict=True)
+                ),
             )
         for roles in opts.by_metric.values():
             _validate_methods(list(roles.methods))
@@ -1848,6 +1861,7 @@ class DayAxisReadouts:
                 scope_is_pinned=self._scope_is_pinned,
             )
             evidence_slices = evidence.slices
+        advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] = {}
         for evidence_slice in evidence_slices:
             raw_rows = _fill_triggered_early_look_rows(
                 evidence_slice.rows,
@@ -1882,6 +1896,7 @@ class DayAxisReadouts:
                         requested_estimands,
                         effective_plan,
                         self._design,
+                        advisories,
                     )
                 )
             failure_rows.extend(raw_rows)
@@ -1907,8 +1922,9 @@ class DayAxisReadouts:
             results, failure_rows, req, control_group=control_group
         )
 
+        estimated = results
         results = [
-            row.model_copy(update={"analysis_population": req.population}) for row in results
+            row.model_copy(update={"analysis_population": req.population}) for row in estimated
         ]
         identity_rows = tuple(results)
         results = _fill_daily_domain_gaps(results, req)
@@ -1926,6 +1942,7 @@ class DayAxisReadouts:
             design=self._design,
             execution_context=self._metadata_context,
             identity_rows=identity_rows,
+            advisories=carried_advisories(advisories, zip(estimated, identity_rows, strict=True)),
         )
 
 

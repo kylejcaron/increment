@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import NoReturn
 
-from increment.errors import InvalidRequestError, RefusalSpec, refusals, refuse
+from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, refusals, refuse
 
 
 def _render(message: str, **_: object) -> str:
@@ -50,9 +50,25 @@ _MANIFEST_UNSUPPORTED = RefusalSpec(
 )
 
 
+def _render_schema_unavailable(*, schema: str) -> str:
+    return (
+        f"The results schema {schema!r} does not exist and could not be created. "
+        "Create it, or connect with permission to create schemas."
+    )
+
+
+_SCHEMA_UNAVAILABLE = RefusalSpec(
+    "store.run.schema_unavailable", CapabilityError, render=_render_schema_unavailable
+)
+
+
 def refuse_store(code: str, message: str, **context: object) -> NoReturn:
     refuse(_REFUSALS[code], message=message, **context)
 
 
 def refuse_unsupported_run_manifest(found: Sequence[str], supported: Sequence[str]) -> NoReturn:
     refuse(_MANIFEST_UNSUPPORTED, found=list(found), supported=list(supported))
+
+
+def refuse_unavailable_results_schema(schema: str) -> NoReturn:
+    refuse(_SCHEMA_UNAVAILABLE, schema=schema)

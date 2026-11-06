@@ -105,6 +105,7 @@ from increment.errors import refuse as _refuse
 from increment.errors import warn as _warn_spec
 from increment.estimation.decision_types import (
     DECISION_ARM_DECISION_ONE_SIDED_ALPHA,
+    AdvisoryKey,
     ArmHypothesisKey,
     AsymptoticSequentialEvidence,
     ContrastDecisionProcedure,
@@ -113,6 +114,7 @@ from increment.estimation.decision_types import (
     DecisionFailure,
     EValueEvidence,
     FixedInference,
+    MethodHypothesisKey,
     NoFamily,
     PValueEvidence,
     SegmentHypothesisKey,
@@ -1011,6 +1013,7 @@ __all__ = [
     "RelativeArmDecisionProcedure",
     "SeamArmAnalysisState",
     "compile_contrast_procedures",
+    "AdvisoryKey",
     "ArmHypothesisKey",
     "ContrastHypothesisKey",
     "DecisionComputation",
@@ -1018,6 +1021,7 @@ __all__ = [
     "AsymptoticSequentialEvidence",
     "EValueEvidence",
     "HypothesisKey",
+    "MethodHypothesisKey",
     "PValueEvidence",
     "SegmentHypothesisKey",
     "TestEvidence",

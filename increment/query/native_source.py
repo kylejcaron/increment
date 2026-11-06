@@ -4240,13 +4240,17 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def build_panel_for_metric(
         self,
-        exposures: Table,
         metric: Metric,
         *,
         population: Literal["assigned", "triggered"] = "assigned",
         horizon_metrics: Sequence[Metric] | None = None,
     ) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar]:
         """Return live panel relations independent of operation-owned TEMP tables."""
+        exposures = (
+            self._get_trigger_population(operation="build_panel_for_metric")
+            if population == "triggered"
+            else self._get_exposures()
+        )
         return self._build_panel_for_metric(
             exposures,
             metric,

@@ -34,6 +34,8 @@ from increment.estimation.readout_types import (
     SourceReadoutScope,
     cell_order,
     freeze,
+    index_advisories,
+    indexed_advisories,
 )
 from increment.estimation.results import LiftEstimate
 from increment.readouts._common import _raise, _runtime_method_roles, _runtime_methods
@@ -108,9 +110,11 @@ def _collect_expected_cells(
     failure_map: Mapping[tuple, Any],
     population: Literal["assigned", "triggered"],
     roster: ResolvedRoster,
-) -> tuple[dict[CellKey, LiftEstimate | None], dict[CellKey, CellFailure]]:
+) -> tuple[dict[CellKey, LiftEstimate | None], dict[CellKey, CellFailure], set[CellKey]]:
     cell_rows: dict[CellKey, LiftEstimate | None] = {}
     failures: dict[CellKey, CellFailure] = {}
+    # Cells whose failure their computations reported, not one assigned here.
+    reported: set[CellKey] = set()
     methodless_counts: dict[tuple[str, str, str], int] = {}
 
     # Matched rows are projected to this population below; expected-cell keys must match.
@@ -165,6 +169,7 @@ def _collect_expected_cells(
             failures[cell] = CellFailure(
                 hypothesis=cell.hypothesis(), code=failure.code, context=failure.context
             )
+            reported.add(cell)
         elif item.group_id not in roster.arms_by_metric.get(item.metric, set()):
             code = (
                 "readout.cell.missing_metric_observations"
@@ -190,7 +195,7 @@ def _collect_expected_cells(
     for leftover in row_map.values():
         for row in leftover:
             cell_rows.setdefault(population_cell(row), row)
-    return cell_rows, failures
+    return cell_rows, failures, reported
 
 
 def resolve_roster(
@@ -542,22 +547,6 @@ def _project_scoped_row(row, failure, scope):
     )
 
 
-def _indexed_advisories(computations):
-    result = {}
-    for computation in computations:
-        for hypothesis, advisories in computation.advisories.items():
-            identity = (
-                hypothesis.metric,
-                getattr(hypothesis, "group_id", None),
-                hypothesis.estimand,
-                getattr(hypothesis, "dimension", None),
-                getattr(hypothesis, "dimension_value", None),
-            )
-            values = result.setdefault(identity, {})
-            values.update({item.model_dump_json(): item for item in advisories})
-    return result
-
-
 def _design_evidence_components(evidence_rows, method_evidence, coordinates, *, decision=False):
     if method_evidence is None:
         parts = [
@@ -735,9 +724,9 @@ def scope_design_results(  # noqa: PLR0913, PLR0915
 
     row_map, failure_map = _indexed_cell_outcomes(rows, computations)
 
-    advisories_by_identity = _indexed_advisories(computations)
+    advisory_index = index_advisories(computations)
 
-    cell_rows, failures = _collect_expected_cells(
+    cell_rows, failures, reported = _collect_expected_cells(
         expected,
         row_map,
         failure_map,
@@ -873,18 +862,7 @@ def scope_design_results(  # noqa: PLR0913, PLR0915
                     reason_context=None if failure is None else failure.context,
                 ),
                 posterior=posterior,
-                advisories=tuple(
-                    advisories_by_identity.get(
-                        (
-                            cell.metric,
-                            cell.group_id,
-                            cell.estimand,
-                            cell.dimension,
-                            cell.dimension_value,
-                        ),
-                        {},
-                    ).values()
-                ),
+                advisories=indexed_advisories(advisory_index, cell, failed=cell in reported),
             )
         )
 

@@ -40,7 +40,7 @@ from tests.parity_harness.expected_differences import (
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "evidence_identity"
-_BINOMIAL_ARM_COUNT_SNAPSHOTS = tuple(
+_BINOMIAL_ROW_SNAPSHOTS = tuple(
     ExpectedDifference(
         scenario="parity_baseline",
         ingress="from_definitions",
@@ -48,20 +48,27 @@ _BINOMIAL_ARM_COUNT_SNAPSHOTS = tuple(
         frozen=frozen,
         current=current,
         reason=(
-            "The lift snapshot digests arm counts, which the captured exact binomial rows "
-            "left off; every other identity field is unchanged."
+            "Lift and breakout snapshots digest arm counts and each row's additive reference. "
+            "The captured exact binomial rows left arm counts off (both lift views), and those "
+            "rows now name the score interval as their additive reference (all three views); "
+            "every other identity field is unchanged."
         ),
     )
     for view, frozen, current in (
         (
             "run_daily_lift",
             "sha256:2179318f45d86080ad8df6f0dad6d51a876f9ac439510ddc69327036626ba9f3",
-            "sha256:7b55c2d488d499e6f3516966ac974f59ff14d7109d74121d0ba5939ed6bd08c8",
+            "sha256:4b525e34af8cb6add5b940b4bfc929ce407d792f4297e7bbb5b1f47b8f1324cb",
         ),
         (
             "run_asof_lift",
             "sha256:144f6c7d41a83d1e59a465cbf877a6b0a09f621017fc658c55ecd54e73b61213",
-            "sha256:02edf0b3c1ed107ca16529618b79d2dc3ecd80ced791fccd8d498bbb1c4fc0d8",
+            "sha256:3b70b680af781304f036556f88b3c9892f544754b78d0a28a4102ce5acf84dc0",
+        ),
+        (
+            "run_breakout",
+            "sha256:b32d44bd49090d4117809297638467edae035acf61e657243b67e724d6291f7d",
+            "sha256:5ce099c78ba4a5bfe4fe51eff2a4c00131f72d3618fd8a5f3253d59107f81e11",
         ),
     )
 )
@@ -428,7 +435,7 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
                 else:
                     original_results[name] = read(pair)
         expected_baseline = fixture["parity_baseline"]["rows"]
-        for difference in _BINOMIAL_ARM_COUNT_SNAPSHOTS:
+        for difference in _BINOMIAL_ROW_SNAPSHOTS:
             expected_baseline = difference.applied_to(expected_baseline)
         expected_baseline = _migrated_identity("parity_baseline", expected_baseline)
         expected_baseline["run_breakout"] = without_guardrail_segments(

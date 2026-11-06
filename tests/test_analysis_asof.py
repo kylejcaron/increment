@@ -44,6 +44,7 @@ from tests.analysis_factory import (
 )
 from tests.capability_consumers_scalar import UNBOUNDED_RETENTION_SEQUENTIAL, refused
 from tests.test_sequential_public_sources import gaussian_plan
+from tests.warning_codes import allow_warning_codes
 
 
 @backend_fixture(scope="module")
@@ -806,6 +807,8 @@ def _analysis_with_bounded_asof_encouragement_events(con, *, sequential: bool = 
     return experiment, resolver
 
 
+# The fixture's covariate means differ by arm, so its CUPED cells are flagged.
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
 def test_native_encouragement_cuped_asof_late_identity(con):
     """Public as-of CUPED rows preserve the LATE/ITT-over-compliance identity."""
     from increment import Method
@@ -2616,6 +2619,7 @@ def test_asof_lift_refuses_a_prior_under_sequential_inference() -> None:
                     "user_id": f"u{i}",
                     "variant": group,
                     "ds": dt.date(2024, 1, 1) + dt.timedelta(days=day),
+                    "exposed": dt.date(2024, 1, 1),
                     "revenue": int(group == "treatment"),
                 }
             )
@@ -2626,12 +2630,13 @@ def test_asof_lift_refuses_a_prior_under_sequential_inference() -> None:
         group="variant",
         date="ds",
         control="control",
+        exposure_date="exposed",
         metrics=[MetricSpec(name="revenue", type="conversion")],
         plan=gaussian_plan(
             [MetricSpec(name="revenue", type="conversion")],
             law="bernoulli",
             date="ds",
-            exposure_date=None,
+            exposure_date="exposed",
         ),
     )
     prior = Normal(mu=0.0, sigma=0.01)

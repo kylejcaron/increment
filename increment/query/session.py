@@ -32,6 +32,7 @@ from ibis.backends.sql import SQLBackend
 from ibis.common.exceptions import TableNotFound
 from ibis.expr import operations as ops
 
+from increment._warehouse_namespace import ensure_schema, schema_exists
 from increment.errors import (
     CapabilityError,
     CodedError,
@@ -359,8 +360,9 @@ class WarehouseArtifactStore:
     Publication persists generation-owned warehouse relations. A snapshot pins
     the manifest and relation references, then lazily creates private temporary
     copies during verification. Verified copies isolate reads from later changes
-    and are dropped when the snapshot closes. A declared schema is created on
-    demand before store-owned tables are written.
+    and are dropped when the snapshot closes. A declared schema and the store's
+    tables are created by its first write, a publication or an abandoned
+    generation; reading a store whose schema does not exist creates nothing.
     """
 
     _INDEX_TABLE_COLUMNS = (
@@ -422,9 +424,9 @@ class WarehouseArtifactStore:
         self._dropped_name = "ud_manifest_dropped"
         self._generations: dict[tuple[uuid.UUID, uuid.UUID], _StoredGeneration] = {}
         self._pending_cleanup: list[_MaterializedRelation] = []
+        self._tables_ready = False
         self._validate_namespace()
-        self._ensure_metadata_table()
-        self._ensure_dropped_table()
+        self._adopt_tables()
 
     def qr_scratch(self):
         """Return a scoped scratch owner for computations over a pinned artifact snapshot."""
@@ -451,10 +453,11 @@ class WarehouseArtifactStore:
                 _remember_materialized(self._pending_cleanup, relation)
 
     def preflight_publication(self) -> None:
-        """Require warehouse-side digest verification before source assembly."""
+        """Refuse before source assembly unless writes can be verified and stored."""
         self._require_warehouse_digest_verifier(
             relation="<publication>", digest_format=BUCKETED_DIGEST_FORMAT
         )
+        self._prepare_write()
 
     def _require_warehouse_digest_verifier(self, *, relation: str, digest_format: int) -> None:
         if self._con.name in _SQL_DIGEST_BACKENDS:
@@ -492,31 +495,39 @@ class WarehouseArtifactStore:
         return name
 
     def _ensure_namespace(self) -> None:
-        if self._schema is None:
-            return
-        create_database = getattr(self._con, "create_database", None)
-        if not callable(create_database):
-            return
-        try:
-            create_database(self._schema, catalog=self._catalog, force=False)
-        except Exception:
-            # Backends commonly report an existing schema as an error. Probe
-            # it before allowing metadata DDL to surface a real namespace error.
-            list_tables = getattr(self._con, "list_tables", None)
-            if not callable(list_tables):
-                return
-            try:
-                list_tables(database=self._database)
-            except Exception:
-                refuse(
-                    _ARTIFACT_STORE_NAMESPACE,
-                    message=f"artifact store namespace {self._database!r} does not exist",
-                    catalog=self._catalog,
-                    schema=self._schema,
-                )
+        if not ensure_schema(self._con, schema=self._schema, catalog=self._catalog):
+            refuse(
+                _ARTIFACT_STORE_NAMESPACE,
+                message=f"artifact store namespace {self._database!r} does not exist",
+                catalog=self._catalog,
+                schema=self._schema,
+            )
+
+    def _namespace_present(self) -> bool:
+        """Whether the declared schema exists, or the backend cannot tell."""
+        return (
+            self._schema is None
+            or schema_exists(self._con, schema=self._schema, catalog=self._catalog) is not False
+        )
+
+    def _adopt_tables(self) -> bool:
+        """Whether the store's tables exist; once its schema does, validate or create them."""
+        if not self._tables_ready and self._namespace_present():
+            self._ensure_tables()
+        return self._tables_ready
+
+    def _prepare_write(self) -> None:
+        """Create the declared schema and the store's tables before the first write."""
+        if not self._tables_ready:
+            self._ensure_namespace()
+            self._ensure_tables()
+
+    def _ensure_tables(self) -> None:
+        self._ensure_metadata_table()
+        self._ensure_dropped_table()
+        self._tables_ready = True
 
     def _ensure_metadata_table(self) -> None:
-        self._ensure_namespace()
         try:
             table = self._con.table(self._meta_name, database=self._database)
         except Exception:
@@ -621,6 +632,8 @@ class WarehouseArtifactStore:
         return tuple(actual)
 
     def _is_dropped(self, artifact_id: uuid.UUID, generation_id: uuid.UUID) -> bool:
+        if not self._adopt_tables():
+            return False
         dropped = self._con.table(self._dropped_name, database=self._database)
         matched = dropped.filter(
             (dropped.artifact_id == str(artifact_id))
@@ -644,6 +657,8 @@ class WarehouseArtifactStore:
     def visible_manifests(self) -> tuple[UnitDayArtifactRef, ...]:
         from increment.query.artifact_contract import ArtifactContractError
 
+        if not self._adopt_tables():
+            return ()
         metadata = self._con.table(self._meta_name, database=self._database)
         dropped = self._con.table(self._dropped_name, database=self._database)
         visible = metadata.anti_join(dropped, ["artifact_id", "generation_id"])
@@ -747,6 +762,7 @@ class WarehouseArtifactStore:
             artifact_id = refresh_of.artifact_id
         else:
             artifact_id = uuid.uuid4()
+        self._prepare_write()
         generation_id = uuid.uuid4()
         generation = _StoredGeneration(artifact_id, generation_id, expected_context, {}, None, None)
         self._generations[(artifact_id, generation_id)] = generation
@@ -755,6 +771,7 @@ class WarehouseArtifactStore:
     def _write_tombstone(self, artifact_id: uuid.UUID, generation_id: uuid.UUID) -> None:
         """Durably hide a generation: any manifest row, present or landing later,
         is excluded from `visible_manifests` and refused on read."""
+        self._prepare_write()
         if self._is_dropped(artifact_id, generation_id):
             return
         row = {
@@ -1115,6 +1132,8 @@ class WarehouseArtifactStore:
     def _generation_for_ref(self, ref: UnitDayArtifactRef) -> _StoredGeneration | None:
         generation = self._generations.get((ref.artifact_id, ref.generation_id))
         if generation is None:
+            if not self._adopt_tables():
+                return None
             metadata = self._con.table(self._meta_name, database=self._database)
             persisted = metadata.filter(
                 (metadata.artifact_id == str(ref.artifact_id))
@@ -1409,6 +1428,8 @@ class WarehouseArtifactStore:
 
         manifest_sha256 = _digest_port().manifest_sha256
 
+        if not self._adopt_tables():
+            return
         metadata = self._con.table(self._meta_name, database=self._database)
         persisted = metadata.filter(
             (metadata.artifact_id == str(artifact_id))

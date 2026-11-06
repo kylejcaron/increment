@@ -56,6 +56,7 @@ from increment.sources import MomentsSource
 from tests.analysis_factory import view_readout
 from tests.sequential_cases import registration
 from tests.test_sequential_public_sources import gaussian_plan
+from tests.warning_codes import allow_warning_codes
 
 
 def _normal_column(mean: float, sd: float, n: int, seed: int) -> np.ndarray:
@@ -1491,7 +1492,9 @@ def test_dense_conversion_posterior_favorable_uses_declared_null():
     assert row.posterior_prob_favorable != pytest.approx(row.chance_to_beat())
 
 
+# The covariate means differ by arm by construction, so the CUPED cell is flagged.
 @pytest.mark.parametrize("q", [0.01, 0.50], ids=["uncapped", "capped"])
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
 def test_cuped_row_never_reads_discovery_true_off_an_unadjusted_canonical(q: float):
     """methods=[unadjusted, cuped]: engineered so the unadjusted row is
     clearly significant (drives the family's selection, since dedup

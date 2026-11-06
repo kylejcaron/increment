@@ -316,7 +316,7 @@ def test_registered_sequential_breakout_refuses_declared_breakouts_it_cannot_sup
         assert reads == []
     with pytest.raises(CodedError) as uncaptured:
         sequential_snapshot(experiment, resolver)
-    assert uncaptured.value.code == "sequential.continuation.legacy"
+    assert uncaptured.value.code == "sequential.capture.required"
     country = run(selected(BreakoutIdentity("country", None)), resolver, capture=capture).cells
     assert {cell.identity.key.dimension for cell in country} == {"country"}
 

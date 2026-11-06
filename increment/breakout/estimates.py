@@ -100,7 +100,12 @@ from increment.estimation.multiplicity import (
     stamp_multiplicity_status,
 )
 from increment.estimation.priors import MixturePrior, StudentTPrior
-from increment.estimation.readout_types import register_collection_types
+from increment.estimation.readout_types import (
+    CellKey,
+    cell_advisories,
+    collect_advisories,
+    register_collection_types,
+)
 from increment.estimation.results import (
     DEFAULT_RELIABILITY_FLOOR,
     BinomialConfidenceSet,
@@ -139,7 +144,8 @@ from increment.semantics.sequential import ASYMPTOTIC_LAWS
 from increment.sequential_state import SequentialSnapshot, require_public_laws, sequential_refuse
 
 if TYPE_CHECKING:
-    from increment.decision import CompiledDecisionPlan, DecisionComputation
+    from increment.decision import AdvisoryKey, CompiledDecisionPlan, DecisionComputation
+    from increment.estimation.advisory import ReadoutAdvisory
     from increment.estimation.readout_types import ReadoutMetadata
     from increment.result_envelope import ResultCell
 
@@ -689,7 +695,7 @@ class BreakoutEstimate(_RowIdentity):
     abs_se: float | None = Field(default=None, allow_inf_nan=False)
     abs_lb: float | None = Field(default=None, allow_inf_nan=False)
     abs_ub: float | None = Field(default=None, allow_inf_nan=False)
-    abs_reference_kind: Literal["normal", "t"] | None = None
+    abs_reference_kind: Literal["normal", "t", "score"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
     abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
     # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.
@@ -1406,7 +1412,7 @@ class DailyLiftEstimate(_RowIdentity):
     abs_se: float | None = Field(default=None, allow_inf_nan=False)
     abs_lb: float | None = Field(default=None, allow_inf_nan=False)
     abs_ub: float | None = Field(default=None, allow_inf_nan=False)
-    abs_reference_kind: Literal["normal", "t"] | None = None
+    abs_reference_kind: Literal["normal", "t", "score"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
     abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
     # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.
@@ -2309,8 +2315,13 @@ def _estimate_lift_or_reason(
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     route_tail: float | None = None,
-) -> tuple[list[LiftEstimate] | None, str | None, Mapping[Any, Any]]:
-    """Call ``estimate_lift`` and retain keyed failures for dense callers.
+) -> tuple[
+    list[LiftEstimate] | None,
+    str | None,
+    Mapping[Any, Any],
+    Mapping[Any, tuple[ReadoutAdvisory, ...]],
+]:
+    """Call ``estimate_lift`` and retain keyed failures and advisories for dense callers.
 
     Catches lift guards and returns their keyed failures rather than dropping
     otherwise estimable sibling arms. ``route_tail`` is the tail a selected cell's corrected
@@ -2343,8 +2354,8 @@ def _estimate_lift_or_reason(
         ]
         if computation.failures and not results:
             reason = next(iter(computation.failures.values())).display()
-            return None, reason, computation.failures
-        return results, None, computation.failures
+            return None, reason, computation.failures, computation.advisories
+        return results, None, computation.failures, computation.advisories
     except LiftGuardError as exc:
         from increment.decision import ArmHypothesisKey, DecisionFailure
 
@@ -2363,7 +2374,7 @@ def _estimate_lift_or_reason(
                         "display": str(exc),
                     },
                 )
-        return None, str(exc), failures
+        return None, str(exc), failures, {}
 
 
 def _rekey_segment_computation(
@@ -2374,6 +2385,7 @@ def _rekey_segment_computation(
 ) -> DecisionComputation[LiftEstimate]:
     from increment.decision import (
         DecisionComputation,
+        MethodHypothesisKey,
         SegmentHypothesisKey,
     )
 
@@ -2385,6 +2397,11 @@ def _rekey_segment_computation(
             dimension,
             dimension_value,
         )
+
+    def advisory_key_for(key: Any) -> Any:
+        if isinstance(key, MethodHypothesisKey):
+            return MethodHypothesisKey(key_for(key.hypothesis), key.method)
+        return key_for(key)
 
     evidence: dict[Any, Any] = {}
     for value in bundle.evidence.values():
@@ -2398,7 +2415,9 @@ def _rekey_segment_computation(
         result.model_copy(update={"dimension": dimension, "dimension_value": dimension_value})
         for result in bundle.results
     )
-    advisories = {key_for(key): values for key, values in bundle.advisories.items() if values}
+    advisories = {
+        advisory_key_for(key): values for key, values in bundle.advisories.items() if values
+    }
     return DecisionComputation[LiftEstimate](
         results=cast(Sequence[LiftEstimate], results),
         evidence=evidence,
@@ -2536,7 +2555,7 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                     cache[cache_key] = (bundle, None)
                 results.extend(bundle.results)
                 evidence.update(bundle.evidence)
-                advisories.update(bundle.advisories)
+                collect_advisories(advisories, bundle.advisories, (method.name,))
                 failures.update(bundle.failures)
             except CodedError as exc:
                 if not exc.code.startswith("estimation.cuped_linear.") or exc.code == (
@@ -2641,7 +2660,10 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                 if reason is not None:
                     return part, reason
                 assert part is not None
-                parts.append(part)
+                # Bound here, a part without rows keeps its advisories on its own method.
+                bound: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]] = {}
+                collect_advisories(bound, part.advisories, (method.name,))
+                parts.append(replace(part, advisories=bound))
             return _merge_decision_computations(parts), None
         method = methods[0] if methods else Method(name="unadjusted")
         role = (method_roles or {}).get(method.name, "decision")
@@ -2697,7 +2719,7 @@ def _estimate_encouragement_or_reason(
     alternative: str = "two-sided",
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-) -> tuple[list[LiftEstimate], str | None]:
+) -> tuple[list[LiftEstimate], Mapping[Any, tuple[ReadoutAdvisory, ...]], str | None]:
     """Call ``estimate_encouragement`` for *estimands*, reporting why a
     slice's compliance/late row(s) came back missing.
 
@@ -2708,29 +2730,28 @@ def _estimate_encouragement_or_reason(
 
     Returns
     -------
-    tuple[list[LiftEstimate], str | None]
-        ``(results, None)`` on success, or ``([], reason)`` when the control arm is missing.
+    tuple[list[LiftEstimate], Mapping[Any, tuple[ReadoutAdvisory, ...]], str | None]
+        ``(results, advisories, None)`` on success, or ``([], {}, reason)`` when the
+        control arm is missing.
     """
     try:
-        results = list(
-            estimate_encouragement(
-                metrics,
-                summary,
-                design,
-                estimands=estimands,
-                methods=methods,
-                prior=prior,
-                alpha=alpha,
-                alternative=alternative,
-                inference=inference,
-                method_roles=method_roles,
-            ).results
+        computation = estimate_encouragement(
+            metrics,
+            summary,
+            design,
+            estimands=estimands,
+            methods=methods,
+            prior=prior,
+            alpha=alpha,
+            alternative=alternative,
+            inference=inference,
+            method_roles=method_roles,
         )
     except InvalidRequestError as exc:
         if exc.code != "estimation.encouragement.control.missing":
             raise
-        return [], str(exc)
-    return results, None
+        return [], {}, str(exc)
+    return list(computation.results), computation.advisories, None
 
 
 # Cohesive encouragement row assembly; splitting this path is deferred.
@@ -2751,11 +2772,11 @@ def _encouragement_rows_for_slice(  # noqa: PLR0913
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     reliability_floor: int,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-) -> list[DailyLiftEstimate]:
-    """One day-slice's compliance/LATE rows for one outcome metric."""
+) -> tuple[list[DailyLiftEstimate], dict[CellKey, tuple[ReadoutAdvisory, ...]]]:
+    """One day-slice's compliance/LATE rows for one outcome metric, and their advisories."""
     if methods == [] or not estimands:
-        return []
-    estimates, _ = _estimate_encouragement_or_reason(
+        return [], {}
+    estimates, advisories, _ = _estimate_encouragement_or_reason(
         metrics=[metric],
         summary=day_rows,
         design=design,
@@ -2809,7 +2830,7 @@ def _encouragement_rows_for_slice(  # noqa: PLR0913
                 )
             )
         )
-    return rows
+    return rows, cell_advisories(rows, advisories)
 
 
 def _slice_reference_kind(
@@ -3001,6 +3022,8 @@ class _BreakoutMetricPass(NamedTuple):
     outcomes: tuple[_BreakoutCellOutcome, ...]
     computations: dict[tuple[str, str], DecisionComputation]
     metric_rows: dict[tuple[str, str], list[Mapping[str, Any]]]
+    # Every estimator invocation's advisories in this segment, bound to its methods.
+    advisories: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]]
 
 
 class _BreakoutContext(NamedTuple):
@@ -3477,6 +3500,60 @@ def _record_failed_method_rows(
     return failed
 
 
+def _without_failed_cells(
+    computation: DecisionComputation,
+    projected_results: list[LiftEstimate],
+    *,
+    metric_name: str,
+    decision_failures: dict[Any, Any],
+    failed_method_results: set[tuple[str, str]],
+    resolved_roles: Mapping[str, Literal["decision", "sensitivity"]],
+) -> DecisionComputation:
+    """*computation* over its projected rows, without the evidence of its failed cells.
+
+    It is returned as is when no row, failure or method cell changed.
+    """
+    from increment.decision import DecisionComputation
+
+    if (
+        projected_results == list(computation.results)
+        and len(decision_failures) == len(computation.failures)
+        and not failed_method_results
+    ):
+        return computation
+    failed_hypotheses = {
+        hypothesis
+        for hypothesis, failure in computation.failures.items()
+        if failure.context.get("projection") != "absolute"
+    }
+    failed_groups = {
+        group_id
+        for group_id, method_name in failed_method_results
+        if resolved_roles.get(method_name, "decision") == "decision"
+    }
+    failed_hypotheses.update(
+        key
+        for key in computation.evidence
+        if getattr(key, "metric", None) == metric_name
+        and getattr(key, "group_id", None) in failed_groups
+    )
+    return DecisionComputation(
+        results=tuple(
+            result
+            for result in projected_results
+            if result.lift is not None
+            or (result.group_id, result.method) not in failed_method_results
+        ),
+        evidence={
+            key: value
+            for key, value in computation.evidence.items()
+            if key not in failed_hypotheses
+        },
+        failures=decision_failures,
+        advisories=computation.advisories,
+    )
+
+
 def _method_input_groups(
     configured: Sequence[Method],
     mixed_groups: Sequence[list[Method]] | None,
@@ -3564,7 +3641,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
     context: _BreakoutContext,
 ) -> _BreakoutMetricPass:
     """Estimate each live breakout metric and retain immutable cell outcomes."""
-    from increment.decision import ArmHypothesisKey, DecisionComputation
+    from increment.decision import ArmHypothesisKey
 
     declared_names = {m.name for m in context.metrics}
     unknown_metrics = {str(r["metric"]) for r in prepared.live_rows} - declared_names
@@ -3585,6 +3662,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
     skip_reason_by_metric: dict[str, str] = {}
     skip_failure_by_metric: dict[str, Any] = {}
     original_failures: dict[tuple[str, str], Any] = {}
+    advisories: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]] = {}
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for metric in context.metrics:
@@ -3705,6 +3783,11 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     family_member=context.family_member,
                 )
                 if computation is not None:
+                    collect_advisories(
+                        advisories,
+                        computation.advisories,
+                        (method.name for method in method_group),
+                    )
                     decision_failures: dict[Any, Any] = {}
                     projected_results = list(computation.results)
                     for hypothesis, failure in computation.failures.items():
@@ -3747,44 +3830,14 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                         method_posteriors=method_posteriors,
                         decision_failures=decision_failures,
                     )
-                    if (
-                        projected_results != list(computation.results)
-                        or len(decision_failures) != len(computation.failures)
-                        or failed_method_results
-                    ):
-                        from increment.decision import DecisionComputation
-
-                        failed_hypotheses = {
-                            hypothesis
-                            for hypothesis, failure in computation.failures.items()
-                            if failure.context.get("projection") != "absolute"
-                        }
-                        failed_groups = {
-                            group_id
-                            for group_id, method_name in failed_method_results
-                            if resolved_roles.get(method_name, "decision") == "decision"
-                        }
-                        failed_hypotheses.update(
-                            key
-                            for key in computation.evidence
-                            if getattr(key, "metric", None) == metric.name
-                            and getattr(key, "group_id", None) in failed_groups
-                        )
-                        computation = DecisionComputation(
-                            results=tuple(
-                                result
-                                for result in projected_results
-                                if result.lift is not None
-                                or (result.group_id, result.method) not in failed_method_results
-                            ),
-                            evidence={
-                                key: value
-                                for key, value in computation.evidence.items()
-                                if key not in failed_hypotheses
-                            },
-                            failures=decision_failures,
-                            advisories=computation.advisories,
-                        )
+                    computation = _without_failed_cells(
+                        computation,
+                        projected_results,
+                        metric_name=metric.name,
+                        decision_failures=decision_failures,
+                        failed_method_results=failed_method_results,
+                        resolved_roles=resolved_roles,
+                    )
                 if computation is not None and computation.failures:
                     _keep_non_guard_failures(computation.failures, original_failures)
                     _record_failed_pairs(computation.failures, unestimable)
@@ -3848,6 +3901,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
         ),
         computations,
         metric_rows,
+        advisories,
     )
 
 
@@ -4172,7 +4226,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                 in selected_keys
             ]
             continue
-        re_estimates, _reason, _failures = _estimate_lift_or_reason(
+        re_estimates, _reason, _failures, _advisories = _estimate_lift_or_reason(
             metrics=[metrics_by_name[metric_name]],
             summary=metric_rows,
             control_group=control_group,
@@ -4324,6 +4378,7 @@ def _snapshot_breakout(
     metrics: Sequence[Metric],
     inference: AsymptoticMean | AlwaysValid | MixedFamily,
     request: _SequentialBreakoutRequest,
+    advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None,
 ) -> BreakoutEstimates:
     from increment.estimation.sequential_runtime import (
         selected_snapshot_results,
@@ -4341,7 +4396,9 @@ def _snapshot_breakout(
         q=request.q,
         alpha_by_metric={m.metric: request.alpha for m in reg.models},
     )
-    rows = selected_snapshot_results(snapshot, inference, nominal_alpha=request.alpha)
+    rows, row_advisories = selected_snapshot_results(
+        snapshot, inference, nominal_alpha=request.alpha
+    )
     output = []
     for row in rows:
         cp = row.require_sequential_result().checkpoint
@@ -4360,6 +4417,8 @@ def _snapshot_breakout(
                 family_threshold=row.family_threshold,
             )
         )
+    if advisories is not None:
+        advisories.update(cell_advisories(output, row_advisories))
     return BreakoutEstimates(stamp_multiplicity_status(output, correction=request.correction))
 
 
@@ -4387,6 +4446,7 @@ def run_breakout(  # noqa: PLR0913
     unit_frames_by_metric: Mapping[str, Mapping[str, Any]] | None = None,
     covariates_by_metric: Mapping[str, Sequence[Any]] | None = None,
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory",
+    _cell_advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None = None,
 ) -> BreakoutEstimates:
     """Estimate lift for every distinct value of a dimension. Partitions
     ``summary`` on ``dimension`` before calling ``estimate_lift`` once
@@ -4443,6 +4503,9 @@ def run_breakout(  # noqa: PLR0913
     _method_evidence_by_metric : Mapping[str, Any] | None
         Method-scoped moments and cell refusals. Each scalar fit, including selected
         interval reinversion, selects its own input through ``rows_for_method``.
+    _cell_advisories : dict[CellKey, tuple[ReadoutAdvisory, ...]] | None
+        Internal: filled with the estimators' typed advisories, keyed by the full
+        identity of each returned cell they qualify.
 
     Raises
     ------
@@ -4492,6 +4555,7 @@ def run_breakout(  # noqa: PLR0913
                 source,
                 reliability_floor,
             ),
+            _cell_advisories,
         )
     if isinstance(summary, SequentialSnapshot):
         sequential_refuse(
@@ -4602,6 +4666,8 @@ def run_breakout(  # noqa: PLR0913
         segment_computations.update(pass_result.computations)
         metric_rows_by_segment_metric.update(pass_result.metric_rows)
         row_pass = _append_breakout_slice_rows(prepared, context, pass_result, len(results))
+        if _cell_advisories is not None:
+            _cell_advisories.update(cell_advisories(row_pass.rows, pass_result.advisories))
         results.extend(row_pass.rows)
         family_entries.extend(row_pass.family_entries)
     family_context = _BreakoutFamilyContext(
@@ -4971,6 +5037,8 @@ class _DailyMetricPass(NamedTuple):
     estimates: list[LiftEstimate]
     unestimable: dict[tuple[str, str], ExclusionReason]
     unavailable_methods: dict[tuple[str, str], set[str]]
+    # Every estimator invocation's advisories in this slice, bound to its methods.
+    advisories: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]]
 
 
 def _plan_daily_lift_slices(
@@ -5001,6 +5069,7 @@ def _estimate_itt_slice_or_unavailable(
     unestimable = dict(prepared.unestimable)
     unavailable_methods: dict[tuple[str, str], set[str]] = {}
     estimates: list[LiftEstimate] = []
+    advisories: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]] = {}
     for metric in slice_metrics:
         metric_rows = [row for row in prepared.live_rows if str(row["metric"]) == metric.name]
         policy = policy_by_metric[metric.name]
@@ -5042,18 +5111,23 @@ def _estimate_itt_slice_or_unavailable(
                     )
                 if not legacy_prepared.part.live_control_metrics:
                     continue
-            metric_estimates, metric_skip, metric_failures = _estimate_lift_or_reason(
-                metrics=[metric],
-                summary=group_rows,
-                control_group=context.control_group,
-                methods=method_group,
-                prior=metric_prior,
-                alpha=policy.alpha,
-                alternative=policy.alternative,
-                null_lift=policy.null_lift,
-                null_abs=policy.null_abs,
-                inference=context.inference,
-                method_roles=resolved_roles,
+            metric_estimates, metric_skip, metric_failures, metric_advisories = (
+                _estimate_lift_or_reason(
+                    metrics=[metric],
+                    summary=group_rows,
+                    control_group=context.control_group,
+                    methods=method_group,
+                    prior=metric_prior,
+                    alpha=policy.alpha,
+                    alternative=policy.alternative,
+                    null_lift=policy.null_lift,
+                    null_abs=policy.null_abs,
+                    inference=context.inference,
+                    method_roles=resolved_roles,
+                )
+            )
+            collect_advisories(
+                advisories, metric_advisories, (method.name for method in method_group)
             )
             if metric_failures and metric_estimates and context.view == "daily":
                 _warn(
@@ -5114,7 +5188,7 @@ def _estimate_itt_slice_or_unavailable(
             for method in configured
             if (metric_name, group_id, method.name) not in successful_methods
         )
-    return _DailyMetricPass(estimates, unestimable, unavailable_methods)
+    return _DailyMetricPass(estimates, unestimable, unavailable_methods, advisories)
 
 
 def _daily_lift_rows_for_slice(
@@ -5205,6 +5279,7 @@ def _stamp_asof_monitoring_notes(
 
 def _append_daily_encouragement_rows(
     results: list[DailyLiftEstimate],
+    advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]],
     day_rows: list[Mapping[str, Any]],
     slice_metrics: Sequence[Metric],
     estimands: Sequence[str],
@@ -5214,30 +5289,30 @@ def _append_daily_encouragement_rows(
     ds_value: date | datetime | str | int | float,
     dim_value: str | None,
 ) -> None:
-    """Append as-of encouragement estimates for the current day slice."""
+    """Append as-of encouragement estimates for the current day slice, and their advisories."""
     for metric in slice_metrics:
         metric_rows = [row for row in day_rows if str(row["metric"]) == metric.name]
-        results.extend(
-            _encouragement_rows_for_slice(
-                metric_rows,
-                metric=metric,
-                design=cast(Encouragement, context.design),
-                estimands=estimands,
-                methods=(context.methods_by_metric or {}).get(metric.name, context.methods),
-                prior=(context.prior_by_metric or {}).get(metric.name, context.prior),
-                policy=policy_by_metric[metric.name],
-                ds_value=ds_value,
-                ds_basis=context.ds_basis,
-                dimension=context.dimension,
-                dim_value=dim_value,
-                source=context.source,
-                inference=context.inference,
-                reliability_floor=context.reliability_floor,
-                method_roles=(context.method_roles_by_metric or {}).get(
-                    metric.name, context.method_roles
-                ),
-            )
+        rows, row_advisories = _encouragement_rows_for_slice(
+            metric_rows,
+            metric=metric,
+            design=cast(Encouragement, context.design),
+            estimands=estimands,
+            methods=(context.methods_by_metric or {}).get(metric.name, context.methods),
+            prior=(context.prior_by_metric or {}).get(metric.name, context.prior),
+            policy=policy_by_metric[metric.name],
+            ds_value=ds_value,
+            ds_basis=context.ds_basis,
+            dimension=context.dimension,
+            dim_value=dim_value,
+            source=context.source,
+            inference=context.inference,
+            reliability_floor=context.reliability_floor,
+            method_roles=(context.method_roles_by_metric or {}).get(
+                metric.name, context.method_roles
+            ),
         )
+        results.extend(rows)
+        advisories.update(row_advisories)
 
 
 def _validate_daily_lift_request(
@@ -5337,7 +5412,13 @@ def _resolve_daily_cell_policy(
 
 
 def _snapshot_daily_lift(
-    summary, metrics, requested_estimands, context: _DailyLiftContext, *, correction: Correction
+    summary,
+    metrics,
+    requested_estimands,
+    context: _DailyLiftContext,
+    *,
+    correction: Correction,
+    advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None,
 ) -> DailyLiftEstimates:
     assert isinstance(context.inference, SEQUENTIAL_POLICIES)
     from increment.estimation.sequential_runtime import (
@@ -5401,21 +5482,24 @@ def _snapshot_daily_lift(
         alpha=context.alpha if context.plan is None else None,
         alternative=context.alternative if context.plan is None else None,
     )
-    results = selected_snapshot_results(
+    results, row_advisories = selected_snapshot_results(
         summary,
         context.inference,
         nominal_alpha=context.alpha if context.plan is None else context.plan.alpha,
     )
-    return daily_sequential_projection(
+    projected = daily_sequential_projection(
         [row.model_copy(update={"ds": summary.reveal_cursor}) for row in results],
         correction=correction,
         source_by_dimension=(
             {} if context.dimension is None else {context.dimension: context.source}
         ),
     )
+    if advisories is not None:
+        advisories.update(cell_advisories(projected, row_advisories))
+    return projected
 
 
-def run_daily_lift(  # noqa: PLR0913
+def run_daily_lift(  # noqa: PLR0913, PLR0915
     summary: SequentialSnapshot | IntoDataFrame | Iterable[Mapping[str, Any]],
     metrics: Sequence[Metric],
     *,
@@ -5441,6 +5525,7 @@ def run_daily_lift(  # noqa: PLR0913
     _policy_by_cell: Mapping[tuple[date, str, str | None], Mapping[str, _DailyCellPolicy]]
     | None = None,
     plan: CompiledDecisionPlan | None = None,
+    _cell_advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None = None,
 ) -> DailyLiftEstimates:
     """Estimate relative lift separately per day slice -
     ``run_breakout``'s day-axis twin. Partitions ``summary`` on ``ds``
@@ -5486,6 +5571,9 @@ def run_daily_lift(  # noqa: PLR0913
         been removed from ``summary`` before fitting.
     _policy_by_cell : Mapping[tuple[date, str, str | None], Mapping[str, _DailyCellPolicy]] | None
         Internal compiled per-day, per-metric cell policy supplied by plan execution.
+    _cell_advisories : dict[CellKey, tuple[ReadoutAdvisory, ...]] | None
+        Internal: filled with the estimators' typed advisories, keyed by the full
+        identity of each returned day cell they qualify.
     Raises
     ------
     ValueError
@@ -5548,7 +5636,12 @@ def run_daily_lift(  # noqa: PLR0913
             plan,
         )
         return _snapshot_daily_lift(
-            summary, metrics, requested_estimands, context, correction=effective_correction
+            summary,
+            metrics,
+            requested_estimands,
+            context,
+            correction=effective_correction,
+            advisories=_cell_advisories,
         )
     if isinstance(summary, SequentialSnapshot):
         sequential_refuse("source.invalid", "as-of exact snapshot requires its registered policy")
@@ -5620,6 +5713,7 @@ def run_daily_lift(  # noqa: PLR0913
         preserve_day_axis=view == "asof",
     )
     results: list[DailyLiftEstimate] = []
+    advisories = {} if _cell_advisories is None else _cell_advisories
     for (ds_value, dim_value, slice_metric_name), day_rows in slices.items():
         slice_metrics = (
             [metric_by_name[slice_metric_name]] if slice_metric_name is not None else metrics
@@ -5668,6 +5762,7 @@ def run_daily_lift(  # noqa: PLR0913
         if encouragement_asof and encouragement_estimands:
             _append_daily_encouragement_rows(
                 results,
+                advisories,
                 day_rows,
                 slice_metrics,
                 encouragement_estimands,
@@ -5689,18 +5784,18 @@ def run_daily_lift(  # noqa: PLR0913
                 day_rows, slice_metrics, prepared, context, policy_by_metric
             )
         else:
-            metric_pass = _DailyMetricPass([], dict(prepared.unestimable), {})
-        results.extend(
-            _daily_lift_rows_for_slice(
-                day_rows,
-                prepared,
-                metric_pass,
-                ds_value=ds_value,
-                dim_value=dim_value,
-                context=context,
-                policy_by_metric=policy_by_metric,
-            )
+            metric_pass = _DailyMetricPass([], dict(prepared.unestimable), {}, {})
+        slice_rows = _daily_lift_rows_for_slice(
+            day_rows,
+            prepared,
+            metric_pass,
+            ds_value=ds_value,
+            dim_value=dim_value,
+            context=context,
+            policy_by_metric=policy_by_metric,
         )
+        advisories.update(cell_advisories(slice_rows, metric_pass.advisories))
+        results.extend(slice_rows)
     return DailyLiftEstimates(
         stamp_multiplicity_status(
             _stamp_asof_monitoring_notes(results, view=view, inference=inference, design=design),

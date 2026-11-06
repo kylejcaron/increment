@@ -1,4 +1,4 @@
-"""Shared helper for asserting on coded library warnings in tests.
+"""Shared helpers for asserting on, and allowing, coded library warnings in tests.
 
 `pytest`'s `WarningMessage.message` is typed `Warning | str`, so a bare
 `w.message.code` doesn't type-check; this narrows via `isinstance` once here
@@ -9,7 +9,9 @@ that asserts on a warning's code.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from functools import wraps
+from typing import Any
 
 from increment.errors import IncrementWarning
 
@@ -28,3 +30,35 @@ def warning_context(record: Iterable[warnings.WarningMessage], code: str) -> Map
     ]
     assert len(contexts) == 1, f"expected exactly one {code!r} warning, found {len(contexts)}"
     return contexts[0]
+
+
+def allow_warning_codes(*codes: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Allow only coded warnings carrying one of *codes* during a test.
+
+    Other warnings are re-emitted with their original category and location,
+    so the repository's warning-as-error policy still applies.
+    """
+
+    def decorate(test: Callable[..., Any]) -> Callable[..., Any]:
+        @wraps(test)
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            records: list[warnings.WarningMessage] = []
+            try:
+                with warnings.catch_warnings(record=True) as caught:
+                    records = caught
+                    warnings.simplefilter("always", IncrementWarning)
+                    result = test(*args, **kwargs)
+            finally:
+                for record in records:
+                    if getattr(record.message, "code", None) not in codes:
+                        warnings.warn_explicit(
+                            record.message,
+                            record.category,
+                            record.filename,
+                            record.lineno,
+                        )
+            return result
+
+        return wrapped
+
+    return decorate

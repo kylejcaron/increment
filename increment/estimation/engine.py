@@ -82,12 +82,11 @@ from increment.errors import (
 from increment.errors import (
     CodedModel as CodedModel,
 )
-from increment.estimation import binomial_rr
+from increment.estimation import binomial_rr, risk_difference
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
 from increment.estimation._tails import (
     resolvable_expm1,
     two_sided_critical_value,
-    wald_bounds,
 )
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.armstats import (
@@ -105,6 +104,11 @@ from increment.estimation.conversion_route import (
     route_for_counts,
 )
 from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_ratio_cuped
+from increment.estimation.diagnostics import (
+    COVARIATE_BALANCE_ALPHA,
+    CovariateBalance,
+    covariate_balance,
+)
 from increment.estimation.inference import (
     LiftGuardError,
     PosteriorFields,
@@ -327,6 +331,56 @@ _register_warning(
         "pooled at nominal 95% in calibration) and is reported unchanged -- add units or check "
         "the denominator for heavy tails before deciding."
     ),
+)
+
+
+def _covariate_imbalance_message(
+    *,
+    metric_name: str,
+    control_group: str,
+    treatment_group: str,
+    covariate: str | None,
+    mean_control: float,
+    mean_treatment: float,
+    statistic: float,
+    alpha: float,
+    adjustment_shift: float | None = None,
+    late_adjustment_shift: float | None = None,
+    **_details: object,
+) -> str:
+    """The covariate-imbalance warning. The move is reported on the absolute scale it was
+    made on, the LATE's own for a LATE; a ratio, whose move is not a multiple of the
+    difference, reports none."""
+    subject = "the covariate" if covariate is None else f"the covariate '{covariate}'"
+    shift, moved_scale = (
+        (adjustment_shift, "absolute difference")
+        if late_adjustment_shift is None
+        else (late_adjustment_shift, "LATE")
+    )
+    moved = (
+        ""
+        if shift is None
+        else f" The adjustment moved the {moved_scale} by {abs(shift):.4g}; if the covariate "
+        f"is at fault, the adjusted {moved_scale} is off by about that much."
+    )
+    return (
+        f"metric '{metric_name}', {treatment_group} vs {control_group}: {subject} used for "
+        f"CUPED averages {mean_treatment:.4g} in {treatment_group} and {mean_control:.4g} in "
+        f"{control_group}, a difference of {abs(statistic):.3g} standard errors (nominal "
+        f"p < {alpha:g}). A difference this large in a value measured before the experiment "
+        "is unusual. It can arise by chance, and more often the more cells are checked. It is "
+        "also what a covariate built differently for one arm produces (values lost or "
+        "zero-filled in one arm, a rescaled join, a window that overlaps the experiment), and "
+        f"what a failed assignment produces.{moved} Check how the covariate was built for each "
+        "arm before relying on either estimate."
+    )
+
+
+_register_warning(
+    "estimation.cuped.covariate_imbalance",
+    IncrementRuntimeWarning,
+    _covariate_imbalance_message,
+    dedupe_fields=("metric_name", "treatment_group"),
 )
 
 
@@ -1191,6 +1245,106 @@ def _small_total_clusters_advisory(
     return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
 
 
+def _cuped_covariate_balance(treatment: ArmStats, control: ArmStats) -> CovariateBalance | None:
+    """Balance of the covariate a scalar CUPED fit adjusts by; ``None`` without one."""
+    arms = (control, treatment)
+    if any(arm.ref_x is None or arm.cx1 is None or arm.cx2 is None or arm.n < 2 for arm in arms):
+        return None
+    return covariate_balance(
+        n_control=control.n,
+        mean_control=control.mean_x(),
+        var_control=control.var_x(),
+        n_treatment=treatment.n,
+        mean_treatment=treatment.mean_x(),
+        var_treatment=treatment.var_x(),
+    )
+
+
+def _declared_covariate(methods: Iterable[Method]) -> str | None:
+    """The covariate the scalar CUPED *methods* declare; ``None`` when they declare none,
+    as a warehouse's implicit pre-period value is, or disagree."""
+    names = {
+        method.covariates[0].name
+        for method in methods
+        if method.variance_reduction == "cuped" and method.covariates
+    }
+    return next(iter(names)) if len(names) == 1 else None
+
+
+def _covariate_imbalance_advisory(
+    treatment: ArmStats,
+    control: ArmStats,
+    balance: CovariateBalance,
+    *,
+    covariate: str | None,
+    slopes: Mapping[str, float],
+    shifts: Mapping[str, float],
+) -> ReadoutAdvisory | None:
+    """Warn of, and return the advisory for, a CUPED cell whose covariate means differ;
+    neither when one of its numbers is past the float range.
+
+    *slopes* are the fitted CUPED coefficients and *shifts* the moves they made in
+    the estimates, each keyed as reported.
+    """
+    context: dict[str, object] = {
+        "metric_name": treatment.metric,
+        "control_group": control.group_id,
+        "treatment_group": treatment.group_id,
+        "covariate": covariate,
+        "mean_control": control.mean_x(),
+        "mean_treatment": treatment.mean_x(),
+        "difference": balance.difference,
+        "standard_error": balance.standard_error,
+        "statistic": balance.statistic,
+        "dof": balance.dof,
+        "p_value": balance.p_value,
+        "alpha": COVARIATE_BALANCE_ALPHA,
+        **slopes,
+        **shifts,
+        "constant_arms": tuple(arm.group_id for arm in (control, treatment) if arm.var_x() <= 0.0),
+    }
+    if not all(math.isfinite(value) for value in context.values() if isinstance(value, float)):
+        return None
+    spec = _WARNINGS["estimation.cuped.covariate_imbalance"]
+    warn(spec, skip_file_prefixes=PACKAGE_FRAMES, context=context)
+    return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
+
+
+def _lift_covariate_imbalance_advisory(
+    treatment: ArmStats, control: ArmStats, strategy: _LiftVarianceStrategy
+) -> ReadoutAdvisory | None:
+    """The advisory for a fixed-horizon CUPED contrast whose covariate balance is flagged.
+
+    The slopes are refitted only for a flagged contrast. A fit that refuses leaves the
+    refusal to the CUPED row, which reaches the same fit.
+    """
+    balance = strategy.cuped_balance
+    if balance is None or not balance.flagged:
+        return None
+    shifts: dict[str, float] = {}
+    try:
+        if strategy.metric_type == "ratio":
+            ratio_fit = fit_ratio_cuped([control, treatment])
+            slopes = {
+                "theta_numerator": ratio_fit.numerator.theta,
+                "theta_denominator": ratio_fit.denominator.theta,
+            }
+        else:
+            theta = fit_cuped([control, treatment]).theta
+            slopes = {"theta": theta}
+            shifts["adjustment_shift"] = theta * balance.difference
+    except CodedError:
+        return None
+    return _covariate_imbalance_advisory(
+        treatment,
+        control,
+        balance,
+        covariate=_declared_covariate(item.method for item in strategy.methods),
+        slopes=slopes,
+        shifts=shifts,
+    )
+
+
 def _lift_advisories(
     metric: Metric,
     treatment: ArmStats,
@@ -1252,11 +1406,24 @@ def _treatment_lift_advisories(metrics, treatment, control, strategy, cluster, s
     )
 
 
-def _attach_lift_advisories(advisory_map, treatment, advisories, result, failure):
-    if advisories and (result is not None or failure is not None):
-        from increment.estimation.decision_types import ArmHypothesisKey
+def _attach_lift_advisories(
+    advisory_map, treatment, method_strategy, advisories, imbalance, result, failure
+):
+    """Key a contrast's advisories for one method that produced a row or a failure.
 
-        advisory_map[ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")] = advisories
+    The contrast's advisories qualify every method's row, so they take the
+    invocation's hypothesis; the covariate-balance advisory qualifies only a CUPED
+    method's row, so it takes the hypothesis bound to that method.
+    """
+    if result is None and failure is None:
+        return
+    from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
+
+    hypothesis = ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")
+    if advisories:
+        advisory_map[hypothesis] = advisories
+    if imbalance is not None and method_strategy.use_cuped:
+        advisory_map[MethodHypothesisKey(hypothesis, method_strategy.method.name)] = (imbalance,)
 
 
 # Orchestrator
@@ -1451,19 +1618,20 @@ def merge_decision_computations(
     computations: Sequence[DecisionComputation[LiftEstimate]],
 ) -> DecisionComputation[LiftEstimate]:
     """Combine disjoint estimator bundles into one DecisionComputation,
-    dropping any retained sequential snapshot."""
+    dropping any retained sequential snapshot. Each bundle's advisories are bound
+    to the methods of its own rows, or to no method when it has none."""
     from increment.estimation.decision_types import DecisionComputation
+    from increment.estimation.readout_types import collect_advisories, result_methods
 
     results: list[Any] = []
     evidence: dict[Any, Any] = {}
     failures: dict[Any, Any] = {}
-    advisories: dict[Any, list[ReadoutAdvisory]] = {}
+    advisories: dict[Any, tuple[ReadoutAdvisory, ...]] = {}
     for computation in computations:
         results.extend(computation.results)
         evidence.update(computation.evidence)
         failures.update(computation.failures)
-        for hypothesis, items in computation.advisories.items():
-            advisories.setdefault(hypothesis, []).extend(items)
+        collect_advisories(advisories, computation.advisories, result_methods(computation.results))
     merged_advisories = {}
     for key, items in advisories.items():
         distinct = {item.model_dump_json(): item for item in items}
@@ -1561,6 +1729,22 @@ def _lift_decision_bundle(  # noqa: PLR0915
                 checkpoint=sequential.checkpoint,
                 certificate=sequential.certificate,
             )
+            continue
+        if result.null_abs is not None and result.abs_reference_kind == "score":
+            # The score test the row's additive interval inverts, read from its counts.
+            p_value = result.p_value()
+            if p_value is None:
+                failures[hypothesis] = DecisionFailure(
+                    hypothesis,
+                    "evidence.p_value.unavailable",
+                    {
+                        "metric": result.metric,
+                        "group_id": result.group_id,
+                        "reason": "missing_sampling_statistic",
+                    },
+                )
+            else:
+                evidence[hypothesis] = PValueEvidence(hypothesis, result.method, p_value, "score")
             continue
         if result.null_abs is not None:
             # The margin test must use the same reference as the margin
@@ -1983,6 +2167,9 @@ class _LiftVarianceStrategy:
     # denominator-precision note, then the denominator-skew coverage note or
     # its unavailability; empty for every other contrast.
     ratio_notes: tuple[str, ...]
+    # The covariate balance of a fixed-horizon unit-grain contrast a CUPED
+    # method adjusts; None for every other contrast or without a covariate.
+    cuped_balance: CovariateBalance | None
 
 
 def _prepare_lift_estimation(
@@ -2105,12 +2292,14 @@ def _select_lift_variance_strategy(
     *,
     fixed_horizon: bool,
 ) -> _LiftVarianceStrategy:
-    """Resolve one contrast's grain, capability, hoisted moments and ratio advisories.
+    """Resolve one contrast's grain, capability, hoisted moments, ratio advisories and
+    CUPED covariate balance.
 
     The ratio advisories are evaluated for a fixed-horizon unit-grain ratio
     contrast only: the denominator-skew region was measured for the
     single-look interval, and a clustered row's denominator is a cluster
-    total whose skew/count regime is not the measured one.
+    total whose skew/count regime is not the measured one. The covariate
+    balance is the fixed-horizon test; CUPED never runs on a clustered row.
     """
     dof: float | None = None
     n_clusters: int | None = None
@@ -2170,6 +2359,11 @@ def _select_lift_variance_strategy(
             )
             if note is not None
         )
+    cuped_balance = (
+        _cuped_covariate_balance(treatment, control)
+        if fixed_horizon and cluster is None and any(item.use_cuped for item in method_strategies)
+        else None
+    )
     return _LiftVarianceStrategy(
         variance_model=variance_model,
         metric_type=metric_type,
@@ -2178,6 +2372,7 @@ def _select_lift_variance_strategy(
         absolute_moments=absolute_moments,
         methods=method_strategies,
         ratio_notes=ratio_notes,
+        cuped_balance=cuped_balance,
     )
 
 
@@ -2339,15 +2534,11 @@ def _without_unused_binomial_uptake(arm: ArmStats) -> ArmStats:
 
 
 def _binomial_abs_sidecar(treatment: ArmStats, control: ArmStats) -> tuple[float, float | None]:
-    """Wald absolute-scale ``(diff, SE)`` from the arms' own mean/variance,
-    independent of the exact binomial method (which needs neither and
-    tolerates zero events/variance that this classical SE cannot).
+    """The displayed absolute-scale ``(diff, SE)`` from the arms' own mean/variance: the Wald
+    SE, which the row's additive interval (`binomial_abs_interval`) does not use.
 
-    ``None`` SE when either arm has fewer than 2 units (no ddof=1
-    variance -- the binomial method itself is admissible at ``n=1``, but
-    this additive Wald sidecar is a distinct, unrelated feature with its
-    own long-standing sample-size floor) or both arms are simultaneously
-    zero-variance, matching the ``abs_se == 0.0 -> None`` convention
+    ``None`` SE when either arm has fewer than 2 units (no ddof=1 variance) or both arms are
+    simultaneously zero-variance, matching the ``abs_se == 0.0 -> None`` convention
     ``_infer_lift_result`` already uses for a degenerate ratio arm.
     """
     if treatment.n < 2 or control.n < 2:
@@ -2360,15 +2551,19 @@ def _binomial_abs_sidecar(treatment: ArmStats, control: ArmStats) -> tuple[float
     return abs_diff, (abs_se if abs_se > 0.0 else None)
 
 
-def _binomial_abs_bounds(abs_diff: float, abs_se: float, alpha_eff: float) -> tuple[float, float]:
-    """Two-sided Wald bounds for the binomial row's additive sidecar at its
-    central-equivalent ``alpha_eff``, through the shared survival-form
-    critical value: an extreme alpha resolves to a finite interval or
-    refuses with ``estimation.tails.unresolvable`` instead of overflowing."""
+def binomial_abs_interval(
+    x_c: int, n_c: int, x_t: int, n_t: int, alpha_eff: float
+) -> tuple[float, float, Literal["score"]]:
+    """``(abs_lb, abs_ub, abs_reference_kind)`` of a binomial row at its central-equivalent
+    ``alpha_eff``: the Miettinen-Nurminen score interval for ``p_t - p_c`` from the four
+    counts. Every binomial row's additive bounds come from here, so a fresh row, a family
+    reissue and a rerouted delta row agree. The critical value takes the shared survival
+    form: an alpha below its resolution refuses with ``estimation.tails.unresolvable``."""
     from scipy.stats import norm
 
-    crit = two_sided_critical_value(norm.isf, alpha_eff, what="binomial additive sidecar")
-    return wald_bounds(abs_diff, crit, abs_se, what="binomial additive sidecar")
+    crit = two_sided_critical_value(norm.isf, alpha_eff, what="binomial additive interval")
+    lower, upper = risk_difference.score_bounds(x_c, n_c, x_t, n_t, crit)
+    return lower, upper, "score"
 
 
 def _validate_binomial_request(
@@ -2531,9 +2726,7 @@ def _infer_binomial_lift_result(
             alpha=alpha_eff,
         )
     abs_diff, abs_se = _binomial_abs_sidecar(treatment, control)
-    abs_lb = abs_ub = None
-    if abs_se is not None:
-        abs_lb, abs_ub = _binomial_abs_bounds(abs_diff, abs_se, alpha_eff)
+    abs_lb, abs_ub, abs_reference_kind = binomial_abs_interval(x_c, n_c, x_t, n_t, alpha_eff)
     result = LiftEstimate(
         metric=treatment.metric,
         group_id=treatment.group_id,
@@ -2551,7 +2744,8 @@ def _infer_binomial_lift_result(
         null_abs=null_abs,
         abs_lb=abs_lb,
         abs_ub=abs_ub,
-        abs_alpha=alpha_eff if abs_lb is not None else None,
+        abs_reference_kind=abs_reference_kind,
+        abs_alpha=alpha_eff,
         reference_kind="binomial",
         binomial_set=binomial_set,
         note=binomial_rr.precision_note(ci),
@@ -4422,6 +4616,7 @@ def _estimate_lift(  # noqa: PLR0913
         advisories = _treatment_lift_advisories(
             metrics, treatment, control, strategy, cluster, inference is not None
         )
+        imbalance = _lift_covariate_imbalance_advisory(treatment, control, strategy)
         metric_type = prepared.metric_types[treatment.metric]
         for method_strategy in strategy.methods:
             method_role = prepared.resolved_method_roles.get(
@@ -4444,7 +4639,9 @@ def _estimate_lift(  # noqa: PLR0913
                 family_member=family_member,
                 route_tail=route_tail,
             )
-            _attach_lift_advisories(advisory_map, treatment, advisories, result, failure)
+            _attach_lift_advisories(
+                advisory_map, treatment, method_strategy, advisories, imbalance, result, failure
+            )
             if failure is not None:
                 guard_failures[failure.hypothesis] = failure
             if result is not None:

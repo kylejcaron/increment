@@ -594,8 +594,9 @@ def capture_differences(
 
     Floats agree to ``tests/parity_harness/comparison.py::TOLERANCE``, the tolerance for public
     readout values from different executions; every other leaf is compared exactly. Arm counts
-    and values a row gained after ``expected`` was captured are accepted only when they follow
-    from that row's own evidence (``without_gained_arm_facts``).
+    and values a row gained after ``expected`` was captured, and the score additive interval an
+    exact binomial row gained, are accepted only when they follow from that row's own evidence
+    (``without_gained_arm_facts``).
     """
     found: list[str] = []
 

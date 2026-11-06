@@ -1215,8 +1215,12 @@ def panel_spine(
         "first_exposure_date",
         day_offset=expanded["_day_offsets"],
     )
+    # Ibis already types date + interval as a date and drops a plain date cast,
+    # but DuckDB evaluates the sum as a timestamp; the round trip keeps `ds` a date.
     days = days.mutate(
-        ds=(days.first_exposure_date + days.day_offset.as_interval("D")).cast("date")
+        ds=(days.first_exposure_date + days.day_offset.as_interval("D"))
+        .cast("timestamp")
+        .cast("date")
     ).select("unit_id", "experiment_id", "day_offset", "ds")
     return keys.left_join(days, ["unit_id", "experiment_id"]).select(
         *spine_cols, "day_offset", "ds"
@@ -1370,7 +1374,7 @@ def unit_day_panel(
     ir.Table
         Columns: `unit_id`, `ds`, `experiment_id`, `group_id`, `metric`,
         `n_events` (0-filled), `sum_value`/`min_value`/`max_value`
-        (0.0-filled), `first_exposure_ts`, `first_exposure_date`.
+        (0.0-filled), `first_exposure_ts`, `first_exposure_date`, `day_offset`.
     """
     _metric_literal = ibis.literal(metric_name) if metric_name else None
 
@@ -1409,6 +1413,7 @@ def unit_day_panel(
             "group_id",
             "first_exposure_ts",
             "first_exposure_date",
+            "day_offset",
         ]
     ).agg(
         n_events=joined.value.count(),
@@ -1448,6 +1453,7 @@ def unit_day_panel(
         "max_value",
         "first_exposure_ts",
         "first_exposure_date",
+        "day_offset",
     )
 
 

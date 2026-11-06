@@ -352,6 +352,7 @@ def _native(
 
     con = ibis.duckdb.connect()
     con.raw_sql("CREATE SCHEMA IF NOT EXISTS analytics")
+    con.raw_sql("CREATE SCHEMA IF NOT EXISTS artifacts")
     con.create_table(
         "event_log",
         _seed_event_log_input(

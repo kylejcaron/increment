@@ -794,7 +794,7 @@ def _encouragement_decision_bundle(
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     late_failures: Sequence[tuple[str, str, float]],
     itt_bundle: DecisionComputation[LiftEstimate] | None,
-    first_stage_advisories: Mapping[Any, tuple[ReadoutAdvisory, ...]],
+    contrast_advisories: Mapping[Any, tuple[ReadoutAdvisory, ...]],
 ) -> DecisionComputation[LiftEstimate]:
     """Attach one decision value to each encouragement hypothesis.
 
@@ -822,7 +822,7 @@ def _encouragement_decision_bundle(
     failures.update(bundle.failures)
     advisories = dict(itt_bundle.advisories) if itt_bundle is not None else {}
     advisories.update(bundle.advisories)
-    advisories.update(first_stage_advisories)
+    advisories.update(contrast_advisories)
     for metric, group_id, z_fs in late_failures:
         hypothesis = ArmHypothesisKey(metric, group_id, "late")
         failures[hypothesis] = DecisionFailure(
@@ -1617,6 +1617,40 @@ def _estimate_late_rows(
     return rows
 
 
+def _late_covariate_imbalance_advisory(
+    t: ArmStats,
+    c: ArmStats,
+    context: _EncouragementFirstStageContext,
+    method_strategies: tuple[_EncouragementMethodStrategy, ...],
+) -> ReadoutAdvisory | None:
+    """The covariate-balance advisory of a CUPED-adjusted LATE, tested on the assigned arms.
+
+    The adjustment moves the ITT numerator by ``theta * difference`` and the LATE by
+    that over the raw first stage.
+    """
+    if not any(strategy.use_cuped for strategy in method_strategies):
+        return None
+    from increment.estimation.engine import (
+        _covariate_imbalance_advisory,
+        _cuped_covariate_balance,
+        _declared_covariate,
+    )
+
+    balance = _cuped_covariate_balance(t, c)
+    if balance is None or not balance.flagged:
+        return None
+    theta = fit_cuped([c, t]).theta
+    itt_shift = theta * balance.difference
+    return _covariate_imbalance_advisory(
+        t,
+        c,
+        balance,
+        covariate=_declared_covariate(strategy.method for strategy in method_strategies),
+        slopes={"theta": theta},
+        shifts={"itt_adjustment_shift": itt_shift, "late_adjustment_shift": itt_shift / context.b},
+    )
+
+
 # Public estimator signature is the API for encouragement results.
 def estimate_encouragement(  # noqa: PLR0913
     metrics: Sequence[Metric],
@@ -1800,8 +1834,8 @@ def _estimate_encouragement(  # noqa: PLR0913
     )
     out = list(prepared.results)
     late_failures: list[tuple[str, str, float]] = []
-    first_stage_advisories = {}
-    from increment.estimation.decision_types import ArmHypothesisKey
+    contrast_advisories = {}
+    from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
     from increment.estimation.engine import _small_total_clusters_advisory
 
     reported_uptake_arms: set[str] = set()
@@ -1820,7 +1854,7 @@ def _estimate_encouragement(  # noqa: PLR0913
         )
         first_stage_advisory = _small_total_clusters_advisory(t.metric, cluster, context.n_clusters)
         if first_stage_advisory is not None and "late" in prepared.estimands:
-            first_stage_advisories[ArmHypothesisKey(t.metric, t.group_id, "late")] = (
+            contrast_advisories[ArmHypothesisKey(t.metric, t.group_id, "late")] = (
                 first_stage_advisory,
             )
         if context.suppression is not None or (
@@ -1839,7 +1873,7 @@ def _estimate_encouragement(  # noqa: PLR0913
             ).model_copy(update={"metric": t.metric} if context.suppression else {})
             out.append(row)
             if first_stage_advisory is not None:
-                first_stage_advisories[ArmHypothesisKey(row.metric, row.group_id, row.estimand)] = (
+                contrast_advisories[ArmHypothesisKey(row.metric, row.group_id, row.estimand)] = (
                     first_stage_advisory,
                 )
         if "late" not in prepared.estimands:
@@ -1862,12 +1896,21 @@ def _estimate_encouragement(  # noqa: PLR0913
                 cluster=cluster,
             )
         )
+        imbalance_advisory = _late_covariate_imbalance_advisory(t, c, context, method_strategies)
+        if imbalance_advisory is not None:
+            late = ArmHypothesisKey(t.metric, t.group_id, "late")
+            # Only a CUPED method's LATE row is adjusted by the covariate.
+            for strategy in method_strategies:
+                if strategy.use_cuped:
+                    contrast_advisories[MethodHypothesisKey(late, strategy.method.name)] = (
+                        imbalance_advisory,
+                    )
     return _encouragement_decision_bundle(
         out,
         inference=inference,
         late_failures=late_failures,
         itt_bundle=prepared.itt_bundle,
-        first_stage_advisories=first_stage_advisories,
+        contrast_advisories=contrast_advisories,
     )
 
 

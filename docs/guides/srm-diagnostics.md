@@ -6,7 +6,9 @@ interval.
 
 The sample-ratio-mismatch (SRM) check is a separate assignment-integrity
 diagnostic. It flags the count imbalance; it does not explain its cause or
-replace a metric's decision interval.
+replace a metric's decision interval. CUPED cells get the same kind of check on
+their covariate's group means; see
+[When CUPED misleads](cuped.md#when-cuped-misleads-a-covariate-that-differs-by-arm).
 
 ## `sample_ratio_mismatch`: fixed vs always-valid
 

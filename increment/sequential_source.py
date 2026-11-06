@@ -1203,6 +1203,22 @@ def _has_cuped_linear_method(request) -> bool:
     )
 
 
+def _refuse_family_mismatch(cell, view) -> NoReturn:
+    """Refuse a registered cell whose family membership the requested view does not compile;
+    a segmented family read as one lift is sent to its breakout view."""
+    if cell.segment and view != "breakout":
+        (dimension, _level), *_ = cell.segment
+        sequential_refuse(
+            "source.invalid",
+            "a segmented sequential family is read segment by segment, not as one "
+            "whole-window or as-of lift",
+            route=f"View.breakout((BreakoutIdentity({dimension!r}, None),))",
+        )
+    sequential_refuse(
+        "source.invalid", "registered family membership differs from the compiled view policy"
+    )
+
+
 def validate_sequential_request(
     request,
     *,
@@ -1321,10 +1337,7 @@ def validate_sequential_request(
                 == ("bonferroni" if isinstance(inference, ASYMPTOTIC_PROCEDURE_POLICIES) else "bh")
             )
             if cell.family != expected_family:
-                sequential_refuse(
-                    "source.invalid",
-                    "registered family membership differs from the compiled view policy",
-                )
+                _refuse_family_mismatch(cell, request.view)
 
 
 def validate_frame_registration(
@@ -1482,6 +1495,7 @@ def _link_population_snapshot(snapshot, previous):
     from increment.sequential_state import (
         SequentialAncestor,
         _PrefixContent,
+        _refuse_rewritten_records,
         declare_sequential_freeze_cells,
     )
 
@@ -1507,9 +1521,7 @@ def _link_population_snapshot(snapshot, previous):
         or snapshot.records[: len(previous.records)] != previous.records
         or (len(snapshot.records) == len(previous.records) and snapshot.states != previous.states)
     ):
-        sequential_refuse(
-            "continuation.rewrite", "prior finalized records were removed, reordered or corrected"
-        )
+        _refuse_rewritten_records(previous.records, snapshot.records)
     carried = {c.cell: c for c in previous.frozen}
     if any(carried.get(c.cell, c) != c for c in snapshot.frozen):
         sequential_refuse(
@@ -1602,6 +1614,10 @@ class SequentialSourceMixin:
 
     _context: SourceContext
     _population: Literal["assigned", "triggered"] = "assigned"
+    # How a source without a checkpoint obtains one.
+    _capture_route = (
+        "capture_sequential(experiment, reader, finalized=True, as_of=<last finalized day>)"
+    )
 
     @property
     def population(self) -> Literal["assigned", "triggered"]:
@@ -1630,8 +1646,9 @@ class SequentialSourceMixin:
         snapshot = getattr(self, "_sequential_snapshot", None)
         if snapshot is None:
             sequential_refuse(
-                "continuation.legacy",
-                "source has no exact finalized joint-unit checkpoint; capture or adopt a current sequential snapshot",
+                "capture.required",
+                "this source holds no finalized sequential checkpoint yet",
+                route=self._capture_route,
             )
         registration = getattr(self.context.plan.inference, "registration", None)
         if registration is not None:

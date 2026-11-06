@@ -1970,6 +1970,7 @@ def test_streaming_snapshot_isolates_post_verification_external_mutation():
 @pytest.mark.slow
 def test_streaming_store_failed_write_drops_unregistered_relation(monkeypatch):
     con = ibis.duckdb.connect()
+    con.create_database("artifacts")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     before = set(con.list_tables(database="artifacts"))
     create = con.create_table
@@ -2338,7 +2339,7 @@ def test_hosted_metadata_creation_targets_the_explicit_catalog(
         monkeypatch.setattr(backend, "raw_sql", execute_hosted_sql)
         for operation in (
             "table",
-            "list_tables",
+            "list_databases",
             "insert",
             "drop_table",
             "execute",
@@ -2405,7 +2406,14 @@ def test_bigquery_store_creation_uses_effective_hosted_sql_namespace(
             return None
 
         monkeypatch.setattr(backend, "raw_sql", execute_hosted_sql)
-        for operation in ("table", "list_tables", "insert", "drop_table", "execute", "to_pyarrow"):
+        for operation in (
+            "table",
+            "list_databases",
+            "insert",
+            "drop_table",
+            "execute",
+            "to_pyarrow",
+        ):
             monkeypatch.setattr(backend, operation, getattr(real, operation))
         WarehouseArtifactStore(backend, catalog=catalog, schema_name=schema)
         assert hosted_targets == [(project, dataset), (project, dataset)]

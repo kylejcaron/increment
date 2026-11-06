@@ -7,6 +7,7 @@ import pyarrow as pa
 import pytest
 from pydantic import ValidationError
 from scipy.stats import beta as beta_dist
+from scipy.stats import t as t_dist
 
 from increment.errors import InvalidRequestError
 from increment.estimation.diagnostics import (
@@ -14,6 +15,7 @@ from increment.estimation.diagnostics import (
     NotApplicable,
     SRMResult,
     allocation_posterior_bands,
+    covariate_balance,
     resolve_srm_expected,
     sample_ratio_mismatch,
 )
@@ -786,6 +788,59 @@ def test_srm_result_repr_shows_allocation_summary_without_internal_mappings():
     assert "observed={'a': 100, 'b': 100}" in display
     assert "expected={'a': 0.5, 'b': 0.5}" in display
     assert not any(token in display for token in ("0x", "sha256:", "mappingproxy", "_v1"))
+
+
+def test_covariate_balance_is_welch_t_on_covariate_means():
+    arms = {"n_control": 100, "var_control": 4.0, "n_treatment": 100, "var_treatment": 4.0}
+    balance = covariate_balance(**arms, mean_control=10.0, mean_treatment=11.0)
+    assert balance is not None
+    assert balance.difference == pytest.approx(1.0)
+    assert balance.standard_error == pytest.approx(math.sqrt(0.08))
+    assert balance.statistic == pytest.approx(1.0 / math.sqrt(0.08))
+    assert balance.dof == pytest.approx(198.0)
+    assert balance.p_value == pytest.approx(2.0 * t_dist.sf(1.0 / math.sqrt(0.08), 198))
+    assert balance.flagged is True
+
+    within = covariate_balance(**arms, mean_control=10.0, mean_treatment=10.5)
+    assert within is not None
+    assert within.statistic == pytest.approx(0.5 / math.sqrt(0.08))
+    assert within.p_value == pytest.approx(2.0 * t_dist.sf(0.5 / math.sqrt(0.08), 198))
+    assert within.flagged is False
+
+
+def test_covariate_balance_one_constant_arm_uses_other_arm_variance():
+    balance = covariate_balance(
+        n_control=400,
+        mean_control=0.0,
+        var_control=0.0,
+        n_treatment=600,
+        mean_treatment=30.0,
+        var_treatment=450.0,
+    )
+    assert balance is not None
+    assert balance.standard_error == pytest.approx(math.sqrt(450.0 / 600.0))
+    assert balance.statistic == pytest.approx(30.0 / math.sqrt(450.0 / 600.0))
+    assert balance.dof == pytest.approx(599.0)
+    assert balance.flagged is True
+    # Constant in both arms: no sampling error to compare against, so no statistic.
+    both_constant = covariate_balance(
+        n_control=400,
+        mean_control=0.0,
+        var_control=0.0,
+        n_treatment=600,
+        mean_treatment=30.0,
+        var_treatment=0.0,
+    )
+    assert both_constant is None
+    single_unit = covariate_balance(
+        n_control=1,
+        mean_control=0.0,
+        var_control=0.0,
+        n_treatment=600,
+        mean_treatment=30.0,
+        var_treatment=450.0,
+    )
+    assert single_unit is None
 
 
 @pytest.mark.parametrize(

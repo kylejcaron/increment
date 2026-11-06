@@ -2656,13 +2656,13 @@ def test_from_unit_panel_forwards_observation_end_censoring():
     import pandas as pd
 
     base = date(2026, 1, 1)
-    # u0-u7 enroll on day 0 (windows close exactly at observation_end); u8/u9 enroll on day 4, so their 3-day windows can't have closed by base+3, censoring both (20% of enrolled units -> warning).
+    # u0-u7 enroll on day 0 (windows close exactly at observation_end); u8/u9 enroll on day 2, so their 3-day windows can't have closed by base+3, censoring both (20% of enrolled units -> warning).
     rows = []
     for i in range(8):
         group = "control" if i % 2 == 0 else "treatment"
         rows.append((f"u{i}", group, base, base, float(i + 1)))
     for i, group in [(8, "control"), (9, "treatment")]:
-        late = base + timedelta(days=4)
+        late = base + timedelta(days=2)
         rows.append((f"u{i}", group, late, late, 100.0))
     df = pd.DataFrame(rows, columns=["user_id", "variant", "day", "exposed_on", "revenue"])
     experiment, resolver = from_frame(

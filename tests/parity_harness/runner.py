@@ -553,8 +553,7 @@ def run_case(
     refuse -- a genuine parity break.
 
     A registered sequential source refuses a run until a checkpoint has been
-    captured (`sequential.continuation.legacy`: "source has no exact finalized
-    joint-unit checkpoint; capture or adopt a current sequential snapshot").
+    captured (`sequential.capture.required`).
     `capture_sequential` therefore runs FIRST for a sequential case, and the run
     reads off that one adopted checkpoint -- not run-then-capture-then-run-again.
     """

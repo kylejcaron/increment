@@ -26,6 +26,7 @@ from increment.semantics.models import (
 )
 from increment.workflows import export_moments, sequential_snapshot
 from tests.analysis_factory import view_readout
+from tests.covariate_cases import allow_tenure_imbalance
 from tests.test_cuped_covariate_sources import _scalar_native_case
 from tests.test_cuped_route_evidence import (
     _artifact_source,
@@ -99,6 +100,7 @@ def _native_case(tmp_path, *, decision=None, sensitivity=(), breakout=False):
 
 @pytest.mark.slow
 @pytest.mark.integration
+@allow_tenure_imbalance
 def test_artifact_single_scalar_export_replays_its_bound_family(tmp_path):
     path, con, methods = _native_case(tmp_path)
     source = _artifact_source(path, con)
@@ -553,6 +555,7 @@ def test_public_scalar_operations_refuse_before_evidence(
 @pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("operation", _scalar_operation_cases("export"))
+@allow_tenure_imbalance
 def test_public_export_carries_each_scalar_family(tmp_path, operation):
     second = _scalar("second", "history_b")
     path, con, methods = _native_case(tmp_path, sensitivity=(second,))

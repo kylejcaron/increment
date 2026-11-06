@@ -266,12 +266,14 @@ def _apply_spec_missing(
     ``missing="zero"`` counts a missing value as 0 with the row still in
     ``n``; ``missing="skip"`` removes the row from THIS metric's moments
     (observed units only). A missing covariate value is filled with the pooled
-    mean of the observed values (or 0 under ``missing="zero"``),
-    computed from the covariate column alone -- BEFORE ``missing="skip"``
-    removes any outcome-null rows below, never from the arm or the
-    outcome, which is what keeps the adjusted estimate unbiased under
-    randomization. NaN is normalized to null first so every backend
-    agrees on what "missing" is.
+    mean of the observed values (or 0 under ``missing="zero"``), computed from
+    the covariate column alone -- BEFORE ``missing="skip"`` removes any
+    outcome-null rows below, never from the arm or the outcome. The adjusted
+    estimate stays unbiased when the filled covariate keeps equal means across
+    arms: for a zero fill, when values and their missingness are distributed alike
+    in both arms (equal missing shares are not enough); for a mean fill, when
+    which values are missing is unrelated to their size. NaN is normalized to
+    null first so every backend agrees on what "missing" is.
     """
     value_cols = ["y"] + (["y_den"] if has_den else [])
     if has_x:
@@ -1525,6 +1527,7 @@ def _total_moment_rows(
             value_columns=sorted(
                 {c for spec in plain for c in (spec.y_column, spec.denominator) if c}
             ),
+            observation_end=observation_end,
         )
         collapsed = _collapse_to_unit_totals(
             admitted,

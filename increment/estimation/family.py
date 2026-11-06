@@ -864,8 +864,10 @@ def _members(rows: Sequence[LiftEstimate | BreakoutEstimate]) -> list[_Member]:
     """Key every row and classify how its interval is reissued, refusing what cannot be. A
     delta-route conversion row is read as a family member: its view carries the composite
     p-value of its persisted counts (`engine.escalate_family_member`), the evidence
-    ``run_breakout(correction="bh")`` reads for the same cell."""
-    from increment.estimation._fcr_reinterval import classify
+    ``run_breakout(correction="bh")`` reads for the same cell. A binomial margin row saved with
+    Wald additive bounds is read with its score interval (`_fcr_reinterval.with_score_margin`),
+    the test its reissue inverts."""
+    from increment.estimation._fcr_reinterval import classify, with_score_margin
     from increment.estimation.engine import escalate_family_member
 
     members: list[_Member] = []
@@ -875,7 +877,7 @@ def _members(rows: Sequence[LiftEstimate | BreakoutEstimate]) -> list[_Member]:
         key = _in_scope(ArmHypothesisKey(row.metric, row.group_id, row.estimand), scope)
         view = row._family_view()
         if view is not None and row.method_role == "decision":
-            view = escalate_family_member(view)
+            view = with_score_margin(escalate_family_member(view))
         construction, reason = ("unavailable", "") if view is None else classify(view)
         if construction is None:
             obstructed.append((_label(index, row), reason))
@@ -985,7 +987,9 @@ def select_exploratory_family(
     dense there -- again what ``run_breakout(correction="bh")`` reports. A row whose relative interval is
     unavailable (a non-positive arm mean) reports only its additive interval; an absolute margin
     can select it, and that interval is reissued from its persisted ``abs_alpha`` at the same
-    level, never narrower than the nominal one. An unselected row keeps its interval.
+    level, never narrower than the nominal one. An exact binomial margin row saved with Wald
+    additive bounds is read with the score interval its own level cuts, selected on that score
+    test and returned with it. Any other unselected row keeps its interval.
 
     A cell excluded for an outcome-based reason (zero variance, non-positive mean, extreme
     ratio) stays in ``m`` as a non-rejection, as in ``run_breakout``. A cell excluded by design
