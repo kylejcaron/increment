@@ -48,7 +48,6 @@ def test_census_counts_each_execution_path_exactly():
     import pyarrow as pa
 
     backend = ibis.duckdb.connect()
-    ibis.set_backend(backend)
     backend.create_table("census_source", obj=pa.table({"x": [1]}))
     try:
         counts = {}
@@ -60,8 +59,8 @@ def test_census_counts_each_execution_path_exactly():
 
         observed("raw_sql", lambda: backend.raw_sql("SELECT 1"))
         observed("chained_execute", lambda: backend.raw_sql("SELECT 2").execute("SELECT 3"))
-        observed("expression_execute", lambda: ibis.literal(4).execute())
-        observed("to_pyarrow", lambda: ibis.literal(5).to_pyarrow())
+        observed("expression_execute", lambda: backend.execute(ibis.literal(4)))
+        observed("to_pyarrow", lambda: backend.to_pyarrow(ibis.literal(5)))
         observed("get_schema", lambda: backend.get_schema("census_source"))
         observed("backend_sql", lambda: backend.sql("SELECT 6"))
         observed(
@@ -107,11 +106,21 @@ def test_census_counts_each_execution_path_exactly():
     [
         "native_scalar",
         "native_breakout",
-        pytest.param("artifact_cuped_breakout", marks=pytest.mark.slow),
-        "dashboard",
+        pytest.param(
+            "artifact_cuped_breakout",
+            marks=pytest.mark.slow(
+                reason="artifact publication, adoption and breakout read take about 17 s locally"
+            ),
+        ),
+        pytest.param(
+            "dashboard",
+            marks=pytest.mark.slow(reason="dashboard preparation takes about 10 s locally"),
+        ),
     ],
     ids=tuple(JOURNEYS),
 )
 def test_statement_counts_stay_within_bounds(journey, seeded_con):
     census = JOURNEYS[journey](seeded_con)
-    assert census.total <= BOUND[journey]["total"]
+    bounds = BOUND[journey]
+    assert census.total <= bounds["total"]
+    assert all(census.by_kind[kind] <= bounds[kind] for kind in census.by_kind)
