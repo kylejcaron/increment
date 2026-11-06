@@ -1070,7 +1070,10 @@ def test_postgres_mixed_cuped_definitions_and_artifact_match_local_and_duckdb(  
         )
     plan = experiment_def["plan"]
     for role in ("primary", "guardrails", "secondaries"):
-        entries = plan[role]
+        # A breakout plan declares no guardrail: a breakout view refuses a margined metric.
+        entries = plan.get(role)
+        if entries is None:
+            continue
         if isinstance(entries, dict):
             entries = [entries]
         for entry in entries:
