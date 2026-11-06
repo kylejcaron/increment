@@ -2706,7 +2706,7 @@ def _missing_and_constant_metric_run():
     import numpy as np
     import pandas as pd
 
-    from increment import AnalysisPlan, MetricSpec, Randomized, run
+    from increment import AnalysisPlan, ExperimentMetric, MetricSpec, Randomized, run
 
     rng = np.random.default_rng(1)
     n = 200
@@ -2737,7 +2737,11 @@ def _missing_and_constant_metric_run():
                 MetricSpec(name="latency", preferred_direction="decrease", missing="skip"),
                 MetricSpec(name="flat"),
             ],
-            plan=AnalysisPlan(primary="revenue", guardrails=["latency"], secondaries=["flat"]),
+            plan=AnalysisPlan(
+                primary="revenue",
+                guardrails=[ExperimentMetric(metric="latency", margin=0.02)],
+                secondaries=["flat"],
+            ),
         )
         with reader:
             return run(experiment, reader)

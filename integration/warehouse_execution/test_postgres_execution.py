@@ -1069,15 +1069,14 @@ def test_postgres_mixed_cuped_definitions_and_artifact_match_local_and_duckdb(  
             },
         )
     plan = experiment_def["plan"]
-    for role in ("primary", "guardrails", "secondaries"):
-        # A breakout plan declares no guardrail: a breakout view refuses a margined metric.
-        entries = plan.get(role)
-        if entries is None:
-            continue
-        if isinstance(entries, dict):
-            entries = [entries]
-        for entry in entries:
-            entry["decision_method"]["covariates"] = covariates
+    # A breakout cannot test a guardrail's margin, and a secondary family cannot be selected
+    # while the withheld arm's ratio has no usable result, so the ratio is a second primary,
+    # whose withheld cell is an unavailable row.
+    (ratio,) = [entry for entry in plan["secondaries"] if entry["metric"] == "rpo"]
+    plan["secondaries"].remove(ratio)
+    plan["primary"] = [plan["primary"], ratio]
+    for entry in (*plan["primary"], *plan["secondaries"]):
+        entry["decision_method"]["covariates"] = covariates
     definitions_path = tmp_path / f"postgres-mixed-{route}.yaml"
     definitions_path.write_text(yaml.safe_dump(definitions_data, sort_keys=False))
 
@@ -1107,9 +1106,8 @@ def test_postgres_mixed_cuped_definitions_and_artifact_match_local_and_duckdb(  
                 decision_method=method,
             ),
         ],
-        # Mirrors the breakout definitions: a breakout cannot test a guardrail's margin, so the
-        # ratio is a secondary.
-        plan=AnalysisPlan(primary="revenue", secondaries=("rpo",)),
+        # Mirrors the definitions: the ratio is a second primary.
+        plan=AnalysisPlan(primary=("revenue", "rpo")),
         design=Randomized(
             control_group="control",
             allocation={"control": 1 / 3, "treatment": 1 / 3, "withheld": 1 / 3},

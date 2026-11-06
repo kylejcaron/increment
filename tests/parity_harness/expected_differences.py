@@ -910,41 +910,43 @@ READOUT_IDENTITY_DIFFERENCES = tuple(
             "8996dea490ae6485b7c28afcb1428a7fcf1ac31078cb832489b52e6cf2f61c40",
             "f14ed77328bfb9959e8338058aea9d1ba05fbafca6a715786f8e465b9a810d5c",
         ),
+        # Every other view's frozen snapshot is the one `tests/test_metric_evidence.py` already
+        # migrates it to: the value-scale move (daily, as-of) or the arm-count and
+        # score-interval move (lift, breakout).
         (
             "parity_baseline",
             "from_definitions",
             "run_daily",
-            "d737e1d938dd0245134cc197e12db74ad54c4b71e37dfc410eb42963d10893d1",
-            "172311ff62820f44bec0e3babecaf384d4f58f93d8a017b77217d355437677e3",
+            "abf157fa97fac9b3cd7002d0e8e4a31b908d852fba1cbf44da1ebb84de4d5713",
+            "d5a8d7f980ca46f6f9ed7b902b808d3719e944b86e11529db3601e836c15d320",
         ),
         (
             "parity_baseline",
             "from_definitions",
             "run_asof",
-            "4e6e2192a9de3be3bed8ba57db4411bb59e88ef51345eab44a8473f2d8eb327f",
-            "8592296a039dfd20f1a3d0b36c2d61be2f1d35171c02cb474a3a464652f87509",
+            "72847bbe44ced27b7e5e19d5b043a5e95eb7f4c7c53ed629acd4a59faab7fe8b",
+            "f279219fa034637a091bf7c534f05226322631d059a2280c65b421d46bff9c38",
         ),
-        # The lift views' frozen snapshots were migrated once already, for arm counts.
         (
             "parity_baseline",
             "from_definitions",
             "run_daily_lift",
-            "7b55c2d488d499e6f3516966ac974f59ff14d7109d74121d0ba5939ed6bd08c8",
-            "47b5acdd17923c231f0a576955212a67c72df4c966cfaae1bf93161c0d8bbace",
+            "4b525e34af8cb6add5b940b4bfc929ce407d792f4297e7bbb5b1f47b8f1324cb",
+            "09d04ee429a1573a5dffbcd8ac0851cc2c1f5592a305188ce89ee42955ee923e",
         ),
         (
             "parity_baseline",
             "from_definitions",
             "run_asof_lift",
-            "02edf0b3c1ed107ca16529618b79d2dc3ecd80ced791fccd8d498bbb1c4fc0d8",
-            "fc796a87b94f29fe6dfd072d4eb5b54078012d92f77017452422e1f6a2c73d1c",
+            "3b70b680af781304f036556f88b3c9892f544754b78d0a28a4102ce5acf84dc0",
+            "d6621f8cfbf4cd5f268b8e275435a888a1d8d304096c489d7905989edf2b177c",
         ),
         (
             "parity_baseline",
             "from_definitions",
             "run_breakout",
-            "b32d44bd49090d4117809297638467edae035acf61e657243b67e724d6291f7d",
-            "b82c98b43ed2dc4ddc1b287e6e5a06449de9f2355e7d73adb0334af812ff34f5",
+            "5ce099c78ba4a5bfe4fe51eff2a4c00131f72d3618fd8a5f3253d59107f81e11",
+            "420fe58001a95f2c39c28bcb2369036c8a4087bd843b632c169da22f1cbba523",
         ),
         (
             "mixed_local",
