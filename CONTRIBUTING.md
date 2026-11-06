@@ -1312,6 +1312,13 @@ These reports are advisory. Use them to guide review; do not suppress
 findings, fragment functions, or alter numerical algorithms merely to reduce
 a score.
 
+The `increment/` report remains advisory because numerical code should not be
+fragmented merely to lower a score. `tests/` and `scripts/` are gated at
+complexity 40 by the committed `complexipy-snapshot.json`: a function above
+that threshold must already be in the snapshot and may not grow. When adding a
+deliberately complex test or script helper, update the snapshot in the same PR
+and include a one-line reason.
+
 ### Packaging changes
 
 For packaging or public-export changes, build and inspect the release

@@ -25,6 +25,7 @@ ENV/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+/.complexipy_cache/
 .dmypy.json
 .pyre/
 .pytype/
