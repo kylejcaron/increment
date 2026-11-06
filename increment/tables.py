@@ -21,6 +21,7 @@ from html import escape as escape_html
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._interpretation import (
+    LOW_RELIABILITY_CAVEAT,
     interpret_readout,
     readout_evidence_columns,
     render_effect_interpretation,
@@ -1025,7 +1026,12 @@ def _cell_evidence_notes(frame, populations, sources) -> list[str]:
 
 
 def _compact_interval_interpretation(value: Any) -> str:
-    text = str(value)
+    verdict, caveat, _ = str(value).partition(LOW_RELIABILITY_CAVEAT)
+    compact = _compact_interval_verdict(verdict.rstrip())
+    return f"{compact} {caveat}" if caveat else compact
+
+
+def _compact_interval_verdict(text: str) -> str:
     if "does not reject; inconclusive" in text:
         return "Contains tested null — inconclusive"
     if "excludes zero" in text:
@@ -1291,9 +1297,6 @@ def _decision_available(row: Mapping[str, Any]) -> bool:
     status = row.get("sequential_status")
     if not _is_missing(status):
         return status in DECIDABLE_SEQUENTIAL_STATUSES
-    low_reliability = row.get("low_reliability")
-    if not _is_missing(low_reliability) and low_reliability:
-        return False
     if row.get("stat_sig"):
         return True
     absolute = not _is_missing(row.get("null_abs"))

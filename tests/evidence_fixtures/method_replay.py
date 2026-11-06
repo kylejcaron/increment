@@ -507,11 +507,8 @@ def assert_encouragement_breakout_matches_old_row(
     n_control: float | None,
 ) -> Any:
     """Compare pure estimate fields and explicit production breakout assembly."""
-    from increment.breakout.estimates import (
-        DEFAULT_RELIABILITY_FLOOR,
-        BreakoutEstimate,
-        _breakout_estimate_row,
-    )
+    from increment.breakout.estimates import BreakoutEstimate, _breakout_estimate_row
+    from increment.estimation.results import DEFAULT_RELIABILITY_FLOOR
 
     if not isinstance(result, LiftEstimate):
         raise TypeError(f"expected a pure LiftEstimate, got {type(result).__name__}")
