@@ -238,6 +238,7 @@ def test_large_asymmetric_bracket_ranks_meet_exact_tail_inequalities(q, alpha):
 
 @pytest.mark.slow
 @pytest.mark.parametrize("n", [2**20, 2**32, 2**40])
+@pytest.mark.numerical_certification
 def test_large_central_bracket_ranks_match_factorial_oracle(n):
     """At a tail equal to an exact central CDF value, both ranks keep their
     coverage and tightness at counts where library CDFs lose digits."""

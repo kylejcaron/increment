@@ -838,6 +838,7 @@ class TestCompositeNoncoverageDecidesPairsByTheRuntime:
         assert result.escalated == float(p_value < 2.0 * own)
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_a_pair_dense_at_neither_tail_is_the_finite_sample_test(self, monkeypatch):
         counts = (300, 3_000, 400, 3_000)
         result = self._composite(monkeypatch, counts, 0.0)
@@ -849,6 +850,7 @@ class TestCompositeNoncoverageDecidesPairsByTheRuntime:
         assert result.lower + result.upper == result.nominal_lower + result.nominal_upper
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_a_pair_dense_at_the_read_tail_is_its_delta_row_there(self, monkeypatch):
         counts = (3_000, 6_000, 3_150, 6_000)
         assert 2_850 >= dense_min_count(self.TAIL)

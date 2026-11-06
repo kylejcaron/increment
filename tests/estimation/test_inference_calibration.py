@@ -1178,6 +1178,7 @@ def test_regeneration_tolerates_only_numerical_reproduction_error(edits, accepte
 
 
 @pytest.mark.slow
+@pytest.mark.numerical_certification
 def test_manifest_regeneration_is_complete_and_deterministic():
     """Regenerate decisions exactly and special-function readings within their
     numerical reproducibility budget, retaining every design condition."""

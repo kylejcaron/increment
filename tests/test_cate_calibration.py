@@ -2017,8 +2017,13 @@ def _e6v0_original_cluster_experiment(
 @pytest.mark.parametrize("members_per_cluster", [5, 100])
 @pytest.mark.parametrize("intervention_grain", ["unit", "cluster"])
 @pytest.mark.parametrize("n_clusters", [16, 80])
+@pytest.mark.parameter_recovery
 def test_e6v0_original_varying_noise_cluster_public_replay(
-    members_per_cluster, intervention_grain, n_clusters, record_property
+    members_per_cluster,
+    intervention_grain,
+    n_clusters,
+    record_property,
+    bootstrap_repetitions=999,
 ):
     """Record actual public behavior, not a Monte Carlo error-control certificate."""
     import json
@@ -2034,7 +2039,7 @@ def test_e6v0_original_varying_noise_cluster_public_replay(
     fit = estimate_cate(experiment, resolver, "y", **options)
     assert fit.n_clusters == n_clusters and fit.reference_df == n_clusters - 1
     assert fit.se > 0 and np.isfinite(fit.vcov).all()
-    bootstrap = ClusterBootstrap(seed=0, repetitions=999)
+    bootstrap = ClusterBootstrap(seed=0, repetitions=bootstrap_repetitions)
     validation = validate_cate(experiment, resolver, "y", bootstrap=bootstrap, **options)
     rule = targeting_rule(experiment, resolver, "y", fraction=0.5, bootstrap=bootstrap, **options)
     # Four inner folds retain six training clusters for four fitted directions.
@@ -2091,6 +2096,10 @@ def test_e6v0_original_varying_noise_cluster_public_replay(
             allow_nan=False,
         ),
     )
+
+
+def test_e6v0_original_varying_noise_cluster_public_replay_smoke(record_property):
+    test_e6v0_original_varying_noise_cluster_public_replay(5, "unit", 16, record_property, 5)
 
 
 @pytest.mark.parametrize("members_per_cluster", [5, 100])

@@ -49,6 +49,7 @@ class TestDensePlansNearTheThresholdAreEnumerated:
         ("alpha", "alternative", "recorded"),
         [(0.2, "two-sided", 0.59184), (0.1, "greater", 0.58895)],
     )
+    @pytest.mark.numerical_certification
     def test_the_recorded_witnesses_are_the_pipelines_exact_probability(
         self, alpha, alternative, recorded
     ):
@@ -76,11 +77,13 @@ class TestBorderlinePlansAreTheUnionOfBothRoutes:
         geometry = RejectionGeometry(key, "exact", PLANNING_CELL_CEILING, Routing(floor, 0.0))
         return geometry, key, floor
 
+    @pytest.mark.numerical_certification
     def test_the_classification_is_borderline_and_the_figure_exact(self):
         assert planning_route(N, N, P, P * (1 + LIFT), tail_alpha=TAIL, mode="auto") == "borderline"
         result = achieved_power(N, LIFT, Baseline.from_proportion(P), _procedure())
         assert result.power_basis == "exact"
 
+    @pytest.mark.numerical_certification
     def test_the_power_is_the_runtimes_delta_decision_on_the_rectangle_plus_the_replay_elsewhere(
         self,
     ):
@@ -128,6 +131,7 @@ class TestBorderlinePlansAreTheUnionOfBothRoutes:
         assert enclosure.power == pytest.approx(expected, abs=1e-12)
         assert enclosure.lower <= expected <= enclosure.upper
 
+    @pytest.mark.numerical_certification
     def test_every_decided_pair_is_the_runtimes_decision(self):
         """Pairs on both routes, on either side of the rectangle's edges, equal what the
         runtime's own row decides."""
@@ -146,6 +150,7 @@ class TestBorderlinePlansAreTheUnionOfBothRoutes:
             runtime = lift_row((x_c, N, x_t, N), alpha=ALPHA, alternative="two-sided").stat_sig()
             assert bool(plus[0, 0] or minus[0, 0]) == runtime, (x_c, x_t)
 
+    @pytest.mark.numerical_certification
     def test_a_shifted_null_is_decided_as_the_runtime_decides_it(self):
         """The routed rectangle is tested against ``1 + null_lift``, and so is every pair of the
         replay, down to pairs whose interval end sits on the null."""
@@ -166,6 +171,7 @@ class TestBorderlinePlansAreTheUnionOfBothRoutes:
             row = lift_row((x_c, N, x_t, N), alpha=ALPHA, null_lift=0.03)
             assert bool(plus[0, 0] or minus[0, 0]) == row.stat_sig(), (x_c, x_t)
 
+    @pytest.mark.numerical_certification
     def test_the_closure_bound_holds_the_power_at_every_rate_of_its_interval(self):
         geometry, _, _ = self._geometry()
         rates = [P * (1 + lift) for lift in (0.08, 0.1, 0.12)]
@@ -329,6 +335,7 @@ class TestRecordedOverstatementIsEnclosed:
     pipeline's exact rejection probability, 0.41252772628 (enumerated over the count lattice).
     Past the replay budget the enclosure is wide, but it holds it."""
 
+    @pytest.mark.numerical_certification
     def test_the_recorded_sparse_design_lies_inside_its_enclosure(self):
         enclosure = planned_enclosure(
             382_230,

@@ -396,6 +396,7 @@ def _grid_records(resolved, counts):
 @pytest.mark.parametrize(
     "arm_counts", [(6, 6), (6, 0), (0, 6)], ids=["both", "no-treated", "no-control"]
 )
+@pytest.mark.numerical_certification
 def test_every_grid_state_gives_the_public_decision(arm_counts):
     """Exhaustive over the whole sufficient-state grid at one look.
 
@@ -849,6 +850,7 @@ def test_case_outcome_sums_the_replication_records():
 
 # Replays a full uncurtailed replication stream against a fresh rule.
 @pytest.mark.slow
+@pytest.mark.parameter_recovery
 def test_curtailment_truncates_the_stream_without_moving_a_decision():
     """A curtailed gate reaches the same verdict at the same draw as the full run.
 
