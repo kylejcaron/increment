@@ -52,6 +52,7 @@ lint:
 	uv run python scripts/check_public_typing.py
 	uv run python scripts/audit_verbosity.py --gate
 	uv run complexipy tests scripts --max-complexity-allowed 40 --quiet
+	uv run python scripts/check_deferred_imports.py
 audit-verbosity:
 	uv run python scripts/audit_verbosity.py --gate
 complexity:
