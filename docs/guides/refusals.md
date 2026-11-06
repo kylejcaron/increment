@@ -57,6 +57,14 @@ reader accepts.
 find its declared `schema` nor create it when saving a run, so nothing was
 saved. Create the schema, or connect with permission to create schemas.
 
+`store.schema_name_too_long` means a schema or catalog name given to
+`WarehouseResultsStore` or `WarehouseArtifactStore` (named in `store`) is
+longer than the warehouse allows for a name: `limit` is 63 bytes on
+PostgreSQL, 255 characters on Snowflake and 1,024 bytes on BigQuery. The store
+refuses when it is created, before it reads or writes anything; PostgreSQL
+would otherwise shorten the name, so two long names that share their first 63
+bytes would save to and read from one schema. Choose a shorter name.
+
 `kernel.request.capture_not_supported` means sequential capture or checkpoint
 adoption was placed in saved request options. Call
 `increment.workflows.capture_sequential(experiment, reader, ...)` with the

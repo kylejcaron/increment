@@ -10,7 +10,12 @@ from typing import cast
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from increment._warehouse_namespace import ensure_schema, split_schema
+from increment._warehouse_namespace import (
+    MAX_IDENTIFIER_BYTES,
+    check_schema_name_length,
+    ensure_schema,
+    split_schema,
+)
 from increment.kernel.program_refusals import refuse_store, refuse_unavailable_results_schema
 from increment.store.parquet import ParquetResultsStore
 from increment.store.types import (
@@ -23,6 +28,15 @@ from increment.store.types import (
     run_record_key,
 )
 
+_RUN_TABLE_PREFIX = "increment_run_"
+_RUN_KEY_DIGITS = MAX_IDENTIFIER_BYTES - len(_RUN_TABLE_PREFIX)
+_RUN_TABLE_NAME = re.compile(rf"{_RUN_TABLE_PREFIX}[0-9a-f]{{{_RUN_KEY_DIGITS}}}")
+
+
+def run_table_name(run_key: str) -> str:
+    """A run's table: the prefix and the key's first 49 hex digits, 63 bytes in all."""
+    return _RUN_TABLE_PREFIX + run_key[:_RUN_KEY_DIGITS]
+
 
 class WarehouseResultsStore:
     """Publish one immutable, generation-scoped table per completed run.
@@ -30,10 +44,17 @@ class WarehouseResultsStore:
     A declared schema, ``schema`` or ``catalog.schema``, is created when the
     first run is saved; reading never creates it. Saving refuses with
     ``store.run.schema_unavailable`` when the schema can be neither found nor
-    created.
+    created. A schema or catalog name longer than the warehouse allows
+    (PostgreSQL 63 bytes, Snowflake 255 characters, BigQuery 1,024 bytes)
+    refuses at construction with ``store.schema_name_too_long``.
     """
 
     def __init__(self, backend, *, schema: str | None = None) -> None:
+        location = None if schema is None else split_schema(schema)
+        if location is not None:
+            check_schema_name_length(
+                backend, store="WarehouseResultsStore", catalog=location[0], schema=location[1]
+            )
         self.backend = backend
         self.schema = schema
         self._schema_ready = schema is None
@@ -50,7 +71,7 @@ class WarehouseResultsStore:
         self._schema_ready = True
 
     def _name(self, experiment_id: str, analysis_spec_hash: str, run_id: str) -> str:
-        return f"increment_run_{run_record_key(experiment_id, analysis_spec_hash, run_id)}"
+        return run_table_name(run_record_key(experiment_id, analysis_spec_hash, run_id))
 
     def put(self, run: Run) -> None:
         from increment.result_envelope import AnalysisEnvelope
@@ -133,11 +154,7 @@ class WarehouseResultsStore:
 
     @staticmethod
     def _is_committed_name(name: str) -> bool:
-        prefix = "increment_run_"
-        return (
-            name.startswith(prefix)
-            and re.fullmatch(r"[0-9a-f]{64}", name[len(prefix) :]) is not None
-        )
+        return _RUN_TABLE_NAME.fullmatch(name) is not None
 
     def _read_manifest_name(self, name: str) -> dict[str, object]:
         try:

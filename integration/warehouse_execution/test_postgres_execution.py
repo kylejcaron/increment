@@ -978,6 +978,72 @@ def test_artifact_explicit_catalog_path(postgres_con):
     run_artifact_explicit_catalog_probe(postgres_con, dialect="postgres")
 
 
+def test_results_store_reopens_a_saved_run(postgres_con, postgres_connect):
+    """A run saved to PostgreSQL reopens from a new connection by id, as latest and in history."""
+    import pandas as pd
+
+    from increment import from_frame, run
+    from increment.errors import CodedError
+    from increment.store import HistorySelector, WarehouseResultsStore
+
+    schema = f"results_{uuid4().hex}"
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "value": [1.0, 2.0, 2.0, 3.0],
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        experiment_id="exp",
+    )
+    reopened = None
+    try:
+        result = run(
+            experiment, reader, results_store=WarehouseResultsStore(postgres_con, schema=schema)
+        )
+        spec = result.run.analysis_spec_hash
+        reopened = postgres_connect()
+        store = WarehouseResultsStore(reopened, schema=schema)
+        handle = store.open_run("exp", spec, result.run.run_id)
+        assert handle.run.manifest_hash == result.run.manifest_hash
+        assert store.open_run("exp", spec).run.run_id == result.run.run_id
+        cells = handle.envelope().cells
+        assert sorted(cell.identity.hash() for cell in cells) == sorted(
+            cell.identity.hash() for cell in result.run.cells
+        )
+        (cell,) = cells
+        # Relative lift of the treatment mean 2.5 over the control mean 1.5.
+        assert cell.summary.point == pytest.approx(2 / 3, rel=1e-9)
+        identity = cell.identity
+        assert identity.scope is not None
+        history = store.history(
+            "exp",
+            HistorySelector(
+                metric_hash=identity.metric_hash,
+                estimator_id=identity.estimator_id,
+                method_config_hash=identity.method_config_hash,
+                method_instance_id=identity.method_instance_id,
+                scope_hash=identity.scope.hash(),
+            ),
+        )
+        assert history.num_rows == 1
+        with pytest.raises(CodedError) as duplicate:
+            store.put(handle.run)
+        assert duplicate.value.code == "store.run.duplicate"
+    finally:
+        reader.close()
+        if reopened is not None:
+            reopened.disconnect()
+        with postgres_con.raw_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'):
+            pass
+
+
 def _postgres_mixed_cuped_rows(n_per_arm: int = 48):
     rows = []
     for arm_index, arm in enumerate(("control", "treatment", "withheld")):
