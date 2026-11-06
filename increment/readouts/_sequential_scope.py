@@ -15,6 +15,7 @@ from increment.estimation.decision_types import (
     sequential_hypothesis_key,
 )
 from increment.estimation.readout_types import (
+    CellAdvisories,
     CellFailure,
     CellKey,
     CellRecord,
@@ -25,6 +26,7 @@ from increment.estimation.readout_types import (
     SamplingInference,
     SourceReadoutScope,
     _record_order,
+    cell_advisories,
     cell_order,
 )
 from increment.estimation.results import LiftEstimate
@@ -315,10 +317,16 @@ def scope_sequential_results(
     estimands: Sequence[str] | None,
     base_roster=None,
     configs: Sequence[Any] | None = None,
+    advisories: CellAdvisories | None = None,
 ) -> LiftEstimates:
-    """Attach both retained populations and account for every unavailable decision."""
+    """Attach both retained populations and account for every unavailable decision.
+
+    ``advisories`` are the assigned rows' typed advisories keyed by each cell's full
+    identity; the triggered checkpoint's own advisories are keyed here.
+    """
     from increment._sequential_readouts import sequential_readout
 
+    advisories = {} if advisories is None else dict(advisories)
     plan = src.context.plan
     design = _require_design(src, "run")
     registration = plan.inference.registration
@@ -342,16 +350,15 @@ def scope_sequential_results(
     else:
         integrity_counts = None
     if snapshot.triggered is not None:
-        rows = [
-            *rows,
-            *sequential_readout(
-                src,
-                population="triggered",
-                snapshot=snapshot,
-                _include_unrequested=True,
-                configs=configs,
-            ),
-        ]
+        triggered_rows, triggered_advisories = sequential_readout(
+            src,
+            population="triggered",
+            snapshot=snapshot,
+            _include_unrequested=True,
+            configs=configs,
+        )
+        advisories.update(cell_advisories(triggered_rows, triggered_advisories))
+        rows = [*rows, *triggered_rows]
     snapshot_id, source = _snapshot_identity(
         plan,
         snapshot,
@@ -408,6 +415,7 @@ def scope_sequential_results(
                 cell=cell,
                 source_snapshot_id=snapshot_id,
                 sampling=SamplingInference(available=True, evidence=_evidence(row, cell)),
+                advisories=advisories.get(cell, ()),
             )
         )
 

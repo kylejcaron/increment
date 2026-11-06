@@ -21,6 +21,7 @@ from increment.frame import CupedCovariate, from_unit_summary
 from increment.readouts import run
 from increment.workflows import export_moments
 from tests.analysis_factory import view_readout
+from tests.covariate_cases import allow_tenure_imbalance
 
 _BREAKOUT = View(view="breakout", grain="total")
 
@@ -199,6 +200,7 @@ def _artifact_source(path, con):
 @pytest.mark.integration
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
 @pytest.mark.parametrize("transport", ["export", "moments_source"])
+@allow_tenure_imbalance
 def test_single_cube_transports_carry_each_scalar_family(tmp_path, monkeypatch, ingress, transport):
     import pyarrow.parquet as pq
 

@@ -411,15 +411,18 @@ _NO_UPTAKE = (
         "route": "construct from_unit_panel with an Encouragement design or uptake=",
     },
 )
-_NO_CHECKPOINT = (
-    "sequential.continuation.legacy",
-    {
-        "reason": (
-            "source has no exact finalized joint-unit checkpoint; capture or adopt a "
-            "current sequential snapshot"
-        )
-    },
+_CAPTURE_ROUTE = (
+    "capture_sequential(experiment, reader, finalized=True, as_of=<last finalized day>)"
 )
+
+
+def _no_checkpoint(route: str = _CAPTURE_ROUTE) -> tuple[str, Mapping[str, object]]:
+    return (
+        "sequential.capture.required",
+        {"reason": "this source holds no finalized sequential checkpoint yet", "route": route},
+    )
+
+
 _UNREGISTERED = (
     "sequential.source.invalid",
     {"reason": "register the likelihood before capturing source data"},
@@ -515,10 +518,14 @@ REFUSALS: dict[tuple[str, str], tuple[str, Mapping[str, object]]] = {
         for loader in ("frame_summary", "moments", "switchback_frame")
     },
     **{
-        ("SequentialSnapshotRequest", loader): _NO_CHECKPOINT
+        ("SequentialSnapshotRequest", loader): _no_checkpoint()
         for loader in LOADERS
-        if loader != "switchback_frame"
+        if loader not in {"moments", "switchback_frame"}
     },
+    ("SequentialSnapshotRequest", "moments"): _no_checkpoint(
+        f"{_CAPTURE_ROUTE} on the source this cube was exported from, then export_moments "
+        "and from_moments again"
+    ),
     ("SequentialSnapshotRequest", "switchback_frame"): (
         "sequential.continuation.legacy",
         {

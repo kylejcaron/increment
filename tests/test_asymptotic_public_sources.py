@@ -50,7 +50,14 @@ def _plan(
                 exposure_date="exposed" if panel else "exposure",
             ),
         ),
-        models=tuple(mean_model(s.name, start_count=start, law=law) for s in specs),
+        models=tuple(
+            mean_model(
+                s.name,
+                start_count=start[s.name] if isinstance(start, dict) else start,
+                law=law,
+            )
+            for s in specs
+        ),
         cells=cells,
     )
     return AnalysisPlan(
@@ -229,6 +236,47 @@ def test_public_stopping_freezes_first_crossing_and_rejects_rewritten_prefix():
         sequential_snapshot(*_analysis(changed, specs, plan), previous=declared)
     assert raised.value.code == "sequential.continuation.rewrite"
     assert isinstance(records, pd.DataFrame)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "row", "changed"),
+    [
+        ("flip", 500, "values_or_definitions"),
+        ("delete", 10, "missing"),
+        ("reassign", 20, "assignment"),
+        ("insert", 5, "order"),
+    ],
+)
+def test_continuation_rewrite_names_first_difference(mutation, row, changed):
+    """A continuation that rewrites the parent's finalized records names the first reveal
+    position whose record differs, the unit the parent revealed there and what changed.
+
+    Units reveal in exposure order, one per row, so row k is reveal position k; a late unit
+    exposed between rows 4 and 5 displaces row 5's unit.
+    """
+    import pandas as pd
+
+    specs = [MetricSpec(name="outcome", type="mean")]
+    plan = _plan(specs)
+    records = _frame([1, 2] * 250, [5, 7] * 250)
+    records["exposure"] *= 2
+    parent = sequential_snapshot(*_analysis(records, specs, plan))
+    unit = records.loc[row, "unit"]
+    mutated = records.copy()
+    if mutation == "flip":
+        mutated.loc[row, "outcome"] = 99
+    elif mutation == "delete":
+        mutated = mutated.drop(index=row)
+    elif mutation == "reassign":
+        mutated.loc[row, "arm"] = "treatment" if mutated.loc[row, "arm"] == "control" else "control"
+    else:
+        late = {"unit": "late", "arm": "control", "outcome": 3, "exposure": 2 * row - 1}
+        mutated = pd.concat([mutated, pd.DataFrame([late])], ignore_index=True)
+    with pytest.raises(CapabilityError) as raised:
+        sequential_snapshot(*_analysis(mutated, specs, plan), previous=parent)
+    assert raised.value.code == "sequential.continuation.rewrite"
+    context = raised.value.context
+    assert (context["position"], context["unit_id"], context["changed"]) == (row, unit, changed)
 
 
 @pytest.mark.slow
@@ -523,9 +571,8 @@ def test_a_frozen_family_member_is_reselected_at_every_look():
         return rows
 
     def family(snapshot):
-        return {
-            r.metric: r for r in selected_snapshot_results(snapshot, policy, nominal_alpha=q / 2)
-        }
+        rows, _ = selected_snapshot_results(snapshot, policy, nominal_alpha=q / 2)
+        return {r.metric: r for r in rows}
 
     first = mean_capture(reg, records(100, 0.5, 1.0))
     before = family(first)
@@ -1410,3 +1457,63 @@ def test_boolean_covariate_also_declared_as_a_segment_keeps_the_adjusted_state(k
             want.point_reason,
         )
         assert rows[level].lift == expected[level].lift
+
+
+def test_balance_advisory_abstains_on_unready_checkpoint():
+    """An adjusted cell with a group below its declared start_count keeps its
+    unavailable reason and gets no covariate-balance advisory, however far apart
+    its covariate means are; its ready sibling reads as it does alone."""
+    import pandas as pd
+
+    from increment import CupedCovariate, Method
+
+    specs = [
+        MetricSpec(
+            name=name,
+            type="mean",
+            decision_method=Method.cuped(
+                covariates=CupedCovariate(name=f"{name}_pre", kind="continuous")
+            ),
+        )
+        for name in ("early", "steady")
+    ]
+    cells = tuple(
+        SequentialCell(metric=s.name, group_id="treatment", family=True, alpha=F(1, 40))
+        for s in specs
+    )
+    arms = ["control"] * 6 + ["treatment"] * 12
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i:02d}" for i in range(18)],
+            "arm": arms,
+            "exposure": range(18),
+            # Six control units are below early's start_count of 10. Its covariate
+            # means differ by 100 against a standard error of 0.25.
+            "early": [float(i % 3) for i in range(18)],
+            "early_pre": [100.0 * (arm == "treatment") + i % 2 for i, arm in enumerate(arms)],
+            "steady": [1.0 + i % 3 + 0.5 * (i % 2) for i in range(18)],
+            "steady_pre": [float(i % 2) for i in range(18)],
+        }
+    )
+    both = _plan(
+        specs, cells=cells, secondary=True, start={"early": 10, "steady": 2}, law="adjusted_mean"
+    )
+    rows = view_readout(*_analysis(frame, specs, both))
+    assert isinstance(rows, LiftEstimates) and rows.metadata is not None
+    by_metric = {row.metric: row for row in rows}
+    alone = _row(
+        _analysis(
+            frame, specs[1:], _plan(specs[1:], cells=cells[1:], secondary=True, law="adjusted_mean")
+        )
+    )
+    early = by_metric["early"].require_asymptotic_sequential_result().bounds
+    assert early.reason == "before_declared_start"
+    steady = by_metric["steady"].require_asymptotic_sequential_result().bounds
+    assert steady.available
+    assert steady == alone.require_asymptotic_sequential_result().bounds
+    assert not [
+        advisory
+        for record in rows.metadata.cells
+        for advisory in record.advisories
+        if advisory.code == "estimation.cuped.covariate_imbalance"
+    ]

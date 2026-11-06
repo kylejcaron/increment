@@ -59,6 +59,7 @@ import pytest
 from increment import from_frame
 from tests.analysis_factory import view_readout
 from tests.mc import CoverageSet, mcse
+from tests.warning_codes import allow_warning_codes
 
 MU_C = 10.0
 LIFT = 0.05
@@ -214,6 +215,8 @@ def _log_reference(
     return math.log(mt) - math.log(mc), math.sqrt(var_c + var_t), df
 
 
+# Randomized replicates flag their covariate by chance in about 1 in 1000 draws.
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
 def study(cell: Cell, reps: int, seed: int) -> dict[str, float]:
     from scipy.stats import t as t_dist
 

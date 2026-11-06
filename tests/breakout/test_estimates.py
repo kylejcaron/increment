@@ -36,7 +36,7 @@ from increment.estimation.results import Estimate, LiftEstimate
 from increment.estimation.sequential import AlwaysValid
 from increment.semantics.models import ConversionMetric, MeanMetric, Measure, RatioMetric
 from tests.estimation._binomial_endpoint_reference import assert_set_contains_finer_reference
-from tests.warning_codes import warning_codes
+from tests.warning_codes import allow_warning_codes, warning_codes
 
 # Helpers mirroring test_engine.py's arm/summary/metric fixture
 # conventions, plus a breakout dimension column.
@@ -1220,6 +1220,8 @@ class TestRunBreakoutBHCorrection:
             assert by_segment["A"].discovery is True
             assert by_segment["A"].family_size == by_segment["N"].family_size == 2
 
+    # The covariate means differ by arm by construction, so the CUPED cells are flagged.
+    @allow_warning_codes("estimation.cuped.covariate_imbalance")
     def test_bh_family_dedups_by_method(self):
         """2 methods x 1 metric x 2 segments: family size must count
         (metric, arm, segment) cells (2), not (metric, method, arm,

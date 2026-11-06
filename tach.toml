@@ -447,6 +447,7 @@ depends_on = [
   "increment._evidence_types",
   "increment.declarations",
   "increment.estimation._sequential_likelihood",
+  "increment.estimation.asymptotic_mean",
   "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_state",
   "increment._unit_cycle",
@@ -926,7 +927,7 @@ depends_on = [
   "increment.winsor",
   "increment._analysis_config", "increment._policy_alpha", "increment._readout_request",
   "increment._window", "increment.breakout.estimates", "increment.compatibility", "increment.decision", "increment.errors",
-  "increment._source_identity", "increment.estimation", "increment.estimation.advisory", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
+  "increment._source_identity", "increment.estimation", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
   "increment._evidence_types", "increment._trigger_integrity",
   "increment._evidence_loaders", "increment._evidence_scopes", "increment.kernel.context",
   "increment._sequential_readouts", "increment.estimation.sequential",
@@ -1144,6 +1145,7 @@ expose = [
 [[interfaces]]
 from = ["increment.estimation.decision_types"]
 expose = [
+  "AdvisoryKey",
   "ArmHypothesisKey",
   "DECISION_ARM_DECISION_ONE_SIDED_ALPHA",
   "exact_fraction",
@@ -1154,6 +1156,7 @@ expose = [
   "DecisionFailure",
   "EValueEvidence",
   "FixedInference",
+  "MethodHypothesisKey",
   "NoFamily",
   "PValueEvidence",
   "SegmentHypothesisKey",

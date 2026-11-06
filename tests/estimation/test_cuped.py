@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import warnings
 from fractions import Fraction
 from typing import TypedDict
 
@@ -19,7 +20,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment.errors import InvalidRequestError
+from increment.errors import IncrementRuntimeWarning, InvalidRequestError
 from increment.estimation.armstats import CENTERED_FIELDS, ArmStats
 from increment.estimation.cuped import (
     CupedFit,
@@ -29,10 +30,15 @@ from increment.estimation.cuped import (
     pooled_theta,
 )
 from increment.estimation.cuped.scalar import _within_arm_theta
+from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.variance import ratio_abs_diff_se, ratio_log_mean_se
 from increment.semantics.models import MeanMetric, Measure, RatioMetric
 from tests.mc import nominal_band, replicate
+from tests.warning_codes import allow_warning_codes, warning_codes
+
+# Randomized replicates flag their covariate by chance in about 1 in 1000 draws.
+_allow_chance_imbalance = allow_warning_codes("estimation.cuped.covariate_imbalance")
 
 # Helpers
 
@@ -210,6 +216,7 @@ def _cuped_coverage_trial(i: int, *, n_per_arm: int, rho: float, seed_base: int)
 
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
+@_allow_chance_imbalance
 def test_cuped_interval_coverage_is_nominal():
     """CUPED's CI covers the true relative lift ~95% of the time over 1500
     independent draws. MCSE at 1500 reps is ~0.56pp; k=3 gives ~3x that
@@ -313,6 +320,7 @@ def _lift_calibration(setting: str, *, reps: int, seed_base: int) -> dict[str, f
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 @pytest.mark.parametrize("setting", sorted(_CAL_SETTINGS))
+@_allow_chance_imbalance
 def test_fitted_theta_lift_is_calibrated_under_each_allocation(setting: str):
     """1500 replicates per setting. The fitted theta is a nuisance treated as
     fixed, so these are asymptotic claims checked at these sizes: the
@@ -1448,6 +1456,128 @@ class TestCupedRatioMetrics:
         with pytest.raises(InvalidRequestError) as exc_info:
             fit_ratio_cuped(arms)
         assert exc_info.value.code == "estimation.cuped.ratio_arm_covariate_role"
+
+
+# A covariate whose arm means differ: the balance advisory
+
+_IMBALANCE = "estimation.cuped.covariate_imbalance"
+
+
+def _covariate_contrast(*, control_covariate: bool) -> list[ArmStats]:
+    """Treatment: n=600, y mean 33, var 500, x mean 30, var 450, Cov(Y, X) 405.
+    Control: n=400, y mean 32, var 500, and either the same covariate
+    moments or x = 0 for every unit (lost and zero-filled)."""
+
+    def arm(n: int, y_mean: float, group_id: str, *, covariate: bool) -> ArmStats:
+        sum_x = 30.0 * n if covariate else 0.0
+        return _make_arm_stats(
+            n=n,
+            mean=y_mean,
+            var=500.0,
+            group_id=group_id,
+            sum_x=sum_x,
+            sum_x2=450.0 * (n - 1) + sum_x**2 / n if covariate else 0.0,
+            sum_xy=405.0 * (n - 1) + sum_x * y_mean if covariate else 0.0,
+        )
+
+    return [
+        arm(400, 32.0, "control", covariate=control_covariate),
+        arm(600, 33.0, "treatment", covariate=True),
+    ]
+
+
+def _cuped_computation(metric, arms):
+    return estimate_lift(
+        metrics=[metric],
+        summary=_summary_df(arms),
+        control_group="control",
+        methods=[Method(name="cuped", variance_reduction="cuped")],
+    )
+
+
+def test_imbalanced_covariate_attaches_advisory_without_moving_the_estimate():
+    with pytest.warns(IncrementRuntimeWarning) as recorded:
+        computation = _cuped_computation(
+            _mean_metric(), _covariate_contrast(control_covariate=False)
+        )
+    assert _IMBALANCE in warning_codes(recorded)
+    advisories = computation.advisories[
+        MethodHypothesisKey(ArmHypothesisKey("rev", "treatment", "itt"), "cuped")
+    ]
+    assert tuple(advisory.code for advisory in advisories) == (_IMBALANCE,)
+    context = advisories[0].context
+    assert context["statistic"] == pytest.approx(30.0 / math.sqrt(450.0 / 600.0))
+    assert context["constant_arms"] == ("control",)
+    # theta = (405/600) / (450/600) = 0.9 from treatment alone (control's x is
+    # constant), so the adjustment moved the 1.0 raw difference by 0.9 * 30.
+    assert context["adjustment_shift"] == pytest.approx(27.0)
+    (result,) = computation.results
+    assert result.abs_diff == pytest.approx(1.0 - 0.9 * 30.0)
+
+
+def test_balanced_covariate_has_no_balance_advisory():
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        computation = _cuped_computation(
+            _mean_metric(), _covariate_contrast(control_covariate=True)
+        )
+    assert _IMBALANCE not in warning_codes(recorded)
+    assert all(
+        advisory.code != _IMBALANCE
+        for advisories in computation.advisories.values()
+        for advisory in advisories
+    )
+
+
+def test_imbalance_statistic_past_the_float_range_abstains_without_failing_the_cell():
+    """Covariate means 0 and 1e150 over a within-arm spread of 1e-160 put the Welch
+    statistic past the float range; with Cov(Y, X) = 0, theta = 0 and the CUPED
+    estimate is the raw difference of 1.0."""
+    arms = [
+        ArmStats(
+            study_id="e",
+            metric="rev",
+            group_id=group_id,
+            n=100,
+            ref_y=y_mean,
+            cy1=0.0,
+            cy2=99.0,
+            ref_x=x_mean,
+            cx1=0.0,
+            cx2=x_scatter,
+            cxy=0.0,
+            x_role="covariate",
+        )
+        for group_id, y_mean, x_mean, x_scatter in (
+            ("control", 10.0, 0.0, 99e-320),
+            ("treatment", 11.0, 1e150, 0.0),
+        )
+    ]
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        computation = _cuped_computation(_mean_metric(), arms)
+    assert _IMBALANCE not in warning_codes(recorded)
+    assert not computation.advisories
+    (result,) = computation.results
+    assert result.abs_diff == pytest.approx(1.0, rel=1e-12)
+
+
+def test_imbalanced_ratio_covariate_advisory_reports_both_slopes_without_a_shift():
+    rng = np.random.default_rng(5)
+    num_c, den_c, _ = _ratio_units(rng, 2000, load_num=0.4, load_den=0.5)
+    # Control's covariate was lost and zero-filled for every unit.
+    control = _ratio_arm("control", num_c, den_c, np.zeros(2000))
+    treatment = _ratio_arm("treatment", *_ratio_units(rng, 2000, load_num=0.4, load_den=0.5))
+    with pytest.warns(IncrementRuntimeWarning):
+        computation = _cuped_computation(_ratio_metric(), [control, treatment])
+    advisories = computation.advisories[
+        MethodHypothesisKey(ArmHypothesisKey("ratio_rev", "treatment", "itt"), "cuped")
+    ]
+    (advisory,) = [advisory for advisory in advisories if advisory.code == _IMBALANCE]
+    fit = fit_ratio_cuped([control, treatment])
+    assert advisory.context["theta_numerator"] == pytest.approx(fit.numerator.theta)
+    assert advisory.context["theta_denominator"] == pytest.approx(fit.denominator.theta)
+    assert "adjustment_shift" not in advisory.context
 
 
 # Near-perfect correlation: the quadratic form must not crash on fp noise

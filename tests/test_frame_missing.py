@@ -1341,9 +1341,9 @@ def test_duplicate_metric_names_refused() -> None:
     assert exc_info.value.context["name"] == "m"
 
 
-def _cuped_null_covariate_frame() -> pa.Table:
-    """True lift 0, x strongly predictive of y, 50 covariate nulls in the
-    control arm only - the shape that silently biased a true-zero lift to -7.2%."""
+def _cuped_null_covariate_frame(control_nulls: int = 50) -> pa.Table:
+    """True lift 0, x strongly predictive of y, *control_nulls* covariate nulls in
+    the control arm only - the shape that silently biased a true-zero lift to -7.2%."""
     rng = np.random.default_rng(7)
     n = 500
     units, variants, ys, xs = [], [], [], []
@@ -1355,7 +1355,7 @@ def _cuped_null_covariate_frame() -> pa.Table:
         ys += y.tolist()
         xs += x.tolist()
     x_col: list[float | None] = list(xs)
-    for i in range(50):  # nulls in the CONTROL arm's covariate
+    for i in range(control_nulls):  # nulls in the CONTROL arm's covariate
         x_col[i] = None
     return pa.table({"user_id": units, "variant": variants, "y": ys, "x": x_col})
 
@@ -1384,11 +1384,47 @@ def test_cuped_covariate_nulls_auto_imputed_with_counted_warning() -> None:
             design=_DESIGN,
         )
     assert "frame.validation.metric_covariate_missing_imputed" in warning_codes(rec)
-    (est,) = readouts.run(src, decision_method=Method(name="cuped", variance_reduction="cuped"))
+    with warnings.catch_warnings(record=True) as ran:
+        warnings.simplefilter("always")
+        (est,) = readouts.run(src, decision_method=Method(name="cuped", variance_reduction="cuped"))
+    # Missingness that depends on the arm but not on the value leaves the filled
+    # covariate balanced.
+    assert "estimation.cuped.covariate_imbalance" not in warning_codes(ran)
     lift = est.require_lift()
     assert lift.lb is not None and lift.ub is not None
     assert lift.lb <= 0.0 <= lift.ub
     assert abs(lift.value) < 0.02
+
+
+def test_covariate_lost_in_one_arm_and_zero_filled_is_flagged() -> None:
+    covariate = CupedCovariate(name="x", kind="continuous", missing="zero")
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        experiment, resolver = from_frame(
+            _cuped_null_covariate_frame(control_nulls=500),
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            # The unadjusted sibling is its own estimate and has no covariate to check.
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    decision_method=Method.cuped(covariates=covariate),
+                    sensitivity_methods=[Method(name="unadjusted")],
+                )
+            ],
+        )
+        result = run(experiment, resolver)
+    assert "frame.validation.metric_covariate_missing_imputed" in warning_codes(recorded)
+    metadata = result.readout().metadata
+    assert metadata is not None
+    flagged = [
+        record.cell.method
+        for record in metadata.cells
+        if any(item.code == "estimation.cuped.covariate_imbalance" for item in record.advisories)
+    ]
+    assert flagged == ["cuped"]
 
 
 def test_all_null_covariate_refuses_with_actionable_message() -> None:
@@ -2077,6 +2113,82 @@ def test_densified_cells_counts_declared_zero_null_fills() -> None:
     )
     # 1 synthesised (u2, d2) cell + 1 genuine-null (u1, d2) cell
     assert src.densified_cells == 2
+
+
+def test_densified_cells_counts_only_eligible_cells() -> None:
+    """Only a unit's own days from its exposure through the last day can be zero filled.
+
+    Every unit has a row on each day from its exposure (day u % 3) through day 6, so no
+    eligible cell is missing; removing one of those rows leaves exactly one.
+    """
+    first = date(2026, 2, 1)
+    rows = [
+        {
+            "unit": u,
+            "arm": "control" if u % 2 else "treatment",
+            "day": first + timedelta(days=k),
+            "exposed": first + timedelta(days=u % 3),
+            "value": 1.0,
+        }
+        for u in range(60)
+        for k in range(u % 3, 7)
+    ]
+
+    def densified(table_rows: list[dict[str, Any]]) -> int:
+        return from_unit_panel(
+            pa.Table.from_pylist(table_rows),
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            exposure_date="exposed",
+            metrics={"value": "mean"},
+        ).densified_cells
+
+    assert densified(rows) == 0
+    assert densified(rows[:3] + rows[4:]) == 1
+
+
+def test_densified_cells_memory_does_not_grow_with_distinct_exposure_dates() -> None:
+    """Counting eligible cells reads each day and each exposure date once.
+
+    Two panels with the same rows and days differ only in how many distinct exposure
+    dates they hold (one, or one per day). Pairing every exposure date with every day
+    would allocate 1500 x 1500 rows (18 MB per 8-byte column) for the second.
+    """
+    import tracemalloc
+
+    import pandas as pd
+
+    n = 1500
+
+    def peak_bytes(exposed: list[int]) -> int:
+        frame = pd.DataFrame(
+            {
+                "unit": range(n),
+                "arm": ["control" if u % 2 else "treatment" for u in range(n)],
+                "day": range(n),
+                "exposed": exposed,
+                "value": [1.0] * n,
+            }
+        )
+        tracemalloc.start()
+        try:
+            from_unit_panel(
+                frame,
+                unit="unit",
+                group="arm",
+                date="day",
+                control="control",
+                exposure_date="exposed",
+                metrics={"value": "mean"},
+            )
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    peak_bytes([0] * n)  # warm imports and caches
+    assert peak_bytes(list(range(n))) - peak_bytes([0] * n) < 4 * 2**20
 
 
 def test_single_unit_arm_error_names_metric_and_arm() -> None:

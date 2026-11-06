@@ -45,6 +45,8 @@ if TYPE_CHECKING:
 
     from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import CompiledDecisionPlan
+    from increment.declarations import CellKey
+    from increment.estimation.advisory import ReadoutAdvisory
     from increment.estimation.inference import Prior
     from increment.semantics.design import Randomized
     from increment.semantics.models import Metric
@@ -269,13 +271,16 @@ def _sequential_asof_rows(
     estimands: Sequence[str] | None,
     population: Literal["assigned", "triggered"],
     configs: Sequence[Any],
+    advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None,
 ) -> list[LiftEstimate]:
     """One population's current checkpoint rows, labelled with that chain's reveal cursor.
 
     The scoped collection accounts for every cell, so an uncommitted triggered
     chain or an unsupported triggered uptake cell is reported, not omitted.
+    *advisories*, when given, receives the labelled rows' typed advisories.
     """
     from increment._sequential_readouts import sequential_readout
+    from increment.estimation.readout_types import carried_advisories, cell_advisories
     from increment.readouts._evidence import current_source_snapshot
     from increment.readouts._sequential_scope import scope_sequential_results
     from increment.sequential_state import sequential_refuse
@@ -285,20 +290,25 @@ def _sequential_asof_rows(
         sequential_refuse(
             "route.unsupported", "as-of reporting requires a labeled finalized checkpoint"
         )
+    checkpoint_rows, checkpoint_advisories = sequential_readout(
+        src, snapshot=snapshot, _include_unrequested=True, configs=configs
+    )
     rows = scope_sequential_results(
         src,
-        sequential_readout(src, snapshot=snapshot, _include_unrequested=True, configs=configs),
+        checkpoint_rows,
         snapshot,
         metrics=[metric.name for metric in metrics],
         estimands=estimands,
         configs=configs,
+        advisories=cell_advisories(checkpoint_rows, checkpoint_advisories),
     )
     chain = snapshot.chain(population) if snapshot.triggered is not None else snapshot
-    return [
-        row.model_copy(update={"ds": chain.reveal_cursor})
-        for row in rows
-        if row.analysis_population == population
-    ]
+    scoped = [row for row in rows if row.analysis_population == population]
+    labelled = [row.model_copy(update={"ds": chain.reveal_cursor}) for row in scoped]
+    if advisories is not None and rows.metadata is not None:
+        recorded = {record.cell: record.advisories for record in rows.metadata.cells}
+        advisories.update(carried_advisories(recorded, zip(scoped, labelled, strict=True)))
+    return labelled
 
 
 def asof_lift(
@@ -312,6 +322,7 @@ def asof_lift(
     prior: Prior | None | _Unset = UNSET,
     completed_windows_only: bool = False,
     _population: Literal["assigned", "triggered"] = "assigned",
+    _cell_advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None = None,
 ) -> list[LiftEstimate]:
     """As-of relative lift under the source's declared plan.
 
@@ -321,7 +332,8 @@ def asof_lift(
     historical dates are not reconstructed from rounded moments. Its selected
     intervals invert the same stopped likelihood at the exact FCR allocation.
     Segmented histories require a per-date state contract and remain
-    unsupported here.
+    unsupported here. A registered checkpoint's typed advisories, keyed by each
+    returned row's cell, fill ``_cell_advisories`` when it is given.
     """
     if src.context.cluster is not None:
         _raise_readout_request("readout.asof.cluster", cluster=src.context.cluster)
@@ -375,6 +387,7 @@ def asof_lift(
             estimands=estimands,
             population=_population,
             configs=resolved_configs,
+            advisories=_cell_advisories,
         )
     if design.mechanism == "encouragement":
         declared = _declared_margin_names(selected)

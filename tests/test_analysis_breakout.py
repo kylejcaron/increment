@@ -34,7 +34,7 @@ from tests.analysis_factory import (
     view_readout,
 )
 from tests.sequential_cases import registration
-from tests.warning_codes import warning_codes
+from tests.warning_codes import allow_warning_codes, warning_codes
 
 _BREAKOUT = View(view="breakout", grain="total")
 
@@ -847,6 +847,111 @@ def test_run_breakout_bh_family_keeps_a_tiny_segment_additive_row():
     )
 
 
+def test_breakout_cell_keeps_typed_advisory_through_payload_round_trip():
+    from increment import MetricSpec, render, run
+    from increment.estimation.variance import RATIO_DENOMINATOR_SKEW_THRESHOLD
+    from increment.result_envelope import AnalysisEnvelope
+    from tests.analysis_factory import declare_views
+
+    rows = [
+        {
+            "unit": f"{country}-{group}-{i}",
+            "arm": group,
+            "country": country,
+            "revenue": 2.0 + 0.1 * (i % 5) + (0.2 if group == "treatment" else 0.0),
+            # One large denominator in fifty skews the "skewed" segment's
+            # denominator mean; alternating 1/2 is symmetric.
+            "sessions": (5.0 if i == 0 else 1.0) if country == "skewed" else 1.0 + i % 2,
+        }
+        for country in ("skewed", "even")
+        for group in ("control", "treatment")
+        for i in range(50)
+    ]
+    experiment, resolver = from_frame(
+        pd.DataFrame(rows),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions")],
+        breakouts=["country"],
+    )
+    code = "estimation.engine.ratio_denominator_skew"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = run(declare_views(experiment, _BREAKOUT), resolver, views=(_BREAKOUT,))
+    restored = AnalysisEnvelope.from_payload(result.envelope.to_payload())
+    for metadata in (result.readout(_BREAKOUT).metadata, restored.metadata):
+        assert metadata is not None
+        flagged = {
+            (record.cell.dimension_value, record.cell.method): advisory.context
+            for record in metadata.cells
+            for advisory in record.advisories
+            if advisory.code == code
+        }
+        assert {segment for segment, _ in flagged} == {"skewed"}
+        assert all(
+            context["threshold"] == RATIO_DENOMINATOR_SKEW_THRESHOLD for context in flagged.values()
+        )
+    assert code in render(result, "full")
+
+
+def test_breakout_covariate_imbalance_advisory_stays_on_its_own_segment_and_method():
+    from increment import CupedCovariate, Method, MetricSpec, run
+    from tests.analysis_factory import declare_views
+
+    rng = np.random.default_rng(3)
+    rows = []
+    for country in ("lost", "intact"):
+        for group in ("control", "treatment"):
+            for i in range(300):
+                pre = 30.0 + rng.normal(0.0, 2.0)
+                rows.append(
+                    {
+                        "unit": f"{country}-{group}-{i}",
+                        "arm": group,
+                        "country": country,
+                        "revenue": 2.0 + 0.9 * pre + rng.normal(0.0, 1.0),
+                        "kept": pre,
+                        # One segment's join lost every control unit's pre-period value.
+                        "pre": None if (country, group) == ("lost", "control") else pre,
+                    }
+                )
+    # A balanced decision covariate beside the zero-filled one, each its own estimate.
+    decision = Method.cuped_multicovariate(
+        covariates=[CupedCovariate(name="kept", kind="continuous")]
+    )
+    zero_filled = Method.cuped(
+        covariates=CupedCovariate(name="pre", kind="continuous", missing="zero"),
+        name="zero_filled",
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        experiment, resolver = from_frame(
+            pd.DataFrame(rows),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue", decision_method=decision, sensitivity_methods=[zero_filled]
+                )
+            ],
+            breakouts=["country"],
+        )
+        result = run(declare_views(experiment, _BREAKOUT), resolver, views=(_BREAKOUT,))
+    metadata = result.readout(_BREAKOUT).metadata
+    assert metadata is not None
+    flagged = {
+        (record.cell.dimension_value, record.cell.method)
+        for record in metadata.cells
+        for advisory in record.advisories
+        if advisory.code == "estimation.cuped.covariate_imbalance"
+    }
+    assert flagged == {("lost", "zero_filled")}
+
+
 def _segment_frame(segments: dict[str, tuple[int, float]], *, seed: int) -> pd.DataFrame:
     """Unit rows per segment: ``(units per arm, treatment shift)`` on Normal(10, 2) outcomes."""
     rng = np.random.default_rng(seed)
@@ -982,6 +1087,8 @@ def test_bonferroni_breakout_without_an_estimable_segment_has_no_family():
     assert readout.metadata.scope.families == ()
 
 
+# GB's covariate means differ by arm by construction, so its CUPED cell is flagged.
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
 def test_breakout_propagates_a_cuped_nonpositive_mean_row_unmodified(con):
     """The previously-caught gap: a CUPED-adjusted mean that turns
     non-positive in exactly one segment must reach breakout as a real

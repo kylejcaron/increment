@@ -446,6 +446,36 @@ def with_expected_difference(
     return expected
 
 
+# Frozen day-axis rows dated after each panel's declared observation end, which the current
+# route no longer returns; the warehouse capture of the same case stops at that end too.
+_DAY_ROWS_THROUGH = {
+    ("asof-audit-retention-breakout-cohorts", "from_unit_panel"): "2025-01-20",
+    ("asof_lift-audit-retention-breakout-cohorts", "from_unit_panel"): "2025-01-20",
+}
+
+
+def through_observation_end(scenario: str, ingress: str, records: Any) -> Any:
+    """The frozen consumer-input *records* of one case without the day-axis rows dated after
+    its declared observation end. Refuses a recorded case whose frozen rows hold none."""
+    end = _DAY_ROWS_THROUGH.get((scenario, ingress))
+    if end is None:
+        return records
+    dropped = 0
+    for record in records:
+        if record["request_type"] != "DayAxisRequest":
+            continue
+        for day_slice in record["answer"]["slices"]:
+            for field in ("rows", "consumer_rows"):
+                rows = day_slice.get(field)
+                if rows is None:
+                    continue
+                kept = [row for row in rows if str(row["ds"]) <= end]
+                dropped += len(rows) - len(kept)
+                day_slice[field] = kept
+    assert dropped, f"{scenario}/{ingress} no longer records day rows after {end}"
+    return records
+
+
 def _binomial_arm_facts(counts: BinomialCounts) -> dict[str, int | float]:
     x_c, n_c, x_t, n_t = counts
     return {"n_control": n_c, "n_treat": n_t, "mean_control": x_c / n_c, "mean_treat": x_t / n_t}

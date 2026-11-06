@@ -331,6 +331,48 @@ values.
   identity are unchanged.
   Migration: read `r.low_reliability` for the caveat; a flagged row's
   `stat_sig()` is no longer a withheld verdict.
+- Release note (breaking): sequential refusals say where and what. A
+  continuation that rewrites a finalized record still refuses with
+  `sequential.continuation.rewrite`, and its context now names the first
+  differing reveal `position`, the `unit_id` the earlier capture revealed there
+  and what `changed` (`missing`, `order`, `assignment` or
+  `values_or_definitions`). Reading a panel, native, artifact or moments source
+  before it holds a finalized checkpoint refuses with the new
+  `sequential.capture.required` (context `reason`, `route`) instead of
+  `sequential.continuation.legacy`, which keeps meaning a checkpoint, plan or
+  cube from an earlier format. A registered segment on a Boolean column whose
+  declared levels include none of `"true"`, `"false"` and `"__null__"` refuses
+  when the experiment is built with `sequential.registration.invalid` (context
+  `dimension`, `declared`, `canonical`) instead of retaining only empty cells,
+  and a whole-window or as-of read of a segmented family names the
+  `View.breakout(...)` route in its `sequential.source.invalid` context. To
+  migrate, catch `sequential.capture.required` where code caught
+  `sequential.continuation.legacy` before a first capture, and declare Boolean
+  segment levels as `"true"`, `"false"` and `"__null__"`.
+- Release note (breaking bug fix): a `from_frame(shape="panel")` or
+  `increment.frame.from_unit_panel` panel checks `observation_end=` when it is
+  built, and the end bounds every result. On a calendar date column an ISO-8601
+  string such as `"2026-02-04"` names that day on every backend; Polars used to
+  fail at `run` with a backend `InvalidOperationError`. A string day column takes
+  a label spelled like its own, which may name a day with no rows (`"d9"` after
+  `"d1"` to `"d8"`), and a numeric day index a number. An end that cannot be
+  read, is of the wrong kind, falls before the panel's first day or cannot be
+  ordered among a string column's labels refuses with
+  `source.panel.observation_end` (context `value`, `axis_kind`, `issue`), which
+  replaces the run-time
+  `frame.panel.observable_end_dtype`. Values dated after the end no longer enter
+  unwindowed whole-window, open-ended retention, daily or as-of results; daily
+  and as-of rows stop at the end; units exposed after it are not analysed and
+  leave the unit counts; and a sequential capture or as-of compliance read at a
+  later `as_of` stops at it. Results move for panels whose end precedes their
+  last day; metrics with a bounded window keep their numbers. `densified_cells`
+  now counts only cells inside each unit's eligible days, from its exposure date
+  (or the first day) through the end (or the last day), so a staggered panel
+  without pre-exposure rows no longer counts its pre-exposure cells. A sequential
+  plan on a panel without `exposure_date=` refuses at construction with
+  `source.frame.sequential_exposure_date`, as the summary shape does, instead of
+  failing at `run`. Experiment `to_json()` and `hash()` are unchanged. To
+  migrate, set `observation_end` to the last day whose data should count.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
@@ -714,6 +756,47 @@ values.
   `from_frame(shape="panel", ...)` and save it again. `EvidenceCapabilities`
   gains an optional `grain_route`, a source's route to an undeclared day axis,
   left out of saved JSON when unset.
+- Release note (feature): a fixed-horizon scalar CUPED cell whose covariate
+  means differ between groups (a two-sided Welch t test on the covariate as
+  adjusted, nominal p < 0.001, the automatic sample-ratio check's threshold)
+  carries the advisory `estimation.cuped.covariate_imbalance`, and the run emits
+  a runtime warning with the same code. Its context reports each group's
+  covariate mean, the `difference` with its `standard_error`, `statistic`, `dof`
+  and `p_value`, the fitted `theta` (`theta_numerator` and `theta_denominator`
+  for a ratio metric), the `constant_arms`, and for a mean metric
+  `adjustment_shift`, how far the adjustment moved the absolute difference (not
+  the relative lift): the unadjusted difference minus the adjusted one, `theta`
+  times the covariate `difference`. A CUPED-adjusted LATE reports
+  `itt_adjustment_shift`, that move on the ITT difference, and
+  `late_adjustment_shift`, the unadjusted LATE minus the adjusted LATE, instead.
+  Breakout segments and daily cells are each tested on their own data.
+  An asymptotic sequential `adjusted_mean` or `adjusted_ratio_mean` cell carries
+  the same advisory at a look where its squared covariate difference exceeds its
+  variance times the count-clock boundary the cell's intervals use, at nominal
+  level 0.001; like those intervals the boundary is asymptotic, so early looks
+  can flag more often (about 0.0055 at a first look of two units per group with
+  normally distributed covariates, `rho = 0.1` and `start_count = 2`). Its
+  context also reports that `boundary` in standard errors and the look's unit
+  `count`. A look without inference for the cell, such as one before
+  `start_count`, is not checked, and a predeclared pre-period adjustment
+  retains no covariate to check.
+  Estimates, intervals, sequential evidence and decisions are unchanged, and the
+  advisory never withholds a result. Breakout, daily, as-of and sequential cells
+  now carry every advisory their own estimate produced, for example a segment's
+  own mixed-covariate CUPED fit advisory; before, they carried only the two
+  ratio-denominator advisories, rebuilt from row notes. Those keep their codes
+  and messages, and their context now carries `threshold` (plus
+  `relative_standard_errors` for `estimation.engine.ratio_denominator_precision`)
+  in place of the row's `note` text. Each advisory stays with the method that
+  produced it on run, breakout, daily, as-of and encouragement cells: a
+  covariate-balance advisory reaches only the CUPED method's cells, also where
+  an unadjusted method is estimated beside it for the same day, a method whose
+  cell fails keeps its advisory on that unavailable cell, and no other method's
+  cell receives it. The covariate-imputation warning
+  `frame.validation.metric_covariate_missing_imputed` now states when the fill
+  it applied keeps the adjusted estimate unbiased, separately for a zero fill
+  and a mean fill; its code and context are unchanged. Experiment `to_json()`,
+  `hash()` and `analysis_spec_hash` are unchanged.
 - Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
   spelled `missing="skip"`, with the same computation: the metric uses only the
   units with a value, and those units stay in every other metric. Estimates are

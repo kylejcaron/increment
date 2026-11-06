@@ -1030,9 +1030,8 @@ def test_asof_cumulative_moments_invariant_to_input_row_order() -> None:
 
 
 def test_observable_end_kind_mismatch_refuses() -> None:
-    """A numeric day axis with a calendar observation_end reaches
-    unsupported date-minus-number backend arithmetic; refused instead,
-    naming both kinds."""
+    """A calendar observation_end on a numeric day axis refuses at construction,
+    naming the axis kind."""
     rows = [
         ("c1", "control", 0, 0, 1.0),
         ("c1", "control", 1, 0, 2.0),
@@ -1046,21 +1045,167 @@ def test_observable_end_kind_mismatch_refuses() -> None:
             )
         )
     )
-    src = from_unit_panel(
-        frame,
-        unit="user_id",
-        group="variant",
-        date="day",
-        control="control",
-        metrics=[MetricSpec(name="revenue", window_days=1)],
-        exposure_date="exposed_on",
-        observation_end=date(2026, 1, 1),
+    with pytest.raises(InvalidRequestError) as exc_info:
+        from_unit_panel(
+            frame,
+            unit="user_id",
+            group="variant",
+            date="day",
+            control="control",
+            metrics=[MetricSpec(name="revenue", window_days=1)],
+            exposure_date="exposed_on",
+            observation_end=date(2026, 1, 1),
+        )
+    assert exc_info.value.code == "source.panel.observation_end"
+    assert exc_info.value.context["axis_kind"] == "numeric"
+    assert exc_info.value.context["issue"] == "wrong_kind"
+
+
+def _staggered_revenue_rows() -> list[dict[str, Any]]:
+    """40 units over six days, unit u exposed on day u % 3 with revenue u + day."""
+    first = date(2026, 2, 1)
+    return [
+        {
+            "u": u,
+            "g": "control" if u % 2 else "treatment",
+            "day": first + timedelta(days=k),
+            "expo": first + timedelta(days=u % 3),
+            "rev": float(u + k),
+        }
+        for u in range(40)
+        for k in range(6)
+    ]
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+def test_observation_end_iso_string_matches_date_on_every_backend(backend: str) -> None:
+    """An ISO string names the same day as the date it spells on every backend.
+
+    Each odd (control) unit u is exposed on day e = u % 3 and keeps its two window
+    days e and e + 1, revenue 2u + 2e + 1; over u = 1, 3, ..., 39 the mean u is 20 and
+    the mean e is 19/20, so mean_control = 40 + 1.9 + 1 = 42.9 with all 20 units mature
+    by day 3 (2026-02-04).
+    """
+    import pandas as pd
+    import polars as pl
+
+    from increment import from_frame, run
+
+    rows = _staggered_revenue_rows()
+    frame = pd.DataFrame(rows) if backend == "pandas" else pl.DataFrame(rows)
+    for end in ("2026-02-04", date(2026, 2, 4)):
+        result = cast(
+            Any,
+            run(
+                *from_frame(
+                    frame,
+                    shape="panel",
+                    unit="u",
+                    group="g",
+                    date="day",
+                    control="control",
+                    exposure_date="expo",
+                    metrics=[MetricSpec(name="rev", type="mean", window_days=2)],
+                    observation_end=end,
+                )
+            ).to_frame(),
+        )
+        assert result["n_control"][0] == 20
+        assert result["mean_control"][0] == pytest.approx(42.9)
+
+
+@pytest.mark.parametrize(
+    ("days", "end", "axis_kind", "issue"),
+    [
+        ([date(2026, 2, 1), date(2026, 2, 2)], "not a date", "calendar", "unparseable"),
+        ([date(2026, 2, 1), date(2026, 2, 2)], 5, "calendar", "wrong_kind"),
+        ([date(2026, 2, 1), date(2026, 2, 2)], date(2025, 1, 1), "calendar", "before_first_day"),
+        (["d1", "d2"], "2026-02-04", "label", "unknown_label"),
+    ],
+)
+def test_invalid_observation_end_refuses_at_construction(
+    days: list[Any], end: Any, axis_kind: str, issue: str
+) -> None:
+    """An end that names no day of the panel's axis refuses when the panel is built."""
+    from increment import from_frame
+
+    frame = pa.table(
+        {
+            "user_id": ["c1", "c1", "t1", "t1"],
+            "variant": ["control", "control", "treatment", "treatment"],
+            "day": days * 2,
+            "revenue": [1.0, 2.0, 3.0, 4.0],
+        }
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        _moments(src, _metric(src, "revenue"), grain="total")
-    assert exc_info.value.code == "frame.panel.observable_end_dtype"
-    assert exc_info.value.context["axis_kind"] == "numeric"
-    assert exc_info.value.context["end_kind"] == "calendar"
+        from_frame(
+            frame,
+            shape="panel",
+            unit="user_id",
+            group="variant",
+            date="day",
+            control="control",
+            metrics={"revenue": "mean"},
+            observation_end=end,
+        )
+    assert exc_info.value.code == "source.panel.observation_end"
+    assert exc_info.value.context["axis_kind"] == axis_kind
+    assert exc_info.value.context["issue"] == issue
+
+
+def test_observation_end_bounds_unwindowed_and_daily() -> None:
+    """Rows after the end never enter whole-window or daily results, and a unit
+    exposed after it is not analysed.
+
+    Through day 2: control units total 2 and 6 (mean 4), treatment units 4 and 8
+    (mean 6), lift 6 / 4 - 1 = 0.5; t3, exposed on day 3, is left out. With no end,
+    t3's 10 joins treatment: (6 + 12 + 10) / 3.
+    """
+    days = [date(2026, 2, 1) + timedelta(days=k) for k in range(3)]
+    values = {"c1": 1.0, "c2": 3.0, "t1": 2.0, "t2": 4.0}
+    rows = [
+        {
+            "unit": unit,
+            "arm": "control" if unit.startswith("c") else "treatment",
+            "day": day,
+            "exposed": days[0],
+            "value": value,
+        }
+        for unit, value in values.items()
+        for day in days
+    ]
+    rows.append(
+        {"unit": "t3", "arm": "treatment", "day": days[2], "exposed": days[2], "value": 10.0}
+    )
+    frame = pa.Table.from_pylist(rows)
+
+    def build(**options: Any) -> FramePanelSource:
+        return from_unit_panel(
+            frame,
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            exposure_date="exposed",
+            metrics={"value": "mean"},
+            **options,
+        )
+
+    def arms(source: FramePanelSource, **options: Any) -> dict[str, tuple[int, float]]:
+        return {
+            row["group_id"]: (row["n"], _sum_y(row) / row["n"])
+            for row in _moments(source, _metric(source, "value"), **options)
+        }
+
+    bounded = build(observation_end=days[1])
+    whole = arms(bounded, grain="total")
+    assert {arm: n for arm, (n, _mean) in whole.items()} == {"control": 2, "treatment": 2}
+    assert whole["control"][1] == pytest.approx(4.0)
+    assert whole["treatment"][1] == pytest.approx(6.0)
+    assert whole["treatment"][1] / whole["control"][1] - 1 == pytest.approx(0.5)
+    daily = _moments(bounded, _metric(bounded, "value"), grain="daily")
+    assert {row["ds"] for row in daily} == {days[0], days[1]}
+    assert arms(build(), grain="total")["treatment"][1] == pytest.approx(28 / 3)
 
 
 def test_infinite_date_on_numeric_axis_refuses() -> None:

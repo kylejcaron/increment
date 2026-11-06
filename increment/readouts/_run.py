@@ -471,6 +471,7 @@ def _run_prepared(  # noqa: PLR0915
 
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
         from increment._sequential_readouts import sequential_readout
+        from increment.estimation.readout_types import cell_advisories
         from increment.readouts._evidence import current_source_snapshot
         from increment.readouts._sequential_scope import scope_sequential_results
 
@@ -491,7 +492,7 @@ def _run_prepared(  # noqa: PLR0915
                 if config.metric.name not in selected_names
             ),
         )
-        rows = sequential_readout(
+        rows, advisories = sequential_readout(
             src,
             metrics=selected,
             estimands=estimands,
@@ -507,6 +508,7 @@ def _run_prepared(  # noqa: PLR0915
             metrics=[metric.name for metric in selected],
             estimands=estimands,
             configs=sequential_configs,
+            advisories=cell_advisories(rows, advisories),
         )
     call_prior = cast("Prior | None", None if prior is UNSET else prior)
     cluster = src.context.cluster

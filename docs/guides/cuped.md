@@ -210,6 +210,21 @@ semantics apply to frame, definitions, and artifact readouts in either method
 role. A requested column that does not exist is instead a request incompatibility
 and is rejected before evidence acquisition.
 
+The adjustment subtracts the fitted coefficient times the filled covariate's
+difference between arms, so either fill keeps the adjusted estimate unbiased
+only when the filled covariate has the same mean in both arms. What that
+requires of the missing values depends on the fill. A zero fill needs the
+values and which of them are missing to be distributed alike in both arms, as
+they are for units with no history before the experiment. Equal missing shares
+are not enough: if one arm lost its high values and the other its low values at
+the same rate, the zero-filled means differ. A join or logging step that lost
+more values in one arm breaks it too. A mean fill tolerates one arm losing more
+values, as long as which values went missing is unrelated to their size; a join
+that fails only for low-spending users in one arm breaks it. The imputation
+warning states the condition for the fill it applied, and the
+[covariate-balance advisory](#when-cuped-misleads-a-covariate-that-differs-by-arm)
+tests the filled covariate.
+
 The policy belongs to each metric's method, never to the shared covariate table.
 The pooled mean uses the full per-unit covariate population before an outcome's
 `missing="skip"` leaves out units without a value, including when that summary
@@ -298,9 +313,11 @@ experiments:
     control_group: C
 ```
 
-A unit with no pre-period activity gets zero in both groups. Under
-randomization, this preserves independence from assignment; such units
-contribute less precision.
+A unit with no pre-period activity gets zero in both groups. The window closes
+at each unit's own first exposure, so under randomization whether a unit has
+pre-period activity does not depend on its arm, and the zero fill preserves
+independence from assignment; such units contribute less precision. Exposure
+timestamps recorded differently by arm break that condition.
 
 `n_pre_periods` supplies the covariate but does not request the adjustment,
 and the covariate is not queried until a CUPED method is requested. Add CUPED
@@ -488,6 +505,29 @@ Capture retains the same zero-filled pre-period total as fixed-horizon CUPED.
 Unit panels and warehouse experiments with `n_pre_periods: 0` reject these
 laws because they cannot supply the covariate.
 
+Each look also checks the covariate's balance between groups, the sequential
+form of the [fixed-horizon check](#when-cuped-misleads-a-covariate-that-differs-by-arm).
+A fixed-look test repeated at every look would flag more and more valid
+experiments as looks accumulate, so the check uses the count-clock boundary
+that the cell's own intervals use, at level 0.001: the cell carries the advisory
+`estimation.cuped.covariate_imbalance` when the squared covariate difference
+exceeds the boundary times its variance. Its context reports each group's
+covariate mean, the `difference` with its `standard_error`, the `statistic`, the
+`boundary` it is compared with (in the same standard errors; it depends on the
+`count` of units at the look and is wider at small counts) and `constant_arms`.
+Like the intervals, the boundary is an asymptotic approximation: 0.001 is its
+nominal asymptotic level, not the chance that a balanced covariate is ever
+flagged. At small counts the estimated covariate variance makes chance flags
+more likely: with normally distributed covariates and the boundary tuned at
+`rho = 0.1` and `start_count = 2`, a first look at two units per group flags a
+balanced covariate with probability about 0.0055. Later looks cannot undo a
+flag at an earlier one, so the chance of a flag at some look stays at least
+that of the first look however large the counts grow.
+A look without inference for the cell, such as one before
+`start_count` units in each group, is not checked. The advisory changes no
+interval, evidence value or decision, so checking it at every look leaves the
+sequential guarantee unchanged.
+
 ??? info "Statistical details: the asymptotic adjusted law"
     Capture retains the joint per-unit vector $(Y, X)$ or $(N, D, X)$ and its
     full within-group scatter. At each look, Increment fits the same
@@ -515,6 +555,8 @@ center fixed from pre-period data before outcomes are read.
 `fit_predeclared_adjustment` applies `fit_cuped` to a pre-period frame;
 capture then retains the single adjusted value $Y_i - \theta (X_i - c)$
 per unit. The exact Bernoulli method does not accept this adjustment.
+Capture retains only that adjusted value, not the covariate, so the covariate
+balance check above does not apply to this form.
 
 <!-- skip: next "requires a prepared pre-period frame" -->
 ```python
@@ -767,9 +809,15 @@ pre-period history. Watch for:
 - **Little correlation:** with $\rho \approx 0$, $\theta \approx 0$, so the
   adjustment does little. This is common in new-user experiments, where
   zero-filled history predicts little.
-- **Constant covariate:** zero variance makes $\theta$ undefined. The
-  estimator raises a `ValueError` rather than reporting an unadjusted
-  estimate under a CUPED label.
+- **Constant covariate:** a covariate constant in every arm makes $\theta$
+  undefined, so the CUPED cell is unavailable with
+  `estimation.cuped.covariate_zero_variance` rather than reporting an
+  unadjusted estimate under a CUPED label. A covariate constant in only one
+  arm still fits $\theta$ from the other arm; that usually means the covariate
+  was built differently for that arm, for example every value missing and
+  filled with zero, and the
+  [covariate-balance advisory](#when-cuped-misleads-a-covariate-that-differs-by-arm)
+  usually flags it.
 - **Quantile metrics:** these reject CUPED covariates because a quantile is not
   a mean of per-unit values. [Ratio metrics](#ratio-metrics) adjust both
   components with one covariate.
@@ -790,6 +838,69 @@ precision.
     \theta = \frac{\operatorname{Cov}(Y_t, X_t)/n_t + \operatorname{Cov}(Y_c, X_c)/n_c}
                   {\operatorname{Var}(X_t)/n_t + \operatorname{Var}(X_c)/n_c}
     $$
+
+## When CUPED misleads: a covariate that differs by arm
+
+CUPED assumes the covariate is measured the same way in every arm. Randomization
+then gives both arms the same expected covariate mean, and the adjustment only
+removes chance imbalance. A covariate that depends on the arm (values lost or
+zero-filled in one arm, a join rescaled for one arm, a window that overlaps the
+experiment) shifts the adjusted difference by $\theta$ times the covariate
+difference. That bias does not shrink with sample size, and the narrower
+interval makes the wrong answer look confident.
+
+Each fixed-horizon scalar CUPED cell, including CUPED on a LATE, therefore
+compares its covariate's group means, as adjusted after any fill, with a Welch
+t test. When the two-sided p-value is below 0.001, the threshold of the
+automatic sample-ratio check, the cell carries the advisory
+`estimation.cuped.covariate_imbalance` and the run emits a runtime warning with
+the same code. The estimate, interval and decision are unchanged: the advisory
+never withholds a result. Breakout segments and daily cells are each tested on
+their own data, so a join that fails for one segment flags that segment.
+Sequential cells on the asymptotic route use a form built for repeated looks,
+with its own small-count limit; see [the standard coefficient on the asymptotic route](#the-standard-coefficient-on-the-asymptotic-route).
+In either form, a cell is not checked when a number the advisory would report
+exceeds the floating-point range (about $10^{308}$).
+
+The advisory's context reports each group's covariate mean (`mean_control`,
+`mean_treatment`), the `difference` with its `standard_error`, the Welch
+`statistic`, `dof` and `p_value`, the fitted `theta` (`theta_numerator` and
+`theta_denominator` for a ratio metric) and `constant_arms`, the groups whose
+covariate is constant. For a mean metric, `adjustment_shift` is how far the
+adjustment moved the absolute difference between groups, not the relative lift:
+the unadjusted difference minus the adjusted one, which equals $\theta$ times the
+covariate `difference`. A positive shift means the adjustment lowered the
+difference. If the covariate is at fault, the adjusted difference is off by about
+that much. A CUPED-adjusted LATE reports `itt_adjustment_shift`, the same move on
+the ITT difference, and `late_adjustment_shift`, that move divided by the first
+stage: the unadjusted LATE minus the adjusted LATE. A ratio metric's shift is not
+a multiple of the difference, so it is not reported.
+
+Three explanations fit a flagged cell:
+
+- **Chance.** Under valid randomization, a value measured before the experiment
+  differs this much in about one cell in 1000. The threshold applies to each
+  cell, so chance flags accumulate: with 20 CUPED cells, about 2% of valid runs
+  show one. The 0.001 level is nominal, because the t reference is asymptotic.
+  When chance is the cause, the adjusted estimate is the better one.
+- **A covariate built differently for one arm.** The adjusted estimate is then
+  biased, by about the reported shift where there is one.
+- **A failed assignment.** Check the sample-ratio result as well; see
+  [SRM diagnostics](srm-diagnostics.md).
+
+Check how the covariate was built for each arm before relying on either
+estimate.
+
+No balance test can tell a small systematic shift from chance. With
+$\rho = \operatorname{Corr}(Y, X)$, a shift whose expected t statistic is $s$
+biases the adjusted estimate by about $s\,\rho/\sqrt{1-\rho^2}$ adjusted
+standard errors, because $\theta\,\mathrm{SE}(\Delta X) = \rho\,\mathrm{SE}(\Delta Y)$
+and the adjusted standard error is $\mathrm{SE}(\Delta Y)\sqrt{1-\rho^2}$. At
+$\rho = 0.9$, a shift with $s = 2$, which the check rarely flags, still leaves
+about 4 standard errors of bias. The check catches gross pipeline errors; it
+does not certify the covariate. Mixed-covariate cells
+(`Method.cuped_multicovariate`) and predeclared sequential adjustments are not
+tested.
 
 ## Mixed numeric and categorical covariates
 
@@ -1206,9 +1317,14 @@ warehouse.
     allocation or matching within-group slopes. Fitting a separate $\theta$
     for each group would reintroduce bias.
 
-    Because $X$ is independent of assignment, adjustment preserves the
-    target difference. When both groups share a slope, the approximate
-    variance-reduction factor is:
+    When $X$ is independent of assignment, as a value measured before
+    randomization is, adjustment preserves the target difference. That is an
+    assumption about how the covariate was built for each arm: a covariate
+    that depends on the arm shifts the adjusted difference by
+    $-\theta\,(\mathbb{E}[\bar{X}_t] - \mathbb{E}[\bar{X}_c])$, a bias that does
+    not shrink with sample size, and each fixed-horizon CUPED cell
+    [tests it](#when-cuped-misleads-a-covariate-that-differs-by-arm). When both
+    groups share a slope, the approximate variance-reduction factor is:
 
     $$
     1 - \rho^2, \qquad \rho = \operatorname{Corr}(Y, X)

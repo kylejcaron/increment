@@ -365,7 +365,7 @@ def test_compliance_shortcut_without_uptake_refuses_before_checkpoint_or_outcome
 
 
 @pytest.mark.integration
-def test_encouragement_asof_requires_completion_before_legacy_checkpoint():
+def test_encouragement_asof_requires_completion_before_capture():
     from increment.errors import InvalidRequestError
 
     connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
@@ -382,7 +382,7 @@ def test_encouragement_asof_requires_completion_before_legacy_checkpoint():
                 View(view="asof", grain="asof", completion_policy=True),
                 estimands=("compliance",),
             )
-        assert missing.value.code == "sequential.continuation.legacy"
+        assert missing.value.code == "sequential.capture.required"
     finally:
         connection.disconnect()
 
@@ -1819,6 +1819,54 @@ def test_boolean_and_null_panel_segments_match_the_canonical_string_oracle(kind)
     ) == _rows(
         view_readout(oracle_experiment, oracle_resolver, View(view="breakout", grain="total"))
     )
+
+
+def test_boolean_segment_levels_must_be_canonical():
+    """A Boolean column labels its units "true", "false" or "__null__", so a family that
+    declares none of those levels could never fill a cell and refuses when it is built.
+    The registration retains its levels sorted, and the refusal names them so."""
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import AnalysisPlan, InferenceSpec
+
+    design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    rows = _arm_rows(("control", "treatment"), levels=("true", "false"))
+    frame = rows.drop(columns="segment").assign(is_new=rows["segment"] == "true")
+
+    def build(levels):
+        plan = AnalysisPlan(
+            primary="outcome",
+            inference=InferenceSpec(kind="always_valid", segments={"is_new": levels}),
+        )
+        return _summary(frame, specs, plan, design)
+
+    with pytest.raises(InvalidRequestError) as raised:
+        build(("True", "False"))
+    assert raised.value.code == "sequential.registration.invalid"
+    assert raised.value.context["dimension"] == "is_new"
+    assert raised.value.context["declared"] == ("False", "True")
+    assert raised.value.context["canonical"] == ("false", "true", "__null__")
+    build(("true", "false"))
+
+
+def test_segmented_whole_window_read_names_breakout_route():
+    """A segmented family is read by segment; a whole-window read names the breakout view."""
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import AnalysisPlan, InferenceSpec
+
+    design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    plan = AnalysisPlan(
+        primary="outcome",
+        inference=InferenceSpec(kind="always_valid", segments={"segment": ("a", "b")}),
+    )
+    experiment, reader = _summary(
+        _arm_rows(("control", "treatment"), levels=("a", "b")), specs, plan, design
+    )
+    with pytest.raises(CapabilityError) as raised:
+        view_readout(experiment, reader, View(view="run"))
+    assert raised.value.code == "sequential.source.invalid"
+    assert "route" in raised.value.context
 
 
 def test_segment_named_like_a_role_column_keeps_every_role_intact():

@@ -543,7 +543,7 @@ UNBOUNDED_RETENTION_SEQUENTIAL = ConsumerContract(
             "from_moments",
             "cube exported from the fixed-horizon definitions readout; the registered route captured no checkpoint for the unbounded band",
             "refused",
-            codes=("sequential.continuation.legacy",),
+            codes=("sequential.capture.required",),
             reason="portable moments only replay an upstream checkpoint, and none can be captured for an unbounded retention band",
             stage="read",
             evidence=(f"{_ASOF}::test_unbounded_retention_cube_has_no_checkpoint_to_replay",),
