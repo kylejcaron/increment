@@ -25,7 +25,6 @@ def _require_arm_binding(binding: Any, method: str) -> Any:
 
 def _build_panel_for_metric_binding(
     binding: Any,
-    exposures: Table,
     metric: Metric,
     *,
     population: Literal["assigned", "triggered"] = "assigned",
@@ -42,7 +41,7 @@ def _build_panel_for_metric_binding(
             "with a warehouse connection"
         ),
     )
-    return src.build_panel_for_metric(exposures, metric, population=population)
+    return src.build_panel_for_metric(metric, population=population)
 
 
 def _panel_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) -> dict[str, str]:
@@ -85,17 +84,20 @@ def _summary_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) 
 def build_panel_for_metric(
     experiment: Experiment,
     reader: ExperimentReader,
-    exposures: Table,
     metric: Metric,
     *,
     population: Literal["assigned", "triggered"] = "assigned",
 ) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, Scalar]:
-    """Return one native metric's live panel tuple, independent of TEMP tables."""
+    """Return one native metric's live panel tuple, independent of TEMP tables.
+
+    The source selects the population's cohort: every enrolled unit, or the
+    triggered units anchored at their first trigger.
+    """
     from increment._binding import binding_for
 
     require_warehouse("build_panel_for_metric")
     return _build_panel_for_metric_binding(
-        binding_for(experiment, reader), exposures, metric, population=population
+        binding_for(experiment, reader), metric, population=population
     )
 
 

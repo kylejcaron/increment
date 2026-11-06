@@ -17,13 +17,14 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
+from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import (
     CapabilityError,
     IncrementWarning,
     InvalidRequestError,
     UnsupportedRequestError,
 )
-from increment.query import panel_sql, summary_sql
+from increment.query import build_panel_for_metric, panel_sql, summary_sql
 from increment.query.builders import (
     asof_group_summary,
     breakout_property_table,
@@ -71,9 +72,9 @@ from increment.semantics.models import (
     RetentionMetric,
     Winsorization,
 )
-from increment.workflows import breakout_summaries, experiment_definition
+from increment.workflows import breakout_summaries, experiment_definition, metrics
 from tests._evidence_requests import _moments
-from tests.analysis_factory import make_binding
+from tests.analysis_factory import bound_source, make_binding
 from tests.warning_codes import warning_codes, warning_context
 
 # Nearly every test here builds its own tiny scratch table directly on
@@ -3123,6 +3124,123 @@ def test_breakout_summaries_keys_dont_collide_across_breakout_sources(con):
     }
     for tables in result.values():
         assert set(tables) == {"group_summary", "daily_group_summary"}
+
+
+def _triggered_panel_analysis(con):
+    """Four enrolled users; c1 and t1 also saw the triggering surface."""
+    if "panel_hook_events" not in con.list_tables():
+        rows = []
+        for user, arm, triggered in (
+            ("c1", "C", True),
+            ("c2", "C", False),
+            ("t1", "T", True),
+            ("t2", "T", False),
+        ):
+            events = [
+                ("enrolled", dt.datetime(2024, 1, 2, 9)),
+                ("purchase", dt.datetime(2024, 1, 4)),
+            ]
+            if triggered:
+                events.append(("saw_surface", dt.datetime(2024, 1, 2, 10)))
+            rows.extend(
+                {"user_id": user, "group_id": arm, "ts": ts, "event": event, "value": 5.0}
+                for event, ts in events
+            )
+        con.create_table("panel_hook_events", obj=rows)
+    defs = Definitions.model_validate(
+        {
+            "dialect": "duckdb",
+            "fact_sources": [
+                {
+                    "name": "events",
+                    "sql": "SELECT * FROM panel_hook_events",
+                    "timestamp_column": "ts",
+                    "entities": ["user_id"],
+                    "facts": [
+                        {"name": "enrolled", "column": None},
+                        {"name": "saw_surface", "column": None},
+                        {"name": "purchase", "column": "value"},
+                    ],
+                }
+            ],
+            "exposures": [
+                {"name": "assignment", "fact": "enrolled"},
+                {"name": "saw_surface", "fact": "saw_surface"},
+            ],
+            "metrics": [
+                {
+                    "type": "mean",
+                    "name": "revenue",
+                    "entity": "user_id",
+                    "fact": "purchase",
+                    "aggregation": "sum",
+                    "window_days": 7,
+                }
+            ],
+            "experiments": [
+                {
+                    "name": "panel_hook",
+                    "exposure": "assignment",
+                    "trigger": "saw_surface",
+                    "unit": "user_id",
+                    "start": "2024-01-01",
+                    "control_group": "C",
+                    "plan": {"secondaries": ["revenue"]},
+                }
+            ],
+        }
+    )
+    return make_binding(
+        con,
+        defs,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 17, tzinfo=dt.UTC)},
+        ),
+    )
+
+
+@pytest.mark.parametrize(("population", "units"), [("assigned", 4), ("triggered", 2)])
+def test_build_panel_for_metric_needs_no_exposures(con, population, units):
+    """The public panel hook selects the population's cohort itself."""
+    experiment, reader = _triggered_panel_analysis(con)
+    (metric,) = metrics(experiment, reader)
+    source = bound_source(reader)
+    cohort = (
+        source._get_trigger_population(operation="build_panel_for_metric")
+        if population == "triggered"
+        else source._get_exposures()
+    )
+    expected = source._build_panel_for_metric(cohort, metric, population, use_cache=False)
+
+    actual = build_panel_for_metric(experiment, reader, metric, population=population)
+
+    assert len(actual) == len(expected)
+    for got, want in zip(actual[:6], expected[:6], strict=True):
+        if got is None or want is None:
+            assert got is want
+            continue
+        assert got.schema() == want.schema()
+        assert sorted(map(repr, got.to_pyarrow().to_pylist())) == sorted(
+            map(repr, want.to_pyarrow().to_pylist())
+        )
+    assert actual[6] == expected[6]
+    assert actual[7].execute() == expected[7].execute()
+    panel, spine = actual[0], actual[1]
+    assert spine.unit_id.nunique().execute() == units
+    assert panel.unit_id.nunique().execute() == units
+
+
+def test_panel_sql_ds_is_a_date_with_day_offset(con):
+    experiment, reader = _analysis_with_cross_source_breakouts(con)
+    statements = panel_sql(experiment, reader)
+    assert {"visit_rate", "checkout"} <= set(statements)
+    for sql in statements.values():
+        rows = con.sql(sql).to_pyarrow()
+        assert pa.types.is_date32(rows.schema.field("ds").type)
+        assert rows.num_rows > 0
+        for row in rows.to_pylist():
+            assert row["ds"] == row["first_exposure_date"] + dt.timedelta(days=row["day_offset"])
 
 
 # window_bound_stats: per-day window scoping

@@ -208,6 +208,30 @@ values.
   caught, and handle the refusal where `prob_favorable()` on a sequential row
   was read as `None`. Estimates, intervals, p-values, the stored
   `posterior_prob_favorable` and experiment identity are unchanged.
+- Release note (breaking API cutover): `increment.query.build_panel_for_metric`
+  is `build_panel_for_metric(experiment, reader, metric, population=...)`; it
+  no longer takes an `exposures` relation, which only private state could
+  supply, and instead reads the assigned or triggered population itself, as a
+  readout does. Drop the `exposures` argument. Panel relations from
+  `panel_sql` and `build_panel_for_metric` now type `ds` as a date, where
+  DuckDB returned a timestamp, and carry `day_offset`, as the data-model guide
+  documents. `WarehouseResultsStore(backend, schema=...)` creates a missing
+  schema when it first saves a run, and refuses that save, before writing
+  anything, with `store.run.schema_unavailable` (`CapabilityError`, context
+  `schema`) when the schema can be neither found nor created; previously the
+  save failed with an uncoded backend error. `run(..., results_store=...)`
+  reaches that refusal after the analysis, with nothing saved. A dotted
+  `catalog.schema` is found and created in that catalog, where the store's
+  tables are written, and on PostgreSQL a mixed-case schema is created as
+  written. Opening a run or reading history never creates a schema; a missing
+  one holds no runs, as before. `WarehouseArtifactStore` likewise no longer
+  creates its declared schema when it is constructed: its first publication
+  or `abandon_generation` creates the schema and the store's tables, and a
+  store whose schema does not exist lists no manifests and refuses
+  `open_snapshot` with `artifact.refresh.invalid_ref`. Publication still
+  refuses with `artifact.store.namespace` before the source is read when the
+  schema can be neither found nor created. Estimates and experiment identity
+  are unchanged.
 - Release note (breaking): `to_frame()`, breakout frames and readout rows
   export `sequential_alpha` and `sequential_log_e` as `Float64` numbers instead
   of exact-fraction strings, so they can be filtered, sorted and plotted;

@@ -1579,6 +1579,7 @@ Retired codes and their replacements are listed below.
 | `store.run.not_found` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.provenance_mismatch` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.roster_mismatch` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.schema_unavailable` | `CapabilityError` | `schema` | `increment.kernel.program_refusals` |
 | `store.run.scope_manifest_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.scope_mapping_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.timestamp_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |

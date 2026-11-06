@@ -1393,8 +1393,10 @@ every workflow operation reads it from the reader. To
 see the SQL a readout would execute without running it, call
 `increment.query.panel_sql(experiment, reader)` and
 `increment.query.summary_sql(experiment, reader)`; they return per-metric
-queries as strings. SQL previews and `build_panel_for_metric(experiment,
-reader, ...)` return live warehouse expressions, not operation-owned TEMP
+queries as strings. `build_panel_for_metric(experiment, reader, metric)` returns
+one metric's panel, spine and event relations for the assigned population, or
+for the triggered population with `population="triggered"`. SQL previews and
+these relations are live warehouse expressions, not operation-owned TEMP
 table references, so they remain executable after another readout refreshes
 materialization.
 

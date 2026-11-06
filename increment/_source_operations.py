@@ -223,7 +223,6 @@ class NativePanelSqlOperation(Protocol):
 
     def build_panel_for_metric(
         self,
-        exposures: Table,
         metric: Metric,
         *,
         population: Literal["assigned", "triggered"] = "assigned",
