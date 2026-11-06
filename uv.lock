@@ -1238,8 +1238,8 @@ requires-dist = [
     { name = "pyyaml", marker = "python_full_version == '3.13.*'", specifier = ">=6.0.2" },
     { name = "pyyaml", marker = "python_full_version >= '3.14'", specifier = ">=6.0.3" },
     { name = "scipy", specifier = ">=1.18.1" },
-    { name = "sqlglot", marker = "extra == 'demo'", specifier = ">=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0,!=30.29.0" },
-    { name = "sqlglot", marker = "extra == 'warehouse'", specifier = ">=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0,!=30.29.0" },
+    { name = "sqlglot", marker = "extra == 'demo'", specifier = ">=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0,!=30.29.0,!=30.30.0" },
+    { name = "sqlglot", marker = "extra == 'warehouse'", specifier = ">=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0,!=30.29.0,!=30.30.0" },
 ]
 provides-extras = ["dashboard", "demo", "tables", "warehouse"]
 

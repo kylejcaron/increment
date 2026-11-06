@@ -38,6 +38,7 @@ updates:
           - "30.26.0"
           - "30.27.0"
           - "30.29.0"
+          - "30.30.0"
       - dependency-name: duckdb
         versions:
           - "2.0.0"
