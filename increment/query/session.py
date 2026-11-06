@@ -34,7 +34,12 @@ from ibis.backends.sql import SQLBackend
 from ibis.common.exceptions import TableNotFound
 from ibis.expr import operations as ops
 
-from increment._warehouse_namespace import ensure_schema, schema_exists
+from increment._warehouse_namespace import (
+    MAX_IDENTIFIER_BYTES,
+    check_schema_name_length,
+    ensure_schema,
+    schema_exists,
+)
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
@@ -398,6 +403,9 @@ class WarehouseArtifactStore:
     and are dropped when the snapshot closes. A declared schema and the store's
     tables are created by its first write, a publication or an abandoned
     generation; reading a store whose schema does not exist creates nothing.
+    A catalog or schema name longer than the warehouse allows (PostgreSQL 63
+    bytes, Snowflake 255 characters, BigQuery 1,024 bytes) refuses at
+    construction with ``store.schema_name_too_long``.
     """
 
     _INDEX_TABLE_COLUMNS = (
@@ -447,6 +455,9 @@ class WarehouseArtifactStore:
                     schema=self._schema,
                     table="ud_manifest_index",
                 )
+        check_schema_name_length(
+            self._con, store="WarehouseArtifactStore", catalog=self._catalog, schema=self._schema
+        )
         self._database: str | tuple[str, str] | None = (
             (self._catalog, self._schema)
             if self._catalog is not None and self._schema is not None
@@ -1531,8 +1542,6 @@ class WarehouseArtifactStore:
         self._generations.pop(key, None)
 
 
-_MAX_IDENTIFIER_LEN = 63  # Postgres's limit - the tightest among supported backends
-
 # Admission budgets on cached Arrow payload bytes (``nbytes``), per result and per snapshot.
 _MAX_ARROW_RESULT_BYTES = 16 * 1024 * 1024
 _MAX_ARROW_CACHE_BYTES = 128 * 1024 * 1024
@@ -2327,7 +2336,7 @@ class WarehouseSession:
         debuggability for guaranteed uniqueness.
         """
         raw = "_".join((*parts, self._suffix))
-        if len(raw.encode()) <= _MAX_IDENTIFIER_LEN:
+        if len(raw.encode()) <= MAX_IDENTIFIER_BYTES:
             return raw
         return f"cr_{hashlib.sha256(raw.encode()).hexdigest()[:24]}"
 

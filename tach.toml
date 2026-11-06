@@ -45,7 +45,7 @@ depends_on = ["increment.errors"]
 [[modules]]
 path = "increment._warehouse_namespace"
 layer = "core"
-depends_on = []
+depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment._compile_gaps"

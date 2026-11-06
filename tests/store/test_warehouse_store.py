@@ -1,5 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 
 import ibis
 import pandas as pd
@@ -7,9 +9,11 @@ import pyarrow as pa
 import pytest
 
 from increment import from_frame, run
-from increment.errors import CodedError
+from increment.errors import CapabilityError, CodedError, InvalidRequestError
 from increment.kernel.contracts import View
+from increment.query.session import WarehouseArtifactStore
 from increment.store import HistorySelector, Run, WarehouseResultsStore
+from increment.store.types import run_record_key
 from tests.analysis_factory import view_readout
 
 
@@ -60,6 +64,11 @@ def _warehouse_run(
             (cell.identity.hash(), cell.identity.analysis_spec_hash) for cell in cells
         ),
     )
+
+
+def _committed_name(experiment_id, analysis_spec_hash, run_id):
+    """The 63-byte table name of a committed run: the first 49 hex digits of its key."""
+    return "increment_run_" + run_record_key(experiment_id, analysis_spec_hash, run_id)[:49]
 
 
 @pytest.mark.integration
@@ -131,6 +140,129 @@ def test_results_store_creates_its_schema():
         assert sorted(cell.identity.hash() for cell in handle.envelope().cells) == saved
     finally:
         reader.close()
+        backend.disconnect()
+
+
+@pytest.mark.parametrize(
+    ("backend", "schema", "limit"),
+    [
+        ("postgres", "r" * 63, None),
+        ("postgres", "r" * 64, 63),
+        ("postgres", "é" * 32, 63),
+        ("postgres", "analytics." + "r" * 64, 63),
+        ("snowflake", "é" * 255, None),
+        ("snowflake", "r" * 256, 255),
+        ("snowflake", "d" * 255 + "." + "s" * 255, None),
+        ("bigquery", "r" * 1024, None),
+        ("bigquery", "r" * 1025, 1024),
+        ("duckdb", "r" * 10_000, None),
+    ],
+    ids=[
+        "postgres-63-bytes",
+        "postgres-64-bytes",
+        "postgres-64-bytes-32-characters",
+        "postgres-catalog-schema",
+        "snowflake-255-characters",
+        "snowflake-256-characters",
+        "snowflake-catalog-and-schema-each-255",
+        "bigquery-1024-bytes",
+        "bigquery-1025-bytes",
+        "duckdb-unlimited",
+    ],
+)
+def test_store_refuses_a_schema_name_over_the_backend_limit(backend, schema, limit):
+    connection = SimpleNamespace(name=backend)
+    if limit is None:
+        assert WarehouseResultsStore(connection, schema=schema).schema == schema
+        return
+    with pytest.raises(InvalidRequestError) as refused:
+        WarehouseResultsStore(connection, schema=schema)
+    assert refused.value.code == "store.schema_name_too_long"
+    assert refused.value.context == {
+        "store": "WarehouseResultsStore",
+        "schema": schema,
+        "backend": backend,
+        "limit": limit,
+    }
+
+
+def _no_table_operations(*args, **kwargs):
+    raise AssertionError("a store whose schema does not exist has no tables to read or write")
+
+
+def _artifact_backend(name):
+    """A backend where no schema exists, so a store within the limit only looks its schema up."""
+    connection: Any = SimpleNamespace(
+        name=name,
+        list_databases=lambda catalog=None: [],
+        **dict.fromkeys(
+            ("to_pyarrow", "execute", "create_table", "table", "drop_table", "insert"),
+            _no_table_operations,
+        ),
+    )
+    return connection
+
+
+@pytest.mark.parametrize(
+    ("backend", "catalog", "schema", "limit"),
+    [
+        ("postgres", None, "r" * 63, None),
+        ("postgres", None, "r" * 64, 63),
+        ("postgres", None, "é" * 32, 63),
+        ("postgres", "c" * 64, "artifact", 63),
+        ("snowflake", None, "r" * 255, None),
+        ("snowflake", None, "r" * 256, 255),
+        ("snowflake", "d" * 255, "s" * 255, None),
+        ("bigquery", "project", "r" * 1025, 1024),
+    ],
+    ids=[
+        "postgres-63-bytes",
+        "postgres-64-bytes",
+        "postgres-64-bytes-32-characters",
+        "postgres-catalog-64-bytes",
+        "snowflake-255-characters",
+        "snowflake-256-characters",
+        "snowflake-catalog-and-schema-each-255",
+        "bigquery-1025-bytes",
+    ],
+)
+def test_artifact_store_refuses_a_schema_name_over_the_backend_limit(
+    backend, catalog, schema, limit
+):
+    connection = _artifact_backend(backend)
+    if limit is None:
+        WarehouseArtifactStore(connection, catalog=catalog, schema_name=schema)
+        return
+    with pytest.raises(InvalidRequestError) as refused:
+        WarehouseArtifactStore(connection, catalog=catalog, schema_name=schema)
+    assert refused.value.code == "store.schema_name_too_long"
+    assert refused.value.context == {
+        "store": "WarehouseArtifactStore",
+        "schema": schema if catalog is None else f"{catalog}.{schema}",
+        "backend": backend,
+        "limit": limit,
+    }
+
+
+def test_artifact_store_refuses_a_name_over_255_characters_as_an_invalid_namespace():
+    # Within BigQuery's 1,024 bytes, but past the 255 characters an artifact identifier allows.
+    with pytest.raises(CapabilityError) as refused:
+        WarehouseArtifactStore(
+            _artifact_backend("bigquery"), catalog="project", schema_name="r" * 1024
+        )
+    assert refused.value.code == "artifact.store.namespace"
+
+
+@pytest.mark.integration
+def test_run_table_names_fit_63_bytes():
+    backend = ibis.duckdb.connect()
+    experiment, resolver = _analysis()
+    try:
+        store = WarehouseResultsStore(backend, schema="results")
+        store.put(_warehouse_run(view_readout(experiment, resolver)))
+        assert backend.list_tables(database="results") == [_committed_name("exp", "spec", "one")]
+    finally:
+        resolver.close()
         backend.disconnect()
 
 
@@ -357,7 +489,7 @@ def _payloads_by_run_id(backend):
 
     result = {}
     for name in backend.list_tables(database="analytics"):
-        if not name.startswith("increment_run_") or len(name.removeprefix("increment_run_")) != 64:
+        if not name.startswith("increment_run_"):
             continue
         payload = backend.table(name, database="analytics").to_pyarrow()["payload"][0].as_py()
         manifest = json.loads(
@@ -368,34 +500,43 @@ def _payloads_by_run_id(backend):
 
 
 @pytest.mark.integration
-def test_warehouse_explicit_open_rejects_a_different_valid_run():
+@pytest.mark.parametrize("reopen", ["by id", "latest", "history"])
+def test_reopen_rejects_a_foreign_run_behind_a_short_name(reopen):
     backend = ibis.duckdb.connect()
     backend.create_database("analytics")
     experiment, resolver = _analysis()
     try:
-        rows = view_readout(experiment, resolver)
-        requested = _warehouse_run(rows)
         foreign = _warehouse_run(
-            rows,
+            view_readout(experiment, resolver),
             run_id="foreign",
             experiment_id="foreign-exp",
             analysis_spec_hash="foreign-spec",
         )
         store = WarehouseResultsStore(backend, schema="analytics")
-        store.put(requested)
         store.put(foreign)
-        payloads = _payloads_by_run_id(backend)
-        target_name, _ = payloads["one"]
-        _, foreign_payload = payloads["foreign"]
-        backend.drop_table(target_name, database="analytics")
+        _, foreign_payload = _payloads_by_run_id(backend)["foreign"]
         backend.create_table(
-            target_name,
+            _committed_name("exp", "spec", "one"),
             obj=pa.table({"payload": pa.array([foreign_payload], type=pa.binary())}),
             database="analytics",
         )
+        operation = {
+            "by id": lambda: store.open_run("exp", "spec", "one"),
+            "latest": lambda: store.open_run("exp", "spec"),
+            "history": lambda: store.history(
+                "exp",
+                HistorySelector(
+                    metric_hash="metric",
+                    estimator_id="t",
+                    method_config_hash="config",
+                    method_instance_id="instance",
+                    scope_hash=View(view="run", grain="total").hash(),
+                ),
+            ),
+        }[reopen]
 
         with pytest.raises(CodedError) as error:
-            store.open_run("exp", "spec", "one")
+            operation()
         assert error.value.code == "store.run.corrupt"
     finally:
         resolver.close()
