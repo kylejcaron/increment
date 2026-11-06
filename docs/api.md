@@ -127,6 +127,27 @@ values.
 
 ### Earlier release notes
 
+- Release note (fix): the `from_definitions` SQL previews
+  `increment.query.panel_sql` and `summary_sql` now load the Ibis compiler of
+  the dialect named by `backend=`, as connecting to that backend does.
+  `backend="singlestoredb"` over another connection therefore reaches Ibis's
+  SingleStoreDB compiler, which refuses today's analysis SQL with
+  `query.backend.operation_unsupported` as MySQL's does, instead of raising
+  `ValueError: Unknown dialect singlestoredb`. A name the installed Ibis cannot
+  write SQL for refuses with the new `CapabilityError` code
+  `query.backend.compiler_unavailable` (context `backend`, `route`) before the
+  preview reads anything. Migration: where code caught `ValueError` from these
+  previews, catch `CodedError` and branch on its code.
+- Release note (fix): on a backend other than DuckDB, PostgreSQL, Snowflake
+  and BigQuery, an analysis whose event times carry a time zone still stops
+  with `query.backend.operation_unsupported`, and its `detail` now reads
+  "converting event times that carry a time zone to UTC (convert them to UTC
+  timestamps without a time zone in the source SQL)" in every session, instead
+  of naming an internal operation. Ordinary Databricks tables take this route:
+  Ibis reads a plain Databricks `TIMESTAMP` as carrying a time zone.
+  [Event times with a time zone](guides/data-model.md#event-times-with-a-time-zone)
+  explains the conversion to make in the source SQL. The code and its context
+  keys, estimates and experiment identity are unchanged.
 - Release note (breaking bug fix): `WarehouseResultsStore` names each run's
   table `increment_run_` plus the first 49 hex digits of its run key, 63
   characters on every warehouse, within PostgreSQL's 63-byte identifier limit.
