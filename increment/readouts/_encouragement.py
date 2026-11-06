@@ -196,9 +196,41 @@ def _group_method_evidence(
                         estimand=estimand,
                     )
             continue
+        # An outcome no control unit observes has no contrast: its cells are unavailable
+        # rows. A family member instead records the refusal its family is sized against.
+        if not group.family_member and not any(
+            str(row["group_id"]) == str(control_group) for row in rows
+        ):
+            continue
         available.append(metric)
         summary.extend(rows)
     return group._replace(metrics=available), summary, failed_rows, failures
+
+
+def _failures_naming_method(
+    computation: DecisionComputation[LiftEstimate], method: Method
+) -> DecisionComputation[LiftEstimate]:
+    """``computation`` with each failure naming ``method``, the one method its call estimated.
+
+    The scope matches a failure to its cell by method; a failure naming none reaches a
+    cell only when no other method shares its hypothesis, so a first stage every method
+    family shares would otherwise explain none of their LATE cells.
+    """
+    from dataclasses import replace
+
+    from increment.decision import DecisionFailure
+
+    return replace(
+        computation,
+        failures={
+            hypothesis: failure
+            if "method" in failure.context
+            else DecisionFailure(
+                failure.hypothesis, failure.code, {**failure.context, "method": method.name}
+            )
+            for hypothesis, failure in computation.failures.items()
+        },
+    )
 
 
 def _compliance_only_rows(src, design, wanted, plan, capture, population):
@@ -308,7 +340,6 @@ def encouragement_rows(
         else None
     )
     results: list[LiftEstimate] = []
-    outcome_compliance: dict[tuple[str, str], LiftEstimate] = {}
     computations: list[DecisionComputation[LiftEstimate]] = []
     family_refusal_deferred = False
     for group in groups:
@@ -368,19 +399,18 @@ def encouragement_rows(
             computation = DecisionComputation[LiftEstimate](
                 results=(), evidence={}, failures=failures
             )
+        else:
+            computation = _failures_naming_method(computation, group.methods[0])
         computations.append(computation)
-        for row in computation.results:
-            stamped = row.model_copy(
+        results.extend(
+            row.model_copy(
                 update={
                     "role": role_by_metric.get(row.metric),
                     "method_role": method_roles.get(row.method, "decision"),
                 }
             )
-            if row.estimand == "compliance":
-                outcome_compliance.setdefault((row.metric, row.group_id), stamped)
-            else:
-                results.append(stamped)
-    results.extend(outcome_compliance.values())
+            for row in computation.results
+        )
 
     # Compliance is design-level: estimate it once at the plan alpha from the
     # declared uptake cohort, never outcome-filtered moments, so it cannot depend

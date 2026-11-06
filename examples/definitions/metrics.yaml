@@ -80,10 +80,12 @@ metrics:
   # ── AOV decomposition trio ─────────────────────────────────────────────
   # Average order value under USER randomization. Orders cluster within
   # users, so AOV must be declared as a ratio metric: the point estimate
-  # is identical to fanning out to order grain and taking the mean, but
-  # the delta method on per-user (revenue, orders) sums is what prices the
-  # clustering into the SE -- treating orders as independent units would
-  # understate the variance.
+  # is identical to fanning out to order grain and taking the mean,
+  # because the purchase fact's one NULL rule (its `missing`) applies to
+  # the revenue sum and the order count alike, but the delta method on
+  # per-user (revenue, orders) sums is what prices the clustering into the
+  # SE -- treating orders as independent units would understate the
+  # variance.
   #
   # Never read AOV alone: on the log scale,
   #   aov lift = revenue_per_user lift - orders_per_user lift,

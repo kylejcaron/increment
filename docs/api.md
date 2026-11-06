@@ -405,6 +405,45 @@ values.
   `source.frame.sequential_exposure_date`, as the summary shape does, instead of
   failing at `run`. Experiment `to_json()` and `hash()` are unchanged. To
   migrate, set `observation_end` to the last day whose data should count.
+- Release note (breaking bug fix): breakout, daily, as-of, contrast,
+  sensitivity and other report cells now report the sampling status of their
+  own row. In `envelope.to_payload()`, `render(result)` and a saved run's
+  `reason_code`, a report cell is `available` when its row carries usable
+  inference evidence (a point, a confidence set, including an exact conversion
+  row with zero control events, or additive bounds; for a CATE, targeting or
+  sensitivity report, its retained estimate, such as the average effect, the
+  policy value or the observed risk ratio), and otherwise `unavailable`
+  with the row's failure code, or `results.component.unavailable` with its
+  exclusion as `context["reason"]` (for example `few_units`). Every such cell
+  was `unavailable` with `results.operation.unsupported` before; that no
+  portable operation is registered remains a property of the row kind and its
+  `supports`. A saved run's `reason_code` column is the sampling status code,
+  as the history table's already is, so it is null for every available cell,
+  including an available lift cell, which stored its posterior's code (such as
+  `"posterior state is not retained"`). `DailyMetricValue` gains a fixed
+  `value_scale="absolute"` field, so a daily-values row's identity matches its
+  cell and render no longer lists those cells as hidden; a values collection
+  pickled or saved as JSON by an earlier release loads with that scale. A daily
+  or as-of lift view now has a row for each treatment arm on each day,
+  including every arm the design's allocation declares: a day with no units in
+  an arm is an unavailable row with `no_treatment_arm` and counts among the
+  required cells, where it was left out. To migrate, read a report cell's
+  availability from its status rather than from `row_kind`, and a saved cell's
+  missing posterior from its `posterior` status rather than from
+  `reason_code`. Estimates and experiment identity are unchanged.
+- Release note (usability): `render(result)` prints each cell's effect and
+  interval at six significant digits (percent for relative effects) instead of
+  raw floats, labels each cell as `print(result)` does, and no longer prints an
+  empty `reason={}`. `Warning:` marks only a qualification that weakens the
+  claim: a disclosed code, live or provider-owned evidence, a failed integrity
+  check, an incomplete decision scope or population roster, or a partial view;
+  the other qualifications print without it. The payload
+  `components.sampling.status.reason` of a failed cell is its failure text, the
+  registered explanation or else the failure context's `display`, instead of a
+  description of its interval construction. In a collection's readout, each
+  `Unavailable` line names the cell's arm, segment and day, and explains a
+  failure without a registered explanation by its `display` text before its raw
+  context. Codes, estimates and experiment identity are unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
@@ -583,6 +622,50 @@ values.
   trigger timestamps beside it already were. Experiments whose sources share
   one timestamp kind read their sources with the same SQL, and experiment
   identity is unchanged.
+- Release note (breaking bug fix): a warehouse enrollment that matches nothing
+  names its cause. When the exposure rows carry `experiment_id` keys but none
+  equals the experiment's `name`, counting enrolled units and running refuse
+  with `source.native.experiment_key_unmatched` (context `experiment`,
+  `observed_keys`: up to five keys the rows carry) instead of returning empty
+  counts and then refusing with `readout.arms.no_treatment`. A SQL exposure
+  whose `experiment_id` is NULL on every row now enrolls every row, as a
+  fact-based exposure and a SQL exposure without the column already did. A
+  run whose enrollment counts no unit refuses with the new
+  `readout.arms.none_enrolled` (context `control_group`, `counts`), for
+  example `from_moments([])` or an exposure that selects no row, with or
+  without a declared allocation; `readout.arms.no_treatment` remains for an
+  enrollment with only the control arm, and its route now names
+  `increment.workflows.srm`. Enrolled arms without usable outcomes, under any
+  design, such as a lone all-NULL `missing="skip"` metric or a panel or
+  warehouse run whose every unit is censored, return unavailable rows with
+  `readout.cell.missing_metric_observations` instead of refusing, and an
+  encouragement run still estimates compliance; such a row names the control
+  arm in `unobserved_arm` when the control arm has no observations. A fact a
+  metric reads that has no loaded rows still scores every unit zero, and now
+  warns with `source.native.fact_no_rows` (context `fact`, `fact_source`,
+  `observed_events`: up to five event labels in that source). Estimates of runs
+  that previously succeeded and experiment identity are unchanged.
+- Release note (breaking bug fix): a warehouse fact declares one rule for a
+  NULL in its value column, `missing: error | skip | zero`, and every metric on
+  the fact follows it, counts, conversion and retention included. Previously a
+  `count`, conversion or retention metric counted a NULL-valued row that `sum`
+  and the averages dropped, so revenue per order as a purchase `sum` over a
+  purchase `count` (14.5 in one case) disagreed with the mean order value
+  (29.0). Under the default, `error`, a read whose rows hold a NULL value
+  refuses with the new `source.native.fact_null_values` (context `fact`,
+  `column`, `null_rows`): an enrolled unit's rows inside a metric window or
+  retention band, counted from its trigger in a triggered read, or its CUPED
+  window, whole-site volume rows, and the rows with a unit a `MetricTrends`
+  trend reads, even when the read returns no row; a row the read leaves out,
+  such as one after the date a pinned snapshot's feed is complete through,
+  never refuses. Publishing a unit-day artifact refuses the same way for the
+  rows it stores, its triggered rows included. SQL previews (`panel_sql`,
+  `summary_sql`) and a trend's `to_table()` and `sql()` cannot refuse; under
+  `error` their SQL reads only the rows with a value. To migrate, fill the NULL
+  values or declare the fact's `missing`: `skip` leaves those rows out of every
+  aggregation, `zero` reads the value as 0 and keeps the row. Definitions
+  without `missing` keep their identity, and runs over facts without NULL
+  values keep their estimates.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra
@@ -744,6 +827,54 @@ values.
   `from_frame(shape="panel", ...)` and save it again. `EvidenceCapabilities`
   gains an optional `grain_route`, a source's route to an undeclared day axis,
   left out of saved JSON when unset.
+- Release note (feature): the covariate-imputation warning
+  `frame.validation.metric_covariate_missing_imputed` also reports, for each
+  group, how many units have no covariate value and how many units it has:
+  its context gains `n_missing_by_arm` and `n_units_by_arm`, keyed by group
+  like `frame.validation.metric_missing_differs_by_arm`. A panel unit counts
+  once however many days it has; `n_missing` still counts missing values. The
+  counts are descriptive and add no check. The code, estimates, and experiment
+  `to_json()` and `hash()` are unchanged.
+- Release note (feature): a mixed-covariate CUPED cell
+  (`Method.cuped_multicovariate`) whose encoded covariate means differ between
+  its two groups (Hotelling's $T^2$ in F form on the two groups' pooled
+  within-group covariance, nominal p < 0.001) carries the advisory
+  `estimation.cuped.covariate_imbalance`, and the run emits a runtime warning
+  with the same code. Its context reports `statistic_kind="hotelling"`, the
+  `covariates` tested, the F `statistic`, `numerator_dof`, `denominator_dof`
+  and `p_value`. Fitted `fitted_multicovariate` evidence now retains each
+  group's within-group covariate scatter (`within_arm_scatter`); evidence
+  exported before carries none, still reads, and is not checked. Estimates,
+  intervals and decisions are unchanged, and experiment `to_json()` and
+  `hash()` are unchanged.
+- Release note (breaking): an encouragement LATE cell suppressed because
+  encouragement lowered uptake (a first-stage z at or below minus
+  `min_first_stage_z`) now fails with
+  `estimation.encouragement.late.negative_first_stage`;
+  `estimation.encouragement.late.weak_first_stage` keeps the first stages
+  between. Both failures' context reports the outcome cohort's
+  `first_stage_estimate`, `first_stage_se`, `first_stage_z` and
+  `min_first_stage_z` beside `metric` and `group_id`; a first stage without
+  sampling variance reports `first_stage_z=None` with
+  `first_stage_z_reason="first_stage_without_sampling_variance"`, where such a
+  cell used to fail the readout. In `run()`, every
+  requested method's LATE cell carries the failure, and a failure from an
+  outcome metric's estimation also names the `method` it belongs to. A
+  suppressed LATE no longer adds a compliance row keyed to the outcome metric,
+  so the number of `estimand == "compliance"` rows no longer depends on the
+  data: read the cohort's first stage from the LATE failure instead. The same
+  holds in breakout, daily and as-of views, where a `late`-only request no
+  longer returns an unrequested compliance row; there each requested method's
+  suppressed LATE cell is an unavailable row (`lift=None`) carrying the same
+  failure code and context, with `method`. The relative LATE row carries
+  its log-scale reference, so `p_value()` returns the p-value that matches its
+  interval instead of refusing with
+  `estimation.results.lift.p_value_missing_log_mean_or_se`, and the cell's
+  sampling evidence in the readout metadata reports that p-value; a relative
+  LATE whose complier means have no sampling variance is withheld with a note
+  on the additive row. LATE estimates and intervals are unchanged, the relative
+  LATE stays out of decision evidence, and experiment `to_json()` and `hash()`
+  are unchanged.
 - Release note (feature): a fixed-horizon scalar CUPED cell whose covariate
   means differ between groups (a two-sided Welch t test on the covariate as
   adjusted, nominal p < 0.001, the automatic sample-ratio check's threshold)

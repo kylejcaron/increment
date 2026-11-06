@@ -202,6 +202,31 @@ saved. Export the collection's JSON (`model_dump_json()`) when you need to
 preserve the empty view's complete scope evidence; a zero-row frame/table has no
 row on which to store attribution.
 
+`render(result)` prints one line per cell, labelled as `print(result)` labels
+it: metric, arm, segment and day, plus each coordinate that differs between the
+rendered cells. The line gives the effect and interval at six significant
+digits (percent for relative effects) and the cell's status; an unavailable
+cell also gives its failure code and the reason it failed. The qualifications
+follow the cells. A line marked `Warning:` weakens the claim the cells support:
+a disclosed code (an unavailable cell's failure, an integrity status other than
+`not_rejected`, an advisory or a partial view), live or provider-owned evidence,
+a failed integrity check, or an incomplete decision scope or population roster.
+The other qualifications, such as a captured snapshot, the comparison and the
+multiplicity family, print without the mark.
+
+Breakout, daily and as-of cells, and CATE, targeting and sensitivity report
+cells, follow the same status rule as whole-window cells. A cell is
+`available` when its row carries usable inference evidence: a point (for a
+report, the estimate it retains, such as a CATE's average effect), a
+confidence set (including an exact conversion row whose control arm has zero
+events) or additive bounds. Otherwise it is `unavailable` with the
+row's own code and reason, such as `few_units` for a segment too small to
+estimate or `nonpositive_mean` for a day whose arm mean is not positive. A
+daily or as-of lift view has a row for every treatment arm on every day,
+including each arm the design's allocation declares: an arm with no units on a
+day is an unavailable row with `no_treatment_arm`, counted among the view's
+required cells, not a missing row.
+
 An affirmative `r.discovery` is the raw selection result, not another
 significance verdict: it can differ from `r.stat_sig()`. `r.p_value()` is the
 row's own unadjusted sampling p-value; it is never divided by a multiplicity

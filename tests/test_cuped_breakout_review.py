@@ -340,7 +340,7 @@ def test_public_breakout_retains_relative_ratio_when_absolute_projection_overflo
     assert cell.summary.upper == pytest.approx(0.0135992501, rel=1e-7)
     envelope_headline = render(AnalysisEnvelope((cell,), metadata=None), "brief").splitlines()[0]
     assert "relative" in envelope_headline
-    assert "0.0099157" in envelope_headline
+    assert "0.991572%" in envelope_headline
 
 
 def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_mean() -> None:

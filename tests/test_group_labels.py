@@ -199,10 +199,10 @@ def test_skipped_boolean_arm_remains_in_enrollment_counts_after_export(tmp_path)
     replay_experiment, replay_resolver = from_moments(
         rows, metrics=[MetricSpec(name="y", missing="skip")], control=True
     )
-    with pytest.raises(InvalidRequestError) as no_treatment:
-        view_readout(replay_experiment, replay_resolver)
-    assert no_treatment.value.code == "readout.arms.no_treatment"
-    assert no_treatment.value.context["control_group"] == "true"
+    # The exported counts keep the skipped arm enrolled, so its cell is unavailable
+    # rather than refused as a control-only roster.
+    (row,) = view_readout(replay_experiment, replay_resolver)
+    assert (row.group_id, row.failure_code) == ("false", "readout.cell.missing_metric_observations")
 
 
 def test_assignment_counts_match_canonical_moments_group_identities(tmp_path):

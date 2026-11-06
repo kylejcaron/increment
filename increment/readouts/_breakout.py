@@ -21,7 +21,11 @@ from increment.breakout.estimates import (
     run_breakout,
 )
 from increment.errors import CodedError
-from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
+from increment.estimation.encouragement import (
+    ESTIMANDS,
+    estimate_encouragement,
+    suppressed_late_rows,
+)
 from increment.estimation.engine import Method, _validate_methods
 from increment.estimation.multiplicity import stamp_multiplicity_status
 from increment.estimation.readout_types import (
@@ -234,6 +238,15 @@ def _encouragement_breakout_rows(
                             continue
                         diagnostic_keys.add(key)
                     lift_estimates.append(estimate)
+                lift_estimates.extend(
+                    suppressed_late_rows(
+                        computation,
+                        methods=[method],
+                        method_roles=roles_by_metric[metric.name],
+                        alternative="two-sided",
+                        prior=configs[metric.name].prior,
+                    )
+                )
             segment_start = len(results)
             for lift_estimate in lift_estimates:
                 if lift_estimate.estimand == "compliance":

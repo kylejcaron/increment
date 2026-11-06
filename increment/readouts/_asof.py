@@ -20,6 +20,7 @@ from increment.estimation.encouragement import (
     ESTIMANDS,
     estimate_compliance,
     estimate_encouragement,
+    suppressed_late_rows,
 )
 from increment.estimation.readout_types import serialize_day_axis
 from increment.estimation.results import LiftEstimate
@@ -133,7 +134,7 @@ class _AsofMetricContext:
 
 def _asof_encouragement_rows(metric, evidence, context, alpha):
     results = []
-    diagnostics = {}
+    method_roles = _runtime_method_roles(context.methods)
     for method in context.methods:
         rows = (
             evidence.rows_for_method(method)
@@ -154,14 +155,19 @@ def _asof_encouragement_rows(metric, evidence, context, alpha):
             alpha=alpha,
             alternative=context.procedure.alternative,
             inference=_sequential_inference(context.plan),
-            method_roles=_runtime_method_roles(context.methods),
+            method_roles=method_roles,
         )
-        for row in computation.results:
-            if row.estimand == "compliance":
-                diagnostics.setdefault((row.metric, row.group_id, row.value_scale), row)
-            else:
-                results.append(row)
-    return [*results, *diagnostics.values()]
+        results.extend(computation.results)
+        results.extend(
+            suppressed_late_rows(
+                computation,
+                methods=[method],
+                method_roles=method_roles,
+                alternative=context.procedure.alternative,
+                prior=context.config.prior,
+            )
+        )
+    return results
 
 
 def _estimate_asof_metric_date(

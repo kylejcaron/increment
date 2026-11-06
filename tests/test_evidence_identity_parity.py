@@ -19,10 +19,12 @@ from tests.analysis_factory import held_source
 from tests.parity_harness import registrations_line5 as _line5
 from tests.parity_harness.comparison import TOLERANCE
 from tests.parity_harness.expected_differences import (
+    CELL_KEY_DIFFERENCES,
     with_declared_favorable_sides,
     with_expected_difference,
     without_gained_arm_facts,
     without_post_capture_family_size,
+    without_value_row_scale,
 )
 from tests.parity_harness.registrations_line2 import (
     LINE2_ASOF_PAIRS,
@@ -190,9 +192,11 @@ def _captured_directions(outcome: Any) -> dict[str, str | None]:
 def _migrated_capture(scenario_id: str, ingress: str, expected: Mapping[str, Any]) -> Any:
     """The frozen outcome migrated by its recorded differences, with the favorable sides its
     captured rows declare added to each compiled plan it records."""
-    return with_declared_favorable_sides(
-        with_expected_difference(scenario_id, ingress, expected), _captured_directions(expected)
+    migrated = with_expected_difference(scenario_id, ingress, expected)
+    migrated = with_expected_difference(
+        scenario_id, ingress, migrated, differences=CELL_KEY_DIFFERENCES
     )
+    return with_declared_favorable_sides(migrated, _captured_directions(expected))
 
 
 def _comparable_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1004,8 +1008,11 @@ def _assert_outcome_matches(
         ):
             if field in expected:
                 expected_value = expected[field]
-                actual_value = without_post_capture_family_size(
-                    expected_value, without_gained_arm_facts(expected_value, actual[field])
+                actual_value = without_value_row_scale(
+                    expected_value,
+                    without_post_capture_family_size(
+                        expected_value, without_gained_arm_facts(expected_value, actual[field])
+                    ),
                 )
                 if snapshotless:
                     expected_value = _without_snapshot_identity(

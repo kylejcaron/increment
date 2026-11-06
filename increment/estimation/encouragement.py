@@ -72,6 +72,7 @@ from increment.estimation.engine import (
     estimate_lift,
     ratio_abs_diff_se,
     ratio_pair_cov,
+    resolve_method_roles,
 )
 from increment.estimation.inference import (
     ONE_SIDED_ALPHA_DOUBLES,
@@ -83,7 +84,7 @@ from increment.estimation.inference import (
     posterior_fields,
 )
 from increment.estimation.priors import MixturePrior, StudentTPrior
-from increment.estimation.results import Estimate, LiftEstimate, _reference_fields
+from increment.estimation.results import Estimate, LiftEstimate, _reference_fields, failed_cell_row
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,
     UPTAKE_COMPLETION_POLICIES,
@@ -792,7 +793,7 @@ def _encouragement_decision_bundle(
     results: Sequence[LiftEstimate],
     *,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
-    late_failures: Sequence[tuple[str, str, float]],
+    late_failures: Sequence[tuple[str, str, _EncouragementFirstStageContext]],
     itt_bundle: DecisionComputation[LiftEstimate] | None,
     contrast_advisories: Mapping[Any, tuple[ReadoutAdvisory, ...]],
 ) -> DecisionComputation[LiftEstimate]:
@@ -800,7 +801,8 @@ def _encouragement_decision_bundle(
 
     Additive LATE is the canonical LATE hypothesis row.  The relative LATE
     presentation is the same null and therefore deliberately emits no second
-    evidence value.
+    evidence value. A suppressed LATE cell's failure carries its outcome
+    cohort's first stage.
     """
     from increment.estimation.decision_types import (
         ArmHypothesisKey,
@@ -823,12 +825,30 @@ def _encouragement_decision_bundle(
     advisories = dict(itt_bundle.advisories) if itt_bundle is not None else {}
     advisories.update(bundle.advisories)
     advisories.update(contrast_advisories)
-    for metric, group_id, z_fs in late_failures:
+    for metric, group_id, context in late_failures:
         hypothesis = ArmHypothesisKey(metric, group_id, "late")
         failures[hypothesis] = DecisionFailure(
             hypothesis,
-            "estimation.encouragement.late.weak_first_stage",
-            {"metric": metric, "group_id": group_id, "first_stage_z": z_fs},
+            "estimation.encouragement.late.negative_first_stage"
+            if context.negative
+            else "estimation.encouragement.late.weak_first_stage",
+            {
+                "metric": metric,
+                "group_id": group_id,
+                "first_stage_estimate": context.b,
+                "first_stage_se": math.sqrt(context.var_b),
+                # A first stage without sampling variance has an infinite z; it
+                # travels as a null with that reason.
+                **(
+                    {"first_stage_z": context.z_fs}
+                    if math.isfinite(context.z_fs)
+                    else {
+                        "first_stage_z": None,
+                        "first_stage_z_reason": "first_stage_without_sampling_variance",
+                    }
+                ),
+                "min_first_stage_z": context.min_first_stage_z,
+            },
         )
     return DecisionComputation(
         results=tuple(results), evidence=evidence, failures=failures, advisories=advisories
@@ -851,12 +871,19 @@ class _PreparedEncouragementEstimation:
 
 @dataclass(frozen=True, slots=True)
 class _EncouragementFirstStageContext:
-    """One contrast's first-stage statistics and emission policy."""
+    """One contrast's first-stage statistics and emission policy.
+
+    ``weak`` suppresses LATE (z below the gate); ``negative`` marks the
+    suppressed cells whose encouragement reduced uptake (z at or below
+    minus the gate), which the design's monotonicity rules out.
+    """
 
     b: float
     var_b: float
     z_fs: float
+    min_first_stage_z: float
     weak: bool
+    negative: bool
     n_clusters: int | None
     dof: float | None
     suppression: str | None
@@ -920,8 +947,6 @@ def _resolve_encouragement_methods(
     """Validate method policy and resolve roles before contrast processing."""
     _validate_methods(methods)
     resolved_method_roles: dict[str, Literal["decision", "sensitivity"]] = dict(method_roles or {})
-    from increment.estimation.engine import resolve_method_roles
-
     if method_roles is None:
         resolved_method_roles = resolve_method_roles(methods)
     code = sequential_support_refusal(
@@ -1100,17 +1125,16 @@ def _first_stage_context(
     elif b > 0:
         z_fs = math.inf  # exactly-known positive first stage: never weak
     elif b < 0:
-        z_fs = -math.inf  # exactly-known negative first stage: always weak
+        z_fs = -math.inf  # exactly-known negative first stage: always negative
     else:
         z_fs = 0.0  # no first stage at all
     weak = z_fs < design.min_first_stage_z
+    negative = z_fs <= -design.min_first_stage_z
     suppression = None
     late_caveat = ""
     if weak and late_requested:
         reason = (
-            "weak instrument"
-            if z_fs > -design.min_first_stage_z
-            else "NEGATIVE first stage: encouragement reduced uptake"
+            "NEGATIVE first stage: encouragement reduced uptake" if negative else "weak instrument"
         )
         suppression = (
             f"late suppressed: first-stage z={z_fs:.2f} < {design.min_first_stage_z:g} ({reason})"
@@ -1127,7 +1151,9 @@ def _first_stage_context(
         b=b,
         var_b=var_b,
         z_fs=z_fs,
+        min_first_stage_z=design.min_first_stage_z,
         weak=weak,
+        negative=negative,
         n_clusters=n_clusters,
         dof=dof,
         suppression=suppression,
@@ -1445,6 +1471,8 @@ def _estimate_unadjusted_late_rows(
         )
     else:
         rel = _late_relative(t, c)
+        if not isinstance(rel, str) and rel[1] <= 0.0:
+            rel = "complier means have no sampling variance"
     if isinstance(rel, str):
         row = row.model_copy(
             update={
@@ -1454,26 +1482,25 @@ def _estimate_unadjusted_late_rows(
         )
         return [row]
     theta, se_theta = rel
-    if se_theta <= 0.0:
-        rel_lift = Estimate(value=math.exp(theta) - 1.0)
-    else:
-        est = _nn_estimate(
-            theta,
-            se_theta,
-            prior,
-            alpha,
-            alternative,
-            inference=inference,
-            n_comparison=t.n + c.n,
-        )
-        assert est.lb is not None and est.ub is not None
-        rel_lift = Estimate(
-            value=math.exp(est.value) - 1.0,
-            lb=math.exp(est.lb) - 1.0,
-            ub=math.exp(est.ub) - 1.0,
-            level=est.level,
-            alpha=est.alpha,
-        )
+    est = _nn_estimate(
+        theta,
+        se_theta,
+        prior,
+        alpha,
+        alternative,
+        inference=inference,
+        n_comparison=t.n + c.n,
+    )
+    assert est.lb is not None and est.ub is not None
+    rel_lift = Estimate(
+        value=math.exp(est.value) - 1.0,
+        lb=math.exp(est.lb) - 1.0,
+        ub=math.exp(est.ub) - 1.0,
+        level=est.level,
+        alpha=est.alpha,
+        log_mean=theta,
+        log_se=se_theta,
+    )
     return [
         row,
         LiftEstimate(
@@ -1489,18 +1516,14 @@ def _estimate_unadjusted_late_rows(
             lift=rel_lift,
             note=f"relative to {context.pop} control mean; "
             f"{context.iv_assumes}{context.late_caveat}",
-            **(
-                posterior_fields(
-                    theta,
-                    se_theta,
-                    prior,
-                    alpha=alpha,
-                    alternative=alternative,
-                    scale="log",
-                    preferred_direction=None,
-                )
-                if se_theta > 0.0
-                else PosteriorFields()
+            **posterior_fields(
+                theta,
+                se_theta,
+                prior,
+                alpha=alpha,
+                alternative=alternative,
+                scale="log",
+                preferred_direction=None,
             ),
         ),
     ]
@@ -1649,6 +1672,46 @@ def _late_covariate_imbalance_advisory(
         slopes={"theta": theta},
         shifts={"itt_adjustment_shift": itt_shift, "late_adjustment_shift": itt_shift / context.b},
     )
+
+
+def suppressed_late_rows(
+    computation: DecisionComputation[LiftEstimate],
+    *,
+    methods: Sequence[Method] | None,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
+    alternative: str,
+    prior: Prior | None,
+) -> list[LiftEstimate]:
+    """An unavailable row for each LATE cell of *computation* that failed without one,
+    per method of the call: how a view without a decision scope reports a suppressed
+    LATE. Each row carries the failure's code and first-stage context with its ``method``.
+    """
+    from increment.estimation.decision_types import ArmHypothesisKey
+
+    resolved = list(methods) if methods is not None else [Method(name="unadjusted")]
+    roles = method_roles if method_roles is not None else resolve_method_roles(resolved)
+    estimated = {
+        (row.metric, row.group_id, row.method)
+        for row in computation.results
+        if row.estimand == "late"
+    }
+    return [
+        failed_cell_row(
+            metric=hypothesis.metric,
+            group_id=hypothesis.group_id,
+            method=method.name,
+            method_role=roles.get(method.name, "decision"),
+            estimand="late",
+            alternative=alternative,
+            code=failure.code,
+            context={**failure.context, "method": method.name},
+            prior_declared=prior is not None,
+        )
+        for hypothesis, failure in computation.failures.items()
+        if isinstance(hypothesis, ArmHypothesisKey) and hypothesis.estimand == "late"
+        for method in resolved
+        if (hypothesis.metric, hypothesis.group_id, method.name) not in estimated
+    ]
 
 
 # Public estimator signature is the API for encouragement results.
@@ -1833,7 +1896,7 @@ def _estimate_encouragement(  # noqa: PLR0913
         for method in prepared.late_methods
     )
     out = list(prepared.results)
-    late_failures: list[tuple[str, str, float]] = []
+    late_failures: list[tuple[str, str, _EncouragementFirstStageContext]] = []
     contrast_advisories = {}
     from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
     from increment.estimation.engine import _small_total_clusters_advisory
@@ -1857,9 +1920,7 @@ def _estimate_encouragement(  # noqa: PLR0913
             contrast_advisories[ArmHypothesisKey(t.metric, t.group_id, "late")] = (
                 first_stage_advisory,
             )
-        if context.suppression is not None or (
-            t.group_id not in reported_uptake_arms and "compliance" in prepared.estimands
-        ):
+        if t.group_id not in reported_uptake_arms and "compliance" in prepared.estimands:
             reported_uptake_arms.add(t.group_id)
             row = _estimate_compliance_row(
                 t,
@@ -1870,7 +1931,7 @@ def _estimate_encouragement(  # noqa: PLR0913
                 prior=normal_prior,
                 alpha=alpha,
                 cluster=cluster,
-            ).model_copy(update={"metric": t.metric} if context.suppression else {})
+            )
             out.append(row)
             if first_stage_advisory is not None:
                 contrast_advisories[ArmHypothesisKey(row.metric, row.group_id, row.estimand)] = (
@@ -1879,7 +1940,7 @@ def _estimate_encouragement(  # noqa: PLR0913
         if "late" not in prepared.estimands:
             continue
         if context.weak:
-            late_failures.append((t.metric, t.group_id, context.z_fs))
+            late_failures.append((t.metric, t.group_id, context))
             continue
         if prepared.metric_types.get(t.metric) == "ratio":
             _refuse("estimation.encouragement.late.ratio", metric=t.metric)

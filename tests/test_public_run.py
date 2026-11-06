@@ -1227,7 +1227,7 @@ def test_run_result_preserves_set_only_projection_through_store_codecs_and_rende
     for candidate in restored:
         output = render(candidate, "full")
         assert candidate.cells[0].summary == effect
-        assert f"{effect.point!r} [{effect.lower!r}, {effect.upper!r}]" in output
+        assert f"set=[{effect.lower * 100:.6g}, +∞]%" in output
 
 
 def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
@@ -1279,7 +1279,7 @@ def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
     output = render(result, "full")
     assert "confidence set" in output
     brief = render(result)
-    assert f"{live.lift.value:.6g}" in brief
+    assert f"{live.lift.value * 100:.6g}%" in brief
     assert "status=unavailable" in brief
     assert result.cells[0].summary is None
     restored = ReadoutResults.model_validate_json(result.readout().model_dump_json())

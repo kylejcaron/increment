@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING, Any, Literal, cast, get_args, overload
 import pyarrow as pa
 from pydantic import BaseModel
 
-from increment._interpretation import EffectEstimate, project_effect
+from increment._interpretation import (
+    EffectEstimate,
+    _failure_text,
+    _has_sampling_result,
+    project_effect,
+)
 from increment.errors import CodedError
 from increment.estimation._fcr_reinterval import Construction, classify, reinterval_selected
 from increment.estimation.readout_types import FamilyScope, ReadoutMetadata
@@ -459,26 +464,31 @@ class ResultCell:
             )
         )
         if sampling_unavailable:
+            code = (
+                failure.code
+                if failure is not None
+                else (
+                    sampling.reason_code
+                    if sampling is not None
+                    else row.sampling_reason_code
+                    or row.failure_code
+                    or "results.component.unavailable"
+                )
+            )
+            context = (
+                failure.context
+                if failure is not None
+                else (row.sampling_reason_context or row.failure_context or {"reason": reason})
+            ) or {}
+            # A failed cell's reason is its failure. `classify` only names the interval
+            # construction, which explains a cell that keeps raw outcomes or did not fail.
+            failed = failure is not None or row.failure_code is not None
             sampling_status = ComponentStatus(
                 "unavailable",
-                code=(
-                    failure.code
-                    if failure is not None
-                    else (
-                        sampling.reason_code
-                        if sampling is not None
-                        else row.sampling_reason_code
-                        or row.failure_code
-                        or "results.component.unavailable"
-                    )
-                ),
-                reason=reason,
-                context=(
-                    failure.context
-                    if failure is not None
-                    else (row.sampling_reason_context or row.failure_context or {"reason": reason})
-                )
-                or {},
+                code=code,
+                reason=_failure_text(code, context, row.metric)
+                or (reason if raw_outcomes_present or not failed else None),
+                context=context,
                 advisories=advisory_codes,
             )
         else:
@@ -618,22 +628,42 @@ class ResultCell:
         except PackageNotFoundError:
             package_version = "0+unknown"
         payload = row.model_dump(mode="json")
-        reason = "report-only retained state has no registered portable operation"
+        summary = _report_summary(row, identity)
+        # Availability is the row's own inference evidence, the rule readout counts use; a CATE,
+        # targeting or sensitivity report keeps its estimate outside the lift fields, so its
+        # summary's point names it. That no portable operation is registered is a property of
+        # the row kind, not of the result.
+        failed = (
+            getattr(row, "sampling_available", None) is False
+            or getattr(row, "failure_code", None) is not None
+        )
+        if not failed and (_has_sampling_result(row) or summary.point is not None):
+            sampling = ComponentStatus("available")
+        else:
+            code = (
+                getattr(row, "failure_code", None)
+                or getattr(row, "sampling_reason_code", None)
+                or "results.component.unavailable"
+            )
+            exclusion = getattr(row, "unavailable", None) or getattr(row, "excluded", None)
+            context = (
+                getattr(row, "failure_context", None)
+                or getattr(row, "sampling_reason_context", None)
+                or ({"reason": str(exclusion)} if exclusion is not None else {})
+            )
+            sampling = ComponentStatus(
+                "unavailable",
+                code=code,
+                reason=_failure_text(code, context, getattr(row, "metric", None)),
+                context=context,
+            )
         return cls(
             identity=identity,
             label=label,
             family=family,
             source_snapshot_id=source_snapshot_id or identity.source_snapshot_id,
             components={
-                "sampling": (
-                    ComponentStatus(
-                        "unavailable",
-                        code="results.operation.unsupported",
-                        reason=reason,
-                        context={"row_kind": row_kind},
-                    ),
-                    None,
-                ),
+                "sampling": (sampling, None),
                 "posterior": (
                     ComponentStatus("unavailable", code="results.component.unavailable"),
                     None,
@@ -644,7 +674,7 @@ class ResultCell:
                 ),
             },
             provenance=Provenance(None, None, package_version, created_at or datetime.now(UTC)),
-            summary=_report_summary(row, identity),
+            summary=summary,
             row_kind=row_kind,
             row_payload={
                 "payload_version": 1,
@@ -1107,15 +1137,8 @@ class ResultCell:
                 "alpha": None if cell.summary is None else cell.summary.alpha,
                 "se": _standard_error(payload["row_payload"] or payload["retained_row"]),
                 "df": _standard_error_df(payload["row_payload"] or payload["retained_row"]),
-                "reason_code": cell.components["sampling"][0].code
-                or next(
-                    (
-                        status.code
-                        for status, _state in cell.components.values()
-                        if status.code is not None
-                    ),
-                    None,
-                ),
+                # Why the cell's sampling result is missing; an available cell has no code.
+                "reason_code": cell.components["sampling"][0].code,
                 "retained_row": None
                 if payload["retained_row"] is None
                 else _json(payload["retained_row"]),

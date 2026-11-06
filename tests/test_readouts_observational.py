@@ -622,7 +622,7 @@ def test_run_observational_declared_absolute_margin_is_no_longer_refused():
     """The counterpart: a declared Metric.margin_abs rides the absolute
     axis, which this path now supports - it must reach the readout
     pipeline instead of being refused at the margin gate. (This source
-    carries no treatment moments, so the run stops at the arm gate; the
+    carries no moments at all, so the run stops at the enrollment gate; the
     point is that no margin-axis refusal fires.)"""
     from increment import readouts as ro
     from increment.semantics.models import MeanMetric
@@ -640,7 +640,7 @@ def test_run_observational_declared_absolute_margin_is_no_longer_refused():
     src = FakeMomentSource([], metrics=[guardrail], capabilities={"total"}, design=_OBS)
     with pytest.raises(InvalidRequestError) as exc:
         ro.run(src)
-    assert exc.value.code == "readout.arms.no_treatment"
+    assert exc.value.code == "readout.arms.none_enrolled"
     assert_refusal(
         "observational_relative_margin_boundary",
         "absolute_margin_passes_relative_gate",
@@ -2979,6 +2979,41 @@ def test_native_and_artifact_observational_quantile_requests_keep_precedence(
         if native is not None:
             cast(Any, native[1]).close()
         con.disconnect()
+
+
+def test_enrolled_arms_without_outcomes_are_unavailable_cells():
+    """Sixty enrolled units, 30 per arm, none with a value of the lone skip metric: the
+    enrollment is not empty, so every cell is an unavailable row naming the control arm."""
+    from increment import run
+    from increment.frame import MetricSpec
+
+    frame = pa.table(
+        {
+            "unit": [f"u{i}" for i in range(60)],
+            "arm": [("C", "T")[i % 2] for i in range(60)],
+            "x": [float(i % 3) for i in range(60)],
+            "a": pa.nulls(60, type=pa.float64()),
+        }
+    )
+    rows = lift_rows(
+        run(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="unit",
+                group="arm",
+                design=Observational(
+                    control_group="C", adjustment=AdjustmentSet(covariates=("x",))
+                ),
+                metrics=[MetricSpec(name="a", missing="skip")],
+            )
+        ).readout()
+    )
+    assert rows
+    for row in rows:
+        assert row.group_id == "T"
+        assert row.failure_code == "readout.cell.missing_metric_observations"
+        assert (row.failure_context or {})["unobserved_arm"] == "C"
 
 
 pytestmark = pytest.mark.integration

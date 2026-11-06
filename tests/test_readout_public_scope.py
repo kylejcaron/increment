@@ -1,6 +1,7 @@
 """Public run readouts keep required-cell failures and completeness."""
 
 import copy
+import json
 import pickle
 import subprocess
 import sys
@@ -411,6 +412,7 @@ def test_filtering_all_daily_means_keeps_arm_mean_identity():
         method_role=None,
         estimand=None,
         analysis_population="assigned",
+        value_scale="absolute",
         group_id="treatment",
         ds=date(2024, 1, 1),
         ds_basis="calendar",
@@ -1298,7 +1300,7 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     from increment.tables import readout_table
 
     failed_repr = repr(results)
-    assert "unavailable guard:" in failed_repr.lower()
+    assert "unavailable guard / " in failed_repr.lower()
     failed_table = readout_table(results).gt().as_raw_html()
     assert "guard" in failed_table
     corrected = view_readout(*_analysis(_frame(guard_constant=False)))
@@ -1410,8 +1412,13 @@ def test_readout_table_renders_failed_scope_and_partial_collection_view():
     failed_row = next(row for row in full_rows if row["failure_code"] is not None)
     assert failed_row["stat_sig"] is None
     full_html = readout_table(full_rows).gt().as_raw_html()
-    assert "estimation.engine.lift_guard" in full_html
-    assert "zero_variance" in full_html
+    context = json.loads(str(failed_row["failure_context"]))
+    assert failed_row["failure_code"] == "estimation.engine.lift_guard"
+    assert context["reason"] == "zero_variance"
+    # The Failure column explains the failure by its display text.
+    message = str(failed_row["failure_message"])
+    assert message == context["display"]
+    assert message in full_html
     assert "Decision scope is incomplete" in full_html
 
     filtered = results.filter(lambda row: row.metric == "rev")

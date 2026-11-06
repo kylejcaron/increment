@@ -32,11 +32,14 @@ from tests.parity_harness.expected_differences import (
     EXPORT_DIFFERENCES,
     READOUT_IDENTITY_DIFFERENCES,
     REPLAY_DIFFERENCES,
+    VALUE_SCALE_SNAPSHOT_REASON,
     ExpectedDifference,
     declared_directions,
     with_declared_favorable_sides,
     without_gained_arm_facts,
+    without_gained_fit_fields,
     without_guardrail_segments,
+    without_value_row_scale,
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "evidence_identity"
@@ -71,6 +74,36 @@ _BINOMIAL_ROW_SNAPSHOTS = tuple(
             "sha256:5ce099c78ba4a5bfe4fe51eff2a4c00131f72d3618fd8a5f3253d59107f81e11",
         ),
     )
+)
+_VALUE_SCALE_SNAPSHOTS = tuple(
+    ExpectedDifference(
+        scenario="parity_baseline",
+        ingress="from_definitions",
+        field=f"{view} source_snapshot_id",
+        frozen=frozen,
+        current=current,
+        reason=VALUE_SCALE_SNAPSHOT_REASON,
+    )
+    for view, frozen, current in (
+        (
+            "run_daily",
+            "sha256:d737e1d938dd0245134cc197e12db74ad54c4b71e37dfc410eb42963d10893d1",
+            "sha256:abf157fa97fac9b3cd7002d0e8e4a31b908d852fba1cbf44da1ebb84de4d5713",
+        ),
+        (
+            "run_asof",
+            "sha256:4e6e2192a9de3be3bed8ba57db4411bb59e88ef51345eab44a8473f2d8eb327f",
+            "sha256:72847bbe44ced27b7e5e19d5b043a5e95eb7f4c7c53ed629acd4a59faab7fe8b",
+        ),
+    )
+)
+_CONTINUATION_SNAPSHOT = ExpectedDifference(
+    scenario="checkpoint_continuation",
+    ingress="from_unit_panel",
+    field="rows[].source_snapshot_id",
+    frozen="sha256:624ad752fba021bd01f78aa4a2af88fa851819b0f202b50230447b2e7e32f9b4",
+    current="sha256:0e0e17306f9439256e64b4a17b2daaf8d0ed6bc6dfbdfeb93974137bfa85159d",
+    reason=VALUE_SCALE_SNAPSHOT_REASON,
 )
 
 
@@ -317,7 +350,11 @@ def _assert_export_moment_rows_close(expected_rows, actual_rows, declared):
         _compare_aggregate(expected_without_fit, actual_without_fit)
         if expected_fit is not None or actual_fit is not None:
             assert expected_fit is not None and actual_fit is not None
-            _compare_aggregate(json.loads(expected_fit), json.loads(actual_fit))
+            expected_payload = json.loads(expected_fit)
+            _compare_aggregate(
+                expected_payload,
+                without_gained_fit_fields(expected_payload, json.loads(actual_fit)),
+            )
 
 
 def _frozen_export_rows(name):
@@ -435,7 +472,7 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
                 else:
                     original_results[name] = read(pair)
         expected_baseline = fixture["parity_baseline"]["rows"]
-        for difference in _BINOMIAL_ROW_SNAPSHOTS:
+        for difference in (*_BINOMIAL_ROW_SNAPSHOTS, *_VALUE_SCALE_SNAPSHOTS):
             expected_baseline = difference.applied_to(expected_baseline)
         expected_baseline = _migrated_identity("parity_baseline", expected_baseline)
         expected_baseline["run_breakout"] = without_guardrail_segments(
@@ -471,9 +508,12 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
         workflows.export_moments(*pairs["mixed_warehouse"], live_cube)
         # QR-derived fit floats can vary at machine epsilon across BLAS/LAPACK platforms.
         # Keep the BASE-captured numeric payload pinned within the replay tolerance.
+        frozen_fit_payload = _warehouse_fit_payload(
+            _FIXTURES / "exports" / "mixed_warehouse.parquet"
+        )
         _assert_replay_rows_close(
-            _warehouse_fit_payload(_FIXTURES / "exports" / "mixed_warehouse.parquet"),
-            _warehouse_fit_payload(live_cube),
+            frozen_fit_payload,
+            without_gained_fit_fields(frozen_fit_payload, _warehouse_fit_payload(live_cube)),
         )
         _assert_export_moment_rows_close(
             _frozen_export_rows("mixed_warehouse"),
@@ -564,8 +604,10 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
                 assert actual_snapshot == {
                     key: expected_continuation[key] for key in actual_snapshot
                 }
+                expected_rows = _CONTINUATION_SNAPSHOT.applied_to(expected_continuation["rows"])
                 _assert_replay_rows_close(
-                    expected_continuation["rows"], _frame_rows(read(continued, "asof"))
+                    expected_rows,
+                    without_value_row_scale(expected_rows, _frame_rows(read(continued, "asof"))),
                 )
                 continuation.verify_parent(parent_snapshot)
             finally:

@@ -15,6 +15,7 @@ that test's docstring for why the layering decision landed there.
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -582,13 +583,74 @@ def test_asof_lift_suppresses_late_on_weak_days_and_reports_it_once_strong(path)
     for r in results:
         assert r.ds is not None
         by_date[r.ds].add(r.estimand)
-    assert by_date[day1] == {"itt", "compliance"}, "weak first stage must suppress late"
+    assert by_date[day1] == {"itt", "compliance", "late"}
     assert "late" in by_date[day2], "strong first stage must report late"
 
-    late_rows = [r for r in results if r.estimand == "late"]
-    assert late_rows
-    for r in late_rows:
-        assert r.ds == day2
+    # No control unit takes up, so the weak day's first stage is treatment's uptake
+    # share with its ddof=1 binomial standard error.
+    (treat,) = [row for row in weak_day if row["group_id"] == "treat"]
+    share = treat["sum_d"] / treat["n"]
+    se = math.sqrt(share * (1.0 - share) / (treat["n"] - 1))
+    assert 0.0 < share / se < 4.0
+    (suppressed,) = [r for r in results if r.estimand == "late" and r.ds == day1]
+    assert suppressed.lift is None
+    assert suppressed.failure_code == "estimation.encouragement.late.weak_first_stage"
+    context = suppressed.failure_context
+    assert context is not None and context["method"] == suppressed.method == "unadjusted"
+    assert context["first_stage_estimate"] == pytest.approx(share, rel=1e-12)
+    assert context["first_stage_se"] == pytest.approx(se, rel=1e-9)
+    assert context["first_stage_z"] == pytest.approx(share / se, rel=1e-9)
+    assert context["min_first_stage_z"] == 4.0
+    assert {r.ds for r in results if r.estimand == "late" and r.lift is not None} == {day2}
+
+
+def test_exactly_negative_first_stage_reports_a_null_z_in_run_and_asof():
+    """Every control unit takes up and no treatment unit does: the first stage is
+    exactly -1 with no sampling variance, so its z is minus infinity. The LATE cell
+    is the negative-first-stage failure in both views, with that z as a null and
+    its reason."""
+    rng = np.random.default_rng(31)
+    rows = []
+    for gid, took_up in (("control", 1.0), ("treat", 0.0)):
+        y = 10.0 + rng.normal(0, 2.0, size=200)
+        d = np.full(200, took_up)
+        rows.append(
+            centered_row_from_raw_sums(
+                {
+                    "experiment_id": "s",
+                    "metric": METRIC.name,
+                    "group_id": gid,
+                    "n": 200,
+                    "sum_y": float(y.sum()),
+                    "sum_y2": float((y**2).sum()),
+                    "sum_d": float(d.sum()),
+                    "sum_yd": float((y * d).sum()),
+                    "sum_y2d": float((y**2 * d).sum()),
+                }
+            )
+        )
+    design = _design(one_sided=False)
+    whole = readouts.run(
+        FakeMomentSource(rows, metrics=[METRIC], capabilities={"total"}, design=design)
+    )
+    dated = readouts.asof_lift(
+        FakeMomentSource(
+            [dict(row, ds=date(2025, 1, 1)) for row in rows],
+            metrics=[METRIC],
+            capabilities={"asof"},
+            design=design,
+        )
+    )
+    for results in (whole, dated):
+        (late,) = [r for r in results if r.estimand == "late"]
+        assert late.lift is None
+        assert late.failure_code == "estimation.encouragement.late.negative_first_stage"
+        context = late.failure_context
+        assert context is not None
+        assert context["first_stage_estimate"] == -1.0
+        assert context["first_stage_se"] == 0.0
+        assert context["first_stage_z"] is None
+        assert context["first_stage_z_reason"] == "first_stage_without_sampling_variance"
 
 
 def test_asof_lift_always_valid_requires_finalized_bounded_windows():
@@ -1245,7 +1307,9 @@ def test_breakout_emits_late_for_strong_segment_suppresses_weak():
         assert r.source is None
         by_segment[r.dimension_value].add(r.estimand)
     assert by_segment["strong"] >= {"itt", "compliance", "late"}
-    assert "late" not in by_segment["weak"]
+    weak_late = [r for r in results if r.dimension_value == "weak" and r.estimand == "late"]
+    assert weak_late and all(r.lift is None for r in weak_late)
+    assert {r.failure_code for r in weak_late} == {"estimation.encouragement.late.weak_first_stage"}
 
 
 def test_breakout_cuped_late_fits_theta_per_segment():
@@ -3157,9 +3221,9 @@ def test_asof_view_refuses_a_margined_encouragement_guardrail():
 
 
 def test_asof_lift_compliance_rows_carry_drift_caveat_when_late_suppressed():
-    """With a weak instrument the late row is suppressed, so the compliance
-    row is the only surviving open-endedness signal for an unwindowed
-    uptake - the drift caveat must reach it."""
+    """With a weak instrument the late cell has no estimate, so the compliance
+    row is the only estimate left to carry the open-endedness signal for an
+    unwindowed uptake - the drift caveat must reach it."""
     design = _design(one_sided=True)  # uptake unwindowed
     rows = _rows(n=200, compliance=0.02, seed=11)  # weak: late suppressed
     for r in rows:
@@ -3172,7 +3236,7 @@ def test_asof_lift_compliance_rows_carry_drift_caveat_when_late_suppressed():
     for r in comp:
         assert r.note is not None
         assert "uptake unwindowed: complier definition drifts" in r.note
-    assert not [r for r in results if r.estimand == "late"]
+    assert all(r.lift is None for r in results if r.estimand == "late")
 
 
 def _two_metric_uptake_table() -> pa.Table:

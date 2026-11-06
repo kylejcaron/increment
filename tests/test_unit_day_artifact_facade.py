@@ -230,6 +230,7 @@ def _definitions(
     empty_plan: bool = False,
     observation_end: str | None = None,
     day_boundary: str | None = None,
+    purchase_missing: str | None = None,
 ) -> Path:
     payload: dict[str, object] = {}
     for name in ("fact_sources.yaml", "exposures.yaml", "metrics.yaml", "experiments.yaml"):
@@ -258,6 +259,14 @@ def _definitions(
         experiment["end"] = None
     if empty_plan:
         experiment["plan"] = {}
+    if purchase_missing is not None:
+        purchase = next(
+            fact
+            for source in payload["fact_sources"]  # ty: ignore[not-iterable]
+            for fact in source["facts"]
+            if fact["name"] == "purchase"
+        )
+        purchase["missing"] = purchase_missing
     sitewide_metric = "purchase_rate"
     if sitewide_count:
         payload["metrics"].append(  # ty: ignore[unresolved-attribute]
@@ -2769,7 +2778,9 @@ def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Pat
     any exposure table still counts", tests/query/test_builders.py:6008). Seeds one
     purchase event for a user who is never exposed at all, inside the experiment
     window, and asserts the whole-site reading includes it."""
-    definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
+    definitions = _definitions(
+        tmp_path, site_volume_only=True, sitewide_count=True, purchase_missing="zero"
+    )
     con, (native_experiment, native_resolver), context, store = _native(definitions=definitions)
     con.raw_sql(
         """
@@ -2821,6 +2832,7 @@ def test_site_volume_coverage_ends_at_the_enrollment_end_not_the_observation_end
         sitewide_count=True,
         observation_end="2025-03-01",
         day_boundary=day_boundary,
+        purchase_missing="zero",
     )
     con, (native_experiment, native_resolver), context, store = _native(definitions=definitions)
     con.raw_sql(

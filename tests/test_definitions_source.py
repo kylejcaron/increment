@@ -18,16 +18,29 @@ import ibis
 import pytest
 
 from examples._seed import seed_event_log
-from increment import Method, View, from_definitions, from_unit_day_artifact, readouts, workflows
+from increment import (
+    Method,
+    View,
+    from_definitions,
+    from_unit_day_artifact,
+    readouts,
+    run,
+    workflows,
+)
+from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.breakout.estimates import run_daily as _day_axis_values
+from increment.errors import InvalidRequestError
+from increment.estimators import MetricTrends, sitewide
 from increment.evidence import (
     BreakoutIdentity,
     MomentRows,
     MomentsRequest,
+    UnitRowsRequest,
     evidence_provider,
     request_evidence,
 )
 from increment.query.native_source import DefinitionsMomentSource
+from increment.query.session import WarehouseArtifactStore
 from increment.semantics.models import (
     AnalysisPlan,
     MeanMetric,
@@ -43,7 +56,12 @@ from tests.analysis_factory import (
     native_connection,
     view_readout,
 )
-from tests.query.test_builders import _analysis_with_cross_source_breakouts
+from tests.query.test_builders import (
+    _analysis_with_cross_source_breakouts,
+    _arm_value,
+    _null_revenue_definitions,
+    _null_revenue_events,
+)
 from tests.test_unit_day_artifact_facade import (
     _expected_context,
     _extensions,
@@ -552,9 +570,10 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_daily_lift(cros
     assert {e.source for e in results} == {"src_a", "src_b"}
     for source in ("src_a", "src_b"):
         assert {e.metric for e in results if e.source == source} == {"visit_rate", "checkout"}
-    # dimension_value differs by source (src_a: US=control-only so no lift
-    # row, CA=treatment; src_b: MX); cross-source mixups would still pass above.
-    assert {e.dimension_value for e in results if e.source == "src_a"} == {"CA"}
+    # dimension_value differs by source (src_a: US=control-only so an unavailable
+    # no_treatment_arm row, CA=treatment; src_b: MX); cross-source mixups would still pass above.
+    assert {e.dimension_value for e in results if e.source == "src_a"} == {"US", "CA"}
+    assert {e.unavailable for e in results if e.dimension_value == "US"} == {"no_treatment_arm"}
     assert {e.dimension_value for e in results if e.source == "src_b"} == {"MX"}
 
 
@@ -603,9 +622,10 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_asof_lift(cross
     assert {e.source for e in results} == {"src_a", "src_b"}
     for source in ("src_a", "src_b"):
         assert {e.metric for e in results if e.source == source} == {"visit_rate", "checkout"}
-    # dimension_value differs by source (src_a: US=control-only so no lift
-    # row, CA=treatment; src_b: MX); cross-source mixups would still pass above.
-    assert {e.dimension_value for e in results if e.source == "src_a"} == {"CA"}
+    # dimension_value differs by source (src_a: US=control-only so an unavailable
+    # no_treatment_arm row, CA=treatment; src_b: MX); cross-source mixups would still pass above.
+    assert {e.dimension_value for e in results if e.source == "src_a"} == {"US", "CA"}
+    assert {e.unavailable for e in results if e.dimension_value == "US"} == {"no_treatment_arm"}
     assert {e.dimension_value for e in results if e.source == "src_b"} == {"MX"}
 
 
@@ -872,6 +892,195 @@ def test_direct_unadjusted_daily_asof_do_not_query_pre_period_stats(
     assert [_stable_aliases(q) for q in direct_queries] == [
         _stable_aliases(q) for q in baseline_queries
     ]
+
+
+# Per read: the data's NULL purchases, then the definitions that read them.
+_NULL_FACT_READS: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    "outcome": ({}, {}),
+    "pre_period": (
+        {"null_at": -dt.timedelta(days=1)},
+        {
+            "plan": "{primary: {metric: avg_order, "
+            "decision_method: {name: cuped, variance_reduction: cuped}}}",
+            "n_pre_periods": 7,
+        },
+    ),
+    "site_volume": (
+        {"null_owner": "unenrolled"},
+        {"plan": "{primary: revenue}", "site_metric": True},
+    ),
+    "trends": ({}, {}),
+    "empty_fetch": ({"loaded": False}, {"observation_end": None}),
+    # Checkout two days after exposure; each NULL purchase a day past the assignment-anchored
+    # window, inside the checkout-anchored one.
+    "triggered": (
+        {"trigger_at": dt.timedelta(days=2), "null_at": dt.timedelta(days=3, hours=2)},
+        {"trigger": True},
+    ),
+    "triggered_publication": (
+        {"trigger_at": dt.timedelta(days=2), "null_at": dt.timedelta(days=3, hours=2)},
+        {"trigger": True},
+    ),
+}
+
+
+def _null_snapshot(complete_through: dt.datetime = dt.datetime(2025, 1, 9, tzinfo=dt.UTC)):
+    """The pinned evidence a triggered read needs: events through 2025-01-09, complete
+    through *complete_through*."""
+    return SourceSnapshotEvidence(
+        dt.datetime(2025, 1, 9, tzinfo=dt.UTC), {"events": complete_through}
+    )
+
+
+# Whole-site impact reads an unwindowed metric, which the loader flags as variable-window.
+@pytest.mark.filterwarnings("ignore:metric 'revenue' has window_days=None")
+@pytest.mark.parametrize("read", list(_NULL_FACT_READS))
+def test_null_fact_values_refuse_by_default(tmp_path, read):
+    """Forty purchases carry a NULL revenue and the fact declares no NULL rule, so every read
+    whose rows hold them refuses with the fact, column and rows: the enrolled units' outcome
+    window, their CUPED pre-period (each NULL purchase a day before exposure), whole-site
+    volume (unenrolled units buying inside the enrollment window), a calendar trend over the
+    window, an as-of read before any window completes, which aggregates no row, and the
+    checkout-anchored window of a triggered run and of a triggered artifact."""
+    event_options, experiment_options = _NULL_FACT_READS[read]
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", _null_revenue_events(**event_options))
+    definitions = _null_revenue_definitions(tmp_path, **experiment_options)
+    with pytest.raises(InvalidRequestError) as refused:
+        if read == "trends":
+            MetricTrends.from_definitions(definitions, connection).metric(
+                "avg_order", start=dt.date(2025, 1, 1), end=dt.date(2025, 1, 5)
+            ).to_frame()
+        else:
+            experiment, reader = from_definitions(
+                definitions,
+                connection,
+                experiment_name="x",
+                source_snapshot_evidence=_null_snapshot() if read.startswith("triggered") else None,
+            )
+            if read == "site_volume":
+                sitewide(experiment, reader, "revenue")
+            elif read == "empty_fetch":
+                metric = next(
+                    m for m in workflows.metrics(experiment, reader) if m.name == "avg_order"
+                )
+                _moments(bound_source(reader), metric, grain="asof", completed_windows_only=True)
+            elif read == "triggered":
+                triggered = View(view="run", grain="total", population="triggered")
+                run(experiment.with_views(triggered), reader, views=(triggered,))
+            elif read == "triggered_publication":
+                publish_unit_day_artifact(
+                    experiment,
+                    reader,
+                    WarehouseArtifactStore(connection, schema_name="artifacts"),
+                    extensions=_extensions(
+                        _expected_context(definitions, "x"),
+                        "trigger_population",
+                        "trigger_measure_stats",
+                    ),
+                )
+            else:
+                run(experiment, reader)
+    assert refused.value.code == "source.native.fact_null_values"
+    assert dict(refused.value.context) == {
+        "fact": "purchase",
+        "column": "revenue",
+        "null_rows": 40,
+    }
+
+
+# Per read: the data's NULL purchases, the definitions, and the pinned snapshot, if any.
+_UNUSED_NULL_READS: dict[
+    str, tuple[dict[str, Any], dict[str, Any], SourceSnapshotEvidence | None]
+] = {
+    # Each NULL purchase inside the assignment-anchored window, before the checkout.
+    "before_trigger": (
+        {"trigger_at": dt.timedelta(days=2)},
+        {"trigger": True},
+        _null_snapshot(),
+    ),
+    # Each NULL purchase on day 0, before the retention band [2, 3).
+    "retention_before_band": ({}, {"plan": "{secondaries: [returned]}"}, None),
+    # Each NULL purchase on 2025-01-03; the feed is complete through 2025-01-01 only.
+    "past_feed_edge": (
+        {"null_at": dt.timedelta(days=2, hours=2)},
+        {"plan": "{primary: revenue}", "site_metric": True},
+        _null_snapshot(dt.datetime(2025, 1, 2, tzinfo=dt.UTC)),
+    ),
+    # Each NULL purchase in the pre-period of an enrolled unit that never checks out.
+    "untriggered_covariate": (
+        {
+            "trigger_at": dt.timedelta(days=2),
+            "null_at": -dt.timedelta(days=1),
+            "null_owner": "untriggered",
+        },
+        {
+            "trigger": True,
+            "n_pre_periods": 7,
+            "plan": "{primary: {metric: avg_order, decision_method: {name: scalar, "
+            "variance_reduction: cuped, covariates: [{name: pre_revenue, kind: continuous, "
+            "measure: {fact: purchase, aggregation: sum}}]}}}",
+        },
+        _null_snapshot(),
+    ),
+    # Each NULL purchase on a row without a unit.
+    "trend_without_unit": ({"null_owner": "nobody"}, {}, None),
+}
+
+
+@pytest.mark.filterwarnings("ignore:metric 'revenue' has window_days=None")
+@pytest.mark.parametrize("read", list(_UNUSED_NULL_READS))
+def test_null_values_a_read_does_not_use_do_not_refuse(tmp_path, read):
+    """Forty NULL-revenue purchases under the default rule refuse no read that leaves them
+    out, and the read's numbers are those of the valued purchases (unit i buys at 10 + i):
+    a triggered read anchors at the checkout, so its order mean is control mean(10 + i) =
+    29.0; a retention band starting on day 2 sees no return; a feed complete through
+    2025-01-01 stops the unwindowed order total there, at 29.0; a triggered unit frame's
+    covariate reads only checked-out units; a trend counts only rows with a unit, so its
+    2025-01-01 order mean over u0..u39 is 29.5."""
+    event_options, experiment_options, snapshot = _UNUSED_NULL_READS[read]
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", _null_revenue_events(**event_options))
+    definitions = _null_revenue_definitions(tmp_path, **experiment_options)
+    if read == "trend_without_unit":
+        trend = (
+            MetricTrends.from_definitions(definitions, connection)
+            .metric("avg_order", start=dt.date(2025, 1, 1), end=dt.date(2025, 1, 5))
+            .to_frame("pyarrow")
+            .to_pylist()
+        )
+        (first_day,) = [row for row in trend if row["period"] == dt.date(2025, 1, 1)]
+        assert first_day["value"] == pytest.approx(29.5, abs=1e-12)
+        return
+    experiment, reader = from_definitions(
+        definitions, connection, experiment_name="x", source_snapshot_evidence=snapshot
+    )
+    try:
+        source = bound_source(reader)
+        metrics = {metric.name: metric for metric in workflows.metrics(experiment, reader)}
+        if read == "untriggered_covariate":
+            frame = cast(
+                Any,
+                request_evidence(
+                    evidence_provider(source),
+                    UnitRowsRequest(
+                        metrics["avg_order"], covariates=("pre_revenue",), population="triggered"
+                    ),
+                ),
+            )
+            values = {row["unit_id"]: row["y"] for row in frame.to_pylist()}
+            assert values == pytest.approx({f"u{i}": 10.0 + i for i in range(40)}, abs=1e-12)
+            return
+        name, population, expected = {
+            "before_trigger": ("avg_order", "triggered", 29.0),
+            "retention_before_band": ("returned", "assigned", 0.0),
+            "past_feed_edge": ("revenue", "assigned", 29.0),
+        }[read]
+        rows = _moments(source, metrics[name], population=population)
+        control = next(row for row in rows if row["group_id"] == "control")
+        assert _arm_value(control) == pytest.approx(expected, abs=1e-12)
+    finally:
+        reader.close()
 
 
 pytestmark = pytest.mark.integration

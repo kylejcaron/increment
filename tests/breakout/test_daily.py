@@ -3082,7 +3082,7 @@ class TestRunDailyLiftReturnsDailyLiftEstimates:
 
 
 class TestRunDailyLiftAsofEncouragementLate:
-    def test_weak_day_omits_late_and_keeps_itt_and_compliance(self):
+    def test_weak_day_reports_late_unavailable_and_keeps_itt_and_compliance(self):
         design = _encouragement_design(min_first_stage_z=4.0)
         rows = _encouragement_day_rows(
             ds=date(2025, 1, 1), n=2000, tau=2.0, compliance=0.005, seed=1
@@ -3096,13 +3096,16 @@ class TestRunDailyLiftAsofEncouragementLate:
             view="asof",
         )
 
-        assert {row.estimand for row in results} == {"itt", "compliance"}
-        assert not [row for row in results if row.estimand == "late"]
+        assert {row.estimand for row in results} == {"itt", "compliance", "late"}
+        late = [row for row in results if row.estimand == "late"]
+        assert {(row.lift, row.failure_code) for row in late} == {
+            (None, "estimation.encouragement.late.weak_first_stage")
+        }
         (compliance,) = [row for row in results if row.estimand == "compliance"]
         assert compliance.metric == f"{_mean_metric('rev').name}_uptake"
         assert "late suppressed" in (compliance.note or "")
 
-    def test_late_only_weak_day_keeps_explanatory_compliance(self):
+    def test_late_only_weak_day_adds_no_compliance_row(self):
         rows = _encouragement_day_rows(
             ds=date(2025, 1, 1), n=2000, tau=2.0, compliance=0.005, seed=1
         )
@@ -3116,8 +3119,7 @@ class TestRunDailyLiftAsofEncouragementLate:
             estimands=("late",),
         )
 
-        assert {row.estimand for row in results} == {"compliance"}
-        assert results[0].note
+        assert {row.estimand for row in results} <= {"late"}
 
     def test_itt_only_skips_encouragement_diagnostics(self, monkeypatch):
         rows = _encouragement_day_rows(ds=date(2025, 1, 1), n=4000, tau=2.0, compliance=0.5, seed=7)

@@ -97,18 +97,40 @@ class EffectEstimate:
     qualification: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _Qualification:
+    """A rendered qualification; ``weakens`` marks one that limits what the result supports."""
+
+    text: str
+    weakens: bool = False
+
+
+def _failure_text(code: str | None, context: Any, metric: str | None) -> str | None:
+    """Explain a failure by its registered template, else by the display text its context holds."""
+    if code is None:
+        return None
+    rendered = render_readout_failure(code, context, identity={"metric": metric})
+    if rendered is not None:
+        return rendered
+    display = context.get("display") if hasattr(context, "get") else None
+    return display if isinstance(display, str) and display else None
+
+
+def _failure_message(code: str | None, context: Any, metric: str | None, row) -> str | None:
+    message = _failure_text(code, context, metric)
+    if message is None and code is not None:
+        return f"{code}: {_json(context) or '{}'}"
+    if message is None and getattr(row, "unavailable", None) is not None:
+        return f"Unavailable: {row.unavailable}"
+    return message
+
+
 def _unscoped_cell(row) -> InterpretedCell:
     failure_code = getattr(row, "failure_code", None)
     failure_context = getattr(row, "failure_context", None)
-    failure_message = render_readout_failure(
-        failure_code,
-        failure_context,
-        identity={"metric": getattr(row, "metric", None)},
+    failure_message = _failure_message(
+        failure_code, failure_context, getattr(row, "metric", None), row
     )
-    if failure_code is not None and failure_message is None:
-        failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
-    elif failure_message is None and getattr(row, "unavailable", None) is not None:
-        failure_message = f"Unavailable: {row.unavailable}"
     return InterpretedCell(
         key=CellKey.from_row(row),
         required=False,
@@ -272,19 +294,9 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                     failure_code, failure_context, sampling_available = _failure_and_availability(
                         row, record
                     )
-                    failure_message = render_readout_failure(
-                        failure_code,
-                        failure_context,
-                        identity={"metric": cell.metric},
+                    failure_message = _failure_message(
+                        failure_code, failure_context, cell.metric, row
                     )
-                    if failure_code is not None and failure_message is None:
-                        failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
-                    elif (
-                        failure_message is None
-                        and row is not None
-                        and getattr(row, "unavailable", None) is not None
-                    ):
-                        failure_message = f"Unavailable: {row.unavailable}"
                     posterior = record.posterior
                     interpreted.append(
                         InterpretedCell(
@@ -662,10 +674,11 @@ def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[
         for group in interpretation.groups
         for row in group.visible_rows
     }
+    varying = _varying_fields(cell.identity.key for cell in cells)
     lines = []
     for cell in cells:
         key = cell.identity.key
-        label = _cell_label(key)
+        label = _cell_coordinates(key, varying)
         comparison = comparisons.get((cell.source_snapshot_id, key))
         if comparison is not None and all(comparison):
             label += f", comparison={comparison[1]} vs {comparison[0]}"
@@ -673,7 +686,10 @@ def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[
             label += f", source={_display_source(cell.source_snapshot_id)}"
         status = cell.components["sampling"][0]
         row = rows_by_identity.get((cell.source_snapshot_id, key))
-        text = _brief_summary_text(cell.summary)
+        text = _brief_summary_text(
+            cell.summary,
+            label="mean" if cell.row_kind in ("daily_metric", "asof_metric") else "effect",
+        )
         text += f"; status={status.state}"
         if status.code is not None:
             text += f"; code={status.code}"
@@ -705,36 +721,40 @@ def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[
                 text += f"; {restriction}"
         lines.append(f"{label}: {text}")
 
-    lines.extend(_brief_disclosure_lines(interpretation))
-    lines.extend(f"Warning: {line}" for line in render_readout_qualifications(interpretation))
-    for group in interpretation.groups:
-        lines.extend(
-            line
-            for line in _render_group_scope(group, group.visible_rows)
-            if line.startswith("Integrity:")
-            or line.startswith("SRM not checked")
-            or line.startswith("SRM not run")
+    lines.extend(
+        _marked(item)
+        for item in (
+            *_brief_disclosure_lines(interpretation),
+            *_readout_qualifications(interpretation),
         )
-    lines.extend(_coherence_qualifications(interpretation))
+    )
+    for group in interpretation.groups:
+        integrity = _render_integrity_disclosure(group)
+        if integrity is not None:
+            weakens = group.integrity_status == "failed"
+            lines.append(_marked(_Qualification(integrity, weakens=weakens)))
     return tuple(lines)
 
 
-def _brief_summary_text(summary) -> str:
+def _marked(item: _Qualification) -> str:
+    return f"Warning: {item.text}" if item.weakens else item.text
+
+
+def _brief_summary_text(summary, *, label: str = "effect") -> str:
     if summary is None:
         return "unavailable"
-    text = f"{summary.point!r} [{summary.lower!r}, {summary.upper!r}] ({summary.value_scale}"
+    shown = "; ".join(
+        text for text in (_effect_text(summary, label=label), _confidence_set_text(summary)) if text
+    )
+    details = [summary.value_scale]
     if summary.alpha is not None:
-        text += f", {1 - summary.alpha:.1%} confidence"
-    if summary.geometry is not None:
-        text += f", {summary.geometry} set {summary.intervals!r}"
-    if summary.reason is not None:
-        text += f", {summary.reason}"
-    if summary.qualification is not None:
-        text += f", {summary.qualification}"
-    return text + ")"
+        details.append(f"{1 - summary.alpha:.1%} confidence")
+    details.extend(text for text in (summary.reason, summary.qualification) if text is not None)
+    return f"{shown or label + ' unavailable'} ({', '.join(details)})"
 
 
-def _brief_disclosure_lines(interpretation: ReadoutInterpretation) -> tuple[str, ...]:
+def _brief_disclosure_lines(interpretation: ReadoutInterpretation) -> tuple[_Qualification, ...]:
+    """Name each disclosure code once per comparison; every disclosure weakens the claim."""
     source_ids = {group.source_snapshot_id for group in interpretation.groups}
     lines = []
     for group in interpretation.groups:
@@ -760,52 +780,69 @@ def _brief_disclosure_lines(interpretation: ReadoutInterpretation) -> tuple[str,
         if group.control_group is not None and group.treatment_group is not None:
             qualifications.append(f"comparison={group.treatment_group} vs {group.control_group}")
         suffix = "" if not qualifications else f" ({'; '.join(qualifications)})"
-        lines.extend(f"Warning: {code}{suffix}" for code in sorted(warning_codes))
+        lines.extend(
+            _Qualification(f"{code}{suffix}", weakens=True) for code in sorted(warning_codes)
+        )
     if not interpretation.groups and not interpretation.metadata_known:
-        lines.append("Warning: integrity.unknown")
+        lines.append(_Qualification("integrity.unknown", weakens=True))
     if interpretation.partial and not any(group.partial for group in interpretation.groups):
-        lines.append("Warning: readout.partial_view")
+        lines.append(_Qualification("readout.partial_view", weakens=True))
     return tuple(lines)
 
 
 def _coherence_qualifications(
     interpretation: ReadoutInterpretation, *, include_uniform_capture: bool = False
-) -> tuple[str, ...]:
+) -> tuple[_Qualification, ...]:
     """Qualify evidence coherence; one uniform capture is the default guarantee and is
-    stated only where every disclosure is listed."""
+    stated only where every disclosure is listed. Live or provider evidence weakens the claim."""
+    modes = interpretation.effective_modes or {}
     uniform_capture = (
         interpretation.coherence == "captured"
         and not interpretation.independently_captured
         and not interpretation.provider_owned
-        and all(mode == "captured" for mode in (interpretation.effective_modes or {}).values())
+        and all(mode == "captured" for mode in modes.values())
     )
     if uniform_capture and not include_uniform_capture:
         return ()
     qualifications = []
     if interpretation.independently_captured:
-        qualifications.append("Coherence: captured independently per result family.")
+        qualifications.append(
+            _Qualification("Coherence: captured independently per result family.")
+        )
     else:
         if interpretation.provider_owned:
-            qualifications.append("Coherence: provider-owned; the kernel does not pin a snapshot.")
+            qualifications.append(
+                _Qualification(
+                    "Coherence: provider-owned; the kernel does not pin a snapshot.", weakens=True
+                )
+            )
         if interpretation.coherence == "live":
-            qualifications.append("Coherence: live; no pinned snapshot is guaranteed.")
+            qualifications.append(
+                _Qualification("Coherence: live; no pinned snapshot is guaranteed.", weakens=True)
+            )
         elif interpretation.coherence == "captured" and not interpretation.provider_owned:
-            qualifications.append("Coherence: captured.")
-    if interpretation.effective_modes:
-        modes = ", ".join(
-            f"{source}={mode}" for source, mode in sorted(interpretation.effective_modes.items())
+            qualifications.append(_Qualification("Coherence: captured."))
+    if modes:
+        listed = ", ".join(f"{source}={mode}" for source, mode in sorted(modes.items()))
+        qualifications.append(
+            _Qualification(
+                f"Effective evidence modes: {listed}",
+                weakens=any(mode != "captured" for mode in modes.values()),
+            )
         )
-        qualifications.append(f"Effective evidence modes: {modes}")
     return tuple(qualifications)
 
 
 def render_readout_text(interpretation: ReadoutInterpretation) -> str:
     """Render metric evidence first, followed by relevant qualifications."""
-    lines = list(_coherence_qualifications(interpretation))
+    lines = [item.text for item in _coherence_qualifications(interpretation)]
     if not interpretation.groups:
         lines.append("Scope retained; no source-qualified cells recorded.")
         return "\n".join(lines)
     show_source = len({group.source_snapshot_id for group in interpretation.groups}) > 1
+    varying = _varying_fields(
+        cell.key for group in interpretation.groups for cell in group.source_cells
+    )
     for group in interpretation.groups:
         lines.append(
             _render_group_label(
@@ -816,7 +853,7 @@ def render_readout_text(interpretation: ReadoutInterpretation) -> str:
         )
         visible_rows = sorted(group.visible_rows, key=_row_display_order)
         lines.extend(_render_group_rows(group, visible_rows))
-        lines.extend(_render_group_scope(group, visible_rows))
+        lines.extend(_render_group_scope(group, visible_rows, varying))
     return "\n".join(lines)
 
 
@@ -862,7 +899,7 @@ def _render_integrity_disclosure(group) -> str | None:
     return None
 
 
-def _render_group_scope(group, visible_rows) -> list[str]:
+def _render_group_scope(group, visible_rows, varying: frozenset[str]) -> list[str]:
     lines = []
     integrity = _render_integrity_disclosure(group)
     if integrity is not None:
@@ -882,7 +919,7 @@ def _render_group_scope(group, visible_rows) -> list[str]:
     for item in group.unavailable_cells:
         if item.visible:
             lines.append(
-                f"Unavailable {item.key.metric}: "
+                f"Unavailable {_cell_coordinates(item.key, varying)}: "
                 f"{item.failure_message or item.failure_code or 'reason unavailable'}"
             )
     for item in group.hidden_cells:
@@ -1121,10 +1158,15 @@ def _display_source(source_id: str | None) -> str | None:
 
 def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tuple[str, ...]:
     """Return compact, source-attributed qualifications for a rendered table header."""
+    return tuple(item.text for item in _readout_qualifications(interpretation))
+
+
+def _readout_qualifications(interpretation: ReadoutInterpretation) -> tuple[_Qualification, ...]:
+    """Qualify each comparison; rejected integrity and incomplete or partial scope weaken it."""
     if not interpretation.groups:
         return (
             *_coherence_qualifications(interpretation, include_uniform_capture=True),
-            "Scope and integrity unknown.",
+            _Qualification("Scope and integrity unknown."),
         )
     comparisons = [
         _group_comparison(group, metadata_known=interpretation.metadata_known)
@@ -1137,7 +1179,7 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
         }
     )
     repeat_attribution = attribution_count > 1
-    bullets: list[str] = []
+    bullets: list[_Qualification] = []
     for group, comparison in zip(interpretation.groups, comparisons, strict=True):
         attribution = [
             value
@@ -1150,9 +1192,9 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
         ]
         suffix = "" if not attribution else f" [{', '.join(attribution)}]"
 
-        def add_bullet(text: str, group_suffix: str = suffix) -> None:
+        def add_bullet(text: str, *, weakens: bool = False, group_suffix: str = suffix) -> None:
             attribution_suffix = group_suffix if repeat_attribution or not bullets else ""
-            bullets.append(text + attribution_suffix)
+            bullets.append(_Qualification(text + attribution_suffix, weakens=weakens))
 
         add_bullet(f"Comparison: {comparison}")
         integrity = f"Integrity: {group.integrity_status}"
@@ -1160,7 +1202,7 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
             integrity += f" ({group.integrity_code})"
         if group.integrity_status == "not_rejected":
             integrity += "; no detected mismatch, not proof of valid randomization"
-        add_bullet(integrity)
+        add_bullet(integrity, weakens=group.integrity_status == "failed")
         decision = (
             "unknown"
             if group.decision_complete is None
@@ -1187,7 +1229,10 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
             )
         add_bullet(
             f"Scope: decision {decision}; roster {roster}"
-            f"{'; partial view' if group.partial else ''}{counts}"
+            f"{'; partial view' if group.partial else ''}{counts}",
+            weakens=group.decision_complete is False
+            or group.roster_complete is False
+            or group.partial,
         )
         for item in group.unavailable_cells:
             if not item.visible:
@@ -1486,15 +1531,12 @@ def render_effect_interpretation(row) -> str | None:
 
 
 def _reason(context):
-    if context is None:
+    # An empty mapping records no reason, like a missing one.
+    if not context:
         return "reason unavailable"
-    if isinstance(context, dict):
+    if hasattr(context, "get"):
         return str(context.get("reason", context.get("display", context)))
-    return (
-        str(context.get("reason", context.get("display", context)))
-        if hasattr(context, "get")
-        else str(context)
-    )
+    return str(context)
 
 
 def _json(value):

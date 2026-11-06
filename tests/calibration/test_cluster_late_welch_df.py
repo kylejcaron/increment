@@ -36,10 +36,9 @@ Statistic
     that adopts another reference fails here explicitly rather than only
     through the parity gap. Refused replications are counted and reported,
     never dropped silently, and each must be the named mechanism: an inline
-    first-stage z below the design's ``min_first_stage_z`` with the surviving
-    absolute compliance row carrying the ``late suppressed: first-stage
-    z=...`` diagnostic. Emitted replications must sit on the other side of
-    the same gate, so the count is exactly the gate's.
+    first-stage z below the design's ``min_first_stage_z``, reported as the
+    failed LATE cell's ``first_stage_z``. Emitted replications must sit on
+    the other side of the same gate, so the count is exactly the gate's.
 Tolerance / MC uncertainty
     Binomial MCSE ``sqrt(p(1-p)/reps)``: 0.005-0.0085 at 2000 reps. Every
     pinned coverage is asserted within k=3 MCSE of the value measured on the
@@ -274,14 +273,15 @@ def late_study(cell: Cell, reps: int, seed: int) -> dict[str, float]:
                 # 983b315 retains weak-first-stage LATE cells as typed failures.
                 assert z_fs < design.min_first_stage_z + GATE_TOLERANCE, (cell, z_fs)
                 (late,) = lates
-                assert late.failure_code == "estimation.encouragement.late.weak_first_stage"
-                (comp,) = [
-                    r for r in results if r.estimand == "compliance" and r.value_scale == "absolute"
-                ]
-                assert comp.note is not None and "late suppressed: first-stage z=" in comp.note, (
-                    cell,
-                    comp.note,
+                assert late.failure_code == (
+                    "estimation.encouragement.late.negative_first_stage"
+                    if z_fs <= -design.min_first_stage_z
+                    else "estimation.encouragement.late.weak_first_stage"
                 )
+                assert late.failure_context is not None
+                assert late.failure_context["first_stage_z"] == pytest.approx(
+                    z_fs, rel=GATE_TOLERANCE, abs=GATE_TOLERANCE
+                ), (cell, late.failure_context)
                 suppressed += 1
                 continue
             assert lates, f"missing planned LATE cell at first-stage z={z_fs} for {cell}"

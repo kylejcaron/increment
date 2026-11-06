@@ -3143,6 +3143,30 @@ def test_preferred_direction_dump_includes_when_declared():
     assert reloaded.declared_preferred_direction == "decrease"
 
 
+def test_fact_missing_default_keeps_definition_identity(example_definitions):
+    """The default NULL rule is omitted from canonical output, so existing definitions keep
+    the parsed dump their digest hashes, and declaring the default changes nothing."""
+    import yaml
+
+    from increment.semantics.loader import load
+
+    dumped = load(example_definitions).model_dump(mode="json")
+    assert all(
+        "missing" not in fact for source in dumped["fact_sources"] for fact in source["facts"]
+    )
+    path = example_definitions / "fact_sources.yaml"
+    payload = yaml.safe_load(path.read_text())
+    for source in payload["fact_sources"]:
+        for fact in source["facts"]:
+            if fact["column"] is not None:
+                fact["missing"] = "error"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    declared = load(example_definitions)
+    valued = [fact for source in declared.fact_sources for fact in source.facts if fact.column]
+    assert valued and all("missing" in fact.model_fields_set for fact in valued)
+    assert declared.model_dump(mode="json") == dumped
+
+
 # ── Positive infinity / nan rejected in declaration fields (h6d7) ──────
 
 

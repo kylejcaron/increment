@@ -310,6 +310,7 @@ def _user_facing_python_strings(path: Path) -> list[tuple[int, str]]:
         "_render_group_scope",
         "_render_group_rows",
         "render_readout_qualifications",
+        "_readout_qualifications",
         "_selection_qualification",
         "render_effect_interpretation",
         "_render_effect",

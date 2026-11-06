@@ -1,4 +1,6 @@
+import functools
 import math
+import warnings
 from collections.abc import MutableMapping
 from typing import cast
 
@@ -12,6 +14,7 @@ from increment.errors import (
     UnsupportedRequestError,
 )
 from increment.estimation.armstats import ArmStats, centered_row_from_raw_sums
+from increment.estimation.decision_types import ArmHypothesisKey
 from increment.estimation.encouragement import _late_relative, _nn_estimate, estimate_encouragement
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
@@ -347,29 +350,105 @@ def test_complier_relative_late_recovers_ratio():
     assert rel[0].require_lift().value == pytest.approx(0.20, abs=0.06)
 
 
-def test_weak_instrument_suppresses_late_but_keeps_itt():
-    res = estimate_encouragement(
-        [METRIC], _rows(n=200, compliance=0.02), _design(one_sided=True)
-    ).results
-    got = _by_estimand(res)
-    assert not any(k[0] == "late" for k in got)
-    assert ("itt", "relative") in got
-    comp = got[("compliance", "absolute")][0]
-    assert comp.note is not None and "suppressed" in comp.note
+def test_weak_first_stage_keeps_weak_code():
+    rows = _rows(n=200, compliance=0.02)
+    c, t = rows
+    b = t["sum_d"] / t["n"] - c["sum_d"] / c["n"]
+    var_b = sum(a["sum_d"] * (a["n"] - a["sum_d"]) / a["n"] / (a["n"] - 1) / a["n"] for a in rows)
+    assert abs(b / math.sqrt(var_b)) < 4.0
+    computed = estimate_encouragement([METRIC], rows, _design(one_sided=True))
+    assert not [r for r in computed.results if r.estimand == "late"]
+    assert [r for r in computed.results if r.estimand == "itt"]
+    failure = computed.failures[ArmHypothesisKey("rev", "treat", "late")]
+    assert failure.code == "estimation.encouragement.late.weak_first_stage"
+    assert failure.context["first_stage_estimate"] == pytest.approx(b, rel=1e-12)
+    assert failure.context["first_stage_se"] == pytest.approx(math.sqrt(var_b), rel=1e-12)
+    assert failure.context["first_stage_z"] == pytest.approx(b / math.sqrt(var_b), rel=1e-12)
+    assert failure.context["min_first_stage_z"] == 4.0
 
 
-def test_negative_first_stage_is_named_not_called_weak():
-    """A strongly NEGATIVE first stage (encouragement REDUCED uptake) is
-    an instrumentation/product bug, not a weak instrument - suppression
-    is still correct, but the reason must name the sign instead of
-    calling a |z| of ~18 'weak'."""
-    rows = _rows(n=4000, compliance=0.01, one_sided=False)  # control uptake 0.1 >> treat 0.01
-    res = estimate_encouragement([METRIC], rows, _design(one_sided=False)).results
-    comp = [r for r in res if r.estimand == "compliance"]
-    assert comp and comp[0].note is not None
-    assert "suppressed" in comp[0].note
-    assert "reduced uptake" in comp[0].note
-    assert "weak instrument" not in comp[0].note
+@functools.cache
+def _two_sided_run(seed: int, control_uptake: float, encouraged_uptake: float):
+    """One simulated two-sided encouragement readout and the raw columns behind it."""
+    import polars as pl
+
+    from increment import run
+    from increment.semantics.design import ExclusionRestriction, UptakeSpec
+
+    rng = np.random.default_rng(seed)
+    n = 4000
+    z = rng.random(n) < 0.5
+    d = np.where(z, rng.random(n) < encouraged_uptake, rng.random(n) < control_uptake).astype(int)
+    y = 8 + 3 * d + rng.normal(0, 2, n)
+    frame = pl.DataFrame(
+        {"u": [f"u{i}" for i in range(n)], "g": np.where(z, "enc", "control"), "y": y, "d": d}
+    )
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="d"),
+        exclusion_restriction=ExclusionRestriction(justification="x"),
+        one_sided=False,
+    )
+    experiment, reader = from_frame(
+        frame, shape="summary", unit="u", group="g", metrics={"y": "mean"}, design=design
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = run(experiment, reader)
+    return result, z, d, y
+
+
+def test_relative_late_p_value_matches_its_interval():
+    from scipy.stats import norm
+
+    result, z, d, y = _two_sided_run(5, 0.1, 0.7)
+    (row,) = [r for r in result.readout() if r.estimand == "late" and r.value_scale == "relative"]
+    arms = []
+    for mask in (z, ~z):
+        yy, yd = y[mask], y[mask] * d[mask]
+        cov = np.cov(np.vstack([yy, yd]), ddof=1)
+        arms.append((yy.mean(), yd.mean(), cov, mask.sum()))
+    (y_t, yd_t, cov_t, n_t), (y_c, yd_c, cov_c, n_c) = arms
+    n1 = yd_t - yd_c
+    n0 = (y_c - yd_c) - (y_t - yd_t)
+    theta = math.log(n1) - math.log(n0)
+    var_theta = 0.0
+    for cov, n, g_y, g_yd in (
+        (cov_t, n_t, 1 / n0, 1 / n1 - 1 / n0),
+        (cov_c, n_c, -1 / n0, -1 / n1 + 1 / n0),
+    ):
+        var_theta += (g_y**2 * cov[0, 0] + g_yd**2 * cov[1, 1] + 2 * g_y * g_yd * cov[0, 1]) / n
+    p = row.p_value()
+    assert p == pytest.approx(2 * norm.sf(abs(theta / math.sqrt(var_theta))), rel=1e-6)
+    assert row.stat_sig() == (p < 0.05)
+
+
+def test_negative_first_stage_has_its_own_code():
+    result, z, d, _ = _two_sided_run(2, 0.6, 0.3)
+    (late,) = [r for r in result.readout() if r.estimand == "late"]
+    b = d[z].mean() - d[~z].mean()
+    var_b = d[z].var(ddof=1) / z.sum() + d[~z].var(ddof=1) / (~z).sum()
+    assert late.lift is None
+    assert late.failure_code == "estimation.encouragement.late.negative_first_stage"
+    assert late.failure_context is not None
+    assert late.failure_context["metric"] == "y"
+    assert late.failure_context["group_id"] == "enc"
+    assert late.failure_context["first_stage_estimate"] == pytest.approx(b, rel=1e-9)
+    assert late.failure_context["first_stage_estimate"] == pytest.approx(-0.3016, abs=1e-4)
+    assert late.failure_context["first_stage_se"] == pytest.approx(math.sqrt(var_b), rel=1e-9)
+    assert late.failure_context["first_stage_z"] == pytest.approx(-20.10, abs=0.01)
+    assert late.failure_context["min_first_stage_z"] == 4.0
+
+
+def test_compliance_row_count_does_not_depend_on_first_stage():
+    counts = []
+    for seed, control_uptake, encouraged_uptake in ((2, 0.6, 0.3), (5, 0.1, 0.7)):
+        result = _two_sided_run(seed, control_uptake, encouraged_uptake)[0]
+        frame = result.to_frame(backend="pandas")
+        compliance = frame[frame["estimand"] == "compliance"]
+        assert "y" not in set(compliance["metric"])
+        counts.append(len(compliance))
+    assert counts[0] == counts[1]
 
 
 def test_pop_label_derives_from_the_uptake_fact():

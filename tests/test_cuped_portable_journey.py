@@ -368,6 +368,7 @@ def test_fixed_caps_export_fits_with_warehouse_qr_and_replays_without_unit_trans
             )
 
 
+@pytest.mark.filterwarnings("ignore:fact 'signup' has no loaded rows")
 def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_path, monkeypatch):
     import datetime as dt
 

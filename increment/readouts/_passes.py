@@ -14,7 +14,7 @@ from increment.estimation.engine import Method, _estimate_lift, estimate_lift
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.inference import LiftGuardError
 from increment.estimation.quantile import quantile_lift_from_rows
-from increment.estimation.results import LiftEstimate
+from increment.estimation.results import LiftEstimate, failed_cell_row
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.readouts._common import _runtime_method_roles, _warn
 from increment.semantics.design import Encouragement
@@ -166,25 +166,19 @@ def _append_lift_cell_failure(  # noqa: PLR0913
         )
     else:
         results.append(
-            LiftEstimate(
+            failed_cell_row(
                 metric=metric.name,
                 group_id=group_id,
                 method=method.name,
+                method_role=method_role,
                 estimand=estimand,
-                value_scale="absolute" if estimand == "late" else "relative",
                 alternative=alternative,
+                code=code,
+                context=failure_context,
+                prior_declared=prior is not None,
                 null_lift=null_lift,
                 null_abs=null_abs,
                 preferred_direction=preferred_direction,
-                method_role=method_role,
-                failure_code=code,
-                failure_context=failure_context,
-                sampling_available=False,
-                sampling_reason_code=code,
-                sampling_reason_context=failure_context,
-                posterior_available=False if prior is not None else None,
-                posterior_reason_code=code if prior is not None else None,
-                posterior_reason_context=failure_context if prior is not None else None,
             )
         )
 

@@ -521,18 +521,16 @@ def _weak_rows():
 
 def test_weak_first_stage_gate_is_identical_with_and_without_cuped():
     """Numerator-only adjustment cannot move the gate: it reads the RAW
-    first stage. Same suppression, same z, same text."""
+    first stage, so both methods report the same LATE failure."""
     rows = _weak_rows()
-    plain = estimate_encouragement(
-        [METRIC], rows, _design(), estimands=("compliance", "late")
-    ).results
+    plain = estimate_encouragement([METRIC], rows, _design(), estimands=("compliance", "late"))
     adjusted = estimate_encouragement(
         [METRIC], rows, _design(), estimands=("compliance", "late"), methods=CUPED
-    ).results
-    assert _late(plain) == [] and _late(adjusted) == []
-    plain_notes = [r.note for r in plain if r.estimand == "compliance"]
-    assert plain_notes == [r.note for r in adjusted if r.estimand == "compliance"]
-    assert any("late suppressed" in (n or "") for n in plain_notes)
+    )
+    assert _late(plain.results) == [] and _late(adjusted.results) == []
+    late = ArmHypothesisKey("rev", "treat", "late")
+    assert plain.failures[late] == adjusted.failures[late]
+    assert plain.failures[late].code == "estimation.encouragement.late.weak_first_stage"
 
 
 def test_near_gate_caveat_text_is_identical_with_and_without_cuped():

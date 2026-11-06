@@ -71,6 +71,14 @@ def resolve_window_days(metric: Metric) -> int | None:
     _raise("facade.window.resolve_window_days", metric_type=type(metric).__name__)
 
 
+def outcome_band(metric: Metric) -> tuple[int, int | None]:
+    """Return the days after exposure whose events the outcome reads, half-open
+    ``[start, end)``: a retention band, else ``[0, resolve_window_days)``."""
+    if isinstance(metric, RetentionMetric):
+        return metric.band
+    return 0, resolve_window_days(metric)
+
+
 def maturity_days(metric: Metric) -> int | None:
     """Return the maturity offset used to censor an immature unit.
 

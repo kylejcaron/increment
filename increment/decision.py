@@ -335,7 +335,7 @@ class _ArmDecisionProcedure(CodedModel, BaseModel):
     favorable_side: Literal["greater", "less"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-    _declaration_omits_none: ClassVar[frozenset[str]] = frozenset({"favorable_side"})
+    _declaration_omits_default: ClassVar[frozenset[str]] = frozenset({"favorable_side"})
 
     @model_validator(mode="after")
     def _one_sided_alpha(self) -> _ArmDecisionProcedure:

@@ -756,10 +756,24 @@ class SourceColumn(AliasMixin, _Base):
     description: str | None = None
 
 
+#: A fact's rule for a NULL value; see `Fact`.
+FactNullPolicy = Literal["error", "zero", "skip"]
+
+
 class Fact(SourceColumn):
-    # `column` is the fact's value column; None means an occurrence-only
-    # event (page_view) - count/conversion/retention work, but sum/averages/etc. do not.
+    """A fact: one event type, plus its value column when it carries one.
+
+    ``column`` is the value column; None means an occurrence-only event
+    (page_view) - count/conversion/retention work, but sum/averages/etc. do not.
+    ``missing`` is the one rule for a NULL value, applied to every aggregation of
+    the fact: ``"error"`` (default) refuses a read whose rows hold one, ``"zero"``
+    reads it as 0 and still counts the row, and ``"skip"`` drops the row from
+    every aggregation, counts included.
+    """
+
     column: str | None = None
+    missing: FactNullPolicy = Field(default="error", exclude_if=lambda value: value == "error")
+    _declaration_omits_default: ClassVar[frozenset[str]] = frozenset({"missing"})
 
 
 class Property(SourceColumn):

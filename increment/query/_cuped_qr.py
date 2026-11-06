@@ -547,19 +547,32 @@ def _aggregate_grouped_matrix(
     *,
     execute: Callable[[ir.Table], object],
     max_statement_chars: int = 80_000,
-) -> dict[str, FloatMatrix]:
-    """Reduce all group matrices in bounded statements."""
+    fields: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, FloatMatrix], list[dict[str, Any]]]:
+    """Reduce all group matrices in bounded statements.
+
+    The first statement also reduces ``fields``, even without values; its per-group
+    records are returned beside the matrices.
+    """
+    fields = fields or {}
     width = len(values)
     row_batch = max(1, max_statement_chars // max(1, width * 64))
     matrices: dict[str, np.ndarray] = {}
-    for start in range(0, width, row_batch):
+    first: list[dict[str, Any]] = []
+    for start in range(0, width if width or not fields else 1, row_batch):
         stop = min(start + row_batch, width)
-        fields = {
+        sums = {
             f"_qr_m_{row}_{column}": (values[row] * values[column]).sum()
             for row in range(start, stop)
             for column in range(width)
         }
-        records = _rows(execute(relation.group_by(group_column).aggregate(**fields)))
+        records = _rows(
+            execute(
+                relation.group_by(group_column).aggregate(**(fields if start == 0 else {}), **sums)
+            )
+        )
+        if start == 0:
+            first = records
         for record in records:
             group = str(record[group_column])
             matrix = matrices.setdefault(group, np.zeros((width, width), dtype=float))
@@ -569,7 +582,7 @@ def _aggregate_grouped_matrix(
     return {
         group: tuple(tuple(float(value) for value in row) for row in matrix)
         for group, matrix in matrices.items()
-    }
+    }, first
 
 
 def _sum_scaled_parts(parts: Sequence[tuple[float, int]]) -> float:
@@ -842,7 +855,9 @@ def _warehouse_hc2_scores(
             )
     scored = cast(ir.Table, scratch.materialize_next(relation.mutate(**score_values)))
     flat_scores = tuple(scored[name] for family in score_names for name in family)
-    covariance_by_arm = _aggregate_grouped_matrix(scored, "group_id", flat_scores, execute=execute)
+    covariance_by_arm, _ = _aggregate_grouped_matrix(
+        scored, "group_id", flat_scores, execute=execute
+    )
     covariance_parts = [[[] for _ in flat_scores] for _ in flat_scores]
     for source_index, source_arm in enumerate(arms):
         normalized_covariance = covariance_by_arm[str(source_arm)]
@@ -2062,6 +2077,8 @@ class QRPreparedRelation:
     outcome_offsets: tuple[tuple[float, ...], ...]
     centered_outcome_means: tuple[tuple[float, ...], ...]
     outcome_arm_exponents: tuple[tuple[int, ...], ...]
+    # Each arm's cross-product sums of the covariates centered at its own retained means.
+    covariate_scatter: tuple[FloatMatrix, ...]
 
 
 def prepare_qr_factor_input(  # noqa: PLR0915
@@ -2097,8 +2114,24 @@ def prepare_qr_factor_input(  # noqa: PLR0915
             (value.isnull() | is_nan | is_inf).ifelse(1, 0).cast("int64").sum()
         )
         values.append(value)
-    counts_rows = _rows(
-        execute(relation.group_by("group_id").aggregate(_qr_n=relation.count(), **nonfinite_fields))
+    centered_covariates = tuple(
+        relation[source_name]
+        - _sum_sql(
+            ibis.ifelse(
+                relation["group_id"] == arm,
+                exact_double(encoded.centered_means[index][arm_index]),
+                0.0,
+            )
+            for arm_index, arm in enumerate(arms)
+        )
+        for index, source_name in enumerate(encoded.columns)
+    )
+    scatter_by_arm, counts_rows = _aggregate_grouped_matrix(
+        relation,
+        "group_id",
+        centered_covariates,
+        execute=execute,
+        fields={"_qr_n": relation.count(), **nonfinite_fields},
     )
     count_lookup = {str(row["group_id"]): int(row["_qr_n"]) for row in counts_rows}
     if set(count_lookup) != set(arms):
@@ -2141,18 +2174,9 @@ def prepare_qr_factor_input(  # noqa: PLR0915
     weighted_covariate_columns = tuple(
         f"_qr_weighted_covariate_{index}" for index in range(len(encoded.columns))
     )
-    for index, (source_name, target_name, weighted_name) in enumerate(
-        zip(encoded.columns, covariate_columns, weighted_covariate_columns, strict=True)
+    for target_name, weighted_name, centered in zip(
+        covariate_columns, weighted_covariate_columns, centered_covariates, strict=True
     ):
-        arm_mean = _sum_sql(
-            ibis.ifelse(
-                relation["group_id"] == arm,
-                exact_double(encoded.centered_means[index][arm_index]),
-                0.0,
-            )
-            for arm_index, arm in enumerate(arms)
-        )
-        centered = relation[source_name] - arm_mean
         fields[target_name] = centered
         fields[weighted_name] = centered * sqrt_weight
     offsets: list[tuple[float, ...]] = []
@@ -2254,6 +2278,7 @@ def prepare_qr_factor_input(  # noqa: PLR0915
         tuple(offsets),
         tuple(centered_means),
         outcome_arm_exponents,
+        tuple(scatter_by_arm[arm] for arm in arms),
     )
 
 
@@ -2574,6 +2599,7 @@ def fit_warehouse_qr(  # noqa: PLR0915
         is_ratio=metric.type == "ratio",
         denominator_support=denominator_support,
         control=request.control,
+        within_arm_scatter=prepared.covariate_scatter,
     )
     specs = []
     estimates = []

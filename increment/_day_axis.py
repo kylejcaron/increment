@@ -1029,8 +1029,12 @@ def _estimate_day_axis_lift_slice(
         ds_basis = "cohort" if evidence_slice.view == "cohort" else "calendar"
     results = list(unavailable)
     if estimation_rows:
+        # The triggered pre-pass already reports each arm with no triggered units on a day,
+        # with its own code; the estimator's roster row for that cell is the same cell.
+        held = {_day_cell(row) for row in unavailable}
         results.extend(
-            daily_lift(
+            row
+            for row in daily_lift(
                 summary=estimation_rows,
                 metrics=list(evidence_slice.metrics),
                 control_group=control_group,
@@ -1038,11 +1042,13 @@ def _estimate_day_axis_lift_slice(
                 source=evidence_slice.source_name,
                 view=evidence_slice.view,
                 segment_roster_by_metric=segment_roster_by_metric,
+                treatment_arms=tuple(getattr(design, "allocation", None) or ()),
                 _policy_by_cell=policy_by_cell,
                 **kwargs,
                 _cell_advisories=advisories,
                 **extra,
             )
+            if _day_cell(row) not in held
         )
     if triggered:
         results.extend(
@@ -1060,6 +1066,11 @@ def _estimate_day_axis_lift_slice(
             )
         )
     return results
+
+
+def _day_cell(row) -> tuple[Any, ...]:
+    day = row.ds.date() if isinstance(row.ds, dt.datetime) else row.ds
+    return (day, row.metric, row.group_id, row.dimension_value)
 
 
 def _triggered_group_roster(source: _BuiltinMomentSource, experiment: Experiment) -> list[str]:

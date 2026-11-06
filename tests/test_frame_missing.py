@@ -837,6 +837,70 @@ def test_skip_failure_names_the_arm_without_observations() -> None:
         assert message in render(result, "brief")
 
 
+@pytest.mark.parametrize("case", ["all_null_skip", "declared_allocation", "censored_panel"])
+def test_enrolled_arms_without_outcomes_are_unavailable_cells(case) -> None:
+    """Enrolled units with no usable outcome are unavailable cells, not an empty roster:
+    a lone all-null skip metric on 30/30 units (with or without a declared allocation),
+    and a panel whose observation end precedes every window's close."""
+    groups = ["control", "treatment"] * 30
+    if case == "censored_panel":
+        frame = pl.DataFrame(
+            [
+                {
+                    "u": u,
+                    "g": groups[u],
+                    "day": date(2026, 2, 1) + timedelta(days=k),
+                    "expo": date(2026, 2, 1) + timedelta(days=u % 3),
+                    "rev": float(u + k),
+                }
+                for u in range(40)
+                for k in range(6)
+            ]
+        )
+        built = from_frame(
+            frame,
+            shape="panel",
+            unit="u",
+            group="g",
+            date="day",
+            control="control",
+            exposure_date="expo",
+            metrics=[MetricSpec(name="rev", window_days=5)],
+            observation_end=date(2026, 2, 2),
+        )
+    else:
+        frame = pl.DataFrame(
+            {"u": range(60), "g": groups, "a": [None] * 60}, schema_overrides={"a": pl.Float64}
+        )
+        skip_metric = [MetricSpec(name="a", missing="skip")]
+        built = (
+            from_frame(
+                frame,
+                shape="summary",
+                unit="u",
+                group="g",
+                design=Randomized(
+                    control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+                ),
+                metrics=skip_metric,
+            )
+            if case == "declared_allocation"
+            else from_frame(
+                frame, shape="summary", unit="u", group="g", control="control", metrics=skip_metric
+            )
+        )
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        rows: Any = run(*built).readout()
+    (row,) = rows
+    assert row.group_id == "treatment"
+    assert row.failure_code == "readout.cell.missing_metric_observations"
+    if case == "censored_panel":
+        assert "frame.censoring.dropped_units" in warning_codes(record)
+    else:
+        assert row.failure_context["unobserved_arm"] == "control"
+
+
 def test_drop_is_refused_with_route_to_skip() -> None:
     with pytest.raises(CodedError) as exc_info:
         MetricSpec(name="x", missing="drop")
@@ -858,10 +922,11 @@ def test_skip_label_reaches_frame_and_render() -> None:
     (line,) = [
         line
         for line in render(result, "brief").splitlines()
-        if line.startswith("score / arm=treatment / ")
+        if line.startswith("score / arm=treatment")
     ]
     assert line.count(row.population) == 1
-    assert line.count("population=") == 1
+    # One analysis population: the label omits it, so the restriction is the only population.
+    assert "population=" not in line
 
 
 def test_skip_label_reaches_breakout_frame_and_render() -> None:
@@ -887,9 +952,7 @@ def test_skip_label_reaches_breakout_frame_and_render() -> None:
         (line,) = [
             line
             for line in lines
-            if line.startswith(
-                f"{metric} / arm=treatment / dimension=segment / segment={segment} / "
-            )
+            if line.startswith(f"{metric} / arm=treatment / segment={segment}")
         ]
         assert line.count("observed-only population; counts not recorded per segment") == (
             1 if metric == "score" else 0
@@ -955,12 +1018,10 @@ def test_skip_label_composes_with_overlap_trimming() -> None:
     assert skipped.population == f"{skip_label}; {trimmed_only.population}"
     assert skipped.estimand == "overlap_subpopulation_ate"
     (line,) = [
-        line
-        for line in render(result, "brief").splitlines()
-        if line.startswith("revenue / arm=T / ") and f"estimand={skipped.estimand}" in line
+        line for line in render(result, "brief").splitlines() if line.startswith("revenue / arm=T")
     ]
     assert line.count(skipped.population) == 1
-    assert line.count("population=") == 1
+    assert "population=" not in line
 
 
 def test_inferred_all_null_metric_obeys_missing_policy() -> None:
@@ -1330,6 +1391,32 @@ def test_cuped_covariate_nulls_auto_imputed_with_counted_warning() -> None:
     assert lift.lb is not None and lift.ub is not None
     assert lift.lb <= 0.0 <= lift.ub
     assert abs(lift.value) < 0.02
+
+
+def test_imputation_warning_reports_missing_by_arm() -> None:
+    table = pa.table(
+        {
+            "user_id": [f"u{i}" for i in range(22)],
+            "variant": ["control"] * 10 + ["treatment"] * 12,
+            "y": [float(i % 4) for i in range(22)],
+            "x": pa.array([None if i < 3 else float(i % 5) for i in range(22)], pa.float64()),
+        }
+    )
+    covariate = CupedCovariate(name="x", kind="continuous", missing="impute")
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        from_unit_summary(
+            table,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[MetricSpec(name="y", decision_method=Method.cuped(covariates=covariate))],
+            design=_DESIGN,
+        )
+    context = warning_context(recorded, "frame.validation.metric_covariate_missing_imputed")
+    assert context["n_missing"] == 3
+    assert context["n_missing_by_arm"] == {"control": 3, "treatment": 0}
+    assert context["n_units_by_arm"] == {"control": 10, "treatment": 12}
 
 
 def test_covariate_lost_in_one_arm_and_zero_filled_is_flagged() -> None:

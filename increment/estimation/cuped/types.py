@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, is_dataclass
-from typing import Literal, NoReturn
+from typing import TYPE_CHECKING, Literal, NoReturn
 
 import numpy as np
 
 from increment.estimation.cuped._numeric import _check_alpha, _fail
 from increment.estimation.cuped.encoding import MulticovariateCupedLayout
+
+if TYPE_CHECKING:
+    from increment.estimation.diagnostics import MulticovariateBalance
 
 
 def _freeze_payload(value):
@@ -61,7 +64,13 @@ class MulticovariateCupedProjection:
 
 @dataclass(frozen=True, slots=True)
 class MulticovariateCupedFit:
-    """Immutable fitted evidence; unit-level input arrays are not retained."""
+    """Immutable fitted evidence; unit-level input arrays are not retained.
+
+    ``covariate_mean_differences`` holds each arm's encoded covariate means minus the
+    control arm's and ``within_arm_scatter`` each arm's centered cross-product sums of
+    the encoded covariates, both with each column in units of its pooled within-arm
+    standard deviation; both are empty when the fit's evidence predates them.
+    """
 
     arm_order: tuple[object, ...]
     control: object
@@ -79,6 +88,8 @@ class MulticovariateCupedFit:
     leverage_trace: float
     is_ratio: bool
     _projections: tuple[tuple[str, object, object, str, float, float, float], ...]
+    covariate_mean_differences: tuple[tuple[float, ...], ...] = ()
+    within_arm_scatter: tuple[tuple[tuple[float, ...], ...], ...] = ()
 
     def absolute(
         self, arm: object, *, control: object | None = None, alpha: float = 0.05
@@ -116,6 +127,28 @@ class MulticovariateCupedFit:
         if scale not in ("log", "absolute"):
             _fail("estimation.cuped_linear.invalid_scale", scale=scale)
         return self._lookup("ratio", arm, control, scale, alpha)
+
+    def covariate_balance(
+        self, arm: object, *, control: object | None = None
+    ) -> MulticovariateBalance | None:
+        """Hotelling comparison of the encoded covariate means of *arm* and *control*.
+
+        ``None`` when the fit retains no within-arm scatter, or as
+        ``multicovariate_balance`` abstains.
+        """
+        ti, ci = self._pair(arm, control)
+        if not self.within_arm_scatter:
+            return None
+        from increment.estimation.diagnostics import multicovariate_balance
+
+        return multicovariate_balance(
+            mean_control=self.covariate_mean_differences[ci],
+            mean_treatment=self.covariate_mean_differences[ti],
+            n_control=self.n_by_arm[ci],
+            n_treatment=self.n_by_arm[ti],
+            scatter_control=self.within_arm_scatter[ci],
+            scatter_treatment=self.within_arm_scatter[ti],
+        )
 
     def _pair(self, arm: object, control: object | None) -> tuple[int, int]:
         try:
@@ -171,6 +204,7 @@ class FitState:
     is_ratio: bool
     denominator_support: tuple[tuple[object, ...], ...] = ()
     control: object | None = None
+    within_arm_scatter: tuple[tuple[tuple[float, ...], ...], ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -189,6 +223,7 @@ class FitState:
             "adjusted_means",
             "theta",
             "denominator_support",
+            "within_arm_scatter",
         ):
             object.__setattr__(self, name, _freeze_payload(getattr(self, name)))
         for name in ("n_min", "p", "is_ratio", "control"):
@@ -228,6 +263,14 @@ class FitState:
             _invalid_evidence("FitState slope/RHS shape mismatch")
         if len(self.adjusted_means) != len(self.slopes) * len(self.eligible_arms):
             _invalid_evidence("FitState adjusted means do not match outcome components")
+        if self.within_arm_scatter and (
+            len(self.within_arm_scatter) != len(self.eligible_arms)
+            or any(
+                len(matrix) != self.p or any(len(row) != self.p for row in matrix)
+                for matrix in self.within_arm_scatter
+            )
+        ):
+            _invalid_evidence("FitState within-arm scatter does not match arms and dimension")
 
 
 @dataclass(frozen=True, slots=True)

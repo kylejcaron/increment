@@ -135,7 +135,10 @@ def witness(order=("full", "drop")):
     return source
 
 
-def compliance_missingness_source(*, missing_treatment: bool, clustered: bool = False):
+def compliance_missingness_source(
+    *, missing_treatment: bool, missing_control: bool = False, clustered: bool = False
+):
+    missing = {"treatment": missing_treatment, "control": missing_control}
     rows = []
     for group in ("control", "treatment"):
         for i in range(20):
@@ -147,14 +150,15 @@ def compliance_missingness_source(*, missing_treatment: bool, clustered: bool = 
                     "clicked": float(group == "treatment" and i < 10),
                     "full": float(2 + (i % 2) + (group == "treatment")),
                     "drop": (
-                        None
-                        if missing_treatment and group == "treatment"
-                        else float(2 + (i % 2) + (group == "treatment"))
+                        None if missing[group] else float(2 + (i % 2) + (group == "treatment"))
                     ),
                 }
             )
+    table = pa.Table.from_pylist(rows)
     return from_unit_summary(
-        pa.Table.from_pylist(rows),
+        table.set_column(
+            table.schema.get_field_index("drop"), "drop", table["drop"].cast(pa.float64())
+        ),
         unit="unit",
         group="arm",
         control="control",
@@ -187,14 +191,27 @@ def test_compliance_only_readout_is_independent_of_outcome_missingness(metrics):
     assert observed.value == pytest.approx(0.5)
 
 
-def test_mixed_outcome_request_still_requires_available_outcomes():
+@pytest.mark.parametrize("unobserved_arm", ["treatment", "control"])
+def test_mixed_outcome_request_reports_unavailable_outcomes(unobserved_arm):
+    """Both arms are enrolled, so an outcome no unit of the treatment arm, or of either arm,
+    observes leaves its LATE cell unavailable rather than refused, naming the control arm
+    first, and the compliance cell still estimates."""
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        source = compliance_missingness_source(
+            missing_treatment=True, missing_control=unobserved_arm == "control"
+        )
     # Missing 0/20 control vs 20/20 treatment: chi-square 40 on 1 df, p = 2.5e-10 < 0.001.
-    with pytest.warns(IncrementWarning) as recorded:
-        source = compliance_missingness_source(missing_treatment=True)
-    assert "frame.validation.metric_missing_differs_by_arm" in warning_codes(recorded)
-    with pytest.raises(CodedError) as error:
-        readouts.run(source, metrics=["drop"], estimands=["compliance", "late"])
-    assert error.value.code == "readout.arms.no_treatment"
+    assert ("frame.validation.metric_missing_differs_by_arm" in warning_codes(recorded)) == (
+        unobserved_arm == "treatment"
+    )
+    rows = {
+        row.estimand: row
+        for row in readouts.run(source, metrics=["drop"], estimands=["compliance", "late"])
+    }
+    assert rows["compliance"].failure_code is None
+    assert rows["late"].failure_code == "readout.cell.missing_metric_observations"
+    assert (rows["late"].failure_context or {})["unobserved_arm"] == unobserved_arm
 
 
 def test_compliance_only_control_source_refuses_no_treatment():
@@ -1119,8 +1136,10 @@ def test_late_suppression_uses_outcome_cohort(strong_design, estimands, order):
     assert weak_late.failure_context is not None
     assert weak_late.failure_context["group_id"] == "treatment"
     assert weak_late.lift is None
-    diagnostics = [row for row in results if "late suppressed" in (row.note or "")]
-    assert {row.metric for row in diagnostics} == {expected_weak}
+    # The failure carries the weak metric's own cohort first stage, not the design-level one.
+    assert weak_late.failure_context["first_stage_estimate"] == pytest.approx(
+        0.0 if strong_design else 0.03
+    )
     design_rows = [row for row in results if row.metric == "uptake"]
     assert len(design_rows) == int("compliance" in estimands)
     assert all("late suppressed" not in (row.note or "") for row in design_rows)

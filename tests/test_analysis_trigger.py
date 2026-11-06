@@ -1060,6 +1060,7 @@ def test_public_decision_keeps_assigned_and_triggered_families_separate(tmp_path
 
 @pytest.mark.integration
 @pytest.mark.slow
+@pytest.mark.filterwarnings("ignore:fact 'missing' has no loaded rows")
 def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingresses(
     tmp_path,
 ):

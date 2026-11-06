@@ -1205,6 +1205,18 @@ def test_run_refuses_when_no_selected_metric_has_a_treatment_arm():
     assert exc_info.value.context["observed_arms"] == ("control",)
 
 
+def test_empty_roster_is_none_enrolled():
+    """No moments row means no unit enrolled in any arm: the refusal names the empty
+    enrollment rather than a missing treatment arm (control-only rosters keep
+    `readout.arms.no_treatment`, as above)."""
+    from increment import from_moments, run
+
+    with pytest.raises(InvalidRequestError) as exc_info:
+        run(*from_moments([], metrics={"x": "mean"}, control="control"))
+    assert exc_info.value.code == "readout.arms.none_enrolled"
+    assert exc_info.value.context["control_group"] == "control"
+
+
 def test_control_only_percentile_metric_uses_the_aggregate_arm_gate():
     from increment import readouts
     from increment.frame import from_unit_summary
@@ -1244,10 +1256,11 @@ def test_control_only_percentile_metric_uses_the_aggregate_arm_gate():
     (result,) = [row for row in results if row.failure_code is None]
     assert result.metric == "plain"
     assert result.require_lift().value == pytest.approx(1.0)
-    with pytest.raises(InvalidRequestError) as refused:
-        readouts.run(source, metrics=("winsor",))
-    assert refused.value.code == "readout.arms.no_treatment"
-    assert refused.value.context["observed_arms"] == ("C",)
+    # Read alone, the enrolled treatment arm still has no winsor values: an unavailable
+    # row, not a control-only refusal.
+    (alone,) = readouts.run(source, metrics=("winsor",))
+    assert alone.failure_code == "readout.cell.missing_metric_observations"
+    assert (alone.failure_context or {})["unobserved_arm"] == "T"
 
 
 def test_percentile_winsorization_refuses_sequential_run():

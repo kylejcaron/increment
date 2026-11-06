@@ -4,7 +4,10 @@ from typing import Any, cast
 
 import pytest
 
-from tests.parity_harness.expected_differences import ExpectedDifference
+from tests.parity_harness.expected_differences import (
+    VALUE_SCALE_SNAPSHOT_REASON,
+    ExpectedDifference,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -45,6 +48,46 @@ BINOMIAL_ROW_SNAPSHOT_DIFFERENCES = tuple(
             "breakout",
             "sha256:b36013595a199643bc99407709b3253008aa20dfdbd310dfed3a1144aea57fc9",
             "sha256:fd017e16f0999da4f298a1692e00322a54d7335ce7c4d1b0f467675ee82feddb",
+        ),
+    )
+)
+VALUE_SCALE_SNAPSHOT_DIFFERENCES = tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress=ingress,
+        field=f"{view} snapshot_id",
+        frozen=frozen,
+        current=current,
+        reason=VALUE_SCALE_SNAPSHOT_REASON,
+    )
+    for scenario, ingress, view, frozen, current in (
+        (
+            "breakout_store_dimension",
+            "from_definitions",
+            "daily",
+            "sha256:64f65bc8a092793edc036331f96643d5f76eaf7d31eae2d27fac636bfdb2f504",
+            "sha256:10987ef0000f7a04587c0428edcc4f379602106dd98dc994381d082bd403ee67",
+        ),
+        (
+            "breakout_store_dimension",
+            "from_definitions",
+            "asof",
+            "sha256:6e3358e10d620b1a10a51061deeafd5a5b20b11495103138ba611191abd4679d",
+            "sha256:b10a1956f1982c017722963ed11813f9c76d1a5ad7548dc4bfb6ad7693151f6c",
+        ),
+        (
+            "frame_panel_analysis",
+            "from_unit_panel",
+            "daily",
+            "sha256:ef7d9e98a4ad8ab76bffa1c7fdf2cae8b0f20480ff184ef020336882d1c18bba",
+            "sha256:8179ba5c6343378eacad3aeaed669407ff07cff1cbbfaaf6b2f0d932b8139abb",
+        ),
+        (
+            "frame_panel_analysis",
+            "from_unit_panel",
+            "asof",
+            "sha256:d90f56f993eb4618eaaa46f7d055d5c5caa3ac3be7aa59d848a3ca45791a66cd",
+            "sha256:7996d27c616d2bf7aa1a140cbdf83048e93470f596b0aeca6ff1356da29f15e2",
         ),
     )
 )
@@ -98,8 +141,8 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
             "asof_lift": View(view="asof", grain="asof"),
             "breakout": View(view="breakout", grain="total"),
         }
-        if ingress == "from_definitions":
-            for difference in BINOMIAL_ROW_SNAPSHOT_DIFFERENCES:
+        for difference in (*BINOMIAL_ROW_SNAPSHOT_DIFFERENCES, *VALUE_SCALE_SNAPSHOT_DIFFERENCES):
+            if difference.ingress == ingress:
                 expected = difference.applied_to(expected)
         assert {
             name: _snapshot_id(view_readout(experiment, resolver, scope))

@@ -21,6 +21,7 @@ from increment.query.builders import (
     pre_period_stats,
     window_bound_stats,
 )
+from increment.query.fact_resolution import covariate_ref, fact_null_policy
 from increment.query.native_contract import DimensionedDayEvidence
 from increment.semantics.design import Encouragement
 from increment.semantics.models import (
@@ -192,7 +193,7 @@ class _DaySource:
         *,
         triggered_observation_edges: Callable[[Metric], tuple[dt.date, dt.date | None]],
         build_breakout_properties: Callable[[FactSource, str, ir.Table], ir.Table],
-        fetch_arrow: Callable[[ir.Expr], Any],
+        fetch_outcome: Callable[..., Any],
         defs: Definitions,
         preflight_breakout: Callable[..., FactSource],
         preflight_day_request: Callable[..., None],
@@ -214,7 +215,7 @@ class _DaySource:
         self._horizon_metrics = horizon_metrics
         self.breakouts: tuple[str, ...] = breakouts
         self._build_breakout_properties = build_breakout_properties
-        self._fetch_arrow = fetch_arrow
+        self._fetch_outcome = fetch_outcome
         self._defs = defs
         self._preflight_breakout = preflight_breakout
         self._preflight_day_request = preflight_day_request
@@ -370,13 +371,26 @@ class _DaySource:
         """
         if not include_covariate or self._experiment.n_pre_periods <= 0:
             return None
-        pre_events = metric_events(fact_tbl, metric, value_column=value_col)
+        pre_events = metric_events(
+            fact_tbl,
+            metric,
+            value_column=value_col,
+            null_policy=fact_null_policy(self._defs, covariate_ref(metric).fact),
+        )
         return pre_period_stats(
             pre_events,
             exposures,
             self._experiment,
             source_key=f"{metric.name}:pre",
         )
+
+    def _fetch_rows(
+        self, query: ir.Table, metric: Metric, exposures: ir.Table, *, include_covariate: bool
+    ) -> list[dict[str, Any]]:
+        """Fetch an outcome *query*, refusing NULL values among the rows it reads, the
+        CUPED pre-period's included when the covariate is."""
+        rows = self._fetch_outcome(query, metric, exposures, covariate=include_covariate)
+        return cast("list[dict[str, Any]]", rows.to_pylist())
 
     def _preflight_covariate(
         self,
@@ -461,7 +475,7 @@ class _DaySource:
                 completed_windows_only=completed_windows_only,
                 _outcome_observation_end=outcome_edge,
             )
-            return cast("list[dict[str, Any]]", self._fetch_arrow(asof).to_pylist())
+            return self._fetch_rows(asof, metric, exposures, include_covariate=include_covariate)
 
         if isinstance(metric, RetentionMetric):
             _panel, spine, stats, _events, _den_events, fact_tbl, value_col, data_as_of = (
@@ -482,7 +496,7 @@ class _DaySource:
                 pre_stats=pre_stats,
                 data_as_of=data_as_of,
             )
-            return cast("list[dict[str, Any]]", self._fetch_arrow(cohorts).to_pylist())
+            return self._fetch_rows(cohorts, metric, exposures, include_covariate=include_covariate)
 
         panel, den_panel, _uptake_panel, _uptake_window_days, _edge, _uptake_edge = (
             self._cached_asof_panel(exposures, metric, include_covariate)
@@ -491,7 +505,7 @@ class _DaySource:
         if den_panel is not None:
             den_panel = window_bound_stats(den_panel, metric)
         daily = daily_group_summary(panel, metric=metric, den_panel=den_panel)
-        return cast("list[dict[str, Any]]", self._fetch_arrow(daily).to_pylist())
+        return self._fetch_rows(daily, metric, exposures, include_covariate=include_covariate)
 
     def breakout_moments(
         self,
@@ -557,7 +571,7 @@ class _DaySource:
             )
             return DimensionedDayEvidence(
                 source_name=fs.name,
-                rows=cast("list[dict[str, Any]]", self._fetch_arrow(asof).to_pylist()),
+                rows=self._fetch_rows(asof, metric, exposures, include_covariate=include_covariate),
             )
 
         if isinstance(metric, RetentionMetric):
@@ -583,7 +597,9 @@ class _DaySource:
             )
             return DimensionedDayEvidence(
                 source_name=fs.name,
-                rows=cast("list[dict[str, Any]]", self._fetch_arrow(cohorts).to_pylist()),
+                rows=self._fetch_rows(
+                    cohorts, metric, exposures, include_covariate=include_covariate
+                ),
             )
 
         panel, den_panel, _uptake_panel, _uptake_window_days, _edge, _uptake_edge = (
@@ -596,7 +612,7 @@ class _DaySource:
         daily = daily_group_summary(dim_panel, metric=metric, by=by, den_panel=den_panel)
         return DimensionedDayEvidence(
             source_name=fs.name,
-            rows=cast("list[dict[str, Any]]", self._fetch_arrow(daily).to_pylist()),
+            rows=self._fetch_rows(daily, metric, exposures, include_covariate=include_covariate),
         )
 
     def unit_frame(

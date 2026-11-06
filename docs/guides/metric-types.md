@@ -530,6 +530,14 @@ per-unit ratios.
 Each part is a full measure: its own `fact`, `aggregation`, `window_days`, and
 optional `filters`.
 
+!!! info "NULL fact values"
+    A fact's `missing` declares one rule for a NULL in its value column, and every
+    metric on the fact follows it, counts included ([data model](data-model.md)). So
+    revenue per order as a ratio of a purchase `sum` over a purchase `count` equals the
+    mean order value: `skip` leaves a NULL-revenue order out of both parts, `zero`
+    counts it as a 0-revenue order in both. Under the default, `error`, a read whose
+    window holds a NULL value refuses with `source.native.fact_null_values`.
+
 ### Heavy-tailed denominators at small samples
 
 The delta-method interval assumes the denominator mean is close to normally

@@ -620,9 +620,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             }
         )
         if method.variance_reduction == "cuped":
-            _enforce_missing_policy(
-                self._frame, (method_spec,), shape="summary", emit_warnings=False
-            )
+            _enforce_missing_policy(self._frame, (method_spec,), shape="summary")
             declared_scalar = next(
                 (declared for declared in spec._methods if declared.variance_reduction == "cuped"),
                 None,
@@ -1042,7 +1040,11 @@ class FrameTotalsSource(SequentialSourceMixin):
         if uptake is not None:
             _validate_uptake_binary(nwf, uptake)
         nwf = _enforce_missing_policy(
-            nwf, specs, shape="summary", defer_scalar_failures=registration is None
+            nwf,
+            specs,
+            shape="summary",
+            warn_by=(unit, group),
+            defer_scalar_failures=registration is None,
         )
         _validate_conversion_binary(nwf, specs)
         if cluster is not None:
@@ -2061,9 +2063,7 @@ class FramePanelSource(SequentialSourceMixin):
                     )
             for key, partition in population.group_by(list(by)):
                 try:
-                    _enforce_missing_policy(
-                        partition, (method_spec,), shape="summary", emit_warnings=False
-                    )
+                    _enforce_missing_policy(partition, (method_spec,), shape="summary")
                 except InvalidRequestError as exc:
                     if exc.code not in SCALAR_COVARIATE_REFUSALS:
                         raise
@@ -2135,9 +2135,7 @@ class FramePanelSource(SequentialSourceMixin):
             }
         )
         if self._source_frame is not None:
-            _enforce_missing_policy(
-                self._source_frame, (method_spec,), shape="panel", emit_warnings=False
-            )
+            _enforce_missing_policy(self._source_frame, (method_spec,), shape="panel")
         covariate_names = tuple(item.name for item in method.covariates or ())
         acquired_columns = unit_frame_covariate_columns(covariate_names)
         admitted = _admit_panel_totals(
@@ -2586,7 +2584,11 @@ class FramePanelSource(SequentialSourceMixin):
             _validate_uptake_binary(nwf, uptake)
         if not _summary_reducer:
             nwf = _enforce_missing_policy(
-                nwf, specs, shape="panel", defer_scalar_failures=registration is None
+                nwf,
+                specs,
+                shape="panel",
+                warn_by=(unit, group),
+                defer_scalar_failures=registration is None,
             )
         _validate_conversion_binary(nwf, specs)
         identity = _unit_identity(nwf, unit=unit, group=group, breakouts=breakouts)

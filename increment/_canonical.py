@@ -235,12 +235,12 @@ def declaration_value(value: Any) -> Any:
             ),
         }
     if hasattr(type(value), "model_fields"):
-        # A field a model adds after identities were recorded stays out while it is None.
-        omitted = getattr(type(value), "_declaration_omits_none", frozenset())
+        # A field a model adds after identities were recorded stays out while it holds its default.
+        omitted = getattr(type(value), "_declaration_omits_default", frozenset())
         return {
             name: declaration_value(getattr(value, name))
-            for name in type(value).model_fields
-            if not (name in omitted and getattr(value, name) is None)
+            for name, field in type(value).model_fields.items()
+            if not (name in omitted and getattr(value, name) == field.default)
         }
     if is_dataclass(value) and not isinstance(value, type):
         return {

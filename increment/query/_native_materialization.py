@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
@@ -19,12 +19,13 @@ from increment.query.builders import (
     unit_totals,
     winsorize_unit_totals,
 )
+from increment.query.fact_resolution import PrePeriodRows, covariate_ref, fact_null_policy
 from increment.semantics.models import RatioMetric
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from increment.semantics.models import Experiment, Metric
+    from increment.semantics.models import Definitions, Experiment, Metric
 
 
 class _MaterializationSource(Protocol):
@@ -39,6 +40,7 @@ class _MaterializationSource(Protocol):
     _panel_cache: Any
     _experiment_name: str
     _experiment: Experiment
+    _defs: Definitions
     _con: Any
     _session: Any
 
@@ -55,6 +57,10 @@ class _MaterializationSource(Protocol):
     def _build_pre_events(
         self, fact_tbl: Table, metric: Metric, value_col: str | None
     ) -> Table | None: ...
+
+    def _censoring_bookkeeping(
+        self, metric: Metric, exposures: Table, pre_period: Sequence[PrePeriodRows] = ()
+    ) -> Callable[[Table], list[dict[str, Any]]]: ...
 
 
 class _NativeMaterializationMixin:
@@ -126,12 +132,7 @@ class _NativeMaterializationMixin:
         spine_expr = panel_spine(exposures, self._experiment, end_date=self._union_event_horizon())
         spine = cast(Any, self)._materialize_table(spine_name, spine_expr)
 
-        measure_tables: dict[
-            tuple[
-                str, tuple[tuple[str, str, tuple[str | int | float | bool, ...]], ...], str | None
-            ],
-            Table,
-        ] = {}
+        measure_tables: dict[tuple[Any, ...], Table] = {}
 
         # Metrics sharing a measure use one stats table instead of rescanning events.
         for metric in self._metrics:
@@ -139,7 +140,11 @@ class _NativeMaterializationMixin:
                 metric.name
             ]
             measure_ref = metric.numerator if isinstance(metric, RatioMetric) else metric
-            measure_key = resolved_measure_key(measure_ref, value_column=value_col)
+            measure_key = resolved_measure_key(
+                measure_ref,
+                value_column=value_col,
+                null_policy=fact_null_policy(self._defs, measure_ref.fact),
+            )
             materialized_stats = measure_tables.get(measure_key)
             if materialized_stats is None:
                 stats_name = cast(Any, self)._temp_name(self._experiment_name, "stats", metric.name)
@@ -175,6 +180,7 @@ class _NativeMaterializationMixin:
         want_cuped: bool = True,
         pre_stats_override: Table | None = None,
         covariate_missing: str | None = None,
+        covariate_rows: Sequence[PrePeriodRows] = (),
         by: Sequence[str] = (),
         properties_table: Table | None = None,
     ) -> tuple[Table, Table | None, Table | None, Table]:
@@ -182,6 +188,9 @@ class _NativeMaterializationMixin:
 
         Retention cohorts reuse pre-period stats; quantiles use unit totals.
         Disable CUPED work when no requested method needs a pre-period covariate.
+        *covariate_rows* are the declared covariates' pre-period rows; the metric's
+        own covariate adds its rows when built here. The censoring bookkeeping
+        refuses NULL values among both.
         """
         # Build CUPED covariates from the same fact/value-column/aggregation as the outcome.
         if pre_stats_override is not None:
@@ -195,6 +204,8 @@ class _NativeMaterializationMixin:
                 if pre_events is not None
                 else None
             )
+            if pre_events is not None:
+                covariate_rows = (*covariate_rows, PrePeriodRows(covariate_ref(metric), exposures))
         den_stats = (
             post_exposure_stats(
                 den_events,
@@ -221,7 +232,7 @@ class _NativeMaterializationMixin:
             covariate_missing=covariate_missing,
             data_as_of=data_as_of,
             warn_on_censoring=(
-                (lambda query: self._session.fetch_arrow(query).to_pylist())
+                self._censoring_bookkeeping(metric, exposures, covariate_rows)
                 if warn_on_censoring
                 else False
             ),

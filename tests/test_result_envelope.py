@@ -1317,7 +1317,7 @@ def test_collection_and_envelope_headlines_share_relative_lift_value():
     assert cell.summary.value_scale == row.value_scale == "relative"
     assert cell.summary.point == pytest.approx(row.lift.value)
     assert f"{row.lift.value * 100:.1f}%" in collection
-    assert str(row.lift.value) in envelope
+    assert f"{row.lift.value * 100:.6g}%" in envelope
 
 
 @pytest.mark.integration
@@ -2193,7 +2193,7 @@ def test_render_labels_disambiguate_same_metric_cells(seeded_con, seeded_defs):
     assert "arm=treatment" in output
     assert "method=unadjusted" in output
     assert "method=cuped" in output
-    assert "role=decision" in output
+    assert len({line.split(": ", 1)[0] for line in output.splitlines()[:2]}) == 2
 
 
 def test_render_keeps_retained_comparison_identity_after_arrow_round_trip():
@@ -2322,9 +2322,10 @@ def test_brief_render_has_one_headline_per_metric_and_full_keeps_it():
     assert isinstance(rows, LiftEstimates)
     envelope = AnalysisEnvelope(tuple(rows.as_cells()), metadata=None)
     brief_lines = render(envelope, "brief").splitlines()
-    headline_lines = [line for line in brief_lines if not line.startswith("Warning: ")]
+    metrics = {cell.identity.key.metric for cell in envelope.cells}
+    headline_lines = [line for line in brief_lines if line.split(" / ", 1)[0] in metrics]
     warning_lines = [line for line in brief_lines if line.startswith("Warning: ")]
-    assert len(headline_lines) == len({cell.identity.key.metric for cell in envelope.cells})
+    assert len(headline_lines) == len(metrics)
     assert warning_lines
     full_lines = set(render(envelope, "full").splitlines())
     assert set(brief_lines) <= full_lines
@@ -2355,7 +2356,7 @@ def test_joint_confidence_set_summary_preserves_disconnected_geometry():
 
     brief = render(AnalysisEnvelope((restored,), metadata=None), "brief")
     full = render(AnalysisEnvelope((restored,), metadata=None), "full")
-    assert "disconnected set" in brief
+    assert "(disconnected)" in brief
     assert "zero_denominator" in brief
     assert set(brief.splitlines()) <= set(full.splitlines())
 
@@ -2696,3 +2697,248 @@ def test_render_rejects_unknown_audience_with_coded_error():
     with pytest.raises(CodedError) as raised:
         render(AnalysisEnvelope((), None), cast(Literal["brief", "full"], "detailed"))
     assert raised.value.code == "results.render.audience_invalid"
+
+
+def _missing_and_constant_metric_run():
+    """Run revenue beside latency, which treatment never reports (skipped), and a constant flat."""
+    import warnings
+
+    import numpy as np
+    import pandas as pd
+
+    from increment import AnalysisPlan, MetricSpec, Randomized, run
+
+    rng = np.random.default_rng(1)
+    n = 200
+    arm = np.array(["control"] * n + ["treatment"] * n)
+    frame = pd.DataFrame(
+        {
+            "u": [f"u{i}" for i in range(2 * n)],
+            "arm": arm,
+            "revenue": 10 + (arm == "treatment") * 0.8 + rng.normal(0, 2, 2 * n),
+            "latency": np.where(arm == "treatment", np.nan, 100 + rng.normal(0, 5, 2 * n)),
+            "flat": np.full(2 * n, 3.0),
+        }
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        experiment, reader = from_frame(
+            frame,
+            shape="summary",
+            unit="u",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[
+                MetricSpec(name="revenue"),
+                MetricSpec(name="latency", preferred_direction="decrease", missing="skip"),
+                MetricSpec(name="flat"),
+            ],
+            plan=AnalysisPlan(primary="revenue", guardrails=["latency"], secondaries=["flat"]),
+        )
+        with reader:
+            return run(experiment, reader)
+
+
+def test_failed_cell_reason_is_its_failure():
+    from increment.estimation.readout_types import render_readout_failure
+
+    result = _missing_and_constant_metric_run()
+    statuses = {
+        cell["identity"]["key"]["metric"]: cell["components"]["sampling"]["status"]
+        for cell in json.loads(json.dumps(result.envelope.to_payload()))["cells"]
+    }
+    flat, latency = statuses["flat"], statuses["latency"]
+    assert flat["reason"] == flat["context"]["display"]
+    expected = render_readout_failure(
+        latency["code"], latency["context"], identity={"metric": "latency"}
+    )
+    assert expected is not None
+    assert latency["reason"] == expected
+
+
+def _readout_availability(result, views):
+    """Each readout row's cell key and whether its readout frame counts that cell available."""
+    from increment.declarations import CellKey
+
+    availability = []
+    for view in views:
+        rows = result.readout(view)
+        flags = rows.to_frame(backend="polars")["sampling_available"].to_list()
+        availability.extend(
+            (CellKey.from_row(row), flag) for row, flag in zip(rows, flags, strict=True)
+        )
+    return availability
+
+
+def test_report_cell_status_matches_readout_availability():
+    import warnings
+    from collections import Counter
+    from datetime import date
+
+    import pandas as pd
+
+    from increment import run
+    from increment.errors import IncrementWarning
+    from tests.test_analysis_daily import _daily_revenue_run
+
+    result, views = _daily_revenue_run()
+    states = Counter(
+        cell.components["sampling"][0].state
+        for cell in result.cells
+        if cell.row_kind != "lift_estimate"
+    )
+    readout = Counter(
+        "available" if flag else "unavailable"
+        for _key, flag in _readout_availability(result, views)
+    )
+    assert states == readout == Counter(available=9)
+
+    result, _views = _daily_revenue_run(zero_on=date(2026, 2, 2))
+    (zeroed,) = (
+        cell.components["sampling"][0]
+        for cell in result.cells
+        if cell.row_kind == "daily_lift" and cell.identity.key.ds == date(2026, 2, 2)
+    )
+    assert zeroed.state == "unavailable"
+    assert zeroed.code != "results.operation.unsupported"
+    assert zeroed.context["reason"] == "nonpositive_mean"
+
+    frame = pd.DataFrame(
+        [
+            {"unit": f"{segment}-{arm}-{index}", "arm": arm, "segment": segment, "value": value}
+            for segment, values in (
+                ("A", (8.0, 12.0) * 25),
+                ("B", (8.0, 12.0) * 25),
+                ("T", (10.0,)),
+            )
+            for arm, shift in (("control", 0.0), ("treatment", 1.0))
+            for index, value in enumerate(item + shift for item in values)
+        ]
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+    )
+    with reader, warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = run(experiment.with_views(View(view="breakout", grain="total")), reader)
+    statuses = {
+        cell.identity.key.dimension_value: cell.components["sampling"][0]
+        for cell in result.cells
+        if cell.row_kind == "breakout"
+    }
+    assert {segment: status.state for segment, status in statuses.items()} == {
+        "A": "available",
+        "B": "available",
+        "T": "unavailable",
+    }
+    assert statuses["T"].context["reason"] == "few_units"
+
+
+def _zero_control_conversion_run(*views):
+    """Two days of a conversion panel in segments A and B; control converts only in A on day one."""
+    from datetime import date
+
+    import polars as pl
+
+    from increment import AnalysisPlan, MetricSpec, run
+
+    days = (date(2026, 2, 1), date(2026, 2, 2))
+    rows = [
+        {
+            "user_id": f"{segment}{arm[0]}{unit}",
+            "variant": arm,
+            "segment": segment,
+            "day": day,
+            "exposed": days[0],
+            "converted": float(
+                unit < 15 if arm == "treatment" else segment == "A" and day == days[0] and unit < 10
+            ),
+        }
+        for segment in ("A", "B")
+        for arm in ("control", "treatment")
+        for unit in range(40)
+        for day in days
+    ]
+    experiment, reader = from_frame(
+        pl.DataFrame(rows),
+        shape="panel",
+        unit="user_id",
+        group="variant",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=[MetricSpec(name="converted", type="conversion", window_days=2)],
+        breakouts=["segment"],
+        plan=AnalysisPlan(primary="converted"),
+    )
+    with reader:
+        return experiment, run(experiment.with_views(*views), reader)
+
+
+def test_cell_key_round_trips_for_every_emitted_row():
+    from increment.declarations import CellKey
+    from increment.result_envelope import result_rows
+
+    values = View.daily(values=True)
+    _experiment, result = _zero_control_conversion_run(
+        View(view="breakout", grain="total"), View.daily(), values, View.asof()
+    )
+    assert {cell.row_kind for cell in result.cells} == {
+        "lift_estimate",
+        "breakout",
+        "daily_lift",
+        "daily_metric",
+        "asof_lift",
+    }
+    for cell, row in zip(result.cells, result_rows(result.cells, result.live_rows), strict=True):
+        assert CellKey.from_row(row) == cell.identity.key
+
+    rows = result.readout(values)
+    assert set(rows.to_frame(backend="polars")["hidden_cell_count"]) == {0}
+
+
+def test_confidence_set_only_report_cells_stay_available():
+    from increment.result_envelope import AnalysisEnvelope, render, result_rows
+
+    views = (View(view="breakout", grain="total"), View.daily())
+    _experiment, result = _zero_control_conversion_run(*views)
+    restored = AnalysisEnvelope.from_payload(
+        AnalysisEnvelope(result.cells, result.run.metadata).to_payload()
+    ).cells
+    brief = render(result, "brief").splitlines()
+    available = {key for key, flag in _readout_availability(result, views) if flag}
+    rows = result_rows(result.cells, result.live_rows)
+    portable = (result_rows(result.cells), result_rows(restored))
+    set_only = [
+        index
+        for index, row in enumerate(rows)
+        if row.lift is None and getattr(row, "binomial_set", None) is not None
+    ]
+    assert {result.cells[index].row_kind for index in set_only} == {"breakout", "daily_lift"}
+    for index in set_only:
+        cell, again = result.cells[index], restored[index]
+        assert rows[index].stat_sig() is not None
+        status = cell.components["sampling"][0]
+        assert (status.state, status.code) == ("available", None)
+        assert "status=available" in brief[index] and "code=" not in brief[index]
+        assert (again.components["sampling"][0].state, again.components["sampling"][0].code) == (
+            "available",
+            None,
+        )
+        assert dict(again.supports) == dict(cell.supports)
+        # A report verdict is reject or retain exactly when the cell's portable row carries
+        # a test result and lies in its decision scope, live and reopened alike.
+        for projected in portable:
+            assert projected[index].stat_sig() == rows[index].stat_sig()
+            assert projected[index].decision_scope_complete is not False
+        assert cell.identity.key in available
