@@ -125,6 +125,7 @@ def test_docs_mixed_with_runtime_or_unknown_path_requires_postgres(repository, p
     [
         ("increment/_moment_plan.py", True),
         ("increment/semantics/models.py", True),
+        ("increment/estimation/__init__.py", True),
     ],
 )
 def test_query_dependency_changes_follow_tach_closure(repository, path, expected):

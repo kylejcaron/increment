@@ -116,6 +116,10 @@ def _imported_modules(node: ast.AST, root: Path, module_names: set[str]) -> set[
 
 
 def _dependency_closure(root: Path, roots: set[str]) -> set[str]:
+    """Declared modules that load with ``roots``: dependencies and enclosing packages.
+
+    Importing a module first runs the ``__init__`` of every package that contains it.
+    """
     graph = tomllib.loads((root / "tach.toml").read_text())
     dependencies = {item["path"]: set(item["depends_on"]) for item in graph["modules"]}
     closure = set(roots)
@@ -123,7 +127,9 @@ def _dependency_closure(root: Path, roots: set[str]) -> set[str]:
         raise ValueError("Dependency roots are missing from tach.toml.")
     pending = list(closure)
     while pending:
-        for dependency in dependencies[pending.pop()]:
+        module = pending.pop()
+        packages = {module.rsplit(".", depth)[0] for depth in range(1, module.count(".") + 1)}
+        for dependency in dependencies[module] | (packages & dependencies.keys()):
             if dependency not in closure:
                 closure.add(dependency)
                 pending.append(dependency)
