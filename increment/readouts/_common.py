@@ -81,12 +81,6 @@ _REFUSALS = refusals(
     {
         "readout.alwaysvalid_under_encouragement": "{method}: AlwaysValid under an encouragement design requires completed_windows_only=True so repeated looks use finalized observations",
         "readout.completed_encouragement_inference": "{method}: completed encouragement inference requires bounded outcome and uptake windows; unbounded metrics={unbound!r}, uptake_window_days={uptake_window_days!r}",
-        "readout.estimate_lift_every": RefusalSpec(
-            "readout.estimate_lift_every",
-            UnsupportedRequestError,
-            template="estimate_lift: every requested randomized metric/arm/method cell was refused by an inference guard -- no estimates remain. Failures: {failures!r}",
-            keys=frozenset({"failures"}),
-        ),
         "readout.value_scale_names": "value_scale= names metrics this source does not report on this call: {unknown_value_scale!r} (selected: {metric_names!r}) -- refusing rather than silently dropping the request",
         "readout.sequential_inference_supported": RefusalSpec(
             "readout.sequential_inference_supported",

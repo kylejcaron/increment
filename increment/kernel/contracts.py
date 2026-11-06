@@ -48,6 +48,11 @@ _REFUSALS = refusals(
             "The reader for experiment {experiment_id!r} was read from an offline catalog "
             "and cannot read data; build it with a connection to run"
         ),
+        "kernel.run.reader_unportable": (
+            "The reader for experiment {experiment_id!r} holds the data or connection it "
+            "reads, so it cannot be pickled or copied; pickle the experiment and build a "
+            "new reader where it runs"
+        ),
         "kernel.run.reader_required": (
             "Pass the reader a builder returns with the experiment, not a {received}; "
             "a BoundResolver only verifies a custom provider, so build a reader with "

@@ -5,7 +5,7 @@ import pickle
 import subprocess
 import sys
 from datetime import date
-from typing import Any, cast
+from typing import cast
 
 import narwhals as nw
 import numpy as np
@@ -21,7 +21,7 @@ from increment.breakout.estimates import (
     DailyMetricValues,
     LiftEstimates,
 )
-from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedRequestError
+from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.readout_types import CellKey, ReadoutResults
 from increment.estimation.results import Estimate, LiftEstimate
 from increment.semantics.design import Randomized
@@ -1702,29 +1702,17 @@ def test_sensitivity_survives_when_every_decision_method_fails():
     assert [row.failure_code for row in restored_rows] == [row.failure_code for row in rows]
 
 
-def test_every_cell_failing_remains_an_explicit_refusal():
+def test_every_cell_failing_returns_unavailable_rows():
     frame = _frame()
     frame["rev"] = 1.0
     with pytest.warns(IncrementWarning) as captured:
-        with pytest.raises(UnsupportedRequestError) as raised:
-            view_readout(*_analysis(frame))
+        results = _readouts(view_readout(*_analysis(frame)))
     assert warning_codes(captured) == ["readouts.run.cell_refused", "readouts.run.cell_refused"]
-    assert raised.value.code == "readout.estimate_lift_every"
-
-    from pydantic import TypeAdapter
-
-    failures = TypeAdapter(list[dict[str, Any]]).validate_python(raised.value.context["failures"])
     failure_rows = set()
-    for failure in failures:
-        context = failure["context"]
+    for row in _lift_rows(results):
+        assert row.failure_context is not None
         failure_rows.add(
-            (
-                failure["metric"],
-                failure["group_id"],
-                failure["method"],
-                failure["code"],
-                context["reason"],
-            )
+            (row.metric, row.group_id, row.method, row.failure_code, row.failure_context["reason"])
         )
     assert failure_rows == {
         ("rev", "treatment", "unadjusted", "estimation.engine.lift_guard", "zero_variance"),

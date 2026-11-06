@@ -1204,7 +1204,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "run breakout", "none cluster sequential observational ni_margin", "*", "rows"),
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "run breakout", "winsor_fixed winsor_percentile", "*", "rows"),
         box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "cuped", "skip", "rows"),
-        box("REF:sequential.route.unsupported#breakout", "retention windowed_mean windowed_conversion windowed_ratio", "breakout", "sequential", "error zero", "rows"),
+        box("REF:evidence.breakout_unavailable", "retention windowed_mean windowed_conversion windowed_ratio", "breakout", "sequential", "error zero", "rows"),
         box("REF:sequential.route.unsupported#skip", "mean conversion ratio quantile retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "sequential", "skip", "rows"),
         box("REF:sequential.route.unsupported#metric_type", "quantile", "run breakout", "sequential", "error zero", "rows"),
         box("REF:sequential.source.invalid", "mean conversion ratio", "run breakout", "sequential", "error zero", "rows"),

@@ -127,6 +127,34 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking numerical correction): a run whose every requested
+  cell fails returns each cell as an unavailable row that keeps its `metric`,
+  `group_id` and its own `failure_code`, as a run with one healthy cell already
+  did, instead of refusing with `readout.estimate_lift_every`. This covers an
+  undeclared plan and cells outside a declared secondary family. A declared
+  secondary family with a member cell refused for a one-unit arm or a zero
+  control denominator still refuses the run with `family.evidence.incomplete`,
+  as before. `readout.estimate_lift_every` (`UnsupportedRequestError`) is
+  retired, and `RETIRED_CODES` maps it to no replacement. A single ratio
+  metric whose control denominator total is zero, for example, returns one row
+  carrying `estimation.variance.ratio_moments_nonpositive_denominator_mean`.
+  Observational readouts take their arms from the source's unit or assignment
+  counts, as randomized readouts do. A run with every cell present now reports
+  `decision_scope_complete=True` with roster source `experiment_counts`,
+  instead of an incomplete `observed_union` roster. An arm the source counts
+  but whose metric has no outcome rows is a
+  `readout.cell.missing_metric_observations` cell listed in `missing_cells`.
+  In a declared secondary family that cell now counts toward the family size
+  as a non-rejection with p-value 1, as it does under a randomized design.
+  Before, an observational family was sized by its estimated cells alone, so
+  its threshold was too loose and it could report a discovery the full family
+  does not support. Assignment integrity stays unchecked under an
+  observational design. An observational readout gets a new snapshot ID once,
+  because its snapshot now digests those counts. Migration: where code caught
+  `readout.estimate_lift_every`, read each row's `failure_code` and
+  `failure_context`. Estimates and experiment identity are unchanged. In an
+  observational family with such a cell, the threshold, the discoveries and
+  the intervals of selected cells follow the larger family.
 - Release note (breaking): an ordinary unclustered lift row whose arm mean is
   close to zero relative to its standard error, or one of whose arms has
   constant outcomes, now keeps its additive Welch result instead of failing
@@ -231,6 +259,58 @@ values.
   secondary families use Benjamini-Hochberg at a fixed horizon and e-BH under
   sequential inference, including `AsymptoticMean`, not Bonferroni. Estimates,
   refusals and experiment identity are unchanged.
+- Release note (breaking bug fix): `runnable()` now reports two refusals that
+  `run()` raised only at execution, with the same code and context. A
+  triggered view, such as `View.overall(population="triggered")`, on a source
+  that declares no trigger, such as a `from_frame` source, and a fixed-horizon
+  triggered whole-window view on `from_moments` rows that record a trigger but
+  no triggered population refuse with
+  `facade.analysis.trigger_unsupported` for every estimator, where `runnable()`
+  reported `evidence.operation_unavailable` for the arm estimators; its
+  `experiment` now names the experiment, `"frame"` for `from_frame`, instead of
+  `'<unknown>'`. A breakout view on an experiment that declares no breakouts
+  refuses with `evidence.breakout_unavailable`, whose `constructor` is the
+  builder, such as `from_frame`; `requested` holds the view's selected
+  properties, or a registered sequential segment family's dimension, empty
+  when it has neither, `offered` is empty and the `route` names
+  `breakouts=[...]`. On such an experiment this code now precedes the
+  `sequential.route.unsupported` refusal a sequential breakout view could
+  raise while it ran. For a view without a selection `runnable()`
+  reported nothing, and `from_frame(shape="panel")`, `from_definitions` and
+  `from_unit_day_artifact` returned an empty breakout readout. Branch on
+  `facade.analysis.trigger_unsupported` for a triggered view, and declare
+  `breakouts=[...]` or drop the breakout view. Pickling or deep-copying a
+  reader refuses with `kernel.run.reader_unportable` (context `experiment_id`)
+  instead of raising a `TypeError`: a reader holds the frame or connection it
+  reads, so pickle the experiment and build a new reader where it runs.
+  Estimates and experiment identity are unchanged.
+- Release note (breaking numerical correction): a breakout or daily row
+  flagged `low_reliability` (fewer than 50 units in its control or treatment
+  arm) now keeps its verdict. `stat_sig()`, `rejection_side()`, the readout
+  frame's `stat_sig` and `decision_available`, and decisions rebuilt from a
+  run's cells decide it from its own interval, as for any other row; before,
+  a flagged segment selected by its BH family still reported
+  `stat_sig() == False` and was called inconclusive. Its interpretation line
+  now ends with a caveat naming the 50-unit criterion, and
+  [Reading results](guides/reading-results.md#small-segments-are-flagged-not-withheld)
+  states it. A fixed-horizon Bonferroni breakout divides each metric's alpha
+  by its (treatment arm, segment) cells estimable by their arm counts under
+  its decision method, so a sensitivity method never changes it, and its
+  family lists only those cells: with four segments, one of them a single
+  unit per arm, the other three are read at `1 - 0.05/3` instead of
+  `1 - 0.05/4`, and the sparse one is an unavailable `few_units` row outside
+  the family. With several treatment arms every arm of every segment counts,
+  so the familywise guarantee holds over all of them: three segments of two
+  arms are read at `1 - 0.05/6`, not `1 - 0.05/3`, and the family and its
+  rows report `family_axes == ("arm", "segment")` instead of `("segment",)`.
+  Under `conversion_inference="auto"` a conversion or retention comparison
+  takes the delta-method or exact binomial route by comparing its counts with
+  a threshold that depends on its level, so a comparison near that threshold
+  can change route, interval and p-value with the corrected level.
+  Daily-breakout Bonferroni, point estimates, BH families and experiment
+  identity are unchanged.
+  Migration: read `r.low_reliability` for the caveat; a flagged row's
+  `stat_sig()` is no longer a withheld verdict.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
@@ -263,9 +343,9 @@ values.
   `estimation.armstats.arm_stats.least_compute_metric`, or
   `estimation.variance.ratio_moments_least_two_units` for a ratio metric, with
   context `group_id`, `metric` and `n`, and the other arms are still
-  estimated. A one-unit control arm leaves no cell to estimate, so the run
-  refuses with `readout.estimate_lift_every`, whose `failures` carry the same
-  code for every cell. Both messages name the route "drop or merge arm".
+  estimated. Outside a declared secondary family, a one-unit control arm
+  leaves every treatment cell of its metric unavailable with that same code.
+  Both messages name the route "drop or merge arm".
   An unavailable sensitivity row carries its metric's declared margin and
   direction (`null_lift`, `null_abs`, `preferred_direction`), as its decision
   row does. Unclustered ratio rows now report `n_control` and `n_treat` as

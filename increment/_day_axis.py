@@ -36,7 +36,6 @@ from increment._readout_request import _raise as _raise_readout
 from increment._source_admission import _arm_experiment, _require_arm_binding
 from increment._source_types import declared_evidence, is_custom_source
 from increment.breakout.estimates import (
-    DEFAULT_RELIABILITY_FLOOR,
     DailyLiftEstimate,
     DailyLiftEstimates,
     DailyMetricValue,
@@ -66,6 +65,7 @@ from increment.estimation.engine import (
 )
 from increment.estimation.inference import validate_readout_inference
 from increment.estimation.readout_types import CellFailure, CellKey
+from increment.estimation.results import DEFAULT_RELIABILITY_FLOOR
 from increment.evidence import evidence_provider, request_evidence
 from increment.readouts._common import (
     _sequential_inference,
