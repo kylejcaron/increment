@@ -60,6 +60,7 @@ from increment.estimation.armstats import (
 from increment.estimation.binomial_rr import UNKNOWN_ALTERNATIVE
 from increment.estimation.cuped import fit_cuped
 from increment.estimation.engine import (
+    _RELATIVE_UNAVAILABLE_NOTES,
     Method,
     _df_to_arms,
     _estimate_lift,
@@ -1301,9 +1302,14 @@ def _relative_compliance_row(
             next(iter(comp.failures.values())).display() if comp.failures else comp_guard_reason
         )
     if comp is not None and comp.results:
-        return cast("Sequence[LiftEstimate]", comp.results)[0].model_copy(
-            update={"estimand": "compliance", "note": context.suppression}
-        )
+        relative = cast("Sequence[LiftEstimate]", comp.results)[0]
+        reason = relative.relative_unavailable_reason
+        if reason is None:
+            return relative.model_copy(
+                update={"estimand": "compliance", "note": context.suppression}
+            )
+        # The uptake arms block the log scale; report the uptake lift itself instead.
+        comp_guard_reason = _RELATIVE_UNAVAILABLE_NOTES.get(reason, comp_guard_reason)
     notes = [
         f"uptake lift on the absolute scale; relative uptake lift withheld: {comp_guard_reason}"
     ]

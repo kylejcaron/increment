@@ -3128,15 +3128,15 @@ def test_ratio_row_reports_arm_counts_and_ratios():
     assert row.mean_treat == pytest.approx(4.5)
     assert row.require_lift().value == pytest.approx(0.5)
 
-    # A negative control numerator total leaves only the additive contrast.
-    signed = frame.assign(num=[-2.0, 0.0, -4.0, 3.0, 6.0, 9.0])
-    with pytest.warns(IncrementWarning):
-        (row,) = _summary_rows(signed, metrics)
+    # A negative control numerator total over well-resolved denominators leaves only the
+    # additive contrast.
+    signed = frame.assign(num=[-2.0, 0.0, -4.0, 3.0, 6.0, 9.0], den=[1.9, 2.0, 2.1, 2.9, 3.0, 3.1])
+    (row,) = _summary_rows(signed, metrics)
     assert row.lift is None
     assert row.n_control == row.n_treat == 3
-    assert row.mean_control == pytest.approx(-1.5)
-    assert row.mean_treat == pytest.approx(4.5)
-    assert row.abs_diff == pytest.approx(6.0)
+    assert row.mean_control == pytest.approx(-1.0)
+    assert row.mean_treat == pytest.approx(2.0)
+    assert row.abs_diff == pytest.approx(3.0)
 
 
 def test_quantile_row_reports_arm_counts():

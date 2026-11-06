@@ -275,6 +275,8 @@ def test_primary_interval_at_split_alpha_two_primaries_two_arms():
 
 
 def _guarded_three_arm_source(*, all_degenerate: bool = False, secondary: bool = False):
+    """A constant control: `treatment_bad`, constant too, has no uncertainty on either scale
+    and fails its lift guard, while `treatment_good` keeps its additive row."""
     n = 200
     table = pa.table(
         {
@@ -282,7 +284,7 @@ def _guarded_three_arm_source(*, all_degenerate: bool = False, secondary: bool =
             "variant": ["control"] * n + ["treatment_good"] * n + ["treatment_bad"] * n,
             "revenue": np.concatenate(
                 [
-                    np.full(n, 10.0) if all_degenerate else _normal_column(10.0, 2.0, n, 31),
+                    np.full(n, 10.0),
                     np.full(n, 11.0) if all_degenerate else _normal_column(11.0, 2.0, n, 32),
                     np.full(n, 12.0),
                 ]
@@ -339,7 +341,7 @@ def test_secondary_fcr_pass_keeps_producer_failure_in_scoped_results():
     assert failed.failure_context is not None
     assert failed.failure_context["reason"] == "zero_variance"
     assert failed.lift is None
-    assert surviving.lift is not None
+    assert surviving.failure_code is None and surviving.abs_lb is not None
     assert isinstance(results, LiftEstimates)
     assert results.metadata is not None
     failed_record = next(

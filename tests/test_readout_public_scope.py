@@ -1655,7 +1655,8 @@ def test_sensitivity_survives_when_every_decision_method_fails():
     n = 200
     rows = []
     for group, shift in (("control", 0.0), ("treatment", 0.2)):
-        x = rng.normal(1.0, np.sqrt(38.0), n)
+        # A constant covariate leaves the CUPED decision method no slope to fit.
+        x = np.ones(n)
         y = x + rng.normal(0.0, np.sqrt(2.0), n) + shift
         rows.extend(
             {"unit": f"{group}{i}", "arm": group, "rev": float(y[i]), "x": float(x[i])}
@@ -1671,10 +1672,10 @@ def test_sensitivity_survives_when_every_decision_method_fails():
             MetricSpec(
                 name="rev",
                 type="mean",
-                decision_method=Method(name="unadjusted"),
-                sensitivity_methods=(
-                    Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="x", kind="continuous")
                 ),
+                sensitivity_methods=(Method(name="unadjusted"),),
             )
         ],
     )
@@ -1684,7 +1685,7 @@ def test_sensitivity_survives_when_every_decision_method_fails():
     rows = _lift_rows(results)
     (sensitivity,) = [row for row in rows if row.method_role == "sensitivity"]
     (failed_decision,) = [row for row in rows if row.method_role == "decision"]
-    assert sensitivity.method == "cuped" and sensitivity.lift is not None
+    assert sensitivity.method == "unadjusted" and sensitivity.lift is not None
     assert failed_decision.failure_code is not None and failed_decision.lift is None
     assert failed_decision.decision_scope_complete is False
     assert results.metadata is not None

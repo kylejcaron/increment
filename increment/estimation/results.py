@@ -88,6 +88,9 @@ def _sequential_display_parts(result: SequentialResult, *, point_available: bool
 
 
 RelativeUnavailableReason = Literal[
+    # An arm mean too close to zero relative to its standard error for the
+    # log-scale delta method; the additive difference decides the row.
+    "delta_method_unreliable",
     "joint_covariance_indefinite",
     "joint_covariance_unrepresentable",
     "nonpositive_arm_mean",
@@ -95,7 +98,16 @@ RelativeUnavailableReason = Literal[
     # (``relative_error_code`` names it); the additive projection stays usable.
     "relative_unrepresentable",
     "zero_relative_variance",
+    # Exactly one arm is constant: the log scale has no uncertainty for it,
+    # while the additive difference keeps the other arm's.
+    "zero_variance",
 ]
+
+# Reasons for which the arm summaries block the log scale itself: with no
+# declared margin the additive difference tested against zero is the decision.
+_ADDITIVE_DECISION_REASONS = frozenset(
+    {"delta_method_unreliable", "nonpositive_arm_mean", "zero_variance"}
+)
 
 
 if TYPE_CHECKING:
@@ -2639,17 +2651,18 @@ def _additive_excludes(row: DecisionRow, null: float) -> bool:
 
 def _additive_zero_reference(row: DecisionRow) -> tuple[float, float, float | None] | None:
     """``(abs_diff, abs_se, df)`` when the row's decision is the additive
-    difference tested against zero: the relative scale is undefined because an
-    arm mean is not positive, the row's declared null is the unshifted zero on
-    both scales (no absolute margin, no relative margin -- a declared relative
-    margin has no additive counterpart, so such a row stays a conservative
-    non-rejection), and the additive sidecar carries an interval with its own
-    reference. The reference is the one the interval was cut from -- Welch or
-    cluster ``t`` at ``abs_reference_df``, Normal otherwise -- so ``p_value()``
-    and ``stat_sig()`` read the same construction. ``None`` leaves the row a
-    conservative non-rejection."""
+    difference tested against zero: the arm summaries block the log scale (an
+    arm mean is not positive, one arm is constant, or an arm mean is close to
+    zero relative to its standard error), the row's declared null is the
+    unshifted zero on both scales (no absolute margin, no relative margin -- a
+    declared relative margin has no additive counterpart, so such a row stays a
+    conservative non-rejection), and the additive sidecar carries an interval
+    with its own reference. The reference is the one the interval was cut from
+    -- Welch or cluster ``t`` at ``abs_reference_df``, Normal otherwise -- so
+    ``p_value()`` and ``stat_sig()`` read the same construction. ``None`` leaves
+    the row a conservative non-rejection."""
     if (
-        row.relative_unavailable_reason != "nonpositive_arm_mean"
+        row.relative_unavailable_reason not in _ADDITIVE_DECISION_REASONS
         or row.null_abs is not None
         or row.null_lift != 0.0
         or row.abs_diff is None
@@ -2835,13 +2848,14 @@ def _null_abs_p_value(row: DecisionRow) -> float:
 
 
 def _relative_unavailable_p_value(row: DecisionRow) -> float:
-    """``p_value()`` for a row with no relative interval. A nonpositive arm
-    mean leaves the log route undefined, not indeterminate: with an additive
-    reference the row is decided on that scale against zero, and without one
-    the maximal, never-rejecting p-value is the correct answer. Unavailable
-    joint covariance and zero relative variance remain indeterminate."""
+    """``p_value()`` for a row with no relative interval. When the arm
+    summaries block the log scale, the relative route is unavailable, not
+    indeterminate: with an additive reference the row is decided on that scale
+    against zero, and without one the maximal, never-rejecting p-value is the
+    correct answer. Unavailable joint covariance and zero relative variance
+    remain indeterminate."""
     reason = row.relative_unavailable_reason
-    if reason != "nonpositive_arm_mean":
+    if reason not in _ADDITIVE_DECISION_REASONS:
         _raise("estimation.results.joint.unavailable", reason=reason)
     reference = _additive_zero_reference(row)
     if reference is None:

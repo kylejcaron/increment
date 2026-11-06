@@ -52,7 +52,7 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 | [CUPED treats its adjustment coefficient as known](#cuped-treats-its-adjustment-coefficient-as-known) | approximation | Coefficient treated as known: interval narrower than a known-coefficient comparator in the tested design (equal allocation, one homogeneous slope); unequal allocation and arm-specific slopes untested. |
 | [Mixed-covariate linear CUPED is fixed-horizon approximate](#mixed-covariate-linear-cuped-is-fixed-horizon-approximate) | approximation | HC2 uncertainty and a Bell–McCaffrey Student-t reference are working approximations, not finite-sample coverage. |
 | [Conversion and retention follow count-based inference routes](#conversion-and-retention-arms-dense-counts-use-the-delta-method-sparse-counts-are-estimated-exactly-not-refused) | scope of guarantee | Reading a conversion or retention interval's route, size limits, or extreme alpha. |
-| [Signed effects require a suitable scale and reference](#signed-effects-require-a-suitable-scale-and-reference) | assumption | A control mean can be zero or negative. |
+| [Signed effects require a suitable scale and reference](#signed-effects-require-a-suitable-scale-and-reference) | assumption | A control mean can be zero, negative or close to zero, or one arm's outcomes are constant. |
 | [A quantile's reported interval depends on the alpha you asked for](#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for) | scope of guarantee | Comparing quantile intervals across analyses that used different alpha. |
 | [A quantile metric's planned variance is a projection from the pilot, not a certified bound](#a-quantile-metrics-planned-variance-is-a-projection-from-the-pilot-not-a-certified-bound) | approximation | Sizing a quantile experiment from a pilot, especially far past the pilot's size. |
 | [Switchback carryover is assumed away, not tested](#switchback-carryover-is-assumed-away-not-tested) | assumption | Choosing a switchback washout; nothing checks that carryover has faded. |
@@ -443,9 +443,11 @@ assigned-population result when those assumptions are not defensible.
     or unrepresentable joint covariance sets `relative_unavailable_reason`; additive
     output survives rather than being replaced by a clipped covariance or fabricated
     relative precision. Scalar posterior decision probabilities are not recovered
-    from a joint frequentist set. A fixed-horizon mean row whose arm mean is not
-    positive (`relative_unavailable_reason="nonpositive_arm_mean"`) has no relative
-    scale at all; with no declared absolute margin its decision is the additive
+    from a joint frequentist set. A fixed-horizon mean row whose arm summaries block the
+    log scale (`relative_unavailable_reason` is `"nonpositive_arm_mean"`,
+    `"delta_method_unreliable"` or `"zero_variance"`; see
+    [signed effects](#signed-effects-require-a-suitable-scale-and-reference)) has no
+    relative interval; with no declared absolute margin its decision is the additive
     difference tested against zero under the reference its additive interval was cut
     from, so `p_value()`, `stat_sig()` and family selection read that scale. A
     declared relative margin also prevents this zero-reference fallback; in that
@@ -1010,20 +1012,49 @@ that needs an absolute-scale estimand)
 
 ### Signed effects require a suitable scale and reference
 
-Ordinary unclustered log-scale arm lift needs positive arm means. A control mean that can
-be zero or negative needs an additive-scale route: observational adjusted methods,
-encouragement LATE, switchback contrasts, sitewide impact, or the clustered unadjusted
-route's signed joint-relative set. `run(..., value_scale="absolute")` is an
-observational selector, not a general randomized arm-lift option.
+Relative lift on the ordinary unclustered route is a log-scale ratio, so it needs arm means
+that are positive and well resolved. When they are not, `run()` still returns the row: the
+relative lift is unavailable, and the additive difference with its Welch `t` interval is the
+row's result. `r.relative_unavailable_reason` names the cause:
+
+- `"nonpositive_arm_mean"`: an arm mean is zero or negative, so the log ratio is undefined.
+- `"delta_method_unreliable"`: an arm mean is close to zero relative to its standard error
+  (a combined log-scale standard error of 0.5 or more), where the log-scale approximation
+  no longer holds.
+- `"zero_variance"`: one arm's outcomes are constant, so the log scale has no uncertainty
+  for that arm; the additive interval is the other arm's one-sample `t`.
+
+With no declared margin, the additive difference tested against zero decides the row: its
+`p_value()`, `stat_sig()` and family selection. A declared relative margin has no additive
+counterpart, so such a row stays a conservative non-rejection with `p_value()` 1.0. A declared
+prior marks only the posterior unavailable and leaves the sampling row unchanged. When both
+arms are constant, neither scale has an uncertainty. If both arm means are positive, the cell
+fails with `estimation.engine.lift_guard`; if either is zero or negative, the row keeps
+`"nonpositive_arm_mean"` and its additive difference with no bounds, a conservative
+non-rejection with `p_value()` 1.0.
+
+A ratio metric's additive difference divides by the same denominator means as its log
+ratio, so it can replace a blocked log scale only when both arms resolve their denominator
+mean: a relative standard error `sqrt(var_d / n) / d_bar` of at most 0.15, the level above
+which the row carries the `ratio_denominator_precision` note. Past it, the cell fails with
+`estimation.engine.lift_guard` whichever of the three reasons blocked the log scale: the
+additive interval's first-order approximation of the denominator fails along with the log
+scale's.
+
+For an adjusted effect or a signed relative set, use a route built for it: observational
+adjusted methods, encouragement LATE, switchback contrasts, sitewide impact, or the
+clustered unadjusted route's signed joint-relative set. `run(..., value_scale="absolute")`
+is an observational selector, not a general randomized arm-lift option.
 
 ??? info "Statistical details: additive routes and the sitewide option"
-    Prior-free adjusted and clustered unadjusted routes preserve additive inference
-    and signed joint-relative sets. A negative control mean is allowed; a zero one
-    can leave no finite ratio point. Ordinary unclustered log-scale arm lift still
-    requires positive means. Absolute-scale estimation is supported directly by
-    observational adjusted methods, encouragement LATE, switchback contrasts,
-    and sitewide impact APIs; `run(..., value_scale="absolute")` remains an
-    observational selector rather than a general randomized arm-lift option.
+    The additive interval uses each arm's own standard error and size (a
+    Welch-Satterthwaite `t`), so translating every outcome by a constant leaves it
+    unchanged: control means of 0.1 and -0.05 on otherwise identical data give the same
+    interval. Prior-free adjusted and clustered unadjusted routes preserve additive
+    inference and signed joint-relative sets; a negative control mean is allowed there, and
+    a zero one can leave no finite ratio point. Absolute-scale estimation is supported
+    directly by observational adjusted methods, encouragement LATE, switchback contrasts,
+    and sitewide impact APIs.
 
     A randomized experiment is not shut out, though. `sitewide()` derives an additive
     effect directly from enrolled-arm moments, so it is a conditional randomized route for a
