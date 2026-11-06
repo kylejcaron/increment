@@ -1358,10 +1358,10 @@ class _SequentialMdeSearch:
             return certified
         if certified.lower >= target:
             if m_min == 0.0:
-                _raise(
-                    "power.sequential_mde.design_search_minimum",
-                    estimate=certified.estimate,
-                    target=target,
+                return _MdeRefusal(
+                    "at_or_below_null_power",
+                    _REFUSALS["power.sequential_mde.design_search_minimum"],
+                    {"estimate": certified.estimate, "target": target},
                 )
             if self.require_expected:
                 expected = self.certify_expected(m_min, certified, (m_min, m_min))

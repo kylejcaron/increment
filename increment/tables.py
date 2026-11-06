@@ -278,9 +278,9 @@ def _liftestimate_to_row(
             lower=_outward(result.bounds.lower, lower=True),
             higher=_outward(result.bounds.upper, lower=False),
             level=1.0 - float(result.bounds.alpha),
-            sequential_alpha=str(result.bounds.alpha),
+            sequential_alpha=float(result.bounds.alpha),
             sequential_status=result.bounds.status,
-            sequential_log_e=str(result.log_e)
+            sequential_log_e=float(result.log_e)
             if isinstance(result, SequentialInferenceResult)
             else None,
             sequential_validity_regime=getattr(result, "validity_regime", "finite_sample"),

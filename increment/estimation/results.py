@@ -1092,6 +1092,10 @@ class _RowIdentity(CodedModel, BaseModel):
         )
 
 
+#: Display names of the recorded family procedures, shared by every family label.
+_FAMILY_PROCEDURE_LABELS = {"e_bh": "e-BH", "bh": "Benjamini-Hochberg", "bonferroni": "Bonferroni"}
+
+
 def _selection_qualification(row: Any) -> str | None:
     """Describe an affirmative family selection from the row's retained provenance."""
     if getattr(row, "discovery", None) is not True:
@@ -1102,14 +1106,12 @@ def _selection_qualification(row: Any) -> str | None:
     family = f"retained family size {size}" if size is not None else "retained family"
     level = f" at q={q:g}" if q is not None else ""
     procedure = getattr(row, "family_procedure", None)
-    if procedure == "e_bh":
-        procedure_label = "e-BH family selection"
-    elif procedure == "bonferroni":
-        procedure_label = "Bonferroni family selection"
-    elif procedure == "bh":
-        procedure_label = "Benjamini-Hochberg family selection"
-    else:
-        procedure_label = "Family selection; procedure not recorded"
+    procedure_name = _FAMILY_PROCEDURE_LABELS.get(procedure)
+    procedure_label = (
+        f"{procedure_name} family selection"
+        if procedure_name is not None
+        else "Family selection; procedure not recorded"
+    )
     if getattr(row, "sequential_result", None) is not None:
         guarantee = getattr(row, "family_guarantee", None)
         qualification = (

@@ -74,6 +74,23 @@ def test_sequential_breakout_rejection_overrides_low_reliability_suppression():
     assert "effect direction supported (increase)" in interpretation
 
 
+def test_brief_family_label_matches_selection_qualification():
+    from increment import render
+    from increment.tables import estimates_to_readout
+    from tests.test_asymptotic_public_sources import _ebh_family_run
+
+    result = _ebh_family_run()
+    (selected,) = [row for row in estimates_to_readout(result.readout()) if row["discovery"]]
+    label = str(selected["selection_qualification"]).split(" family selection")[0]
+    assert label == "e-BH"
+    (line,) = [
+        line
+        for line in render(result, "brief").splitlines()
+        if line.startswith(f"{selected['metric']} /")
+    ]
+    assert f"{4}-member {label}" in line
+
+
 def test_explicit_non_significance_suppresses_excluding_interval_claim():
     from types import SimpleNamespace
 
