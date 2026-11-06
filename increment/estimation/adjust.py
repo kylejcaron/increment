@@ -1081,6 +1081,8 @@ def _estimate_ate_data(  # noqa: PLR0913
 
     results: list[LiftEstimate] = []
     refused_failures: dict[Any, DecisionFailure] = {}
+    # A contrast the engine refuses on every scale is a failure without a row.
+    engine_failures: dict[Any, DecisionFailure] = {}
     any_attempted = False
     # Acquisition is owned by the caller; only materialized values enter this kernel.
     for method in methods:
@@ -1110,7 +1112,7 @@ def _estimate_ate_data(  # noqa: PLR0913
                         **parameters,
                     )
                 else:
-                    unadj = _estimate_lift(
+                    computation = _estimate_lift(
                         [metric],
                         list(evidence.metric_rows(metric)),
                         design.control_group,
@@ -1125,7 +1127,9 @@ def _estimate_ate_data(  # noqa: PLR0913
                         method_roles=method_roles,
                         family_member=family_member,
                         route_tail=route_tail,
-                    ).results
+                    )
+                    unadj = computation.results
+                    engine_failures.update(computation.failures)
                 # The docstring promise "labelled accordingly" must be visible
                 # on the row itself, not just the method name, for a report reader.
                 results.extend(
@@ -1239,14 +1243,12 @@ def _estimate_ate_data(  # noqa: PLR0913
     from increment.estimation.engine import _lift_decision_bundle
 
     bundle = _lift_decision_bundle(results, inference=None)
-    if not refused_failures:
+    if not refused_failures and not engine_failures:
         return bundle
-    failures = dict(bundle.failures)
-    failures.update(refused_failures)
     return DecisionComputation(
         results=bundle.results,
         evidence=dict(bundle.evidence),
-        failures=failures,
+        failures={**engine_failures, **bundle.failures, **refused_failures},
         advisories=bundle.advisories,
     )
 

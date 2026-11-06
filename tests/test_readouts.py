@@ -2551,9 +2551,19 @@ class TestDailyInferenceRefusalIsCoded:
         assert view_readout(experiment, resolver, View(view="daily", grain="daily"))
 
 
-def test_readout_cells_refuse_duplicate_metric_group_rows():
+@pytest.mark.parametrize("duplicated", ["control", "treatment"])
+@pytest.mark.parametrize(
+    "design",
+    [
+        Randomized(control_group="control"),
+        Observational(control_group="control", adjustment=AdjustmentSet(covariates=("z",))),
+    ],
+    ids=["randomized", "observational"],
+)
+def test_readout_cells_refuse_duplicate_metric_group_rows(design, duplicated):
     """A readout rejects duplicate arm rows exactly like estimate_lift's own
-    ingress; keying on group_id alone silently keeps the last row read."""
+    ingress, whichever arm repeats; keying on group_id alone silently keeps one
+    row read, or estimates the repeated arm twice."""
     from increment import readouts
     from tests.test_readouts_encouragement import FakeMomentSource
 
@@ -2573,14 +2583,15 @@ def test_readout_cells_refuse_duplicate_metric_group_rows():
             summary,
             metrics=[MeanMetric(name="rev", entity="u", fact="rev")],
             capabilities={"total"},
-            design=Randomized(control_group="control"),
+            design=design,
         )
 
-    summary = [_row("control", 1.0), _row("treatment", 1.1), _row("control", 1.05)]
+    summary = [_row("control", 1.0), _row("treatment", 1.1), _row(duplicated, 1.05)]
+    unadjusted = Method(name="unadjusted")
     with pytest.raises(InvalidRequestError) as forward:
-        readouts.run(_source(summary))
+        readouts.run(_source(summary), decision_method=unadjusted)
     with pytest.raises(InvalidRequestError) as backward:
-        readouts.run(_source(list(reversed(summary))))
+        readouts.run(_source(list(reversed(summary))), decision_method=unadjusted)
     assert forward.value.code == backward.value.code == "estimation.engine.arm.duplicate_rows"
 
 

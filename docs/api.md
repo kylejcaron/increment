@@ -145,7 +145,13 @@ values.
   `estimation.adjust_common.control_group_found` under an adjusted method). A
   family member whose cell is refused for either reason refuses the run with
   `family.evidence.incomplete`, as under a randomized design, where it refused
-  with the cell's own code.
+  with the cell's own code. A cell whose two arms each hold one constant
+  value is an unavailable row carrying `estimation.engine.lift_guard` with
+  reason `zero_variance` and warns, as under a randomized design, where it
+  carried `readout.cell.unsupported_request` or the run refused with
+  `estimation.adjust.estimate_ate_every`; in a declared secondary family it is
+  a non-rejection with p-value 1 that `family_size` counts, where the family
+  left it out.
   `estimation.adjust.estimate_ate_every` is raised only when the adjustment
   method refuses every metric. Observational family rows now report
   `family_size`, and a selected row reissued at the family's FCR level reports

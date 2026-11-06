@@ -13,7 +13,7 @@ from increment.estimation.adjust import (
     weight_diagnostics_projection,
 )
 from increment.estimation.conversion_route import fcr_route_tail
-from increment.estimation.engine import Method, _is_unadjusted_method
+from increment.estimation.engine import Method, _df_to_arms, _is_unadjusted_method
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.results import (
@@ -27,6 +27,7 @@ from increment.readouts._common import (
     _runtime_method_roles,
     _runtime_methods,
     _sequential_inference,
+    _warn,
 )
 from increment.readouts._passes import _record_cell_refusal
 
@@ -100,7 +101,9 @@ def _estimate_ate_from_evidence(  # noqa: PLR0913
         return estimate(methods, evidence)
     # An unadjusted contrast reads only its arm and control, so each arm is its own cell and a
     # cell-local guard leaves only that cell unavailable, as under a randomized design. An
-    # adjusted method fits its models across every arm and is estimated on all of them.
+    # adjusted method fits its models across every arm and is estimated on all of them. A pair
+    # cannot show a repeated arm row, so the whole inventory is validated first.
+    _df_to_arms(rows)
     computations: list[DecisionComputation[LiftEstimate]] = []
     for method in methods:
         if not _is_unadjusted_method(method):
@@ -111,8 +114,8 @@ def _estimate_ate_from_evidence(  # noqa: PLR0913
             if group_id == control:
                 continue
             try:
-                computations.append(
-                    estimate([method], ObservationalEvidence({metric.name: (control_row, row)}))
+                computation = estimate(
+                    [method], ObservationalEvidence({metric.name: (control_row, row)})
                 )
             except CodedError as exc:
                 failed_rows: list[LiftEstimate] = []
@@ -133,6 +136,18 @@ def _estimate_ate_from_evidence(  # noqa: PLR0913
                 if failed_rows:
                     computations.append(
                         DecisionComputation(results=tuple(failed_rows), evidence={}, failures={})
+                    )
+                continue
+            computations.append(computation)
+            if computation.failures and not computation.results:
+                for failure in computation.failures.values():
+                    _warn(
+                        "readouts.run.cell_refused",
+                        metric_name=metric.name,
+                        group_id=group_id,
+                        method_name=method.name,
+                        reason=failure.display(),
+                        stacklevel=3,
                     )
     return _merge_decision_computations(computations)
 

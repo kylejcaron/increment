@@ -469,6 +469,26 @@ def test_primary_alpha_split_without_counts_follows_its_own_arms(mechanism, tmp_
     assert row.require_lift().alpha == pytest.approx(0.05)
 
 
+@pytest.mark.parametrize("mechanism", ["randomized", "observational"])
+def test_constant_family_member_keeps_its_reason_and_its_slot(mechanism):
+    """`b` is constant in every arm, so neither scale of its contrasts has an uncertainty: each
+    `b` cell is refused, an unavailable row carrying the lift guard, and a p = 1 member. BH at
+    q = 0.1 over {~0, ~0, 1, 1} selects the two `a` contrasts at the threshold 2 * 0.1 / 4."""
+    frame = _family_frame(("C", "T1", "T2")).assign(b=2.0)
+    with pytest.warns(IncrementWarning) as captured:
+        results = _family_readout(*_family_analysis(frame, _family_design(mechanism)))
+    assert set(warning_codes(captured)) == {"readouts.run.cell_refused"}
+    (family,) = results.metadata.scope.families
+    assert len(family.members) == 4
+    rows = {(row.metric, row.group_id): row for row in results}
+    for arm in ("T1", "T2"):
+        assert rows[("b", arm)].failure_code == "estimation.engine.lift_guard"
+        assert (rows[("b", arm)].failure_context or {})["reason"] == "zero_variance"
+        assert rows[("a", arm)].family_size == len(family.members)
+        assert rows[("a", arm)].family_threshold == pytest.approx(2 * 0.1 / 4)
+        assert rows[("a", arm)].discovery is True
+
+
 def test_never_enrolled_arm_leaves_the_family_scope():
     """A declared arm without an enrolled unit is a count exclusion, not a hypothesis: its cells
     stay unavailable rows, outside the family, and the family is the two T1 contrasts."""
