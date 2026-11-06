@@ -82,12 +82,11 @@ from increment.errors import (
 from increment.errors import (
     CodedModel as CodedModel,
 )
-from increment.estimation import binomial_rr
+from increment.estimation import binomial_rr, risk_difference
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
 from increment.estimation._tails import (
     resolvable_expm1,
     two_sided_critical_value,
-    wald_bounds,
 )
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.armstats import (
@@ -1562,6 +1561,22 @@ def _lift_decision_bundle(  # noqa: PLR0915
                 certificate=sequential.certificate,
             )
             continue
+        if result.null_abs is not None and result.abs_reference_kind == "score":
+            # The score test the row's additive interval inverts, read from its counts.
+            p_value = result.p_value()
+            if p_value is None:
+                failures[hypothesis] = DecisionFailure(
+                    hypothesis,
+                    "evidence.p_value.unavailable",
+                    {
+                        "metric": result.metric,
+                        "group_id": result.group_id,
+                        "reason": "missing_sampling_statistic",
+                    },
+                )
+            else:
+                evidence[hypothesis] = PValueEvidence(hypothesis, result.method, p_value, "score")
+            continue
         if result.null_abs is not None:
             # The margin test must use the same reference as the margin
             # interval, so a t reference needs its own degrees of freedom.
@@ -2339,15 +2354,11 @@ def _without_unused_binomial_uptake(arm: ArmStats) -> ArmStats:
 
 
 def _binomial_abs_sidecar(treatment: ArmStats, control: ArmStats) -> tuple[float, float | None]:
-    """Wald absolute-scale ``(diff, SE)`` from the arms' own mean/variance,
-    independent of the exact binomial method (which needs neither and
-    tolerates zero events/variance that this classical SE cannot).
+    """The displayed absolute-scale ``(diff, SE)`` from the arms' own mean/variance: the Wald
+    SE, which the row's additive interval (`binomial_abs_interval`) does not use.
 
-    ``None`` SE when either arm has fewer than 2 units (no ddof=1
-    variance -- the binomial method itself is admissible at ``n=1``, but
-    this additive Wald sidecar is a distinct, unrelated feature with its
-    own long-standing sample-size floor) or both arms are simultaneously
-    zero-variance, matching the ``abs_se == 0.0 -> None`` convention
+    ``None`` SE when either arm has fewer than 2 units (no ddof=1 variance) or both arms are
+    simultaneously zero-variance, matching the ``abs_se == 0.0 -> None`` convention
     ``_infer_lift_result`` already uses for a degenerate ratio arm.
     """
     if treatment.n < 2 or control.n < 2:
@@ -2360,15 +2371,19 @@ def _binomial_abs_sidecar(treatment: ArmStats, control: ArmStats) -> tuple[float
     return abs_diff, (abs_se if abs_se > 0.0 else None)
 
 
-def _binomial_abs_bounds(abs_diff: float, abs_se: float, alpha_eff: float) -> tuple[float, float]:
-    """Two-sided Wald bounds for the binomial row's additive sidecar at its
-    central-equivalent ``alpha_eff``, through the shared survival-form
-    critical value: an extreme alpha resolves to a finite interval or
-    refuses with ``estimation.tails.unresolvable`` instead of overflowing."""
+def binomial_abs_interval(
+    x_c: int, n_c: int, x_t: int, n_t: int, alpha_eff: float
+) -> tuple[float, float, Literal["score"]]:
+    """``(abs_lb, abs_ub, abs_reference_kind)`` of a binomial row at its central-equivalent
+    ``alpha_eff``: the Miettinen-Nurminen score interval for ``p_t - p_c`` from the four
+    counts. Every binomial row's additive bounds come from here, so a fresh row, a family
+    reissue and a rerouted delta row agree. The critical value takes the shared survival
+    form: an alpha below its resolution refuses with ``estimation.tails.unresolvable``."""
     from scipy.stats import norm
 
-    crit = two_sided_critical_value(norm.isf, alpha_eff, what="binomial additive sidecar")
-    return wald_bounds(abs_diff, crit, abs_se, what="binomial additive sidecar")
+    crit = two_sided_critical_value(norm.isf, alpha_eff, what="binomial additive interval")
+    lower, upper = risk_difference.score_bounds(x_c, n_c, x_t, n_t, crit)
+    return lower, upper, "score"
 
 
 def _validate_binomial_request(
@@ -2531,9 +2546,7 @@ def _infer_binomial_lift_result(
             alpha=alpha_eff,
         )
     abs_diff, abs_se = _binomial_abs_sidecar(treatment, control)
-    abs_lb = abs_ub = None
-    if abs_se is not None:
-        abs_lb, abs_ub = _binomial_abs_bounds(abs_diff, abs_se, alpha_eff)
+    abs_lb, abs_ub, abs_reference_kind = binomial_abs_interval(x_c, n_c, x_t, n_t, alpha_eff)
     result = LiftEstimate(
         metric=treatment.metric,
         group_id=treatment.group_id,
@@ -2551,7 +2564,8 @@ def _infer_binomial_lift_result(
         null_abs=null_abs,
         abs_lb=abs_lb,
         abs_ub=abs_ub,
-        abs_alpha=alpha_eff if abs_lb is not None else None,
+        abs_reference_kind=abs_reference_kind,
+        abs_alpha=alpha_eff,
         reference_kind="binomial",
         binomial_set=binomial_set,
         note=binomial_rr.precision_note(ci),

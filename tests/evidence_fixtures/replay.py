@@ -21,6 +21,7 @@ from increment.evidence import (
 from increment.semantics.models import Metric
 from tests.evidence_fixtures.transcript import Transcript, _plain, _validate_record
 from tests.parity_harness.comparison import TOLERANCE
+from tests.parity_harness.expected_differences import without_gained_arm_facts
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,8 +481,10 @@ def assert_estimator_matches_old_row(
 
     The CUPED fit consumer itself leaves ``sampling_available`` unset; its
     public row assembly stamps that status after the pure estimate is returned.
+    Fields exact binomial rows gained or reconstructed after the capture are
+    projected back by ``without_gained_arm_facts``.
     """
-    actual = result.model_dump(mode="python")
+    actual = without_gained_arm_facts(old_row, result.model_dump(mode="python"))
     excluded = _ASSEMBLY_ONLY_FIELDS
     if consumer == "cuped":
         excluded |= {"sampling_available"}

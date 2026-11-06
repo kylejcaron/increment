@@ -124,7 +124,7 @@ tests/estimation/test_armstats.py 1
 tests/estimation/test_asymptotic_e_value_calibration.py 3
 tests/estimation/test_asymptotic_joint.py 7
 tests/estimation/test_asymptotic_mean.py 3
-tests/estimation/test_binomial_abs_sidecar.py 3
+tests/estimation/test_binomial_abs_sidecar.py 2
 tests/estimation/test_binomial_rr.py 5
 tests/estimation/test_cate.py 2
 tests/estimation/test_certified.py 7

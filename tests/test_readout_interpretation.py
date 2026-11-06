@@ -1251,7 +1251,18 @@ def test_missing_additive_interval_is_not_reported_as_an_unbounded_set():
     from increment.estimation.results import LiftEstimate
 
     assert isinstance(result, LiftEstimate)
-    assert result.abs_diff == 1.0 and result.abs_lb is None and result.abs_ub is None
+    # Constant arms carry no Wald standard error: a row saved before exact rows cut a score
+    # interval holds no additive interval.
+    result = LiftEstimate.model_validate(
+        {
+            **result.model_dump(),
+            "abs_lb": None,
+            "abs_ub": None,
+            "abs_alpha": None,
+            "abs_reference_kind": None,
+        }
+    )
+    assert result.abs_diff == 1.0 and result.abs_se is None
     text = render_readout_text(interpret_readout([result], None))
     assert "additive interval unavailable" in text
     assert "additive effect: 1" in text

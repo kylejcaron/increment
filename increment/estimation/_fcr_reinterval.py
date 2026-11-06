@@ -172,10 +172,35 @@ def _wald_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
     return view.model_copy(update=updates)
 
 
+def _score_additive(x_c: int, n_c: int, x_t: int, n_t: int, alpha_eff: float) -> dict[str, object]:
+    """The additive fields of a binomial row cut at its central-equivalent *alpha_eff*."""
+    from increment.estimation.engine import binomial_abs_interval
+
+    lower, upper, kind = binomial_abs_interval(x_c, n_c, x_t, n_t, alpha_eff)
+    return {"abs_lb": lower, "abs_ub": upper, "abs_reference_kind": kind, "abs_alpha": alpha_eff}
+
+
+def with_score_margin(view: LiftEstimate) -> LiftEstimate:
+    """*view* as a family member: a binomial margin row saved with Wald additive bounds and no
+    reference is read with the score interval its own level cuts, so a family selects it on the
+    score test its reissued interval inverts. Any other row is returned unchanged."""
+    bset = view.binomial_set
+    if (
+        view.null_abs is None
+        or view.abs_reference_kind is not None
+        or view.reference_kind != "binomial"
+        or bset is None
+    ):
+        return view
+    return view.model_copy(
+        update=_score_additive(bset.x_c, bset.n_c, bset.x_t, bset.n_t, bset.alpha)
+    )
+
+
 def _binomial_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
-    """The exact binomial row ``estimate_lift`` builds at *alpha* from the persisted counts."""
+    """The exact binomial row ``estimate_lift`` builds at *alpha* from the persisted counts, its
+    score additive interval included (a row persisted with Wald additive bounds gets one too)."""
     from increment.estimation import binomial_rr
-    from increment.estimation.engine import _binomial_abs_bounds
 
     bset = view.binomial_set
     assert bset is not None
@@ -219,12 +244,7 @@ def _binomial_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
                 "alpha": alpha_eff,
             }
         )
-    if view.abs_se is not None:
-        assert view.abs_diff is not None
-        updates["abs_lb"], updates["abs_ub"] = _binomial_abs_bounds(
-            view.abs_diff, view.abs_se, alpha_eff
-        )
-        updates["abs_alpha"] = alpha_eff
+    updates.update(_score_additive(bset.x_c, bset.n_c, bset.x_t, bset.n_t, alpha_eff))
     return view.model_copy(update=updates)
 
 
@@ -236,15 +256,14 @@ def _conversion_parent(
     the row finally reports at the corrected level *fcr_alpha* (`fcr_route_tail`), the Wald
     row where they are dense there and the exact binomial row from the counts where they are
     not (the corrected level fell below the row's dense level), as a fresh finite-sample row
-    would be cut: Normal additive bounds with no t reference, and only the disclosures that
-    still apply."""
+    would be cut: the score additive interval with no t reference, and only the disclosures
+    that still apply."""
     from increment.estimation import binomial_rr
     from increment.estimation.conversion_route import (
         fcr_route_tail,
         route_for_counts,
         without_composite_note,
     )
-    from increment.estimation.engine import _binomial_abs_bounds
 
     evidence = view.delta_evidence
     assert evidence is not None, "classified: the row carries its counts"
@@ -290,7 +309,6 @@ def _conversion_parent(
         "reference_df": None,
         "dof": None,
         "scale": "linear",
-        "abs_reference_kind": None,
         "abs_reference_df": None,
         "note": " | ".join(
             part
@@ -299,12 +317,7 @@ def _conversion_parent(
         )
         or None,
     }
-    if view.abs_se is not None:
-        assert view.abs_diff is not None
-        updates["abs_lb"], updates["abs_ub"] = _binomial_abs_bounds(
-            view.abs_diff, view.abs_se, alpha_eff
-        )
-        updates["abs_alpha"] = alpha_eff
+    updates.update(_score_additive(x_c, n_c, x_t, n_t, alpha_eff))
     return view.model_copy(update=updates)
 
 

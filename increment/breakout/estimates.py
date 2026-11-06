@@ -689,7 +689,7 @@ class BreakoutEstimate(_RowIdentity):
     abs_se: float | None = Field(default=None, allow_inf_nan=False)
     abs_lb: float | None = Field(default=None, allow_inf_nan=False)
     abs_ub: float | None = Field(default=None, allow_inf_nan=False)
-    abs_reference_kind: Literal["normal", "t"] | None = None
+    abs_reference_kind: Literal["normal", "t", "score"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
     abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
     # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.
@@ -1406,7 +1406,7 @@ class DailyLiftEstimate(_RowIdentity):
     abs_se: float | None = Field(default=None, allow_inf_nan=False)
     abs_lb: float | None = Field(default=None, allow_inf_nan=False)
     abs_ub: float | None = Field(default=None, allow_inf_nan=False)
-    abs_reference_kind: Literal["normal", "t"] | None = None
+    abs_reference_kind: Literal["normal", "t", "score"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
     abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
     # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.

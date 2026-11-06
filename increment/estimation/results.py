@@ -623,7 +623,7 @@ _REFUSALS = refusals(
         "estimation.results.binomial.obsolete_construction": "binomial confidence set records method {method!r} (None: none recorded); this version reads only {supported!r}. A set naming an incompatible construction, or persisted without naming one, may use different envelopes, thresholds or numerical rules, so its stored interval and a recomputed verdict could disagree. Re-run the analysis to cut the set again.",
         "estimation.results.binomial.posterior_unavailable": "metric={metric!r} group_id={group_id!r}: no Normal/lognormal posterior exists for a reference_kind='binomial' row -- the exact binomial method is a frequentist test-inversion, not a posterior; chance_to_beat/prob_beyond/prob_within/risk_if_shipped and their favorable variants are unavailable here. Use stat_sig()/p_value() (both binomial-set-aware) or the persisted lift/binomial_set bounds directly.",
         "estimation.results.lift.binomial_lift_availability": "metric={metric!r} group_id={group_id!r}: {reason}",
-        "estimation.results.lift.absolute_reference_mismatch": "absolute reference {kind!r} requires df exactly for t, got {df!r}",
+        "estimation.results.lift.absolute_reference_mismatch": "absolute reference {kind!r} with df {df!r} does not fit this row: a t reference carries its df, and a score reference belongs only to an exact binomial row",
         "estimation.results.lift.absolute_alpha_without_interval": "abs_alpha={abs_alpha!r} is the alpha an additive interval was cut at, but this row carries no additive interval (abs_lb/abs_ub)",
         "estimation.results.lift.absolute_alpha_mismatch": "abs_alpha={abs_alpha!r} contradicts the alpha {alpha!r} of the relative interval the same call cut",
         "estimation.results.delta.counts_out_of_range": "delta-route conversion evidence counts out of range: x_c={x_c}, n_c={n_c}, x_t={x_t}, n_t={n_t}",
@@ -635,7 +635,10 @@ _raise = raiser(_REFUSALS)
 
 
 def _validate_absolute_reference_fields(row: Any) -> Any:
-    if (row.abs_reference_kind == "t") != (row.abs_reference_df is not None):
+    if (row.abs_reference_kind == "t") != (row.abs_reference_df is not None) or (
+        row.abs_reference_kind == "score"
+        and (row.reference_kind != "binomial" or row.binomial_set is None)
+    ):
         _raise(
             "estimation.results.lift.absolute_reference_mismatch",
             kind=row.abs_reference_kind,
@@ -1239,8 +1242,10 @@ class LiftEstimate(_RowIdentity):
     # additive sibling of `null_lift`. None = no absolute margin in play.
     abs_lb: float | None = Field(default=None, allow_inf_nan=False)
     abs_ub: float | None = Field(default=None, allow_inf_nan=False)
-    # None means the sidecar reference is unavailable, including legacy rows.
-    abs_reference_kind: Literal["normal", "t"] | None = None
+    # The reference abs_lb/abs_ub were cut from: Welch or cluster "t" (with abs_reference_df),
+    # "normal", or "score" (the risk-difference score interval of a binomial row). None means
+    # no reference was persisted, as on a row saved before binomial rows carried one.
+    abs_reference_kind: Literal["normal", "t", "score"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
     abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
     allocation_alpha: float | None = Field(
@@ -2815,7 +2820,15 @@ def row_decision_alpha(row: DecisionRow) -> float | None:
 
 
 def _null_abs_p_value(row: DecisionRow) -> float:
-    """Tail against ``null_abs`` under the additive interval's reference."""
+    """Tail against ``null_abs`` under the additive interval's reference: the score test of
+    the binomial counts for a score interval, else the Normal or t tail of ``abs_diff``."""
+    assert row.null_abs is not None
+    if row.abs_reference_kind == "score":
+        from increment.estimation.risk_difference import score_p_value
+
+        bset = row.binomial_set
+        assert bset is not None, "validated: a score reference rides on a binomial set"
+        return score_p_value(bset.x_c, bset.n_c, bset.x_t, bset.n_t, row.null_abs, row.alternative)
     if row.abs_se is None or row.abs_diff is None or not row.abs_se > 0.0:
         _raise(
             "estimation.results.lift.p_value_null_abs_missing_abs_se",
@@ -2842,7 +2855,6 @@ def _null_abs_p_value(row: DecisionRow) -> float:
             group_id=row.group_id,
             metric=row.metric,
         )
-    assert row.null_abs is not None
     return _additive_tail_p_value(
         row.abs_diff, row.abs_se, row.null_abs, row.alternative, reference_df
     )

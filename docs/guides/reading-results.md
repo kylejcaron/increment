@@ -172,7 +172,11 @@ increase or decrease: direction is stated only when the interval also excludes
 zero on the result's own axis. Absolute-native estimates and contrasts use
 additive intervals; relative rows with an absolute margin use their retained
 additive interval; sequential ratio bounds are interpreted after conversion to
-lift coordinates. Daily arm means are values, not treatment/control contrasts.
+lift coordinates. `r.abs_reference_kind` names how that additive interval was
+cut: Welch `"t"` or `"normal"`, or, on an exact conversion row
+(`reference_kind="binomial"`), `"score"`, the score interval for the difference
+of conversion rates, whose score test also decides an absolute margin there.
+Daily arm means are values, not treatment/control contrasts.
 Secondary selection status is shown separately from interval evidence; neither
 is a ship/no-ship verdict.
 
@@ -474,7 +478,7 @@ string, such as `columns="lift"`, raises `results.frame.columns_string`; pass
 assigned — treatment vs control
 converted: control → treatment; n control=89; n treatment=111; mean control=0; mean treatment=0.36036; estimand=itt; stat_sig=True
 converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
-converted additive effect: 0.36036, set [0.270641, 0.45008].
+converted additive effect: 0.36036, set [0.276908, 0.4532].
 converted binomial set central: [1.61559, +∞] at 0.95 confidence.
 converted test alternative: two-sided; null (relative lift): 0.
 converted result identity: method unadjusted; method role decision; estimand itt.
