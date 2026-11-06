@@ -321,6 +321,25 @@ values.
   instead of `results.frame.unknown_columns` listing its letters; pass a list
   such as `columns=["lift"]`. Results, saved cells and experiment identity
   hashes are unchanged.
+  unchanged.
+- Release note (bug fix): a fact source whose SQL lacks a declared fact value
+  column or property column refuses with
+  `definition.fact_source.missing_columns` before any data is read, naming the
+  source and the declared column names; SQL the connection cannot resolve, such
+  as a misspelled table, refuses with `definition.fact_source.sql_unresolved`,
+  naming the source, with the backend error chained. Both previously raised an
+  uncoded backend error when the experiment ran. When an experiment's exposure,
+  metric, trigger, uptake and CUPED sources, and every source of a unit
+  property taken before exposure, mix timestamps with and without a time zone,
+  the ones with a time zone are converted to UTC when they
+  are read, so windows and pre-exposure property values compare instants in UTC
+  rather than in the connection's session time zone. Such experiments run under
+  a non-UTC session move to their UTC-correct values (a numerical
+  correction). A published uptake extension
+  reads an uptake timestamp without a time zone as UTC, as the exposure and
+  trigger timestamps beside it already were. Experiments whose sources share
+  one timestamp kind read their sources with the same SQL, and experiment
+  identity is unchanged.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra

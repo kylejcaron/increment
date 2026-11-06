@@ -6,7 +6,7 @@ import datetime as dt
 import ibis
 import pytest
 
-from increment import from_moments
+from increment import from_definitions, from_moments, run
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import DefinitionError, InvalidRequestError
 from increment.query.fact_resolution import (
@@ -271,7 +271,9 @@ def test_fact_source_missing_event_refuses_before_data_query_and_survives_transp
         }
     )
     defs = Definitions.model_construct(fact_sources=(fs,), dim_sources=())
-    relation = ibis.memtable({"user_id": ["u1"], "event_time": [dt.datetime(2025, 1, 1)]})
+    relation = ibis.memtable(
+        {"user_id": ["u1"], "event_time": [dt.datetime(2025, 1, 1)], "amount": [1.0]}
+    )
 
     def unexpected_query(*args: object, **kwargs: object) -> None:
         raise AssertionError("schema refusal must precede data execution")
@@ -353,3 +355,80 @@ def test_missing_fact_source_event_refuses_before_public_data_query(
         assert not data_queries
     finally:
         analysis_resolver.close()
+
+
+_EVENTS_DEFINITIONS = """\
+dialect: duckdb
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: event_at
+    entities: [user_id]
+    facts:
+      - {name: page_view, column: null}
+      - {name: purchase, column: revenue}
+    properties:
+      - {name: country, column: country_code}
+exposures:
+  - {name: enrolled, fact: page_view}
+metrics:
+  - {name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 7}
+experiments:
+  - name: exp
+    exposure: enrolled
+    unit: user_id
+    start: 2025-01-01
+    end: 2025-01-10
+    control_group: control
+    plan: {primary: revenue}
+"""
+
+
+@pytest.mark.parametrize(
+    ("typo", "code", "context"),
+    [
+        (
+            ("column: revenue}", "column: revnue}"),
+            "definition.fact_source.missing_columns",
+            {"fact_source": "events", "missing": ("revnue",)},
+        ),
+        (
+            ("column: country_code}", "column: country_cod}"),
+            "definition.fact_source.missing_columns",
+            {"fact_source": "events", "missing": ("country_cod",)},
+        ),
+        (
+            ("FROM events", "FROM evnts"),
+            "definition.fact_source.sql_unresolved",
+            {"fact_source": "events"},
+        ),
+    ],
+    ids=["value_column", "property_column", "relation"],
+)
+def test_missing_value_property_or_relation_refuses_with_code(tmp_path, typo, code, context):
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "events",
+        obj=[
+            {
+                "user_id": unit,
+                "event": "page_view",
+                "event_at": dt.datetime(2025, 1, 1, 9),
+                "revenue": 0.0,
+                "country_code": "US",
+                "experiment_id": "exp",
+                "group_id": group,
+            }
+            for unit, group in (("u1", "control"), ("u2", "treatment"))
+        ],
+    )
+    path = tmp_path / "defs.yaml"
+    path.write_text(_EVENTS_DEFINITIONS.replace(*typo))
+    experiment, reader = from_definitions(path, con, experiment_name="exp")
+    try:
+        with pytest.raises(DefinitionError) as raised:
+            run(experiment, reader)
+    finally:
+        reader.close()
+    assert raised.value.code == code
+    assert dict(raised.value.context) == context
