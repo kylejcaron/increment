@@ -109,6 +109,33 @@ def test_from_import_of_only_submodule_keeps_package_cycle(tmp_path: Path) -> No
     assert "runtime cycle: pkg.a, pkg.p" in result.stdout
 
 
+def test_package_reexport_edges_do_not_form_runtime_cycle(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    (package / "__init__.py").write_text("VALUE = 1\nfrom pkg import child\n")
+    (package / "child.py").write_text("from pkg import VALUE\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 0
+
+
+def test_dotted_child_import_still_detects_ancestor_package_cycle(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    (package / "p").mkdir()
+    (package / "p" / "__init__.py").write_text("import pkg.a\n")
+    (package / "p" / "child.py").write_text("")
+    (package / "a.py").write_text("import pkg.p.child\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "runtime cycle: pkg.a, pkg.p" in result.stdout
+
+
 @pytest.mark.parametrize(
     "source",
     [

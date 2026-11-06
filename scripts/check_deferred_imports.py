@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ratchet deferred imports and cycles; ancestor edges omit increment's lazy facade."""
+"""Ratchet deferred imports and cycles; omit lazy facade and package re-export edges."""
 
 import argparse
 import ast
@@ -309,6 +309,8 @@ def cycles(graph: dict[str, set[str]]) -> list[frozenset[str]]:
         stack.append(node)
         on_stack.add(node)
         for target in graph.get(node, set()):
+            if target.startswith(node + "."):
+                continue
             if target not in indices:
                 connect(target)
                 lowlinks[node] = min(lowlinks[node], lowlinks[target])
