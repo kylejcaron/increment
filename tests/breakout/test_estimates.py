@@ -2285,6 +2285,23 @@ class TestBreakoutEstimate:
         assert round_tripped.reference_kind == "t"
         assert round_tripped.reference_df == pytest.approx(row.reference_df)
 
+    def test_binomial_segment_keeps_its_score_reference_through_frame_and_round_trip(self):
+        rows = [
+            _conversion_arm_row(1000, 10, country="US", group_id="control"),
+            _conversion_arm_row(1000, 4, country="US", group_id="treatment"),
+        ]
+        result = run_breakout(
+            rows, [_conversion_metric()], control_group="control", dimension="country"
+        )
+        (row,) = result
+        assert row.reference_kind == "binomial"
+        assert row.abs_reference_kind == "score"
+        frame = cast(pd.DataFrame, result.to_frame(backend="pandas"))
+        assert frame["abs_reference_kind"].tolist() == ["score"]
+        round_tripped = BreakoutEstimate.model_validate_json(row.model_dump_json())
+        assert round_tripped.abs_reference_kind == "score"
+        assert (round_tripped.abs_lb, round_tripped.abs_ub) == (row.abs_lb, row.abs_ub)
+
 
 class TestBreakoutEstimateReferenceValidation:
     @staticmethod

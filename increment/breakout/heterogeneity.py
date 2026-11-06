@@ -306,7 +306,8 @@ def _critical_for_reference(
     Rebuilding a t-reference interval with a Normal quantile would narrow it
     by the z/t ratio, understating exactly the small-sample uncertainty the t
     reference exists to carry. A row whose reference was never persisted
-    (``None``) keeps the Normal reading its endpoints were written under.
+    (``None``) keeps the Normal reading its endpoints were written under, and a
+    binomial row's score interval leaves its displayed Wald SE on that reading.
     """
     if reference_kind == "t":
         assert reference_df is not None, "validated: a t reference carries its df"

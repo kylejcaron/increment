@@ -16,7 +16,7 @@ def _snapshot_id(result: Any) -> str | None:
     return result[0].source_snapshot_id if result else None
 
 
-ARM_COUNT_SNAPSHOT_DIFFERENCES = tuple(
+BINOMIAL_ROW_SNAPSHOT_DIFFERENCES = tuple(
     ExpectedDifference(
         scenario="breakout_store_dimension",
         ingress="from_definitions",
@@ -24,20 +24,27 @@ ARM_COUNT_SNAPSHOT_DIFFERENCES = tuple(
         frozen=frozen,
         current=current,
         reason=(
-            "Lift snapshots digest arm counts, which the pre-kernel route left off exact "
-            "binomial and unclustered ratio rows; every other snapshot ID is unchanged."
+            "Lift and breakout snapshots digest arm counts and each row's additive reference. "
+            "The pre-kernel route left arm counts off exact binomial and unclustered ratio rows "
+            "(both lift views), and exact binomial rows now name the score interval as their "
+            "additive reference (all three views); every other snapshot ID is unchanged."
         ),
     )
     for view, frozen, current in (
         (
             "daily_lift",
             "sha256:ed34e487c261b462afc2663879586ddb9a0317d4d2feb0f94fd1049778f54678",
-            "sha256:ea6d414d523d07754282af65f8f0b7998d701485ddd2377f5549762f31c236ec",
+            "sha256:13f1c31232d63f01b6b85f537d2c72c53baf79c64d25cfa5abcbe3072371506f",
         ),
         (
             "asof_lift",
             "sha256:e85a35071b539ee939d5d29fb3e5f31c526aa2241f9617323539c8c52d1139dd",
-            "sha256:04714fe731f23aad5e8436b6074e52f5cbad75817efc1157e930a18ed5e52b55",
+            "sha256:413112f6af4bd1914c5cc492225adfe810f961262ab19a22347b3c4f07e7c649",
+        ),
+        (
+            "breakout",
+            "sha256:b36013595a199643bc99407709b3253008aa20dfdbd310dfed3a1144aea57fc9",
+            "sha256:fd017e16f0999da4f298a1692e00322a54d7335ce7c4d1b0f467675ee82feddb",
         ),
     )
 )
@@ -92,7 +99,7 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
             "breakout": View(view="breakout", grain="total"),
         }
         if ingress == "from_definitions":
-            for difference in ARM_COUNT_SNAPSHOT_DIFFERENCES:
+            for difference in BINOMIAL_ROW_SNAPSHOT_DIFFERENCES:
                 expected = difference.applied_to(expected)
         assert {
             name: _snapshot_id(view_readout(experiment, resolver, scope))

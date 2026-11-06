@@ -415,6 +415,11 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment.estimation.risk_difference"
+layer = "core"
+depends_on = []
+
+[[modules]]
 path = "increment._bernoulli_moments"
 layer = "core"
 depends_on = []
@@ -445,7 +450,7 @@ depends_on = [
   "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_state",
   "increment._unit_cycle",
-  "increment.estimation._score_design",
+  "increment.estimation._score_design", "increment.estimation.risk_difference",
 ]
 
 [[modules]]

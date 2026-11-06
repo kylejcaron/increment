@@ -5,7 +5,9 @@ why. Every other value of the case is still compared. Both the frozen and the
 current value are pinned, so a change on either side fails the comparison, and
 a record whose difference no longer occurs fails until it is removed. Fields a
 row gained after the capture are projected away only when their value follows
-from the row's own captured evidence.
+from the row's own captured evidence, and a value whose construction changed
+after the capture is projected back only when both its captured and its current
+value follow from that evidence under their own constructions.
 """
 
 from __future__ import annotations
@@ -174,6 +176,28 @@ _RECORDS = (
             "A sequential row carries its metric's declared preferred_direction, as a "
             "fixed-horizon row does; the captured row recorded none."
         ),
+    ),
+    ExpectedDifference(
+        scenario="breakout_store_dimension",
+        ingress="from_definitions",
+        # Cell, row and family `source_snapshot_id`, `scope.snapshot_id` and the
+        # `scope.by_source` key.
+        field="source_snapshot_id",
+        frozen="sha256:b36013595a199643bc99407709b3253008aa20dfdbd310dfed3a1144aea57fc9",
+        current="sha256:fd017e16f0999da4f298a1692e00322a54d7335ce7c4d1b0f467675ee82feddb",
+        reason=(
+            "The breakout snapshot digests each row's additive reference, which the exact "
+            "binomial segment rows now name as the score interval; their bounds are checked "
+            "by `without_gained_arm_facts`."
+        ),
+    ),
+    ExpectedDifference(
+        scenario="breakout_store_dimension",
+        ingress="from_definitions",
+        field="family_id",
+        frozen="sha256:020683b7c4135af28e830fa95ecc26a1be457017b8a35ec14550f603bf28022e",
+        current="sha256:fd2bc5d54f902f2d2daa1c0f8c18079b9f139218e47f508d75fbac5bb7849f36",
+        reason="The breakout family ID digests the snapshot ID above.",
     ),
 )
 # A breakout view on an experiment that declares no breakout, or a triggered view no source
@@ -459,21 +483,52 @@ def _without_gained_unit_arm_facts(
     return projected
 
 
+def _assert_score_interval(actual: Mapping[str, Any], counts: BinomialCounts) -> None:
+    """The live row's additive bounds are the score interval of its counts at ``abs_alpha``."""
+    from increment.estimation.engine import binomial_abs_interval
+
+    alpha = actual["abs_alpha"]
+    score = binomial_abs_interval(*counts, alpha)[:2]
+    assert nested_close(score, (actual["abs_lb"], actual["abs_ub"])), (counts, alpha, score)
+
+
+def _assert_score_replaced_wald(
+    expected: Mapping[str, Any], actual: Mapping[str, Any], counts: BinomialCounts
+) -> None:
+    """The live row's additive bounds are the score interval of its counts, and the captured
+    row's the Wald interval of its own ``abs_diff`` and ``abs_se``, both at ``abs_alpha``."""
+    from scipy.stats import norm
+
+    _assert_score_interval(actual, counts)
+    alpha = actual["abs_alpha"]
+    half_width = float(norm.isf(alpha / 2.0)) * expected["abs_se"]
+    wald = (expected["abs_diff"] - half_width, expected["abs_diff"] + half_width)
+    assert nested_close(wald, (expected["abs_lb"], expected["abs_ub"])), (alpha, wald)
+
+
 def without_gained_arm_facts(
     expected: Any,
     actual: Any,
     counts: Mapping[tuple[str, str], BinomialCounts] | None = None,
 ) -> Any:
-    """``actual`` without the arm counts and values rows gained after a capture.
+    """``actual`` without the arm counts and values rows gained after a capture, and the score
+    additive interval exact binomial rows gained in place of the captured Wald interval.
 
-    Only a field the captured row lacks or holds as null is projected. On an exact binomial row
-    (``reference_kind == "binomial"``) the counts must equal ``n_c`` and ``n_t`` exactly, as
-    integers on a typed row; the rates must equal ``x_c / n_c`` and ``x_t / n_t`` within the
-    harness tolerance. Both come from the row's own ``binomial_set`` or, for a flattened row
-    without one, from ``counts`` keyed by ``(metric, group_id)`` as ``(x_c, n_c, x_t, n_t)``.
-    Ratio and quantile rows follow ``_without_gained_unit_arm_facts``. Every other field is
-    left to the caller's comparison. Lists and tuples pair by position, so a captured model's
-    ``(type name, fields)`` form is projected too.
+    An arm fact is projected only where its captured row lacks it or holds it as null. On an
+    exact binomial row (``reference_kind == "binomial"``) the counts must equal ``n_c`` and
+    ``n_t`` exactly, as integers on a typed row; the rates must equal ``x_c / n_c`` and
+    ``x_t / n_t`` within the harness tolerance. Both come from the row's own ``binomial_set``
+    or, for a flattened row without one, from ``counts`` keyed by ``(metric, group_id)`` as
+    ``(x_c, n_c, x_t, n_t)``. Such a row with ``abs_reference_kind == "score"`` whose captured
+    row names no additive reference takes the captured ``abs_lb``/``abs_ub`` and a null
+    reference once its live bounds equal the score interval of its counts at the row's
+    ``abs_alpha``, within the harness tolerance. A captured row with a Wald standard error
+    must also hold ``abs_diff`` plus or minus the Normal critical value times ``abs_se``; one
+    without, whose Wald interval was undefined, must hold no bounds and no ``abs_alpha``, and
+    the live ``abs_alpha`` is projected back to null too. Ratio and quantile rows follow
+    ``_without_gained_unit_arm_facts``. Every other field is left to the caller's comparison.
+    Lists and tuples pair by position, so a captured model's ``(type name, fields)`` form is
+    projected too.
     """
     if isinstance(expected, Mapping) and isinstance(actual, Mapping):
         projected = {
@@ -486,12 +541,12 @@ def without_gained_arm_facts(
         if isinstance(exact, tuple) and len(exact) == 2:
             exact = exact[1]
         if isinstance(exact, Mapping):
-            implied = _binomial_arm_facts((exact["x_c"], exact["n_c"], exact["x_t"], exact["n_t"]))
+            row_counts = (exact["x_c"], exact["n_c"], exact["x_t"], exact["n_t"])
         elif counts is not None:
-            implied = _binomial_arm_facts(counts[(actual["metric"], actual["group_id"])])
+            row_counts = counts[(actual["metric"], actual["group_id"])]
         else:
             return projected
-        for field, value in implied.items():
+        for field, value in _binomial_arm_facts(row_counts).items():
             if actual.get(field) is None or expected.get(field) is not None:
                 continue
             if field in ("n_control", "n_treat"):
@@ -508,6 +563,23 @@ def without_gained_arm_facts(
                 projected[field] = None
             else:
                 del projected[field]
+        if (
+            actual.get("abs_reference_kind") == "score"
+            and expected.get("abs_reference_kind") is None
+        ):
+            if expected.get("abs_se") is not None:
+                _assert_score_replaced_wald(expected, actual, row_counts)
+                restored: tuple[str, ...] = ("abs_lb", "abs_ub", "abs_reference_kind")
+            elif all(expected.get(field) is None for field in ("abs_lb", "abs_ub", "abs_alpha")):
+                _assert_score_interval(actual, row_counts)
+                restored = ("abs_lb", "abs_ub", "abs_alpha", "abs_reference_kind")
+            else:
+                restored = ()
+            for field in restored:
+                if field in expected:
+                    projected[field] = expected[field]
+                else:
+                    projected.pop(field, None)
         return projected
     if (
         isinstance(expected, (list, tuple))

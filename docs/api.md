@@ -127,6 +127,26 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking): an exact conversion or retention row
+  (`reference_kind="binomial"`) now cuts its additive `abs_lb`/`abs_ub` as the
+  Miettinen-Nurminen score interval for the difference of rates and labels it
+  `abs_reference_kind="score"`; it was an unlabeled Normal-Wald interval. An
+  absolute margin (`margin_abs`, `null_abs`) on such a row is decided by the
+  matching score test, so `p_value()`, `stat_sig()` and guardrail verdicts
+  change at sparse counts, where the Wald test rejected too often (exact size
+  0.0785 against 0.05 at two expected treatment events per 1,000 units; the
+  score test's is 0.0432). The row's displayed `abs_diff` and `abs_se` are
+  unchanged, and a row without a Wald standard error (both arms constant, or
+  an arm of one unit) now has a finite additive interval. A family reissue,
+  including a delta-route row rerouted to the exact route, cuts the same score
+  interval. Because these rows now name their additive reference, the snapshot
+  and family IDs of breakout, daily and as-of lift readouts that contain them
+  change once. Migration: none needed to read saved results; a row saved
+  before this release keeps its stored Wald bounds and Normal margin test, and
+  reissuing it rebuilds the score interval from its counts. In
+  `select_exploratory_family`, such a margin row is read with its score
+  interval, so it is selected on the test its reissued interval inverts.
+  Experiment identity is unchanged.
 - Release note (breaking numerical correction): a run whose every requested
   cell fails returns each cell as an unavailable row that keeps its `metric`,
   `group_id` and its own `failure_code`, as a run with one healthy cell already
