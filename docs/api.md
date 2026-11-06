@@ -237,11 +237,13 @@ values.
   as a misspelled table, refuses with `definition.fact_source.sql_unresolved`,
   naming the source, with the backend error chained. Both previously raised an
   uncoded backend error when the experiment ran. When an experiment's exposure,
-  metric, trigger, uptake and CUPED sources mix timestamps with and without a
-  time zone, the ones with a time zone are converted to UTC when they are read,
-  so windows compare instants in UTC rather than in the connection's session
-  time zone. Such experiments run under a non-UTC session move to their
-  UTC-correct values (a numerical correction). A published uptake extension
+  metric, trigger, uptake and CUPED sources, and every source of a unit
+  property taken before exposure, mix timestamps with and without a time zone,
+  the ones with a time zone are converted to UTC when they
+  are read, so windows and pre-exposure property values compare instants in UTC
+  rather than in the connection's session time zone. Such experiments run under
+  a non-UTC session move to their UTC-correct values (a numerical
+  correction). A published uptake extension
   reads an uptake timestamp without a time zone as UTC, as the exposure and
   trigger timestamps beside it already were. Experiments whose sources share
   one timestamp kind read their sources with the same SQL, and experiment

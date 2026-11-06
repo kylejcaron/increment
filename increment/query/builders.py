@@ -2467,7 +2467,10 @@ def asof_group_summary(
         columns = panel.columns
         while outcome_edge_column in columns:
             outcome_edge_column = "_" + outcome_edge_column
-        panel = panel.mutate(**{outcome_edge_column: _outcome_observation_end})
+        # The edge joins as a one-row relation, never as a named scalar subquery: the
+        # compiler names a projected subquery in place, so every other read of it in
+        # the statement (the filter below, the spine's end date) would carry the alias.
+        panel = panel.cross_join(_outcome_observation_end.name(outcome_edge_column).as_table())
         first_observed_day = panel.first_exposure_date
         if isinstance(metric, RetentionMetric):
             first_observed_day += _days_literal(metric.band[0]).as_interval("D")

@@ -25,8 +25,6 @@ from increment.errors import (
 )
 from increment.query import panel_sql, summary_sql
 from increment.query.builders import (
-    _local_date_at_offset,
-    _naive_utc_ts,
     asof_group_summary,
     breakout_property_table,
     canonical_dimension_value,
@@ -42,8 +40,10 @@ from increment.query.builders import (
     post_exposure_stats,
     site_volume,
     triggered_population,
+    union_event_horizon,
     unit_day_panel,
     unit_day_spine_stats,
+    unit_day_stats,
     unit_totals,
     window_bound_stats,
     winsorize_unit_totals,
@@ -84,20 +84,23 @@ pytestmark = [pytest.mark.creates_tables, pytest.mark.integration]
 
 
 def test_aware_timestamps_convert_to_naive_utc_natively_at_full_precision():
-    """An aware timestamp becomes naive UTC through the backend's own conversion of the
-    stored instant: a cast to a naive type or an epoch difference would read the session
-    time zone (PostgreSQL), and a whole-microsecond round trip would move a nanosecond
-    exposure across later events (Snowflake). Day bucketing reads the same conversion."""
-    events = ibis.table({"ts": "timestamp('UTC', 9)"}, name="events")
+    """Day bucketing, at a UTC or a fixed-offset day boundary, reads an aware timestamp
+    through the backend's own conversion of the stored instant: a cast to a naive type or an
+    epoch difference would read the session time zone (PostgreSQL), and a whole-microsecond
+    round trip would move a nanosecond instant across later events (Snowflake). Mixed-kind
+    ingress reads the same conversion."""
+    events = ibis.table(
+        {"unit_id": "string", "ts": "timestamp('UTC', 9)", "value": "float64"}, name="events"
+    )
     expected = {
         "postgres": '"t0"."ts" AT TIME ZONE \'UTC\'',
         "snowflake": 'CAST(CONVERT_TIMEZONE(\'UTC\', "t0"."ts") AS TIMESTAMPNTZ(9))',
     }
     for dialect, conversion in expected.items():
-        sql = ibis.to_sql(_naive_utc_ts(events), dialect=dialect)
+        sql = ibis.to_sql(union_event_horizon([events]), dialect=dialect)
         assert conversion in sql, (dialect, sql)
         assert "1970" not in sql, (dialect, sql)
-    day = events.select(ds=_local_date_at_offset(events.ts, dt.timedelta(hours=-5)))
+    day = unit_day_stats(events, source_key="value", day_boundary_offset=dt.timedelta(hours=-5))
     sql = ibis.to_sql(day, dialect="postgres")
     assert expected["postgres"] in sql, sql
     assert "1970" not in sql, sql

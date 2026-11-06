@@ -574,9 +574,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     def _timestamp_kinds_mixed(self) -> bool:
         """Whether this experiment's relations mix time-zone-aware and naive timestamps.
 
-        Decided once from the exposure, trigger, metric, uptake and CUPED relations. When
-        they mix, every aware timestamp is read as naive UTC at ingress, so no comparison
-        depends on the session time zone; relations of one kind keep their own type.
+        Decided once from the relations compared with exposure time (see
+        `_timestamped_relations`). When they mix, every aware timestamp is read as naive UTC
+        at ingress, so no comparison depends on the session time zone; relations of one kind
+        keep their own type.
         """
         if self._mixed_timestamp_kinds is None:
             aware: set[bool] = set()
@@ -591,7 +592,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         return self._mixed_timestamp_kinds
 
     def _timestamped_relations(self) -> tuple[tuple[str, str], ...]:
-        """``(sql, timestamp column)`` of each exposure, trigger, metric, uptake and CUPED relation."""
+        """``(sql, timestamp column)`` of each exposure, trigger, metric, uptake and CUPED
+        relation and each source of a unit property taken before exposure."""
         relations: dict[tuple[str, str], None] = {}
         facts: list[str] = []
         for name in (self._experiment.exposure, self._experiment.trigger):
@@ -622,7 +624,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         for fact in facts:
             source, _ = _find_fact_source(self._defs, fact)
             relations[(source.sql, source.timestamp_column)] = None
+        for source in self._pre_exposure_property_sources():
+            relations[(source.sql, source.timestamp_column)] = None
         return tuple(relations)
+
+    def _pre_exposure_property_sources(self) -> Iterator[FactSource]:
+        """Sources with the experiment's unit and a property taken before exposure.
+
+        A read can name any such property (a covariate, breakout, factor or CATE
+        interaction, declared or not), so every one counts.
+        """
+        unit = self._experiment.unit
+        for source in self._defs.fact_sources:
+            if unit in source.entities and any(
+                p.as_of == "pre_exposure" for p in self._defs.properties_of(source)
+            ):
+                yield source
 
     def _site_volume_scope_names(
         self, site_volume_metrics: frozenset[str], sources: dict[str, FactSource]

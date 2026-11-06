@@ -14,15 +14,26 @@
 from __future__ import annotations
 
 import datetime as dt
+from statistics import fmean
 from typing import Any, cast
 
 import ibis
 import pyarrow as pa
 import pytest
 
-from increment import View, from_definitions, from_unit_day_artifact
+from increment import (
+    CupedCovariate,
+    Method,
+    MetricSpec,
+    View,
+    from_definitions,
+    from_frame,
+    from_unit_day_artifact,
+)
 from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.errors import CapabilityError
+from increment.estimators import estimate_cate
+from increment.results import LiftEstimate
 from increment.workflows import allocation_history, metrics
 from tests.analysis_factory import bound_source, held_source, view_readout
 
@@ -432,20 +443,45 @@ experiments:
     assert _enrolled_by_arm(analysis) == {"control": 1, "treatment": 1}
 
 
-@pytest.mark.parametrize("exposure", ["fact", "sql"])
-def test_mixed_timestamp_kinds_are_session_independent(tmp_path, exposure):
-    """Every arm is exposed at 10:00Z through a time-zone-aware relation and buys at naive
-    09:00 (1.0) and 10:30 (5.0). Naive timestamps are UTC, so only the 10:30 purchase
-    follows exposure and each arm's mean is 5.0 whatever the session time zone. July puts
-    Los Angeles at a UTC offset other than its offset at the epoch, which an epoch
+@pytest.mark.parametrize("aware", ["fact_exposure", "sql_exposure", "covariate", "cate"])
+def test_mixed_timestamp_kinds_are_session_independent(tmp_path, aware):
+    """Every unit is exposed at 10:00Z, buys at 09:00 (1.0) and 10:30 (its outcome), and has
+    a pre-exposure tenure recorded at 09:00 (its covariate) and 10:30 (a later value). One
+    relation has a time zone: the exposure, read through a fact or SQL, or the tenure's,
+    read as a declared CUPED covariate or as a CATE interaction named only at the call;
+    naive timestamps are UTC. So whatever the session time zone, only the 10:30 purchase
+    follows exposure, each arm's as-of mean is that arm's 5.0 average outcome on every day,
+    and the result is the one computed from each unit's 10:30 purchase and 09:00 tenure.
+    July puts Los Angeles at a UTC offset other than its offset at the epoch, which an epoch
     difference taken in session time would add to the exposure."""
-    units = {"c1": "control", "c2": "control", "t1": "treatment", "t2": "treatment"}
-    exposed = pa.array([dt.datetime(2025, 7, 1, 10, tzinfo=dt.UTC)] * 4, pa.timestamp("us", "UTC"))
+    # Twenty units, so a one-interaction CATE fit has ten units per covariate column.
+    units = {f"{arm[0]}{i}": arm for arm in ("control", "treatment") for i in range(10)}
+    tenure = {unit: 1.0 + (3 * i) % 7 for i, unit in enumerate(units)}
+    later_tenure = {unit: 100.0 + i for i, unit in enumerate(units)}
+    # Outcomes rise with tenure, more steeply under treatment, alternate 0.25 either side of
+    # that line, and average 5.0 in each arm.
+    arm_tenure = {
+        arm: fmean(tenure[unit] for unit in units if units[unit] == arm)
+        for arm in ("control", "treatment")
+    }
+    outcome = {
+        unit: 5.0
+        + (1.5 if arm == "treatment" else 0.5) * (tenure[unit] - arm_tenure[arm])
+        + 0.25 * (-1) ** i
+        for i, (unit, arm) in enumerate(units.items())
+    }
+
+    def times(values: list[dt.datetime], *, zoned: bool) -> pa.Array:
+        if zoned:
+            return pa.array([at.replace(tzinfo=dt.UTC) for at in values], pa.timestamp("us", "UTC"))
+        return pa.array(values, pa.timestamp("us"))
+
+    exposed = times([dt.datetime(2025, 7, 1, 10)] * len(units), zoned=aware.endswith("exposure"))
     views = pa.table(
         {
             "user_id": list(units),
             "event_at": exposed,
-            "event": ["page_view"] * 4,
+            "event": ["page_view"] * len(units),
             "group_id": list(units.values()),
         }
     )
@@ -456,21 +492,41 @@ def test_mixed_timestamp_kinds_are_session_independent(tmp_path, exposure):
     purchases = [
         (unit, dt.datetime(2025, 7, 1, hour, minute), value)
         for unit in units
-        for hour, minute, value in ((9, 0, 1.0), (10, 30, 5.0))
+        for hour, minute, value in ((9, 0, 1.0), (10, 30, outcome[unit]))
     ]
     purchases.append(("late", dt.datetime(2025, 7, 22), 1.0))
     orders = pa.table(
         {
             "user_id": [unit for unit, _, _ in purchases],
-            "event_at": pa.array([at for _, at, _ in purchases], pa.timestamp("us")),
+            "event_at": times([at for _, at, _ in purchases], zoned=False),
             "event": ["purchase"] * len(purchases),
             "revenue": [value for _, _, value in purchases],
         }
     )
+    recorded = [
+        (unit, dt.datetime(2025, 7, 1, hour, minute), values[unit])
+        for unit in units
+        for hour, minute, values in ((9, 0, tenure), (10, 30, later_tenure))
+    ]
+    profiles = pa.table(
+        {
+            "user_id": [unit for unit, _, _ in recorded],
+            "observed_at": times(
+                [at for _, at, _ in recorded], zoned=not aware.endswith("exposure")
+            ),
+            "tenure": [value for _, _, value in recorded],
+        }
+    )
     enrolled = (
-        "{name: enrolled, fact: page_view}"
-        if exposure == "fact"
-        else '{name: enrolled, sql: "SELECT unit_id, ts, group_id FROM enrollments"}'
+        '{name: enrolled, sql: "SELECT unit_id, ts, group_id FROM enrollments"}'
+        if aware == "sql_exposure"
+        else "{name: enrolled, fact: page_view}"
+    )
+    primary = (
+        "revenue"
+        if aware == "cate"
+        else "{metric: revenue, decision_method: {name: scalar, variance_reduction: cuped, "
+        "covariates: [{name: tenure, kind: continuous, property: tenure, source: profiles}]}}"
     )
     defs_path = _write_defs(
         tmp_path,
@@ -480,23 +536,58 @@ fact_sources:
      facts: [{{name: page_view, column: null}}]}}
   - {{name: orders, sql: SELECT * FROM orders, timestamp_column: event_at, entities: [user_id],
      facts: [{{name: purchase, column: revenue}}]}}
+  - {{name: profiles, sql: SELECT * FROM profiles, timestamp_column: observed_at,
+     entities: [user_id], facts: [],
+     properties: [{{name: tenure, column: tenure, dtype: float, as_of: pre_exposure}}]}}
 exposures: [{enrolled}]
 metrics:
   - {{name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 7}}
 experiments:
   - {{name: exp, exposure: enrolled, unit: user_id, start: 2025-07-01, end: 2025-07-02,
-     observation_end: 2025-07-20, control_group: control, plan: {{primary: revenue}}}}
+     observation_end: 2025-07-20, control_group: control, plan: {{primary: {primary}}}}}
 """,
     )
+
+    def readout(experiment: Any, reader: Any) -> tuple[float, ...]:
+        if aware == "cate":
+            fit = estimate_cate(experiment, reader, "revenue", interact=["tenure"])
+            return fit.ate, fit.se, fit.interactions[0].coef
+        estimate = view_readout(experiment, reader)[0]
+        assert isinstance(estimate, LiftEstimate)
+        return estimate.require_lift().value, estimate.require_lift().log_se
+
+    method = Method.cuped(
+        name="scalar", covariates=CupedCovariate(name="tenure", kind="continuous")
+    )
+    expected = readout(
+        *from_frame(
+            pa.table(
+                {
+                    "unit": list(units),
+                    "group": list(units.values()),
+                    "revenue": list(outcome.values()),
+                    "tenure": list(tenure.values()),
+                }
+            ),
+            shape="summary",
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[MetricSpec(name="revenue", decision_method=method)],
+        )
+    )
+    tables = {"views": views, "enrollments": enrollments, "orders": orders, "profiles": profiles}
     means = {}
+    results = {}
     for zone in ("UTC", "America/Los_Angeles", "Asia/Tokyo"):
         con = ibis.duckdb.connect()
         con.raw_sql(f"SET TimeZone = '{zone}'")
-        for name, table in (("views", views), ("enrollments", enrollments), ("orders", orders)):
+        for name, table in tables.items():
             con.create_table(name, table)
         experiment, reader = from_definitions(defs_path, con, experiment_name="exp")
         try:
             rows = view_readout(experiment, reader, View(view="asof", grain="asof", values=True))
+            results[zone] = readout(experiment, reader)
         finally:
             reader.close()
             con.disconnect()
@@ -509,6 +600,8 @@ experiments:
         for key, mean in means[zone].items():
             assert mean == pytest.approx(5.0, abs=1e-12)
             assert mean == pytest.approx(means["UTC"][key], abs=1e-12)
+    for observed in results.values():
+        assert observed == pytest.approx(expected, rel=1e-9)
 
 
 def test_definitions_assignment_ledger_uses_explicit_role_mapping(tmp_path):
