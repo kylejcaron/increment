@@ -772,7 +772,11 @@ def quantile_lift_from_rows(
                 arm_ns=arm_ns,
                 preferred_direction=metric.declared_preferred_direction,
             )
-            updates: dict[str, Any] = {"quantile_p_value": p_value}
+            updates: dict[str, Any] = {
+                "quantile_p_value": p_value,
+                "n_control": int(arms[control_group].shape[0]),
+                "n_treat": int(values.shape[0]),
+            }
             if widened:
                 updates["note"] = _wider_interval_note(se_c, se_t, classical_se_c, classical_se_t)
             out.append(est.model_copy(update=updates))

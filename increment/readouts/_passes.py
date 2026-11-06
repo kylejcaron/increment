@@ -132,7 +132,7 @@ def _lift_cells_missing_control(  # noqa: PLR0913
         return fallback, [], computation
 
 
-def _append_lift_cell_failure(
+def _append_lift_cell_failure(  # noqa: PLR0913
     *,
     results: list[LiftEstimate],
     computations: list[DecisionComputation[LiftEstimate]] | None,
@@ -141,6 +141,9 @@ def _append_lift_cell_failure(
     method: Method,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
     alternative: str,
+    null_lift: float,
+    null_abs: float | None,
+    preferred_direction: PreferredDirection | None,
     code: str,
     context: Mapping[str, object],
     prior: Prior | None,
@@ -170,6 +173,9 @@ def _append_lift_cell_failure(
                 estimand=estimand,
                 value_scale="absolute" if estimand == "late" else "relative",
                 alternative=alternative,
+                null_lift=null_lift,
+                null_abs=null_abs,
+                preferred_direction=preferred_direction,
                 method_role=method_role,
                 failure_code=code,
                 failure_context=failure_context,
@@ -308,6 +314,9 @@ def _estimate_lift_cells(  # noqa: PLR0913
                     group_id=group_id,
                     method=method,
                     alternative=alternative,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
+                    preferred_direction=preferred_direction,
                     method_roles=method_roles,
                     code="estimation.engine.lift_guard",
                     context={
@@ -339,6 +348,9 @@ def _estimate_lift_cells(  # noqa: PLR0913
                     group_id=group_id,
                     method=method,
                     alternative=alternative,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
+                    preferred_direction=preferred_direction,
                     method_roles=method_roles,
                     code=exc.code,
                     context=exc.context,
@@ -440,6 +452,9 @@ def _estimate_pass(  # noqa: PLR0913
                         method=method,
                         method_roles=method_roles,
                         alternative=test.alternative,
+                        null_lift=getattr(test, "null_lift", 0.0),
+                        null_abs=getattr(test, "null_abs", None),
+                        preferred_direction=metric.declared_preferred_direction,
                         code=exc.code,
                         context=exc.context,
                         prior=config.prior,
@@ -465,17 +480,7 @@ def _estimate_pass(  # noqa: PLR0913
     )
     if not failures and not failed_rows:
         return rows, refused, computation
-    failed_rows = [
-        row.model_copy(
-            update={
-                "role": role,
-                "preferred_direction": metric.declared_preferred_direction,
-                "null_lift": getattr(test, "null_lift", 0.0),
-                "null_abs": getattr(test, "null_abs", None),
-            }
-        )
-        for row in failed_rows
-    ]
+    failed_rows = [row.model_copy(update={"role": role}) for row in failed_rows]
     return (
         [*failed_rows, *rows],
         refused,

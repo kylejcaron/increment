@@ -187,6 +187,9 @@ def _group_method_evidence(
                         method=method,
                         method_roles={method.name: group.method_role},
                         alternative=group.alternative,
+                        null_lift=group.null_lift,
+                        null_abs=group.null_abs,
+                        preferred_direction=metric.declared_preferred_direction,
                         code=exc.code,
                         context=exc.context,
                         prior=group.prior,
@@ -317,19 +320,7 @@ def encouragement_rows(
         )
         computations.extend(failures)
         results.extend(
-            row.model_copy(
-                update={
-                    "role": role_by_metric.get(row.metric),
-                    "preferred_direction": next(
-                        metric.declared_preferred_direction
-                        for metric in metrics
-                        if metric.name == row.metric
-                    ),
-                    "null_lift": group.null_lift,
-                    "null_abs": group.null_abs,
-                }
-            )
-            for row in failed_rows
+            row.model_copy(update={"role": role_by_metric.get(row.metric)}) for row in failed_rows
         )
         if not group.metrics:
             continue
