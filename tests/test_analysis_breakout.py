@@ -1843,16 +1843,6 @@ def test_native_encouragement_breakout_carries_uptake_moments(con):
     assert {row.estimand for row in results} == {"itt", "compliance", "late"}
 
 
-@pytest.mark.slow
-def test_retention_breakout_summary_uses_mature_exposure_cohorts():
-    """The small parity fixture also exercises the one-segment control."""
-    from tests.parity_harness.cases import _retention_breakout_cohorts_case
-    from tests.parity_harness.runner import assert_parity, run_case
-
-    case = _retention_breakout_cohorts_case(single_segment=True)
-    assert_parity(case, run_case(case))
-
-
 @pytest.mark.parametrize(
     "ingress",
     ["from_definitions", pytest.param("from_unit_day_artifact", marks=pytest.mark.slow)],

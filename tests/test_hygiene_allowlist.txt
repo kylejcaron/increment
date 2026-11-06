@@ -89,6 +89,8 @@ tests/test_evidence_level_parity.py 41
 tests/evidence_fixtures/scenarios.py 22
 # Closed request/answer codecs and genuine pinned warehouse input source identity.
 tests/evidence_fixtures/transcript.py 8
+# The package's unsupported-request refusal a replay raises for a request it never recorded.
+tests/evidence_fixtures/recording.py 1
 # Retained CUPED envelopes and full method-fit identity for pure estimators.
 tests/evidence_fixtures/replay.py 5
 # Source-free observational and result-row assembly consumers.
