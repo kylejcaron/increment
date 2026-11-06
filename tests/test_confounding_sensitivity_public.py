@@ -310,6 +310,8 @@ def test_sensitivity_report_row_round_trips_as_report_only_cell():
         payload = json.loads(json.dumps(cell.to_payload()))
         restored = ResultCell.from_payload(payload)
         assert restored.supports["sampling"] == frozenset()
+        for status in (cell.components["sampling"][0], restored.components["sampling"][0]):
+            assert (status.state, status.code) == ("available", None)
         match restored.row_payload:
             case {"data": {"interval_unavailable_reason": reason}}:
                 assert reason == report.interval_unavailable_reason

@@ -394,6 +394,10 @@ def test_public_analysis_cells_round_trip_through_parquet_store(tmp_path):
         )
         assert mismatched_method.num_rows == 0
         assert arrow["se"].to_pylist()[0] == pytest.approx(expected_se)
+        # An available cell has no reason code in either saved table.
+        assert cells[0].components["sampling"][0].state == "available"
+        assert arrow["reason_code"].to_pylist()[0] is None
+        assert history["reason_code"].to_pylist() == [None]
 
         conflicting_cells = tuple(
             replace(cell, provenance=replace(cell.provenance, execution_identity_hash="other"))

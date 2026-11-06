@@ -922,10 +922,11 @@ def test_skip_label_reaches_frame_and_render() -> None:
     (line,) = [
         line
         for line in render(result, "brief").splitlines()
-        if line.startswith("score / arm=treatment / ")
+        if line.startswith("score / arm=treatment")
     ]
     assert line.count(row.population) == 1
-    assert line.count("population=") == 1
+    # One analysis population: the label omits it, so the restriction is the only population.
+    assert "population=" not in line
 
 
 def test_skip_label_reaches_breakout_frame_and_render() -> None:
@@ -951,9 +952,7 @@ def test_skip_label_reaches_breakout_frame_and_render() -> None:
         (line,) = [
             line
             for line in lines
-            if line.startswith(
-                f"{metric} / arm=treatment / dimension=segment / segment={segment} / "
-            )
+            if line.startswith(f"{metric} / arm=treatment / segment={segment}")
         ]
         assert line.count("observed-only population; counts not recorded per segment") == (
             1 if metric == "score" else 0
@@ -1019,12 +1018,10 @@ def test_skip_label_composes_with_overlap_trimming() -> None:
     assert skipped.population == f"{skip_label}; {trimmed_only.population}"
     assert skipped.estimand == "overlap_subpopulation_ate"
     (line,) = [
-        line
-        for line in render(result, "brief").splitlines()
-        if line.startswith("revenue / arm=T / ") and f"estimand={skipped.estimand}" in line
+        line for line in render(result, "brief").splitlines() if line.startswith("revenue / arm=T")
     ]
     assert line.count(skipped.population) == 1
-    assert line.count("population=") == 1
+    assert "population=" not in line
 
 
 def test_inferred_all_null_metric_obeys_missing_policy() -> None:

@@ -1440,3 +1440,93 @@ def test_plain_run_labels_omit_constant_coordinates():
     text = repr(_two_metric_run())
     for coordinate in ("method=", "population=", "estimand="):
         assert coordinate not in text
+
+
+def test_brief_render_formats_numbers_and_omits_empty_reasons():
+    import re
+
+    from increment import render
+    from tests.test_analysis_daily import _daily_revenue_run
+    from tests.test_public_run import _two_metric_run
+
+    brief = render(_two_metric_run(), "brief")
+    assert re.search(r"\d{10,}", brief) is None
+    assert "reason={}" not in brief
+    assert not any(line.startswith("Warning:") for line in brief.splitlines())
+
+    result, _views = _daily_revenue_run(values=False)
+    lines = render(result, "brief").splitlines()
+    marked = {line for line in lines if line.startswith("Warning: ")}
+    roster = {line for line in lines if "roster incomplete" in line}
+    assert roster and roster <= marked
+    disclosure = re.compile(r"Warning: [a-z0-9_]+(\.[a-z0-9_:]+)+( \(.*\))?")
+    assert all(disclosure.fullmatch(line) for line in marked - roster)
+
+
+@pytest.mark.integration
+def test_unavailable_reasons_stay_identifiable_across_methods_and_populations(tmp_path):
+    from increment import render
+    from increment.estimation.readout_types import CellFailure, SamplingInference
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, result_rows
+
+    result, _views = _methods_by_population_run(tmp_path)
+    # The estimator keeps a constant triggered covariate by dropping it, so record the
+    # zero-variance refusal on the triggered adjusted cell.
+    code, context = "estimation.cuped.covariate_zero_variance", {"weighted_var_x": 0.0}
+    (failed,) = (
+        cell
+        for cell in result.cells
+        if cell.identity.key.method != "unadjusted"
+        and cell.identity.key.analysis_population == "triggered"
+    )
+    key = failed.identity.key
+    metadata = result.run.metadata.model_copy(
+        update={
+            "cells": tuple(
+                record.model_copy(
+                    update={
+                        "failure": CellFailure(
+                            hypothesis=key.hypothesis(), code=code, context=context
+                        ),
+                        "sampling": SamplingInference(
+                            available=False, reason_code=code, reason_context=context
+                        ),
+                    }
+                )
+                if record.cell == key and record.source_snapshot_id == failed.source_snapshot_id
+                else record
+                for record in result.run.metadata.cells
+            )
+        }
+    )
+    cells = tuple(
+        ResultCell.from_row(
+            row.model_copy(
+                update={
+                    "lift": None,
+                    "sampling_available": False,
+                    "failure_code": code,
+                    "failure_context": context,
+                }
+            )
+            if cell is failed
+            else row,
+            metadata,
+        )
+        for cell, row in zip(result.cells, result_rows(result.cells, result.live_rows), strict=True)
+    )
+
+    lines = render(AnalysisEnvelope(cells, metadata), "brief").splitlines()[: len(cells)]
+    assert len({line.split(": ", 1)[0] for line in lines}) == len(cells) == 4
+    (failed_line,) = (line for line in lines if code in line)
+    assert "method=region_adjusted" in failed_line
+    assert "population=triggered" in failed_line
+    for cell, line in zip(cells, lines, strict=True):
+        if cell.summary is not None and cell.summary.point is not None:
+            assert f"{cell.summary.point * 100:.6g}%" in line
+    assert sum(cell.summary is not None for cell in cells) == 3
+
+    readout = render_readout_text(interpret_readout(result_rows(cells), metadata))
+    (unavailable,) = (line for line in readout.splitlines() if line.startswith("Unavailable "))
+    assert code in unavailable
+    assert "method=region_adjusted" in unavailable

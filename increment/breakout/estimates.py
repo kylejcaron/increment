@@ -1096,6 +1096,7 @@ class EstimateList[M: BaseModel](list[M]):
         from increment.estimation.readout_types import validate_collection
 
         super().__init__(rows)
+        metadata = self._current_metadata(metadata)
         self._metadata = metadata
         self.source = source
         self.sequential_snapshot = sequential_snapshot
@@ -1104,6 +1105,10 @@ class EstimateList[M: BaseModel](list[M]):
         self._envelope_completion_policy = completion_policy
         self._persisted_cells = None
         validate_collection(self, metadata)
+
+    def _current_metadata(self, metadata: ReadoutMetadata | None) -> ReadoutMetadata | None:
+        """``metadata`` with any earlier key of a row's cell replaced by its current key."""
+        return metadata
 
     @property
     def metadata(self) -> ReadoutMetadata | None:
@@ -1323,6 +1328,7 @@ class DailyMetricValue(CodedModel, BaseModel):
     metric: str
     group_id: str
     value: Estimate | None  # absolute mean; Wald CI: mean +/- z * sqrt(var / n)
+    value_scale: Literal["absolute"] = "absolute"
     unavailable: ExclusionReason | None = None
     n: int
     ds_basis: Literal["calendar", "cohort"] = "calendar"
@@ -1351,6 +1357,11 @@ class DailyMetricValue(CodedModel, BaseModel):
                 self, "decision_scope_reason_context", freeze(self.decision_scope_reason_context)
             )
         return self
+
+    def __setstate__(self, state: dict[str, object]) -> None:
+        # A value pickled before ``value_scale`` was a field has no entry for it.
+        cast("dict[str, object]", state["__dict__"]).setdefault("value_scale", "absolute")
+        super().__setstate__(state)
 
 
 class DailyLiftEstimate(_RowIdentity):
@@ -1810,8 +1821,6 @@ def _envelope_identity(
             segment=segment,
         )
     }
-    if isinstance(row, DailyMetricValue):
-        updates["key"] = key.key.model_copy(update={"value_scale": "absolute"})
     return key.model_copy(update=updates)
 
 
@@ -1887,6 +1896,9 @@ class DailyMetricValues(EstimateList[DailyMetricValue]):
     _model = DailyMetricValue
     _envelope_view: Literal["daily", "asof"] | None = None
 
+    def _current_metadata(self, metadata: ReadoutMetadata | None) -> ReadoutMetadata | None:
+        return _with_value_row_keys(tuple(self), metadata)
+
     def as_cells(self, *, created_at: datetime | None = None):
         from importlib import import_module
 
@@ -1909,6 +1921,25 @@ class DailyMetricValues(EstimateList[DailyMetricValue]):
             )
             for row in self
         ]
+
+
+def _with_value_row_keys(
+    rows: tuple[DailyMetricValue, ...], metadata: ReadoutMetadata | None
+) -> ReadoutMetadata | None:
+    """Metadata saved before a value row recorded ``value_scale`` keys the row's cell with no
+    scale; that key names the row's absolute cell."""
+    from increment.estimation.readout_types import CellKey, rekeyed_metadata
+
+    if metadata is None:
+        return None
+    keys = {}
+    for row in rows:
+        key = CellKey.from_row(row)
+        recorded = key.model_copy(update={"value_scale": None})
+        source = metadata.scope.by_source.get(row.source_snapshot_id)
+        if source is not None and key not in source.cells and recorded in source.cells:
+            keys[recorded] = key
+    return rekeyed_metadata(metadata, keys) if keys else metadata
 
 
 class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
@@ -5047,6 +5078,9 @@ class _DailyLiftContext(NamedTuple):
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None
     plan: CompiledDecisionPlan | None = None
     segment_count_by_metric: Mapping[str, int] | None = None
+    #: Each metric's treatment arms: the design's declared arms and any observed anywhere
+    #: in the summary; a day slice without one of them reports that arm unavailable.
+    treatment_arms_by_metric: Mapping[str, frozenset[str]] | None = None
 
 
 class _DailyMetricPass(NamedTuple):
@@ -5250,9 +5284,16 @@ def _daily_lift_rows_for_slice(
                 )
             )
         )
+    # A treatment arm with no row on this day is a requested cell with no units.
+    unestimable = dict(metric_pass.unestimable)
+    present = {(str(row["metric"]), str(row.get("group_id"))) for row in day_rows}
+    for metric_name in sorted({metric for metric, _group_id in present}):
+        for group_id in (context.treatment_arms_by_metric or {}).get(metric_name, ()):
+            if (metric_name, group_id) not in present:
+                unestimable.setdefault((metric_name, group_id), "no_treatment_arm")
     rows.extend(
         _nan_lift_rows(
-            metric_pass.unestimable,
+            unestimable,
             unavailable_methods=metric_pass.unavailable_methods,
             methods=context.methods,
             methods_by_metric=context.methods_by_metric,
@@ -5515,7 +5556,38 @@ def _snapshot_daily_lift(
     return projected
 
 
-def run_daily_lift(  # noqa: PLR0913, PLR0915
+def _daily_rosters(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    control_group: str,
+    dimension: str | None,
+    segment_roster_by_metric: Mapping[str, Sequence[str]] | None,
+    treatment_arms: Sequence[str],
+) -> tuple[dict[str, int], dict[str, frozenset[str]]]:
+    """Per metric, over the whole daily summary: the segment count (when broken out by
+    ``dimension``) and the treatment arms, declared or observed."""
+    segments: dict[str, set[str]] = {
+        name: set(values) for name, values in (segment_roster_by_metric or {}).items()
+    }
+    declared = set(treatment_arms) - {control_group}
+    arms: dict[str, set[str]] = {}
+    for row in rows:
+        metric_name = str(row["metric"])
+        group_id = str(row.get("group_id"))
+        metric_arms = arms.setdefault(metric_name, set(declared))
+        if group_id != control_group:
+            metric_arms.add(group_id)
+        if dimension is not None:
+            segments.setdefault(metric_name, set()).add(str(row[dimension]))
+    segment_counts = (
+        {name: max(len(values), 1) for name, values in segments.items()}
+        if dimension is not None
+        else {}
+    )
+    return segment_counts, {name: frozenset(groups) for name, groups in arms.items()}
+
+
+def run_daily_lift(  # noqa: PLR0913
     summary: SequentialSnapshot | IntoDataFrame | Iterable[Mapping[str, Any]],
     metrics: Sequence[Metric],
     *,
@@ -5538,6 +5610,7 @@ def run_daily_lift(  # noqa: PLR0913, PLR0915
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]]
     | None = None,
     segment_roster_by_metric: Mapping[str, Sequence[str]] | None = None,
+    treatment_arms: Sequence[str] = (),
     _policy_by_cell: Mapping[tuple[date, str, str | None], Mapping[str, _DailyCellPolicy]]
     | None = None,
     plan: CompiledDecisionPlan | None = None,
@@ -5585,6 +5658,9 @@ def run_daily_lift(  # noqa: PLR0913, PLR0915
     segment_roster_by_metric : Mapping[str, Sequence[str]] | None
         Optional full dimension-value roster per metric, used when empty cells have
         been removed from ``summary`` before fitting.
+    treatment_arms : Sequence[str]
+        The design's declared treatment arms. Each one, and each arm observed for a
+        metric anywhere in *summary*, is a cell on every day slice of that metric.
     _policy_by_cell : Mapping[tuple[date, str, str | None], Mapping[str, _DailyCellPolicy]] | None
         Internal compiled per-day, per-metric cell policy supplied by plan execution.
     _cell_advisories : dict[CellKey, tuple[ReadoutAdvisory, ...]] | None
@@ -5604,7 +5680,9 @@ def run_daily_lift(  # noqa: PLR0913, PLR0915
     DailyLiftEstimates
         Dense over ITT cells: an unestimable (day, metric, method, arm)
         gets ``lift=None`` plus an ``unavailable`` reason rather than
-        being dropped. A slice that keeps some estimable arms while
+        being dropped. A treatment arm (see *treatment_arms*) with no row
+        in a day slice is ``no_treatment_arm`` there. A slice that keeps
+        some estimable arms while
         excluding guarded arms emits a per-metric ``UserWarning``;
         pre-estimation drops (too few units, non-positive means) stay
         silent and surface only as unavailable rows. Encouragement
@@ -5701,16 +5779,13 @@ def run_daily_lift(  # noqa: PLR0913, PLR0915
                 "breakout.run_daily_lift_plan_missing_procedures",
                 missing_procedures=missing_procedures,
             )
-    segment_count_by_metric: dict[str, int] = {}
-    if dimension is not None:
-        segments_by_metric: dict[str, set[str]] = {
-            name: set(values) for name, values in (segment_roster_by_metric or {}).items()
-        }
-        for row in raw_rows:
-            segments_by_metric.setdefault(str(row["metric"]), set()).add(str(row[dimension]))
-        segment_count_by_metric = {
-            name: max(len(values), 1) for name, values in segments_by_metric.items()
-        }
+    segment_count_by_metric, treatment_arms_by_metric = _daily_rosters(
+        raw_rows,
+        control_group=control_group,
+        dimension=dimension,
+        segment_roster_by_metric=segment_roster_by_metric,
+        treatment_arms=treatment_arms,
+    )
     # A compiled plan makes the resolver own the full per-cell composition;
     # direct plan-less callers retain the standalone call-wide correction.
     # per_metric_correction's own unknown-metric check is unreachable: `unknown`
@@ -5757,6 +5832,7 @@ def run_daily_lift(  # noqa: PLR0913, PLR0915
             method_roles_by_metric,
             plan,
             segment_count_by_metric,
+            treatment_arms_by_metric,
         )
         policy_day = ds_value.date() if isinstance(ds_value, datetime) else ds_value
         policy_by_metric = {

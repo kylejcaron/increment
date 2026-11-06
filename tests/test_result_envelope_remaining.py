@@ -383,7 +383,9 @@ def test_restored_set_only_breakout_uses_public_confidence_projection():
         assert cell.summary.lower == row.binomial_set.lower
         assert cell.summary.alpha == row.binomial_set.alpha
         assert cell.summary.geometry == row.binomial_set.geometry
-        assert "6.0016" in render(AnalysisEnvelope((cell,), None), "brief")
+        lower = cell.summary.lower
+        assert lower is not None
+        assert f"{lower * 100:.6g}" in render(AnalysisEnvelope((cell,), None), "brief")
     finally:
         resolver.close()
 
@@ -418,8 +420,12 @@ def test_mixed_lift_and_report_cells_render_and_project_to_table(seeded_con, see
         assert breakout.summary.point == pytest.approx(
             breakout.row_payload["data"]["lift"]["value"]  # ty: ignore[not-subscriptable, invalid-argument-type]
         )
-        assert repr(breakout.summary.point) in render(envelope, "brief")
-        assert "breakout" in render(envelope, "brief")
+        point = breakout.summary.point
+        assert point is not None
+        brief = render(envelope, "brief")
+        assert f"{point * 100:.6g}%" in brief
+        key = breakout.identity.key
+        assert f"{key.dimension}={key.dimension_value}" in brief
         html = readout_table(envelope, nest_by="segment")._repr_html_()
         assert "d7_retention" in html
     finally:

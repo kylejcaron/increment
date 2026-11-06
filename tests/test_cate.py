@@ -644,6 +644,10 @@ def test_honest_cate_and_targeting_reports_have_report_only_cells():
     )
     restored_cells = []
     for result, row_kind in (
+        (
+            estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"]),
+            "cate",
+        ),
         (validation, "cate_validation"),
         (rule, "targeting"),
         (selection, "targeting_selection"),
@@ -663,29 +667,40 @@ def test_honest_cate_and_targeting_reports_have_report_only_cells():
                 pytest.fail(f"report payload has no identity context: {restored.row_payload!r}")
         assert restored.summary is not None
         result_data = cast(Any, result)
-        estimate = (
-            result_data.holdout_ate
-            if row_kind == "cate_validation"
-            else (
-                result_data.policy_value
-                if row_kind == "targeting"
-                else result_data.rule.policy_value
+        if row_kind == "cate":
+            expected = result_data.ate
+        else:
+            estimate = (
+                result_data.holdout_ate
+                if row_kind == "cate_validation"
+                else (
+                    result_data.policy_value
+                    if row_kind == "targeting"
+                    else result_data.rule.policy_value
+                )
             )
-        )
-        expected = None if estimate is None else estimate.value
+            expected = None if estimate is None else estimate.value
         summary = cast(Any, restored.summary)
         assert summary.point == expected
         if expected is None:
             assert summary.reason is not None
         else:
             assert summary.point == pytest.approx(expected)
+        # A report that retains its estimate is available, live and reopened alike.
+        for status in (cell.components["sampling"][0], restored.components["sampling"][0]):
+            assert status.state == ("unavailable" if expected is None else "available")
+            assert expected is None or status.code is None
         table = readout_table(AnalysisEnvelope((restored,), None))._repr_html_()
         assert "revenue" in table
     brief = render(AnalysisEnvelope(tuple(restored_cells), None), "brief")
+    retained = 0
     for restored in restored_cells:
         summary = cast(Any, restored.summary)
         if summary.point is not None:
-            assert repr(summary.point) in brief
+            retained += 1
+            scale = 100 if summary.value_scale == "relative" else 1
+            assert f"{summary.point * scale:.6g}" in brief
+    assert brief.count("status=available") == retained
     full = render(AnalysisEnvelope(tuple(restored_cells), None), "full")
     assert "recommendation=" in full
     assert "gate=" in full

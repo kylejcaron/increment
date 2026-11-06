@@ -1173,6 +1173,42 @@ def partial_metadata(metadata, rows, reason):
     return metadata.model_copy(update={"partial": partial, "partial_reason": reasons})
 
 
+def rekeyed_metadata(metadata: ReadoutMetadata, keys: Mapping[CellKey, CellKey]) -> ReadoutMetadata:
+    """``metadata`` with each cell key in ``keys`` replaced by its value, in canonical order."""
+
+    def cells(items: tuple[CellKey, ...]) -> tuple[CellKey, ...]:
+        return tuple(sorted({keys.get(cell, cell) for cell in items}, key=cell_order))
+
+    scope = metadata.scope
+    by_source = {
+        source_id: source.model_copy(
+            update={"cells": cells(source.cells), "decision_cells": cells(source.decision_cells)}
+        )
+        for source_id, source in scope.by_source.items()
+    }
+    records = sorted(
+        (
+            record.model_copy(update={"cell": keys.get(record.cell, record.cell)})
+            for record in metadata.cells
+        ),
+        key=_record_order,
+    )
+    return ReadoutMetadata.model_validate(
+        metadata.model_copy(
+            update={
+                "scope": scope.model_copy(
+                    update={
+                        "cells": cells(scope.cells),
+                        "decision_cells": cells(scope.decision_cells),
+                        "by_source": by_source,
+                    }
+                ),
+                "cells": tuple(records),
+            }
+        )
+    )
+
+
 def _merge_source_scopes(left, right, ids):
     sources: dict[str, SourceReadoutScope] = {}
     source_descriptors = {}
