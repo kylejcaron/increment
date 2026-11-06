@@ -179,13 +179,6 @@ def iter_cells() -> Iterator[Cell]:
         yield Cell(metric, view, option, boundary, missing)
 
 
-# Scalar CUPED cells the PR scope runs whatever the covering array selects. The covering array
-# reaches ratio CUPED on the daily axis only through a refusing missing policy, so this cell is
-# the PR-tier comparison of its daily values and lift across definitions, the unit-day artifact
-# and (values) the unit panel.
-PR_CUPED_CELLS = (Cell("ratio", "daily", "cuped", "utc", "error"),)
-
-
 ASYMPTOTIC_RETENTION = "asymptotic_mean"
 
 
@@ -1379,55 +1372,42 @@ def preflight_hazards() -> tuple[PreflightHazard, ...]:
     )
 
 
-def _disposition_signature(disposition: Disposition) -> tuple[object, ...]:
-    verdicts = tuple(
-        (method, ingress, verdict.status)
-        for method, leg in disposition.legs.items()
-        for ingress, verdict in leg.items()
+def _cheapest_cells_per_capability(cells: tuple[Cell, ...], test_name: str) -> tuple[Cell, ...]:
+    durations = json.loads(
+        (Path(__file__).resolve().parents[2] / ".github/slow-test-durations.json").read_text()
     )
-    refusal_codes = tuple(
-        (method, ingress, verdict.outcome.code)
-        for method, leg in disposition.legs.items()
-        for ingress, verdict in leg.items()
-        if isinstance(verdict.outcome, Refuses)
-    )
-    waived_ingresses = frozenset(
-        ingress
-        for leg in disposition.legs.values()
-        for ingress, verdict in leg.items()
-        if not isinstance(verdict.outcome, Runs)
-    )
-    return verdicts, refusal_codes, waived_ingresses
+    candidates: dict[tuple[str, str, str], list[Cell]] = {}
+    for cell in cells:
+        for method in methods(cell):
+            candidates.setdefault((cell.metric, method, cell.option), []).append(cell)
+
+    def duration(cell: Cell) -> float:
+        nodeid = f"tests/test_parity_matrix.py::{test_name}[{cell.id}]"
+        return durations.get(nodeid, 0.0)
+
+    selected = {min(group, key=duration) for group in candidates.values()}
+    return tuple(cell for cell in cells if cell in selected)
 
 
 @cache
 def pr_matrix_cells() -> tuple[Cell, ...]:
-    """The primary cells every pull request runs: a strength-3 covering array, one sentinel
-    per disposition and the pinned CUPED cells. The other cells run in the exhaustive gate."""
-    from tests.parity_harness.covering import _covering_subset
+    """Cheapest cell per (metric, method, design) capability, plus the PR refusal hazards.
 
+    Missing duration weights are unmeasured fast cells and rank at zero. Ties use matrix
+    iteration order. Other cells remain in the exhaustive matrix.
+    """
     cells = tuple(iter_cells())
-    covered = set(
-        _covering_subset(
-            tuple(
-                (cell.metric, cell.view, cell.option, cell.day_boundary, cell.missing)
-                for cell in cells
-            ),
-            strength=3,
-        )
-    )
-    sentinels: dict[tuple[object, ...], Cell] = {}
-    for cell in cells:
-        sentinels.setdefault(_disposition_signature(classify(cell)), cell)
-    selected = covered
-    selected.update(
-        (cell.metric, cell.view, cell.option, cell.day_boundary, cell.missing)
-        for cell in (*sentinels.values(), *PR_CUPED_CELLS)
-    )
-    return tuple(
-        cell
-        for cell in cells
-        if (cell.metric, cell.view, cell.option, cell.day_boundary, cell.missing) in selected
+    selected = set(_cheapest_cells_per_capability(cells, "test_cell"))
+    hazard_cell_ids = {hazard.cell.rsplit("-", 1)[0] for hazard in preflight_hazards()}
+    selected.update(cell for cell in cells if cell.id in hazard_cell_ids)
+    return tuple(cell for cell in cells if cell in selected)
+
+
+@cache
+def pr_asymptotic_retention_cells() -> tuple[Cell, ...]:
+    """Cheapest asymptotic-retention cell per metric/method code path."""
+    return _cheapest_cells_per_capability(
+        tuple(iter_asymptotic_retention_cells()), "test_asymptotic_retention_cell"
     )
 
 
