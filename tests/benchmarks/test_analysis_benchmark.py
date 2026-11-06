@@ -21,7 +21,7 @@ from increment import (
 )
 from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.semantics.design import Randomized
-from tests.analysis_factory import view_readout
+from tests.analysis_factory import non_guardrail_metrics, view_readout
 
 # Generated frames and seeded DuckDB event logs are prepared before benchmarking.
 _CASES = (
@@ -148,7 +148,13 @@ def _readout(experiment: Any, resolver: Any, operation: str) -> Callable[[], obj
         case "all" | "run":
             return lambda: view_readout(experiment, resolver)
         case "breakout" | "breakout_lift":
-            return lambda: view_readout(experiment, resolver, View(view="breakout", grain="total"))
+            # A breakout cannot test a guardrail's margin, so it reads the other metrics.
+            return lambda: view_readout(
+                experiment,
+                resolver,
+                View(view="breakout", grain="total"),
+                metrics=non_guardrail_metrics(experiment, resolver),
+            )
         case "daily" | "daily_conversion" | "daily_mean":
             metric = {
                 "daily_conversion": ["purchase_rate"],
