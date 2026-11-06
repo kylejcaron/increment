@@ -124,10 +124,6 @@ fact_sources:
     entities: [user_id]
     facts:
       - name: page_view
-    properties:
-      - name: used_feature
-        column: used_feature
-        dtype: int
   - name: convs
     sql: 'SELECT * FROM {convs_tbl}'
     timestamp_column: ts
