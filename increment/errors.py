@@ -1060,6 +1060,7 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "query.session.warehouse_artifact.write_relation_sealed": "query.session.warehouse_artifact.publication_handle_sealed",
         "query.source.artifact_facade.verification_lazy_digest": "query.artifact_reader.artifact_moment.verification_lazy_digest",
         "readout.estimate_ate_every": "estimation.adjust.estimate_ate_every",
+        "readout.estimate_lift_every": None,
         "readout.inference.encouragement_run": None,
         "readout.unknown_estimand_supported": "estimation.encouragement.unknown_estimand_supported",
         "readout.value_scale_encouragement_absolute": "readout.encouragement.value_scale",

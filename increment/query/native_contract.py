@@ -141,7 +141,6 @@ class NativeCoreSource(_BuiltinMomentSource, Protocol):
     def summary_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
     def build_panel_for_metric(
         self,
-        exposures: Table,
         metric: Metric,
         *,
         population: Literal["assigned", "triggered"] = "assigned",

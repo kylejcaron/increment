@@ -13,13 +13,14 @@ import warnings
 from typing import Any, cast
 
 import ibis
+import narwhals as nw
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
 from narwhals.typing import IntoDataFrame
 
-from increment import View, from_frame, from_unit_day_artifact
+from increment import View, from_frame, from_unit_day_artifact, run
 from increment.artifacts import publish_unit_day_artifact
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import (
@@ -3095,20 +3096,70 @@ def test_one_unit_extra_arm_is_an_unavailable_row():
         assert stray.alternative == "greater"
 
 
-def test_one_unit_control_refuses_every_cell():
+def test_one_unit_control_leaves_every_cell_unavailable():
+    code = "estimation.armstats.arm_stats.least_compute_metric"
     frame = _arm_frame(
         {"control": [3.0], "treatment": [2.0, 3.0, 4.0, 5.0], "variant_b": [1.0, 2.0, 3.0, 4.0]}
     )
-    with pytest.warns(IncrementWarning), pytest.raises(UnsupportedRequestError) as raised:
-        _summary_rows(frame, {"x": "mean"})
-    assert raised.value.code == "readout.estimate_lift_every"
-    failures = cast(list[dict[str, Any]], raised.value.context["failures"])
-    code = "estimation.armstats.arm_stats.least_compute_metric"
-    assert sorted((f["metric"], f["group_id"], f["code"]) for f in failures) == [
-        ("x", "treatment", code),
-        ("x", "variant_b", code),
-    ]
-    assert [f["context"]["group_id"] for f in failures] == ["control", "control"]
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"x": "mean"},
+    )
+    with pytest.warns(IncrementWarning):
+        result = run(experiment, reader)
+    readout = result.readout()
+    assert isinstance(readout, LiftEstimates)
+    rows = _lift_rows(readout)
+    expected = [("x", "treatment", code), ("x", "variant_b", code)]
+    assert sorted((row.metric, row.group_id, row.failure_code) for row in rows) == expected
+    for row in rows:
+        assert row.failure_context is not None
+        assert row.failure_context["group_id"] == "control"
+        assert row.stat_sig() is None
+    projected = nw.from_native(result.to_frame(), eager_only=True)
+    assert sorted(projected.select("metric", "group_id", "failure_code").rows()) == expected
+
+
+def test_mixed_degenerate_cells_each_keep_their_reason():
+    """A one-unit arm, a declared arm with no units and a constant metric each leave only
+    their own cells unavailable; the healthy cell is still estimated."""
+    one_unit = "estimation.armstats.arm_stats.least_compute_metric"
+    frame = _arm_frame(
+        {"control": [1.0, 2.0, 3.0, 4.0], "treatment": [2.0, 3.0, 4.0, 5.0], "qa": [3.0]}
+    ).assign(flat=1.0)
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics={"x": "mean", "flat": "mean"},
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.4, "treatment": 0.4, "qa": 0.1, "empty": 0.1},
+        ),
+    )
+    with pytest.warns(IncrementWarning):
+        rows = {
+            (row.metric, row.group_id): row for row in _lift_rows(view_readout(experiment, reader))
+        }
+    assert rows["x", "treatment"].failure_code is None
+    assert rows["x", "treatment"].require_lift().value == pytest.approx(0.4)
+    reasons = {
+        cell: (row.failure_code, (row.failure_context or {}).get("reason"))
+        for cell, row in rows.items()
+        if cell != ("x", "treatment")
+    }
+    assert reasons == {
+        ("x", "qa"): (one_unit, None),
+        ("x", "empty"): ("readout.cell.missing_arm", None),
+        ("flat", "treatment"): ("estimation.engine.lift_guard", "zero_variance"),
+        ("flat", "qa"): (one_unit, None),
+        ("flat", "empty"): ("readout.cell.missing_arm", None),
+    }
 
 
 def test_ratio_row_reports_arm_counts_and_ratios():

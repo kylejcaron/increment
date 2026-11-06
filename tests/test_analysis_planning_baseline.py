@@ -24,7 +24,7 @@ from increment import (
     run,
 )
 from increment.artifacts import SourceSnapshotEvidence
-from increment.errors import CapabilityError, CodedError, IncrementWarning, UnsupportedRequestError
+from increment.errors import CapabilityError, CodedError, IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.kernel.contracts import View
 from increment.power import Baseline
@@ -399,7 +399,7 @@ class TestPlanningBaselineOnDataframeRoutes:
         ],
         ids=["mean", "ratio"],
     )
-    def test_degenerate_covariate_preserves_cuped_code_in_all_failed_refusal(self, metric):
+    def test_degenerate_covariate_preserves_cuped_code_on_its_unavailable_row(self, metric):
         """Planning and runtime both retain the specific CUPED guard code."""
         frame = _unit_summary_frame()
         frame["revenue_den"] = [1.0 + (i % 3) for i in range(len(frame))]
@@ -422,21 +422,15 @@ class TestPlanningBaselineOnDataframeRoutes:
         with pytest.raises(CodedError) as planned:
             planning_baseline(experiment, resolver, "revenue")
         with pytest.warns(IncrementWarning) as runtime_warnings:
-            with pytest.raises(UnsupportedRequestError) as runtime:
-                run(experiment, resolver)
+            (row,) = run(experiment, resolver).readout()
         warning = runtime_warnings[0].message
         assert isinstance(warning, IncrementWarning)
         assert warning.code == "readouts.run.cell_refused"
-        failures = runtime.value.context["failures"]
-        assert isinstance(failures, tuple)
-        assert len(failures) == 1
-        failure = failures[0]
-        assert isinstance(failure, Mapping)
-        failure_context = failure.get("context")
-        assert isinstance(failure_context, Mapping)
-        assert failure.get("code") == "estimation.cuped.covariate_zero_variance"
-        assert failure_context.get("weighted_var_x") == 0.0
-        assert planned.value.code == failure.get("code")
+        assert isinstance(row, LiftEstimate)
+        assert row.failure_code == "estimation.cuped.covariate_zero_variance"
+        assert row.failure_context is not None
+        assert row.failure_context["weighted_var_x"] == 0.0
+        assert planned.value.code == row.failure_code
 
     @pytest.mark.parametrize("metric_type", ["mean", "ratio"])
     def test_cuped_reduction_matches_the_runtime_cuped_standard_error(self, metric_type):

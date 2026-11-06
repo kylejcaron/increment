@@ -64,7 +64,6 @@ experiment_id: Stable identifier for the analyzed experiment.
 experiment_name: Name of the experiment definition.
 exploratory_metrics: Metrics included in an exploratory family.
 exposure_date: Column recording exposure timing.
-exposures: Exposure records or values.
 extensions: Optional artifact evidence extensions.
 factor: Name of a declared adjustment factor.
 finalized: Whether the sequential checkpoint is final.

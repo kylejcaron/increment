@@ -2575,7 +2575,7 @@ def _conversion_family_analysis(arms, t1_successes):
 @pytest.mark.parametrize("t1_successes", [4800, 3800], ids=["no_selection", "fcr_reinterval"])
 def test_observational_conversion_family_routes_from_the_evidence_it_estimates(t1_successes):
     """A late arm between reads must not enter the estimates of a family sized without it: the
-    BH family and every returned row (including an FCR reinterval) come from the one moments
+    BH family and every estimated row (including an FCR reinterval) come from the one moments
     read each metric was sized from, and every member is routed at its own level by the counts
     of that read."""
     from increment.estimation.conversion_route import dense_level
@@ -2584,9 +2584,13 @@ def test_observational_conversion_family_routes_from_the_evidence_it_estimates(t
     late = _conversion_family_analysis(["control", "T1", "T2"], t1_successes)
     (experiment, resolver), source = _drifting_analysis(early, late)
     try:
-        rows = list(
-            lift_rows(view_readout(experiment, resolver, decision_method=Method(name="unadjusted")))
-        )
+        rows = [
+            row
+            for row in lift_rows(
+                view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
+            )
+            if row.failure_code is None
+        ]
     finally:
         for _, family_resolver in (early, late):
             family_resolver.close()
@@ -2734,9 +2738,13 @@ def test_observational_adjusted_family_estimates_only_the_inventory_it_selected_
     late = _mean_family_analysis(["control", "T1", "T2"])
     (experiment, resolver), source = _drifting_analysis(early, late)
     try:
-        rows = list(
-            lift_rows(view_readout(experiment, resolver, decision_method=Method(name=method)))
-        )
+        rows = [
+            row
+            for row in lift_rows(
+                view_readout(experiment, resolver, decision_method=Method(name=method))
+            )
+            if row.failure_code is None
+        ]
     finally:
         for _, family_resolver in (early, late):
             family_resolver.close()

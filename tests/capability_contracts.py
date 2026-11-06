@@ -276,7 +276,7 @@ CUPED_LINEAR_INTERACTIONS = (
                     "source_limited",
                     "facade.analysis.trigger_unsupported",
                     "Dataframe ingresses do not retain the source trigger chain.",
-                    "read",
+                    "construction",
                     "tests/test_cuped_linear_acceptance.py::test_cuped_linear_interactions_preserve_ingress_specific_refusals",
                 ),
             )

@@ -34,7 +34,6 @@ from increment.readouts._evidence import (
 )
 from increment.readouts._metric_rows import load_metric_evidence
 from increment.readouts._observational import _estimate_observational
-from increment.readouts._passes import _raise_if_all_lift_cells_refused
 from increment.readouts._randomized import (
     _estimate_randomized_non_secondary,
     _estimate_randomized_secondary_family,
@@ -630,6 +629,7 @@ def _run_prepared(  # noqa: PLR0915
     if design.mechanism == "observational":
         from increment.readouts._design_scope import (
             observational_expected,
+            resolve_roster,
             scope_design_results,
         )
 
@@ -643,6 +643,10 @@ def _run_prepared(  # noqa: PLR0915
                 set().union(*(evidence.arms(metric) for metric in selected)),
                 design.control_group,
             )
+        observed_by_metric = {m.name: set(evidence.arms(m)) for m in selected}
+        # The scope's roster, resolved before estimation so a secondary family is sized by
+        # every arm the scope lists, not only the arms each metric observed.
+        roster = resolve_roster(src, design, population, observed_by_metric)
         obs_computations: list[Any] = []
         rows = _estimate_observational(
             src,
@@ -654,6 +658,7 @@ def _run_prepared(  # noqa: PLR0915
             call_prior=call_prior,
             evidence=evidence,
             unit_frame_memo=unit_frame_memo,
+            arms=roster.arms,
             computations=obs_computations,
         )
         return scope_design_results(
@@ -668,8 +673,8 @@ def _run_prepared(  # noqa: PLR0915
                 selected, configs, design, plan, value_scale=value_scale, arms=arms
             ),
             evidence_rows=evidence.rows,
-            observed_by_metric={m.name: set(evidence.arms(m)) for m in selected},
-            use_counts=False,
+            observed_by_metric=observed_by_metric,
+            base_roster=roster,
             request_extra={
                 "metrics": [
                     m.model_dump(mode="json") for m in sorted(selected, key=lambda m: m.name)
@@ -694,7 +699,7 @@ def _run_prepared(  # noqa: PLR0915
     observed_by_metric: dict[str, set[str]] = {}
     evidence_by_metric = {}
     computations: list[Any] = []
-    out, refused_cells, secondary_entries, computations = _estimate_randomized_non_secondary(
+    out, secondary_entries, computations = _estimate_randomized_non_secondary(
         src,
         selected,
         configs,
@@ -710,7 +715,7 @@ def _run_prepared(  # noqa: PLR0915
         evidence_by_metric=evidence_by_metric,
         scope_active=scope_active,
     )
-    secondary_out, secondary_refused = _estimate_randomized_secondary_family(
+    secondary_out = _estimate_randomized_secondary_family(
         src,
         secondary_entries,
         design,
@@ -726,11 +731,8 @@ def _run_prepared(  # noqa: PLR0915
         scope_active=scope_active,
     )
     out.extend(secondary_out)
-    refused_cells.extend(secondary_refused)
     if selected:
         _refuse_if_no_treatment_arm(observed_arms, design.control_group)
-    if refused_cells and not any(row.failure_code is None for row in out):
-        _raise_if_all_lift_cells_refused(refused_cells, computations)
     order = {metric.name: i for i, metric in enumerate(selected)}
     out.sort(key=lambda row: order[row.metric])
     identity_source = src if snapshot_source is None else snapshot_source

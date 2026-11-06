@@ -1072,8 +1072,6 @@ def test_zero_denominator_arm_is_withheld_like_the_unadjusted_path() -> None:
 
 
 def test_zero_denominator_control_fails_every_linear_contrast_without_abort() -> None:
-    from increment.errors import CodedError
-
     linear = _ratio_analysis(
         _ratio_rows_with_dead_arm(dead_control=True),
         Method.cuped_multicovariate(
@@ -1084,16 +1082,14 @@ def test_zero_denominator_control_fails_every_linear_contrast_without_abort() ->
         _ratio_rows_with_dead_arm(dead_control=True), Method(name="unadjusted")
     )
     for analysis in (linear, unadjusted):
-        with pytest.raises(CodedError) as raised, pytest.warns():
-            view_readout(*analysis)
-        assert raised.value.code == "readout.estimate_lift_every"
+        with pytest.warns():
+            rows = [row for row in view_readout(*analysis) if isinstance(row, LiftEstimate)]
+        assert {row.group_id for row in rows} == {"dead", "treatment"}
+        assert {row.failure_code for row in rows} == {
+            "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+        }
         if analysis is linear:
-            failures = cast(list[dict[str, Any]], raised.value.context["failures"])
-            assert {failure["group_id"] for failure in failures} == {"dead", "treatment"}
-            assert {failure["context"]["group_id"] for failure in failures} == {"control"}
-            assert {failure["code"] for failure in failures} == {
-                "estimation.variance.ratio_moments_nonpositive_denominator_mean"
-            }
+            assert {(row.failure_context or {}).get("group_id") for row in rows} == {"control"}
 
 
 @pytest.mark.parametrize(
@@ -1101,11 +1097,9 @@ def test_zero_denominator_control_fails_every_linear_contrast_without_abort() ->
     [("treatment",), ("treatment", "dead")],
     ids=["single_treatment", "every_non_control_arm"],
 )
-def test_every_withheld_contrast_arm_refuses_exactly_like_unadjusted(
+def test_every_withheld_contrast_arm_is_unavailable_exactly_like_unadjusted(
     zero_groups: tuple[str, ...],
 ) -> None:
-    from increment.errors import CodedError
-
     groups = ("control", *zero_groups)
     linear = _ratio_analysis(
         _ratio_rows_with_dead_arm(groups=groups, zero_groups=zero_groups),
@@ -1117,18 +1111,14 @@ def test_every_withheld_contrast_arm_refuses_exactly_like_unadjusted(
         _ratio_rows_with_dead_arm(groups=groups, zero_groups=zero_groups),
         Method(name="unadjusted"),
     )
-    outcomes: dict[str, list[dict[str, Any]]] = {}
-    for label, analysis in (("linear", linear), ("unadjusted", unadjusted)):
-        with pytest.raises(CodedError) as raised, pytest.warns():
-            view_readout(*analysis)
-        assert raised.value.code == "readout.estimate_lift_every"
-        outcomes[label] = cast(list[dict[str, Any]], raised.value.context["failures"])
-    assert {failure["group_id"] for failure in outcomes["linear"]} == set(zero_groups)
-    for label in ("linear", "unadjusted"):
-        assert {failure["code"] for failure in outcomes[label]} == {
+    for analysis in (linear, unadjusted):
+        with pytest.warns():
+            rows = [row for row in view_readout(*analysis) if isinstance(row, LiftEstimate)]
+        assert {row.group_id for row in rows} == set(zero_groups)
+        assert {row.failure_code for row in rows} == {
             "estimation.variance.ratio_moments_nonpositive_denominator_mean"
         }
-        assert {failure["context"]["group_id"] for failure in outcomes[label]} == set(zero_groups)
+        assert {(row.failure_context or {}).get("group_id") for row in rows} == set(zero_groups)
     with pytest.warns():
         linear_cells = {
             (row.dimension_value, row.group_id): row.excluded
@@ -1152,8 +1142,6 @@ def _dead_arm_rows_with_unsupported_sibling() -> list[dict[str, Any]]:
 
 
 def test_withheld_arm_keeps_its_refusal_when_the_sibling_fit_fails() -> None:
-    from increment.errors import CodedError
-
     denominator_code = "estimation.variance.ratio_moments_nonpositive_denominator_mean"
     expected = {
         "dead": (denominator_code, {"metric": "rpo", "group_id": "dead", "d_bar": 0.0}),
@@ -1163,23 +1151,23 @@ def test_withheld_arm_keeps_its_refusal_when_the_sibling_fit_fails() -> None:
         name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
     )
 
-    # Every decision cell refused: the readout refuses as a whole, carrying each arm's own reason.
+    # Every decision cell refused: each arm is an unavailable row carrying its own reason.
     decision_experiment, decision_resolver = _ratio_analysis(
         _dead_arm_rows_with_unsupported_sibling(), linear
     )
-    with pytest.raises(CodedError) as raised, pytest.warns():
-        view_readout(decision_experiment, decision_resolver)
-    assert raised.value.code == "readout.estimate_lift_every"
-    failures = {
-        failure["group_id"]: failure
-        for failure in cast(list[dict[str, Any]], raised.value.context["failures"])
-    }
-    assert set(failures) == set(expected)
+    with pytest.warns():
+        decision_rows = {
+            row.group_id: row
+            for row in view_readout(decision_experiment, decision_resolver)
+            if isinstance(row, LiftEstimate)
+        }
+    assert set(decision_rows) == set(expected)
     for arm, (code, context) in expected.items():
-        assert failures[arm]["code"] == code
+        assert decision_rows[arm].failure_code == code
         if context is not None:
-            assert dict(failures[arm]["context"]) == context
-    assert failures["treatment"]["context"]["level"] == "rare"
+            assert decision_rows[arm].failure_context == context
+    treatment_context = decision_rows["treatment"].failure_context
+    assert treatment_context is not None and treatment_context["level"] == "rare"
 
     # A valid decision alongside: the linear sensitivity rows each keep their own refusal.
     sensitivity_experiment, sensitivity_resolver = _ratio_analysis(

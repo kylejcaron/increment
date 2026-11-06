@@ -2013,14 +2013,12 @@ _merged_declarations.update(
         ),
         "edge-zero-variance-arm": ParityDeclaration(
             attempted=("from_unit_summary",),
-            waive=_EDGE_SOURCE_WAIVERS,
-            refusals=(("from_unit_summary", "readout.estimate_lift_every"),),
+            waive=_EDGE_NON_TARGET_WAIVERS,
             warnings=(("from_unit_summary", ("readouts.run.cell_refused",)),),
         ),
         "edge-near-zero-ratio-denominator": ParityDeclaration(
             attempted=("from_unit_summary",),
-            waive=_EDGE_SOURCE_WAIVERS,
-            refusals=(("from_unit_summary", "readout.estimate_lift_every"),),
+            waive=_EDGE_NON_TARGET_WAIVERS,
             warnings=(("from_unit_summary", ("readouts.run.cell_refused",)),),
         ),
         "edge-near-zero-positive-ratio-denominator": ParityDeclaration(

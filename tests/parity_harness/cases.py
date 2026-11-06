@@ -7539,10 +7539,14 @@ def _exploratory_metrics_case() -> ParityCase:
         for name, reader in _EXPLORATORY_READS.items():
             with pytest.raises(CodedError) as caught:
                 reader(bound, ["purchase_rate"])
-            # A contrast source refuses every non-whole-window view before its options.
+            # A contrast source refuses every non-whole-window view before its options, and
+            # a breakout view on this experiment, which declares no breakout, refuses before
+            # its options too.
             expected_code = (
                 "facade.analysis.contrast_unavailable"
                 if switchback and name != "run"
+                else "evidence.breakout_unavailable"
+                if name == "run_breakout"
                 else _EXPLORATORY_SOURCE_LIMITED
             )
             assert caught.value.code == expected_code
@@ -9998,12 +10002,16 @@ def _edge_cases() -> tuple[ParityCase, ...]:
             id="edge-empty-arm", rows=empty_arm, metric=MetricSpec(name="revenue")
         ),
         _edge_unit_summary_case(
-            id="edge-zero-variance-arm", rows=zero_variance, metric=MetricSpec(name="revenue")
+            id="edge-zero-variance-arm",
+            rows=zero_variance,
+            metric=MetricSpec(name="revenue"),
+            refusal_only=False,
         ),
         _edge_unit_summary_case(
             id="edge-near-zero-ratio-denominator",
             rows=ratio_rows,
             metric=MetricSpec(name="r", type="ratio", numerator="revenue", denominator="sessions"),
+            refusal_only=False,
         ),
         _edge_unit_summary_case(
             id="edge-near-zero-positive-ratio-denominator",

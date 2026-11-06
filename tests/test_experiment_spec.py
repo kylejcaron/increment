@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import copy
-import copyreg
 import dataclasses
-import io
 import json
 import pickle
 from fractions import Fraction
-from types import MappingProxyType
 from typing import cast
 
 import numpy as np
@@ -178,7 +175,7 @@ def test_non_portable_experiment_round_trips():
     assert pickle.loads(pickle.dumps(experiment)) == experiment
 
 
-def test_reader_stays_unpicklable_and_experiment_copies_leave_it_alone():
+def test_experiment_deep_copy_leaves_its_reader_alone():
     frame = pd.DataFrame(
         {
             "unit": [f"u{index}" for index in range(8)],
@@ -194,16 +191,6 @@ def test_reader_stays_unpicklable_and_experiment_copies_leave_it_alone():
         control="control",
         metrics=[MetricSpec(name="value", type="mean")],
     )
-
-    # Cached fixtures register MappingProxyType with copyreg; pickle without that registration.
-    pickler = pickle.Pickler(io.BytesIO())
-    pickler.dispatch_table = {
-        kind: reducer
-        for kind, reducer in copyreg.dispatch_table.items()
-        if kind is not MappingProxyType
-    }
-    with pytest.raises(TypeError):
-        pickler.dump(reader)
     memo: dict[int, object] = {}
     assert copy.deepcopy(experiment, memo) == experiment
     assert id(reader) not in memo

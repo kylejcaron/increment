@@ -1,4 +1,4 @@
-# Traced on commit: 92320fa01a3db2a0af75476277850d91f6642f7c
+# Traced on commit: e3b894e8a4d069fb199e8dd63d8cf0bd661477e8
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -48,6 +48,7 @@ increment._source_workflows
 increment._study
 increment._trigger_integrity
 increment._unit_cycle
+increment._warehouse_namespace
 increment._window
 increment._winsor_errors
 increment.artifacts
@@ -114,6 +115,7 @@ increment.estimation.priors
 increment.estimation.quantile
 increment.estimation.readout_types
 increment.estimation.results
+increment.estimation.risk_difference
 increment.estimation.sequential
 increment.estimation.sequential_result
 increment.estimation.variance

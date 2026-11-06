@@ -372,8 +372,8 @@ class TestRunBreakoutSegmentIsolation:
         assert thin_cell.p_value() == thin.p_value()
 
     def test_excluded_and_low_reliability_cells(self):
-        """An excluded cell has no evidence to decide on; a low-reliability cell keeps its
-        statistic but its interval verdict is withheld as a non-rejection."""
+        """An excluded cell has no evidence to decide on; a low-reliability cell decides from its
+        own interval, so its verdict agrees with its p-value."""
         excluded = BreakoutEstimate(
             metric="rev",
             group_id="treatment",
@@ -396,7 +396,7 @@ class TestRunBreakoutSegmentIsolation:
             reliability_floor=50,
         )
         assert thin.low_reliability is True
-        assert thin.stat_sig() is False
+        assert thin.stat_sig() is True
         thin_p = thin.p_value()
         assert thin_p is not None and thin_p < 0.05
 
@@ -832,45 +832,88 @@ class TestRunBreakoutBonferroniCorrection:
         assert isinstance(result, BreakoutEstimates)
         assert len(result.to_frame()) == 0
 
-    def test_bonferroni_k_reflects_pre_skip_segment_count(self):
-        """5 declared segments, 1 with no control arm (skipped): K for Bonferroni must still be 5
-        (pre-skip), not 4 (post-skip survivors) - shrinking K after the skip loop
-        under-corrects."""
-        rows = []
-        for i, country in enumerate(["US", "CA", "GB", "DE"]):
-            rows.append(
-                _make_arm_row(n=500, mean=10.0 + i, var=4.0, country=country, group_id="control")
+    def test_bonferroni_k_counts_count_estimable_cells(self):
+        """Bonferroni divides alpha, per metric, by the (treatment arm, segment) cells its
+        counts can estimate: a one-unit segment T is an unavailable row outside the family,
+        and m2, one unit per arm in C too, is divided by one fewer."""
+        rows = [
+            _make_arm_row(
+                n=1 if segment == "T" or (segment, metric) == ("C", "m2") else 200,
+                mean=10.0 if arm == "control" else 11.0,
+                var=4.0,
+                country=segment,
+                metric=metric,
+                group_id=arm,
             )
-            rows.append(
-                _make_arm_row(n=500, mean=11.0 + i, var=4.0, country=country, group_id="treatment")
-            )
-        # MX: treatment only, no control row - skipped, but still counts
-        # toward K (5 declared segments, not 4 surviving ones).
-        rows.append(_make_arm_row(n=500, mean=12.0, var=4.0, country="MX", group_id="treatment"))
-
-        with pytest.warns(IncrementWarning) as rec:
+            for segment in ("A", "B", "C", "T")
+            for metric in ("m1", "m2")
+            for arm in ("control", "treatment")
+        ]
+        with pytest.warns(IncrementWarning):
             result = run_breakout(
                 summary=rows,
-                metrics=[_mean_metric()],
+                metrics=[_mean_metric("m1"), _mean_metric("m2")],
                 control_group="control",
                 dimension="country",
                 correction="bonferroni",
             )
-        assert "breakout.estimates.slice_no_control_arm" in warning_codes(rec)
 
-        assert {r.dimension_value for r in result} == {"US", "CA", "GB", "DE", "MX"}
-        by_segment = {r.dimension_value: r for r in result}
-        assert by_segment["MX"].excluded == "no_control_arm"
-        for value in ("US", "CA", "GB", "DE"):
-            assert by_segment[value].excluded is None
-            lift = by_segment[value].lift
-            assert lift is not None
-            assert lift.level == pytest.approx(1 - 0.05 / 5), (
-                f"segment {value!r}: K must be 5 (the pre-skip segment "
-                "count, MX included), not 4 -- a reordering regression "
-                "that computed K after the skip loop would shrink this "
-                "to 1 - 0.05/4"
+        cells = {(r.metric, r.dimension_value): r for r in result}
+        excluded = {key for key, r in cells.items() if r.excluded is not None}
+        assert excluded == {("m1", "T"), ("m2", "T"), ("m2", "C")}
+        assert all(cells[key].excluded == "few_units" for key in excluded)
+        levels = {key: r.require_lift().level for key, r in cells.items() if key not in excluded}
+        assert levels == {
+            ("m1", "A"): pytest.approx(1 - 0.05 / 3),
+            ("m1", "B"): pytest.approx(1 - 0.05 / 3),
+            ("m1", "C"): pytest.approx(1 - 0.05 / 3),
+            ("m2", "A"): pytest.approx(1 - 0.05 / 2),
+            ("m2", "B"): pytest.approx(1 - 0.05 / 2),
+        }
+        members = {key for key, r in cells.items() if r.multiplicity_status == "exploratory_family"}
+        assert members == set(levels)
+
+    def test_a_sensitivity_method_leaves_the_decision_k_unchanged(self):
+        """k follows the decision method's count rule: a scalar-CUPED conversion decision
+        excludes the one-unit cell (B, t2), so its three estimable cells are read at
+        1 - 0.05/3, with the same intervals, whether or not an unadjusted sensitivity
+        method that admits that cell is also requested."""
+        rows = []
+        for segment in ("A", "B"):
+            for arm in ("control", "t1", "t2"):
+                n = 1 if (segment, arm) == ("B", "t2") else 1000
+                row = _conversion_arm_row(
+                    n, max(n // 10, 1), country=segment, group_id=arm, with_covariate=True
+                )
+                row["cx2"] = float(n)
+                rows.append(row)
+        cuped = Method(name="cuped", variance_reduction="cuped")
+        decisions = []
+        for methods in ([cuped], [cuped, Method(name="unadjusted")]):
+            with pytest.warns(IncrementWarning):
+                result = run_breakout(
+                    rows,
+                    [_conversion_metric()],
+                    control_group="control",
+                    dimension="country",
+                    correction="bonferroni",
+                    methods=methods,
+                    method_roles={
+                        m.name: "decision" if m is cuped else "sensitivity" for m in methods
+                    },
+                )
+            decisions.append(
+                {(r.dimension_value, r.group_id): r for r in result if r.method == "cuped"}
             )
+        alone, beside = decisions
+        assert alone.pop(("B", "t2")).excluded == beside.pop(("B", "t2")).excluded == "few_units"
+        assert {key: r.require_lift().level for key, r in alone.items()} == dict.fromkeys(
+            [("A", "t1"), ("A", "t2"), ("B", "t1")], pytest.approx(1 - 0.05 / 3)
+        )
+        assert {key: (r.require_lift().lb, r.require_lift().ub) for key, r in beside.items()} == {
+            key: pytest.approx((r.require_lift().lb, r.require_lift().ub))
+            for key, r in alone.items()
+        }
 
     def test_invalid_correction_value_rejected(self):
         """A `correction` value outside {"none", "bonferroni"} raises
@@ -2244,6 +2287,23 @@ class TestBreakoutEstimate:
         assert round_tripped.reference_kind == "t"
         assert round_tripped.reference_df == pytest.approx(row.reference_df)
 
+    def test_binomial_segment_keeps_its_score_reference_through_frame_and_round_trip(self):
+        rows = [
+            _conversion_arm_row(1000, 10, country="US", group_id="control"),
+            _conversion_arm_row(1000, 4, country="US", group_id="treatment"),
+        ]
+        result = run_breakout(
+            rows, [_conversion_metric()], control_group="control", dimension="country"
+        )
+        (row,) = result
+        assert row.reference_kind == "binomial"
+        assert row.abs_reference_kind == "score"
+        frame = cast(pd.DataFrame, result.to_frame(backend="pandas"))
+        assert frame["abs_reference_kind"].tolist() == ["score"]
+        round_tripped = BreakoutEstimate.model_validate_json(row.model_dump_json())
+        assert round_tripped.abs_reference_kind == "score"
+        assert (round_tripped.abs_lb, round_tripped.abs_ub) == (row.abs_lb, row.abs_ub)
+
 
 class TestBreakoutEstimateReferenceValidation:
     @staticmethod
@@ -2484,24 +2544,6 @@ class TestRunBreakoutReliabilityFloor:
         by_segment = {r.dimension_value: r for r in result}
         assert by_segment["control_thin"].low_reliability is True
         assert by_segment["treatment_thin"].low_reliability is True
-
-    def test_low_reliability_suppresses_stat_sig_in_readout(self):
-        """tables.py's stat_sig is forced False for a flagged row even when the interval would
-        otherwise exclude the null - a tight, significant-looking n=20 interval must not render
-        as stat_sig."""
-        pytest.importorskip("coeftable")
-        from increment.tables import estimates_to_readout
-
-        result = run_breakout(
-            summary=self._mixed_n_summary(small_n=20, large_n=200),
-            metrics=[_windowed_mean_metric()],
-            control_group="control",
-            dimension="country",
-        )
-        rows = {r["segment"]: r for r in estimates_to_readout(result)}
-        assert rows["thin"]["low_reliability"] is True
-        assert rows["thin"]["stat_sig"] is False
-        assert rows["thick"]["low_reliability"] is False
 
 
 class TestRunBreakoutArmCounts:

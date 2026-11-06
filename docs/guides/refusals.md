@@ -52,6 +52,10 @@ this release reads (`supported`). Upgrade Increment to open it. The
 [saved-format table](../reference/saved-formats.md) lists the versions each
 reader accepts.
 
+`store.run.schema_unavailable` means `WarehouseResultsStore` could neither
+find its declared `schema` nor create it when saving a run, so nothing was
+saved. Create the schema, or connect with permission to create schemas.
+
 `kernel.request.capture_not_supported` means sequential capture or checkpoint
 adoption was placed in saved request options. Call
 `increment.workflows.capture_sequential(experiment, reader, ...)` with the

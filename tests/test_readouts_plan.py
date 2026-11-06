@@ -507,9 +507,11 @@ def test_run_all_guarded_whole_window_cells_have_explicit_outcome():
     src = _guarded_three_arm_source(all_degenerate=True)
 
     with pytest.warns(IncrementWarning) as captured:
-        with pytest.raises(UnsupportedRequestError) as exc_info:
-            readouts.run(src)
-        assert exc_info.value.code == "readout.estimate_lift_every"
+        results = readouts.run(src)
+    assert {(row.group_id, row.failure_code) for row in results} == {
+        ("treatment_bad", "estimation.engine.lift_guard"),
+        ("treatment_good", "estimation.engine.lift_guard"),
+    }
     assert {
         w.message.context["group_id"]
         for w in captured

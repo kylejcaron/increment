@@ -105,7 +105,7 @@ heavy-tailed outcomes and for ratio metrics. Finite-sample guarantees come from 
 fixed-horizon conversion and retention relative-risk sets labelled
 `reference_kind="binomial"`, prospective switchback `UnitCycleVarianceEnvelope` bounds,
 or the registered Bernoulli sequential route, each under its own declared assumptions;
-the binomial rows' additive `abs_lb`/`abs_ub` sidecar remains approximate.
+the binomial rows' additive `abs_lb`/`abs_ub` interval remains approximate.
 
 !!! warning "A feasibility floor is not a calibration guarantee"
     The sampling floor (two units per arm for most arm inference, twenty for a quantile)
@@ -153,8 +153,13 @@ the binomial rows' additive `abs_lb`/`abs_ub` sidecar remains approximate.
     labels a row with dense counts `reference_kind="t"`, an approximation whose noncoverage was
     measured to stay within a stated tolerance at the dense-count threshold (see the next
     section) and is not a finite-sample guarantee; the default is never a universally
-    finite-sample route. Their additive `abs_lb`/`abs_ub` sidecar, when available,
-    uses a Normal-Wald approximation on either route; that interval is not exact.
+    finite-sample route. Their additive `abs_lb`/`abs_ub` interval is approximate on either
+    route: the delta route's is Welch `t`, and the finite-sample route's is the
+    Miettinen-Nurminen score interval for the difference of proportions
+    (`abs_reference_kind="score"`), whose test also decides an absolute margin there. The score
+    test's size at the measured margin boundaries (1,000 units per arm, a 0.01 margin, 2 to 100
+    expected treatment events) is at most 0.0502 against a nominal 0.05, where the Wald test it
+    replaced reached 0.0785; neither interval is exact.
     Asymptotic and empirically qualified methods are labeled as such rather than treated as
     exact; an unfinished or unsupported capability refuses before producing a result.
     No result field diagnoses model misspecification.

@@ -84,7 +84,7 @@ tests/test_warehouse_cuped_qr.py 5
 # Test-only evidence-fixture inspection of retired internal acquisition envelopes.
 tests/evidence_fixtures/capture.py 2
 # Captured declarations and genuine data-only family, alpha, identity and readout consumers.
-tests/test_evidence_level_parity.py 42
+tests/test_evidence_level_parity.py 41
 # Pinned acquisition, genuine slice routes, qualified fit/frame receipts and source identity.
 tests/evidence_fixtures/scenarios.py 22
 # Closed request/answer codecs and genuine pinned warehouse input source identity.
@@ -124,7 +124,7 @@ tests/estimation/test_armstats.py 1
 tests/estimation/test_asymptotic_e_value_calibration.py 3
 tests/estimation/test_asymptotic_joint.py 7
 tests/estimation/test_asymptotic_mean.py 3
-tests/estimation/test_binomial_abs_sidecar.py 3
+tests/estimation/test_binomial_abs_sidecar.py 2
 tests/estimation/test_binomial_rr.py 5
 tests/estimation/test_cate.py 2
 tests/estimation/test_certified.py 7

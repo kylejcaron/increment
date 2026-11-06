@@ -235,11 +235,11 @@ def _attach_breakout_scope(
     # Finite-sample Bonferroni is metric-local; asymptotic registered
     # Bonferroni retains its compiled joint family axes.
     metric_local = correction == "bonferroni" and (not registered or not asymptotic)
-    # A fixed-horizon BH family (a registered one is e-BH by now) leaves count-excluded
-    # cells out, as its selection does.
+    # A fixed-horizon BH or Bonferroni family (a registered BH one is e-BH by now) leaves
+    # count-excluded cells out, as its selection and its alpha division do.
     count_excluded = (
         {CellKey.from_row(row) for row in rows if design_excluded(row)}
-        if correction == "bh"
+        if correction in ("bh", "bonferroni") and not registered
         else set()
     )
     cells_by_family: dict[tuple[Population, str | None], list[CellKey]] = {}
@@ -263,7 +263,11 @@ def _attach_breakout_scope(
     if correction != "none":
         for (population, metric), members in cells_by_family.items():
             name = f"{policy.name}:{metric}" if metric_local else policy.name
-            axes = ("segment",) if metric_local else policy.axes
+            axes: tuple[str, ...] = policy.axes
+            if metric_local:
+                # A metric-local family spans its members' segments, and their arms when several.
+                arms = {cell.group_id for cell in members}
+                axes = ("arm", "segment") if len(arms) > 1 else ("segment",)
             needs_q = correction in ("bh", "e_bh") or (asymptotic and correction == "bonferroni")
             family_q = q if needs_q else None
             family = MultiplicityFamily(

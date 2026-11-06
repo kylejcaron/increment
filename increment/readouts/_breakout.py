@@ -15,7 +15,6 @@ from increment._literals import Correction
 from increment._readout_request import ReadoutRequest, validate_request
 from increment._source_types import is_custom_source
 from increment.breakout.estimates import (
-    DEFAULT_RELIABILITY_FLOOR,
     BreakoutEstimate,
     BreakoutEstimates,
     _breakout_estimate_row,
@@ -32,6 +31,7 @@ from increment.estimation.readout_types import (
     cell_advisories,
     collect_advisories,
 )
+from increment.estimation.results import DEFAULT_RELIABILITY_FLOOR
 from increment.estimation.sequential import SEQUENTIAL_POLICIES
 from increment.readouts._common import (
     _raise,
@@ -530,10 +530,11 @@ def _breakout_impl(
     adjustment set's confounding structure too, which is not identified -
     raises rather than emitting a confounded estimate.
 
-    correction="bonferroni" divides alpha by the number of distinct
-    dimension values present in each metric's own moments, computed per
-    metric. correction=None (the default) resolves to "bh" under a
-    randomized design, or "none" under Encouragement, which does not
+    correction="bonferroni" divides each metric's alpha by its (treatment
+    arm, segment) cells estimable by their arm counts; the other cells are
+    unavailable rows outside the family. correction=None
+    (the default) resolves to "bh" under a randomized design, or "none"
+    under Encouragement, which does not
     support correction - a caller EXPLICITLY passing a non-"none"
     correction under Encouragement is refused. correction="bh"
     runs run_breakout's flat BH/e-BH family across every (metric, arm,

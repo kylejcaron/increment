@@ -157,6 +157,7 @@ def validate_whole_window(
     plan: CompiledDecisionPlan,
     design: Randomized | Encouragement | Observational | None,
     experiment: Experiment | None,
+    experiment_id: str,
     route: RouteName,
 ) -> None:
     """Validate native and empty seam requests before any moments are read."""
@@ -177,7 +178,7 @@ def validate_whole_window(
         _refuse(
             _TRIGGER_UNSUPPORTED,
             method="run",
-            experiment="<unknown>" if experiment is None else experiment.name,
+            experiment=experiment_id if experiment is None else experiment.name,
             trigger=None if experiment is None else experiment.trigger,
             route=route,
             supported_sources=("from_definitions", "from_unit_day_artifact"),
@@ -198,6 +199,7 @@ class WholeWindowReadouts:
         plan: CompiledDecisionPlan,
         design: Randomized | Encouragement | Observational | None,
         experiment: Experiment | None,
+        experiment_id: str,
         readout_source: Callable[..., _BuiltinMomentSource],
         validate_trigger: Callable[[object], None],
         arm_moments: Callable[..., list[LiftEstimate]],
@@ -208,6 +210,7 @@ class WholeWindowReadouts:
         self._plan = plan
         self._design = design
         self._experiment = experiment
+        self._experiment_id = experiment_id
         self._readout_source = readout_source
         self._validate_trigger = validate_trigger
         self._arm_moments = arm_moments
@@ -223,6 +226,7 @@ class WholeWindowReadouts:
             plan=self._plan,
             design=self._design,
             experiment=self._experiment,
+            experiment_id=self._experiment_id,
             route=route,
         )
         if (
@@ -523,7 +527,7 @@ class WholeWindowReadouts:
                     _refuse(
                         _TRIGGER_UNSUPPORTED,
                         method="run",
-                        experiment="<unknown>",
+                        experiment=self._experiment_id,
                         trigger=None,
                         route=day_axis_route(self._src),
                         supported_sources=("from_definitions", "from_unit_day_artifact"),

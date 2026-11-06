@@ -155,6 +155,7 @@ def whole_window_readouts(binding: SourceBinding) -> WholeWindowReadouts:
         plan=binding.plan,
         design=binding.design,
         experiment=_arm_experiment(binding),
+        experiment_id=binding.experiment_name,
         readout_source=partial(readout_source, binding),
         validate_trigger=partial(_validate_trigger_fires_in_every_arm, binding),
         arm_moments=readouts.arm_moments,

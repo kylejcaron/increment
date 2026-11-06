@@ -641,7 +641,7 @@ class TestReissueRoutesAtTheReportedTail:
         assert reissued.require_lift().alpha == fcr
 
     def test_a_reissue_below_the_dense_level_is_cut_as_a_fresh_finite_sample_row(self):
-        """Normal additive bounds with no t reference, and the row's other disclosures kept
+        """Score additive bounds with no t reference, and the row's other disclosures kept
         while the composite note, which no longer applies, is dropped."""
         from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
 
@@ -659,7 +659,7 @@ class TestReissueRoutesAtTheReportedTail:
         reissued = reinterval_at_fcr(row, construction, 0.002)
         fresh = lift_row((2_500, 50_000, 2_800, 50_000), alpha=0.002, mode="finite_sample")
         assert reissued.reference_kind == "binomial"
-        assert (reissued.abs_reference_kind, reissued.abs_reference_df) == (None, None)
+        assert (reissued.abs_reference_kind, reissued.abs_reference_df) == ("score", None)
         assert (reissued.abs_lb, reissued.abs_ub) == (fresh.abs_lb, fresh.abs_ub)
         assert reissued.note == warning
         assert fresh.note is None
@@ -675,7 +675,7 @@ class TestReissueRoutesAtTheReportedTail:
         strong = next(row for row in corrected if row.metric == "strong")
         assert strong.discovery is True and strong.reference_kind == "binomial"
         assert strong.note == warning
-        assert (strong.abs_reference_kind, strong.abs_reference_df) == (None, None)
+        assert (strong.abs_reference_kind, strong.abs_reference_df) == ("score", None)
 
 
 class TestPersistedRowsRoundTrip:

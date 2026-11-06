@@ -952,6 +952,141 @@ def test_breakout_covariate_imbalance_advisory_stays_on_its_own_segment_and_meth
     assert flagged == {("lost", "zero_filled")}
 
 
+def _segment_frame(segments: dict[str, tuple[int, float]], *, seed: int) -> pd.DataFrame:
+    """Unit rows per segment: ``(units per arm, treatment shift)`` on Normal(10, 2) outcomes."""
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame(
+        [
+            {
+                "unit": f"{segment}-{arm}-{index}",
+                "arm": arm,
+                "country": segment,
+                "revenue": 10.0 + (shift if arm == "treatment" else 0.0) + rng.normal(0, 2),
+            }
+            for segment, (n, shift) in segments.items()
+            for arm in ("control", "treatment")
+            for index in range(n)
+        ]
+    )
+
+
+def _run_breakout_view(frame: pd.DataFrame, plan: AnalysisPlan):
+    from increment import run
+
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"revenue": "mean"},
+        breakouts=["country"],
+        plan=plan,
+    )
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            return run(experiment.with_views(_BREAKOUT), reader)
+    finally:
+        reader.close()
+
+
+def test_selected_low_reliability_segment_keeps_its_verdict():
+    """CA (45 per arm) is flagged low reliability and selected by the BH family: its own
+    verdict and its decision record are those of an unflagged selected segment."""
+    result = _run_breakout_view(
+        _segment_frame({"US": (60, 1.5), "CA": (45, 1.0), "GB": (35, 0.0)}, seed=7),
+        AnalysisPlan(primary="revenue"),
+    )
+    rows = {row.dimension_value: row for row in result.readout(_BREAKOUT)}
+    ca, gb = rows["CA"], rows["GB"]
+    assert (ca.low_reliability, ca.discovery, ca.stat_sig()) == (True, True, True)
+    assert (gb.low_reliability, gb.stat_sig()) == (True, False)
+
+    segment_of = {cell.identity.hash(): cell.identity.key.dimension_value for cell in result.cells}
+    (family,) = [family for family in result.decisions.families if family.procedure == "bh"]
+    members = {segment_of[member.identity_hash]: member for member in family.members}
+    assert (members["CA"].status, members["CA"].discovery) == (members["US"].status, True)
+
+
+def test_bonferroni_counts_estimable_segments_and_keeps_low_reliability_verdicts():
+    """A Bonferroni breakout divides alpha by the three count-estimable segments: LOW
+    (45 per arm) keeps its verdict and its flag, and the one-unit segment T is an
+    unavailable row outside the family."""
+    frame = _segment_frame(
+        {"A": (200, 1.0), "B": (200, 0.0), "LOW": (45, 2.0), "T": (1, 0.0)}, seed=3
+    )
+    result = _run_breakout_view(
+        frame,
+        AnalysisPlan(
+            primary="revenue", view_multiplicity=MultiplicitySpec(correction="bonferroni")
+        ),
+    )
+    readout = result.readout(_BREAKOUT)
+    rows = {row.dimension_value: row for row in readout}
+
+    for segment in ("A", "B", "LOW"):
+        assert rows[segment].require_lift().level == pytest.approx(1 - 0.05 / 3)
+    assert (rows["LOW"].low_reliability, rows["LOW"].stat_sig()) == (True, True)
+    sparse = rows["T"]
+    assert (sparse.excluded, sparse.lift, sparse.family_id) == ("few_units", None, None)
+    (family,) = readout.metadata.scope.families
+    assert [member.dimension_value for member in family.members] == ["A", "B", "LOW"]
+
+
+def test_two_arm_bonferroni_family_spans_arm_and_segment():
+    """With two treatment arms every estimable (arm, segment) cell counts: the five cells are
+    read at 1 - 0.05/5, the one-unit cell (C, t2) is an unavailable row outside the family,
+    and the family and its rows report both axes."""
+    rng = np.random.default_rng(11)
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"{segment}-{arm}-{index}",
+                "arm": arm,
+                "country": segment,
+                "revenue": 10.0 + (1.0 if arm != "control" else 0.0) + rng.normal(0, 2),
+            }
+            for segment in ("A", "B", "C")
+            for arm in ("control", "t1", "t2")
+            for index in range(1 if (segment, arm) == ("C", "t2") else 200)
+        ]
+    )
+    result = _run_breakout_view(
+        frame,
+        AnalysisPlan(
+            primary="revenue", view_multiplicity=MultiplicitySpec(correction="bonferroni")
+        ),
+    )
+    readout = result.readout(_BREAKOUT)
+    rows = {(row.dimension_value, row.group_id): row for row in readout}
+
+    sparse = rows.pop(("C", "t2"))
+    assert (sparse.excluded, sparse.family_id) == ("few_units", None)
+    cells = [("A", "t1"), ("A", "t2"), ("B", "t1"), ("B", "t2"), ("C", "t1")]
+    assert {key: row.require_lift().level for key, row in rows.items()} == dict.fromkeys(
+        cells, pytest.approx(1 - 0.05 / 5)
+    )
+    (family,) = readout.metadata.scope.families
+    assert family.family is not None
+    assert {(m.dimension_value, m.group_id) for m in family.members} == set(cells)
+    assert family.family.axes == ("arm", "segment")
+    assert {row.family_axes for row in rows.values()} == {("arm", "segment")}
+
+
+def test_bonferroni_breakout_without_an_estimable_segment_has_no_family():
+    result = _run_breakout_view(
+        _segment_frame({"A": (1, 0.0), "B": (1, 0.0), "C": (1, 0.0)}, seed=5),
+        AnalysisPlan(
+            primary="revenue", view_multiplicity=MultiplicitySpec(correction="bonferroni")
+        ),
+    )
+    readout = result.readout(_BREAKOUT)
+
+    assert {row.excluded for row in readout} == {"few_units"}
+    assert readout.metadata.scope.families == ()
+
+
 # GB's covariate means differ by arm by construction, so its CUPED cell is flagged.
 @allow_warning_codes("estimation.cuped.covariate_imbalance")
 def test_breakout_propagates_a_cuped_nonpositive_mean_row_unmodified(con):
@@ -1385,23 +1520,20 @@ def test_run_breakout_refuses_a_declared_margin_metric(con):
     assert raised.value.code == "readout.margin.breakout"
 
 
-def test_run_breakout_empty_when_no_breakouts_declared(con, example_definitions):
-    """A breakout view returns [] for an experiment with no
-    declared breakouts - mirrors breakout_summaries' own empty-dict
-    contract, and confirms the breakout view doesn't require breakouts to be
-    present to avoid crashing. `pricing_tier_test` is the experiment with
-    no breakouts declared here - `new_onboarding_v2` gained a `country`
-    breakout for the example notebook (see examples/breakout.py)."""
+def test_run_breakout_refuses_when_no_breakouts_declared(con, example_definitions):
+    """A breakout view refuses for an experiment with no declared breakouts,
+    naming the builder whose declaration to extend. `pricing_tier_test` is the
+    experiment with no breakouts declared here - `new_onboarding_v2` gained a
+    `country` breakout for the example notebook (see examples/breakout.py)."""
     experiment, resolver = from_definitions(
         example_definitions, con, experiment_name="pricing_tier_test"
     )
     assert experiment_definition(experiment, resolver).breakouts == ()
 
-    assert view_readout(experiment, resolver, _BREAKOUT) == []
-
-    with pytest.raises(InvalidRequestError) as raised:
-        view_readout(experiment, resolver, _BREAKOUT, metrics=["not_declared"])
-    assert raised.value.code == "facade.analysis_config.unknown_metric_declared"
+    with pytest.raises(CapabilityError) as refused:
+        view_readout(experiment, resolver, _BREAKOUT)
+    assert refused.value.code == "evidence.breakout_unavailable"
+    assert refused.value.context["constructor"] == "from_definitions"
 
 
 def test_panel_sql_and_summary_sql_with_breakouts_include_segment_sql(con):
