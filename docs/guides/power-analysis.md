@@ -654,7 +654,7 @@ Refused on this route:
 | `power_basis` | `exact`, `lower_bound`, or `asymptotic`; see [above](#what-power-and-power_lower-mean) |
 | `numerical_qualification` | `closed_form_model_only_v1` for the asymptotic model; `scipy_special_function_error_model_conditional_v1` for either enumerated basis (conditional on the deployed SciPy/Boost special-function error model, not a cross-build proof) |
 | `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`, relative to the declared `null_lift`, not to control; the matching `relative_lift` is `(1 + null_lift) * (1 + mde_relative) - 1` at `compliance=1`; `None` when no admissible numeric answer is certified |
-| `mde_unavailable_reason` | `unattainable`, `unrepresentable`, or `numerical_resolution` when `mde_relative` is `None`; otherwise `None` |
+| `mde_unavailable_reason` | When `mde_relative` is `None`: `unattainable` (no admissible effect reaches the target power), `unrepresentable` (the answer has no float64 relative lift), `numerical_resolution` (the search could not resolve it), `delta_method_unreliable` (every effect reaching the target has a planned log-scale standard error the runtime refuses; see [below](#small-samples-and-the-runtimes-log-scale-guard)), or `at_or_below_null_power` (the target is at or below the null's own rejection probability, so no nonzero effect is the minimum); otherwise `None` |
 | `effective_var` | Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Enumerated binomial power uses event rates and counts, not this variance. |
 | `n_clusters_per_arm`, `n_clusters_total` | Ceiled randomization-cluster counts, or `None` for unit randomization |
 | `n_triggered_per_arm`, `n_triggered_total` | Analyzed units when `trigger_rate < 1`, otherwise `None` |
@@ -665,6 +665,36 @@ Read the result at its actual integer size and check `power_basis` and
 `numerical_qualification` before quoting it as a runtime-power claim. See
 [Reading results](reading-results.md) and [Multiplicity](multiplicity.md)
 for interpreting the analysis the plan feeds.
+
+### Small samples and the runtime's log-scale guard
+
+A fixed-horizon plan the runtime analyzes with its log-ratio lift estimate
+(unclustered, randomized, with no absorbed factor, and not a conversion or
+retention plan decided from its counts) cannot be read when the estimate's
+combined log-scale standard error is 0.5 or more: the runtime refuses it with
+the `delta_method_unreliable` reason. Planning keeps to the same limit. The
+size `required_sample_size` returns is the smallest that both reaches the
+target power and keeps the planned standard error below 0.5, so a noisy metric
+planned for a large lift can need more units than power alone asks for:
+
+```python
+from increment.estimators import Baseline
+from increment.power import required_sample_size
+
+noisy = Baseline(mean=1.0, var=100.0)  # standard deviation ten times the mean
+# 316 per arm reach 80% power for a fivefold mean, but below 417 per arm the
+# planned log-scale standard error is 0.5 or more.
+assert required_sample_size(4.0, noisy).n_per_arm == 417
+```
+
+`minimum_detectable_effect` likewise returns the smallest effect that meets
+both, and refuses with
+`power.minimum_detectable_effect.delta_method_unreliable` when none does, such
+as `minimum_detectable_effect(50, noisy)`, where the control arm alone has a
+log-scale standard error of 1.41. A supplied-effect answer keeps its planned
+power and reports `mde_relative=None` with that reason. The runtime judges the
+standard error of the sample it sees, so near the limit it refuses only some
+samples, and heavy-tailed outcomes often pass; planning uses the planned value.
 
 ### An MDE against a shifted null
 

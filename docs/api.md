@@ -192,6 +192,46 @@ values.
   a blank segment label rather than `nan`, so the two stay distinct rows.
   Table qualification cells show `>` as written rather than `&gt;`.
   Readout estimates and experiment identity are unchanged.
+- Release note (breaking numerical correction): `required_sample_size` returns
+  the smallest fixed-horizon size whose power, evaluated as `achieved_power`
+  evaluates it, reaches the target. At a
+  treatment-heavy allocation sizes shrink by a few units (199,376 to 199,369
+  per arm at allocation 0.9 for a 2% lift on `Baseline(mean=20, var=400)`). A
+  triggered plan is sized in assigned units analyzed at
+  `assigned * trigger_rate`, as `achieved_power` plans it, so its size moves by
+  a few units and its reported power is `achieved_power`'s at that size; a
+  clustered size follows the same rule, and a very large size whose rounding
+  left its power a few ulps under the target now reaches it. Where the runtime
+  estimates the lift with its log-ratio delta-method contrast (fixed horizon,
+  unclustered, randomized, no absorbed factor, not decided from conversion
+  counts), planning also keeps the planned combined log-scale standard error
+  below 0.5, where the runtime refuses the estimate (`delta_method_unreliable`):
+  a noisy baseline at a large lift sizes larger (417 per arm instead of 316 for
+  a fivefold mean on `Baseline(mean=1, var=100)`), so one unit fewer fails
+  either the power target or that limit; `minimum_detectable_effect`
+  returns the smallest effect that meets both or refuses with the new
+  `power.minimum_detectable_effect.delta_method_unreliable` (context
+  `target_power`, `direction`, `log_se`, `log_se_limit`), and a companion
+  effect is `None` with reason `delta_method_unreliable`; `achieved_power`
+  still reports planned power. A companion effect at a target at or below the
+  null's own rejection probability is `None` with reason
+  `at_or_below_null_power` instead of `0.0`, including from
+  `segment_pairwise_required_sample_size` and `segment_pairwise_achieved_power`;
+  a sequential `achieved_power` or
+  `required_sample_size` at such a target used to raise
+  `power.sequential_mde.design_search_minimum`, which
+  `minimum_detectable_effect` still raises. At such a target
+  `segment_pairwise_minimum_detectable_effect` refuses with
+  `power.minimum_detectable_effect.design_search_minimum` (context `estimate`,
+  `target`) instead of returning `0.0`, and
+  `segment_pairwise_required_sample_size` returns the smallest size whose
+  segments split into two arms instead of sizing for the magnitude of a
+  negative `z_alpha + z_power`. A conversion or retention null at a
+  rate of exactly one as written, such as `null_lift=0.25` on a baseline of
+  0.8, is planned instead of refused with `power.bounded_metric.rate_above_one`.
+  Migrate code that compared a companion `mde_relative` with `0.0` to read
+  `mde_unavailable_reason`. Readout estimates and experiment identity are
+  unchanged.
 - Release note (documentation): the power guide's `PowerResult` table states
   that `mde_relative` is relative to the declared `null_lift`, not to control,
   and that the matching `relative_lift` is
