@@ -515,6 +515,10 @@ LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='d
   `r.p_value() == 1.0` and `r.stat_sig()` False: a non-rejection, never a
   discovery. A declared prior leaves this row unchanged and marks only its
   posterior unavailable (`r.posterior_reason_code == "estimation.engine.lift_guard"`).
+  A ratio metric's additive difference depends on its denominator means as
+  well, so when either arm's denominator mean is too noisy (the condition of
+  the `ratio_denominator_precision` note), a cell that would take any of these
+  three reasons fails with `estimation.engine.lift_guard` instead.
 - A mixed-CUPED (`cuped_linear`) row whose relative projection cannot be
   represented: `r.relative_unavailable_reason == "relative_unrepresentable"`,
   with the exact refusal in `r.relative_error_code`. The relative point lies

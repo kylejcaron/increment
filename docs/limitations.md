@@ -1008,6 +1008,14 @@ fails with `estimation.engine.lift_guard`; if either is zero or negative, the ro
 `"nonpositive_arm_mean"` and its additive difference with no bounds, a conservative
 non-rejection with `p_value()` 1.0.
 
+A ratio metric's additive difference divides by the same denominator means as its log
+ratio, so it can replace a blocked log scale only when both arms resolve their denominator
+mean: a relative standard error `sqrt(var_d / n) / d_bar` of at most 0.15, the level above
+which the row carries the `ratio_denominator_precision` note. Past it, the cell fails with
+`estimation.engine.lift_guard` whichever of the three reasons blocked the log scale: the
+additive interval's first-order approximation of the denominator fails along with the log
+scale's.
+
 For an adjusted effect or a signed relative set, use a route built for it: observational
 adjusted methods, encouragement LATE, switchback contrasts, sitewide impact, or the
 clustered unadjusted route's signed joint-relative set. `run(..., value_scale="absolute")`

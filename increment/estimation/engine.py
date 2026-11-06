@@ -1891,10 +1891,15 @@ def _infer_lift_result(
                 )
             )
     except LiftGuardError as exc:
-        if exc.reason in ("zero_variance", "delta_method_unreliable") and abs_se is not None:
+        if (
+            exc.reason in ("zero_variance", "delta_method_unreliable")
+            and abs_se is not None
+            and not _ratio_denominator_unresolved(contrast, strategy)
+        ):
             # The guard blocks only the log scale; the additive difference keeps
-            # its uncertainty whenever either arm varies. Its note already
-            # carries the guard and any ratio advisories.
+            # its uncertainty whenever either arm varies and, for a ratio, both
+            # denominator means are resolved. Its note already carries the guard
+            # and any ratio advisories.
             unavailable = _RelativeScaleUnavailable(
                 str(exc),
                 reason=exc.reason,
@@ -1916,26 +1921,7 @@ def _infer_lift_result(
                 preferred_direction,
             )
         else:
-            result = None
-            guard_reason = exc.reason
-            guard_display = str(exc)
-    if result is None:
-        if method_role != "decision":
-            return None, None
-        from increment.estimation.decision_types import ArmHypothesisKey, DecisionFailure
-
-        hypothesis = ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")
-        return None, DecisionFailure(
-            hypothesis,
-            "estimation.engine.lift_guard",
-            {
-                "metric": treatment.metric,
-                "group_id": treatment.group_id,
-                "method": method.name,
-                "reason": guard_reason or "lift guard",
-                "display": guard_display,
-            },
-        )
+            return _lift_guard_failure(treatment, method.name, method_role, exc)
     update: dict[str, Any] = dict(_winsorization_result_fields(control, treatment))
     if strategy.n_clusters is None and strategy.metric_type not in {"ratio", "quantile"}:
         update.update(
@@ -2593,6 +2579,47 @@ class _RelativeScaleUnavailable(LiftGuardError):
         self.abs_se_c = abs_se_c
 
 
+def _ratio_denominator_unresolved(
+    contrast: tuple[ArmStats, ArmStats], strategy: _LiftVarianceStrategy
+) -> bool:
+    """Whether either arm of a ratio contrast resolves its denominator mean
+    too poorly for the additive difference to stand in for a blocked log scale.
+
+    A ratio arm's log-scale SE includes the relative SE of its denominator
+    mean, and the additive delta method linearises ``1 / d_bar`` through the
+    same term. Past the denominator-precision threshold that linearisation
+    no longer holds its level, so the cell keeps the guard's failure.
+    """
+    return strategy.metric_type == "ratio" and any(
+        ratio_denominator_precision(arm) > RATIO_DENOMINATOR_PRECISION_THRESHOLD for arm in contrast
+    )
+
+
+def _lift_guard_failure(
+    treatment: ArmStats,
+    method_name: str,
+    method_role: Literal["decision", "sensitivity"],
+    exc: LiftGuardError,
+) -> tuple[None, DecisionFailure | None]:
+    """The keyed failure of a decision cell a lift guard refused on every
+    scale; a sensitivity cell is omitted."""
+    if method_role != "decision":
+        return None, None
+    from increment.estimation.decision_types import ArmHypothesisKey, DecisionFailure
+
+    return None, DecisionFailure(
+        ArmHypothesisKey(treatment.metric, treatment.group_id, "itt"),
+        "estimation.engine.lift_guard",
+        {
+            "metric": treatment.metric,
+            "group_id": treatment.group_id,
+            "method": method_name,
+            "reason": exc.reason,
+            "display": str(exc),
+        },
+    )
+
+
 def _ratio_log_lift(num_c: float, den_c: float, num_t: float, den_t: float) -> float:
     """Preserve the joint contrast before rounding finite positive component means."""
     ratio = (Fraction(num_t) * Fraction(den_c)) / (Fraction(num_c) * Fraction(den_t))
@@ -3132,6 +3159,8 @@ def _asymptotic_lift_outcome(
             else None
         )
     except _RelativeScaleUnavailable as exc:
+        if _ratio_denominator_unresolved(contrast, strategy):
+            return _lift_guard_failure(treatment, method_strategy.method.name, method_role, exc)
         return _relative_unavailable_outcome(
             exc,
             contrast,

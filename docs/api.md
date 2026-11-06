@@ -139,7 +139,12 @@ values.
   constant arm's interval is the other arm's one-sample t. When both arms are
   constant at positive means, the cell still fails with
   `estimation.engine.lift_guard`; at a zero or negative mean it keeps its
-  unbounded additive row as before. A
+  unbounded additive row as before. A ratio metric whose denominator mean is
+  too noisy in either arm (relative standard error above 0.15, where the
+  `ratio_denominator_precision` note applies) still fails with these guards.
+  With such a denominator, a ratio row with a zero or negative numerator mean,
+  which kept an additive row, now fails the same way (`reason`
+  `"non_positive_mean"`): its additive difference shares that denominator. A
   declared prior no longer turns a non-positive-mean decision row into that
   failure: the row keeps its sampling interval, p-value and verdict and marks
   only its posterior unavailable (`posterior_reason_code`
@@ -147,7 +152,9 @@ values.
   guards excluded as `zero_variance` or `extreme_ratio` are now live rows.
   Migration: where code expected these cells to fail, read
   `relative_unavailable_reason` and the `abs_*` fields; the row's note names
-  the condition. Experiment identity is unchanged.
+  the condition. Where code read a noisy-denominator ratio's
+  `"nonpositive_arm_mean"` row, handle the `estimation.engine.lift_guard`
+  failure instead. Experiment identity is unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded

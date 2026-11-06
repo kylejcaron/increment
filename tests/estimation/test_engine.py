@@ -789,6 +789,51 @@ class TestRelativeScaleGuardsKeepTheAdditiveRow:
         assert row.stat_sig() is False
         assert row.p_value() == 1.0
 
+    @pytest.mark.parametrize(
+        ("control_mean", "row_reason", "guard_reason"),
+        [
+            (0.1, "delta_method_unreliable", "delta_method_unreliable"),
+            (-0.05, "nonpositive_arm_mean", "non_positive_mean"),
+        ],
+    )
+    def test_ratio_guard_keeps_the_additive_row_only_with_resolved_denominators(
+        self, control_mean: float, row_reason: str, guard_reason: str
+    ):
+        """A ratio's additive delta method linearises its denominator means, as the log scale
+        does. A control numerator mean close to zero relative to its SE, or below zero, blocks
+        the log scale in both contrasts: with the control's denominator mean resolved to
+        relative SE 0.1 the additive row survives, while at 0.2, past the
+        denominator-precision threshold, the cell keeps its lift-guard failure."""
+        from tests.ratio_arms import moment_arm, summary
+
+        def guarded(control_precision: float):
+            n = 50
+            control = moment_arm(
+                "control",
+                n=n,
+                y_bar=control_mean,
+                var_y=1.0,
+                d_bar=1.0,
+                var_d=n * control_precision**2,
+            )
+            treatment = moment_arm(
+                "treatment", n=n, y_bar=control_mean + 0.5, var_y=1.0, d_bar=1.0, var_d=n * 0.1**2
+            )
+            return estimate_lift(
+                [_ratio_metric("rpo")], summary(control, treatment), control_group="control"
+            )
+
+        resolved, unresolved = guarded(0.1), guarded(0.2)
+
+        assert resolved.failures == {}
+        (row,) = resolved.results
+        assert row.relative_unavailable_reason == row_reason
+        assert row.abs_diff == pytest.approx(0.5)
+        assert unresolved.results == ()
+        (failure,) = unresolved.failures.values()
+        assert failure.code == "estimation.engine.lift_guard"
+        assert failure.context["reason"] == guard_reason
+
 
 # Method axis
 
