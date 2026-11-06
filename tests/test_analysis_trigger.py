@@ -1595,7 +1595,7 @@ def test_triggered_breakout_without_declared_trigger_is_refused_even_without_bre
         cast(Any, resolver).close()
 
 
-def test_triggered_artifact_without_breakouts_returns_empty_estimates(tmp_path):
+def test_triggered_artifact_without_breakouts_refuses_breakout_views(tmp_path):
     from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
     path = _write_defs(tmp_path)
@@ -1612,12 +1612,11 @@ def test_triggered_artifact_without_breakouts_returns_empty_estimates(tmp_path):
             native,
             kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
         )
-        assert _both_populations(*adopted, breakout=True) == []
-        assert view_readout(*adopted, View(view="breakout", grain="total")) == []
-        assert (
-            view_readout(*adopted, View(view="breakout", grain="total", population="triggered"))
-            == []
-        )
+        for scope in _BREAKOUT_POPULATION_SCOPES:
+            with pytest.raises(CapabilityError) as refused:
+                view_readout(*adopted, scope)
+            assert refused.value.code == "evidence.breakout_unavailable"
+            assert refused.value.context["constructor"] == "from_unit_day_artifact"
     finally:
         if adopted is None:
             native[1].close()

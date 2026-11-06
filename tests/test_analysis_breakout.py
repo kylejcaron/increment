@@ -1278,23 +1278,20 @@ def test_run_breakout_refuses_a_declared_margin_metric(con):
     assert raised.value.code == "readout.margin.breakout"
 
 
-def test_run_breakout_empty_when_no_breakouts_declared(con, example_definitions):
-    """A breakout view returns [] for an experiment with no
-    declared breakouts - mirrors breakout_summaries' own empty-dict
-    contract, and confirms the breakout view doesn't require breakouts to be
-    present to avoid crashing. `pricing_tier_test` is the experiment with
-    no breakouts declared here - `new_onboarding_v2` gained a `country`
-    breakout for the example notebook (see examples/breakout.py)."""
+def test_run_breakout_refuses_when_no_breakouts_declared(con, example_definitions):
+    """A breakout view refuses for an experiment with no declared breakouts,
+    naming the builder whose declaration to extend. `pricing_tier_test` is the
+    experiment with no breakouts declared here - `new_onboarding_v2` gained a
+    `country` breakout for the example notebook (see examples/breakout.py)."""
     experiment, resolver = from_definitions(
         example_definitions, con, experiment_name="pricing_tier_test"
     )
     assert experiment_definition(experiment, resolver).breakouts == ()
 
-    assert view_readout(experiment, resolver, _BREAKOUT) == []
-
-    with pytest.raises(InvalidRequestError) as raised:
-        view_readout(experiment, resolver, _BREAKOUT, metrics=["not_declared"])
-    assert raised.value.code == "facade.analysis_config.unknown_metric_declared"
+    with pytest.raises(CapabilityError) as refused:
+        view_readout(experiment, resolver, _BREAKOUT)
+    assert refused.value.code == "evidence.breakout_unavailable"
+    assert refused.value.context["constructor"] == "from_definitions"
 
 
 def test_panel_sql_and_summary_sql_with_breakouts_include_segment_sql(con):

@@ -1104,6 +1104,7 @@ Retired codes and their replacements are listed below.
 | `kernel.run.reader_closed` | `InvalidRequestError` | `experiment_id` | `increment.kernel.contracts` |
 | `kernel.run.reader_offline` | `InvalidRequestError` | `experiment_id` | `increment.kernel.contracts` |
 | `kernel.run.reader_required` | `InvalidRequestError` | `received` | `increment.kernel.contracts` |
+| `kernel.run.reader_unportable` | `InvalidRequestError` | `experiment_id` | `increment.kernel.contracts` |
 | `kernel.scope.family_mismatch` | `CapabilityError` | `experiment_id`, `view` | `increment._runnability` |
 | `kernel.scope.invalid` | `InvalidRequestError` | `field` | `increment.kernel.contracts` |
 | `kernel.snapshot.integrity` | `InvalidRequestError` | `snapshot_id`, `stream` | `increment.kernel.contracts` |
