@@ -196,6 +196,12 @@ def _group_method_evidence(
                         estimand=estimand,
                     )
             continue
+        # An outcome no control unit observes has no contrast: its cells are unavailable
+        # rows. A family member instead records the refusal its family is sized against.
+        if not group.family_member and not any(
+            str(row["group_id"]) == str(control_group) for row in rows
+        ):
+            continue
         available.append(metric)
         summary.extend(rows)
     return group._replace(metrics=available), summary, failed_rows, failures

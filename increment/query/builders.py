@@ -49,6 +49,7 @@ from increment.semantics.models import (
     ActiveMetric,
     ConversionMetric,
     Experiment,
+    FactNullPolicy,
     FactRef,
     Filter,
     MeanMetric,
@@ -660,20 +661,30 @@ def _is_occurrence_only(ref: FactRef) -> bool:
 
 
 def resolved_measure_key(
-    ref: FactRef, *, value_column: str | None
-) -> tuple[str, tuple[tuple[str, str, tuple[str | int | float | bool, ...]], ...], str | None]:
+    ref: FactRef,
+    *,
+    value_column: str | None,
+    null_policy: FactNullPolicy = "error",
+) -> tuple[
+    str,
+    tuple[tuple[str, str, tuple[str | int | float | bool, ...]], ...],
+    str | None,
+    FactNullPolicy,
+]:
     """Identity of the resolved measure *ref* reduces to, before aggregation.
 
-    A resolved measure is a fact plus its filters plus a value column -
-    everything `metric_events` needs to build one ref's events. Two refs
-    that produce the same key here produce identical `metric_events`
-    output in every load-bearing column, which is how the definitions source
-    dedupes declared metrics down to the distinct measures actually scanned.
+    A resolved measure is a fact plus its filters plus a value column plus the
+    fact's NULL rule - everything `metric_events` needs to build one ref's
+    events. Two refs that produce the same key here produce identical
+    `metric_events` output in every load-bearing column, which is how the
+    definitions source dedupes declared metrics down to the distinct measures
+    actually scanned.
 
-    `value_column` folds to None for an occurrence-only ref (its events
-    never touch the value column). Filter order is canonicalized away:
-    filters apply conjunctively, so two refs differing only in filter
-    order are the same measure.
+    `value_column` folds to None for an occurrence-only ref, whose events are 1
+    per row; under ``"skip"`` its rows depend on the fact's own column, which the
+    fact name already fixes. Filter order is canonicalized away: filters apply
+    conjunctively, so two refs differing only in filter order are the same
+    measure.
     """
     filters_key = tuple(
         sorted(
@@ -683,7 +694,45 @@ def resolved_measure_key(
             key=lambda k: (k[0], k[1], tuple(map(repr, k[2]))),
         )
     )
-    return (ref.fact, filters_key, None if _is_occurrence_only(ref) else value_column)
+    return (
+        ref.fact,
+        filters_key,
+        None if _is_occurrence_only(ref) else value_column,
+        null_policy,
+    )
+
+
+def measure_rows(fact_table: ir.Table, ref: FactRef) -> ir.Table:
+    """The fact rows *ref* reads, before its value is: the fact's events under its filters."""
+    filtered = fact_table.filter(fact_table.event == ref.fact)
+    for flt in ref.filters:
+        filtered = _apply_filter(filtered, flt)
+    return filtered
+
+
+def outcome_rows(
+    rows: ir.Table,
+    exposures: ir.Table,
+    experiment: Experiment,
+    *,
+    band: tuple[int, int | None],
+) -> ir.Table:
+    """*rows* an outcome reads: an enrolled unit's rows strictly after its first
+    exposure, dated in its half-open *band* of days after that exposure and
+    through the observation horizon."""
+    anchors = exposures.select("unit_id", "first_exposure_ts").distinct()
+    joined = rows.join(anchors, rows.unit_id == anchors.unit_id, rname="{name}_anchor")
+    day = _local_date(joined.ts, experiment)
+    first_day = _local_date(joined.first_exposure_ts, experiment)
+    band_start, band_end = band
+    kept = joined.ts > joined.first_exposure_ts
+    if band_start:
+        kept &= day >= first_day + _days_literal(band_start).as_interval("D")
+    if band_end is not None:
+        kept &= day < first_day + _days_literal(band_end).as_interval("D")
+    if experiment.observation_horizon is not None:
+        kept &= day <= ibis.literal(experiment.observation_horizon_day)
+    return joined.filter(kept).select(rows.columns)
 
 
 def metric_events(
@@ -692,20 +741,24 @@ def metric_events(
     value_column: str | None = None,
     part: Literal["numerator", "denominator"] = "numerator",
     keep: Sequence[str] = (),
+    *,
+    null_policy: FactNullPolicy = "error",
 ) -> ir.Table:
     """Filter *fact_table* to the rows relevant for *metric* (or a ratio part).
 
-    `value_column` is the numeric column to use as the event value (None
-    for occurrence-only metrics - value is implicitly 1 per event). `part`
-    selects numerator vs denominator for a `RatioMetric`; ignored otherwise.
+    `value_column` is the fact's value column (None for an occurrence-only
+    fact). `part` selects numerator vs denominator for a `RatioMetric`;
+    ignored otherwise. `null_policy` is the fact's rule for a NULL value,
+    applied to occurrence and value refs alike: ``"zero"`` reads it as 0 and
+    keeps the row, ``"skip"`` drops the row. A read under ``"error"`` refuses
+    NULL values before it runs, so the rows here are those of ``"skip"``: SQL a
+    preview returns, which cannot refuse, then never counts a row its sums drop.
 
     Returns
     -------
     ir.Table
-        Columns: `unit_id`, `ts`, `metric`, `value`. A value-based ref
-        drops rows whose value column is NULL (complete-case); an
-        occurrence-only ref never reads the value column, so its rows
-        always count.
+        Columns: `unit_id`, `ts`, `metric`, `value` (1 per event for an
+        occurrence-only ref).
     """
     # ── Determine the reference Measure/FactRef ────────────────────────
     if isinstance(metric, RatioMetric):
@@ -720,32 +773,45 @@ def metric_events(
             _raise("query.builders.part_ratiometric", part=part)
         _ref = metric
 
-    # ── Filter to the metric's fact rows ───────────────────────────────
-    filtered = fact_table.filter(fact_table.event == _ref.fact)
-
-    # ── Apply metric-level filters ─────────────────────────────────────
-    for flt in _ref.filters:
-        filtered = _apply_filter(filtered, flt)
+    occurrence_only = _is_occurrence_only(_ref)
+    col_name = value_column if occurrence_only else (value_column or "value")
+    filtered = measure_rows(fact_table, _ref)
+    if col_name is not None and null_policy != "zero":
+        filtered = filtered.filter(filtered[col_name].notnull())
 
     # ── Build the value column ─────────────────────────────────────────
-    if _is_occurrence_only(_ref):
+    if occurrence_only:
         # Cast the literal explicitly: PostgreSQL otherwise returns NUMERIC, not a float.
         return filtered.mutate(
             metric=ibis.literal(metric.name),
             value=ibis.literal(1, type="int32").cast("float64"),
         ).select("unit_id", "ts", "metric", "value", *keep)
 
-    # A NULL value is dropped entirely (complete-case): counting it would
-    # inflate n_events while adding nothing to sum_value, biasing avg down.
-    col_name = value_column or "value"
-    filtered = filtered.filter(filtered[col_name].notnull())
-    value = filtered[col_name]
+    value = filtered[value_column or "value"]
     if value.type().is_boolean():
         value = value.ifelse(1, 0)
-    return filtered.mutate(
-        metric=ibis.literal(metric.name),
-        value=value.cast("float64"),
-    ).select("unit_id", "ts", "metric", "value", *keep)
+    value = value.cast("float64")
+    if null_policy == "zero":
+        value = ibis.coalesce(value, 0.0)
+    return filtered.mutate(metric=ibis.literal(metric.name), value=value).select(
+        "unit_id", "ts", "metric", "value", *keep
+    )
+
+
+def site_rows(
+    rows: ir.Table, experiment: Experiment, *, observation_cutoff: dt.datetime | None = None
+) -> ir.Table:
+    """*rows* whole-site volume reads: every unit's rows dated within
+    `[experiment.start, experiment.end]` (date-inclusive, an unset `end` open on
+    the right), and at or before *observation_cutoff* when a source snapshot pins
+    one, so site volume and arm moments see the same events."""
+    local_date = _local_date(rows.ts, experiment)
+    rows = rows.filter(local_date >= ibis.literal(experiment.start_day))
+    if experiment.end is not None:
+        rows = rows.filter(local_date <= ibis.literal(experiment.end_day))
+    if observation_cutoff is not None:
+        rows = rows.filter(rows.ts <= _utc_timestamp_literal(rows.ts, observation_cutoff))
+    return rows
 
 
 def _windowed_fact_sum(
@@ -756,11 +822,9 @@ def _windowed_fact_sum(
     value_column: str | None,
     part: Literal["numerator", "denominator"],
     observation_cutoff: dt.datetime | None = None,
+    null_policy: FactNullPolicy = "error",
 ) -> ir.Table:
-    """One ratio part's whole-site sum over events in
-    `[experiment.start, experiment.end]` (date-inclusive, an unset `end`
-    open on the right), and at or before *observation_cutoff* when a source
-    snapshot pins one, so site volume and arm moments see the same events.
+    """One ratio part's whole-site sum over the events `site_rows` keeps.
 
     Shared by `site_volume` (one fact table serving both ratio parts) and
     any caller resolving numerator/denominator against independently
@@ -768,13 +832,11 @@ def _windowed_fact_sum(
     NULL, so a whole-site ratio and its complement share one zero
     convention.
     """
-    events = metric_events(fact_table, metric, value_column, part=part)
-    local_date = _local_date(events.ts, experiment)
-    events = events.filter(local_date >= ibis.literal(experiment.start_day))
-    if experiment.end is not None:
-        events = events.filter(local_date <= ibis.literal(experiment.end_day))
-    if observation_cutoff is not None:
-        events = events.filter(events.ts <= _utc_timestamp_literal(events.ts, observation_cutoff))
+    events = site_rows(
+        metric_events(fact_table, metric, value_column, part=part, null_policy=null_policy),
+        experiment,
+        observation_cutoff=observation_cutoff,
+    )
     return events.aggregate(y=ibis.coalesce(events.value.sum(), 0.0))
 
 
@@ -785,6 +847,7 @@ def site_volume(
     *,
     value_column: str | None = None,
     observation_cutoff: dt.datetime | None = None,
+    null_policy: FactNullPolicy = "error",
 ) -> ir.Table:
     """Whole-site metric volume within the experiment's enrollment window
     (no exposure join - every unit's events count, exposed or not).
@@ -808,6 +871,7 @@ def site_volume(
         value_column=value_column,
         part="numerator",
         observation_cutoff=observation_cutoff,
+        null_policy=null_policy,
     )
     if isinstance(metric, RatioMetric):
         den = _windowed_fact_sum(
@@ -817,6 +881,7 @@ def site_volume(
             value_column=value_column,
             part="denominator",
             observation_cutoff=observation_cutoff,
+            null_policy=null_policy,
         )
         totals = num.cross_join(den, rname="{name}_den")
     else:
@@ -1249,31 +1314,38 @@ def post_exposure_stats(
     )
 
 
-def pre_period_stats(
-    events: ir.Table, exposures: ir.Table, experiment: Experiment, *, source_key: str
-) -> ir.Table:
-    """Day-grain sufficient stats for the CUPED pre-period covariate.
+def pre_period_rows(rows: ir.Table, exposures: ir.Table, experiment: Experiment) -> ir.Table:
+    """*rows* the CUPED pre-period covariate reads: an enrolled unit's rows in
+    `[first_exposure_date - n_pre_periods, first_exposure_ts)`.
 
-    Scoped to `[first_exposure_date - n_pre_periods, first_exposure_ts)`;
-    like `post_exposure_stats`, this filter must run on raw events before
-    `unit_day_stats` collapses them to day grain.
+    The lower bound compares against the localized day; the upper bound stays a
+    raw timestamp comparison.
     """
     fe = exposures.select(
         "unit_id",
         "first_exposure_ts",
         first_exposure_date=_local_date(exposures.first_exposure_ts, experiment),
     ).distinct()
-    joined = events.join(fe, events.unit_id == fe.unit_id, rname="{name}_fe")
+    joined = rows.join(fe, rows.unit_id == fe.unit_id, rname="{name}_fe")
     pre_start = joined.first_exposure_date - _days_literal(experiment.n_pre_periods).as_interval(
         "D"
     )
-    # Lower bound compares against the LOCALIZED day (pre_start derives
-    # from first_exposure_date); the upper bound stays a raw ts comparison.
     scoped = joined.filter(
         (_local_date(joined.ts, experiment) >= pre_start) & (joined.ts < joined.first_exposure_ts)
     )
+    return scoped.select(rows.columns)
+
+
+def pre_period_stats(
+    events: ir.Table, exposures: ir.Table, experiment: Experiment, *, source_key: str
+) -> ir.Table:
+    """Day-grain sufficient stats for the CUPED pre-period covariate.
+
+    Scoped by `pre_period_rows`; like `post_exposure_stats`, this filter must
+    run on raw events before `unit_day_stats` collapses them to day grain.
+    """
     return unit_day_stats(
-        scoped.select(events.columns), source_key=source_key, experiment=experiment
+        pre_period_rows(events, exposures, experiment), source_key=source_key, experiment=experiment
     )
 
 

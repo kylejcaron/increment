@@ -39,7 +39,15 @@ from increment.query.builders import (
     union_event_horizon,
     unit_day_stats,
 )
-from increment.query.fact_resolution import _find_fact_source, _resolve_value_column
+from increment.query.fact_resolution import (
+    OutcomeRows,
+    PrePeriodRows,
+    _find_fact_source,
+    _resolve_value_column,
+    covariate_ref,
+    fact_null_policy,
+    refuse_null_fact_values,
+)
 from increment.query.schemas import ARTIFACT_RELATION_SCHEMAS
 from increment.semantics.artifact import (
     AssignmentCountsExtension,
@@ -56,13 +64,14 @@ from increment.semantics.models import Definitions, RatioMetric
 from increment.sources import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence, Set
 
     import ibis.expr.types as ir
 
     from increment.query.artifact_contract import ArtifactContext, ArtifactStore
+    from increment.query.fact_resolution import NullValueCount
     from increment.semantics.artifact import UnitDayArtifactRef
-    from increment.semantics.models import Experiment, Metric
+    from increment.semantics.models import Experiment, FactRef, Metric
 
 
 def _binding_covariates(binding: Any) -> tuple[Any, ...]:
@@ -336,6 +345,7 @@ class ArtifactPublisher:
         validate_mixed_assignments: Callable[[], None],
         data_as_of: Callable[[ir.Table, str], Any],
         source_snapshot_evidence: Any,
+        null_value_counts: Callable[..., Mapping[str, NullValueCount]],
     ) -> None:
         self._experiment = experiment
         self._defs = definitions
@@ -352,6 +362,7 @@ class ArtifactPublisher:
         self._validate_mixed_assignments = validate_mixed_assignments
         self._data_as_of = data_as_of
         self._source_snapshot_evidence = source_snapshot_evidence
+        self._null_value_counts = null_value_counts
         # These expressions read only the source snapshot owned by publish.
         self._event_cache: dict[tuple[Any, ...], ir.Table] = {}
         self._uptake_cache: dict[str, ir.Table] = {}
@@ -450,7 +461,12 @@ class ArtifactPublisher:
         extra_sources = {
             request.source_name for request in requested if getattr(request, "source_name", None)
         }
+        # The covariate rows a published CUPED extension stores.
+        metrics = {metric.name: metric for metric in self._metrics}
+        covariate_refs: list[FactRef] = []
         for request in requested:
+            if request.kind == "cuped_preperiod":
+                covariate_refs.append(covariate_ref(metrics[request.metric_name]))
             if request.kind != "cuped_measure_covariate":
                 continue
             binding = self._experiment.bindings[request.metric_name]
@@ -458,6 +474,7 @@ class ArtifactPublisher:
                 item for item in _binding_covariates(binding) if item.name == request.covariate_name
             )
             if covariate.measure is not None:
+                covariate_refs.append(covariate.measure)
                 measure_source, _ = _find_fact_source(self._defs, covariate.measure.fact)
                 extra_sources.add(measure_source.name)
         from increment._evidence_types import AssignmentRequest
@@ -490,6 +507,12 @@ class ArtifactPublisher:
                     request.uptake_name
                     for request in requested
                     if request.kind == "encouragement_uptake"
+                ],
+                covariate_refs=covariate_refs,
+                triggered_metrics=[
+                    metrics[request.metric_names[0]]
+                    for request in requested
+                    if request.kind == "trigger_measure_stats"
                 ],
             )
             extension_specs = publisher._assemble_extension_specs(
@@ -567,6 +590,7 @@ class ArtifactPublisher:
             metric,
             value_column=value_col,
             part=cast(Literal["numerator", "denominator"], part),
+            null_policy=fact_null_policy(self._defs, ref.fact),
         )
         evidence = self._source_snapshot_evidence
         if evidence is not None:
@@ -654,6 +678,40 @@ class ArtifactPublisher:
             for key, (ref, _metric, column, _part, _physical) in specs.items()
         }
 
+    def _exposure_bounds(
+        self,
+        exposures: ir.Table,
+        *,
+        covariate_refs: Sequence[FactRef],
+        site_volume_metrics: Set[str],
+        triggered_metrics: Sequence[Metric],
+    ) -> dict[str, Any]:
+        """The first and last exposure days, read beside the published metrics' NULL counts.
+
+        The artifact stores the outcome rows its metrics read, the rows after each unit's
+        trigger of *triggered_metrics*, the pre-period rows of *covariate_refs* and the
+        whole-site rows of *site_volume_metrics*, so a NULL value a run would refuse is
+        refused here, before anything is written.
+        """
+        outcomes = [OutcomeRows(metric, exposures) for metric in self._metrics]
+        if triggered_metrics:
+            population = self._get_trigger_population()
+            outcomes += [OutcomeRows(metric, population) for metric in triggered_metrics]
+        null_counts = self._null_value_counts(
+            outcomes,
+            pre_period=[PrePeriodRows(ref, exposures) for ref in covariate_refs],
+            site=[metric for metric in self._metrics if metric.name in site_volume_metrics],
+        )
+        bounds = exposures.aggregate(
+            first_ds=exposures.first_exposure_date.min(),
+            last_ds=exposures.first_exposure_date.max(),
+        )
+        if null_counts:
+            bounds = bounds.mutate(**{name: count.null_rows for name, count in null_counts.items()})
+        row = self._con.to_pyarrow(bounds).to_pylist()[0]
+        refuse_null_fact_values(null_counts, row)
+        return row
+
     def _assemble_publication(
         self,
         context: Any,
@@ -661,6 +719,8 @@ class ArtifactPublisher:
         *,
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: set[str] | None = None,
+        covariate_refs: Sequence[FactRef] = (),
+        triggered_metrics: Sequence[Metric] = (),
     ) -> _PublicationAssembly:
         self._validate_mixed_assignments()
         exposures = self._get_exposures().mutate(
@@ -684,12 +744,12 @@ class ArtifactPublisher:
             ).cast(ibis_dt.Timestamp(timezone="UTC", scale=6)),
             first_exposure_date=exposures.first_exposure_date,
         )
-        exposure_bounds = self._con.to_pyarrow(
-            exposures.aggregate(
-                first_ds=exposures.first_exposure_date.min(),
-                last_ds=exposures.first_exposure_date.max(),
-            )
-        ).to_pylist()[0]
+        exposure_bounds = self._exposure_bounds(
+            exposures,
+            covariate_refs=covariate_refs,
+            site_volume_metrics=site_volume_metrics or set(),
+            triggered_metrics=triggered_metrics,
+        )
         first_ds = exposure_bounds["first_ds"] or dt.date.max
         last_exposure_ds = exposure_bounds["last_ds"] or first_ds
         measure_specs: dict[str, tuple[Any, Metric, str | None, str, tuple[Any, ...]]] = {}
@@ -700,7 +760,9 @@ class ArtifactPublisher:
             fs, fact_def = _find_fact_source(self._defs, ref.fact)
             value_col = _resolve_value_column(fs, fact_def)
             key = _measure_recipe_key(ref)
-            physical_key = resolved_measure_key(ref, value_column=value_col)
+            physical_key = resolved_measure_key(
+                ref, value_column=value_col, null_policy=fact_def.missing
+            )
             if metric.name in (site_volume_metrics or set()):
                 site_volume_keys.add(physical_key)
             measure_specs.setdefault(key, (ref, metric, value_col, part, physical_key))
@@ -924,7 +986,9 @@ class ArtifactPublisher:
         measure = metric.numerator if isinstance(metric, RatioMetric) else metric
         fs, fact_def = _find_fact_source(self._defs, measure.fact)
         value_col = _resolve_value_column(fs, fact_def)
-        pinned = self._event_cache[resolved_measure_key(measure, value_column=value_col)]
+        pinned = self._event_cache[
+            resolved_measure_key(measure, value_column=value_col, null_policy=fact_def.missing)
+        ]
         pre_events = pinned.filter(~pinned._metadata).select("unit_id", "ts", "metric", "value")
         if not self._experiment.n_pre_periods:
             kind = request.kind
@@ -999,7 +1063,12 @@ class ArtifactPublisher:
             filters=measure.filters,
             window_days=measure.window_days,
         )
-        events = metric_events(self._get_fact_table(source), metric, value_column=value_col)
+        events = metric_events(
+            self._get_fact_table(source),
+            metric,
+            value_column=value_col,
+            null_policy=fact.missing,
+        )
         anchors = exposures.select(
             "unit_id",
             "first_exposure_ts",
@@ -1110,6 +1179,7 @@ class ArtifactPublisher:
                 metric,
                 value_column=value_col,
                 part=part,
+                null_policy=fact.missing,
             )
             joined = events.join(anchors, events.unit_id == anchors.unit_id).filter(
                 events.ts > anchors.first_trigger_ts
@@ -1251,7 +1321,11 @@ class ArtifactPublisher:
                 emitted_recipe_keys.add(measure_key)
                 fs, fact_def = _find_fact_source(self._defs, measure.fact)
                 value_col = _resolve_value_column(fs, fact_def)
-                pinned = self._event_cache[resolved_measure_key(measure, value_column=value_col)]
+                pinned = self._event_cache[
+                    resolved_measure_key(
+                        measure, value_column=value_col, null_policy=fact_def.missing
+                    )
+                ]
                 events = pinned.filter(~pinned._metadata).select("unit_id", "ts", "metric", "value")
                 local_day = _local_date(events.ts, self._experiment)
                 events = events.filter(local_day >= ibis.literal(self._experiment.start_day))

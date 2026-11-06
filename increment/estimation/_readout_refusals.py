@@ -137,8 +137,18 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
             lambda *, control_group, observed_arms: (
                 f"no treatment arm to compare against control {control_group!r}: the "
                 f"loaded moments carry only {sorted(observed_arms)!r}. A lift readout "
-                "needs at least one non-control arm; use readouts.srm() to monitor a "
-                "treatment-free prefix."
+                "needs at least one non-control arm; use increment.workflows.srm to "
+                "monitor a treatment-free prefix."
+            ),
+        ),
+        "readout.arms.none_enrolled": RefusalSpec(
+            "readout.arms.none_enrolled",
+            InvalidRequestError,
+            lambda *, control_group, counts: (
+                f"no unit is enrolled in any arm (control {control_group!r}; units by arm: "
+                f"{dict(counts)!r}), so there is nothing to compare. Check what selects the "
+                "enrolled units: the experiment key and exposure filters, the start and end "
+                "dates, or the rows passed in."
             ),
         ),
         "readout.asof.segment_unsupported": RefusalSpec(

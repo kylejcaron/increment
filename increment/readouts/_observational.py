@@ -131,7 +131,18 @@ def _estimate_observational(
     methods_by_metric = {
         metric.name: _runtime_methods(config_by_name[metric.name], design) for metric in selected
     }
-    selected = [metric for metric in selected if methods_by_metric[metric.name]]
+    control = str(design.control_group)
+    # An outcome without observations in the control arm and a treatment arm has no
+    # contrast: its cells are unavailable rows. A family member instead keeps its slot.
+    selected = [
+        metric
+        for metric in selected
+        if methods_by_metric[metric.name]
+        and (
+            getattr(plan.procedures[metric.name].family, "member", False)
+            or (control in evidence.arms(metric) and evidence.arms(metric) - {control})
+        )
+    ]
     non_secondary = [m for m in selected if plan.procedures[m.name].role != "secondary"]
     secondary = [m for m in selected if plan.procedures[m.name].role == "secondary"]
 

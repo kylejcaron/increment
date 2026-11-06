@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -52,9 +52,10 @@ from increment._immutable import _FrozenMapping
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_operations import DashboardGroupData
 from increment._source_types import EvidenceCapabilities, ScalarEvidenceDeclaration
-from increment._window import NO_DATA_SIGNAL, resolve_window_days
-from increment.errors import CodedError, RefusalSpec
+from increment._window import NO_DATA_SIGNAL, outcome_band
+from increment.errors import PACKAGE_FRAMES, CodedError, RefusalSpec
 from increment.errors import refuse as _refuse
+from increment.errors import warn as _warn_spec
 from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.query._native_dashboard import (
     _dashboard_quantiles,
@@ -74,6 +75,8 @@ from increment.query._native_refusals import (
     _NATIVE_COVARIATE_DTYPE,
     _NATIVE_COVARIATE_KIND,
     _NATIVE_COVARIATE_UNRESOLVED,
+    _NATIVE_EXPERIMENT_KEY_UNMATCHED,
+    _NATIVE_FACT_NO_ROWS,
     _NATIVE_TRIGGER_EVIDENCE_REQUIRED,
     _percentile_winsorization,
     _refuse_operation,
@@ -104,10 +107,15 @@ from increment.query.builders import (
     join_breakout_dimension,
     join_pre_period_covariate,
     join_unit_covariates,
+    measure_rows,
     metric_events,
+    outcome_rows,
     panel_spine,
     post_exposure_stats,
+    pre_period_rows,
     pre_period_stats,
+    resolved_measure_key,
+    site_rows,
     site_volume,
     triggered_population,
     union_event_horizon,
@@ -118,12 +126,22 @@ from increment.query.builders import (
     winsorize_unit_totals,
 )
 from increment.query.fact_resolution import (
+    NullValueCount,
+    OutcomeRows,
+    PrePeriodRows,
     _find_fact_source,
     _rename_to_builder_cols,
     _resolve_breakout_fact_source,
     _resolve_value_column,
+    checked_rows,
+    covariate_ref,
+    fact_null_policy,
+    fact_refs,
+    null_value_count,
+    refuse_null_fact_values,
     resolve_fact_source_sql,
     validate_fact_source_schema,
+    with_null_counts,
 )
 from increment.query.integrity import (
     arm_counts,
@@ -182,6 +200,7 @@ if TYPE_CHECKING:
     from increment._evidence_types import RowValue
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Observational, Randomized
+    from increment.semantics.models import FactRef
     from increment.sequential_state import SequentialCheckpoint
     from increment.sources import Grain, _BuiltinMomentSource
 
@@ -385,6 +404,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar],
         ] = {}
         self._cuped_relation_cache: dict[tuple[str, str, dt.date | None], Table] = {}
+        self._unloaded_facts_warned: set[str] = set()
         self._reduction_calls = 0
         self._reduction_batch_depth = 0
         self._assignment_validation_depth = 0
@@ -1524,11 +1544,17 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             num_fs, num_fact_def = _find_fact_source(self._defs, metric.numerator.fact)
             num_fact_tbl = self._get_fact_table(num_fs)
             num_value_col = _resolve_value_column(num_fs, num_fact_def)
-            return metric_events(num_fact_tbl, metric, value_column=num_value_col, part="numerator")
+            return metric_events(
+                num_fact_tbl,
+                metric,
+                value_column=num_value_col,
+                part="numerator",
+                null_policy=num_fact_def.missing,
+            )
         fs, fact_def = _find_fact_source(self._defs, metric.fact)
         fact_tbl = self._get_fact_table(fs)
         value_col = _resolve_value_column(fs, fact_def)
-        return metric_events(fact_tbl, metric, value_column=value_col)
+        return metric_events(fact_tbl, metric, value_column=value_col, null_policy=fact_def.missing)
 
     def _union_event_horizon(self, metrics: Sequence[Metric] | None = None) -> ir.Scalar:
         """Memoized union of declared and any caller-selected metrics.
@@ -1571,7 +1597,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 den_tbl = self._get_fact_table(den_fs)
                 den_col = _resolve_value_column(den_fs, den_fact_def)
                 event_tables.append(
-                    metric_events(den_tbl, metric, value_column=den_col, part="denominator")
+                    metric_events(
+                        den_tbl,
+                        metric,
+                        value_column=den_col,
+                        part="denominator",
+                        null_policy=den_fact_def.missing,
+                    )
                 )
         return union_event_horizon(event_tables, self._experiment)
 
@@ -1598,6 +1630,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             validate_mixed_assignments=self._validate_mixed_assignments,
             data_as_of=self._data_as_of,
             source_snapshot_evidence=self._session.source_snapshot_evidence,
+            null_value_counts=self._null_value_counts,
         )
 
     def publish_unit_day_artifact(
@@ -1742,6 +1775,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._get_fact_table(fact_source),
             measure_metric,
             value_column=_resolve_value_column(fact_source, fact),
+            null_policy=fact.missing,
         )
         anchors = exposures.select(
             "unit_id",
@@ -1798,6 +1832,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                             update={"kind": covariate.kind, "missing": covariate.missing}
                         )
         return covariate
+
+    def _declared_covariate_rows(
+        self, covariate: Any, metric: Metric, exposures: Table
+    ) -> tuple[PrePeriodRows, ...]:
+        """The pre-period rows a declared CUPED covariate reads: a measure's own rows; a
+        unit property reads no fact rows."""
+        if covariate is None:
+            return ()
+        measure = getattr(self._resolve_covariate_binding(covariate, metric), "measure", None)
+        return () if measure is None else (PrePeriodRows(measure, exposures),)
 
     def _bound_scalar_covariate_pre_stats(
         self,
@@ -1894,6 +1938,26 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         experiment's ``experiment_id`` (see :meth:`_build_exposure_events_table`).
         """
         exposure_def = self._exp_lookup_exposures[exposure_name]
+        tbl, keyed = self._unscoped_exposure_events(exposure_name, dim_joined=dim_joined)
+        if keyed:
+            tbl = self._scope_to_experiment_key(tbl)
+        elif exposure_def.sql is not None:
+            # The column is documented as optional, and downstream reductions
+            # read it unconditionally, so supply it rather than crashing on a
+            # query that returned exactly the required three columns.
+            tbl = tbl.mutate(experiment_id=ibis.literal(self._experiment.name))
+        # Declared Exposure.filters (fact-based exposures only; validated at load
+        # time) narrow enrollment.
+        for flt in exposure_def.filters:
+            tbl = _apply_filter(tbl, flt)
+        return tbl
+
+    def _unscoped_exposure_events(
+        self, exposure_name: str, *, dim_joined: bool
+    ) -> tuple[Table, bool]:
+        """The named exposure's rows before experiment-key scoping, and whether
+        the source itself carries an ``experiment_id`` column."""
+        exposure_def = self._exp_lookup_exposures[exposure_name]
         if exposure_def.sql is not None:
             tbl = self._session.source_sql(exposure_def.sql)
             # first_exposures() requires unit_id/ts/group_id; a documented
@@ -1918,14 +1982,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 )
             if self._timestamp_kinds_mixed():
                 tbl = _naive_utc_ts(tbl)
-            if "experiment_id" in tbl.columns:
-                tbl = tbl.filter(tbl.experiment_id == self._experiment.name)
-            else:
-                # The column is documented as optional, and downstream reductions
-                # read it unconditionally, so supply it rather than crashing on a
-                # query that returned exactly the required three columns.
-                tbl = tbl.mutate(experiment_id=ibis.literal(self._experiment.name))
-            return tbl
+            return tbl, "experiment_id" in tbl.columns
 
         # Exposure._exactly_one_source enforces sql XOR fact, so fact is
         # guaranteed non-None once sql is None.
@@ -1952,22 +2009,42 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 self._experiment.unit,
                 naive_utc=self._timestamp_kinds_mixed(),
             )
-        tbl = tbl.filter(tbl.event == exposure_def.fact)
-        if raw_has_experiment_id:
-            # NULL experiment_id can mark unrelated rows sharing this fact, such as
-            # pre-period events, and those stay excluded. An all-NULL column carries
-            # no signal, so coalesce it like a missing column rather than enrolling
-            # nobody; one windowed aggregate detects that case.
-            column_unused = ~tbl.experiment_id.notnull().any()
-            tbl = tbl.mutate(
-                experiment_id=ibis.ifelse(column_unused, self._experiment.name, tbl.experiment_id)
+        return tbl.filter(tbl.event == exposure_def.fact), raw_has_experiment_id
+
+    def _scope_to_experiment_key(self, tbl: Table) -> Table:
+        """Keep the rows whose ``experiment_id`` is this experiment's name.
+
+        A NULL key can mark unrelated rows sharing the relation, such as pre-period
+        events, and those stay excluded. An all-NULL column carries no key, so it
+        enrolls every row like a missing column; one windowed aggregate detects it.
+        """
+        column_unused = ~tbl.experiment_id.notnull().any()
+        tbl = tbl.mutate(
+            experiment_id=ibis.ifelse(column_unused, self._experiment.name, tbl.experiment_id)
+        )
+        return tbl.filter(tbl.experiment_id == self._experiment.name)
+
+    def _refuse_unmatched_experiment_key(self) -> None:
+        """Refuse an empty enrollment whose exposure rows carry keys, none of them this one."""
+        tbl, keyed = self._unscoped_exposure_events(self._experiment.exposure, dim_joined=False)
+        if not keyed:
+            return
+        name = self._experiment.name
+        (probe,) = self._session.fetch_arrow(
+            tbl.aggregate(
+                keyed=tbl.experiment_id.notnull().any(),
+                matched=(tbl.experiment_id == name).any(),
             )
-            tbl = tbl.filter(tbl.experiment_id == self._experiment.name)
-        # Declared Exposure.filters (fact-based exposures only; validated at load
-        # time) narrow enrollment.
-        for flt in exposure_def.filters:
-            tbl = _apply_filter(tbl, flt)
-        return tbl
+        ).to_pylist()
+        if not probe["keyed"] or probe["matched"]:
+            return
+        keys = tbl.filter(tbl.experiment_id.notnull()).select(key=tbl.experiment_id.cast("string"))
+        observed = self._session.fetch_arrow(keys.distinct().order_by("key").limit(5)).to_pylist()
+        _refuse(
+            _NATIVE_EXPERIMENT_KEY_UNMATCHED,
+            experiment=name,
+            observed_keys=tuple(row["key"] for row in observed),
+        )
 
     def _build_panel_for_metric(
         self,
@@ -2280,13 +2357,21 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             num_fact_tbl = self._get_fact_table(num_fs)
             num_value_col = _resolve_value_column(num_fs, num_fact_def)
             events = metric_events(
-                num_fact_tbl, metric, value_column=num_value_col, part="numerator"
+                num_fact_tbl,
+                metric,
+                value_column=num_value_col,
+                part="numerator",
+                null_policy=num_fact_def.missing,
             )
             den_fs, den_fact_def = _find_fact_source(self._defs, metric.denominator.fact)
             den_fact_tbl = self._get_fact_table(den_fs)
             den_value_col = _resolve_value_column(den_fs, den_fact_def)
             den_events = metric_events(
-                den_fact_tbl, metric, value_column=den_value_col, part="denominator"
+                den_fact_tbl,
+                metric,
+                value_column=den_value_col,
+                part="denominator",
+                null_policy=den_fact_def.missing,
             )
             fact_tbl = num_fact_tbl
             value_col = num_value_col
@@ -2301,7 +2386,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             fs, fact_def = _find_fact_source(self._defs, metric.fact)
             fact_tbl = self._get_fact_table(fs)
             value_col = _resolve_value_column(fs, fact_def)
-            events = metric_events(fact_tbl, metric, value_column=value_col)
+            events = metric_events(
+                fact_tbl, metric, value_column=value_col, null_policy=fact_def.missing
+            )
             data_as_of = self._data_as_of(fact_tbl, metric.fact)
 
         outcome_exposures = exposures
@@ -2345,6 +2432,110 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         return panel, spine, stats, events, den_events, fact_tbl, value_col, data_as_of
 
+    def _null_value_counts(
+        self,
+        outcomes: Sequence[OutcomeRows] = (),
+        *,
+        pre_period: Sequence[PrePeriodRows] = (),
+        site: Sequence[Metric] = (),
+    ) -> dict[str, NullValueCount]:
+        """Lazy counts of NULL values of a fact without a NULL rule among the rows a read uses.
+
+        One count per fact, filters and scope: the *outcomes*' rows (each unit's rows
+        strictly after its anchor, dated in the metric's window or retention band, through
+        the observation horizon or a pinned snapshot's effective edge for the metric), the
+        *pre_period* CUPED covariate rows, and *site* metrics' whole-site rows. Every scope
+        stops at any pinned snapshot cutoff. A read projects the counts beside its own
+        aggregates, so the check issues no statement of its own.
+        """
+        evidence = self._session.source_snapshot_evidence
+        counts: dict[str, NullValueCount] = {}
+        seen: set[tuple[Any, ...]] = set()
+
+        def count(ref: FactRef, scope: tuple[Any, ...], read: Callable[[Table], Table]) -> None:
+            fs, fact = _find_fact_source(self._defs, ref.fact)
+            key = (*scope, ref.fact, resolved_measure_key(ref, value_column=fact.column)[1])
+            if fact.column is None or fact.missing != "error" or key in seen:
+                return
+            seen.add(key)
+            rows = measure_rows(self._get_fact_table(fs), ref)
+            if evidence is not None:
+                rows = rows.filter(
+                    rows.ts <= _utc_timestamp_literal(rows.ts, evidence.observation_cutoff_ts)
+                )
+            counts[f"_fact_null_rows_{len(counts)}"] = null_value_count(fact, read(rows))
+
+        for metric, cohort in outcomes:
+            # A triggered outcome reads each unit's rows from its trigger on.
+            anchors = (
+                cohort.mutate(first_exposure_ts=cohort.first_trigger_ts)
+                if "first_trigger_ts" in cohort.columns
+                else cohort
+            )
+            experiment = (
+                self._experiment
+                if evidence is None
+                else self._pinned_spine_experiment(metric, evidence)
+            )
+            band = outcome_band(metric)
+            outcome = partial(outcome_rows, exposures=anchors, experiment=experiment, band=band)
+            scope = ("outcome", id(cohort), band, experiment.observation_horizon_day)
+            for ref in fact_refs(metric):
+                count(ref, scope, outcome)
+        if self._experiment.n_pre_periods > 0:
+            for covariate in pre_period:
+                count(
+                    covariate.ref,
+                    ("pre_period", id(covariate.exposures)),
+                    partial(
+                        pre_period_rows,
+                        exposures=covariate.exposures,
+                        experiment=self._experiment,
+                    ),
+                )
+        for metric in site:
+            for ref in fact_refs(metric):
+                count(ref, ("site",), partial(site_rows, experiment=self._experiment))
+        return counts
+
+    def _fetch_outcome(
+        self, query: Table, metric: Metric, exposures: Table, *, covariate: bool = False
+    ) -> pa.Table:
+        """Fetch *query*, refusing NULL values of *metric*'s facts read beside it.
+
+        With *covariate*, the read also uses *metric*'s CUPED pre-period rows. The
+        counts arrive on their own row, so a result without rows refuses too.
+        """
+        counts = self._null_value_counts(
+            (OutcomeRows(metric, exposures),),
+            pre_period=(PrePeriodRows(covariate_ref(metric), exposures),) if covariate else (),
+        )
+        if not counts:
+            return self._session.fetch_arrow(query)
+        return checked_rows(self._session.fetch_arrow(with_null_counts(query, counts)), counts)
+
+    def _outcome_record_batches(
+        self, relation: Table, counts: Mapping[str, NullValueCount]
+    ) -> Iterator[pa.RecordBatch]:
+        """Stream *relation*, refusing NULL values *counts* find before a batch is used.
+
+        *relation* has one row per cohort unit and *counts* read only cohort units'
+        rows, so a stream without rows has nothing to refuse.
+        """
+        record_batches = artifact_query_ports().sequential_capture.record_batches
+        if not counts:
+            yield from record_batches(self._con, relation)
+            return
+        checked = False
+        stream = record_batches(
+            self._con, relation.mutate(**{name: count.null_rows for name, count in counts.items()})
+        )
+        for batch in stream:
+            if not checked and batch.num_rows:
+                refuse_null_fact_values(counts, batch.slice(0, 1).to_pylist()[0])
+                checked = True
+            yield batch.drop_columns(list(counts))
+
     _NO_DATA_SIGNAL = NO_DATA_SIGNAL
 
     def _data_as_of(self, fact_tbl: Table, fact: str) -> ir.Scalar:
@@ -2363,7 +2554,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         ``panel_sql``/``summary_sql`` never trigger a warehouse
         round-trip just to compute it. Coalesced against a far-future
         sentinel so a fact with zero rows doesn't propagate SQL NULL
-        through ``ibis.least`` and wrongly cap censoring to nothing.
+        through ``ibis.least`` and wrongly cap censoring to nothing;
+        :meth:`_censoring_bookkeeping` reports that case instead.
         """
         scoped = fact_tbl.filter(fact_tbl.event == fact)
         return cast(
@@ -2372,6 +2564,70 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 _local_date(scoped.ts, self._experiment).max(),
                 ibis.literal(self._NO_DATA_SIGNAL),
             ),
+        )
+
+    def _censoring_bookkeeping(
+        self, metric: Metric, exposures: Table, pre_period: Sequence[PrePeriodRows] = ()
+    ) -> Callable[[Table], list[dict[str, Any]]]:
+        """Execute censoring bookkeeping rows for *metric* through this source.
+
+        Each fact the metric reads gets a ``max(ts) IS NULL`` flag projected onto
+        the one-row bookkeeping query, beside the freshness scalar that query
+        already reads, so a fact with no loaded rows warns without another round
+        trip; the query stays the same on every call, so repeats are served from
+        the session's cache. Event labels are read, and the warning emitted once
+        per fact, only on that path. The same query counts the NULL values the
+        outcome reads for *exposures* and the *pre_period* covariate rows, refused
+        before the outcome moments are read.
+        """
+        facts = tuple(
+            dict.fromkeys(
+                (metric.numerator.fact, metric.denominator.fact)
+                if isinstance(metric, RatioMetric)
+                else (metric.fact,)
+            )
+        )
+        sources = [_find_fact_source(self._defs, fact)[0] for fact in facts]
+        null_counts = self._null_value_counts(
+            (OutcomeRows(metric, exposures),), pre_period=pre_period
+        )
+
+        def execute(query: Table) -> list[dict[str, Any]]:
+            flags = {name: count.null_rows for name, count in null_counts.items()}
+            for index, (fact, source) in enumerate(zip(facts, sources, strict=True)):
+                fact_tbl = self._get_fact_table(source)
+                loaded_through = fact_tbl.filter(fact_tbl.event == fact).ts.max()
+                flags[f"_fact_unloaded_{index}"] = loaded_through.isnull().as_scalar()
+            rows = self._session.fetch_arrow(query.mutate(**flags)).to_pylist()
+            for row in rows:
+                refuse_null_fact_values(null_counts, row)
+                for name in null_counts:
+                    del row[name]
+            for index, (fact, source) in enumerate(zip(facts, sources, strict=True)):
+                unloaded = any(row.pop(f"_fact_unloaded_{index}") for row in rows)
+                if unloaded and fact not in self._unloaded_facts_warned:
+                    self._unloaded_facts_warned.add(fact)
+                    self._warn_fact_no_rows(fact, source)
+            return rows
+
+        return execute
+
+    def _warn_fact_no_rows(self, fact: str, source: FactSource) -> None:
+        fact_tbl = self._get_fact_table(source)
+        labels = fact_tbl.filter(fact_tbl.event.notnull()).select(
+            event=fact_tbl.event.cast("string")
+        )
+        observed = self._session.fetch_arrow(
+            labels.distinct().order_by("event").limit(5)
+        ).to_pylist()
+        _warn_spec(
+            _NATIVE_FACT_NO_ROWS,
+            skip_file_prefixes=PACKAGE_FRAMES,
+            context={
+                "fact": fact,
+                "fact_source": source.name,
+                "observed_events": tuple(row["event"] for row in observed),
+            },
         )
 
     def _resolve_breakout_props(
@@ -2416,7 +2672,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         covariate feeds both component slopes (docs/guides/cuped.md).
         """
         if self._experiment.n_pre_periods > 0:
-            return metric_events(fact_tbl, metric, value_column=value_col)
+            return metric_events(
+                fact_tbl,
+                metric,
+                value_column=value_col,
+                null_policy=fact_null_policy(self._defs, covariate_ref(metric).fact),
+            )
         return None
 
     def _validate_cluster_labels(self, exposures: Table, cluster: str) -> None:
@@ -2713,12 +2974,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 result = accounting.left_join(
                     aggregates, "group_id", rname="{name}_summary"
                 ).left_join(event_counts, "group_id", rname="{name}_events")
-                window = (
-                    metric.band
-                    if isinstance(metric, RetentionMetric)
-                    else (0, resolve_window_days(metric))
-                )
-                for record in self._session.fetch_arrow(result).to_pylist():
+                window = outcome_band(metric)
+                # One row per group with an enrolled unit, and the counts read only
+                # enrolled units' rows: a result without rows has nothing to refuse.
+                counts = self._null_value_counts((OutcomeRows(metric, exposures),))
+                for record in self._checked_rows(result, counts):
                     rows.append(
                         _observed_dashboard_group(metric, record, window, population=population)
                     )
@@ -3209,6 +3469,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 want_cuped=want_cuped,
                 pre_stats_override=pre_stats_override,
                 covariate_missing=covariate.missing if covariate is not None else None,
+                covariate_rows=self._declared_covariate_rows(covariate, metric, exposures),
             )
             tables.append(self._session.fetch_arrow(summary))
 
@@ -3230,6 +3491,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         ``site_volume``'s convention, so an empty window cannot reach
         ``sitewide_evidence``'s ``float(row["y"])`` as NULL.
         """
+        ref = getattr(metric, part) if isinstance(metric, RatioMetric) else metric
         return _windowed_fact_sum(
             fact_tbl,
             metric,
@@ -3237,6 +3499,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             value_column=value_col,
             part=part,
             observation_cutoff=self._site_observation_cutoff(),
+            null_policy=fact_null_policy(self._defs, ref.fact),
         )
 
     def _site_observation_cutoff(self) -> dt.datetime | None:
@@ -3253,8 +3516,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         numerator and denominator may resolve to different fact
         sources, so this always resolves them independently via two
         ``_windowed_metric_sum`` calls; a non-ratio metric has only one
-        fact table and calls ``site_volume`` directly.
+        fact table and calls ``site_volume`` directly. The first query
+        also counts the NULL values among the whole-site rows.
         """
+        counts = self._null_value_counts(site=(metric,))
         if isinstance(metric, RatioMetric):
             num_fs, num_fact_def = _find_fact_source(self._defs, metric.numerator.fact)
             num_fact_tbl = self._get_fact_table(num_fs)
@@ -3262,9 +3527,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             den_fs, den_fact_def = _find_fact_source(self._defs, metric.denominator.fact)
             den_fact_tbl = self._get_fact_table(den_fs)
             den_value_col = _resolve_value_column(den_fs, den_fact_def)
-            num_row = self._session.fetch_arrow(
-                self._windowed_metric_sum(num_fact_tbl, metric, num_value_col, "numerator")
-            ).to_pylist()[0]
+            num_row = self._checked_row(
+                self._windowed_metric_sum(num_fact_tbl, metric, num_value_col, "numerator"),
+                counts,
+            )
             den_row = self._session.fetch_arrow(
                 self._windowed_metric_sum(den_fact_tbl, metric, den_value_col, "denominator")
             ).to_pylist()[0]
@@ -3278,8 +3544,28 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._experiment,
             value_column=value_col,
             observation_cutoff=self._site_observation_cutoff(),
+            null_policy=fact_def.missing,
         )
-        return self._session.fetch_arrow(volume).to_pylist()[0]
+        return self._checked_row(volume, counts)
+
+    def _checked_row(self, query: Table, counts: Mapping[str, NullValueCount]) -> dict[str, Any]:
+        """Fetch the one row of the aggregate *query*, refusing a NULL value *counts* find."""
+        return self._checked_rows(query, counts)[0]
+
+    def _checked_rows(
+        self, query: Table, counts: Mapping[str, NullValueCount]
+    ) -> list[dict[str, Any]]:
+        """Fetch *query* with *counts* projected onto each of its rows, refusing a NULL
+        value they find. A result without rows refuses nothing."""
+        if counts:
+            query = query.mutate(**{name: count.null_rows for name, count in counts.items()})
+        rows = self._session.fetch_arrow(query).to_pylist()
+        if rows:
+            refuse_null_fact_values(counts, rows[0])
+        for row in rows:
+            for name in counts:
+                del row[name]
+        return rows
 
     def sitewide_evidence(
         self,
@@ -3536,7 +3822,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             breakouts=tuple(sorted({b.property for b in self._experiment.breakouts})),
             triggered_observation_edges=self.triggered_observation_edges,
             build_breakout_properties=self._build_breakout_properties_table,
-            fetch_arrow=self._session.fetch_arrow,
+            fetch_outcome=self._fetch_outcome,
             defs=self._defs,
             preflight_breakout=self._preflight_breakout,
             preflight_day_request=self._preflight_day_request,
@@ -3657,6 +3943,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     if scalar_covariate is not None
                     else None
                 ),
+                covariate_rows=self._declared_covariate_rows(scalar_covariate, metric, exposures),
             )
             # Row dicts, never pa.concat_tables: differently winsorized metrics get
             # different winsor-column dtypes (null vs double), which it rejects.
@@ -4460,6 +4747,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if population == "assigned":
             mixed = self._mixed_assignment_units or 0
             unassigned = self._unassigned_assignment_units or 0
+            if not (counts or mixed or unassigned):
+                self._refuse_unmatched_experiment_key()
             if mixed:
                 counts[MIXED_ASSIGNMENT_LABEL] = mixed
             if unassigned:
@@ -4588,7 +4877,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Capture only units finalized through the explicit common horizon."""
         artifact_context = artifact_query_ports().publisher.artifact_context
         capture_relations = artifact_query_ports().sequential_capture.capture_relations
-        record_batches = artifact_query_ports().sequential_capture.record_batches
         validate_relational_capture = (
             artifact_query_ports().sequential_capture.validate_relational_capture
         )
@@ -4651,6 +4939,24 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 )
                 cohort = anchors.filter(final_day(anchors) <= ibis.literal(as_of))
                 metrics = {metric.name: metric for metric in pinned.context.metrics}
+                outcomes = [
+                    metrics[model.metric]
+                    for model in selected_registration.models
+                    if model.observable == "outcome"
+                ]
+                # The covariate is scoped to before assignment, whichever population is read.
+                covariate_cohort = (
+                    pinned._assignment_anchored(cohort) if population == "triggered" else cohort
+                )
+                null_counts = pinned._null_value_counts(
+                    tuple(OutcomeRows(metric, cohort) for metric in outcomes),
+                    pre_period=tuple(
+                        PrePeriodRows(covariate_ref(metric), covariate_cohort)
+                        for metric in outcomes
+                    )
+                    if covariate
+                    else (),
+                )
 
                 def relation_for(model):
                     if model.observable == "uptake":
@@ -4661,7 +4967,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     pinned,
                     relation_for,
                     cohort,
-                    lambda relation: record_batches(pinned._con, relation),
+                    lambda relation: pinned._outcome_record_batches(relation, null_counts),
                     recipe_id=recipe_id,
                     finalized=finalized,
                     as_of=as_of,
@@ -4678,30 +4984,17 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 )
 
             def outcome(metric, cohort, population):
+                events = pinned._metric_primary_events(metric)
+                den_events = None
                 if isinstance(metric, RatioMetric):
-                    fs, fact = _find_fact_source(pinned._defs, metric.numerator.fact)
-                    table = pinned._get_fact_table(fs)
-                    events = metric_events(
-                        table,
-                        metric,
-                        value_column=_resolve_value_column(fs, fact),
-                        part="numerator",
-                    )
                     dfs, dfact = _find_fact_source(pinned._defs, metric.denominator.fact)
                     den_events = metric_events(
                         pinned._get_fact_table(dfs),
                         metric,
                         value_column=_resolve_value_column(dfs, dfact),
                         part="denominator",
+                        null_policy=dfact.missing,
                     )
-                else:
-                    fs, fact = _find_fact_source(pinned._defs, metric.fact)
-                    events = metric_events(
-                        pinned._get_fact_table(fs),
-                        metric,
-                        value_column=_resolve_value_column(fs, fact),
-                    )
-                    den_events = None
                 pre_events = events
                 pre_cohort = cohort
                 if population == "triggered":
@@ -5072,6 +5365,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 uptake_window_days=uptake_window_days,
                 warn_on_censoring=True,
                 want_cuped=False,
+                # The cohort's units, still anchored at assignment: those the covariates join.
+                covariate_rows=tuple(
+                    PrePeriodRows(measure, exposures) for measure in covariate_measures.values()
+                ),
             )
             if (
                 outcome_stage == "raw"
@@ -5139,6 +5436,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         counts = self._arm_counts(self._get_exposures())
         mixed = self._mixed_assignment_units or 0
         unassigned = self._unassigned_assignment_units or 0
+        if not (counts or mixed or unassigned):
+            self._refuse_unmatched_experiment_key()
         if mixed:
             counts[MIXED_ASSIGNMENT_LABEL] = mixed
         if unassigned:
@@ -5175,6 +5474,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._union_horizon_metric_cache = {}
         self._panel_cache = {}
         self._cuped_relation_cache = {}
+        self._unloaded_facts_warned = set()
         self._reduction_calls = 0
         self._materialized = False
         self._reduction_batch_depth = 0

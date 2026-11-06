@@ -148,10 +148,13 @@ def native_fixture(
         con.create_table("events", obj=pa.Table.from_pylist(events))
     else:
         con = warehouse_connection(events)
+    outcome_rule = {}
     if outcome_state == "absent":
         con.raw_sql("DELETE FROM events WHERE event IN ('full_event', 'drop_event')")
     elif outcome_state == "null":
         con.raw_sql("UPDATE events SET revenue = NULL")
+        # The outcome rows stay present, their values unobserved.
+        outcome_rule = {"missing": "skip"}
     definitions = Definitions.model_validate(
         {
             "dialect": con.name,
@@ -166,8 +169,8 @@ def native_fixture(
                         {"name": "exposed", "column": None},
                         {"name": "triggered", "column": None},
                         {"name": "clicked", "column": None},
-                        {"name": "full_event", "column": "revenue"},
-                        {"name": "drop_event", "column": "revenue"},
+                        {"name": "full_event", "column": "revenue", **outcome_rule},
+                        {"name": "drop_event", "column": "revenue", **outcome_rule},
                     ],
                 }
             ],

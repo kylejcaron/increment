@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import effective_methods
+from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._readout_request import _raise as _raise_readout_request
 from increment._window import resolve_window_days
 from increment.compatibility import Unsupported, refuse_unsupported
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
     from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import CompiledDecisionPlan
+    from increment.readouts._design_scope import ResolvedRoster
     from increment.semantics.design import Observational, Randomized
     from increment.semantics.models import Metric
 
@@ -302,12 +304,35 @@ def _refuse_unsupported_by(metric: Metric, by: Sequence[str]) -> None:
         _raise_readout_request("readout.run.segment_unsupported", metric=metric.name)
 
 
-def _refuse_if_no_treatment_arm(observed_arms: set[str], control_group: str) -> None:
-    """A lift readout needs a contrast: refuse once every metric has been
-    read and none carried a non-control arm, instead of returning no rows."""
-    if not observed_arms - {str(control_group)}:
+def _refuse_if_no_treatment_arm(
+    observed_arms: set[str], control_group: str, roster: ResolvedRoster | None = None
+) -> None:
+    """A lift readout needs a contrast: refuse once every metric has been read
+    and no non-control arm can carry a cell, instead of returning no rows.
+
+    The roster's enrollment counts, when the source has them, decide: no enrolled
+    unit refuses as an empty enrollment, units in the control arm alone as a
+    control-only one, and an enrolled arm without observed outcomes is left to cell
+    assembly. Without counts, the observed arms decide the same way.
+    """
+    control = str(control_group)
+    counts = None if roster is None else roster.counts
+    enrolled = {
+        arm
+        for arm, units in (counts or {}).items()
+        if units > 0 and arm not in {MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL}
+    }
+    if (observed_arms | enrolled) - {control}:
+        return
+    if not observed_arms and not enrolled:
+        arms = () if roster is None else roster.arms
         _raise_readout_request(
-            "readout.arms.no_treatment",
+            "readout.arms.none_enrolled",
             control_group=control_group,
-            observed_arms=tuple(sorted(observed_arms)),
+            counts=dict(sorted({**dict.fromkeys(arms, 0), **(counts or {})}.items())),
         )
+    _raise_readout_request(
+        "readout.arms.no_treatment",
+        control_group=control_group,
+        observed_arms=tuple(sorted(observed_arms)),
+    )

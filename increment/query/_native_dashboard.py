@@ -9,7 +9,7 @@ import ibis
 import ibis.expr.types as ir
 
 from increment._source_operations import DashboardGroupData
-from increment._window import resolve_window_days
+from increment._window import outcome_band
 from increment.estimation.armstats import ArmStats
 from increment.query._native_refusals import _refuse_operation
 from increment.semantics.models import (
@@ -71,9 +71,7 @@ def _retained_dashboard_groups(
             getattr(checkpoint.model, "adjustment", None) is not None
             or getattr(metric, "winsorization", None) is not None
         )
-        window = (
-            metric.band if isinstance(metric, RetentionMetric) else (0, resolve_window_days(metric))
-        )
+        window = outcome_band(metric)
         for state in (checkpoint.control, checkpoint.treatment):
             unavailable = dict.fromkeys(
                 (

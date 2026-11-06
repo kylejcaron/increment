@@ -6501,6 +6501,121 @@ def test_metric_events_occurrence_refs_keep_null_valued_rows(con):
     assert set(got["value"]) == {1.0}
 
 
+# One declared NULL rule per valued fact
+
+
+def _null_revenue_events(
+    *,
+    null_at: dt.timedelta = dt.timedelta(hours=2),
+    null_owner: Literal["enrolled", "unenrolled", "untriggered", "nobody"] = "enrolled",
+    loaded: bool = True,
+    trigger_at: dt.timedelta | None = None,
+) -> pa.Table:
+    """Units u0..u39, even ones in control, exposed at 08:00 on 2025-01-01; each checks out
+    *trigger_at* after exposure when given, and buys once at ``10 + i`` an hour after that
+    exposure or checkout. A NULL-revenue purchase *null_at* after exposure is made by each
+    u{i}, an unenrolled unit s{i}, an enrolled unit t{i} that never checks out, or a row
+    without a unit, as *null_owner* says. When *loaded*, a later unenrolled purchase shows
+    the feed loaded through the window."""
+    start = dt.datetime(2025, 1, 1, 8)
+    rows: list[tuple[object, ...]] = (
+        [("bg", "purchase", start + dt.timedelta(days=8), 1.0, None, None)] if loaded else []
+    )
+    priced_at = (trigger_at or dt.timedelta(0)) + dt.timedelta(hours=1)
+    for i in range(40):
+        arm = ("control", "treatment")[i % 2]
+        owner = {"enrolled": f"u{i}", "unenrolled": f"s{i}", "untriggered": f"t{i}"}.get(null_owner)
+        rows += [
+            (f"u{i}", "page_view", start, None, "x", arm),
+            (f"u{i}", "purchase", start + priced_at, 10.0 + i, None, None),
+            (owner, "purchase", start + null_at, None, None, None),
+        ]
+        if trigger_at is not None:
+            rows.append((f"u{i}", "checkout", start + trigger_at, None, None, None))
+        if null_owner == "untriggered":
+            rows.append((owner, "page_view", start, None, "x", arm))
+    names = ("user_id", "event", "event_at", "revenue", "experiment_id", "group_id")
+    return pa.Table.from_pylist([dict(zip(names, row, strict=True)) for row in rows])
+
+
+def _null_revenue_definitions(
+    directory,
+    missing: str | None = None,
+    *,
+    plan: str = "{secondaries: [avg_order, aov]}",
+    n_pre_periods: int = 0,
+    observation_end: str | None = "2025-01-05",
+    site_metric: bool = False,
+    trigger: bool = False,
+):
+    """Definitions over `_null_revenue_events()` as ``events``: the order mean ``avg_order``,
+    revenue per order ``aov`` and ``returned``, a purchase on day 2 after exposure (with
+    *site_metric*, also the unwindowed order total ``revenue`` whole-site impact reads), all
+    on ``purchase`` under the NULL rule *missing*, read by experiment ``x`` under *plan* with
+    *n_pre_periods* CUPED days, observed through *observation_end* (None: while data
+    arrives), and with *trigger*, triggered by a checkout."""
+    rule = "" if missing is None else f", missing: {missing}"
+    site = (
+        "\n  - {name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum}"
+        if site_metric
+        else ""
+    )
+    horizon = "" if observation_end is None else f"observation_end: {observation_end}, "
+    checkout = ", {name: checkout, column: null}" if trigger else ""
+    checked_out = ", {name: checked_out, fact: checkout}" if trigger else ""
+    trigger_line = "trigger: checked_out, " if trigger else ""
+    path = directory / "null-revenue.yaml"
+    path.write_text(
+        f"""
+fact_sources:
+  - {{name: events, sql: SELECT * FROM events, timestamp_column: event_at, entities: [user_id],
+     facts: [{{name: page_view, column: null}}, {{name: purchase, column: revenue{rule}}}{checkout}]}}
+exposures: [{{name: enrolled, fact: page_view}}{checked_out}]
+metrics:
+  - {{name: avg_order, type: mean, entity: user_id, fact: purchase, aggregation: avg_event,
+     window_days: 3}}
+  - {{name: aov, type: ratio, entity: user_id,
+     numerator: {{fact: purchase, aggregation: sum, window_days: 3}},
+     denominator: {{fact: purchase, aggregation: count, window_days: 3}}}}
+  - {{name: returned, type: retention, entity: user_id, fact: purchase,
+     threshold_days: [2, 3]}}{site}
+experiments:
+  - {{name: x, exposure: enrolled, {trigger_line}unit: user_id, start: 2025-01-01,
+     end: 2025-01-01, {horizon}control_group: control, n_pre_periods: {n_pre_periods},
+     plan: {plan}}}
+"""
+    )
+    return path
+
+
+def _arm_value(row) -> float:
+    """An arm's metric value from its moment row: the unit mean, or a ratio of totals."""
+    if row["ref_den"] is None:
+        return _total(row) / row["n"]
+    return _total(row) / _total(row, "ref_den", "cden1")
+
+
+@pytest.mark.parametrize(("missing", "expected"), [("skip", 29.0), ("zero", 14.5), (None, 29.0)])
+def test_fact_missing_policy_applies_to_every_aggregation(tmp_path, missing, expected):
+    """Control units i = 0, 2, ..., 38 each buy at 10 + i and once with a NULL revenue. One
+    rule covers every aggregation of the fact, the order count included: dropping the NULL
+    order makes the order mean and revenue per order both mean(10 + i) = 29.0, and reading
+    it as 0 makes both 14.5. The SQL a preview returns cannot refuse, so under the default
+    rule it reads only the valued orders, also 29.0 for both."""
+    from increment import from_definitions
+
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", _null_revenue_events())
+    experiment, reader = from_definitions(
+        _null_revenue_definitions(tmp_path, missing), connection, experiment_name="x"
+    )
+    queries = summary_sql(experiment, reader)
+    for metric in ("avg_order", "aov"):
+        rows = connection.sql(queries[metric]).to_pyarrow().to_pylist()
+        control = next(row for row in rows if row["group_id"] == "control")
+        assert _arm_value(control) == pytest.approx(expected, abs=1e-12), metric
+
+
 # site_volume — window-scoped, exposure-join-free metric volume
 
 
@@ -6541,7 +6656,9 @@ def test_site_volume_sums_all_events_including_non_exposed_units(con, experiment
 
 def test_site_volume_ratio_numerator_and_denominator(con, experiment):
     """RatioMetric: numerator and denominator sums come from their own
-    fact/filters, independently of each other."""
+    fact/filters, independently of each other. Both parts read the one value
+    column passed, so every session row carries a value under the default
+    NULL rule."""
     rows = con.create_table(
         "site_volume_ratio_events",
         obj=[
@@ -6561,19 +6678,19 @@ def test_site_volume_ratio_numerator_and_denominator(con, experiment):
                 "unit_id": "u1",
                 "ts": dt.datetime(2025, 8, 1, 9, 0, 0),
                 "event": "session",
-                "amount": None,
+                "amount": 0.0,
             },
             {
                 "unit_id": "u1",
                 "ts": dt.datetime(2025, 8, 2, 9, 0, 0),
                 "event": "session",
-                "amount": None,
+                "amount": 0.0,
             },
             {
                 "unit_id": "u3",
                 "ts": dt.datetime(2025, 8, 3, 9, 0, 0),
                 "event": "session",
-                "amount": None,
+                "amount": 0.0,
             },
         ],
     )

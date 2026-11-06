@@ -2753,11 +2753,12 @@ def test_custom_provider_triggered_analysis_uses_declared_population(tmp_path) -
         filtered_provider.source = source
         filtered_provider.moments = lambda request: ()
         filtered_analysis = bind_pair(filtered_provider, experiment=declared)
-        from increment.errors import InvalidRequestError
-
-        with pytest.raises(InvalidRequestError) as filtered:
-            list(view_readout(*filtered_analysis, population="triggered"))
-        assert filtered.value.code == "readout.arms.no_treatment"
+        # The enrolled triggered arms carry no moments, so every cell is unavailable.
+        filtered_rows = list(view_readout(*filtered_analysis, population="triggered"))
+        assert filtered_rows
+        assert {row.failure_code for row in filtered_rows} == {
+            "readout.cell.missing_metric_observations"
+        }
     finally:
         if provider_analysis is not None:
             provider_analysis[1].close()

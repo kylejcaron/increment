@@ -10,13 +10,28 @@ identically.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from increment.errors import CodedError, DefinitionError, InvalidRequestError, raiser, refusals
-from increment.semantics.models import Breakout, Definitions, Experiment, Fact, Factor, FactSource
+from increment.errors import refuse as _refuse
+from increment.query._native_refusals import _NATIVE_FACT_NULL_VALUES
+from increment.semantics.models import (
+    Breakout,
+    Definitions,
+    Experiment,
+    Fact,
+    FactNullPolicy,
+    Factor,
+    FactRef,
+    FactSource,
+    Metric,
+    RatioMetric,
+)
 
 if TYPE_CHECKING:
+    import ibis.expr.types as ir
+    import pyarrow as pa
     from ibis import Table
     from ibis.backends.sql import SQLBackend
 
@@ -100,6 +115,108 @@ def _find_fact_source(defs: Definitions, fact_name: str) -> tuple[FactSource, Fa
         fact_name=fact_name,
         available=[f.name for fs in defs.fact_sources for f in fs.facts],
     )
+
+
+def fact_null_policy(defs: Definitions, fact_name: str) -> FactNullPolicy:
+    """The rule *fact_name* declares for a NULL value of its column."""
+    return _find_fact_source(defs, fact_name)[1].missing
+
+
+def fact_refs(metric: Metric) -> tuple[FactRef, ...]:
+    """The fact refs *metric* reads: a ratio's numerator and denominator, else itself."""
+    if isinstance(metric, RatioMetric):
+        return (metric.numerator, metric.denominator)
+    return (metric,)
+
+
+def covariate_ref(metric: Metric) -> FactRef:
+    """The ref whose pre-period rows form *metric*'s own CUPED covariate: a ratio's
+    numerator, which feeds both component slopes, else the metric itself."""
+    return metric.numerator if isinstance(metric, RatioMetric) else metric
+
+
+class NullValueCount(NamedTuple):
+    """A lazy count of NULL values of *fact*'s column among the rows one read uses."""
+
+    fact: Fact
+    null_rows: ir.Scalar
+
+
+class OutcomeRows(NamedTuple):
+    """The outcome rows a read uses: *metric*'s rows after each unit's anchor in
+    *exposures*, its first trigger when the cohort carries one, else its first exposure."""
+
+    metric: Metric
+    exposures: Table
+
+
+class PrePeriodRows(NamedTuple):
+    """The CUPED covariate rows a read uses: *ref*'s rows in the pre-period before each
+    unit's first exposure in *exposures*."""
+
+    ref: FactRef
+    exposures: Table
+
+
+def null_value_count(fact: Fact, rows: Table) -> NullValueCount:
+    """The lazy count of NULL values of *fact*'s column among *rows*."""
+    assert fact.column is not None
+    return NullValueCount(fact, rows[fact.column].isnull().sum().as_scalar())
+
+
+def refuse_null_fact_values(counts: Mapping[str, NullValueCount], row: Mapping[str, Any]) -> None:
+    """Refuse the first fact in *counts* whose NULL count *row* carries is nonzero.
+
+    *row* comes from a query that projected each count under its key beside its
+    own aggregates, so the check issues no statement of its own.
+    """
+    for name, count in counts.items():
+        null_rows = int(row[name] or 0)
+        if null_rows:
+            _refuse(
+                _NATIVE_FACT_NULL_VALUES,
+                fact=count.fact.name,
+                column=count.fact.column,
+                null_rows=null_rows,
+            )
+
+
+_COUNT_ROW = "_fact_null_count_row"
+
+
+def with_null_counts(query: Table, counts: Mapping[str, NullValueCount]) -> Table:
+    """*query*'s rows plus one count row holding *counts*, split again by `checked_rows`.
+
+    The count row keeps the counts when *query* returns no rows, so a read that
+    aggregates nothing refuses as any other read of the same rows does; each count
+    is evaluated once. Row order is not kept.
+    """
+    import ibis
+
+    rows = query.select(
+        *query.columns,
+        **{_COUNT_ROW: ibis.literal(False)},
+        **{name: ibis.null().cast("int64") for name in counts},
+    )
+    count_row = (
+        ibis.literal(0)
+        .name("_")
+        .as_table()
+        .select(
+            **{name: ibis.null().cast(dtype) for name, dtype in query.schema().items()},
+            **{_COUNT_ROW: ibis.literal(True)},
+            **{name: count.null_rows.cast("int64") for name, count in counts.items()},
+        )
+    )
+    return ibis.union(rows, count_row, distinct=False)
+
+
+def checked_rows(result: pa.Table, counts: Mapping[str, NullValueCount]) -> pa.Table:
+    """Refuse a NULL count the count row of *result* holds, then return the query's rows."""
+    import pyarrow.compute as pc
+
+    refuse_null_fact_values(counts, result.filter(pc.field(_COUNT_ROW)).to_pylist()[0])
+    return result.filter(~pc.field(_COUNT_ROW)).drop_columns([_COUNT_ROW, *counts])
 
 
 def _require_design(control: object | None, design: object | None, *, constructor: str) -> None:
