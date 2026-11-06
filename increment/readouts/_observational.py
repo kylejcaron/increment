@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, cast
 from increment._literals import ValueScale
 from increment._policy_alpha import resolve_cell_alpha
 from increment._source_types import _BuiltinMomentSource
+from increment.errors import CodedError
 from increment.estimation.adjust import (
     ObservationalEvidence,
     _estimate_ate_data,
@@ -12,7 +13,7 @@ from increment.estimation.adjust import (
     weight_diagnostics_projection,
 )
 from increment.estimation.conversion_route import fcr_route_tail
-from increment.estimation.engine import Method
+from increment.estimation.engine import Method, _is_unadjusted_method
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.results import (
@@ -27,6 +28,7 @@ from increment.readouts._common import (
     _runtime_methods,
     _sequential_inference,
 )
+from increment.readouts._passes import _record_cell_refusal
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
@@ -59,27 +61,79 @@ def _estimate_ate_from_evidence(  # noqa: PLR0913
     family_member: bool = False,
     route_tail: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
-    return _estimate_ate_data(
-        design,
-        metrics=(metric,),
-        cluster=evidence.cluster,
-        methods=methods,
-        prior=prior,
-        alpha=alpha,
-        alternative="two-sided",
-        value_scale=value_scale,
-        null_lifts=None,
-        null_abs=null_abs,
-        alternatives=alternatives,
-        scales={metric.name: (value_scale or {}).get(metric.name, "relative")},
-        _raise_if_empty=False,
-        resolved_method_roles=roles,
-        method_roles=roles,
-        evidence=evidence,
-        family_member=family_member,
-        route_tail=route_tail,
-        unit_frame_memo=unit_frame_memo,
-    )
+    def estimate(
+        cell_methods: list[Method], cell_evidence: ObservationalEvidence
+    ) -> DecisionComputation[LiftEstimate]:
+        return _estimate_ate_data(
+            design,
+            metrics=(metric,),
+            cluster=cell_evidence.cluster,
+            methods=cell_methods,
+            prior=prior,
+            alpha=alpha,
+            alternative="two-sided",
+            value_scale=value_scale,
+            null_lifts=None,
+            null_abs=null_abs,
+            alternatives=alternatives,
+            scales={metric.name: (value_scale or {}).get(metric.name, "relative")},
+            _raise_if_empty=False,
+            resolved_method_roles=roles,
+            method_roles=roles,
+            evidence=cell_evidence,
+            family_member=family_member,
+            route_tail=route_tail,
+            unit_frame_memo=unit_frame_memo,
+        )
+
+    from increment.decision import DecisionComputation
+
+    control = str(design.control_group)
+    rows = evidence.metric_rows(metric)
+    control_row = next((row for row in rows if str(row["group_id"]) == control), None)
+    if (
+        evidence.cluster is not None
+        or control_row is None
+        or not any(_is_unadjusted_method(method) for method in methods)
+    ):
+        return estimate(methods, evidence)
+    # An unadjusted contrast reads only its arm and control, so each arm is its own cell and a
+    # cell-local guard leaves only that cell unavailable, as under a randomized design. An
+    # adjusted method fits its models across every arm and is estimated on all of them.
+    computations: list[DecisionComputation[LiftEstimate]] = []
+    for method in methods:
+        if not _is_unadjusted_method(method):
+            computations.append(estimate([method], evidence))
+            continue
+        for row in rows:
+            group_id = str(row["group_id"])
+            if group_id == control:
+                continue
+            try:
+                computations.append(
+                    estimate([method], ObservationalEvidence({metric.name: (control_row, row)}))
+                )
+            except CodedError as exc:
+                failed_rows: list[LiftEstimate] = []
+                _record_cell_refusal(
+                    exc,
+                    results=failed_rows,
+                    computations=computations,
+                    metric=metric,
+                    group_id=group_id,
+                    method=method,
+                    method_roles=roles,
+                    alternative=(alternatives or {}).get(metric.name, "two-sided"),
+                    null_lift=0.0,
+                    null_abs=(null_abs or {}).get(metric.name),
+                    preferred_direction=metric.declared_preferred_direction,
+                    prior=prior,
+                )
+                if failed_rows:
+                    computations.append(
+                        DecisionComputation(results=tuple(failed_rows), evidence={}, failures={})
+                    )
+    return _merge_decision_computations(computations)
 
 
 def _estimate_observational(
@@ -146,12 +200,14 @@ def _estimate_observational(
     non_secondary = [m for m in selected if plan.procedures[m.name].role != "secondary"]
     secondary = [m for m in selected if plan.procedures[m.name].role == "secondary"]
 
+    produced: list[DecisionComputation[LiftEstimate]] = []
     results: list[LiftEstimate] = []
     for metric in non_secondary:
         config = config_by_name[metric.name]
         procedure = plan.procedures[metric.name]
+        # A primary's alpha is split across every arm its scope lists, observed or not.
         n_arms = (
-            len(evidence.arms(metric) - {str(design.control_group)})
+            len(set(arms or evidence.arms(metric)) - {control})
             if procedure.role == "primary"
             else 0
         )
@@ -169,8 +225,7 @@ def _estimate_observational(
             evidence=evidence,
             unit_frame_memo=unit_frame_memo,
         )
-        if computations is not None:
-            computations.append(computation)
+        produced.append(computation)
         results.extend(
             row.model_copy(update={"role": procedure.role if plan.declared else None})
             for row in computation.results
@@ -191,11 +246,22 @@ def _estimate_observational(
                 evidence=evidence,
                 unit_frame_memo=unit_frame_memo,
                 arms=arms,
-                computations=computations,
+                computations=produced,
             )
         )
 
-    if not results and selected:
+    if computations is not None:
+        computations.extend(produced)
+    failure_codes = {
+        failure.code for computation in produced for failure in computation.failures.values()
+    }
+    # Nothing is left to report only when the adjustment method refused every metric; any
+    # other failure is its own cell's unavailable row.
+    if (
+        not results
+        and selected
+        and failure_codes == {"estimation.adjust_common.supported_ratio_metric"}
+    ):
         _raise("estimation.adjust.estimate_ate_every")
     order = {metric.name: i for i, metric in enumerate(selected)}
     results.sort(key=lambda result: order[result.metric])
@@ -218,7 +284,8 @@ def _unobserved_member_failures(
     arms: Sequence[str],
     estimated: Collection[tuple[str, str]],
 ) -> dict[ArmHypothesisKey, DecisionFailure]:
-    """Family failures for the roster *arms* in which a member metric has no value.
+    """Family failures for the roster *arms* in which a member metric has no value, or for
+    every roster arm when the metric has no control value, since no arm then has a contrast.
 
     Such a cell has no estimate, but the scope lists it as a member, so it keeps its family
     slot as a sure non-rejection (p = 1). *estimated* holds the (metric, arm) cells already in
@@ -226,17 +293,19 @@ def _unobserved_member_failures(
     from increment.decision import ArmHypothesisKey, DecisionFailure
     from increment.readouts._design_scope import observational_expected
 
+    control = str(design.control_group)
     failures: dict[ArmHypothesisKey, DecisionFailure] = {}
     members = set(estimated)
     for metric in family:
         observed = set(evidence.arms(metric))
+        control_unobserved = control not in observed
         for cell in observational_expected(
             [metric],
             [config_by_name[metric.name]],
             design,
             plan,
             value_scale=value_scale,
-            arms=[arm for arm in arms if arm not in observed],
+            arms=[arm for arm in arms if control_unobserved or arm not in observed],
         ):
             if cell.method_role != "decision" or (metric.name, cell.group_id) in members:
                 continue
@@ -245,7 +314,11 @@ def _unobserved_member_failures(
             failures[key] = DecisionFailure(
                 key,
                 "readout.cell.missing_metric_observations",
-                {"metric": metric.name, "group_id": cell.group_id, "unobserved_arm": cell.group_id},
+                {
+                    "metric": metric.name,
+                    "group_id": cell.group_id,
+                    "unobserved_arm": control if control_unobserved else cell.group_id,
+                },
             )
     return failures
 
@@ -317,7 +390,14 @@ def _estimate_observational_secondary_family(  # noqa: PLR0913
     nominal_by_metric: dict[str, list[LiftEstimate]] = {}
     computation_by_metric: dict[str, DecisionComputation[LiftEstimate]] = {}
     for metric in family:
-        computation = _nominal_pass(metric, plan.alpha, family_member=True)
+        # A counted control arm without this metric's values leaves nothing to estimate: each
+        # cell is an unobserved member below.
+        computation = (
+            _merge_decision_computations([])
+            if str(design.control_group) in arms
+            and str(design.control_group) not in evidence.arms(metric)
+            else _nominal_pass(metric, plan.alpha, family_member=True)
+        )
         nominal_by_metric[metric.name] = list(computation.results)
         computation_by_metric[metric.name] = computation
 
@@ -371,6 +451,7 @@ def _estimate_observational_secondary_family(  # noqa: PLR0913
         "family_axes": ("metric", "arm"),
         "family_q": outcome.q,
         "family_threshold": outcome.realized_threshold,
+        "family_size": outcome.n_family,
     }
     if fcr_alpha is None:
         for metric in family:
@@ -387,6 +468,7 @@ def _estimate_observational_secondary_family(  # noqa: PLR0913
                             "family_threshold": (
                                 family_record["family_threshold"] if is_decision else None
                             ),
+                            "family_size": family_record["family_size"] if is_decision else None,
                         }
                     )
                 )
@@ -436,8 +518,9 @@ def _estimate_observational_secondary_family(  # noqa: PLR0913
                 )
                 continue
             key = ArmHypothesisKey(row.metric, row.group_id, row.estimand)
-            if key in selected_cells:
-                match = next(
+            # Only a selected row reissued at the FCR level carries its nominal level.
+            match = (
+                next(
                     (
                         cell
                         for cell in reestimated.get(row.metric, [])
@@ -445,15 +528,17 @@ def _estimate_observational_secondary_family(  # noqa: PLR0913
                     ),
                     None,
                 )
-                stamped = carry_nominal_evidence(row, match) if match is not None else row
-            else:
-                stamped = row
+                if key in selected_cells
+                else None
+            )
+            stamped = row if match is None else carry_nominal_evidence(row, match)
             out.append(
                 stamped.model_copy(
                     update={
                         "role": "secondary",
                         "discovery": family_discovery(outcome, key),
                         **family_record,
+                        "family_nominal_alpha": None if match is None else plan.alpha,
                     }
                 )
             )

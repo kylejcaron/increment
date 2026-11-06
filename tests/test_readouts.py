@@ -3109,21 +3109,31 @@ def test_one_unit_extra_arm_is_an_unavailable_row():
         assert stray.alternative == "greater"
 
 
-def test_one_unit_control_leaves_every_cell_unavailable():
-    code = "estimation.armstats.arm_stats.least_compute_metric"
-    frame = _arm_frame(
-        {"control": [3.0], "treatment": [2.0, 3.0, 4.0, 5.0], "variant_b": [1.0, 2.0, 3.0, 4.0]}
-    )
+def _one_unit_run(values: dict[str, list[float]], mechanism: str) -> Any:
+    frame = _arm_frame(values)
+    observational = mechanism == "observational"
     experiment, reader = from_frame(
-        frame,
+        frame.assign(z=np.arange(len(frame), dtype=float)),
         shape="summary",
         unit="user_id",
         group="variant",
-        control="control",
         metrics={"x": "mean"},
+        control=None if observational else "control",
+        design=Observational(control_group="control", adjustment=AdjustmentSet(covariates=("z",)))
+        if observational
+        else None,
     )
     with pytest.warns(IncrementWarning):
-        result = run(experiment, reader)
+        return run(experiment, reader, decision_method=Method(name="unadjusted"))
+
+
+@pytest.mark.parametrize("mechanism", ["randomized", "observational"])
+def test_one_unit_control_leaves_every_cell_unavailable(mechanism):
+    code = "estimation.armstats.arm_stats.least_compute_metric"
+    result = _one_unit_run(
+        {"control": [3.0], "treatment": [2.0, 3.0, 4.0, 5.0], "variant_b": [1.0, 2.0, 3.0, 4.0]},
+        mechanism,
+    )
     readout = result.readout()
     assert isinstance(readout, LiftEstimates)
     rows = _lift_rows(readout)
@@ -3135,6 +3145,21 @@ def test_one_unit_control_leaves_every_cell_unavailable():
         assert row.stat_sig() is None
     projected = nw.from_native(result.to_frame(), eager_only=True)
     assert sorted(projected.select("metric", "group_id", "failure_code").rows()) == expected
+
+
+def test_observational_one_unit_arm_leaves_its_sibling_estimated():
+    """The unadjusted contrast of each arm reads only that arm and control, as under a
+    randomized design: the one-unit arm is unavailable and treatment's lift is 3.5 / 2.5 - 1."""
+    result = _one_unit_run(
+        {"control": [1.0, 2.0, 3.0, 4.0], "treatment": [2.0, 3.0, 4.0, 5.0], "qa": [3.0]},
+        "observational",
+    )
+    rows = {row.group_id: row for row in _lift_rows(result.readout())}
+    assert rows["treatment"].require_lift().value == pytest.approx(0.4)
+    stray = rows["qa"]
+    assert stray.failure_code == "estimation.armstats.arm_stats.least_compute_metric"
+    assert stray.failure_context is not None
+    assert (stray.failure_context["group_id"], stray.failure_context["n"]) == ("qa", 1)
 
 
 def test_mixed_degenerate_cells_each_keep_their_reason():

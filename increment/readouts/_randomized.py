@@ -235,6 +235,35 @@ def _skipped_cell_failures(src, metric, control_group) -> dict[Any, Any]:
     return failures
 
 
+def _unread_counted_arm_failures(metric, counted_arms, control_group, family_groups):
+    """Family failures for the counted treatment arms a member metric's read lacks.
+
+    The scope lists every counted arm, so a cell whose arm the metric's moments read missed
+    (an arm that enrolled after the read, or a source that omits it) keeps its family slot as
+    a sure non-rejection (p = 1). An arm with no enrolled unit is a count exclusion, not a
+    member."""
+    from increment.decision import ArmHypothesisKey, DecisionFailure
+
+    failures = {}
+    for arm in counted_arms:
+        if arm == str(control_group) or arm in family_groups:
+            continue
+        key = ArmHypothesisKey(metric.name, arm, "itt")
+        failures[key] = DecisionFailure(
+            key,
+            "readout.cell.missing_metric_observations",
+            {"metric": metric.name, "group_id": arm, "unobserved_arm": arm},
+        )
+    return failures
+
+
+def _primary_split_arms(metric_rows, counted_arms, control_group) -> int:
+    """Treatment arms a primary's alpha is split across: every counted arm, as its family
+    scope lists them, or without counts the arms its moments read."""
+    counted = sum(arm != str(control_group) for arm in counted_arms)
+    return counted or metric_rows.n_treatment_arms
+
+
 def _secondary_source_rows(metric_rows, is_quantile, control_group):
     observed_arms = set(metric_rows.observed_arms)
     if is_quantile:
@@ -355,6 +384,7 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
     observed_by_metric: dict[str, set[str]],
     evidence_by_metric: dict[str, MetricEvidence],
     scope_active: bool = False,
+    counted_arms: tuple[str, ...] = (),
 ) -> list[LiftEstimate]:
     """Run nominal, selection, and FCR passes for randomized secondaries."""
     if not secondary_entries:
@@ -383,7 +413,6 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
         evidence_by_metric[metric.name] = metric_rows
         observed_arms |= metric_observed
         skipped = _skipped_cell_failures(src, metric, design.control_group)
-        skipped_by_metric[metric.name] = skipped
         if _control_values_all_skipped(src, metric, design.control_group) or (
             is_quantile and not metric_rows.n_treatment_arms
         ):
@@ -410,9 +439,17 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
             )
         nominal_by_metric[metric.name] = nominal
         nominal_computation_by_metric[metric.name] = computation
-        family_groups_by_metric[metric.name] = _secondary_group_ids(
-            nominal, computation, observed_groups, is_quantile
-        ) | {key.group_id for key in skipped}
+        groups = _secondary_group_ids(nominal, computation, observed_groups, is_quantile) | {
+            key.group_id for key in skipped
+        }
+        # Read by the family only: a counted arm this metric's read lacks is a p = 1 member.
+        skipped_by_metric[metric.name] = {
+            **skipped,
+            **_unread_counted_arm_failures(metric, counted_arms, design.control_group, groups),
+        }
+        family_groups_by_metric[metric.name] = groups | {
+            key.group_id for key in skipped_by_metric[metric.name]
+        }
 
     computations.extend(nominal_computation_by_metric.values())
     family, non_family = _partition_secondary_family(secondary_entries)
@@ -566,6 +603,7 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
     observed_by_metric: dict[str, set[str]],
     evidence_by_metric: dict[str, MetricEvidence],
     scope_active: bool = False,
+    counted_arms: tuple[str, ...] = (),
 ) -> tuple[
     list[LiftEstimate],
     list[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
@@ -611,7 +649,12 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
                 rows_est = []
             else:
                 cell_alpha = (
-                    resolve_cell_alpha(plan, test, n_arms=metric_rows.n_treatment_arms, view=None)
+                    resolve_cell_alpha(
+                        plan,
+                        test,
+                        n_arms=_primary_split_arms(metric_rows, counted_arms, design.control_group),
+                        view=None,
+                    )
                     if test.role == "primary"
                     else test.alpha
                 )
@@ -640,7 +683,10 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
             ):
                 continue
             cell_alpha = resolve_cell_alpha(
-                plan, test, n_arms=metric_rows.n_treatment_arms, view=None
+                plan,
+                test,
+                n_arms=_primary_split_arms(metric_rows, counted_arms, design.control_group),
+                view=None,
             )
             rows_est, computation = _estimate_pass(
                 src,

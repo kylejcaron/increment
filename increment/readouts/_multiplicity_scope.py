@@ -41,11 +41,14 @@ def attach_multiplicity_scope(
     family_populations: set[str] | None = None,
     view_policy: MultiplicityFamily | None = None,
     decision_snapshot_id: str | None = None,
+    unenrolled_arms: frozenset[str] = frozenset(),
 ) -> tuple[list[Any], tuple[FamilyScope, ...]]:
     """Attach row provenance and the unchanged source family membership.
 
     Membership is resolved from the predeclared source cells and effective
-    per-metric configuration, never from surviving or displayed rows.
+    per-metric configuration, never from surviving or displayed rows. A cell of
+    an arm in *unenrolled_arms* is a count exclusion: its row stays, outside
+    every family, as a fixed-horizon breakout family leaves its count exclusions out.
     """
     configs_by_metric = {config.metric.name: config for config in configs}
     family_cells = {}
@@ -54,7 +57,9 @@ def attach_multiplicity_scope(
     row_by_cell = {CellKey.from_row(row): row for row in rows}
     for cell in cells:
         procedure = plan.procedures.get(cell.metric)
-        if family_populations is not None and cell.analysis_population not in family_populations:
+        if cell.group_id in unenrolled_arms or (
+            family_populations is not None and cell.analysis_population not in family_populations
+        ):
             cell_family[cell] = None
             continue
         row = row_by_cell.get(cell)

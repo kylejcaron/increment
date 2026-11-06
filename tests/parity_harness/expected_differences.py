@@ -794,6 +794,39 @@ CONSUMER_INPUT_DIFFERENCES = _by_case(_CONSUMER_INPUT_RECORDS)
 TYPED_INPUT_DIFFERENCES = _by_case(_TYPED_INPUT_RECORDS)
 CELL_KEY_DIFFERENCES = _by_case(_CELL_KEY_RECORDS)
 DISPOSITION_DIFFERENCES = _by_case(_DISPOSITION_RECORDS)
+# An observational whole-window BH family row reports its family's size since these captures,
+# as a randomized one did: (scenario, member count, ingresses captured with family rows).
+_OBSERVATIONAL_FAMILY_SIZES = (
+    ("conversion_route_observational_family", 2, _INGRESSES),
+    ("observational_aipw_dml_covariate_adjusted", 4, _INGRESSES[:1] + _INGRESSES[2:]),
+    ("observational_categorical_covariate_adjusted", 2, _INGRESSES[:1] + _INGRESSES[2:]),
+    ("observational_categorical_covariate_missing_levels", 2, _INGRESSES[3:]),
+    ("observational_default_with_unadjusted_sensitivity", 4, _INGRESSES[:1] + _INGRESSES[2:]),
+    ("observational_iptw_covariate_adjusted_ate", 4, _INGRESSES[:1] + _INGRESSES[2:]),
+    (
+        "observational_multiplicity_primary_secondary_guardrail",
+        2,
+        _INGRESSES[:1] + _INGRESSES[2:],
+    ),
+)
+OBSERVATIONAL_FAMILY_SIZE_DIFFERENCES = _by_case(
+    tuple(
+        ExpectedDifference(
+            scenario=scenario,
+            ingress=ingress,
+            field="family_size",
+            key="family_size",
+            frozen=None,
+            current=size,
+            reason=(
+                "An observational secondary family row reports its member count, as a "
+                "randomized row does; the capture predates the field on this route."
+            ),
+        )
+        for scenario, size, ingresses in _OBSERVATIONAL_FAMILY_SIZES
+        for ingress in ingresses
+    )
+)
 
 
 def _d7_retention_margin(ingress: str) -> GuardrailMigration:

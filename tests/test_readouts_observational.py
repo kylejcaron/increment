@@ -44,6 +44,7 @@ from increment.results import NotApplicable
 from increment.workflows import export_moments, srm
 from tests.analysis_factory import (
     bound_source,
+    drifting_analysis,
     lift_rows,
     make_binding,
     make_binding_like,
@@ -2448,33 +2449,6 @@ def test_public_observational_quantile_margin_precedence(ingress, request_kind):
             analysis[1].close()
 
 
-class _DriftingMoments:
-    """A source whose arm inventory changes after each metric's first moments read, as a
-    warehouse does when a late arm lands between a readout's reads. Every other attribute is
-    the late source's."""
-
-    def __init__(self, early, late):
-        self._late = late
-        self._early_moments = early.moments
-        self._late_moments = late.moments
-        self.reads: dict[str, int] = {}
-
-    def moments(self, metric, **options):
-        self.reads[metric.name] = self.reads.get(metric.name, 0) + 1
-        moments = self._early_moments if self.reads[metric.name] == 1 else self._late_moments
-        return moments(metric, **options)
-
-    def __getattr__(self, name):
-        return getattr(self._late, name)
-
-
-def _drifting_analysis(early, late):
-    source = _DriftingMoments(bound_source(early[1]), bound_source(late[1]))
-    # Capture both original reductions before substituting the drifting read behavior.
-    bound_source(late[1]).moments = source.moments
-    return late, source
-
-
 def test_public_definitions_relative_margin_refused_during_construction(tmp_path):
     """A plan-bound relative margin on a real observational Definitions
     source is rejected by the public constructor, before any warehouse read."""
@@ -2584,7 +2558,7 @@ def test_observational_conversion_family_routes_from_the_evidence_it_estimates(t
 
     early = _conversion_family_analysis(["control", "T1"], t1_successes)
     late = _conversion_family_analysis(["control", "T1", "T2"], t1_successes)
-    (experiment, resolver), source = _drifting_analysis(early, late)
+    (experiment, resolver), source = drifting_analysis(early, late)
     try:
         rows = [
             row
@@ -2738,7 +2712,7 @@ def test_readouts_run_uses_only_request_based_provider_evidence():
 def test_observational_adjusted_family_estimates_only_the_inventory_it_selected_from(method):
     early = _mean_family_analysis(["control", "T1"])
     late = _mean_family_analysis(["control", "T1", "T2"])
-    (experiment, resolver), source = _drifting_analysis(early, late)
+    (experiment, resolver), source = drifting_analysis(early, late)
     try:
         rows = [
             row
@@ -2763,7 +2737,7 @@ def test_estimate_ate_reads_each_metrics_moments_once_across_methods():
 
     early = _mean_family_analysis(["control", "T1"])
     late = _mean_family_analysis(["control", "T1", "T2"])
-    (_, resolver), source = _drifting_analysis(early, late)
+    (_, resolver), source = drifting_analysis(early, late)
     try:
         context = bound_source(resolver).context
         computation = estimate_ate(

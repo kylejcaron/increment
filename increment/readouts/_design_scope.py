@@ -73,6 +73,18 @@ class ResolvedRoster:
     arms_by_metric: Mapping[str, set[str]]
     known_arms: frozenset[str]
 
+    @property
+    def enrolled_arms(self) -> tuple[str, ...]:
+        """Roster arms with an enrolled unit: counted above zero, or observed by a metric."""
+        counts = self.counts or {}
+        observed = set().union(*self.arms_by_metric.values())
+        return tuple(arm for arm in self.arms if counts.get(arm, 0) > 0 or arm in observed)
+
+    @property
+    def unenrolled_arms(self) -> frozenset[str]:
+        """Roster arms no unit enrolled in, such as a declared arm that never started."""
+        return frozenset(self.arms) - frozenset(self.enrolled_arms)
+
 
 def _method_role(value: str) -> Literal["decision", "sensitivity"]:
     if value in ("decision", "sensitivity"):
@@ -902,6 +914,7 @@ def scope_design_results(  # noqa: PLR0913, PLR0915
         configs,
         snapshot_id,
         decision_snapshot_id=decision_snapshot_id,
+        unenrolled_arms=roster.unenrolled_arms,
     )
     scope = ReadoutScope(
         snapshot_id=snapshot_id,
