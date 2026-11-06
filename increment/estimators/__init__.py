@@ -108,6 +108,7 @@ _EXPORTS = {
     "InvalidRequestError": ("increment.errors", "InvalidRequestError"),
     "RefusalSpec": ("increment.errors", "RefusalSpec"),
     "UnsupportedRequestError": ("increment.errors", "UnsupportedRequestError"),
+    "UnverifiedWarehouseWarning": ("increment.errors", "UnverifiedWarehouseWarning"),
     "WireFormatError": ("increment.errors", "WireFormatError"),
     "Assignment": ("increment.semantics.assignment", "Assignment"),
     "ParallelAssignment": ("increment.semantics.assignment", "ParallelAssignment"),
@@ -184,6 +185,9 @@ if TYPE_CHECKING:
     )
     from increment.errors import (
         UnsupportedRequestError as UnsupportedRequestError,
+    )
+    from increment.errors import (
+        UnverifiedWarehouseWarning as UnverifiedWarehouseWarning,
     )
     from increment.errors import (
         WireFormatError as WireFormatError,
@@ -430,6 +434,7 @@ __all__ = [
     "InvalidRequestError",
     "RefusalSpec",
     "UnsupportedRequestError",
+    "UnverifiedWarehouseWarning",
     "WireFormatError",
     "Assignment",
     "ParallelAssignment",

@@ -33,7 +33,15 @@ def test_cuped_nonfinite_parts_compile_for_supported_dialects() -> None:
     con.create_table("finite_values", ibis.memtable({"value": [1.0]}))
     table = con.table("finite_values")
     is_nan, is_inf = nonfinite_parts(table.value)
-    for dialect in ("snowflake", "bigquery", "postgres", "duckdb"):
+    for dialect in (
+        "snowflake",
+        "bigquery",
+        "postgres",
+        "duckdb",
+        "clickhouse",
+        "trino",
+        "databricks",
+    ):
         sql = ibis.to_sql(table.select(nan_flag=is_nan, inf_flag=is_inf), dialect=dialect).upper()
         if dialect == "snowflake":
             assert "IS_NAN(" not in sql
@@ -41,14 +49,14 @@ def test_cuped_nonfinite_parts_compile_for_supported_dialects() -> None:
             assert "'NAN'" in sql and "ABS(" in sql
         elif dialect == "bigquery":
             assert "IS_NAN(" in sql
-        elif dialect == "duckdb":
+        elif dialect in ("duckdb", "clickhouse", "trino", "databricks"):
             assert "ISNAN(" in sql or "IS_NAN(" in sql
         else:
             assert "'NAN'" in sql
     con.disconnect()
 
 
-@pytest.mark.parametrize("dialect", ["bigquery", "snowflake"])
+@pytest.mark.parametrize("dialect", ["bigquery", "snowflake", "clickhouse", "trino", "databricks"])
 def test_cell_aggregates_compile_without_filter_clause(dialect) -> None:
     from types import SimpleNamespace
 
@@ -71,7 +79,8 @@ def test_cell_aggregates_compile_without_filter_clause(dialect) -> None:
     expression = _preflight(cells, ("segment",), 1, request, metric)
 
     sql = ibis.to_sql(expression, dialect=dialect).upper()
-    assert "FILTER(" not in sql and "FILTER (" not in sql
+    if dialect in ("bigquery", "snowflake"):
+        assert "FILTER(" not in sql and "FILTER (" not in sql
 
 
 def test_cuped_nonfinite_parts_preserve_duckdb_special_value_results() -> None:

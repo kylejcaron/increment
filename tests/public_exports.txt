@@ -25,6 +25,7 @@ Method: Choose an estimation method and its optional adjustments.
 MethodSpec: Declare an estimation method and its CUPED inputs.
 __version__: Check the installed package version.
 EvidenceProvider: Implement typed statistical evidence for a custom data source.
+UnverifiedWarehouseWarning: Silence the one-time notice for a warehouse Increment has not verified.
 RunResult: Return stored result cells, effects, and final decision verdicts from an analysis run.
 run: Register an analysis before execution, persist its result cells, then decide from the validated run.
 Experiment: Describe an immutable analysis, its evidence references, and its declared views.
@@ -144,6 +145,7 @@ InvalidRequestError: Catch an invalid public request.
 RETIRED_CODES: Map a retired refusal code to its replacement.
 RefusalSpec: Declare the refusals a custom provider returns with breakout rows.
 UnsupportedRequestError: Catch a recognized request that is not supported.
+UnverifiedWarehouseWarning: Silence the one-time notice for a warehouse Increment has not verified.
 WireFormatError: Catch serialized data with an invalid wire format.
 unwrap_coded: Recover a coded refusal from a pydantic validation error.
 
@@ -223,6 +225,7 @@ IncrementWarning: Filter or assert on any coded library advisory.
 InvalidRequestError: Catch an invalid public request.
 RefusalSpec: Declare the refusals a custom provider returns with breakout rows.
 UnsupportedRequestError: Catch a recognized request that is not supported.
+UnverifiedWarehouseWarning: Silence the one-time notice for a warehouse Increment has not verified.
 WireFormatError: Catch serialized data with an invalid wire format.
 Assignment: Type the assignment declaration accepted by planning and switchback inputs.
 ParallelAssignment: Declare ordinary parallel-arm assignment for planning.

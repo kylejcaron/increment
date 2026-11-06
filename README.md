@@ -129,10 +129,15 @@ with reader:
 print(result.readout())
 ```
 
-DuckDB, PostgreSQL, Snowflake and BigQuery have execution test suites, but not
-every method runs on every backend. The
+Any Ibis SQL backend is supported. DuckDB, PostgreSQL, Snowflake, and BigQuery
+are verified by execution test suites; other backends show a one-time
+`UnverifiedWarehouseWarning`. An analysis runs when Ibis can translate its
+queries for that backend, and stops with `query.backend.operation_unsupported`
+when it cannot. The default run and warehouse CUPED need TEMP tables; unit-day
+artifacts need a verified backend. The
 [data-model guide](https://getincrement.io/docs/guides/data-model/) explains
-the YAML, and the
+the YAML and [other warehouses](https://getincrement.io/docs/guides/data-model/#other-warehouses),
+and the
 [warehouse example](https://github.com/kylejcaron/increment/blob/main/examples/analysis_from_a_warehouse.py)
 is a notebook that runs the whole workflow on a local DuckDB database.
 

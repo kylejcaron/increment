@@ -19,6 +19,7 @@ from increment.estimation.cuped.types import FitState, InferenceSummary, Project
 from increment.query._cuped_cells import _rows
 from increment.query._float_literals import exact_double
 from increment.query._nonfinite import nonfinite_parts
+from increment.semantics.loader import sqlglot_dialect_name
 
 FloatMatrix = tuple[tuple[float, ...], ...]
 
@@ -90,9 +91,10 @@ def _power_two_l2_scales(  # noqa: PLR0915
 
     backend = relation.get_backend()
     dialect = backend.name
+    sqlglot_dialect = sqlglot_dialect_name(dialect) or dialect
 
     def cte_name(name: str) -> str:
-        return exp.to_identifier(name).sql(dialect=dialect, identify=True)
+        return exp.to_identifier(name).sql(dialect=sqlglot_dialect, identify=True)
 
     moments_sql = ibis.to_sql(moments, dialect=dialect)
     moment_schema = {
@@ -464,7 +466,9 @@ def warehouse_qr_unit_summary(  # noqa: PLR0913
 
     backend = relation.get_backend()
     dialect = backend.name
-    cte_name = exp.to_identifier("_qr_q_products").sql(dialect=dialect, identify=True)
+    cte_name = exp.to_identifier("_qr_q_products").sql(
+        dialect=sqlglot_dialect_name(dialect) or dialect, identify=True
+    )
     wide_sql = (
         f"WITH {cte_name} AS ({ibis.to_sql(products, dialect=dialect)}) "
         f"{ibis.to_sql(wide, dialect=dialect)}"
@@ -923,6 +927,8 @@ def _bm_statement_parts(relation: ir.Table, dialect: str) -> tuple[str, dict[str
     import sqlglot
     from sqlglot import exp
 
+    sqlglot_dialect = sqlglot_dialect_name(dialect) or dialect
+
     slots = {name: exp.column(f"__{name}__", quoted=True) for name in ("t", "l", "r")}
     product = exp.Mul(this=slots["l"].copy(), expression=slots["r"].copy())
     shapes = {
@@ -933,9 +939,9 @@ def _bm_statement_parts(relation: ir.Table, dialect: str) -> tuple[str, dict[str
     }
     templates = {}
     for kind, shape in shapes.items():
-        template = exp.alias_(shape, "__a__", quoted=True).sql(dialect=dialect)
+        template = exp.alias_(shape, "__a__", quoted=True).sql(dialect=sqlglot_dialect)
         for name in ("t", "l", "r", "a"):
-            placeholder = exp.to_identifier(f"__{name}__", quoted=True).sql(dialect=dialect)
+            placeholder = exp.to_identifier(f"__{name}__", quoted=True).sql(dialect=sqlglot_dialect)
             template = template.replace(placeholder, f"{{{name}}}")
         templates[kind] = template
     source = exp.to_identifier("_qr_bm_input", quoted=True)
@@ -947,11 +953,11 @@ def _bm_statement_parts(relation: ir.Table, dialect: str) -> tuple[str, dict[str
         .group_by(group.copy())
         .with_(
             source.copy(),
-            as_=sqlglot.parse_one(ibis.to_sql(relation, dialect=dialect), dialect=dialect),
+            as_=sqlglot.parse_one(ibis.to_sql(relation, dialect=dialect), dialect=sqlglot_dialect),
         )
     )
-    prefix, suffix = statement.sql(dialect=dialect, pretty=True).split(
-        placeholder.sql(dialect=dialect)
+    prefix, suffix = statement.sql(dialect=sqlglot_dialect, pretty=True).split(
+        placeholder.sql(dialect=sqlglot_dialect)
     )
     return prefix, templates, suffix
 
@@ -970,10 +976,11 @@ def _aggregate_bm_batch(
 
     backend = relation.get_backend()
     dialect = backend.name
+    sqlglot_dialect = sqlglot_dialect_name(dialect) or dialect
 
     @cache
     def quote(name: str) -> str:
-        return exp.to_identifier(name, quoted=True).sql(dialect=dialect)
+        return exp.to_identifier(name, quoted=True).sql(dialect=sqlglot_dialect)
 
     prefix, templates, suffix = _bm_statement_parts(relation, dialect)
     separator = ",\n  "

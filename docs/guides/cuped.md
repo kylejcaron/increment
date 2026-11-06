@@ -1297,7 +1297,9 @@ with anchored, scaled warehouse QR; they export format-13
 `fitted_multicovariate` envelopes, including for fixed-cap and other bounded
 outcomes. Eligible categorical requests use guarded joint cells; guard misses
 route to general warehouse QR instead of refusing or downloading units.
-DuckDB, PostgreSQL, Snowflake, and BigQuery have verified execution support.
+DuckDB, PostgreSQL, Snowflake, and BigQuery are verified by execution suites;
+other Ibis SQL backends run the same fit when Ibis can translate it and the
+warehouse supports TEMP tables.
 The QR factorization and unit-dependent inference reductions remain
 warehouse-side; only the bounded triangular solve and fit finalization run on
 the client.

@@ -2030,6 +2030,96 @@ constant 50/50 probability.
     property as `as_of: static` makes it fail with `['free', 'pro']`, which is
     the failure mode the annotation exists to prevent.
 
+## Other warehouses
+
+Increment runs on any SQL backend Ibis supports, through the same
+`from_definitions` call. DuckDB, PostgreSQL, Snowflake and BigQuery are
+*verified*: execution test suites run the analyses on each of them. On another
+backend, Ibis translates the same queries into that backend's SQL and nothing
+refuses because of the backend's name, but Increment has not checked that every
+operation behaves the same there. Unit-day artifacts are the exception:
+Increment verifies an artifact's digests inside the warehouse only on the four
+verified backends, so publishing or opening one elsewhere refuses with
+`query.session.warehouse_artifact.verification_unavailable`.
+
+### The unverified-warehouse notice
+
+The first time Increment uses a connection to an unverified backend, it shows
+one `UnverifiedWarehouseWarning` naming the backend. The notice changes nothing
+in the results and is not recorded in them. It means that operations can behave
+differently across backends, so check results against a verified warehouse or a
+dataframe before relying on them. A team that has checked its backend can
+silence it:
+
+```python
+import warnings
+
+from increment import UnverifiedWarehouseWarning
+
+warnings.filterwarnings("ignore", category=UnverifiedWarehouseWarning)
+```
+
+### TEMP tables
+
+By default a run captures its source rows in a warehouse TEMP table, so every
+read in the run sees the same data, and warehouse CUPED keeps its working
+tables as TEMP tables too. On a connection that cannot create TEMP tables, both
+refuse with `query.session.snapshot.materialization_failed`. When only the source
+capture needs them, `run(experiment, reader, coherence="live")` reads the
+sources directly, and its results are marked live
+([Reading results](reading-results.md) explains what that gives up). Warehouse
+CUPED has no such alternative; analyze those metrics from a dataframe with
+`from_frame`.
+
+### When Ibis cannot translate an operation
+
+When Ibis has no translation of an operation for the backend, the analysis
+stops with `query.backend.operation_unsupported` where that query is reached.
+Queries earlier in the run may already have read data; no result is produced.
+The refusal's `backend` names the SQL dialect and its `detail` repeats Ibis's
+message, which names the operation. Ibis 12, for example, has no Trino
+translation of `Hash`, which Increment uses to check assignments; the `detail`
+then reads `Compilation rule for 'Hash' operation is not defined`.
+
+Ibis translates each operation with a method named `visit_<Operation>` on the
+dialect's compiler class, so you can add a missing one in your own code without
+changing Increment. This rule translates `Hash` for Trino with Trino's 64-bit
+xxHash; `to_utf8` takes text, which is all Increment hashes:
+
+```python
+import ibis
+from ibis.backends.sql.compilers.trino import TrinoCompiler
+
+
+def visit_hash(self, op, *, arg):
+    return self.f.from_big_endian_64(self.f.xxhash64(self.f.to_utf8(arg)))
+
+
+TrinoCompiler.visit_Hash = visit_hash
+
+units = ibis.table({"user_id": "string"}, name="units")
+print(ibis.to_sql(units.select(bucket=units.user_id.hash()), dialect="trino"))
+```
+
+<!-- output -->
+```text
+SELECT
+  FROM_BIG_ENDIAN_64(XXHASH64(TO_UTF8("t0"."user_id"))) AS "bucket"
+FROM "units" AS "t0"
+```
+
+<!-- invisible-code-block: python
+del TrinoCompiler.visit_Hash
+-->
+
+Register the rule in the process that runs the analysis, before `run`;
+`ibis.to_sql`, as above, shows whether the dialect now translates an
+expression. You own the rule's correctness: Increment does not check what it
+computes, and results on that backend stay unverified. Consider contributing
+the rule to [Ibis](https://github.com/ibis-project/ibis) so it ships with the
+backend. TEMP-table support is the backend's own behavior and cannot be added
+this way.
+
 ## Next step
 
 Choose an estimator with [Which experiment analysis method should I use?](choose-a-method.md), or continue to the [warehouse analysis example](../examples/analysis_from_a_warehouse.md).

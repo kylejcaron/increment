@@ -1309,6 +1309,7 @@ Retired codes and their replacements are listed below.
 | `query.artifact_reader.artifact_moment.manifest_no_metric` | `InvalidRequestError` | — | `increment.query.artifact_reader` |
 | `query.artifact_reader.artifact_moment.verification_lazy_digest` | `InvalidRequestError` | — | `increment.query.artifact_reader` |
 | `query.artifact_reader.snapshot_execution_returned` | `InvalidRequestError` | `type_name` | `increment.query.artifact_reader` |
+| `query.backend.operation_unsupported` | `CapabilityError` | `backend`, `detail`, `route` | `increment._compile_gaps` |
 | `query.builders.asof_group_summary` | `InvalidRequestError` | `name`, `threshold_days` | `increment.query.builders` |
 | `query.builders.asof_group_summary_completed_requires_uptake_window` | `InvalidRequestError` | — | `increment.query.builders` |
 | `query.builders.asof_group_summary_den_panel_retention` | `InvalidRequestError` | — | `increment.query.builders` |

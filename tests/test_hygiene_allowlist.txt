@@ -222,6 +222,8 @@ tests/test_asymptotic_public_sources.py 1
 tests/test_cate_calibration.py 7
 tests/test_compatibility_contract.py 1
 tests/test_compatibility_inspector.py 8
+# The translation-failure classifier is checked on raised compiler errors, without a warehouse.
+tests/test_compile_gaps.py 2
 tests/test_compliance_artifacts.py 1
 tests/test_compliance_summary.py 1
 tests/test_cuped_covariate_sources.py 1

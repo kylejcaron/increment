@@ -18,6 +18,7 @@ from increment.estimation.cuped.cells import _pattern_key
 from increment.estimation.cuped.types import CategoricalCells, _freeze_payload
 from increment.query._float_literals import exact_double
 from increment.query._nonfinite import nonfinite_parts
+from increment.semantics.loader import sqlglot_dialect_name
 
 if TYPE_CHECKING:
     from increment.query.cuped import _ResolvedCupedRequest
@@ -163,9 +164,10 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
 
     backend = relation.get_backend()
     dialect = backend.name
+    sqlglot_dialect = sqlglot_dialect_name(dialect) or dialect
 
     sql = ibis.to_sql(decisions, dialect=dialect)
-    query = sqlglot.parse_one(sql, read=dialect)
+    query = sqlglot.parse_one(sql, read=sqlglot_dialect)
     with_clause = query.args.get("with_")
     if with_clause is not None and dialect == "duckdb":
         for cte in with_clause.expressions:
@@ -182,7 +184,7 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
                 for output in outputs
             ):
                 cte.set("materialized", True)
-    sql = query.sql(dialect=dialect)
+    sql = query.sql(dialect=sqlglot_dialect)
     output_schema = {
         "group_id": relation.schema()["group_id"],
         **{
@@ -585,8 +587,9 @@ def _materialize_cell_stages(expression: ir.Table) -> ir.Table:
     import sqlglot
     from sqlglot import exp
 
+    sqlglot_dialect = sqlglot_dialect_name(backend.name) or backend.name
     sql = ibis.to_sql(expression, dialect=backend.name)
-    query = sqlglot.parse_one(sql, read=backend.name)
+    query = sqlglot.parse_one(sql, read=sqlglot_dialect)
     with_clause = query.args.get("with_")
     if with_clause is None:
         return expression
@@ -607,7 +610,7 @@ def _materialize_cell_stages(expression: ir.Table) -> ir.Table:
         ):
             cte.set("materialized", True)
 
-    return backend.sql(query.sql(dialect=backend.name))
+    return backend.sql(query.sql(dialect=sqlglot_dialect))
 
 
 def _rows(value):

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset
 from increment._binding import require_reader
+from increment._compile_gaps import translating_compile_gaps
 from increment._execute import _run_identity_hashes
 from increment._interpretation import EffectEstimate
 from increment.errors import CodedError, InvalidRequestError, RefusalSpec, WireFormatError, refuse
@@ -1201,48 +1202,49 @@ def run(  # noqa: PLR0913
     from increment.kernel.resolver import _select_views
     from increment.kernel.resolver import run as run_experiment
 
-    overrides = _readout_overrides(
-        decision_method=decision_method,
-        sensitivity_methods=sensitivity_methods,
-        prior=prior,
-        metrics=metrics,
-        estimands=estimands,
-        value_scale=value_scale,
-        exploratory_metrics=exploratory_metrics,
-        population=population,
-        coherence=coherence,
-    )
-    require_reader(reader)
-    selected = _select_views(experiment, views)
-    overrides = _coherence_override(selected, _scope_population(selected, overrides))
-    if run_id is not None and not run_id:
-        refuse_store(
-            "store.run.identity_incomplete",
-            "A complete run identity is required",
-            field="run_id",
+    with translating_compile_gaps():
+        overrides = _readout_overrides(
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            metrics=metrics,
+            estimands=estimands,
+            value_scale=value_scale,
+            exploratory_metrics=exploratory_metrics,
+            population=population,
+            coherence=coherence,
         )
-    if results_store is not None or decision_log is not None:
-        _preflight_persistence(
-            reader,
+        require_reader(reader)
+        selected = _select_views(experiment, views)
+        overrides = _coherence_override(selected, _scope_population(selected, overrides))
+        if run_id is not None and not run_id:
+            refuse_store(
+                "store.run.identity_incomplete",
+                "A complete run identity is required",
+                field="run_id",
+            )
+        if results_store is not None or decision_log is not None:
+            _preflight_persistence(
+                reader,
+                selected,
+                overrides,
+                saving=results_store is not None,
+                logging=decision_log is not None,
+            )
+        scoped = run_experiment(
             selected,
-            overrides,
-            saving=results_store is not None,
-            logging=decision_log is not None,
+            reader,
+            options=overrides,
+            capture=capture,
+            execution_context=execution_context,
         )
-    scoped = run_experiment(
-        selected,
-        reader,
-        options=overrides,
-        capture=capture,
-        execution_context=execution_context,
-    )
-    from uuid import uuid4
+        from uuid import uuid4
 
-    return _experiment_result(
-        reader._binding,
-        selected,
-        scoped,
-        run_id=f"run-{uuid4().hex}" if run_id is None else run_id,
-        results_store=results_store,
-        decision_log=decision_log,
-    )
+        return _experiment_result(
+            reader._binding,
+            selected,
+            scoped,
+            run_id=f"run-{uuid4().hex}" if run_id is None else run_id,
+            results_store=results_store,
+            decision_log=decision_log,
+        )
