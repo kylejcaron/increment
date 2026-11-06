@@ -136,12 +136,11 @@ values.
   look's families list every registered cell, including those a request
   narrowed to `estimands=("itt",)`, `("compliance",)` or some metrics leaves
   out, as whole-window readouts already did; only the requested rows are
-  returned, and snapshot and family IDs are unchanged. The uptake row
-  carries the family's `family_id`, `family_axes`, `family_procedure`,
-  `family_q` and `family_guarantee`, and its `multiplicity_status` is
-  `declared_plan` instead of `undeclared_plan`; its `role` stays `None`. With
-  no secondaries, the uptake cell is the one member of a `secondary` family,
-  whose `family_guarantee` is `finite_sample`.
+  returned. The uptake row carries the family's `family_id`, `family_axes`,
+  `family_procedure`, `family_q` and `family_guarantee`, and its
+  `multiplicity_status` is `declared_plan` instead of `undeclared_plan`; its
+  `role` stays `None`. With no secondaries, the uptake cell is the one member
+  of a `secondary` family, whose `family_guarantee` is `finite_sample`.
   A decision on a stored run selects over the same members: the uptake cell's
   own verdict stays `not_evaluated`
   (`decision.not_evaluated.monitoring_view`), its discovery counts toward the
@@ -151,9 +150,12 @@ values.
   `estimands=("itt",)` lists the uptake cell as an unselected member, so its
   family verdict is `not_evaluated` with `decision.family.member_missing`, as
   for any narrowed registered family; request `("itt", "compliance")` to
-  decide the family. Estimates, thresholds, discoveries, snapshot IDs and
-  family IDs are unchanged; saved run envelopes and readout metadata record
-  the added member. Migration: none needed.
+  decide the family. Estimates, thresholds and discoveries are unchanged. An
+  as-of readout that returns the uptake row gets a new snapshot ID once, and
+  with it new family IDs, because its snapshot covers that row's
+  `family_guarantee`, which was empty before; every other snapshot and family
+  ID is unchanged. Saved run envelopes and readout metadata record the added
+  member. Migration: none needed.
 - Release note (feature): analyses run on any Ibis SQL backend. DuckDB,
   PostgreSQL, Snowflake and BigQuery remain the verified warehouses. The first
   time Increment uses a connection to any other backend, it shows one
