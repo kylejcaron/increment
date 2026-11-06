@@ -1611,6 +1611,8 @@ def test_subtolerance_moment_mutation_preserves_parity_but_changes_identity() ->
     assert baseline_categorical == changed_categorical
 
 
+# Two hash-seeded interpreters each need all three real snapshot acquisitions.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_readout_snapshot_identity_is_hash_seed_independent() -> None:
     script = """
@@ -1621,12 +1623,11 @@ scenarios = (
     ("mixed-cuped-multicovariate-fixed-horizon", "from_moments"),
     ("dashboard-group-data", "from_unit_summary"),
 )
+snapshots = {}
 for scenario, ingress in scenarios:
     outcome = _line1_actual_outcome(scenario, ingress)
-    print(json.dumps({
-        "scenario": scenario,
-        "snapshot_id": outcome["metadata"]["scope"]["snapshot_id"],
-    }, sort_keys=True))
+    snapshots[f"{scenario}:{ingress}"] = outcome["metadata"]["scope"]["snapshot_id"]
+print(json.dumps(snapshots, sort_keys=True))
 """
     snapshots = []
     for seed in ("0", "4"):
@@ -1639,7 +1640,7 @@ for scenario, ingress in scenarios:
             text=True,
             env=environment,
         )
-        snapshots.append(result.stdout)
+        snapshots.append(json.loads(result.stdout))
     assert snapshots[0] == snapshots[1]
 
 

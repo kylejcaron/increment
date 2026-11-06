@@ -165,7 +165,7 @@ def test_unavailable_breakout_reason_survives_cell_and_table_round_trip():
     assert "few_units" in html
 
 
-# All five warehouse-produced row kinds must survive detached codecs.
+# Five real row kinds require separate producer and codec round-trips.
 @pytest.mark.slow
 @pytest.mark.integration
 def test_breakout_and_day_axis_producers_round_trip_tagged_rows(seeded_con, seeded_defs):
