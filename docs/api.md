@@ -127,6 +127,58 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking numerical correction): a posterior chance is reported
+  on the metric's favorable side everywhere it is shown. For a metric that
+  declares `preferred_direction`, the readout and `render(result, "full")`
+  print `chance_to_beat_favorable=` and the `posterior_chance_to_beat` column
+  of `estimates_to_readout` and `readout_table` shows the same value, read from
+  `preferred_direction` alone. Previously the readout printed the
+  direction-free chance that lift is positive under `chance_to_beat=` while the
+  table showed the favorable side under the same label, so a clearly improving
+  decrease metric read about 0 in one and 1 in the other. A metric without a
+  direction keeps `chance_to_beat=`, and under a one-sided `alternative` its
+  table column now shows `chance_to_beat()` instead of `None`.
+  `chance_to_beat_favorable()` on a decrease metric reads the posterior's lower
+  tail rather than `1 - chance_to_beat()`, so a vanishing probability keeps its
+  size (about 5e-112 where it showed 0.0). `prob_favorable()` on a sequential
+  row refuses with `CapabilityError` code `sequential.route.unsupported`, as
+  `p_value()` does, instead of returning `None`. A prior declared on a metric
+  (`MetricSpec(prior=...)` or a YAML binding) under sequential inference
+  refuses with `sequential.route.unsupported` (context `reason`, `metric`,
+  `inference`), the code a `run(prior=...)` override already raised;
+  `plan.metric_informative_priors` (`UnsupportedRequestError`) is retired and
+  `RETIRED_CODES` maps it to `sequential.route.unsupported`. To migrate, catch
+  `CapabilityError` with that code where `plan.metric_informative_priors` was
+  caught, and handle the refusal where `prob_favorable()` on a sequential row
+  was read as `None`. Estimates, intervals, p-values, the stored
+  `posterior_prob_favorable` and experiment identity are unchanged.
+- Release note (breaking): `to_frame()`, breakout frames and readout rows
+  export `sequential_alpha` and `sequential_log_e` as `Float64` numbers instead
+  of exact-fraction strings, so they can be filtered, sorted and plotted;
+  `sequential_log_e` is `-inf` or `inf` once a boundary is certain. The exact
+  fractions stay on `row.require_sequential_result()`. Asymptotic rows keep a
+  null `sequential_log_e`, because their plug-in log evidence is not a
+  finite-sample e-value. Rows of a registered sequential e-BH or Bonferroni
+  family, including breakout rows, now report the family's member count in
+  `family_size`. The brief render names a family's procedure as its selection
+  qualification does, for example "4-member e-BH" where it printed
+  "4-member E Bh", and reads "family" for an unrecorded procedure. Migration:
+  code that parsed these columns as strings should read them as floats, or read
+  `Fraction` values from `row.require_sequential_result()`. Estimates, decisions
+  and experiment identity are unchanged.
+- Release note (documentation): the limitations page states how conservative
+  the default conversion interval is at small arms and when it is the default.
+  At a 10% rate it covers 97.5% at 1,000 units per arm with 1.36 times the Katz
+  interval's log width, and 99.5% at 200, where its lower endpoint is a -100%
+  lift for 43% of outcomes. A row takes the delta-method route only with 2,140
+  successes and 2,140 failures per arm at a two-sided 5% level, so the
+  finite-sample route is the default below about 21,400 units per arm at a 10%
+  rate. The page also records that a mean's relative interval covered 93.5% on
+  skewed gamma outcomes at 30 units per arm, where the same rows' additive
+  Welch interval covered 95.6%. The `AnalysisPlan` docstring now says that
+  secondary families use Benjamini-Hochberg at a fixed horizon and e-BH under
+  sequential inference, including `AsymptoticMean`, not Bonferroni. Estimates,
+  refusals and experiment identity are unchanged.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
@@ -154,6 +206,46 @@ values.
   a blank segment label rather than `nan`, so the two stay distinct rows.
   Table qualification cells show `>` as written rather than `&gt;`.
   Readout estimates and experiment identity are unchanged.
+- Release note (breaking numerical correction): `required_sample_size` returns
+  the smallest fixed-horizon size whose power, evaluated as `achieved_power`
+  evaluates it, reaches the target. At a
+  treatment-heavy allocation sizes shrink by a few units (199,376 to 199,369
+  per arm at allocation 0.9 for a 2% lift on `Baseline(mean=20, var=400)`). A
+  triggered plan is sized in assigned units analyzed at
+  `assigned * trigger_rate`, as `achieved_power` plans it, so its size moves by
+  a few units and its reported power is `achieved_power`'s at that size; a
+  clustered size follows the same rule, and a very large size whose rounding
+  left its power a few ulps under the target now reaches it. Where the runtime
+  estimates the lift with its log-ratio delta-method contrast (fixed horizon,
+  unclustered, randomized, no absorbed factor, not decided from conversion
+  counts), planning also keeps the planned combined log-scale standard error
+  below 0.5, where the runtime refuses the estimate (`delta_method_unreliable`):
+  a noisy baseline at a large lift sizes larger (417 per arm instead of 316 for
+  a fivefold mean on `Baseline(mean=1, var=100)`), so one unit fewer fails
+  either the power target or that limit; `minimum_detectable_effect`
+  returns the smallest effect that meets both or refuses with the new
+  `power.minimum_detectable_effect.delta_method_unreliable` (context
+  `target_power`, `direction`, `log_se`, `log_se_limit`), and a companion
+  effect is `None` with reason `delta_method_unreliable`; `achieved_power`
+  still reports planned power. A companion effect at a target at or below the
+  null's own rejection probability is `None` with reason
+  `at_or_below_null_power` instead of `0.0`, including from
+  `segment_pairwise_required_sample_size` and `segment_pairwise_achieved_power`;
+  a sequential `achieved_power` or
+  `required_sample_size` at such a target used to raise
+  `power.sequential_mde.design_search_minimum`, which
+  `minimum_detectable_effect` still raises. At such a target
+  `segment_pairwise_minimum_detectable_effect` refuses with
+  `power.minimum_detectable_effect.design_search_minimum` (context `estimate`,
+  `target`) instead of returning `0.0`, and
+  `segment_pairwise_required_sample_size` returns the smallest size whose
+  segments split into two arms instead of sizing for the magnitude of a
+  negative `z_alpha + z_power`. A conversion or retention null at a
+  rate of exactly one as written, such as `null_lift=0.25` on a baseline of
+  0.8, is planned instead of refused with `power.bounded_metric.rate_above_one`.
+  Migrate code that compared a companion `mde_relative` with `0.0` to read
+  `mde_unavailable_reason`. Readout estimates and experiment identity are
+  unchanged.
 - Release note (documentation): the power guide's `PowerResult` table states
   that `mde_relative` is relative to the declared `null_lift`, not to control,
   and that the matching `relative_lift` is

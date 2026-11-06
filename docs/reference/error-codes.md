@@ -1184,7 +1184,6 @@ Retired codes and their replacements are listed below.
 | `plan.metric.report_only` | `InvalidRequestError` | `metric`, `role` | `increment.decision` |
 | `plan.metric_cuped_methods` | `UnsupportedRequestError` | `inference`, `metric` | `increment.plan` |
 | `plan.metric_frame_contrast` | `InvalidRequestError` | `metric` | `increment.plan` |
-| `plan.metric_informative_priors` | `UnsupportedRequestError` | `inference`, `metric` | `increment.plan` |
 | `plan.metric_priors_relative` | `UnsupportedRequestError` | `metric`, `prior` | `increment.plan` |
 | `plan.metrics.unknown` | `InvalidRequestError` | `declared`, `path`, `unknown` | `increment.decision` |
 | `plan.observational.relative_margin` | `UnsupportedRequestError` | `metrics` | `increment.plan` |
@@ -1236,7 +1235,8 @@ Retired codes and their replacements are listed below.
 | `power.max_workers_positive` | `InvalidRequestError` | — | `increment.power.curve` |
 | `power.mde_relative_unavailable` | `InvalidRequestError` | — | `increment.power.core` |
 | `power.mde_unavailable_reason` | `InvalidRequestError` | `mde_relative`, `mde_unavailable_reason` | `increment.power.core` |
-| `power.minimum_detectable_effect.design_search_minimum` | `InvalidRequestError` | `estimate`, `target` | `increment.power.core` |
+| `power.minimum_detectable_effect.delta_method_unreliable` | `InvalidRequestError` | `direction`, `log_se`, `log_se_limit`, `target_power` | `increment.power.core` |
+| `power.minimum_detectable_effect.design_search_minimum` | `InvalidRequestError` | `estimate`, `target` | `increment.power.core`, `increment.power.pairwise` |
 | `power.minimum_detectable_effect.numerical_resolution` | `InvalidRequestError` | `direction`, `power_enclosure`, `stopping_reason`, `target_power`, `unresolved_interval` | `increment.power._search`, `increment.power.core`, `increment.power.sequential` |
 | `power.minimum_detectable_effect.unattainable` | `InvalidRequestError` | `direction`, `limiting_condition`, `maximum_power`, `power_basis`, `target_power` | `increment.power.core` |
 | `power.minimum_detectable_effect.unrepresentable` | `InvalidRequestError` | `direction`, `limiting_condition`, `target_power` | `increment.power.core` |
@@ -1702,6 +1702,7 @@ Retired codes and their replacements are listed below.
 | `kernel.run.resolver_missing` | `kernel.run.reader_required`, `kernel.run.reader_offline` |
 | `plan.contrast_configs_template_mismatch` | `plan.compile_configs_template_mismatch` |
 | `plan.contrast_configs_wrong_type` | `plan.compile_configs_wrong_type` |
+| `plan.metric_informative_priors` | `sequential.route.unsupported` |
 | `power.alpha` | `estimation.diagnostics.alpha` |
 | `power.segment_pairwise_minimum_n_per_arm_too_small` | `power.segment_pairwise_achieved_n_per_arm_too_small` |
 | `power.sequential_power_enclosure_se_full_finite` | `power.se_full_finite` |

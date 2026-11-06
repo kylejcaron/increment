@@ -32,7 +32,7 @@ from increment.semantics.models import (
     Metric,
     MultiplicitySpec,
 )
-from increment.sequential_state import fixed_horizon_alternative
+from increment.sequential_state import fixed_horizon_alternative, sequential_refuse
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
@@ -95,7 +95,6 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template="configs must contain one entry per metric",
         ),
-        "plan.metric_informative_priors": "metric {metric!r}: informative priors are not supported with {inference} inference",
         "plan.metric_priors_relative": "metric {metric!r}: {prior} priors require the relative decision scale",
         "plan.corrected_encouragement_breakout": "corrected encouragement breakout is not supported",
         "plan.unsupported_decision_plan": RefusalSpec(
@@ -257,8 +256,11 @@ def _compile_one_procedure(
         decision_method, sensitivity_methods = config.decision_method, []
     resolved_prior = config.prior
     if resolved_prior is not None and resolved.inference is not None:
-        _raise(
-            "plan.metric_informative_priors",
+        sequential_refuse(
+            "route.unsupported",
+            f"metric {metric.name!r}: a declared prior does not combine with sequential "
+            "inference, whose coverage is a frequentist guarantee a prior would void; drop "
+            "the metric's prior or use fixed-horizon inference",
             metric=metric.name,
             inference=type(resolved.inference).__name__,
         )

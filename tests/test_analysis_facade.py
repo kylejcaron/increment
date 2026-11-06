@@ -1683,7 +1683,7 @@ def test_run_preserves_cluster_prior_refusal(informative_prior_summary_frame):
     assert exc_info.value.code == "arm.adjustment.cluster_prior"
 
 
-def _unit_summary_analysis_with_plan(plan):
+def _unit_summary_analysis_with_plan(plan, metrics=None):
     """Same shape as the ``unit_summary_analysis`` fixture, but with a
     declared plan baked into the source at construction - the only way
     a frame-backed ``Analysis`` can express ``inference=``/``alternative=``
@@ -1710,29 +1710,36 @@ def _unit_summary_analysis_with_plan(plan):
         unit="user_id",
         group="variant",
         control=None,
-        metrics={"revenue": "conversion"},
+        metrics={"revenue": "conversion"} if metrics is None else metrics,
         design=design,
         plan=plan,
         exposure_date="exposure",
     )
 
 
-def test_run_preserves_sequential_prior_refusal():
-    """A declared prior conflicts with a declared AlwaysValid plan the
-    same way it always has - inference is plan-declared now, not a
-    call-time override, but the refusal survives the cutover."""
+def test_metric_prior_and_sequential_share_one_code():
+    """A prior declared on the metric or passed to the call conflicts with a
+    declared AlwaysValid plan as one hazard with one code."""
     from increment.estimation import Normal
 
+    prior = Normal(mu=0.0, sigma=0.01)
+    declared = MetricSpec(name="revenue", type="conversion", prior=prior)
+    with pytest.raises(ValueError) as metric_prior:
+        _unit_summary_analysis_with_plan(
+            gaussian_plan([declared], law="bernoulli"), metrics=[declared]
+        )
     experiment, resolver = _unit_summary_analysis_with_plan(
         gaussian_plan([MetricSpec(name="revenue", type="conversion")], law="bernoulli")
     )
     with (
         warnings.catch_warnings(),
-        pytest.raises(ValueError) as raised,
+        pytest.raises(ValueError) as call_prior,
     ):
         warnings.simplefilter("ignore", UserWarning)
-        view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.01))
-    assert getattr(raised.value, "code", None) == "sequential.route.unsupported"
+        view_readout(experiment, resolver, prior=prior)
+    codes = {getattr(raised.value, "code", None) for raised in (metric_prior, call_prior)}
+    assert codes == {"sequential.route.unsupported"}
+    assert getattr(metric_prior.value, "context", {}).get("metric") == "revenue"
 
 
 def test_run_forwards_inference_label(unit_summary_analysis: tuple[Any, Any]):

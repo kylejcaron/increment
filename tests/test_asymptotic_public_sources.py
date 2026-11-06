@@ -143,6 +143,58 @@ def test_analysis_wire_export_replay_and_truthful_numeric_columns(tmp_path):
     assert displayed["posterior_prob_favorable"] is None
 
 
+def _ebh_family_run():
+    """Four asymptotic secondaries under e-BH at q=0.10; only ``s1`` moves."""
+    import pandas as pd
+
+    from increment import run
+
+    shifts = {"s1": 3.0, "s2": 0.0, "s3": 0.0, "s4": 0.0}
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"{i:04d}-{arm}",
+                "arm": arm,
+                "exposure": i,
+                **{
+                    name: float(i % 5) + (shift if arm == "treatment" else 0.0)
+                    for name, shift in shifts.items()
+                },
+            }
+            for i in range(100)
+            for arm in ("control", "treatment")
+        ]
+    )
+    return run(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name=name, type="mean") for name in shifts],
+            plan=AnalysisPlan(
+                secondaries=list(shifts), q=0.10, inference=InferenceSpec(kind="asymptotic_mean")
+            ),
+            exposure_date="exposure",
+        )
+    )
+
+
+def test_ebh_rows_report_family_size():
+    import polars as pl
+
+    projected = _ebh_family_run().to_frame(backend="polars")
+    assert projected["family_procedure"].to_list() == ["e_bh"] * 4
+    assert projected["family_size"].to_list() == [4] * 4
+    assert projected.schema["sequential_log_e"] == pl.Float64
+    assert projected["sequential_log_e"].null_count() == 4
+
+
 @pytest.mark.slow
 def test_public_stopping_freezes_first_crossing_and_rejects_rewritten_prefix():
     import pandas as pd
@@ -1142,6 +1194,7 @@ def test_automatic_asymptotic_segments_keep_bonferroni_and_match_the_manual_form
         assert isinstance(result, AsymptoticSequentialResult)
         assert result.decision_alpha == alpha
         assert row.family_threshold is None
+        assert row.family_size == (len(specs) * len(levels) if family else None)
         if level == "absent":
             assert result.bounds.reason == "missing_arm"
             assert row.discovery is (False if family else None)

@@ -329,8 +329,10 @@ assignment-law evidence.
   posterior route if a Bayesian decision is required.
 
 When a prior is supplied and the posterior is available, the readout also
-prints its posterior estimate and `chance_to_beat()` probability, including
-when no preferred direction is declared. The frame field
+prints its posterior estimate and one probability: for a metric that declares
+`preferred_direction`, `chance_to_beat_favorable()`, the posterior probability
+that the lift lies on its favorable side of zero; otherwise the direction-free
+`chance_to_beat()`. The test `alternative` never chooses the side. The frame field
 `posterior_prob_favorable_reason_code` distinguishes an absolute-margin null,
 missing direction, and a neutral direction; it is null when a favorable
 probability is available or the posterior itself is unavailable.

@@ -9,6 +9,7 @@ Quantile metrics are refused because quantile readouts have no segments.
 from __future__ import annotations
 
 import math
+import sys
 from typing import cast
 
 from increment._finite_sample_refusals import refuse_finite_sample_metric_type
@@ -45,11 +46,14 @@ from increment.power._shared import (
     validate_relative_lift as _validate_relative_lift,
 )
 from increment.power.core import (
+    _MDE_DESIGN_SEARCH_MINIMUM,
     Baseline,
+    MdeUnavailableReason,
     PowerDesign,
     PowerResult,
     QuantileBaseline,
     _refuse_cuped_linear_planning,
+    _smallest_admissible_size,
 )
 
 _PAIRWISE_N_PER_ARM_TOO_SMALL = RefusalSpec(
@@ -103,16 +107,17 @@ def _se_sq(n_T: float, n_C: float, baseline: Baseline) -> float:
     return baseline.effective_var / (baseline.mean**2) * (1.0 / n_T + 1.0 / n_C)
 
 
-def _mde_relative(
-    se2: float,
-    design: PowerDesign,
-    procedure: ArmPlanningProcedure,
-    *,
-    dof: float | None = None,
-) -> float:
-    """Minimum detectable relative effect at a fixed variance ``se2``
-    (segment-pairwise model)."""
-    return math.expm1(_mde_theta(se2, design, procedure, dof=dof))
+def _companion_mde(
+    se2: float, design: PowerDesign, procedure: ArmPlanningProcedure
+) -> tuple[float | None, MdeUnavailableReason | None]:
+    """Companion minimum detectable relative effect at a fixed variance
+    ``se2`` (segment-pairwise model), or a null when the target is at or
+    below the null's own power: ``mde_theta``'s zero endpoint has no strictly
+    nonzero minimum (``at_or_below_null_power``)."""
+    theta = _mde_theta(se2, design, procedure)
+    if theta == 0.0:
+        return None, "at_or_below_null_power"
+    return math.expm1(theta), None
 
 
 # Pairwise segment-difference solvers - detect a difference between two
@@ -304,6 +309,31 @@ def _reraise_cluster_floor(exc: ValueError) -> None:
         raise exc
 
 
+_SPLIT_FLOORS = frozenset({"power.segment_share_n", "power.segment_clustered_baseline"})
+
+
+def _smallest_splittable(
+    q_a: float, q_b: float, baseline_a: Baseline, baseline_b: Baseline, design: PowerDesign
+) -> int:
+    """Smallest experiment-wide treatment size whose two segments both hold a
+    two-arm split (and, clustered, two clusters per arm); two when no float64
+    size does, so the caller's own split refusal names the shortfall."""
+
+    def splits(n_t: int) -> bool:
+        n_t, n_c = _compute_arms(n_t, design)
+        try:
+            _pairwise_se_sq(n_t + n_c, q_a, q_b, baseline_a, baseline_b, design)
+        except InvalidRequestError as exc:
+            if exc.code not in _SPLIT_FLOORS:
+                raise
+            return False
+        return True
+
+    # The control arm, n_T (1 - a) / a, stays within float64 up to this size.
+    ceiling = math.floor(sys.float_info.max * min(design.allocation, 1.0 - design.allocation))
+    return _smallest_admissible_size(2, 2, ceiling, splits) or 2
+
+
 def segment_pairwise_required_sample_size(
     r_a: float,
     r_b: float,
@@ -337,7 +367,11 @@ def segment_pairwise_required_sample_size(
     ``effective_var``, but ``PowerResult.n_clusters_*`` stays ``None``:
     no single cluster count is meaningful across two possibly-different
     baselines. Fixed-horizon only; sequential planning for segment
-    contrasts is not yet supported.
+    contrasts is not yet supported. A target at or below the null's own
+    power is reached at zero distance, so its size is the smallest whose
+    segments split into two arms, and its companion ``mde_relative`` is
+    ``None`` with ``at_or_below_null_power``, as ``required_sample_size``
+    reports it.
 
     Raises
     ------
@@ -365,18 +399,21 @@ def segment_pairwise_required_sample_size(
     if alternative == "less" and theta > 0.0:
         _raise("power.r_a_above", r_a=r_a, r_b=r_b, theta=theta)
 
-    k = 1.0 / design.allocation + 1.0 / (1.0 - design.allocation)
-    term_a = baseline_a.effective_var / (baseline_a.mean**2 * q_a)
-    term_b = baseline_b.effective_var / (baseline_b.mean**2 * q_b)
-    from scipy.stats import norm as _norm
-
-    z_sum = float(_norm.isf(procedure.compiled_tail_alpha)) + float(_norm.ppf(design.power))
-
     if abs(theta) < 1e-15:
         _raise("power.r_a_r", r_a=r_a, r_b=r_b)
+    if _mde_theta(1.0, design, procedure) == 0.0:
+        # Zero distance already reaches a target at or below the null's own
+        # power, so every size does: the answer is the smallest one that splits.
+        n_t = _smallest_splittable(q_a, q_b, baseline_a, baseline_b, design)
+    else:
+        k = 1.0 / design.allocation + 1.0 / (1.0 - design.allocation)
+        term_a = baseline_a.effective_var / (baseline_a.mean**2 * q_a)
+        term_b = baseline_b.effective_var / (baseline_b.mean**2 * q_b)
+        from scipy.stats import norm as _norm
 
-    n_total_float = k * z_sum**2 * (term_a + term_b) / theta**2
-    n_t = max(2, math.ceil(n_total_float * design.allocation))
+        z_sum = float(_norm.isf(procedure.compiled_tail_alpha)) + float(_norm.ppf(design.power))
+        n_total_float = k * z_sum**2 * (term_a + term_b) / theta**2
+        n_t = max(2, math.ceil(n_total_float * design.allocation))
     n_t, n_c = _compute_arms(n_t, design)
 
     try:
@@ -384,12 +421,14 @@ def segment_pairwise_required_sample_size(
     except ValueError as exc:
         _reraise_cluster_floor(exc)
         _raise("power.solved_too_small", n_total=n_t + n_c, q_a=q_a, q_b=q_b, exc=str(exc))
+    mde_relative, mde_unavailable_reason = _companion_mde(se2, design, procedure)
     return PowerResult(
         n_per_arm=n_t,
         n_total=n_t + n_c,
         power=min(_power_at(theta, se2, design, procedure), 1.0),
         power_basis="asymptotic",
-        mde_relative=_mde_relative(se2, design, procedure),
+        mde_relative=mde_relative,
+        mde_unavailable_reason=mde_unavailable_reason,
         effective_var=baseline_a.effective_var,
     )
 
@@ -444,12 +483,14 @@ def segment_pairwise_achieved_power(
             q_b=q_b,
             exc=str(exc),
         )
+    mde_relative, mde_unavailable_reason = _companion_mde(se2, design, procedure)
     return PowerResult(
         n_per_arm=n_t,
         n_total=n_t + n_c,
         power=min(_power_at(theta, se2, design, procedure), 1.0),
         power_basis="asymptotic",
-        mde_relative=_mde_relative(se2, design, procedure),
+        mde_relative=mde_relative,
+        mde_unavailable_reason=mde_unavailable_reason,
         effective_var=baseline_a.effective_var,
     )
 
@@ -472,7 +513,11 @@ def segment_pairwise_minimum_detectable_effect(
 
     ``PowerResult.effective_var`` reflects segment A's baseline only; it
     does not summarize ``baseline_b``. Fixed-horizon only; sequential
-    planning for segment contrasts is not yet supported.
+    planning for segment contrasts is not yet supported. A target at or
+    below the null's own power refuses, as ``minimum_detectable_effect``
+    does, with ``power.minimum_detectable_effect.design_search_minimum``:
+    zero distance already qualifies, so no strictly nonzero effect is the
+    minimum.
 
     Raises
     ------
@@ -506,6 +551,12 @@ def segment_pairwise_minimum_detectable_effect(
             exc=str(exc),
         )
     mde_theta = _mde_theta(se2, design, procedure)
+    if mde_theta == 0.0:
+        refuse(
+            _MDE_DESIGN_SEARCH_MINIMUM,
+            estimate=_power_at(0.0, se2, design, procedure),
+            target=design.power,
+        )
     return PowerResult(
         n_per_arm=n_t,
         n_total=n_t + n_c,

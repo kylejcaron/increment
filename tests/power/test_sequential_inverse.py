@@ -322,8 +322,12 @@ class TestNullTargets:
     def test_below_the_null_power_raises_the_null_crossing_error(self):
         null = self._null()
         with pytest.raises(InvalidRequestError) as raised:
-            sequential_solve(
-                N_FIXED, BASE, self.PROCEDURE, PowerDesign(power=0.5 * null.estimate), 14
+            minimum_detectable_effect(
+                N_FIXED,
+                BASE,
+                self.PROCEDURE,
+                PowerDesign(power=0.5 * null.estimate),
+                planned_looks=14,
             )
         assert raised.value.code == "power.sequential_mde.design_search_minimum"
         assert raised.value.context["estimate"] == pytest.approx(null.estimate)

@@ -548,6 +548,7 @@ def selected_snapshot_results(
                     "family_threshold": outcome.realized_threshold,
                     "family_guarantee": outcome.guarantee,
                     "family_nominal_alpha": float(nominal_alpha),
+                    "family_size": outcome.n_family,
                 }
             )
         results.append(row)

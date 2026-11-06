@@ -2862,7 +2862,7 @@ def _breakout_estimate_row(
     FCR re-estimation pass, and readouts' encouragement branch, so every
     real row carries exactly the same field set. ``estimand``/
     ``value_scale``/``note`` and a registered sequential family's
-    ``family_guarantee``/``family_nominal_alpha`` come from the
+    ``family_guarantee``/``family_nominal_alpha``/``family_size`` come from the
     ``LiftEstimate`` itself (model defaults ``"itt"``/``"relative"``/``None``
     on the randomized path, which never sets them).
     """
@@ -2879,8 +2879,8 @@ def _breakout_estimate_row(
                 else None
             ),
             prior_shrunk=lift_estimate.prior_shrunk or lift_estimate.prior_spec is not None,
-            # BreakoutEstimate-only sidecar: _copy_common_fields doesn't
-            # carry it (DailyLiftEstimate has no winsor_* fields).
+            # BreakoutEstimate-only sidecars: _copy_common_fields doesn't
+            # carry them (DailyLiftEstimate has no winsor_* or family_size fields).
             winsor_lower_percentile=lift_estimate.winsor_lower_percentile,
             winsor_upper_percentile=lift_estimate.winsor_upper_percentile,
             winsor_lower_bound=lift_estimate.winsor_lower_bound,
@@ -2891,6 +2891,7 @@ def _breakout_estimate_row(
             winsor_treatment_n=lift_estimate.winsor_treatment_n,
             winsor_treatment_n_lower=lift_estimate.winsor_treatment_n_lower,
             winsor_treatment_n_upper=lift_estimate.winsor_treatment_n_upper,
+            family_size=lift_estimate.family_size,
             low_reliability=low_reliability,
             n_treat=n_treat,
             n_control=n_control,

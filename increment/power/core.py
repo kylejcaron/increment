@@ -98,6 +98,7 @@ from increment.estimation.conversion_route import (
     refuse_finite_sample_unavailable,
 )
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
+from increment.estimation.inference import LOG_DELTA_METHOD_MAX_SE
 from increment.estimation.meta import ESTIMATION_META_VAR_FINITE_STRICTLY
 from increment.estimation.quantile import (
     QuantileArm,
@@ -136,6 +137,7 @@ from increment.power._search import (
     _MDE_NUMERICAL_RESOLUTION,
     _MdeRefusal,
     _noncentrality,
+    _se_from_log,
     bisect_first_true,
     float_from_ordinal,
     float_ordinal,
@@ -204,7 +206,13 @@ _FLOAT_MAX = sys.float_info.max
 # ranks stay accurate to well past it, and it exceeds any real population.
 _MAX_QUANTILE_ARM = 2**40
 
-MdeUnavailableReason = Literal["unattainable", "unrepresentable", "numerical_resolution"]
+MdeUnavailableReason = Literal[
+    "unattainable",
+    "unrepresentable",
+    "numerical_resolution",
+    "delta_method_unreliable",
+    "at_or_below_null_power",
+]
 PowerBasis = Literal["asymptotic", "exact", "lower_bound"]
 
 
@@ -326,6 +334,8 @@ _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
 
 _REFUSALS["estimation.meta.var_finite_strictly"] = ESTIMATION_META_VAR_FINITE_STRICTLY
 _raise = raiser(_REFUSALS)
+#: A target at or below the null's own power: shared by every fixed-horizon MDE solver.
+_MDE_DESIGN_SEARCH_MINIMUM = _REFUSALS["power.minimum_detectable_effect.design_search_minimum"]
 
 
 def _require_companion_mde(
@@ -898,13 +908,19 @@ class PowerResult(CodedModel, BaseModel):
         straddling band whose unprobed interior could already certify the target under the
         same budgets. The returned effect certifies its own target; it does not certify global
         minimality.
-    mde_unavailable_reason : {"unattainable", "unrepresentable", "numerical_resolution"} | None
+    mde_unavailable_reason : {"unattainable", "unrepresentable", "numerical_resolution", "delta_method_unreliable", "at_or_below_null_power"} | None
         Why ``mde_relative`` is ``None``: the target power exceeds every
         admissible alternative's power (``unattainable``), the admissible
-        answer has no float64 representation (``unrepresentable``), or the
+        answer has no float64 representation (``unrepresentable``), the
         search could not resolve it within its numerical limits
-        (``numerical_resolution``). ``None`` whenever ``mde_relative`` is
-        available; a missing effect always carries a reason.
+        (``numerical_resolution``), every effect reaching the target has a
+        planned combined log-scale standard error at or above the 0.5 at
+        which the runtime's relative-lift estimate refuses
+        (``delta_method_unreliable``, the runtime's own reason), or the
+        target is at or below the null's own rejection probability, so zero
+        distance already reaches it and no strictly nonzero effect is the
+        minimum (``at_or_below_null_power``). ``None`` whenever
+        ``mde_relative`` is available; a missing effect always carries a reason.
     effective_var : float
         Per-unit variance for asymptotic planning, after the effective decision
         method's CUPED / factor-absorption reduction and cluster design effect.
@@ -1472,12 +1488,12 @@ def _bounded_preflight(
     procedure: ArmPlanningProcedure, baseline: Baseline, *, null_lift: float
 ) -> bool:
     """Whether the Bernoulli variance shape applies, refusing a bounded
-    baseline outside ``(0, 1)`` or a null rate above one before any
-    calculation. Invalid bounded inputs never fall through to the
-    unbounded model. Solvers re-derive the null's log ratio from
-    ``null_lift``, so a null whose log rate rounds above zero cannot be
-    moved onto the boundary and is refused even at a rate of one as
-    written."""
+    baseline outside ``(0, 1)`` or a null rate above one as written before
+    any calculation. Invalid bounded inputs never fall through to the
+    unbounded model. A null at a rate of exactly one is planned: every
+    alternative the solvers evaluate places its own rate by
+    ``_bounded_point``, so a null log rate that rounds above zero never
+    reaches the treatment variance."""
     if not _is_bounded_metric(procedure):
         return False
     if not 0.0 < baseline.mean < 1.0:
@@ -1487,7 +1503,7 @@ def _bounded_preflight(
             mean=baseline.mean,
         )
     rate = _written(baseline.mean) * (1 + _written(null_lift))
-    if rate > 1 or math.log(baseline.mean) + math.log1p(null_lift) > 0.0:
+    if rate > 1:
         _refuse_rate_above_one(procedure, baseline, rate, role="null")
     return True
 
@@ -1951,6 +1967,46 @@ _MDE_UNREPRESENTABLE = RefusalSpec(
     InvalidRequestError,
     template="the minimum detectable effect at power={target_power} in the {direction} direction exists but has no float64 representation as a relative lift ({limiting_condition}) -- the standard error or compliance is too extreme for a relative-scale answer",
 )
+# Context: target_power, direction, log_se (the smallest planned combined log-scale SE among
+# the effects reaching the target) and log_se_limit (the runtime's refusal threshold).
+_MDE_DELTA_METHOD_UNRELIABLE = RefusalSpec(
+    "power.minimum_detectable_effect.delta_method_unreliable",
+    InvalidRequestError,
+    template="no effect that reaches power={target_power} in the {direction} direction is one the runtime can estimate: each has a planned combined log-scale standard error of at least {log_se:.4g}, and the runtime refuses a relative lift whose log-scale standard error is {log_se_limit} or more (delta_method_unreliable) -- raise n_per_arm",
+)
+
+
+def _runtime_log_guarded(procedure: ArmPlanningProcedure) -> bool:
+    """Whether the runtime decides this plan with ``infer_lift``'s log-ratio
+    contrast, which refuses a combined log-scale SE of
+    ``LOG_DELTA_METHOD_MAX_SE`` or more: a fixed-horizon, unclustered,
+    randomized, unabsorbed, non-quantile plan the runtime does not route by
+    its counts. Clustered, encouragement and absorbed-factor estimates use
+    other constructions, a count-routed plan's delta-method region lies inside
+    the guard by construction (with or without a prior), sequential plans have
+    no such guard, and a quantile plan keeps its own pilot-projected size
+    search."""
+    analysis = procedure.analysis
+    return (
+        isinstance(procedure.inference, FixedInference)
+        and procedure.dependence == "iid"
+        and analysis.identification == "randomized"
+        and analysis.variance_adjustment == "none"
+        and procedure.metric.metric_type != "quantile"
+        and not _runtime_count_routed(procedure)
+    )
+
+
+def _log_mean_se(var: float, mean: float, n: float) -> float:
+    """One arm's log-mean SE exactly as ``se_log_mean`` forms it,
+    ``exp(0.5 * (log(var) - log(n) - 2 log(mean)))``, saturating where that
+    refuses: zero for zero variance, infinite for a mean that underflows to
+    zero or an SE that overflows."""
+    if var == 0.0:
+        return 0.0
+    if mean <= 0.0:
+        return math.inf
+    return _se_from_log(math.log(var) - math.log(n) - 2.0 * math.log(mean))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1979,6 +2035,32 @@ class _ArmPlan:
         alternative whose absolute effective log ratio is ``theta``."""
         nc = _noncentrality(distance, self.log_se_sq(theta))
         return _power_from_nc(nc, self.procedure, dof=self.dof)
+
+    def log_guarded(self) -> bool:
+        return _runtime_log_guarded(self.procedure)
+
+    def runtime_log_se(self, mean_t: float) -> float:
+        """The combined log-scale SE ``infer_lift`` judges at the planned
+        arms, ``hypot(se_t, se_c)``, with the treatment arm at the mean the
+        runtime receives, ``mean_t = m0 * (1 + effective_lift)`` as written
+        (``log(m0) + log1p(lift)`` can round to the other side of the guard),
+        and its variance (the Bernoulli shape when bounded, at a rate of at
+        most one)."""
+        baseline = self.baseline
+        var = baseline.effective_var
+        var_t = var
+        if self.bounded:
+            m0, mean_t = baseline.mean, min(mean_t, 1.0)
+            var_t = var * mean_t * (1.0 - mean_t) / (m0 * (1.0 - m0))
+        return math.hypot(
+            _log_mean_se(var_t, mean_t, self.n_T), _log_mean_se(var, baseline.mean, self.n_C)
+        )
+
+    def passes_log_guard(self, mean_t: float) -> bool:
+        """Whether the runtime's log-scale guard admits the planned arms with
+        treatment mean ``mean_t``; always true on a route that guard does not
+        decide."""
+        return not self.log_guarded() or self.runtime_log_se(mean_t) < LOG_DELTA_METHOD_MAX_SE
 
 
 def _first_ordinal_accepted(rejected: int, accepted: int, accept: Callable[[float], bool]) -> int:
@@ -2147,6 +2229,60 @@ class _MdeSearch:
             },
         )
 
+    def at_or_below_null_power(self, estimate: float) -> _MdeRefusal:
+        """The null's own rejection probability ``estimate`` already reaches
+        the target, so no strictly nonzero minimum exists."""
+        return _MdeRefusal(
+            "at_or_below_null_power",
+            _MDE_DESIGN_SEARCH_MINIMUM,
+            {"estimate": estimate, "target": self.target},
+        )
+
+    def treatment_mean(self, m: float) -> float:
+        """The treatment mean the runtime receives for candidate ``m``,
+        ``m0 * (1 + null_lift) * (1 + m * compliance)``: at a zero null, the
+        mean ``achieved_power`` plans for ``relative_lift=m``."""
+        return self.plan.baseline.mean * ((1.0 + self.null_lift) * (1.0 + m * self.compliance))
+
+    def decides(self, m: float) -> bool:
+        point = self.candidate(m)
+        return (
+            point is not None
+            and self.power_of(point) >= self.target
+            and self.plan.passes_log_guard(self.treatment_mean(m))
+        )
+
+    def decidable(self, m: float, power: float) -> tuple[float, float] | _MdeRefusal:
+        """The smallest effect from ``m``, the first reaching the target, whose
+        planned arms the runtime's log-scale guard also admits, with its power.
+        Growing an effect shrinks only the treatment arm's log SE, so in the
+        increasing direction the answer is the first admitted effect past ``m``
+        (at most the last admissible one); in the decreasing direction it
+        only grows, so ``m`` is admitted or nothing is."""
+        plan = self.plan
+        if plan.passes_log_guard(self.treatment_mean(m)):
+            return m, power
+        limit = m
+        if self.sigma > 0.0:
+            limit = self.upper_endpoint(m)
+            if self.decides(limit):
+                found = float_from_ordinal(
+                    _first_ordinal_accepted(float_ordinal(m), float_ordinal(limit), self.decides)
+                )
+                admitted = self.candidate(found)
+                assert admitted is not None
+                return found, self.power_of(admitted)
+        return _MdeRefusal(
+            "delta_method_unreliable",
+            _MDE_DELTA_METHOD_UNRELIABLE,
+            {
+                "target_power": self.target,
+                "direction": self.direction,
+                "log_se": plan.runtime_log_se(self.treatment_mean(limit)),
+                "log_se_limit": LOG_DELTA_METHOD_MAX_SE,
+            },
+        )
+
     def lower_endpoint(self) -> float | _MdeRefusal:
         """First admissible candidate in increasing-distance order.
 
@@ -2297,17 +2433,18 @@ def _solve_arm_mde(
     """Smallest admissible complier-scale relative effect reaching ``target``
     power at the plan's counts, with that effect's own power.
 
-    A lower endpoint already reaching the target is returned with its
-    actual power, including a zero endpoint when the null is admissible and
-    the target is at or below the null's own power. The public MDE entry point
-    refuses that zero-distance result because no strictly nonzero minimum exists;
-    supplied-effect entry points may still report it as their companion MDE.
-    A partial-compliance-shifted null's nonzero lower endpoint is also
-    returned with its power. A peak or endpoint below target means no answer
-    exists. Otherwise the first crossing is isolated to adjacent
-    float64 candidates by bisecting their ordinals between the failing
-    lower endpoint and the passing peak or endpoint, so the answer reaches
-    the target and its predecessor in distance order does not.
+    A zero lower endpoint already reaching the target (the target is at or
+    below the null's own power) has no strictly nonzero minimum and is
+    ``at_or_below_null_power``. A partial-compliance-shifted null's nonzero
+    lower endpoint reaching it is returned with its power. A peak or
+    endpoint below target means no answer exists. Otherwise the first
+    crossing is isolated to adjacent float64 candidates by bisecting their
+    ordinals between the failing lower endpoint and the passing peak or
+    endpoint, so the answer reaches the target and its predecessor in
+    distance order does not. Where the runtime decides the plan with its
+    log-scale delta-method contrast, the answer is also the first effect
+    that contrast's guard admits (``_MdeSearch.decidable``), or
+    ``delta_method_unreliable`` when none is.
     """
     search = _MdeSearch.build(plan, target=target, null_lift=null_lift, alternative=alternative)
     m_min = search.lower_endpoint()
@@ -2317,7 +2454,9 @@ def _solve_arm_mde(
     assert low is not None
     power_min = search.power_of(low)
     if power_min >= target:
-        return m_min, power_min
+        if m_min == 0.0:
+            return search.at_or_below_null_power(power_min)
+        return search.decidable(m_min, power_min)
 
     m_max = search.upper_endpoint(m_min)
     high = search.candidate(m_max)
@@ -2334,7 +2473,7 @@ def _solve_arm_mde(
     )
     point = search.candidate(m)
     assert point is not None
-    return m, search.power_of(point)
+    return search.decidable(m, search.power_of(point))
 
 
 def _sequential_sample_size_detected(
@@ -2371,9 +2510,9 @@ def _solve_sequential_mde(
     """Smallest admissible complier-scale relative effect whose sequential
     boundary-crossing power is certified to reach ``target`` at the plan's
     counts, with the alternative's own variance behind the drift and the
-    boundary at every candidate. A target at or below the null's own
-    certified crossing probability raises ``ValueError`` when zero is
-    admissible; every other missing answer is an ``_MdeRefusal``."""
+    boundary at every candidate. Every missing answer is an ``_MdeRefusal``,
+    including a target at or below the null's own certified crossing
+    probability when zero is admissible (``at_or_below_null_power``)."""
     search = _MdeSearch.build(plan, target=target, null_lift=null_lift, alternative=alternative)
     return _SequentialMdeSearch.build(
         looks,
@@ -2400,24 +2539,33 @@ BINOMIAL_PLANNING_MODEL = "hybrid_finite_plus_delta_v3"
 _GeometryCache = dict[tuple[BinomialDecision, Routing | None, Route], RejectionGeometry]
 
 
-def _runtime_binomial(procedure: ArmPlanningProcedure) -> bool:
-    """Whether the runtime routes this plan by its counts.
+def _runtime_count_routed(procedure: ArmPlanningProcedure) -> bool:
+    """Whether the runtime picks this plan's route from its counts.
 
     Mirrors ``increment.estimation.engine._binomial_eligible`` -- a declared
     conversion or retention metric, unclustered, not CUPED-adjusted, with raw
-    binary counts -- plus that route's own entry conditions: fixed-horizon
-    inference and no prior. An absorbed factor or winsorized outcome is no
-    longer a raw binomial count, so those plans keep the log-ratio model.
+    binary counts -- plus that routing's own entry conditions: fixed-horizon
+    inference, and a prior only under ``conversion_inference="auto"``, which
+    routes by the counts whether or not a prior is set. An absorbed factor or
+    winsorized outcome is no longer a raw binomial count, so those plans keep
+    the log-ratio model.
     """
     return (
         _is_bounded_metric(procedure)
         and procedure.dependence == "iid"
         and procedure.decision_method.variance_reduction == "none"
         and isinstance(procedure.inference, FixedInference)
-        and not procedure.prior_present
+        and (not procedure.prior_present or _conversion_mode(procedure) == "auto")
         and procedure.analysis.variance_adjustment == "none"
         and procedure.metric.winsorization == "none"
     )
+
+
+def _runtime_binomial(procedure: ArmPlanningProcedure) -> bool:
+    """Whether planning replays the runtime's count-routed decision: a
+    count-routed plan without a prior. A prior-carrying plan keeps the
+    log-ratio model."""
+    return _runtime_count_routed(procedure) and not procedure.prior_present
 
 
 def _conversion_mode(procedure: ArmPlanningProcedure) -> ConversionInference:
@@ -3070,23 +3218,24 @@ def _dense_mde(
     target: float,
     null_lift: float,
     alternative: Alternative,
-) -> tuple[float, float] | None:
+) -> tuple[float, float] | _MdeRefusal | None:
     """The closed-form effect, when every effect from the null up to it is planned in closed
     form (counts dense with near certainty, lattices too large to enumerate).
 
     The closed form is the power of each such effect, and ``_solve_arm_mde`` isolates its
     first crossing, so that crossing is also the first the plan reaches: no effect before it
-    is planned any other way, and no lattice is built. Any other plan (an enumerated, sparse or
-    borderline effect on the way, or no closed-form answer) returns ``None`` and is searched
-    against the enumerated decision.
+    is planned any other way, and no lattice is built. A null the closed form plans that
+    already reaches the target is ``at_or_below_null_power`` the same way. Any other plan (an
+    enumerated, sparse or borderline effect on the way, or no closed-form answer) returns
+    ``None`` and is searched against the enumerated decision.
     """
     if model.mode != "auto":
         return None
     solved = _solve_arm_mde(plan, target=target, null_lift=null_lift, alternative=alternative)
-    if isinstance(solved, _MdeRefusal):
+    if isinstance(solved, _MdeRefusal) and solved.reason != "at_or_below_null_power":
         return None
     search = _MdeSearch.build(plan, target=target, null_lift=null_lift, alternative=alternative)
-    point = search.candidate(solved[0])
+    point = search.candidate(0.0 if isinstance(solved, _MdeRefusal) else solved[0])
     if point is None:
         return None
     _, every = model.closed_extent(search.theta0, point[1])
@@ -3148,7 +3297,10 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
     try:
         first = search.begin(m_min)
         if search.detected(search.value(first)):
-            return m_min, search.value(first).published
+            published = search.value(first).published
+            if m_min == 0.0:
+                return search.at_or_below_null_power(published)
+            return m_min, published
         last = search.begin(m_max)
         found = search.between(m_min, m_max, first, last)
         if found is not None:
@@ -3820,6 +3972,94 @@ def _sequential_companion(
     return solved.mde_relative, solved.power, None
 
 
+def _smallest_admissible_size(
+    seed: int, floor: int, ceiling: int, admissible: Callable[[int], bool]
+) -> int | None:
+    """Smallest size in ``[floor, ceiling]`` that ``admissible`` accepts, searched
+    from ``seed``: gallop down from an accepted seed or up from a rejected one,
+    then bisect between a rejected and an accepted size. Whatever the predicate,
+    the answer is accepted and its predecessor is rejected (or the answer is
+    ``floor``); it is the smallest accepted size when acceptance switches once.
+    ``None`` when ``ceiling`` itself is rejected."""
+    seed = min(max(seed, floor), ceiling)
+    step = 1
+    if admissible(seed):
+        accepted = seed
+        while True:
+            if accepted == floor:
+                return floor
+            probe = max(floor, accepted - step)
+            if not admissible(probe):
+                rejected = probe
+                break
+            accepted = probe
+            step *= 2
+    else:
+        rejected = seed
+        while True:
+            if rejected == ceiling:
+                return None
+            probe = min(ceiling, rejected + step)
+            if admissible(probe):
+                accepted = probe
+                break
+            rejected = probe
+            step *= 2
+    while accepted - rejected > 1:
+        mid = rejected + (accepted - rejected) // 2
+        if admissible(mid):
+            accepted = mid
+        else:
+            rejected = mid
+    return accepted
+
+
+def _fixed_horizon_size(
+    procedure: ArmPlanningProcedure,
+    baseline: Baseline,
+    design: PowerDesign,
+    *,
+    theta: float,
+    distance: float,
+    mean_t: float,
+    bounded: bool,
+    seed: int,
+    clustered: bool,
+) -> tuple[int, int] | None:
+    """Smallest assigned arm pair whose planned power at the supplied effect
+    reaches the target and, where the runtime decides the plan with its
+    log-scale delta-method contrast, whose planned arms that contrast's guard
+    admits at the treatment mean ``mean_t``; ``None`` beyond float64 sizes. A
+    candidate is planned as ``achieved_power`` plans it: the allocation's
+    control size, analyzed counts ``assigned * trigger_rate`` (triggering
+    follows recruitment) and, clustered, the conservative cluster reference.
+    Power and the guard both improve as either arm grows, and the control size
+    never shrinks with the treatment size, so acceptance switches once."""
+    floor = _assigned_minimum_per_arm(procedure, baseline)
+    trigger = baseline.trigger_rate
+
+    def admissible(assigned_t: int) -> bool:
+        assigned_t, assigned_c = _compute_arms(assigned_t, design, minimum_per_arm=floor)
+        dof = None
+        if clustered:
+            dof = _cluster_dof(assigned_t, assigned_c, baseline, enforce_floor=False)
+            assert dof is not None
+            # Candidates without a t reference lie outside the search domain.
+            if dof <= 0.0:
+                return False
+        plan = _ArmPlan(
+            procedure, baseline, assigned_t * trigger, assigned_c * trigger, dof, bounded
+        )
+        return plan.power(distance, theta) >= design.power and plan.passes_log_guard(mean_t)
+
+    # The control arm, n_T (1 - a) / a, stays within float64 up to this size.
+    ceiling = math.floor(_FLOAT_MAX * min(design.allocation, 1.0 - design.allocation))
+    n_t = _smallest_admissible_size(seed, floor, ceiling, admissible)
+    if n_t is None:
+        return None
+    return _compute_arms(n_t, design, minimum_per_arm=floor)
+
+
 # Solvers
 
 
@@ -3844,6 +4084,15 @@ def required_sample_size(  # noqa: PLR0915
 
     ``n_per_arm`` is the treatment-arm size after ceiling to whole units;
     ``power`` is the actual (slightly >= target) power at that integer size.
+    A fixed-horizon closed-form plan returns the smallest assigned treatment
+    size whose power, evaluated as ``achieved_power`` evaluates it, reaches
+    the target. Where the runtime estimates the lift with its log-scale
+    delta-method contrast (unclustered, randomized, unabsorbed and not routed
+    by counts), that size must also keep the planned combined log-scale
+    standard error below 0.5, the level at which the runtime refuses the
+    estimate (``delta_method_unreliable``), so a high-variance baseline at a
+    large lift can size above the power target. One unit fewer either falls
+    short of the target or fails that guard.
     A runtime-binomial plan sizes from its computed enclosure: a size reaches the target
     when the enclosure's lower end does, and the result states the point when the enclosure
     resolves to ``1e-6`` or that lower end otherwise (``power_basis="lower_bound"``), with
@@ -3851,7 +4100,9 @@ def required_sample_size(  # noqa: PLR0915
     SciPy/Boost special-function error model, not a cross-build proof. A size the enclosure
     straddles is never returned, so a wide enclosure sizes conservatively rather than short.
     ``mde_relative`` is the companion minimum detectable effect at that size,
-    ``None`` with ``mde_unavailable_reason`` when none exists at ``design.power``.
+    ``None`` with ``mde_unavailable_reason`` when none exists at ``design.power``;
+    a target at or below the null's own rejection probability is still sized,
+    and its companion is ``at_or_below_null_power``.
 
     ``GaussianScoreMixture`` computes the always-valid Gaussian-model
     planning approximation the runtime's ``asymptotic_mean`` boundary
@@ -3914,6 +4165,7 @@ def required_sample_size(  # noqa: PLR0915
     binomial = _runtime_binomial(procedure)
     model: _BinomialPlan | None = None
     binomial_power: BinomialPower | None = None
+    searched_assigned = False
     if distance == 0.0:
         _raise(
             "power.size_design_relative",
@@ -3929,9 +4181,9 @@ def required_sample_size(  # noqa: PLR0915
         )
     else:
         # Normal seed: the per-unit H1 variance coefficient at the allocation
-        # fractions times the dimensionless quantile sum, over the squared
-        # distance, formed in log space. Integer rounding, the cluster floor
-        # and reference, triggering, and the sequential search refine it.
+        # fractions times the dimensionless quantile sum, over the squared distance,
+        # in log space. Rounding, clusters, triggering, the runtime's log-scale
+        # guard and the sequential search refine it.
         z_sum = abs(_mde_theta(1.0, design, procedure))
         if z_sum == 0.0:
             n_total_float = 0.0
@@ -4005,53 +4257,33 @@ def required_sample_size(  # noqa: PLR0915
                 design,
                 minimum_per_arm=_minimum_per_arm(procedure),
             )
-        elif clustered:
-            # Search over ASSIGNED treatment units. Triggering is applied
-            # after recruitment, so both the analyzed SE and cluster
-            # reference must be reconstructed from the same assigned pair.
-            initial_assigned_t = max(
-                math.ceil(n_T / baseline.trigger_rate),
-                _assigned_minimum_per_arm(procedure, baseline),
-            )
-
-            def _cluster_meets_target(assigned_t: int) -> bool:
-                assigned_t, assigned_c = _compute_arms(
-                    assigned_t,
-                    design,
-                    minimum_per_arm=_assigned_minimum_per_arm(procedure, baseline),
-                )
-                dof = _cluster_dof(
-                    assigned_t,
-                    assigned_c,
-                    baseline,
-                    enforce_floor=False,
-                )
-                assert dof is not None
-                # Candidates without a t reference lie outside the search domain.
-                if dof <= 0.0:
-                    return False
-                plan = _ArmPlan(
-                    procedure,
-                    baseline,
-                    assigned_t * baseline.trigger_rate,
-                    assigned_c * baseline.trigger_rate,
-                    dof,
-                    bounded,
-                )
-                return plan.power(distance, theta) >= design.power
-
-            lo, hi = initial_assigned_t, max(2, initial_assigned_t)
-            while not _cluster_meets_target(hi):
-                hi *= 2
-            n_T, n_C = _compute_arms(
-                bisect_first_true(lo, hi, _cluster_meets_target),
+        else:
+            # Search ASSIGNED treatment units. Triggering is applied after
+            # recruitment, so the analyzed SE, the guard and any cluster
+            # reference are reconstructed from the same assigned pair.
+            sized = _fixed_horizon_size(
+                procedure,
+                baseline,
                 design,
-                minimum_per_arm=_assigned_minimum_per_arm(procedure, baseline),
+                theta=theta,
+                distance=distance,
+                mean_t=baseline.mean * (1.0 + relative_lift * baseline.compliance),
+                bounded=bounded,
+                seed=math.ceil(n_T / baseline.trigger_rate),
+                clustered=clustered,
             )
+            if sized is None:
+                _raise(
+                    "power.sample_size_detecting",
+                    relative_lift=relative_lift,
+                    null_lift=decision.null_lift,
+                )
+            n_T, n_C = sized
+            searched_assigned = True
     # Re-compute power and MDE at the actual integer n.
-    if clustered:
-        # The cluster branch already searched assigned units; do not ceil a
-        # second, independently rounded analyzed pair.
+    if searched_assigned:
+        # The fixed-horizon search already chose assigned units; do not ceil
+        # a second, independently rounded analyzed pair.
         assigned_T, assigned_C = n_T, n_C
         analyzed_T = assigned_T * baseline.trigger_rate
         analyzed_C = assigned_C * baseline.trigger_rate
@@ -4115,8 +4347,10 @@ def required_sample_size(  # noqa: PLR0915
         effective_var=baseline.effective_var,
         n_clusters_per_arm=k_per_arm,
         n_clusters_total=k_total,
-        n_triggered_per_arm=(round(analyzed_T) if clustered else n_T) if triggered else None,
-        n_triggered_total=(round(analyzed_T + analyzed_C) if clustered else (n_T + n_C))
+        n_triggered_per_arm=(round(analyzed_T) if searched_assigned else n_T)
+        if triggered
+        else None,
+        n_triggered_total=(round(analyzed_T + analyzed_C) if searched_assigned else (n_T + n_C))
         if triggered
         else None,
         expected_n_total=_expected_n_total(expected_t, n_total),
@@ -4146,10 +4380,12 @@ def achieved_power(
     when the enclosure's absolute numerical error is at most ``1e-6``, otherwise the
     enclosure's lower end (``power_basis="lower_bound"``); ``power_lower`` and
     ``power_upper`` carry the enclosure either way. A closed-form plan reports its model
-    power, with treatment variance evaluated at the alternative. ``mde_relative`` is the
-    minimum detectable effect at the same size and target under the same
-    model; when none exists there it is ``None`` with
-    ``mde_unavailable_reason`` set, and the supplied-effect answer stands.
+    power, with treatment variance evaluated at the alternative, even at a size whose
+    planned log-scale standard error the runtime's delta-method estimate refuses.
+    ``mde_relative`` is the minimum detectable effect at the same size and target under
+    the same model, as ``minimum_detectable_effect`` finds it; when none exists there
+    (including ``delta_method_unreliable`` and ``at_or_below_null_power``) it is ``None``
+    with ``mde_unavailable_reason`` set, and the supplied-effect answer stands.
     A binomial plan whose decision the runtime refuses in full (an arm above
     its ceiling, a nuisance budget below the endpoint solver's floor, a tail
     level its float margin dominates) decides no count pair and is refused
@@ -4316,7 +4552,12 @@ def minimum_detectable_effect(
     target (both evaluated ends at any width, or either end once the band is at tolerance
     width) is passed over and the search continues, so the returned effect certifies its
     target but may lie above an effect a fuller evaluation would certify. Closed-form power is the delta-method
-    model's own value. A target excluded throughout the admissible domain is ``unattainable``;
+    model's own value. Where the runtime estimates the lift with its log-scale delta-method
+    contrast (see ``required_sample_size``), the answer is the smallest effect that both reaches
+    the target and keeps the planned combined log-scale standard error below 0.5, where the
+    runtime refuses the estimate; its ``power`` can then exceed the target. When no effect
+    does, the request refuses with ``delta_method_unreliable``. A target excluded throughout the
+    admissible domain is ``unattainable``;
     one with no representable answer is ``unrepresentable``. Refusals carry a
     ``power.minimum_detectable_effect.*`` code. The look schedule resolves as in
     ``required_sample_size``. For fixed-horizon inference, a target at or below the null's own
@@ -4399,12 +4640,6 @@ def _minimum_detectable_effect(
             ).candidate(mde_relative)
             assert answer is not None
             enclosure = model.evaluate(answer[1], answer[0])
-        if mde_relative == 0.0:
-            _raise(
-                "power.minimum_detectable_effect.design_search_minimum",
-                estimate=power,
-                target=design.power,
-            )
         expected_t = None
 
     triggered = baseline.trigger_rate < 1.0

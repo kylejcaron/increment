@@ -123,6 +123,10 @@ ONE_SIDED_ALPHA_DOUBLES = _REFUSALS["estimation.inference.one_sided_alpha_double
 _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
 _raise = raiser(_REFUSALS)
 
+#: ``infer_lift`` refuses a combined log-scale SE at or above this value
+#: (``delta_method_unreliable``); power planning sizes and detects only below it.
+LOG_DELTA_METHOD_MAX_SE = 0.5
+
 # An absolute-native row carries no abs_diff/abs_se sidecar (it would
 # merely re-represent ``lift``), so an absolute margin on one reads empty.
 ABSOLUTE_NULL_ABS_REFUSAL = (
@@ -627,10 +631,10 @@ def infer_lift(  # noqa: PLR0913
 
     # The log-Normal approximation degrades with se_log_rr, not with the
     # ratio; at 0.5 a 95% interval already spans ~7x, past where it holds.
-    if se_log_rr >= 0.5:
+    if se_log_rr >= LOG_DELTA_METHOD_MAX_SE:
         raise LiftGuardError(
             f"Log delta method unreliable: combined log-scale SE "
-            f"{se_log_rr:.3f} >= 0.5 (too few events / too small arms)",
+            f"{se_log_rr:.3f} >= {LOG_DELTA_METHOD_MAX_SE} (too few events / too small arms)",
             reason="delta_method_unreliable",
         )
 
