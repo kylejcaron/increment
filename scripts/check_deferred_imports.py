@@ -37,12 +37,17 @@ def _targets(
         else:
             base = node.module or ""
         if base == package or base.startswith(package + "."):
-            targets.add(base)
+            submodules: set[str] = set()
+            has_attribute = False
             for alias in node.names:
                 candidate = f"{base}.{alias.name}"
                 if _module_exists(candidate, root):
-                    targets.discard(base)
-                    targets.add(candidate)
+                    submodules.add(candidate)
+                else:
+                    has_attribute = True
+            targets.update(submodules)
+            if has_attribute or not submodules:
+                targets.add(base)
     return targets
 
 

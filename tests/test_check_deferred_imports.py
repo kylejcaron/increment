@@ -40,11 +40,17 @@ def test_new_deferred_edge_fails_with_its_module_pair(tmp_path: Path) -> None:
     assert "pkg.a -> pkg.b" in result.stdout
 
 
-def test_type_checking_import_is_not_a_runtime_deferred_edge(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:",
+        "import typing\nif typing.TYPE_CHECKING:",
+    ],
+)
+def test_type_checking_import_is_excluded_from_runtime_cycle(tmp_path: Path, guard: str) -> None:
     package = _package(tmp_path)
-    (package / "a.py").write_text(
-        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import pkg.b\n"
-    )
+    (package / "a.py").write_text(f"{guard}\n    import pkg.b\n")
+    (package / "b.py").write_text("import pkg.a\n")
     baseline = tmp_path / "baseline.txt"
     baseline.write_text("# deferred\n# cycle\n")
 
@@ -53,18 +59,39 @@ def test_type_checking_import_is_not_a_runtime_deferred_edge(tmp_path: Path) -> 
     assert result.returncode == 0
 
 
-def test_deferred_cycle_is_rejected_until_its_members_are_baselined(tmp_path: Path) -> None:
+def test_deferred_cycle_is_rejected_until_its_members_are_baselined(
+    tmp_path: Path,
+) -> None:
     package = _package(tmp_path)
     (package / "a.py").write_text("def load():\n    import pkg.b\n")
     (package / "b.py").write_text("import pkg.a\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\npkg.a -> pkg.b\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "runtime cycle: pkg.a, pkg.b" in result.stdout
+
+    baseline.write_text("# deferred\npkg.a -> pkg.b\n# cycle\npkg.a\npkg.b\n")
+    result = _run(package, baseline)
+
+    assert result.returncode == 0
+
+
+def test_mixed_from_import_keeps_base_module_cycle(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    (package / "p").mkdir()
+    (package / "p" / "__init__.py").write_text("VALUE = 1\nfrom pkg.a import marker\n")
+    (package / "p" / "child.py").write_text("")
+    (package / "a.py").write_text("from pkg.p import VALUE, child\n")
     baseline = tmp_path / "baseline.txt"
     baseline.write_text("# deferred\n# cycle\n")
 
     result = _run(package, baseline)
 
     assert result.returncode == 1
-    assert "pkg.a" in result.stdout
-    assert "pkg.b" in result.stdout
+    assert "runtime cycle: pkg.a, pkg.p" in result.stdout
 
 
 def test_removing_an_edge_from_the_baseline_is_allowed(tmp_path: Path) -> None:
