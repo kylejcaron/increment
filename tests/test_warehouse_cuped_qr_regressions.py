@@ -850,6 +850,30 @@ def test_globally_constant_covariate_is_dropped_like_local_fit(tmp_path):
     assert actual.adjusted_means == pytest.approx(local.adjusted_means)
 
 
+def test_warehouse_fitted_scatter_matches_local_fit(tmp_path):
+    rng = np.random.default_rng(2604)
+    rows = [
+        {
+            "unit_id": f"{arm}-{index:03d}",
+            "group_id": arm,
+            "x": float(1.0e6 + rng.normal(5.0, 2.0) + 0.3 * arm_index),
+            "category": ("a", "b", "c")[index % 3],
+            "y": float(rng.normal(10.0, 1.0)),
+        }
+        for arm_index, arm in enumerate(ARMS)
+        for index in range((70, 90)[arm_index])
+    ]
+    local, actual = _fit_pair(rows, ratio=False, tmp_path=tmp_path, categorical=True)
+    for warehouse, retained in zip(
+        actual.within_arm_scatter, local.within_arm_scatter, strict=True
+    ):
+        assert np.asarray(warehouse) == pytest.approx(np.asarray(retained), rel=1e-9)
+    warehouse_balance = actual.covariate_balance("treatment")
+    local_balance = local.covariate_balance("treatment")
+    assert warehouse_balance is not None and local_balance is not None
+    assert warehouse_balance.statistic == pytest.approx(local_balance.statistic, rel=1e-9)
+
+
 def test_categorical_cardinality_refuses_before_transferring_labels(tmp_path):
     rows = [
         {

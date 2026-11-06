@@ -2327,6 +2327,46 @@ class LiftEstimate(_RowIdentity):
         return row_p_value(self)
 
 
+def failed_cell_row(
+    *,
+    metric: str,
+    group_id: str,
+    method: str,
+    method_role: Literal["decision", "sensitivity"],
+    estimand: Literal["itt", "late"],
+    alternative: str,
+    code: str,
+    context: Mapping[str, object],
+    prior_declared: bool,
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
+    preferred_direction: PreferredDirection | None = None,
+) -> LiftEstimate:
+    """An unavailable cell whose refusal is its failure and its sampling reason, and
+    its posterior reason under a declared prior; a LATE cell is on its additive scale.
+    The cell keeps the null and favorable side of the hypothesis it was to test."""
+    return LiftEstimate(
+        metric=metric,
+        group_id=group_id,
+        method=method,
+        estimand=estimand,
+        value_scale="absolute" if estimand == "late" else "relative",
+        alternative=alternative,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        preferred_direction=preferred_direction,
+        method_role=method_role,
+        failure_code=code,
+        failure_context=context,
+        sampling_available=False,
+        sampling_reason_code=code,
+        sampling_reason_context=context,
+        posterior_available=False if prior_declared else None,
+        posterior_reason_code=code if prior_declared else None,
+        posterior_reason_context=context if prior_declared else None,
+    )
+
+
 if TYPE_CHECKING:
     from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import sys
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from numbers import Integral
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypedDict, cast
@@ -334,7 +334,15 @@ _register_warning(
 )
 
 
-def _covariate_imbalance_message(
+def _covariate_imbalance_message(**context: Any) -> str:
+    """The covariate-imbalance warning: a mixed CUPED cell's joint test of its covariates,
+    else one covariate's means."""
+    if context.get("statistic_kind") == "hotelling":
+        return _joint_covariate_imbalance_message(**context)
+    return _single_covariate_imbalance_message(**context)
+
+
+def _single_covariate_imbalance_message(
     *,
     metric_name: str,
     control_group: str,
@@ -348,9 +356,8 @@ def _covariate_imbalance_message(
     late_adjustment_shift: float | None = None,
     **_details: object,
 ) -> str:
-    """The covariate-imbalance warning. The move is reported on the absolute scale it was
-    made on, the LATE's own for a LATE; a ratio, whose move is not a multiple of the
-    difference, reports none."""
+    """The move is reported on the absolute scale it was made on, the LATE's own for a
+    LATE; a ratio, whose move is not a multiple of the difference, reports none."""
     subject = "the covariate" if covariate is None else f"the covariate '{covariate}'"
     shift, moved_scale = (
         (adjustment_shift, "absolute difference")
@@ -373,6 +380,33 @@ def _covariate_imbalance_message(
         "zero-filled in one arm, a rescaled join, a window that overlaps the experiment), and "
         f"what a failed assignment produces.{moved} Check how the covariate was built for each "
         "arm before relying on either estimate."
+    )
+
+
+def _joint_covariate_imbalance_message(
+    *,
+    metric_name: str,
+    control_group: str,
+    treatment_group: str,
+    covariates: tuple[str, ...],
+    statistic: float,
+    numerator_dof: int,
+    denominator_dof: int,
+    alpha: float,
+    **_details: object,
+) -> str:
+    names = ", ".join(f"'{name}'" for name in covariates)
+    return (
+        f"metric '{metric_name}', {treatment_group} vs {control_group}: the means of the "
+        f"CUPED covariates ({names}) differ between {treatment_group} and {control_group}, "
+        f"tested jointly across {numerator_dof} encoded columns "
+        f"(F = {statistic:.3g} on {numerator_dof} and {denominator_dof} degrees of freedom, "
+        f"nominal p < {alpha:g}). Differences this large in values measured before the "
+        "experiment are unusual. They can arise by chance, and more often the more cells are "
+        "checked. They are also what a covariate built differently for one arm produces "
+        "(values lost or zero-filled in one arm, a rescaled join, a window that overlaps the "
+        "experiment), and what a failed assignment produces. Check how each covariate was "
+        "built for each arm before relying on either estimate."
     )
 
 
@@ -1280,34 +1314,68 @@ def _covariate_imbalance_advisory(
     slopes: Mapping[str, float],
     shifts: Mapping[str, float],
 ) -> ReadoutAdvisory | None:
-    """Warn of, and return the advisory for, a CUPED cell whose covariate means differ;
-    neither when one of its numbers is past the float range.
+    """Warn of, and return the advisory for, a CUPED cell whose covariate means differ.
 
     *slopes* are the fitted CUPED coefficients and *shifts* the moves they made in
     the estimates, each keyed as reported.
     """
-    context: dict[str, object] = {
-        "metric_name": treatment.metric,
-        "control_group": control.group_id,
-        "treatment_group": treatment.group_id,
-        "covariate": covariate,
-        "mean_control": control.mean_x(),
-        "mean_treatment": treatment.mean_x(),
-        "difference": balance.difference,
-        "standard_error": balance.standard_error,
-        "statistic": balance.statistic,
-        "dof": balance.dof,
-        "p_value": balance.p_value,
-        "alpha": COVARIATE_BALANCE_ALPHA,
-        **slopes,
-        **shifts,
-        "constant_arms": tuple(arm.group_id for arm in (control, treatment) if arm.var_x() <= 0.0),
-    }
+    return _imbalance_advisory(
+        {
+            "metric_name": treatment.metric,
+            "control_group": control.group_id,
+            "treatment_group": treatment.group_id,
+            "covariate": covariate,
+            "mean_control": control.mean_x(),
+            "mean_treatment": treatment.mean_x(),
+            "difference": balance.difference,
+            "standard_error": balance.standard_error,
+            "statistic": balance.statistic,
+            "dof": balance.dof,
+            "p_value": balance.p_value,
+            "alpha": COVARIATE_BALANCE_ALPHA,
+            **slopes,
+            **shifts,
+            "constant_arms": tuple(
+                arm.group_id for arm in (control, treatment) if arm.var_x() <= 0.0
+            ),
+        }
+    )
+
+
+def _imbalance_advisory(context: dict[str, object]) -> ReadoutAdvisory | None:
+    """Warn of, and return, the covariate-imbalance advisory with *context*; neither
+    when one of its numbers is past the float range."""
     if not all(math.isfinite(value) for value in context.values() if isinstance(value, float)):
         return None
     spec = _WARNINGS["estimation.cuped.covariate_imbalance"]
     warn(spec, skip_file_prefixes=PACKAGE_FRAMES, context=context)
     return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
+
+
+def _multicovariate_imbalance_advisory(
+    metric_name: str, fit: Any, treatment_group: str, control_group: str
+) -> ReadoutAdvisory | None:
+    """Warn of, and return the advisory for, a mixed CUPED contrast whose encoded covariate
+    means differ jointly; ``None`` when they do not or the fit retains no scatter."""
+    balance = fit.covariate_balance(treatment_group, control=control_group)
+    if balance is None or not balance.flagged:
+        return None
+    return _imbalance_advisory(
+        {
+            "metric_name": metric_name,
+            "control_group": control_group,
+            "treatment_group": treatment_group,
+            "covariates": tuple(
+                name for name in fit.layout.names if name not in fit.layout.structural_omissions
+            ),
+            "statistic_kind": "hotelling",
+            "statistic": balance.statistic,
+            "numerator_dof": balance.numerator_dof,
+            "denominator_dof": balance.denominator_dof,
+            "p_value": balance.p_value,
+            "alpha": COVARIATE_BALANCE_ALPHA,
+        }
+    )
 
 
 def _lift_covariate_imbalance_advisory(
@@ -4257,12 +4325,23 @@ def _project_cuped_linear(
                 **_cuped_linear_posterior_fields(metric, arm, prior, reference_df=relative.dof),
             )
         )
-    return _lift_decision_bundle(
+    bundle = _lift_decision_bundle(
         results,
         inference=None,
         cuped_advisory=advisory,
         cuped_failures=cuped_failures,
     )
+    advisories = dict(bundle.advisories)
+    for arm in fit.arm_order:
+        if arm == control_group:
+            continue
+        imbalance = _multicovariate_imbalance_advisory(metric.name, fit, arm, control_group)
+        if imbalance is not None:
+            from increment.estimation.decision_types import ArmHypothesisKey
+
+            key = ArmHypothesisKey(metric.name, arm, "itt")
+            advisories[key] = (*advisories.get(key, ()), imbalance)
+    return replace(bundle, advisories=advisories)
 
 
 def reintervalize_cuped_decision(

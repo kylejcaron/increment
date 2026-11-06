@@ -756,6 +756,54 @@ values.
   `from_frame(shape="panel", ...)` and save it again. `EvidenceCapabilities`
   gains an optional `grain_route`, a source's route to an undeclared day axis,
   left out of saved JSON when unset.
+- Release note (feature): the covariate-imputation warning
+  `frame.validation.metric_covariate_missing_imputed` also reports, for each
+  group, how many units have no covariate value and how many units it has:
+  its context gains `n_missing_by_arm` and `n_units_by_arm`, keyed by group
+  like `frame.validation.metric_missing_differs_by_arm`. A panel unit counts
+  once however many days it has; `n_missing` still counts missing values. The
+  counts are descriptive and add no check. The code, estimates, and experiment
+  `to_json()` and `hash()` are unchanged.
+- Release note (feature): a mixed-covariate CUPED cell
+  (`Method.cuped_multicovariate`) whose encoded covariate means differ between
+  its two groups (Hotelling's $T^2$ in F form on the two groups' pooled
+  within-group covariance, nominal p < 0.001) carries the advisory
+  `estimation.cuped.covariate_imbalance`, and the run emits a runtime warning
+  with the same code. Its context reports `statistic_kind="hotelling"`, the
+  `covariates` tested, the F `statistic`, `numerator_dof`, `denominator_dof`
+  and `p_value`. Fitted `fitted_multicovariate` evidence now retains each
+  group's within-group covariate scatter (`within_arm_scatter`); evidence
+  exported before carries none, still reads, and is not checked. Estimates,
+  intervals and decisions are unchanged, and experiment `to_json()` and
+  `hash()` are unchanged.
+- Release note (breaking): an encouragement LATE cell suppressed because
+  encouragement lowered uptake (a first-stage z at or below minus
+  `min_first_stage_z`) now fails with
+  `estimation.encouragement.late.negative_first_stage`;
+  `estimation.encouragement.late.weak_first_stage` keeps the first stages
+  between. Both failures' context reports the outcome cohort's
+  `first_stage_estimate`, `first_stage_se`, `first_stage_z` and
+  `min_first_stage_z` beside `metric` and `group_id`; a first stage without
+  sampling variance reports `first_stage_z=None` with
+  `first_stage_z_reason="first_stage_without_sampling_variance"`, where such a
+  cell used to fail the readout. In `run()`, every
+  requested method's LATE cell carries the failure, and a failure from an
+  outcome metric's estimation also names the `method` it belongs to. A
+  suppressed LATE no longer adds a compliance row keyed to the outcome metric,
+  so the number of `estimand == "compliance"` rows no longer depends on the
+  data: read the cohort's first stage from the LATE failure instead. The same
+  holds in breakout, daily and as-of views, where a `late`-only request no
+  longer returns an unrequested compliance row; there each requested method's
+  suppressed LATE cell is an unavailable row (`lift=None`) carrying the same
+  failure code and context, with `method`. The relative LATE row carries
+  its log-scale reference, so `p_value()` returns the p-value that matches its
+  interval instead of refusing with
+  `estimation.results.lift.p_value_missing_log_mean_or_se`, and the cell's
+  sampling evidence in the readout metadata reports that p-value; a relative
+  LATE whose complier means have no sampling variance is withheld with a note
+  on the additive row. LATE estimates and intervals are unchanged, the relative
+  LATE stays out of decision evidence, and experiment `to_json()` and `hash()`
+  are unchanged.
 - Release note (feature): a fixed-horizon scalar CUPED cell whose covariate
   means differ between groups (a two-sided Welch t test on the covariate as
   adjusted, nominal p < 0.001, the automatic sample-ratio check's threshold)

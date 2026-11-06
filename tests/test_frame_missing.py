@@ -1396,6 +1396,32 @@ def test_cuped_covariate_nulls_auto_imputed_with_counted_warning() -> None:
     assert abs(lift.value) < 0.02
 
 
+def test_imputation_warning_reports_missing_by_arm() -> None:
+    table = pa.table(
+        {
+            "user_id": [f"u{i}" for i in range(22)],
+            "variant": ["control"] * 10 + ["treatment"] * 12,
+            "y": [float(i % 4) for i in range(22)],
+            "x": pa.array([None if i < 3 else float(i % 5) for i in range(22)], pa.float64()),
+        }
+    )
+    covariate = CupedCovariate(name="x", kind="continuous", missing="impute")
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        from_unit_summary(
+            table,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[MetricSpec(name="y", decision_method=Method.cuped(covariates=covariate))],
+            design=_DESIGN,
+        )
+    context = warning_context(recorded, "frame.validation.metric_covariate_missing_imputed")
+    assert context["n_missing"] == 3
+    assert context["n_missing_by_arm"] == {"control": 3, "treatment": 0}
+    assert context["n_units_by_arm"] == {"control": 10, "treatment": 12}
+
+
 def test_covariate_lost_in_one_arm_and_zero_filled_is_flagged() -> None:
     covariate = CupedCovariate(name="x", kind="continuous", missing="zero")
     with warnings.catch_warnings(record=True) as recorded:

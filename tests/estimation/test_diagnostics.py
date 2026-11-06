@@ -7,6 +7,7 @@ import pyarrow as pa
 import pytest
 from pydantic import ValidationError
 from scipy.stats import beta as beta_dist
+from scipy.stats import f as f_dist
 from scipy.stats import t as t_dist
 
 from increment.errors import InvalidRequestError
@@ -16,6 +17,7 @@ from increment.estimation.diagnostics import (
     SRMResult,
     allocation_posterior_bands,
     covariate_balance,
+    multicovariate_balance,
     resolve_srm_expected,
     sample_ratio_mismatch,
 )
@@ -841,6 +843,68 @@ def test_covariate_balance_one_constant_arm_uses_other_arm_variance():
         var_treatment=450.0,
     )
     assert single_unit is None
+
+
+def test_hotelling_balance_closed_form():
+    # S = [[4, 0], [0, 1]] pooled over nu = 198: each arm's scatter is 99 * S.
+    scatter = ((396.0, 0.0), (0.0, 99.0))
+
+    def balance_at(shift):
+        return multicovariate_balance(
+            n_control=100,
+            n_treatment=100,
+            mean_control=(0.0, 0.0),
+            mean_treatment=(shift, 0.0),
+            scatter_control=scatter,
+            scatter_treatment=scatter,
+        )
+
+    balance = balance_at(1.0)
+    assert balance is not None
+    statistic = 12.5 * 197 / 396  # T^2 = 50 * d' S^-1 d = 12.5
+    assert balance.statistic == pytest.approx(statistic, rel=1e-12)
+    assert (balance.numerator_dof, balance.denominator_dof) == (2, 197)
+    assert balance.p_value == pytest.approx(f_dist.sf(statistic, 2, 197), rel=1e-12)
+    assert balance.flagged is False  # p = 0.0024, above 0.001
+
+    shifted = balance_at(2.0)
+    assert shifted is not None
+    assert shifted.statistic == pytest.approx(50.0 * 197 / 396, rel=1e-12)
+    assert shifted.flagged is True
+
+
+def test_hotelling_reduces_to_pooled_t_at_one_covariate():
+    n_control, n_treatment = 30, 50
+    scatter_control, scatter_treatment = 29 * 2.0, 49 * 3.0
+    pooled = (scatter_control + scatter_treatment) / (n_control + n_treatment - 2)
+    t = 0.7 / math.sqrt(pooled * (1 / n_control + 1 / n_treatment))
+    balance = multicovariate_balance(
+        n_control=n_control,
+        n_treatment=n_treatment,
+        mean_control=(1.0,),
+        mean_treatment=(1.7,),
+        scatter_control=((scatter_control,),),
+        scatter_treatment=((scatter_treatment,),),
+    )
+    assert balance is not None
+    assert balance.statistic == pytest.approx(t * t, rel=1e-12)
+    assert (balance.numerator_dof, balance.denominator_dof) == (1, 78)
+    assert balance.p_value == pytest.approx(2.0 * t_dist.sf(t, 78), rel=1e-10)
+
+
+def test_hotelling_singular_pooled_scatter_abstains():
+    scatter = ((4.0, 4.0), (4.0, 4.0))
+    assert (
+        multicovariate_balance(
+            n_control=50,
+            n_treatment=50,
+            mean_control=(0.0, 0.0),
+            mean_treatment=(1.0, 1.0),
+            scatter_control=scatter,
+            scatter_treatment=scatter,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(

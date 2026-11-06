@@ -110,10 +110,10 @@ See the [capabilities by entry point](../reference/capabilities-by-entry-point.m
 - **LATE**: the effect of treatment on people who comply because of encouragement, not everyone.
 
 !!! warning "When LATE is not available"
-    LATE requires randomized assignment, a relevant first stage, the exclusion restriction, and monotonicity (no defiers). A weak first stage leaves a visible typed failure rather than a numeric estimate. Requesting LATE without declaring exclusion raises `identification.encouragement.exclusion_required`; sequential and per-day LATE are unsupported.
+    LATE requires randomized assignment, a relevant first stage, the exclusion restriction, and monotonicity (no defiers). A weak first stage leaves a visible typed failure rather than a numeric estimate. So does a reversed one, where encouragement lowered uptake: the design assumes encouragement raises uptake, so a first-stage z at or below minus the gate fails with its own code. Requesting LATE without declaring exclusion raises `identification.encouragement.exclusion_required`; sequential and per-day LATE are unsupported.
 
 ??? info "Statistical details"
-    LATE is ITT divided by the compliance first stage: the effect among compliers whose treatment receipt changed because of encouragement.
+    LATE is ITT divided by the compliance first stage: the effect among compliers whose treatment receipt changed because of encouragement. The relative LATE row states the same effect against the complier control mean; its `p_value()` reads the row's own log-scale reference, so it agrees with its interval, and it adds no decision evidence beyond the additive row.
 
     The notebook's registered uptake confidence sequence is shown in **ratio coordinates**, not as a lift interval. Its default display keeps the bounds, confidence level, and geometry status concise; exact rational endpoints and the endpoint certificates remain available from the result's `sequential_result.bounds` when detailed numerical evidence is needed.
 
@@ -146,7 +146,7 @@ For fixed-horizon uptake alone, use `run(estimands=["compliance"])`; no outcome 
 
     Each metric's LATE uses the first stage on its matching outcome cohort. As-of compliance includes units assigned by the requested day and qualifying uptake through that day; a triggered-population compliance series instead admits units by their first eligible trigger day while retaining assignment-anchored uptake windows.
 
-    In fixed-horizon `run()`, a weak first stage for one metric's outcome cohort suppresses that cohort's LATE estimate but retains its planned LATE row as a typed failure (`failure_code="estimation.encouragement.late.weak_first_stage"` and `lift=None`). Other metrics use their own outcome cohorts and can still report LATE when their first stages pass.
+    In fixed-horizon `run()`, a weak first stage for one metric's outcome cohort suppresses that cohort's LATE estimate but retains its planned LATE row as a typed failure (`failure_code="estimation.encouragement.late.weak_first_stage"` and `lift=None`). A first-stage z at or below minus the gate fails instead with `estimation.encouragement.late.negative_first_stage`. The failure context carries that cohort's first stage: `first_stage_estimate`, `first_stage_se`, `first_stage_z` and `min_first_stage_z`, plus `metric`, `group_id` and `method`. A first stage with no sampling variance (for example, every control unit takes up and no encouraged unit does) has no finite z: `first_stage_z` is `None` and `first_stage_z_reason` is `"first_stage_without_sampling_variance"`. Every requested method's LATE row carries the failure, because the first stage does not depend on the method. A suppressed LATE adds no compliance row; compliance stays design-level. Other metrics use their own outcome cohorts and can still report LATE when their first stages pass.
 
 !!! warning "Daily estimates"
     Daily encouragement uptake is a first-stage rate; per-day LATE is unsupported. Request only an estimand the daily view supports:
@@ -261,7 +261,7 @@ con.disconnect()
 ```
 
 !!! warning "Outcome and compliance caveats"
-    Triggered sequential compliance is unavailable (`triggered_uptake_unsupported`), and clustered daily outcome histories are unavailable. A weak first stage leaves a typed LATE failure (`estimation.encouragement.late.weak_first_stage`); it is never silently dropped.
+    Triggered sequential compliance is unavailable (`triggered_uptake_unsupported`), and clustered daily outcome histories are unavailable. A weak first stage leaves a typed LATE failure (`estimation.encouragement.late.weak_first_stage`, or `estimation.encouragement.late.negative_first_stage` when encouragement lowered uptake); it is never silently dropped.
 
 !!! warning "Sequential request requirements"
     Registered sequential ITT and relative Bernoulli compliance additionally require joint finalization and immutable prefix proofs; see [Sequential inference](sequential-inference.md). Sequential compliance additionally needs an explicit `SequentialCompliancePolicy` on the plan, matching its registered alpha, direction, null and family membership. The default policy excludes compliance from discovery selection; a registered family must explicitly include it. For sequential as-of readouts, pass `completed_windows_only=True`.
@@ -269,7 +269,7 @@ con.disconnect()
 ??? info "As-of, sequential, and artifact details"
     `from_definitions` and `from_unit_day_artifact` apply uptake windows to raw timestamps before day bucketing. For a one-day window starting at noon, uptake at exposure or 21 hours later qualifies; uptake exactly 24 hours later does not. Qualifying uptake after the last outcome day remains visible in as-of readouts. Later uptake alone does not add outcome-observation days, change calendar-day averages, or admit newer outcome cohorts. Completed outcome rows still require outcome data through their last required day. A `from_frame` panel input carries day-reduced flags, not raw event timestamps: use elapsed exposure days when reducing the same events for cross-path comparison.
 
-    With `completed_windows_only=True`, compliance includes only units whose uptake window has closed. Continuous intent-to-treat alone monitors under the public asymptotic mean law (the same construction a randomized design uses): assignment to encouragement is itself randomized, so the confidence-sequence assumptions only need the allocation, not the mechanism label. Binary-uptake LATE remains fixed-horizon because it is not a bivariate Gaussian observation model. LATE suppression diagnostics use the affected outcome's first stage, even when design-level compliance gives a different weak/strong classification.
+    With `completed_windows_only=True`, compliance includes only units whose uptake window has closed. Continuous intent-to-treat alone monitors under the public asymptotic mean law (the same construction a randomized design uses): assignment to encouragement is itself randomized, so the confidence-sequence assumptions only need the allocation, not the mechanism label. Binary-uptake LATE remains fixed-horizon because it is not a bivariate Gaussian observation model. A suppressed LATE's failure context reports the affected outcome's first stage, even when design-level compliance gives a different weak/strong classification.
 
     For `from_definitions` and `from_unit_day_artifact`, completed cumulative outcome rows wait for both outcome and uptake windows, including ITT-only requests. A separate uptake feed is included in the same data snapshot. Without this filter, ITT-only requests need no uptake moments.
 

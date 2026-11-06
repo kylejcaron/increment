@@ -16,7 +16,7 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
-from increment.frame import CupedCovariate, from_unit_panel, from_unit_summary
+from increment.frame import CupedCovariate, FramePanelSource, from_unit_panel, from_unit_summary
 from increment.readouts import breakout, run
 from tests._override_warnings import allow_declared_overrides
 from tests.analysis_factory import view_readout
@@ -111,6 +111,33 @@ def test_method_specific_breakout_request_refuses_instead_of_returning_totals(pa
             by=("segment",),
         )
     assert raised.value.code == "evidence.breakout_unavailable"
+
+
+def test_panel_without_an_observation_mapping_serves_scalar_cuped_moments():
+    """The observation mapping is sequential metadata: a panel source built without
+    one validates an explicit scalar CUPED method and serves the same moments."""
+    method = _scalar("declared")
+    with pytest.warns(IncrementWarning):
+        base = _source(
+            pa.Table.from_pylist(_records()),
+            [MetricSpec(name="outcome", decision_method=method)],
+            panel=True,
+        )
+    source = FramePanelSource(
+        panel=base._sparse_panel,
+        metrics=list(base._specs),
+        control=base._control,
+        experiment_id=base._experiment_id,
+        design=base.design,
+        plan=base.plan,
+        group_counts=dict(base._group_counts),
+        n_filled=base._n_filled,
+        synthesised_metrics=base.context.metrics,
+        source_frame=base._source_frame,
+        unit_column=base._unit_column,
+    )
+    metric = source.context.metrics[0]
+    assert source.moments_for_method(metric, method) == base.moments_for_method(metric, method)
 
 
 @pytest.mark.parametrize("by", [(), ("segment",)])

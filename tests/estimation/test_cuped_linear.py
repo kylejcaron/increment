@@ -519,6 +519,202 @@ def test_three_arm_absolute_projection_uses_joint_covariance():
     assert result.se**2 == pytest.approx(contrast @ np.asarray(fit.covariance) @ contrast)
 
 
+def _balance_witness(n_control=60, n_treatment=240, shift=0.4):
+    """Seeded correlated covariates with a treatment mean shift on the second column."""
+    rng = np.random.default_rng(1103)
+    arm = np.repeat(["c", "t"], [n_control, n_treatment])
+    mixing = np.array([[1.0, 0.4, 0.0], [0.0, 1.0, 0.3], [0.0, 0.0, 2.0]])
+    x = rng.normal(size=(len(arm), 3)) @ mixing + np.array([5.0, -3.0, 40.0])
+    x[arm == "t", 1] += shift
+    y = 1.0 + x @ np.array([0.5, -0.2, 0.3]) + rng.normal(size=len(arm))
+    return y, arm, x
+
+
+def _scatter(x):
+    centered = x - x.mean(axis=0)
+    return centered.T @ centered
+
+
+def test_hotelling_unequal_arms_matches_direct_pooled_scatter():
+    y, arm, x = _balance_witness()
+    state, _, fit = fit_cuped_multicovariate(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={f"x{j}": x[:, j] for j in range(3)},
+        kinds=dict.fromkeys(("x0", "x1", "x2"), "continuous"),
+        return_components=True,
+    )
+    xc, xt = x[arm == "c"], x[arm == "t"]
+    pooled = (_scatter(xc) + _scatter(xt)) / 298
+    difference = xt.mean(axis=0) - xc.mean(axis=0)
+    t_squared = 60 * 240 / 300 * difference @ np.linalg.solve(pooled, difference)
+    statistic = t_squared * 296 / (3 * 298)
+    balance = fit.covariate_balance("t")
+    assert balance is not None
+    assert balance.statistic == pytest.approx(statistic, rel=1e-10)
+    assert (balance.numerator_dof, balance.denominator_dof) == (3, 296)
+    assert balance.p_value == pytest.approx(stats.f.sf(statistic, 3, 296), rel=1e-10)
+    scales = np.asarray(state.scales)
+    for retained, direct in zip(state.within_arm_scatter, (xc, xt), strict=True):
+        assert np.asarray(retained) * np.outer(scales, scales) == pytest.approx(
+            _scatter(direct), rel=1e-10
+        )
+
+
+@pytest.mark.parametrize("unit", [1e-200, 1e200], ids=["tiny", "huge"])
+def test_hotelling_balance_is_invariant_to_the_covariates_units(unit):
+    """T² is invariant to rescaling the covariates, including to units whose squared
+    scatter lies past the float range."""
+    y, arm, x = _balance_witness(shift=1.0)
+    xc, xt = x[arm == "c"], x[arm == "t"]
+    difference = xt.mean(axis=0) - xc.mean(axis=0)
+    pooled = (_scatter(xc) + _scatter(xt)) / 298
+    statistic = 60 * 240 / 300 * difference @ np.linalg.solve(pooled, difference) * 296 / (3 * 298)
+    assert stats.f.sf(statistic, 3, 296) < 0.001
+    rescaled = x * unit
+    fit = fit_cuped_multicovariate(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={f"x{j}": rescaled[:, j] for j in range(3)},
+        kinds=dict.fromkeys(("x0", "x1", "x2"), "continuous"),
+    )
+    balance = fit.covariate_balance("t")
+    assert balance is not None and balance.flagged
+    assert balance.statistic == pytest.approx(statistic, rel=1e-9)
+
+
+def test_three_arm_fit_uses_only_the_contrast_arms():
+    y, arm, x = _balance_witness()
+    rng = np.random.default_rng(1104)
+    other_x = rng.normal(size=(80, 3)) * 4.0 + np.array([9.0, 2.0, 30.0])
+    other_y = 3.0 + other_x @ np.array([0.5, -0.2, 0.3]) + rng.normal(size=80)
+    fits = [
+        fit_cuped_multicovariate(
+            values,
+            arms,
+            control="c",
+            arm_order=order,
+            covariates={f"x{j}": covariates[:, j] for j in range(3)},
+            kinds=dict.fromkeys(("x0", "x1", "x2"), "continuous"),
+        )
+        for values, arms, covariates, order in (
+            (y, arm, x, ("c", "t")),
+            (
+                np.r_[y, other_y],
+                np.r_[arm, np.repeat("o", 80)],
+                np.vstack([x, other_x]),
+                ("c", "t", "o"),
+            ),
+        )
+    ]
+    two, three = (fit.covariate_balance("t") for fit in fits)
+    assert two is not None and three is not None
+    assert three.statistic == pytest.approx(two.statistic, rel=1e-10)
+    assert three.denominator_dof == two.denominator_dof
+
+
+def _zero_filled_run(*, zero_fill):
+    import warnings
+
+    import polars as pl
+
+    from increment import CupedCovariate, Method, from_frame, run
+
+    rng = np.random.default_rng(11)
+    n = 2000
+    arm = np.where(rng.random(n) < 0.5, "treatment", "control")
+    x1 = rng.normal(10.0, 2.0, n)
+    history = rng.normal(5.0, 1.0, n)
+    x2 = np.where(arm == "control", 0.0, history) if zero_fill else history
+    y = 3.0 + 0.5 * x1 + 0.8 * history + rng.normal(0.0, 1.0, n)
+    frame = pl.DataFrame({"u": [f"u{i}" for i in range(n)], "g": arm, "y": y, "x1": x1, "x2": x2})
+    experiment, reader = from_frame(
+        frame, shape="summary", unit="u", group="g", control="control", metrics={"y": "mean"}
+    )
+    method = Method.cuped_multicovariate(
+        name="linear",
+        covariates=[CupedCovariate(name=name, kind="continuous") for name in ("x1", "x2")],
+    )
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        result = run(experiment, reader, decision_method=method)
+    fit = fit_cuped_multicovariate(
+        y,
+        arm,
+        control="control",
+        arm_order=("control", "treatment"),
+        covariates={"x1": x1, "x2": x2},
+        kinds={"x1": "continuous", "x2": "continuous"},
+    )
+    return result, recorded, fit
+
+
+def _imbalance_advisories(result):
+    metadata = result.readout().metadata
+    assert metadata is not None
+    return [
+        advisory
+        for record in metadata.cells
+        for advisory in record.advisories
+        if advisory.code == "estimation.cuped.covariate_imbalance"
+    ]
+
+
+def test_covariate_zero_filled_in_one_arm_flags_the_multicovariate_cell():
+    from tests.warning_codes import warning_codes
+
+    result, recorded, fit = _zero_filled_run(zero_fill=True)
+    assert "estimation.cuped.covariate_imbalance" in warning_codes(recorded)
+    (advisory,) = _imbalance_advisories(result)
+    assert advisory.context["statistic_kind"] == "hotelling"
+    assert advisory.context["covariates"] == ("x1", "x2")
+    assert (advisory.context["numerator_dof"], advisory.context["denominator_dof"]) == (2, 1997)
+    assert advisory.context["p_value"] < 0.001
+    (row,) = result.readout()
+    assert row.require_lift().log_mean == pytest.approx(fit.relative("treatment").estimate)
+
+
+def test_balanced_multicovariate_cell_carries_no_imbalance_advisory():
+    result, _, _ = _zero_filled_run(zero_fill=False)
+    assert _imbalance_advisories(result) == []
+
+
+def test_joint_imbalance_past_the_float_range_still_reports_the_cell():
+    """A covariate whose arm means differ by 1e170 against a within-arm standard
+    deviation of 2 puts the Hotelling statistic past the float range: the run reports
+    the cell without an advisory instead of failing."""
+    import warnings
+
+    import polars as pl
+
+    from increment import CupedCovariate, Method, from_frame, run
+    from tests.warning_codes import warning_codes
+
+    rng = np.random.default_rng(11)
+    arm = np.repeat(["control", "treatment"], 200)
+    x1 = rng.normal(10.0, 2.0, 400) + np.where(arm == "treatment", 1e170, 0.0)
+    x2 = rng.normal(5.0, 1.0, 400)
+    y = 3.0 + 0.8 * x2 + rng.normal(0.0, 1.0, 400)
+    frame = pl.DataFrame({"u": [f"u{i}" for i in range(400)], "g": arm, "y": y, "x1": x1, "x2": x2})
+    experiment, reader = from_frame(
+        frame, shape="summary", unit="u", group="g", control="control", metrics={"y": "mean"}
+    )
+    method = Method.cuped_multicovariate(
+        name="linear",
+        covariates=[CupedCovariate(name=name, kind="continuous") for name in ("x1", "x2")],
+    )
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        result = run(experiment, reader, decision_method=method)
+    assert "estimation.cuped.covariate_imbalance" not in warning_codes(recorded)
+    assert _imbalance_advisories(result) == []
+    assert len(result.readout()) == 1
+
+
 def test_three_arm_relative_and_ratio_projections_remain_finite():
     rng = np.random.default_rng(941)
     arm = np.repeat(["c", "t", "other"], [9, 13, 11])

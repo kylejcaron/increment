@@ -1136,8 +1136,10 @@ def test_late_suppression_uses_outcome_cohort(strong_design, estimands, order):
     assert weak_late.failure_context is not None
     assert weak_late.failure_context["group_id"] == "treatment"
     assert weak_late.lift is None
-    diagnostics = [row for row in results if "late suppressed" in (row.note or "")]
-    assert {row.metric for row in diagnostics} == {expected_weak}
+    # The failure carries the weak metric's own cohort first stage, not the design-level one.
+    assert weak_late.failure_context["first_stage_estimate"] == pytest.approx(
+        0.0 if strong_design else 0.03
+    )
     design_rows = [row for row in results if row.metric == "uptake"]
     assert len(design_rows) == int("compliance" in estimands)
     assert all("late suppressed" not in (row.note or "") for row in design_rows)

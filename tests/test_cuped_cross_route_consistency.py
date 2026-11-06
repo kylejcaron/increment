@@ -19,6 +19,7 @@ from increment.estimation.results import LiftEstimate
 from tests.analysis_factory import view_readout
 from tests.covariate_cases import allow_tenure_imbalance
 from tests.test_cuped_route_evidence import _records, _scalar
+from tests.warning_codes import allow_warning_codes
 
 
 @pytest.mark.parametrize("mechanism", ["randomized", "observational"])
@@ -148,6 +149,7 @@ def _rebound_linear(binding):
 @pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("binding", ["property", "measure"])
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
 def test_native_multicovariate_override_acquires_effective_binding(tmp_path, binding):
     import warnings
 

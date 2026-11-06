@@ -475,6 +475,8 @@ def _decode_fitted_evidence(
     if not isinstance(state_value, dict):
         invalid_evidence("fitted evidence FitState must be an object")
     state_value = dict(state_value)
+    # A payload written before the within-arm scatter was retained decodes without it.
+    state_value.setdefault("within_arm_scatter", [])
     state = _fitted_dataclass(FitState, state_value, nested={"layout": MulticovariateCupedLayout})
     summary_value = evidence["inference_summary"]
     if not isinstance(summary_value, dict):
@@ -865,6 +867,7 @@ def _normalize_fitted_float_fields(evidence: dict[str, object]) -> None:
                 "slopes",
                 "adjusted_means",
                 "theta",
+                "within_arm_scatter",
             ),
         )
     summary = evidence.get("inference_summary")

@@ -657,6 +657,8 @@ def _assert_cell_fit_parity(actual, expected):
         "max_leverage",
         "mean_leverage",
         "leverage_trace",
+        "covariate_mean_differences",
+        "within_arm_scatter",
     ):
         assert np.asarray(getattr(actual, name)) == pytest.approx(
             np.asarray(getattr(expected, name)), rel=1e-10, abs=1e-12

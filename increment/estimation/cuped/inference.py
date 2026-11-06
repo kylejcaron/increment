@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, NoReturn, cast
 
 import numpy as np
 from scipy.linalg import qr as scipy_qr
 
+from increment.errors import CodedError
 from increment.estimation.cuped._numeric import _fail
+from increment.estimation.cuped.encoding import _normalized_offset_difference
 from increment.estimation.cuped.types import (
     FitState,
     InferenceSummary,
@@ -28,6 +31,7 @@ def finalize_fit(state: FitState, summary: InferenceSummary) -> MulticovariateCu
         for index, record in enumerate(summary.scaled_projected_score_squares)
     )
     fit_dof = _fit_degrees_of_freedom(state, finalized)
+    differences, scatter = _covariate_balance_evidence(state)
     return MulticovariateCupedFit(
         state.eligible_arms,
         state.control,
@@ -45,6 +49,58 @@ def finalize_fit(state: FitState, summary: InferenceSummary) -> MulticovariateCu
         summary.sum_leverage,
         state.is_ratio,
         finalized,
+        covariate_mean_differences=differences,
+        within_arm_scatter=scatter,
+    )
+
+
+def _covariate_balance_evidence(
+    state: FitState,
+) -> tuple[tuple[tuple[float, ...], ...], tuple[tuple[tuple[float, ...], ...], ...]]:
+    """Arm covariate means less the control's, and within-arm scatter, with each encoded
+    column in units of its within-arm standard deviation pooled over the eligible arms.
+
+    The balance statistic is invariant to the column units, and these stay representable
+    where the covariates' own units would underflow or overflow; they do not depend on
+    the fit's encoding. In the encoded coordinates, ``(x - offset_a) / scale_k``, the
+    offsets are differenced at a common exponent, free of cancellation at large
+    offsets; a difference past the float range is infinite.
+    """
+    if not state.within_arm_scatter:
+        return (), ()
+    control = state.eligible_arms.index(state.control)
+
+    def offset_difference(k: int, arm: int) -> float:
+        try:
+            return _normalized_offset_difference(
+                state.offsets[k][arm], state.offsets[k][control], state.scales[k]
+            )
+        except CodedError:
+            return math.inf
+
+    differences = tuple(
+        tuple(
+            math.fsum(
+                (
+                    offset_difference(k, arm),
+                    state.centered_means[arm][k],
+                    -state.centered_means[control][k],
+                )
+            )
+            for k in range(state.p)
+        )
+        for arm in range(len(state.eligible_arms))
+    )
+    scatter = np.asarray(state.within_arm_scatter, dtype=float).reshape(
+        len(state.within_arm_scatter), state.p, state.p
+    )
+    pooled = np.diag(scatter.sum(axis=0)) / (sum(state.counts) - len(state.eligible_arms))
+    spread = np.where(pooled > 0.0, np.sqrt(pooled), 1.0)
+    return tuple(
+        tuple(float(value) for value in np.asarray(row) / spread) for row in differences
+    ), tuple(
+        tuple(tuple(float(value) for value in row) for row in matrix / np.outer(spread, spread))
+        for matrix in scatter
     )
 
 

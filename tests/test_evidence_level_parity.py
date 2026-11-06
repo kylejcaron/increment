@@ -967,6 +967,7 @@ def test_frozen_cuped_and_quantile_inputs_match_independent_source_rows():
 
     from tests.estimation.test_cuped_linear import _reference
     from tests.parity_harness import matrix_data
+    from tests.parity_harness.expected_differences import without_gained_fit_fields
 
     units = _historical_input("cuped_unit_panel_input.json")
     live_units = _acquired_coordinate(units.scenario_id, units.ingress, units.baseline_revision)
@@ -1007,7 +1008,11 @@ def test_frozen_cuped_and_quantile_inputs_match_independent_source_rows():
         for r in live_fit.records
         if r["request_type"] == "MethodFitRequest" and r["request"] == fit_record["request"]
     )
-    _assert_input_value(live_record["answer"]["envelope"], fit_record["answer"]["envelope"])
+    frozen_envelope = fit_record["answer"]["envelope"]
+    _assert_input_value(
+        without_gained_fit_fields(frozen_envelope, live_record["answer"]["envelope"]),
+        frozen_envelope,
+    )
     answer = fit_record["answer"]
     assert answer["origin"] == live_record["answer"]["origin"] == "retained_fitted"
     export_path = (
@@ -1664,6 +1669,7 @@ def _assert_coordinate_inputs(live, frozen):
         through_observation_end,
         with_declared_favorable_sides,
         with_expected_difference,
+        without_gained_fit_fields,
         without_metric_outcome_columns,
     )
 
@@ -1687,7 +1693,12 @@ def _assert_coordinate_inputs(live, frozen):
         differences=CONSUMER_INPUT_DIFFERENCES,
     )
     _assert_input_value(
-        without_metric_outcome_columns(expected_inputs, _source_input_identity_projection(live)),
+        without_gained_fit_fields(
+            expected_inputs,
+            without_metric_outcome_columns(
+                expected_inputs, _source_input_identity_projection(live)
+            ),
+        ),
         with_declared_favorable_sides(expected_inputs, live.declared_directions),
         path="source_input_identity",
     )
@@ -1714,7 +1725,7 @@ def _assert_coordinate_inputs(live, frozen):
                         for field in _RAW_REFERENCE_FIELDS:
                             if row[field] is not None:
                                 row[field] = "independently-validated-raw-reduction"
-    _assert_input_value(actual, expected)
+    _assert_input_value(without_gained_fit_fields(expected, actual), expected)
 
 
 def _assert_input_value(actual, expected, path="typed_inputs"):
@@ -3495,6 +3506,7 @@ def _assert_old_metadata_coverage(transcript):
 
 def _assert_old_metadata_payload(results, transcript, bindings, source_scopes, *, merged):
     from increment.result_envelope import AnalysisEnvelope
+    from tests.parity_harness.expected_differences import without_relative_late_p_value
     from tests.test_evidence_identity_parity import (
         _capture,
         _compare,
@@ -3533,6 +3545,7 @@ def _assert_old_metadata_payload(results, transcript, bindings, source_scopes, *
         expected, _metadata_without_modes(actual)
     )
     comparable = _project_post_capture_artifact_digests(expected, comparable)
+    comparable = without_relative_late_p_value(expected, comparable, results)
     try:
         _compare(_metadata_without_modes(expected), comparable)
     except AssertionError as error:
@@ -4956,6 +4969,7 @@ def _assert_old_readout_rows(actual, expected, *, nominal_alpha=None):
     from tests.parity_harness.expected_differences import (
         without_gained_arm_facts,
         without_post_capture_family_size,
+        without_relative_late_log_reference,
     )
     from tests.test_evidence_identity_parity import _retained_capture_projection
 
@@ -4979,7 +4993,9 @@ def _assert_old_readout_rows(actual, expected, *, nominal_alpha=None):
             assert nominal_alpha is not None
             maximum = nominal_alpha * (2.0 if left["alternative"] in {"less", "greater"} else 1.0)
             assert 0.0 < left["allocation_alpha"] <= maximum
-        left = without_post_capture_family_size(right, without_gained_arm_facts(right, left))
+        left = without_relative_late_log_reference(
+            right, without_post_capture_family_size(right, without_gained_arm_facts(right, left))
+        )
         left, _compatibility_fields = _retained_capture_projection(right, left)
         extra = left.keys() - right.keys()
         if extra:
