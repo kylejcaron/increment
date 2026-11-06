@@ -408,7 +408,8 @@ def _load_metric_evidence(  # noqa: PLR0915
 
     # A linear fit from retained categorical cells or a warehouse has no unit rows to
     # identify it; its moment rows are the evidence, digested raw. A local fit's unit
-    # rows identify it exactly, so its moment rows keep the ordinary digest.
+    # rows identify it exactly, so its moment rows keep the ordinary digest. The decision
+    # fit's origin picks the digest even when another method loads unit rows.
     raw_moments = ("moments_rows", *_rows_raw_digest_and_arms(rows)[1:])
     fitted_components = (
         raw_moments if decision_is_linear else ordinary_component,
@@ -617,6 +618,8 @@ def _load_metric_evidence(  # noqa: PLR0915
     if decision_is_linear:
         if decision_fitted_locally:
             decision_components += (_decision_unit_component(frame, methods[0], acquired_columns),)
+        else:
+            decision_components = fitted_components
         decision_components += tuple(
             item
             for item in local_fit_components

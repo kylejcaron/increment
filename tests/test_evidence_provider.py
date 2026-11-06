@@ -2994,25 +2994,28 @@ def test_local_cuped_fallback_preserves_retained_categorical_components() -> Non
 
             return EvidenceScopeResult(scoped(), request)
 
-    try:
-        evidence = cast(
-            Any,
-            request_evidence(
-                Provider(),
-                MetricEvidenceRequest(
-                    metric=source.context.metrics[0],
-                    control_group="control",
-                    methods=(decision, fallback),
-                    covariates=(covariate,),
-                ),
+    def evidence_for(*methods: Method) -> Any:
+        return request_evidence(
+            Provider(),
+            MetricEvidenceRequest(
+                metric=source.context.metrics[0],
+                control_group="control",
+                methods=methods,
+                covariates=(covariate,),
             ),
         )
+
+    try:
+        evidence = evidence_for(decision, fallback)
+        alone = evidence_for(decision)
     finally:
         analysis[1].close()
 
     component = ("categorical_cells:retained", "retained-categorical-evidence", 1)
     assert component in evidence.evidence_components
     assert component in evidence.decision_evidence_components
+    # A companion fitted from unit rows leaves the retained decision's identity unchanged.
+    assert evidence.decision_evidence_components == alone.decision_evidence_components
 
 
 @pytest.mark.integration
