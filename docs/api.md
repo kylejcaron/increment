@@ -144,7 +144,7 @@ values.
   A decision on a stored run selects over the same members: the uptake cell's
   own verdict stays `not_evaluated`
   (`decision.not_evaluated.monitoring_view`), its discovery counts toward the
-  family's rejections, and it no longer makes the family verdict
+  family's rejections, and it no longer makes a whole-window family's verdict
   `not_evaluated`. Before, that decision selected over the secondaries alone,
   a smaller family than the rows report. A run that requests
   `estimands=("itt",)` lists the uptake cell as an unselected member, so its

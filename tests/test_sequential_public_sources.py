@@ -403,6 +403,23 @@ def test_family_with_a_registered_uptake_cell_decides_after_reopen(tmp_path):
     assert family.status == "reject"
 
 
+def test_asof_family_of_a_registered_uptake_cell_alone_is_not_decided():
+    from dataclasses import replace
+
+    from increment import run
+
+    experiment, resolver = _registered_uptake_family(panel=True, primary="s")
+    asof = View(view="asof", grain="asof", completion_policy=True)
+
+    result = run(replace(experiment, views=(asof,)), resolver, estimands=("itt", "compliance"))
+
+    (family,) = [family for family in result.decisions.families if family.procedure == "e_bh"]
+    (uptake,) = family.members
+    # The look's e-BH over m = 1 selects the uptake cell, but an as-of look only monitors.
+    assert uptake.discovery is True
+    assert family.status == "not_evaluated"
+
+
 def test_explicit_view_corrections_are_unchanged():
     from increment.decision import MultiplicityFamily
     from increment.semantics.models import MultiplicitySpec

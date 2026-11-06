@@ -593,12 +593,13 @@ def decide(  # noqa: PLR0915
             family_reasons = tuple(
                 sorted({code for member in members for code in member.reason_codes})
             )
-            # A registered uptake member counts toward the family's size and rejections, but
-            # its own cell stays a diagnostic, so its verdict does not hold the family back.
+            # A registered uptake member counts toward a whole-window family's size and
+            # rejections, but its own cell stays a diagnostic, so its verdict does not hold
+            # the family back; in a monitoring view it does, like every other member.
             evaluated = [
                 member
                 for key, member in zip(family.members, members, strict=True)
-                if key.estimand != "compliance"
+                if family.view != "run" or key.estimand != "compliance"
             ]
             state = (
                 "not_evaluated"

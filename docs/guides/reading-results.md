@@ -94,7 +94,7 @@ views, not tests of the whole experiment.
 An uptake cell whose sequential compliance policy declares `family=True` keeps
 its `not_evaluated` verdict, but it is a member of the secondary family: it
 counts toward that family's size and discoveries, and its own verdict does not
-make the family's verdict `not_evaluated`.
+make a whole-window family's verdict `not_evaluated`.
 Narrowing a run's selected metrics or estimands does not erase its registered
 family roster; unselected members remain visible as `not_evaluated`.
 
