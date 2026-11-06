@@ -29,6 +29,7 @@ from increment.sequential_state import (
     registration_id,
     require_public_laws,
     sequential_refuse,
+    validate_compliance_allocation,
     validate_sequential_methods,
     validate_sequential_transform,
 )
@@ -921,44 +922,6 @@ def validate_compliance_policy(plan, design, *, required=False):
     validate_compliance_allocation(
         registration, plan.compliance, plan.alpha, plan.q, required=required
     )
-
-
-def validate_compliance_allocation(registration, policy, alpha, q, *, required=False):
-    """Shared declaration, compiled-plan and portable-policy invariant."""
-    from fractions import Fraction
-
-    models = [m for m in registration.models if m.observable == "uptake" and m.law == "bernoulli"]
-    cells = [c for c in registration.roster if c.estimand == "compliance"]
-    if not models and not cells and not required and policy is None:
-        return
-    if (
-        len(models) != 1
-        or not cells
-        or policy is None
-        or {c.metric for c in cells} != {models[0].metric}
-    ):
-        sequential_refuse(
-            "source.invalid",
-            "compliance requires a Bernoulli uptake model, retained cells and an explicit compiled compliance policy",
-        )
-    if policy.alpha > Fraction(alpha):
-        sequential_refuse("source.invalid", "compliance alpha exceeds the compiled plan allocation")
-    if policy.family and (float(registration.q) != q or registration.q > Fraction(q)):
-        sequential_refuse(
-            "source.invalid", "registered compliance family q differs from the compiled plan"
-        )
-    allocation = policy.alpha / len(cells)
-    if any(
-        c.alpha > allocation
-        or c.alternative != policy.alternative
-        or c.null_lift != policy.null_lift
-        or c.family != policy.family
-        for c in cells
-    ):
-        sequential_refuse(
-            "source.invalid",
-            "registered compliance cells differ from their compiled policy allocation",
-        )
 
 
 def validate_scalar_mean_design(registration, design):

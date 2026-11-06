@@ -2361,6 +2361,7 @@ def failed_cell_row(
 
 if TYPE_CHECKING:
     from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
+    from increment.estimation.contrast_results import ContrastResult
 
     type DecisionRow = LiftEstimate | BreakoutEstimate | DailyLiftEstimate
 
@@ -2549,6 +2550,37 @@ def row_verdict(row: Any) -> bool | None:
         return stat_sig()
     except CodedError:
         return None
+
+
+def contrast_evidence_available(result: ContrastResult) -> bool:
+    """Whether the declared reference supplies typed evidence.
+
+    Envelope evidence does not depend on the descriptive sample standard error.
+    """
+    return (
+        result.residual_p_value is not None
+        if result.method == "switchback_unit_variance_envelope"
+        else result.standard_error is not None and result.standard_error > 0.0
+    )
+
+
+def contrast_stat_sig(result: ContrastResult) -> bool:
+    """Return the contrast's table/readout decision verdict."""
+    if not contrast_evidence_available(result):
+        return False
+    estimate = result.estimate
+    if result.method == "switchback_unit_variance_envelope":
+        assert result.residual_p_value is not None
+        return result.residual_p_value < result.alpha
+    if result.alternative == "greater":
+        return estimate.lb is not None and estimate.lb > result.null_abs
+    if result.alternative == "less":
+        return estimate.ub is not None and estimate.ub < result.null_abs
+    return (
+        estimate.lb is not None
+        and estimate.ub is not None
+        and not (estimate.lb <= result.null_abs <= estimate.ub)
+    )
 
 
 def row_p_value(row: DecisionRow) -> float | None:

@@ -1554,11 +1554,10 @@ def register_collection_types(*collection_types: type) -> None:
 
 
 def registered_collection(model: type) -> Any | None:
-    """Return the registered result collection whose rows are ``model``, if any."""
-    from importlib import import_module
+    """Return the registered result collection whose rows are ``model``, if any.
 
-    # The breakout module registers its collection classes at import time.
-    import_module("increment.breakout.estimates")
+    A collection's defining module registers it on import; this module never loads it.
+    """
     return next(
         (collection for collection in _COLLECTION_TYPES.values() if collection._model is model),
         None,
@@ -1566,16 +1565,14 @@ def registered_collection(model: type) -> Any | None:
 
 
 class ReadoutResults:
-    """Versioned saved-result boundary; decoding returns the existing collection."""
+    """Versioned saved-result boundary; decoding returns the existing collection.
+
+    ``increment.results.ReadoutResults`` loads the modules that register collections.
+    """
 
     @staticmethod
     def model_validate_json(text):
         import json
-        from importlib import import_module
-
-        # The breakout module registers its collection classes at import time.
-        # Load it only during decoding to avoid a static dependency cycle.
-        import_module("increment.breakout.estimates")
 
         # Upward: the saved-result boundary returns ContrastResults, whose concat and
         # validation build this module's ReadoutMetadata.

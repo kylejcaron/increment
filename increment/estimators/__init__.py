@@ -88,9 +88,12 @@ _EXPORTS = {
         "increment.breakout.rollout",
         "segment_rollout_recommendation",
     ),
-    "select_exploratory_family": ("increment.estimation.family", "select_exploratory_family"),
+    "select_exploratory_family": (
+        "increment.estimation.exploratory_family",
+        "select_exploratory_family",
+    ),
     "exploratory_family_exclusion": (
-        "increment.estimation.family",
+        "increment.estimation.exploratory_family",
         "exploratory_family_exclusion",
     ),
     "estimate_policy_contrast": ("increment.logged_policy", "estimate_policy_contrast"),
@@ -206,10 +209,10 @@ if TYPE_CHECKING:
     from increment.estimation.diagnostics import (
         sample_ratio_mismatch as sample_ratio_mismatch,
     )
-    from increment.estimation.family import (
+    from increment.estimation.exploratory_family import (
         exploratory_family_exclusion as exploratory_family_exclusion,
     )
-    from increment.estimation.family import (
+    from increment.estimation.exploratory_family import (
         select_exploratory_family as select_exploratory_family,
     )
     from increment.estimation.priors import MixturePrior as MixturePrior

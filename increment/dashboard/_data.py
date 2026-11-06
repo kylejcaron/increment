@@ -70,7 +70,7 @@ from increment.errors import (
     refuse,
 )
 from increment.estimation.diagnostics import SRMResult
-from increment.estimation.family import (
+from increment.estimation.exploratory_family import (
     exploratory_family_exclusion,
     select_exploratory_family,
 )

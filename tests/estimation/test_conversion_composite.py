@@ -30,7 +30,7 @@ from increment.estimation.engine import (
     escalate_family_member,
     estimate_lift,
 )
-from increment.estimation.family import select_exploratory_family
+from increment.estimation.exploratory_family import select_exploratory_family
 from increment.estimation.results import (
     LiftEstimate,
     conversion_route_label,
