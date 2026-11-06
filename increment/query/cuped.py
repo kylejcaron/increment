@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
+from increment._canonical import CanonicalJSONError, canonical_json_bytes
 from increment._cuped_evidence import categorical_identity, method_key
 from increment._evidence_types import (
     _WarehouseCupedFitEvidence,
     warehouse_cuped_fit_evidence,
 )
+from increment._run_spines import SpineKey, reused_spine
+from increment._source_identity import source_identity
 from increment.estimation.cuped.cells import fit_categorical_cells
 from increment.estimation.cuped.types import _freeze_payload
 from increment.query._cuped_cells import (
@@ -111,8 +115,6 @@ def resolved_multicovariate_request(
     breakout_is_null: bool = False,
 ) -> _ResolvedCupedRequest:
     """Bind one warehouse fit to its immutable source and normalized request."""
-    from increment._source_identity import source_identity
-
     identity = (
         "warehouse-cuped-fit-v1",
         metric.name,
@@ -406,7 +408,11 @@ def fit_multicovariate_request(
     breakout_is_null: bool = False,
     return_components: bool = False,
 ):
-    """Build request identity and fit through the source-owned query interface."""
+    """Build request identity and fit through the source-owned query interface.
+
+    Within one run, a request whose spine an earlier view already fitted reuses that
+    fit or refusal; component requests and live sources always fit.
+    """
     from increment.errors import CodedError
 
     request = resolved_multicovariate_request(
@@ -421,10 +427,52 @@ def fit_multicovariate_request(
         breakout_value=breakout_value,
         breakout_is_null=breakout_is_null,
     )
+
+    def fit():
+        try:
+            return fit_multicovariate_source(
+                source, metric, request, return_components=return_components
+            )
+        except CodedError as exc:
+            return exc
+
+    key = None if return_components else _spine_key(source, metric, request)
+    return request.identity, reused_spine(key, fit)
+
+
+def _spine_key(source, metric, request: _ResolvedCupedRequest) -> SpineKey | None:
+    """The run-scoped key of the relation a fit reads; None when its content can change."""
+    scope = getattr(source, "_spine_scope", None)
+    coordinates = scope() if callable(scope) else None
+    if coordinates is None:
+        return None
+    horizon, relations = coordinates
     try:
-        fit = fit_multicovariate_source(
-            source, metric, request, return_components=return_components
+        return SpineKey(
+            population=request.population,
+            effective_metric=canonical_json_bytes(
+                {
+                    "metric": metric,
+                    "method": method_key(request.method),
+                    "control": request.control,
+                    "arm_order": request.arm_order,
+                }
+            ).decode(),
+            horizon=canonical_json_bytes(horizon).decode(),
+            source_content_digest=hashlib.sha256(
+                canonical_json_bytes(source_identity(source))
+            ).hexdigest(),
+            source_selection=canonical_json_bytes(
+                {
+                    "relations": relations,
+                    "breakout": (
+                        request.breakout_dimension,
+                        request.breakout_source,
+                        request.breakout_value,
+                        request.breakout_is_null,
+                    ),
+                }
+            ).decode(),
         )
-    except CodedError as exc:
-        fit = exc
-    return request.identity, fit
+    except CanonicalJSONError:
+        return None

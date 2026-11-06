@@ -25,6 +25,7 @@ from increment._day_axis import (
 from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastReadoutRequest
 from increment._evidence_types import SequentialCaptureRequest
 from increment._exploratory import exploratory_sibling, select_exploratory
+from increment._run_spines import run_spines
 from increment._runnability import (
     operation_options,
     records_breakout_sources,
@@ -750,7 +751,8 @@ def execute_views(
     against it. A sequential capture is taken inside that context before any
     view reads. The run's ``coherence``, saved in the experiment's request options or
     passed at call time (which wins), applies to every view: a view that takes none
-    of its own reads under a shared capture opened with it.
+    of its own reads under a shared capture opened with it. Views that read the same
+    spine share its warehouse fit for this run only.
     """
     requested = {**experiment.request_options, **options}
     coherence = cast(Literal["captured", "live"], requested.get("coherence", "captured"))
@@ -774,7 +776,7 @@ def execute_views(
             if execution_context is None
             else execution_context_scope(execution_context)
         )
-        with ambient:
+        with ambient, run_spines():
             return (ScopedReadout(_VIEWS[operation](scope_binding, **kwargs), scope, kwargs),)
     requests = [
         operation_scope(scope_binding, operation, kwargs, planner=_PLANNER, capture=capture)
@@ -803,7 +805,7 @@ def execute_views(
     # One run reading several views advises each metric's unused covariate once.
     advised = _ADVISED_COVARIATES.set(set())
     try:
-        with acquisition:
+        with acquisition, run_spines():
             if capture is not None:
                 retained_sequential_capture(binding.source, capture, current_execution_context())
             scoped = []

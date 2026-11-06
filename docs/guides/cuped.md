@@ -1304,7 +1304,9 @@ The QR factorization and unit-dependent inference reductions remain
 warehouse-side; only the bounded triangular solve and fit finalization run on
 the client.
 Warehouse QR batches independent summary reductions to reduce database round trips;
-it uses the same observations and interval calculation.
+it uses the same observations and interval calculation. Within one `run`, views that
+need the same fit (the same metric, method, population, source snapshot and breakout
+value) share it; the next `run` fits again.
 
 From definitions or an adopted unit-day artifact, use
 `increment.workflows.export_moments(experiment, reader, path)` to write the

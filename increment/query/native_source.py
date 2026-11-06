@@ -5158,6 +5158,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
         return method_fit_input_digest(self, method_request)
 
+    def _spine_scope(self) -> tuple[dict[str, object], tuple[str, ...]] | None:
+        """The horizon and captured relations a fit reads; None while reads are live."""
+        captured = self._session.captured_relation_names
+        if captured is None:
+            return None
+        evidence = self._session.source_snapshot_evidence
+        fixed = self._has_fixed_event_horizon_override
+        horizon = {
+            "observation_horizon": self._experiment.observation_horizon_day,
+            "snapshot_cutoff": None if evidence is None else evidence.observation_cutoff_ts,
+            "event_edge": self._fixed_event_horizon if fixed else None,
+            # Without a captured edge, the union of these metrics' events cuts the spine.
+            "horizon_metrics": () if fixed else tuple(self._horizon_metrics),
+        }
+        return horizon, captured
+
     @contextmanager
     def cuped_relation(self, metric: Metric, request):
         """Keep the complete CUPED relation inside one pinned source execution."""
