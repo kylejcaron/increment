@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ratchet deferred internal imports and runtime import cycles."""
+"""Ratchet deferred imports and cycles; ancestor edges omit increment's lazy facade."""
 
 import argparse
 import ast
@@ -46,6 +46,33 @@ def _targets(
     return targets
 
 
+class _BoundNames(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.names.update(alias.asname or alias.name for alias in node.names)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.names.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
 class _Imports(ast.NodeVisitor):
     def __init__(self, module: str, package_context: str, package: str, root: Path) -> None:
         self.module = module
@@ -54,23 +81,40 @@ class _Imports(ast.NodeVisitor):
         self.root = root
         self.deferred = False
         self.type_checking = False
-        self.aliases: dict[str, str] = {}
+        self.alias_scopes: list[dict[str, str | None]] = [{}]
         self.edges: set[str] = set()
         self.deferred_edges: set[str] = set()
 
+    def _bind(self, name: str, target: str | None) -> None:
+        self.alias_scopes[-1][name] = target
+
+    def _lookup(self, name: str) -> str | None:
+        for scope in reversed(self.alias_scopes):
+            if name in scope:
+                return scope[name]
+        return None
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            if alias.name in {"typing", "importlib"}:
-                self.aliases[alias.asname or alias.name] = alias.name
+            bound = alias.asname or alias.name.split(".")[0]
+            target = alias.name if alias.name in {"typing", "importlib"} else None
+            self._bind(bound, target)
         self._record(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
+            bound = alias.asname or alias.name
+            target = None
             if node.module == "typing" and alias.name == "TYPE_CHECKING":
-                self.aliases[alias.asname or alias.name] = "typing.TYPE_CHECKING"
+                target = "typing.TYPE_CHECKING"
             elif node.module == "importlib" and alias.name == "import_module":
-                self.aliases[alias.asname or alias.name] = "importlib.import_module"
+                target = "importlib.import_module"
+            self._bind(bound, target)
         self._record(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self._bind(node.id, None)
 
     def _record(self, node: ast.AST) -> None:
         targets = _targets(node, self.module, self.package_context, self.package, self.root)
@@ -80,67 +124,133 @@ class _Imports(ast.NodeVisitor):
         function = node.func
         is_import_module = (
             isinstance(function, ast.Name)
-            and self.aliases.get(function.id) == "importlib.import_module"
+            and self._lookup(function.id) == "importlib.import_module"
         ) or (
             isinstance(function, ast.Attribute)
             and function.attr == "import_module"
             and isinstance(function.value, ast.Name)
-            and self.aliases.get(function.value.id) == "importlib"
+            and self._lookup(function.value.id) == "importlib"
         )
-        if is_import_module and node.args and isinstance(node.args[0], ast.Constant):
-            name = node.args[0].value
-            if isinstance(name, str):
-                package_arg = next(
-                    (
-                        keyword.value.value
-                        for keyword in node.keywords
-                        if keyword.arg == "package"
-                        and isinstance(keyword.value, ast.Constant)
-                        and isinstance(keyword.value.value, str)
-                    ),
-                    None,
+        name_node = (
+            node.args[0]
+            if node.args
+            else next((keyword.value for keyword in node.keywords if keyword.arg == "name"), None)
+        )
+        package_node = (
+            node.args[1]
+            if len(node.args) > 1
+            else next(
+                (keyword.value for keyword in node.keywords if keyword.arg == "package"), None
+            )
+        )
+        if (
+            is_import_module
+            and isinstance(name_node, ast.Constant)
+            and isinstance(name_node.value, str)
+        ):
+            name = name_node.value
+            package_arg = (
+                package_node.value
+                if isinstance(package_node, ast.Constant) and isinstance(package_node.value, str)
+                else None
+            )
+            try:
+                target = (
+                    importlib.util.resolve_name(name, package_arg) if name.startswith(".") else name
                 )
-                try:
-                    target = (
-                        importlib.util.resolve_name(name, package_arg)
-                        if name.startswith(".")
-                        else name
-                    )
-                except ImportError:
-                    target = ""
-                if target == self.package or target.startswith(self.package + "."):
-                    self._record_targets({target})
+            except (ImportError, ValueError):
+                target = ""
+            if target == self.package or target.startswith(self.package + "."):
+                self._record_targets({target})
         self.generic_visit(node)
 
     def _record_targets(self, targets: set[str]) -> None:
-        if not self.type_checking:
-            self.edges.update(targets)
-            if self.deferred:
-                self.deferred_edges.update(targets)
+        if self.type_checking:
+            return
+        expanded = set(targets)
+        for target in targets:
+            parts = target.split(".")
+            while len(parts) > 1:
+                parts.pop()
+                parent = ".".join(parts)
+                if parent == self.package:
+                    break
+                expanded.add(parent)
+        self.edges.update(expanded)
+        if self.deferred:
+            self.deferred_edges.update(expanded)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for expression in node.decorator_list:
+            self.visit(expression)
+        for expression in (*node.args.defaults, *node.args.kw_defaults):
+            if expression is not None:
+                self.visit(expression)
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
+            if argument.annotation:
+                self.visit(argument.annotation)
+        if node.args.vararg and node.args.vararg.annotation:
+            self.visit(node.args.vararg.annotation)
+        if node.args.kwarg and node.args.kwarg.annotation:
+            self.visit(node.args.kwarg.annotation)
+        if node.returns:
+            self.visit(node.returns)
+
+        names = _BoundNames()
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
+            names.names.add(argument.arg)
+        if node.args.vararg:
+            names.names.add(node.args.vararg.arg)
+        if node.args.kwarg:
+            names.names.add(node.args.kwarg.arg)
+        for statement in node.body:
+            names.visit(statement)
+        inherited: dict[str, str | None] = {}
+        for scope in self.alias_scopes:
+            inherited.update(scope)
+        for name in names.names:
+            inherited[name] = None
+        self.alias_scopes.append(inherited)
+        previous = self.deferred
+        self.deferred = True
+        for item in node.body:
+            self.visit(item)
+        self.deferred = previous
+        self.alias_scopes.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        previous = self.deferred
-        self.deferred = True
-        for item in node.body:
-            self.visit(item)
-        self.deferred = previous
+        self._visit_function(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        previous = self.deferred
-        self.deferred = True
+        self._visit_function(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in (*node.decorator_list, *node.bases):
+            self.visit(expression)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        self.alias_scopes.append(dict(self.alias_scopes[-1]))
         for item in node.body:
             self.visit(item)
-        self.deferred = previous
+        self.alias_scopes.pop()
 
     def visit_If(self, node: ast.If) -> None:
         test = node.test
         is_tc = (
-            isinstance(test, ast.Name) and self.aliases.get(test.id) == "typing.TYPE_CHECKING"
+            isinstance(test, ast.Name) and self._lookup(test.id) == "typing.TYPE_CHECKING"
         ) or (
             isinstance(test, ast.Attribute)
             and test.attr == "TYPE_CHECKING"
             and isinstance(test.value, ast.Name)
-            and self.aliases.get(test.value.id) == "typing"
+            and self._lookup(test.value.id) == "typing"
         )
         previous = self.type_checking
         if is_tc:
