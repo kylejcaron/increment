@@ -27,8 +27,7 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 _ROUTE = (
-    "analyze from a dataframe with from_frame, or use a warehouse whose SQL dialect "
-    "supports this operation"
+    "analyze from a dataframe with from_frame, or see 'Other warehouses' in the data-model guide"
 )
 
 

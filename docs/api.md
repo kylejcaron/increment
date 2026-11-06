@@ -127,6 +127,31 @@ values.
 
 ### Earlier release notes
 
+- Release note (feature): analyses run on any Ibis SQL backend. DuckDB,
+  PostgreSQL, Snowflake and BigQuery remain the verified warehouses. The first
+  time Increment uses a connection to any other backend, it shows one
+  `UnverifiedWarehouseWarning` (code `query.session.unverified_warehouse`,
+  context `backend`), exported from `increment`, `increment.errors` and
+  `increment.estimators`; silence it by category once you have checked the
+  backend. Results, renders, `analysis_context` and experiment identity do not
+  record it. Warehouse CUPED tests for NaN with Ibis's own `isnan()`, which
+  also translates for ClickHouse, Trino and Databricks, where CUPED stopped with
+  Ibis's `OperationNotDefinedError`. When Ibis cannot translate a query for the
+  connection's SQL dialect, `run` and the `from_definitions` SQL previews
+  `increment.query.panel_sql` and `summary_sql` raise `CapabilityError` code
+  `query.backend.operation_unsupported` (context `backend`, `detail`, `route`)
+  instead of Ibis's own exception. It is raised where that query is reached,
+  so earlier queries in the run may already have read data; no result is
+  produced. The same failure while Increment writes a TEMP table raises this
+  code too, instead of a materialization warning or
+  `query.session.snapshot.materialization_failed`, whose message now says what
+  needs TEMP tables and names `from_frame` as the route. Publishing and opening
+  unit-day artifacts still refuse on unverified backends with
+  `query.session.warehouse_artifact.verification_unavailable`.
+  [Other warehouses](guides/data-model.md#other-warehouses) explains the notice,
+  TEMP tables, and how to add a missing Ibis translation. Migration: where code
+  caught Ibis's `OperationNotDefinedError` from these calls, catch `CodedError`
+  and branch on this code. Estimates and experiment identity are unchanged.
 - Release note (breaking): an exact conversion or retention row
   (`reference_kind="binomial"`) now cuts its additive `abs_lb`/`abs_ub` as the
   Miettinen-Nurminen score interval for the difference of rates and labels it
@@ -2521,6 +2546,8 @@ codes = {w.message.code for w in caught if isinstance(w.message, IncrementWarnin
 ::: increment.errors.IncrementRuntimeWarning
 
 ::: increment.errors.IncrementDeprecationWarning
+
+::: increment.errors.UnverifiedWarehouseWarning
 
 ## Results (`increment.results`)
 

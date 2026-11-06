@@ -34,6 +34,14 @@ pip install "increment[warehouse]" "ibis-framework[snowflake]"  # remote warehou
 | `increment[tables]` | `coeftable`, `pandas` | CoefTable-based experiment and metric trend tables |
 | `increment[dashboard]` | `marimo`, `coeftable`, `pandas` | Reusable HTML dashboard over one bound experiment; see the [dashboard guide](guides/dashboard.md) |
 
+Any Ibis SQL backend is supported. DuckDB, PostgreSQL, Snowflake, and BigQuery
+are verified by execution test suites; other backends show a one-time
+`UnverifiedWarehouseWarning`. An analysis runs when Ibis can translate its
+queries for that backend, and stops with `query.backend.operation_unsupported`
+when it cannot. The default run and warehouse CUPED need TEMP tables; unit-day
+artifacts need a verified backend. See
+[Other warehouses](guides/data-model.md#other-warehouses).
+
 ## Quickstart
 
 Start without YAML or a warehouse connection: one row per unit is all it

@@ -54,6 +54,13 @@ every loader.
 - Statistics code receives data (rows, moments, fitted evidence), never a source object. Evidence acquisition lives only in `increment/readouts/_evidence.py` and `increment/_evidence_loaders.py` when present. The public builders and `run` (`builders.py`, `_run.py`), the `workflows`, `query`, `artifacts` and `dashboard` functions, `cate.py::estimate_cate`, and the named estimation facades validate and delegate; they do not introduce a second acquisition path. Custom sources MUST declare `EvidenceCapabilities` or implement the public `EvidenceProvider` before reads. The boundary is enforced by `tests/test_evidence_boundary.py`.
 - Each built-in loader declares what it can answer once through `evidence`; legacy plain attributes are private or derived from that declaration. Refusals are validated against declaration data before any read. `tests/test_evidence_capabilities.py` pins the declaration contract. One hazard, one code, on every constructor. Raise the registered `RefusalSpec`; `tests/test_refusal_uniqueness.py::test_each_evidence_hazard_has_one_code_on_every_constructor` enforces the public-constructor contract; never add a per-loader variant of an existing hazard.
 - `tach check` enforces module dependencies; add one only where the table allows.
+- Any Ibis SQL backend is supported; DuckDB, PostgreSQL, Snowflake and BigQuery
+  are verified by the execution suites under `integration/warehouse_execution/`.
+  A branch on the backend name sits beside a portable Ibis default on the same
+  path. A refusal on backend name alone is allowed only where a guarantee
+  cannot be established on an unverified backend (today: in-warehouse artifact
+  digests). `tests/test_backend_portability.py` pins which dialects translate
+  the analysis SQL.
 
 ## Making a change
 
@@ -89,6 +96,9 @@ every loader.
 - An unsupported request refuses before data is read with a `CodedError`
   carrying a stable package-wide code and immutable structured context, and
   names a route forward when one exists. Refusals survive pickle and deepcopy.
+  Exception: when Ibis cannot translate a query for an unverified backend,
+  `increment/_compile_gaps.py` raises `query.backend.operation_unsupported`
+  where that query is reached, which may be after earlier reads.
 - Every requested cell is a result or an unavailable row that keeps its
   identity and exact reason. `assigned` and `triggered` populations and
   multiplicity status stay distinct through filtering. Priors never change
