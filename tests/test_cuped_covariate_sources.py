@@ -1079,6 +1079,7 @@ def test_triggered_covariates_remain_anchored_to_assignment(tmp_path):
 
 
 @pytest.mark.slow
+@allow_tenure_imbalance
 def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_path):
     import pyarrow as pa
     import pytest

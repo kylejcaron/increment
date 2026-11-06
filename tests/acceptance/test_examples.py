@@ -469,7 +469,7 @@ def test_encouragement_export_renders_expected_figures(tmp_path):
         html,
     )
     assert "LATE is omitted" in html
-    assert "late suppressed" in html
+    assert "estimation.encouragement.late.weak_first_stage" in html
     assert re.search(r"first-stage z=\d+\.\d\d \\u0026lt; \d+", html)
 
     assert "Monitor LATE over time" in html

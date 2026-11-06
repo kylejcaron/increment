@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass
+from typing import Any, cast
 
-from tests.parity_harness.comparison import nested_close
+from tests.parity_harness.comparison import TOLERANCE, nested_close
 
 BinomialCounts = tuple[int, int, int, int]
 
@@ -446,6 +446,48 @@ def with_expected_difference(
     return expected
 
 
+#: Mixed CUPED fields gained after the frozen captures, keyed by the field that marks the
+#: mapping holding them: a finalized fit (``_projections``) or a fitted payload's state
+#: (``triangular_factor``). A frozen value that predates them decodes with their empty
+#: defaults and is compared without them.
+_GAINED_AFTER_CAPTURE = {
+    "_projections": ("covariate_mean_differences", "within_arm_scatter"),
+    "triangular_factor": ("within_arm_scatter",),
+}
+FIT_FIELDS_GAINED_AFTER_CAPTURE = _GAINED_AFTER_CAPTURE["_projections"]
+
+
+def without_gained_fit_fields(expected: Any, actual: Any) -> Any:
+    """``actual`` without the mixed CUPED fields its frozen ``expected`` value predates.
+
+    Only a fit or fit-state mapping is projected, and only a field it gained after the
+    capture that the frozen mapping lacks. Every other value is left to the caller's
+    comparison. Lists and tuples pair by position.
+    """
+    if isinstance(expected, Mapping) and isinstance(actual, Mapping):
+        projected = {
+            key: without_gained_fit_fields(expected.get(key), value)
+            for key, value in actual.items()
+        }
+        for marker, gained in _GAINED_AFTER_CAPTURE.items():
+            if marker in actual and marker in expected:
+                for field in gained:
+                    if field not in expected:
+                        projected.pop(field, None)
+        return projected
+    if (
+        isinstance(expected, (list, tuple))
+        and isinstance(actual, (list, tuple))
+        and len(expected) == len(actual)
+    ):
+        paired = [
+            without_gained_fit_fields(left, right)
+            for left, right in zip(expected, actual, strict=True)
+        ]
+        return tuple(paired) if isinstance(actual, tuple) else paired
+    return actual
+
+
 # Frozen day-axis rows dated after each panel's declared observation end, which the current
 # route no longer returns; the warehouse capture of the same case stops at that end too.
 _DAY_ROWS_THROUGH = {
@@ -465,13 +507,13 @@ def through_observation_end(scenario: str, ingress: str, records: Any) -> Any:
         if record["request_type"] != "DayAxisRequest":
             continue
         for day_slice in record["answer"]["slices"]:
-            for field in ("rows", "consumer_rows"):
-                rows = day_slice.get(field)
+            for name in ("rows", "consumer_rows"):
+                rows = day_slice.get(name)
                 if rows is None:
                     continue
                 kept = [row for row in rows if str(row["ds"]) <= end]
                 dropped += len(rows) - len(kept)
-                day_slice[field] = kept
+                day_slice[name] = kept
     assert dropped, f"{scenario}/{ingress} no longer records day rows after {end}"
     return records
 
@@ -703,3 +745,98 @@ def without_metric_outcome_columns(expected: Any, actual: Any) -> Any:
         return live
 
     return project(expected, actual)
+
+
+def _relative_late_reference(lift: Mapping[str, Any]) -> tuple[float, float]:
+    """The log-scale point and SE a relative LATE lift's symmetric Normal interval implies."""
+    from scipy.stats import norm
+
+    z = float(norm.isf(lift["alpha"] / 2.0))
+    return (
+        math.log1p(lift["value"]),
+        (math.log1p(lift["ub"]) - math.log1p(lift["lb"])) / (2.0 * z),
+    )
+
+
+def without_relative_late_log_reference(expected: Any, actual: Any) -> Any:
+    """``actual`` without the log-scale reference a relative LATE row gained after a capture.
+
+    Only an ``estimand == "late"`` row on the relative scale is projected, and only when its
+    captured lift holds ``log_mean`` and ``log_se`` as null. Both must follow from the row's
+    own Normal interval within the harness tolerance: ``log_mean = log1p(value)`` and
+    ``log_se = (log1p(ub) - log1p(lb)) / (2 z)``, ``z`` the upper ``alpha / 2`` quantile of
+    the lift's ``alpha``. Every other field is left to the caller's comparison.
+    """
+    if not isinstance(expected, Mapping) or not isinstance(actual, Mapping):
+        return actual
+    captured, lift = expected.get("lift"), actual.get("lift")
+    if (
+        actual.get("estimand") != "late"
+        or actual.get("value_scale") != "relative"
+        or not isinstance(captured, Mapping)
+        or not isinstance(lift, Mapping)
+        or captured.get("log_mean") is not None
+        or captured.get("log_se") is not None
+        or lift.get("log_mean") is None
+    ):
+        return actual
+    implied = dict(zip(("log_mean", "log_se"), _relative_late_reference(lift), strict=True))
+    for field, value in implied.items():
+        assert nested_close(value, lift[field]), (field, value, lift[field])
+    return {**actual, "lift": {**lift, "log_mean": None, "log_se": None}}
+
+
+def without_relative_late_p_value(expected: Any, actual: Any, rows: Iterable[Any]) -> Any:
+    """Saved ``actual`` metadata without the p-value relative LATE cells gained after a capture.
+
+    Only a ``late`` cell record on the relative scale is projected, and only when its captured
+    sampling evidence is null. The p-value must be the Normal tail, for the row's alternative,
+    of ``(log_mean - log1p(null_lift)) / log_se`` with both taken from the matching row's own
+    interval, as in ``without_relative_late_log_reference``; it is compared relative to its
+    size. Its hypothesis and method must be the cell's own. Records pair by position, and
+    every other field is left to the caller's comparison.
+    """
+    if not isinstance(expected, Mapping) or not isinstance(actual, Mapping):
+        return actual
+    old_records, records = expected.get("cells"), actual.get("cells")
+    if not isinstance(old_records, list) or not isinstance(records, list):
+        return actual
+    if len(old_records) != len(records):
+        return actual
+    from scipy.stats import norm
+
+    from increment.declarations import CellKey
+
+    rows_by_cell = {CellKey.from_row(row): row for row in rows}
+    projected = []
+    pairs = cast(
+        "list[tuple[Mapping[str, Any], Mapping[str, Any]]]",
+        list(zip(old_records, records, strict=True)),
+    )
+    for old, record in pairs:
+        cell, sampling, old_sampling = record["cell"], record.get("sampling"), old.get("sampling")
+        if (
+            cell.get("estimand") != "late"
+            or cell.get("value_scale") != "relative"
+            or not isinstance(sampling, Mapping)
+            or sampling.get("evidence") is None
+            or not isinstance(old_sampling, Mapping)
+            or old_sampling.get("evidence") is not None
+        ):
+            projected.append(record)
+            continue
+        evidence = sampling["evidence"]
+        key = CellKey.model_validate(cell)
+        row = rows_by_cell[key].model_dump(mode="json")
+        log_mean, log_se = _relative_late_reference(row["lift"])
+        statistic = (log_mean - math.log1p(row["null_lift"])) / log_se
+        implied = {
+            "greater": norm.sf(statistic),
+            "less": norm.cdf(statistic),
+            "two-sided": 2.0 * norm.sf(abs(statistic)),
+        }[row["alternative"]]
+        assert evidence["hypothesis"] == asdict(key.hypothesis()), evidence
+        assert (evidence["method"], evidence["reference"]) == (cell["method"], "normal"), evidence
+        assert math.isclose(evidence["p_value"], implied, rel_tol=TOLERANCE), (evidence, implied)
+        projected.append({**record, "sampling": {**sampling, "evidence": None}})
+    return {**actual, "cells": projected}

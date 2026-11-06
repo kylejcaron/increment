@@ -10,12 +10,14 @@ test, not a substitute for it.
 
 ``covariate_balance`` compares a CUPED covariate's arm means with a Welch t test;
 ``covariate_balance_crosses_boundary`` is its count-clock form for sequential looks.
+``multicovariate_balance`` compares a mixed CUPED fit's encoded covariate means
+with a Hotelling T² test.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from types import MappingProxyType
@@ -504,6 +506,79 @@ def covariate_balance(
         standard_error=standard_error,
         statistic=statistic,
         dof=dof,
+        p_value=p_value,
+        flagged=p_value < alpha,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MulticovariateBalance:
+    """Hotelling comparison of a mixed CUPED fit's encoded covariate means.
+
+    ``statistic`` is ``F = T²(ν - p + 1) / (p ν)`` on ``numerator_dof = p`` and
+    ``denominator_dof = ν - p + 1`` degrees of freedom, ``ν = n_c + n_t - 2``;
+    ``p_value`` is its upper tail and ``flagged`` whether that is below the nominal alpha.
+    """
+
+    statistic: float
+    numerator_dof: int
+    denominator_dof: int
+    p_value: float
+    flagged: bool
+
+
+def multicovariate_balance(
+    *,
+    mean_control: Sequence[float],
+    mean_treatment: Sequence[float],
+    n_control: int,
+    n_treatment: int,
+    scatter_control: Sequence[Sequence[float]],
+    scatter_treatment: Sequence[Sequence[float]],
+    alpha: float = COVARIATE_BALANCE_ALPHA,
+) -> MulticovariateBalance | None:
+    """Hotelling T² test that covariates fixed before assignment have equal arm means.
+
+    ``scatter_*`` are each arm's centered cross-product sums in the coordinates of
+    the means. With ``S = (scatter_control + scatter_treatment) / ν`` and ``d`` the
+    mean difference, ``T² = n_c n_t / (n_c + n_t) · dᵀ S⁻¹ d``, invariant to any
+    affine change of coordinates. The F reference assumes a common within-arm
+    covariance, so ``alpha`` is a nominal threshold. ``None`` without a scatter,
+    with an arm below 2 units, with ``ν < p``, or when the pooled scatter is
+    numerically singular.
+    """
+    import numpy as np
+    from scipy.linalg import solve_triangular
+    from scipy.stats import f as f_dist
+
+    if not scatter_control or not scatter_treatment or min(n_control, n_treatment) < 2:
+        return None
+    difference = np.asarray(mean_treatment, dtype=float) - np.asarray(mean_control, dtype=float)
+    p = difference.size
+    nu = n_control + n_treatment - 2
+    denominator_dof = nu - p + 1
+    if p == 0 or denominator_dof < 1:
+        return None
+    pooled = np.add(scatter_control, scatter_treatment, dtype=float) / nu
+    spread = np.sqrt(np.diag(pooled))
+    if not (np.isfinite(pooled).all() and np.isfinite(difference).all() and (spread > 0.0).all()):
+        return None
+    # Unit-diagonal scaling leaves T² unchanged; a squared pivot at the fit's rank
+    # threshold marks a numerically singular scatter.
+    try:
+        factor = np.linalg.cholesky(pooled / np.outer(spread, spread))
+    except np.linalg.LinAlgError:
+        return None
+    if np.min(np.diag(factor)) ** 2 <= p * np.finfo(float).eps:
+        return None
+    whitened = solve_triangular(factor, difference / spread, lower=True)
+    t_squared = n_control * n_treatment / (n_control + n_treatment) * float(whitened @ whitened)
+    statistic = t_squared * denominator_dof / (p * nu)
+    p_value = float(f_dist.sf(statistic, p, denominator_dof))
+    return MulticovariateBalance(
+        statistic=statistic,
+        numerator_dof=p,
+        denominator_dof=denominator_dof,
         p_value=p_value,
         flagged=p_value < alpha,
     )

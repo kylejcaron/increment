@@ -374,7 +374,7 @@ class SqlPanelSource:
         _reject_duplicate_units(nwf, unit)
         if design is not None:
             _validate_control(nwf, group, design.control_group)
-        nwf = _enforce_missing_policy(nwf, specs, shape="summary")
+        nwf = _enforce_missing_policy(nwf, specs, shape="summary", warn_by=(unit, group))
         _validate_conversion_binary(nwf, specs)
         missing_value_accounts = skip_missing_accounts(nwf, specs, group=group)
 

@@ -2223,7 +2223,7 @@ def test_analysis_from_unit_summary_encouragement_uptake():
 def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_keeps_diagnostic(
     estimands,
 ):
-    """Keep outcome-specific LATE diagnostics and requested design-wide compliance."""
+    """Each weak LATE cell carries its outcome cohort's first stage; compliance stays design-wide."""
     con = ibis.duckdb.connect()
     control_units = [f"c{i}" for i in range(1, 21)]
     treat_units = [f"t{i}" for i in range(1, 21)]
@@ -2365,8 +2365,8 @@ def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_ke
         by_metric[row.metric].add(row.estimand)
 
     # Scope completion retains each requested weak-LATE cell as an unavailable
-    # result, alongside the metric-specific and design-wide compliance diagnostics.
-    expected = {"errors": {"compliance", "late"}, "revenue": {"compliance", "late"}}
+    # result carrying its cohort's first stage; compliance stays design-wide.
+    expected = {"errors": {"late"}, "revenue": {"late"}}
     if "compliance" in estimands:
         expected["uptake"] = {"compliance"}
     assert dict(by_metric) == expected
@@ -2374,6 +2374,8 @@ def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_ke
         if row.estimand == "late":
             assert row.failure_code == "estimation.encouragement.late.weak_first_stage"
             assert row.lift is None
+            assert row.failure_context is not None
+            assert row.failure_context["first_stage_estimate"] == pytest.approx(1 / 20)
         if row.estimand == "compliance":
             assert row.lift is not None
             assert row.lift.value == pytest.approx(1 / 20)

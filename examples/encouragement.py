@@ -269,12 +269,12 @@ def _(encouragement_design, increment, np, simulate_encouragement):
 @app.cell
 def _(mo, weak_results):
     _estimands = sorted({r.estimand for r in weak_results if r.lift is not None})
-    _compliance = next(r for r in weak_results if r.estimand == "compliance")
+    _late = next(r for r in weak_results if r.estimand == "late")
+    _first_stage = _late.failure_context
 
     mo.md(f"""
-    Reported: **{", ".join(_estimands)}**. LATE is omitted.
-
-    > {_compliance.note}
+    Reported: **{", ".join(_estimands)}**. LATE is omitted (`{_late.failure_code}`):
+    the first-stage z={_first_stage["first_stage_z"]:.2f} < {_first_stage["min_first_stage_z"]:g}.
     """)
     return
 

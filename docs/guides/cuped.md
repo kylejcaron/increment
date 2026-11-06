@@ -221,7 +221,11 @@ the same rate, the zero-filled means differ. A join or logging step that lost
 more values in one arm breaks it too. A mean fill tolerates one arm losing more
 values, as long as which values went missing is unrelated to their size; a join
 that fails only for low-spending users in one arm breaks it. The imputation
-warning states the condition for the fill it applied, and the
+warning states the condition for the fill it applied and, for each arm, how
+many units have no value (`n_missing_by_arm` of `n_units_by_arm` in its
+context; a panel unit counts once however many days it has). The counts are
+descriptive: unequal counts alone do not bias a mean fill, so they raise no
+alarm. The
 [covariate-balance advisory](#when-cuped-misleads-a-covariate-that-differs-by-arm)
 tests the filled covariate.
 
@@ -898,9 +902,22 @@ standard errors, because $\theta\,\mathrm{SE}(\Delta X) = \rho\,\mathrm{SE}(\Del
 and the adjusted standard error is $\mathrm{SE}(\Delta Y)\sqrt{1-\rho^2}$. At
 $\rho = 0.9$, a shift with $s = 2$, which the check rarely flags, still leaves
 about 4 standard errors of bias. The check catches gross pipeline errors; it
-does not certify the covariate. Mixed-covariate cells
-(`Method.cuped_multicovariate`) and predeclared sequential adjustments are not
+does not certify the covariate. Predeclared sequential adjustments are not
 tested.
+
+A mixed-covariate cell (`Method.cuped_multicovariate`) tests all its encoded
+columns at once: numeric covariates, the indicators of categorical levels and
+the missing-value indicators. The statistic is Hotelling's $T^2$ on the two
+groups' mean differences, with the covariance pooled within those two groups
+only, and its F form is compared with $F(p, n_t + n_c - p - 1)$ for $p$
+encoded columns. A p-value below 0.001 gives the cell the same advisory. Its
+context reports `statistic_kind="hotelling"`, the `covariates` tested, the F
+`statistic` with `numerator_dof` and `denominator_dof`, and the `p_value`; it
+reports no adjustment shift. The F reference assumes both groups share one
+covariance, so the level is nominal. The statistic does not depend on the
+covariates' units, and as for one covariate, a cell whose statistic exceeds
+the floating-point range is not checked. Fitted evidence exported before this
+check carries no within-group covariance, so its cells are not tested.
 
 ## Mixed numeric and categorical covariates
 

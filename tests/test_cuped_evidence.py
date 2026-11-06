@@ -17,6 +17,7 @@ from increment.errors import CodedError, WireFormatError
 from increment.semantics.models import AnalysisPlan, CupedCovariate
 from increment.workflows import export_moments, health_check
 from tests.analysis_factory import view_readout
+from tests.warning_codes import allow_warning_codes
 
 pytestmark = pytest.mark.integration
 
@@ -337,6 +338,70 @@ def test_local_fitted_envelope_uses_aggregate_encoder_coordinates(fitted_evidenc
     assert norm <= scale <= 2 * norm
 
 
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
+def test_legacy_fitted_evidence_abstains(tmp_path):
+    method = Method.cuped_multicovariate(
+        name="mixed",
+        covariates=(
+            CupedCovariate(name="history_a", kind="continuous"),
+            CupedCovariate(name="segment", kind="categorical"),
+        ),
+    )
+    spec = MetricSpec(name="outcome", decision_method=method)
+    # A covariate shifted in one arm, so the retained scatter flags it.
+    records = [
+        {**row, "history_a": row["history_a"] + 3.0 * (row["arm"] == "treatment")}
+        for row in _records()
+    ]
+    analysis = from_frame(
+        pa.Table.from_pylist(records),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        experiment_id="compact",
+        metrics=[spec],
+        plan=AnalysisPlan(primary="outcome"),
+    )
+    try:
+        _, rows = _export_rows(analysis, tmp_path)
+    finally:
+        analysis[1].close()
+    legacy_rows = []
+    for row in rows:
+        if row.get("record_kind") == "cuped_evidence":
+            payload = json.loads(row["cuped_evidence"])
+            if payload["kind"] == "fitted_multicovariate":
+                del payload["evidence"]["fit_state"]["within_arm_scatter"]
+                row = {**row, "cuped_evidence": canonical_json_bytes(payload).decode()}
+        legacy_rows.append(row)
+    assert legacy_rows != rows
+    results = []
+    for replayed in (rows, legacy_rows):
+        experiment, reader = from_moments(
+            replayed, metrics=[spec], control="control", experiment_id="compact"
+        )
+        try:
+            results.append(view_readout(experiment, reader))
+        finally:
+            reader.close()
+    flagged = []
+    for result in results:
+        assert result.metadata is not None
+        flagged.append(
+            {
+                record.cell.method
+                for record in result.metadata.cells
+                if any(
+                    item.code == "estimation.cuped.covariate_imbalance"
+                    for item in record.advisories
+                )
+            }
+        )
+    assert flagged == [{"mixed"}, set()]
+    assert _dumps(results[1]) == _dumps(results[0])
+
+
 def test_local_fitted_export_preserves_arm_only_rank_refusal(tmp_path):
     from increment.estimation.cuped.multicovariate import fit_cuped_multicovariate
 
@@ -406,6 +471,7 @@ _FITTED_SEQUENCE_PATHS = (
     ("fit_state", "adjusted_means"),
     ("fit_state", "theta"),
     ("fit_state", "denominator_support"),
+    ("fit_state", "within_arm_scatter"),
     ("fit_state", "layout", "names"),
     ("fit_state", "layout", "kinds"),
     ("fit_state", "layout", "levels"),

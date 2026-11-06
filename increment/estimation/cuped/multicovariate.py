@@ -95,6 +95,7 @@ class _LinearCupedCalculator:
     _multiplicities: np.ndarray | None = None
     _scatter_factor: np.ndarray | None = None
     _scatter_exponents: np.ndarray | None = None
+    _x_scatter: tuple[np.ndarray, ...] = ()
 
     def _contrast_x(self, j: np.ndarray) -> np.ndarray:
         jsum = math.fsum(float(value) for value in j)
@@ -616,6 +617,7 @@ def _make_fit_state(
         is_ratio=len(outcomes) == 2,
         denominator_support=denominator_support,
         control=control,
+        within_arm_scatter=calculator._x_scatter,
     )
 
 
@@ -910,8 +912,13 @@ def _fit_covariate_slopes(
         for idx in indices
     )
     weights = np.empty(n, dtype=float)
+    scatter = []
     for idx, mean, count in zip(indices, means, counts, strict=True):
-        x[idx] -= mean
+        centered = x[idx] - mean
+        x[idx] = centered
+        scatter.append(
+            (centered.T if multiplicities is None else centered.T * multiplicities[idx]) @ centered
+        )
         weights[idx] = 1 / (count * (count - 1))
     sqrt_weights = np.sqrt(weights if multiplicities is None else weights * multiplicities)
     p = x.shape[1]
@@ -982,6 +989,7 @@ def _fit_covariate_slopes(
         gram_factor,
         tuple(slopes),
         anchor,
+        tuple(scatter),
     )
 
 
@@ -1054,9 +1062,18 @@ def _fit_calculator(
         )
         for outcome in centered_outcomes
     )
-    means, weights, sqrt_weights, q_covariate, r_scaled, scales, gram_factor, slopes, anchor = (
-        _fit_covariate_slopes(x, indices, centered_outcomes, local_means, layout, multiplicities)
-    )
+    (
+        means,
+        weights,
+        sqrt_weights,
+        q_covariate,
+        r_scaled,
+        scales,
+        gram_factor,
+        slopes,
+        anchor,
+        x_scatter,
+    ) = _fit_covariate_slopes(x, indices, centered_outcomes, local_means, layout, multiplicities)
     p = x.shape[1]
     arm_count = len(order)
     design = np.zeros((n, arm_count + p))
@@ -1225,6 +1242,7 @@ def _fit_calculator(
         multiplicities,
         scatter_factor[0] if scatter_factor is not None else None,
         scatter_factor[1] if scatter_factor is not None else None,
+        tuple(_readonly(matrix) for matrix in x_scatter),
     )
     return calculator, leverage
 

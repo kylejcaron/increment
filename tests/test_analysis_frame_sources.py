@@ -2266,16 +2266,15 @@ def test_from_unit_panel_asof_encouragement_weak_then_strong(
     for row in results:
         by_day[row.ds].add(row.estimand)
     first, second = sorted(by_day)[:2]
-    assert by_day[first] == {"itt", "compliance"}
+    assert by_day[first] == {"itt", "compliance", "late"}
     assert by_day[second] == {"itt", "compliance", "late"}
     compliance = [row for row in results if row.estimand == "compliance"]
-    assert {row.metric for row in compliance} == {"uptake", "revenue_uptake"}
-    # A weak first stage suppresses the late readout on the first day only:
-    # the revenue_uptake compliance row stands in for it there and nowhere else.
-    assert {(row.metric, row.ds) for row in compliance if row.metric == "revenue_uptake"} == {
-        ("revenue_uptake", first)
+    # Compliance stays design-level: a weak first stage adds no compliance row keyed
+    # to the outcome, and it suppresses the late readout on the first day only.
+    assert {row.metric for row in compliance} == {"uptake"}
+    late_pairs = {
+        (row.metric, row.ds) for row in results if row.estimand == "late" and row.lift is not None
     }
-    late_pairs = {(row.metric, row.ds) for row in results if row.estimand == "late"}
     assert late_pairs == {("revenue", day) for day in sorted(by_day)[1:]}
 
 

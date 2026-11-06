@@ -76,7 +76,11 @@ from increment.estimation.armstats import ArmStats
 from increment.estimation.conversion_route import fcr_route_tail
 from increment.estimation.cuped import BreakoutCell, BreakoutIdentity
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
-from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
+from increment.estimation.encouragement import (
+    ESTIMANDS,
+    estimate_encouragement,
+    suppressed_late_rows,
+)
 from increment.estimation.engine import (
     CELL_ESTIMATION_GUARD_CODES,
     UNBOUNDED_RETENTION_DAILY_REMEDY,
@@ -2723,10 +2727,10 @@ def _estimate_encouragement_or_reason(
     """Call ``estimate_encouragement`` for *estimands*, reporting why a
     slice's compliance/late row(s) came back missing.
 
-    A weak first stage omits a ``late`` row without raising (an
-    explanatory ``compliance`` row is still emitted); this helper only
-    catches the case where the whole slice lacks *design.control_group*
-    entirely. Every other ``ValueError`` propagates unchanged.
+    A weak or negative first stage returns each method's ``late`` cell as an
+    unavailable row carrying its failure. This helper only catches the case
+    where the whole slice lacks *design.control_group* entirely. Every other
+    ``ValueError`` propagates unchanged.
 
     Returns
     -------
@@ -2751,7 +2755,14 @@ def _estimate_encouragement_or_reason(
         if exc.code != "estimation.encouragement.control.missing":
             raise
         return [], {}, str(exc)
-    return list(computation.results), computation.advisories, None
+    suppressed = suppressed_late_rows(
+        computation,
+        methods=methods,
+        method_roles=method_roles,
+        alternative=alternative,
+        prior=prior,
+    )
+    return [*computation.results, *suppressed], computation.advisories, None
 
 
 # Cohesive encouragement row assembly; splitting this path is deferred.
@@ -2818,6 +2829,11 @@ def _encouragement_rows_for_slice(  # noqa: PLR0913
                     dimension_value=dim_value,
                     source=source,
                     low_reliability=below_floor,
+                    unavailable=(
+                        "estimation_failed"
+                        if estimate.failure_code is not None and estimate.lift is None
+                        else None
+                    ),
                     # The encouragement estimation pass produces no
                     # sequential checkpoint or family-correction metadata.
                     sequential_result=None,

@@ -291,8 +291,14 @@ _MISSING_DIFFERS_BY_ARM = _register_warning(
 _register_warning(
     "frame.validation.metric_covariate_missing_imputed",
     IncrementWarning,
-    lambda *, name, covariate, n_missing, filled: (
-        f"metric {name!r}: covariate column {covariate!r} has {n_missing} missing value(s), "
+    lambda *, name, covariate, n_missing, n_missing_by_arm, n_units_by_arm, filled: (
+        f"metric {name!r}: covariate column {covariate!r} has {n_missing} missing value(s) "
+        "(units without a value: "
+        + ", ".join(
+            f"{arm} {n_missing_by_arm[arm]} of {n_units_by_arm[arm]}"
+            for arm in sorted(n_units_by_arm)
+        )
+        + "), "
         + (
             "each counted as zero. This keeps the adjusted estimate unbiased when the values "
             "and which of them are missing are distributed alike in both arms (for example, "
@@ -933,6 +939,12 @@ def _group_counts(frame: nw.DataFrame[Any], group: str) -> dict[str, int]:
     return {str(row[group]): int(row["__n__"]) for row in counts.iter_rows(named=True)}
 
 
+def _unit_counts_by_arm(frame: nw.DataFrame[Any], *, unit: str, group: str) -> dict[str, int]:
+    """Distinct *unit* values per *group* value; a panel repeats a unit on each day."""
+    counts = frame.group_by(group).agg(nw.col(unit).n_unique().alias("__n__"))
+    return {str(row[group]): int(row["__n__"]) for row in counts.iter_rows(named=True)}
+
+
 def _reject_duplicate_units(frame: nw.DataFrame[Any], unit: str) -> None:
     """Duplicates inflate ``n`` and corrupt the variance, silently.
 
@@ -1568,7 +1580,7 @@ def _enforce_missing_policy(
     specs: Sequence[MetricSpec],
     *,
     shape: Literal["summary", "panel"],
-    emit_warnings: bool = True,
+    warn_by: tuple[str, str] | None = None,
     defer_scalar_failures: bool = False,
 ) -> nw.DataFrame[Any]:
     """Validate every spec's declared null/NaN policy against the data.
@@ -1585,13 +1597,29 @@ def _enforce_missing_policy(
     (unit, day) cells. ``"skip"`` is refused outright on the panel;
     densification zero-fills absent cells, so skipping a null row would
     silently mean zero anyway, not an observed-only population.
+
+    *warn_by* names *frame*'s (unit, group) columns. Given, each filled covariate
+    warns with the units lacking a value counted per arm, a panel unit missing it
+    on several days once; ``None`` validates without warning.
     """
     counts: dict[str, int] = {}
+    arm_units: dict[str, int] = {}
+    arm_missing: dict[str, dict[str, int]] = {}
 
     def miss(col: str) -> int:
         if col not in counts:
             counts[col] = _missing_count(frame, col)
         return counts[col]
+
+    def miss_by_arm(col: str, unit: str, group: str) -> tuple[dict[str, int], dict[str, int]]:
+        if not arm_units:
+            arm_units.update(_unit_counts_by_arm(frame, unit=unit, group=group))
+        if col not in arm_missing:
+            missing = _unit_counts_by_arm(
+                frame.filter(_is_missing(frame, col)), unit=unit, group=group
+            )
+            arm_missing[col] = {arm: missing.get(arm, 0) for arm in arm_units}
+        return arm_missing[col], arm_units
 
     fill_zero: set[str] = set()
     for spec in specs:
@@ -1638,12 +1666,15 @@ def _enforce_missing_policy(
                         metric=spec.name,
                         covariate=covariate.name,
                     )
-                if emit_warnings:
+                if warn_by is not None:
+                    n_missing_by_arm, n_units_by_arm = miss_by_arm(covariate.name, *warn_by)
                     _warn(
                         "frame.validation.metric_covariate_missing_imputed",
                         name=spec.name,
                         covariate=covariate.name,
                         n_missing=n_missing,
+                        n_missing_by_arm=n_missing_by_arm,
+                        n_units_by_arm=n_units_by_arm,
                         filled=(
                             "the pooled mean of the observed values"
                             if covariate.missing == "impute"

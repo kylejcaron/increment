@@ -33,6 +33,7 @@ from tests.parity_harness.expected_differences import (
     declared_directions,
     with_declared_favorable_sides,
     without_gained_arm_facts,
+    without_gained_fit_fields,
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "evidence_identity"
@@ -313,7 +314,11 @@ def _assert_export_moment_rows_close(expected_rows, actual_rows, declared):
         _compare_aggregate(expected_without_fit, actual_without_fit)
         if expected_fit is not None or actual_fit is not None:
             assert expected_fit is not None and actual_fit is not None
-            _compare_aggregate(json.loads(expected_fit), json.loads(actual_fit))
+            expected_payload = json.loads(expected_fit)
+            _compare_aggregate(
+                expected_payload,
+                without_gained_fit_fields(expected_payload, json.loads(actual_fit)),
+            )
 
 
 def _assert_export_moments_close(expected, actual, declared):
@@ -438,9 +443,12 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
         workflows.export_moments(*pairs["mixed_warehouse"], live_cube)
         # QR-derived fit floats can vary at machine epsilon across BLAS/LAPACK platforms.
         # Keep the BASE-captured numeric payload pinned within the replay tolerance.
+        frozen_fit_payload = _warehouse_fit_payload(
+            _FIXTURES / "exports" / "mixed_warehouse.parquet"
+        )
         _assert_replay_rows_close(
-            _warehouse_fit_payload(_FIXTURES / "exports" / "mixed_warehouse.parquet"),
-            _warehouse_fit_payload(live_cube),
+            frozen_fit_payload,
+            without_gained_fit_fields(frozen_fit_payload, _warehouse_fit_payload(live_cube)),
         )
         _assert_export_moments_close(
             _FIXTURES / "exports" / "mixed_warehouse.parquet",

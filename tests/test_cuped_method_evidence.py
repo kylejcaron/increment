@@ -379,15 +379,22 @@ def test_encouragement_scalar_families_share_one_weak_stage_diagnostic(panel):
         results = view_readout(experiment, resolver, estimands=("itt", "late"))
     itt = [row for row in results if isinstance(row, LiftEstimate) and row.estimand == "itt"]
     late = [row for row in results if isinstance(row, LiftEstimate) and row.estimand == "late"]
-    diagnostics = [
+    assert not [
         row for row in results if isinstance(row, LiftEstimate) and row.estimand == "compliance"
     ]
     assert {row.method for row in itt} == {"a", "b"}
     assert all(row.lift is not None for row in itt)
     assert {row.method for row in late} == {"a", "b"}
     assert all(row.lift is None for row in late)
-    assert len(diagnostics) == 1
-    assert diagnostics[0].metric == "outcome"
+    # No uptake in either arm: the one first stage both families share is exactly zero.
+    assert {row.failure_code for row in late} == {"estimation.encouragement.late.weak_first_stage"}
+    assert {
+        tuple(
+            (row.failure_context or {})[key]
+            for key in ("metric", "first_stage_estimate", "first_stage_se", "first_stage_z")
+        )
+        for row in late
+    } == {("outcome", 0.0, 0.0, 0.0)}
 
 
 def test_encouragement_refuses_multicovariate_sensitivity():

@@ -577,6 +577,7 @@ def fit_categorical_cells(cells: CategoricalCells, *, control) -> Multicovariate
         if components == 2
         else (),
         control=control,
+        within_arm_scatter=calculator._x_scatter,
     )
     cached = _cache_projections(calculator, outcomes, cells.arms)
     summary = _make_inference_summary(
