@@ -12,6 +12,7 @@ import hashlib
 import json
 import shutil
 import uuid
+import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
@@ -35,11 +36,13 @@ from ibis.expr import operations as ops
 
 from increment._warehouse_namespace import ensure_schema, schema_exists
 from increment.errors import (
+    PACKAGE_FRAMES,
     CapabilityError,
     CodedError,
     IncrementWarning,
     InvalidRequestError,
     RefusalSpec,
+    UnverifiedWarehouseWarning,
     WarningSpec,
     raiser,
     refusals,
@@ -236,6 +239,36 @@ _register_warning(
         "or pass store='none' to disable materialization."
     ),
 )
+
+_register_warning(
+    "query.session.unverified_warehouse",
+    UnverifiedWarehouseWarning,
+    lambda *, backend: (
+        f"{backend} is not one of the warehouses Increment verifies (DuckDB, PostgreSQL, "
+        "Snowflake, BigQuery). Ibis translates the analysis for it, but operations can "
+        "behave differently across backends; check results against a verified warehouse "
+        "or a dataframe before relying on them."
+    ),
+)
+
+VERIFIED_BACKENDS: frozenset[str] = frozenset({"duckdb", "postgres", "snowflake", "bigquery"})
+
+# Keyed by object identity: Ibis backends compare equal by database identity, so two
+# live in-memory DuckDB connections would share one entry in a WeakSet.
+_NOTIFIED_CONNECTIONS: dict[int, weakref.ref[SQLBackend]] = {}
+
+
+def _note_unverified_warehouse(con: SQLBackend) -> None:
+    """Warn once per connection object whose backend is outside the verified set."""
+    key = id(con)
+    if con.name in VERIFIED_BACKENDS or key in _NOTIFIED_CONNECTIONS:
+        return
+    warn(
+        _WARNINGS["query.session.unverified_warehouse"],
+        skip_file_prefixes=PACKAGE_FRAMES,
+        context={"backend": con.name},
+    )
+    _NOTIFIED_CONNECTIONS[key] = weakref.ref(con, lambda _ref: _NOTIFIED_CONNECTIONS.pop(key, None))
 
 
 def _validate_artifact_schema(table: ir.Table, role: str) -> None:
@@ -1913,6 +1946,7 @@ class WarehouseSession:
         *,
         source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     ) -> None:
+        _note_unverified_warehouse(con)
         self._con = con
         self._defs = defs
         self._fact_tables: dict[tuple[str, str, bool, bool], Table] = {}

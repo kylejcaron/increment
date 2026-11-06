@@ -19,7 +19,7 @@ from __future__ import annotations
 import ibis
 import pytest
 
-from increment import from_definitions
+from increment import UnverifiedWarehouseWarning, from_definitions
 from increment.semantics.loader import (
     resolve_execution_dialect,
     verify_sql_admission_matches_execution,
@@ -144,5 +144,6 @@ experiments:
     con = ibis.duckdb.connect()
     con.create_table("events", obj=ibis.memtable({"user_id": ["u1"], "ts": ["2025-01-01"]}))
     con.name = "totallymadeupdb"
-    experiment, resolver = from_definitions(definitions_path, con, experiment_name="exp")
+    with pytest.warns(UnverifiedWarehouseWarning):
+        experiment, resolver = from_definitions(definitions_path, con, experiment_name="exp")
     assert experiment is not None and resolver is not None

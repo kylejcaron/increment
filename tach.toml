@@ -1137,6 +1137,7 @@ expose = [
   "PACKAGE_FRAMES",
   "RETIRED_CODES",
   "UnsupportedRequestError",
+  "UnverifiedWarehouseWarning",
   "WarningSpec",
   "WireFormatError",
   "raiser",

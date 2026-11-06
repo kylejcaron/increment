@@ -18,7 +18,12 @@ import ibis
 import ibis.expr.types as ir
 import pytest
 
-from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
+from increment.errors import (
+    CapabilityError,
+    IncrementWarning,
+    InvalidRequestError,
+    UnverifiedWarehouseWarning,
+)
 from increment.query.artifact_contract import ARTIFACT_DOMAIN_ROOT, ArtifactContractError
 from increment.query.artifact_digest import manifest_sha256
 from increment.query.session import (
@@ -756,6 +761,33 @@ def test_temp_names_unique_across_sessions():
     a = WarehouseSession(con, defs=None)  # type: ignore[ty:invalid-argument-type]
     b = WarehouseSession(con, defs=None)  # type: ignore[ty:invalid-argument-type]
     assert a.temp_name("stats") != b.temp_name("stats")
+
+
+def test_unverified_connection_warns_once_naming_the_backend(monkeypatch):
+    con = ibis.duckdb.connect()
+    monkeypatch.setattr(con, "name", "clickhouse")
+
+    with pytest.warns(UnverifiedWarehouseWarning) as record:
+        WarehouseSession(con, defs=None)  # type: ignore[ty:invalid-argument-type]
+        WarehouseSession(con, defs=None)  # type: ignore[ty:invalid-argument-type]
+
+    (notice,) = [w.message for w in record if isinstance(w.message, UnverifiedWarehouseWarning)]
+    assert notice.code == "query.session.unverified_warehouse"
+    assert notice.context == {"backend": "clickhouse"}
+    assert "clickhouse" in str(notice)
+
+
+def test_equal_but_distinct_connections_each_get_a_notice(monkeypatch):
+    first, second = ibis.duckdb.connect(), ibis.duckdb.connect()
+    assert first == second  # in-memory DuckDB connections share one database identity
+    monkeypatch.setattr(first, "name", "clickhouse")
+    monkeypatch.setattr(second, "name", "clickhouse")
+
+    with pytest.warns(UnverifiedWarehouseWarning) as record:
+        WarehouseSession(first, defs=None)  # type: ignore[ty:invalid-argument-type]
+        WarehouseSession(second, defs=None)  # type: ignore[ty:invalid-argument-type]
+
+    assert [w.category for w in record].count(UnverifiedWarehouseWarning) == 2
 
 
 def test_materialize_table_creates_temp_and_tracks_name():

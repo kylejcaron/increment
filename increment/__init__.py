@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         from_unit_day_artifact,
     )
     from increment.declarations import Method
+    from increment.errors import UnverifiedWarehouseWarning
     from increment.evidence import EvidenceProvider
     from increment.frame import MetricSpec
     from increment.kernel.contracts import View
@@ -89,6 +90,7 @@ __all__ = [
     "MethodSpec",
     "__version__",
     "EvidenceProvider",
+    "UnverifiedWarehouseWarning",
 ]
 
 _LAZY_IMPORTS = {
@@ -128,6 +130,7 @@ _LAZY_IMPORTS = {
     "MultiplicitySpec": ("increment.semantics.models", "MultiplicitySpec"),
     "InferenceSpec": ("increment.semantics.models", "InferenceSpec"),
     "EvidenceProvider": ("increment.evidence", "EvidenceProvider"),
+    "UnverifiedWarehouseWarning": ("increment.errors", "UnverifiedWarehouseWarning"),
 }
 
 # Public submodules load only when imported; attribute access before that names the import.

@@ -285,6 +285,10 @@ class IncrementDeprecationWarning(IncrementWarning, DeprecationWarning):
     """A coded warning that also satisfies `filterwarnings(category=DeprecationWarning)`."""
 
 
+class UnverifiedWarehouseWarning(IncrementWarning):
+    """A one-time notice that a connection's warehouse is not one Increment verifies."""
+
+
 Renderer = Callable[..., str]
 
 
@@ -1138,6 +1142,7 @@ __all__ = [
     "RETIRED_CODES",
     "RefusalSpec",
     "UnsupportedRequestError",
+    "UnverifiedWarehouseWarning",
     "WireFormatError",
     "unwrap_coded",
 ]
