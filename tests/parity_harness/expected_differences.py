@@ -301,6 +301,40 @@ _PANEL_ASOF_WITHOUT_EXPOSURE_DATE = {
         ),
     },
 }
+# The failures a retired whole-run refusal listed, which the run now returns as unavailable rows.
+_ALL_CELLS_FAILED = (
+    (
+        "edge-zero-variance-arm",
+        {
+            "code": "estimation.engine.lift_guard",
+            "context": {
+                "display": (
+                    "Degenerate data: an arm has zero variance (e.g. all-identical outcomes or a "
+                    "saturated conversion arm), cannot estimate lift uncertainty for that arm"
+                ),
+                "group_id": "treatment",
+                "method": "unadjusted",
+                "metric": "revenue",
+                "reason": "zero_variance",
+            },
+            "estimand": "itt",
+            "group_id": "treatment",
+            "method": "unadjusted",
+            "metric": "revenue",
+        },
+    ),
+    (
+        "edge-near-zero-ratio-denominator",
+        {
+            "code": "estimation.variance.ratio_moments_nonpositive_denominator_mean",
+            "context": {"d_bar": 0.0, "group_id": "control", "method": "unadjusted", "metric": "r"},
+            "estimand": "itt",
+            "group_id": "treatment",
+            "method": "unadjusted",
+            "metric": "r",
+        },
+    ),
+)
 _DISPOSITION_RECORDS = tuple(
     ExpectedDifference(
         scenario=f"{view}-{base}",
@@ -340,6 +374,24 @@ _DISPOSITION_RECORDS = tuple(
         ),
         ("asof_lift", "conversion_route_breakout_segments", {"kind": "cells"}),
     )
+) + tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress="from_unit_summary",
+        field="disposition",
+        frozen={
+            "kind": "refusal",
+            "code": "readout.estimate_lift_every",
+            "stage": "run",
+            "context": {"failures": [failure]},
+        },
+        current={"kind": "unavailable", "stage": "run", "cells": [failure]},
+        reason=(
+            "The run's only cell failed; the retired `readout.estimate_lift_every` refusal gives "
+            "way to that cell's unavailable row, carrying the failure it listed."
+        ),
+    )
+    for scenario, failure in _ALL_CELLS_FAILED
 )
 
 

@@ -320,8 +320,8 @@ def _reintervalize_cuped_secondary(  # noqa: PLR0913
         if method.name in decision_names and method.variance_reduction != "cuped_multicovariate"
     ]
     if not ordinary_decision_methods:
-        return rows, []
-    ordinary_rows, refused, computation = _estimate_pass(
+        return rows
+    ordinary_rows, computation = _estimate_pass(
         src,
         metric,
         evidence,
@@ -337,7 +337,7 @@ def _reintervalize_cuped_secondary(  # noqa: PLR0913
     computations.append(computation)
     return [
         row for row in rows if row.method_role != "decision" or row.method in cuped_names
-    ] + ordinary_rows, refused
+    ] + ordinary_rows
 
 
 def _estimate_randomized_secondary_family(  # noqa: PLR0913
@@ -355,17 +355,16 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
     observed_by_metric: dict[str, set[str]],
     evidence_by_metric: dict[str, MetricEvidence],
     scope_active: bool = False,
-) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]]]:
+) -> list[LiftEstimate]:
     """Run nominal, selection, and FCR passes for randomized secondaries."""
     if not secondary_entries:
-        return [], []
+        return []
     nominal_by_metric: dict[str, list[LiftEstimate]] = {}
     nominal_computation_by_metric: dict[str, DecisionComputation[LiftEstimate]] = {}
     family_groups_by_metric: dict[str, set[str]] = {}
     skipped_by_metric: dict[str, dict[Any, Any]] = {}
     # Evidence read for the nominal pass (moment rows or a quantile unit
     # frame), reused by the FCR pass instead of re-querying the source.
-    refused_cells: list[tuple[str, str, str, str]] = []
     loaded = _load_family_rows(
         src,
         secondary_entries,
@@ -390,9 +389,9 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
         ):
             # Nothing to contrast; the final arm gate decides whether the
             # whole readout refuses.
-            nominal, refused, computation = [], [], _merge_decision_computations([])
+            nominal, computation = [], _merge_decision_computations([])
         else:
-            nominal, refused, computation = _estimate_pass(
+            nominal, computation = _estimate_pass(
                 src,
                 metric,
                 evidence_by_metric[metric.name],
@@ -414,7 +413,6 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
         family_groups_by_metric[metric.name] = _secondary_group_ids(
             nominal, computation, observed_groups, is_quantile
         ) | {key.group_id for key in skipped}
-        refused_cells.extend(refused)
 
     computations.extend(nominal_computation_by_metric.values())
     family, non_family = _partition_secondary_family(secondary_entries)
@@ -425,7 +423,7 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
             for row in nominal_by_metric[metric.name]
         )
     if not family:
-        return out, refused_cells
+        return out
 
     family_cells = _secondary_family_cells(family, nominal_by_metric, family_groups_by_metric)
     from increment.decision import DecisionComputation
@@ -463,7 +461,7 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
     }
     if fcr_alpha is None:
         out.extend(_secondary_rows_without_fcr(family, nominal_by_metric, outcome, family_record))
-        return out, refused_cells
+        return out
 
     selected_names = {key.metric for key in selected_cells}
     reestimated: dict[str, list[LiftEstimate]] = {}
@@ -503,7 +501,7 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
         if metric_rows.unit_frame is not None and any(
             method.variance_reduction == "cuped_multicovariate" for method in _metric_methods
         ):
-            reestimated[metric.name], refused = _reintervalize_cuped_secondary(
+            reestimated[metric.name] = _reintervalize_cuped_secondary(
                 src,
                 metric,
                 test,
@@ -521,7 +519,7 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
                 selected_cells,
             )
         else:
-            reestimated[metric.name], refused, computation = _estimate_pass(
+            reestimated[metric.name], computation = _estimate_pass(
                 src,
                 metric,
                 selected_evidence,
@@ -539,7 +537,6 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
         reestimated[metric.name] = [
             open_bound_from_two_sided_at_target(r) for r in reestimated[metric.name]
         ]
-        refused_cells.extend(refused)
     out.extend(
         _stamp_fcr_selected_rows(
             family,
@@ -550,7 +547,7 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
             family_record,
         )
     )
-    return out, refused_cells
+    return out
 
 
 def _estimate_randomized_non_secondary(  # noqa: PLR0913
@@ -571,7 +568,6 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
     scope_active: bool = False,
 ) -> tuple[
     list[LiftEstimate],
-    list[tuple[str, str, str, str]],
     list[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
     list[Any],
 ]:
@@ -581,7 +577,6 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
     can refuse a treatment-free readout without a second load.
     """
     out: list[LiftEstimate] = []
-    refused_cells: list[tuple[str, str, str, str]] = []
     secondary_entries: list[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]] = []
     for metric, config in zip(selected, configs, strict=True):
         test = plan.procedures[metric.name]
@@ -613,14 +608,14 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
             ):
                 continue
             if metric_methods == []:
-                rows_est, refused = [], []
+                rows_est = []
             else:
                 cell_alpha = (
                     resolve_cell_alpha(plan, test, n_arms=metric_rows.n_treatment_arms, view=None)
                     if test.role == "primary"
                     else test.alpha
                 )
-                rows_est, refused, computation = _estimate_pass(
+                rows_est, computation = _estimate_pass(
                     src,
                     metric,
                     metric_rows.unit_frame,
@@ -647,7 +642,7 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
             cell_alpha = resolve_cell_alpha(
                 plan, test, n_arms=metric_rows.n_treatment_arms, view=None
             )
-            rows_est, refused, computation = _estimate_pass(
+            rows_est, computation = _estimate_pass(
                 src,
                 metric,
                 metric_rows,
@@ -660,8 +655,7 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
                 advisory_seen=advisory_seen,
                 methods=metric_methods,
             )
-        refused_cells.extend(refused)
         if computation is not None:
             computations.append(computation)
         out.extend(rows_est)
-    return out, refused_cells, secondary_entries, computations
+    return out, secondary_entries, computations

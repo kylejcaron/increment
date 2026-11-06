@@ -199,40 +199,41 @@ def resolve_roster(
     population: Literal["assigned", "triggered"],
     observed_by_metric,
     *,
-    use_counts=True,
     base_roster: ResolvedRoster | None = None,
 ) -> ResolvedRoster:
     """Resolve arm identity and reject assignments outside a declared allocation."""
     is_clustered = getattr(src.context, "cluster", None) is not None
     if base_roster is None:
         counts = None
-        if use_counts:
-            count_grains = declared_evidence(src).count_grains
-            # Assignment counts first; cluster counts only for an assigned clustered readout;
-            # unit counts only when units are the assignment grain. Triggered counts never
-            # establish the assignment law.
-            for kind, applies in (
-                ("assignment", True),
-                ("cluster", is_clustered and population == "assigned"),
-                ("unit", not is_clustered),
-            ):
-                if counts is not None or not applies or kind not in count_grains:
-                    continue
-                try:
-                    counts = {
-                        arm: count
-                        for arm, count in load_counts(
-                            src,
-                            CountsRequest(
-                                kind=kind,
-                                population="assigned" if kind == "cluster" else population,
-                            ),
-                        ).counts.items()
-                        if arm is not None
-                    }
-                except CapabilityError:
-                    pass
-        integrity_counts = counts if population == "assigned" else None
+        count_grains = declared_evidence(src).count_grains
+        # Assignment counts first; cluster counts only for an assigned clustered readout;
+        # unit counts only when units are the assignment grain. Triggered counts never
+        # establish the assignment law.
+        for kind, applies in (
+            ("assignment", True),
+            ("cluster", is_clustered and population == "assigned"),
+            ("unit", not is_clustered),
+        ):
+            if counts is not None or not applies or kind not in count_grains:
+                continue
+            try:
+                counts = {
+                    arm: count
+                    for arm, count in load_counts(
+                        src,
+                        CountsRequest(
+                            kind=kind,
+                            population="assigned" if kind == "cluster" else population,
+                        ),
+                    ).counts.items()
+                    if arm is not None
+                }
+            except CapabilityError:
+                pass
+        # Observational counts name the exposure arms only; no assignment law is checked.
+        integrity_counts = (
+            counts if population == "assigned" and design.mechanism != "observational" else None
+        )
     else:
         counts = base_roster.counts
         integrity_counts = base_roster.integrity_counts
@@ -651,7 +652,6 @@ def scope_design_results(  # noqa: PLR0913, PLR0915
     observed_by_metric: Mapping[str, set[str]],
     compliance_summary: Any = None,
     estimands: Sequence[str] | None = None,
-    use_counts: bool = True,
     base_roster: ResolvedRoster | None = None,
     request_extra: Mapping[str, Any] | None = None,
     component_source: str | None = None,
@@ -664,7 +664,6 @@ def scope_design_results(  # noqa: PLR0913, PLR0915
         design,
         population,
         observed_by_metric,
-        use_counts=use_counts,
         base_roster=base_roster,
     )
     arms = roster.arms

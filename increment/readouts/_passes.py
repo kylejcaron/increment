@@ -16,7 +16,7 @@ from increment.estimation.inference import LiftGuardError
 from increment.estimation.quantile import quantile_lift_from_rows
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
-from increment.readouts._common import _raise, _runtime_method_roles, _warn
+from increment.readouts._common import _runtime_method_roles, _warn
 from increment.semantics.design import Encouragement
 from increment.sources import EvidenceSource
 
@@ -85,7 +85,7 @@ def _lift_cells_missing_control(  # noqa: PLR0913
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
     cluster: str | None,
     advisory_seen: set[tuple[object, ...]],
-) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
+) -> tuple[list[LiftEstimate], DecisionComputation[LiftEstimate]]:
     if family:
         from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
 
@@ -103,7 +103,7 @@ def _lift_cells_missing_control(  # noqa: PLR0913
                     "reason": "no_control_arm",
                 },
             )
-        return [], [], DecisionComputation(results=(), evidence={}, failures=failures)
+        return [], DecisionComputation(results=(), evidence={}, failures=failures)
     # Preserve estimate_lift's normal missing-control error and wording.
     captured: list[Any] = []
     try:
@@ -129,7 +129,7 @@ def _lift_cells_missing_control(  # noqa: PLR0913
         raise
     else:
         _emit_captured_lift_warnings(captured, advisory_seen)
-        return fallback, [], computation
+        return fallback, computation
 
 
 def _append_lift_cell_failure(  # noqa: PLR0913
@@ -209,7 +209,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
     family_member: bool = False,
     route_tail: float | None = None,
     evidence: MetricEvidence | None = None,
-) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
+) -> tuple[list[LiftEstimate], DecisionComputation[LiftEstimate]]:
     """Estimate randomized whole-window cells independently.
 
     ``estimate_lift`` accepts a whole metric slice and therefore aborts its
@@ -251,7 +251,6 @@ def _estimate_lift_cells(  # noqa: PLR0913
 
     effective_methods = methods if methods is not None else [Method(name="unadjusted")]
     results: list[LiftEstimate] = []
-    refused: list[tuple[str, str, str, str]] = []
     computations: list[DecisionComputation[LiftEstimate]] = []
     for group_id, treatment in by_group.items():
         if group_id == control_group:
@@ -294,7 +293,6 @@ def _estimate_lift_cells(  # noqa: PLR0913
                     if computation.failures and not cell_results:
                         for failure in computation.failures.values():
                             reason = failure.display()
-                            refused.append((metric.name, group_id, method.name, reason))
                             _warn(
                                 "readouts.run.cell_refused",
                                 metric_name=metric.name,
@@ -306,7 +304,6 @@ def _estimate_lift_cells(  # noqa: PLR0913
             except LiftGuardError as exc:
                 _emit_captured_lift_warnings(captured, advisory_seen)
                 reason = str(exc)
-                refused.append((metric.name, group_id, method.name, reason))
                 _append_lift_cell_failure(
                     results=results,
                     computations=computations,
@@ -340,7 +337,6 @@ def _estimate_lift_cells(  # noqa: PLR0913
                 if exc.code not in _CELL_ESTIMATION_GUARD_CODES:
                     raise
                 reason = str(exc)
-                refused.append((metric.name, group_id, method.name, reason))
                 _append_lift_cell_failure(
                     results=results,
                     computations=computations,
@@ -370,45 +366,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
             else:
                 _emit_captured_lift_warnings(captured, advisory_seen)
                 results.extend(cell_results)
-    return results, refused, _merge_decision_computations(computations)
-
-
-def _raise_if_all_lift_cells_refused(
-    refused: Sequence[tuple[str, str, str, str]],
-    computations: Sequence[DecisionComputation[Any]],
-) -> None:
-    """Refuse an all-failed run with the producer's keyed failure evidence."""
-    if not refused:
-        return
-    from increment.decision import ArmHypothesisKey
-
-    failures = [
-        {
-            "metric": key.metric,
-            "group_id": key.group_id,
-            "estimand": key.estimand,
-            "method": failure.context.get("method"),
-            "code": failure.code,
-            "context": dict(failure.context),
-        }
-        for computation in computations
-        for key, failure in computation.failures.items()
-        if isinstance(key, ArmHypothesisKey)
-    ]
-    failures.sort(
-        key=lambda failure: (
-            failure["metric"],
-            failure["group_id"],
-            failure["method"] or "",
-            failure["code"],
-        )
-    )
-    if failures and all(
-        isinstance(failure["code"], str) and failure["code"].startswith("estimation.cuped_linear.")
-        for failure in failures
-    ):
-        return
-    _raise("readout.estimate_lift_every", failures=failures)
+    return results, _merge_decision_computations(computations)
 
 
 def _estimate_pass(  # noqa: PLR0913
@@ -427,7 +385,7 @@ def _estimate_pass(  # noqa: PLR0913
     methods: list[Method],
     family_member: bool = False,
     route_tail: float | None = None,
-) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
+) -> tuple[list[LiftEstimate], DecisionComputation[LiftEstimate]]:
     method_roles = _runtime_method_roles(methods)
     available = []
     failed_rows: list[LiftEstimate] = []
@@ -461,7 +419,7 @@ def _estimate_pass(  # noqa: PLR0913
                     )
                 continue
         available.append(method)
-    rows, refused, computation = _estimate_available_pass(
+    rows, computation = _estimate_available_pass(
         src,
         metric,
         evidence,
@@ -479,13 +437,9 @@ def _estimate_pass(  # noqa: PLR0913
         route_tail=route_tail,
     )
     if not failures and not failed_rows:
-        return rows, refused, computation
+        return rows, computation
     failed_rows = [row.model_copy(update={"role": role}) for row in failed_rows]
-    return (
-        [*failed_rows, *rows],
-        refused,
-        _merge_decision_computations([*failures, computation]),
-    )
+    return [*failed_rows, *rows], _merge_decision_computations([*failures, computation])
 
 
 def _estimate_available_pass(  # noqa: PLR0913, PLR0915
@@ -505,7 +459,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
     method_roles: Mapping[str, Literal["decision", "sensitivity"]],
     family_member: bool = False,
     route_tail: float | None = None,
-) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
+) -> tuple[list[LiftEstimate], DecisionComputation[LiftEstimate]]:
     """Run one randomized estimation pass with role, alpha, and retry policy.
 
     ``family_member`` marks the metric's decision rows as members of the plan's BH family,
@@ -522,7 +476,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
         if not rows_summary:
             from increment.estimation.decision_types import DecisionComputation
 
-            return [], [], DecisionComputation(results=(), evidence={}, failures={})
+            return [], DecisionComputation(results=(), evidence={}, failures={})
 
         if "_winsor_raw_state" not in rows_summary[0]:
             winsor_refuse(
@@ -545,14 +499,10 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
             raw_outcomes={metric.name: rows_summary[0]["_winsor_raw_state"]},
             winsor_references=rows_summary[0]["_winsor_references"],
         )
-        return (
-            [row.model_copy(update={"role": role}) for row in computation.results],
-            [],
-            computation,
-        )
+        return [row.model_copy(update={"role": role}) for row in computation.results], computation
     if getattr(metric, "type", None) == "quantile":
         if methods == [] and retry != "family":
-            return [], [], _merge_decision_computations([])
+            return [], _merge_decision_computations([])
         computation = quantile_lift_from_rows(
             evidence.unit_frame if isinstance(evidence, MetricEvidence) else evidence,
             metric,
@@ -565,11 +515,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
             inference=inference,
             _return_computation=True,
         )
-        return (
-            [row.model_copy(update={"role": role}) for row in computation.results],
-            [],
-            computation,
-        )
+        return [row.model_copy(update={"role": role}) for row in computation.results], computation
 
     if isinstance(evidence, MetricEvidence) and any(
         method.variance_reduction == "cuped_multicovariate" for method in methods
@@ -590,10 +536,9 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
         ]
         computations = []
         rows_est = []
-        refused = []
         linear_cache: dict[str, tuple[Any | None, CodedError | None]] = {}
         if ordinary_methods:
-            ordinary, ordinary_refused, ordinary_computation = _estimate_lift_cells(
+            ordinary, ordinary_computation = _estimate_lift_cells(
                 metric=metric,
                 summary=list(evidence.rows),
                 control_group=design.control_group,
@@ -615,7 +560,6 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
                 evidence=evidence,
             )
             rows_est.extend(ordinary)
-            refused.extend(ordinary_refused)
             computations.append(ordinary_computation)
         from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
 
@@ -731,7 +675,6 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
                                 context=failure_context,
                             )
                         )
-                    refused.append((metric.name, group_id, method.name, str(exc)))
                 computations.append(
                     DecisionComputation[LiftEstimate](results=(), evidence={}, failures=failures)
                 )
@@ -744,7 +687,6 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
                     code = row.failure_code
                     if code is None or code.startswith("estimation.cuped_linear."):
                         continue
-                    refused.append((metric.name, row.group_id, method.name, code))
                     _warn(
                         "readouts.run.cell_refused",
                         metric_name=metric.name,
@@ -754,7 +696,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
                         stacklevel=3,
                     )
         computation = _merge_decision_computations(computations)
-        return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation
+        return [row.model_copy(update={"role": role}) for row in rows_est], computation
     if retry in ("whole", "whole_asof"):
         computations = [
             _estimate_lift(
@@ -781,13 +723,9 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
             for method in methods
         ]
         computation = _merge_decision_computations(computations)
-        return (
-            [row.model_copy(update={"role": role}) for row in computation.results],
-            [],
-            computation,
-        )
+        return [row.model_copy(update={"role": role}) for row in computation.results], computation
 
-    rows_est, refused, computation = _estimate_lift_cells(
+    rows_est, computation = _estimate_lift_cells(
         metric=metric,
         summary=rows_summary or [],
         control_group=design.control_group,
@@ -807,4 +745,4 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
         route_tail=route_tail,
         evidence=evidence if isinstance(evidence, MetricEvidence) else None,
     )
-    return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation
+    return [row.model_copy(update={"role": role}) for row in rows_est], computation

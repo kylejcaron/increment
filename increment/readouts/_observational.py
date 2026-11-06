@@ -29,10 +29,15 @@ from increment.readouts._common import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     from increment._analysis_config import ResolvedMetricConfig
-    from increment.decision import CompiledDecisionPlan, DecisionComputation
+    from increment.decision import (
+        ArmHypothesisKey,
+        CompiledDecisionPlan,
+        DecisionComputation,
+        DecisionFailure,
+    )
     from increment.estimation.inference import Prior
     from increment.semantics.design import Observational
     from increment.semantics.models import Metric
@@ -88,6 +93,7 @@ def _estimate_observational(
     call_prior: Prior | None,
     evidence: ObservationalEvidence,
     unit_frame_memo: Any,
+    arms: Sequence[str],
     computations: list[DecisionComputation[LiftEstimate]] | None = None,
 ) -> list[LiftEstimate]:
     """Estimate the observational phase after whole-window validation.
@@ -173,6 +179,7 @@ def _estimate_observational(
                 resolved_alternatives=resolved_alternatives,
                 evidence=evidence,
                 unit_frame_memo=unit_frame_memo,
+                arms=arms,
                 computations=computations,
             )
         )
@@ -189,7 +196,50 @@ def _estimate_observational(
     ]
 
 
-def _estimate_observational_secondary_family(
+def _unobserved_member_failures(
+    family: Sequence[Metric],
+    config_by_name: Mapping[str, ResolvedMetricConfig],
+    design: Observational,
+    plan: CompiledDecisionPlan,
+    *,
+    value_scale: Mapping[str, ValueScale] | None,
+    evidence: ObservationalEvidence,
+    arms: Sequence[str],
+    estimated: Collection[tuple[str, str]],
+) -> dict[ArmHypothesisKey, DecisionFailure]:
+    """Family failures for the roster *arms* in which a member metric has no value.
+
+    Such a cell has no estimate, but the scope lists it as a member, so it keeps its family
+    slot as a sure non-rejection (p = 1). *estimated* holds the (metric, arm) cells already in
+    the family."""
+    from increment.decision import ArmHypothesisKey, DecisionFailure
+    from increment.readouts._design_scope import observational_expected
+
+    failures: dict[ArmHypothesisKey, DecisionFailure] = {}
+    members = set(estimated)
+    for metric in family:
+        observed = set(evidence.arms(metric))
+        for cell in observational_expected(
+            [metric],
+            [config_by_name[metric.name]],
+            design,
+            plan,
+            value_scale=value_scale,
+            arms=[arm for arm in arms if arm not in observed],
+        ):
+            if cell.method_role != "decision" or (metric.name, cell.group_id) in members:
+                continue
+            members.add((metric.name, cell.group_id))
+            key = ArmHypothesisKey(metric.name, cell.group_id, cell.estimand)
+            failures[key] = DecisionFailure(
+                key,
+                "readout.cell.missing_metric_observations",
+                {"metric": metric.name, "group_id": cell.group_id, "unobserved_arm": cell.group_id},
+            )
+    return failures
+
+
+def _estimate_observational_secondary_family(  # noqa: PLR0913
     src: _BuiltinMomentSource,
     secondary: Sequence[Metric],
     config_by_name: Mapping[str, ResolvedMetricConfig],
@@ -202,14 +252,16 @@ def _estimate_observational_secondary_family(
     resolved_alternatives: Mapping[str, str] | None,
     evidence: ObservationalEvidence,
     unit_frame_memo: Any,
+    arms: Sequence[str],
     computations: list[DecisionComputation[LiftEstimate]] | None = None,
 ) -> list[LiftEstimate]:
     """Nominal pass at plan.alpha, BH-select at plan.q, FCR-reestimate the
     selected cells -- the observational sibling of
     _estimate_randomized_secondary_family, built on estimate_ate's own
-    DecisionComputation[LiftEstimate] return value. Membership follows the declared plan.
+    DecisionComputation[LiftEstimate] return value. Membership follows the declared plan,
+    over the roster's *arms*.
     """
-    from increment.decision import ArmHypothesisKey
+    from increment.decision import ArmHypothesisKey, DecisionComputation
 
     family = [m for m in secondary if getattr(plan.procedures[m.name].family, "member", False)]
     non_family = [
@@ -274,8 +326,26 @@ def _estimate_observational_secondary_family(
         for key in computation_by_metric[metric.name].failures:
             if isinstance(key, ArmHypothesisKey) and key not in seen_keys:
                 family_cells.append((key, None))
+    unobserved = _unobserved_member_failures(
+        family,
+        config_by_name,
+        design,
+        plan,
+        value_scale=value_scale,
+        evidence=evidence,
+        arms=arms,
+        estimated={(key.metric, key.group_id) for key, _ in family_cells},
+    )
+    family_cells.extend((key, None) for key in unobserved)
     family_computation = _merge_decision_computations(
-        [computation_by_metric[metric.name] for metric in family]
+        [
+            *(computation_by_metric[metric.name] for metric in family),
+            DecisionComputation[LiftEstimate](
+                results=(),
+                evidence={},
+                failures=dict(unobserved.items()),
+            ),
+        ]
     )
     outcome = select_family(
         decision_cells(family_cells),

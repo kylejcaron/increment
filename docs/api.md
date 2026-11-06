@@ -127,6 +127,34 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking numerical correction): a run whose every requested
+  cell fails returns each cell as an unavailable row that keeps its `metric`,
+  `group_id` and its own `failure_code`, as a run with one healthy cell already
+  did, instead of refusing with `readout.estimate_lift_every`. This covers an
+  undeclared plan and cells outside a declared secondary family. A declared
+  secondary family with a member cell refused for a one-unit arm or a zero
+  control denominator still refuses the run with `family.evidence.incomplete`,
+  as before. `readout.estimate_lift_every` (`UnsupportedRequestError`) is
+  retired, and `RETIRED_CODES` maps it to no replacement. A single ratio
+  metric whose control denominator total is zero, for example, returns one row
+  carrying `estimation.variance.ratio_moments_nonpositive_denominator_mean`.
+  Observational readouts take their arms from the source's unit or assignment
+  counts, as randomized readouts do. A run with every cell present now reports
+  `decision_scope_complete=True` with roster source `experiment_counts`,
+  instead of an incomplete `observed_union` roster. An arm the source counts
+  but whose metric has no outcome rows is a
+  `readout.cell.missing_metric_observations` cell listed in `missing_cells`.
+  In a declared secondary family that cell now counts toward the family size
+  as a non-rejection with p-value 1, as it does under a randomized design.
+  Before, an observational family was sized by its estimated cells alone, so
+  its threshold was too loose and it could report a discovery the full family
+  does not support. Assignment integrity stays unchecked under an
+  observational design. An observational readout gets a new snapshot ID once,
+  because its snapshot now digests those counts. Migration: where code caught
+  `readout.estimate_lift_every`, read each row's `failure_code` and
+  `failure_context`. Estimates and experiment identity are unchanged. In an
+  observational family with such a cell, the threshold, the discoveries and
+  the intervals of selected cells follow the larger family.
 - Release note (breaking): an ordinary unclustered lift row whose arm mean is
   close to zero relative to its standard error, or one of whose arms has
   constant outcomes, now keeps its additive Welch result instead of failing
@@ -291,9 +319,9 @@ values.
   `estimation.armstats.arm_stats.least_compute_metric`, or
   `estimation.variance.ratio_moments_least_two_units` for a ratio metric, with
   context `group_id`, `metric` and `n`, and the other arms are still
-  estimated. A one-unit control arm leaves no cell to estimate, so the run
-  refuses with `readout.estimate_lift_every`, whose `failures` carry the same
-  code for every cell. Both messages name the route "drop or merge arm".
+  estimated. Outside a declared secondary family, a one-unit control arm
+  leaves every treatment cell of its metric unavailable with that same code.
+  Both messages name the route "drop or merge arm".
   An unavailable sensitivity row carries its metric's declared margin and
   direction (`null_lift`, `null_abs`, `preferred_direction`), as its decision
   row does. Unclustered ratio rows now report `n_control` and `n_treat` as

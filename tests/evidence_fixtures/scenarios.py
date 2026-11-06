@@ -709,8 +709,8 @@ def scenario_roster(*, include_temporal: bool = True) -> tuple[ScenarioIngress, 
 
 
 def observe_scenario_disposition(scenario_id: str, ingress: str) -> Mapping[str, Any]:
-    """Check a refusal or absence against its exact frozen public contract, migrated by the
-    pair's recorded differences."""
+    """Check a refusal, an absence or a run of only unavailable cells against its exact frozen
+    public contract, migrated by the pair's recorded differences."""
     from increment import workflows
     from increment.errors import CodedError
     from tests.parity_harness.expected_differences import with_expected_difference
@@ -748,12 +748,13 @@ def observe_scenario_disposition(scenario_id: str, ingress: str) -> Mapping[str,
             bound = None
             stage = "construct"
             actual = None
+            results = ()
             try:
                 bound = case.build[ingress]()
                 stage = "run"
                 if case.sequential:
                     workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
-                _read(bound, ingress, case)
+                results = _read(bound, ingress, case)
             except CodedError as error:
                 actual = {
                     "kind": "refusal",
@@ -765,7 +766,23 @@ def observe_scenario_disposition(scenario_id: str, ingress: str) -> Mapping[str,
                 if bound is not None:
                     _close_parity_binding(bound)
             if actual is None:
-                raise AssertionError(f"{scenario_id}/{ingress}: required refusal returned")
+                if not results or any(row.failure_code is None for row in results):
+                    raise AssertionError(f"{scenario_id}/{ingress}: required refusal returned")
+                actual = {
+                    "kind": "unavailable",
+                    "stage": "run",
+                    "cells": [
+                        {
+                            "code": row.failure_code,
+                            "context": _plain(row.failure_context),
+                            "estimand": row.estimand,
+                            "group_id": row.group_id,
+                            "method": row.method,
+                            "metric": row.metric,
+                        }
+                        for row in results
+                    ],
+                }
     if actual != expected:
         raise AssertionError(
             f"{scenario_id}/{ingress}: frozen disposition {expected!r} != observed {actual!r}"
