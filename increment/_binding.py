@@ -4,7 +4,7 @@ import reprlib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self
 
 from increment._canonical import declaration_value
 from increment._execute import execute_views, operation_parameters, selected_binding
@@ -503,6 +503,17 @@ class ExperimentReader:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    def __reduce__(self) -> NoReturn:
+        """Refuse to pickle: a reader holds the frame or connection it reads."""
+        from increment.kernel.contracts import _refuse
+
+        _refuse("kernel.run.reader_unportable", experiment_id=self._experiment.experiment_id)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> NoReturn:
+        """Refuse to copy: a reader holds the frame or connection it reads."""
+        del memo
+        self.__reduce__()
 
     def __repr__(self) -> str:
         """Name the experiment, how the reader reads and whether it is closed; never reads."""

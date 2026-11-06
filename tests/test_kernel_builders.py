@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import pickle
 import shutil
 import subprocess
 import sys
@@ -524,6 +526,38 @@ def test_closed_reader_refuses_every_read(tmp_path):
                 read(closed_experiment, closed_reader)
             assert closed.value.code == "kernel.run.reader_closed"
             assert dict(closed.value.context) == {"experiment_id": closed_experiment.experiment_id}
+
+
+@pytest.mark.parametrize(
+    "reads", ["frame", pytest.param("warehouse", marks=pytest.mark.integration)]
+)
+def test_reader_refuses_pickle_and_deepcopy(request, reads):
+    if reads == "frame":
+        experiment, reader = from_frame(
+            _frame(),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics={"value": "mean"},
+        )
+    else:
+        experiment, reader = from_definitions(
+            request.getfixturevalue("seeded_defs"),
+            request.getfixturevalue("seeded_con"),
+            experiment_name="new_onboarding_v2",
+        )
+    with reader:
+        for portable in (pickle.dumps, copy.deepcopy):
+            with pytest.raises(CodedError) as refused:
+                portable(reader)
+            assert refused.value.code == "kernel.run.reader_unportable"
+            assert dict(refused.value.context) == {"experiment_id": experiment.experiment_id}
+    restored = pickle.loads(pickle.dumps(refused.value))
+    assert (restored.code, dict(restored.context)) == (
+        refused.value.code,
+        dict(refused.value.context),
+    )
 
 
 def test_reads_refuse_anything_but_a_reader():

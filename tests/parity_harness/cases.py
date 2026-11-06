@@ -7539,10 +7539,14 @@ def _exploratory_metrics_case() -> ParityCase:
         for name, reader in _EXPLORATORY_READS.items():
             with pytest.raises(CodedError) as caught:
                 reader(bound, ["purchase_rate"])
-            # A contrast source refuses every non-whole-window view before its options.
+            # A contrast source refuses every non-whole-window view before its options, and
+            # a breakout view on this experiment, which declares no breakout, refuses before
+            # its options too.
             expected_code = (
                 "facade.analysis.contrast_unavailable"
                 if switchback and name != "run"
+                else "evidence.breakout_unavailable"
+                if name == "run_breakout"
                 else _EXPLORATORY_SOURCE_LIMITED
             )
             assert caught.value.code == expected_code

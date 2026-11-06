@@ -176,6 +176,91 @@ _RECORDS = (
         ),
     ),
 )
+# A breakout view on an experiment that declares no breakout, or a triggered view no source
+# can read, refuses in the check `runnable()` and `run` share, before any read; the frozen
+# refusals were raised while the view ran.
+_RECORDS += tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress="from_moments",
+        field="refusal context",
+        key="context",
+        frozen={
+            "constructor": "MomentsSource",
+            "offered": [],
+            "requested": requested,
+            "route": "use a source with the requested breakout dimensions",
+        },
+        current={
+            "constructor": "from_moments",
+            "offered": [],
+            "requested": requested,
+            "route": "declare breakouts=[...] on from_frame, or on the experiment in the definitions",
+        },
+        reason=(
+            "The refusal names the public builder and how to declare a breakout, where the "
+            "frozen refusal named the source class; both name the breakout the view requests, "
+            "a registered segment family's dimension or none."
+        ),
+    )
+    for scenario, requested in (
+        ("artifact-breakout-exposure-coverage", []),
+        ("audit-binary-breakout-ancillary-uptake", []),
+        ("audit-encouragement-multi-metric-breakout", []),
+        ("audit-retention-breakout-cohorts", []),
+        ("breakout_boolean_store_dimension", []),
+        ("breakout_store_dimension", []),
+        ("dashboard-breakout-reads", []),
+        ("sequential_automatic_breakout_continuous_bonferroni", ["store"]),
+        ("sequential_automatic_breakout_discrete_bh", ["store"]),
+        ("sequential_boolean_segments_automatic_asymptotic_mean", ["store"]),
+        ("sequential_boolean_segments_automatic_exact_bernoulli", ["store"]),
+        ("sequential_boolean_segments_registered_asymptotic_mean", ["store"]),
+        ("sequential_boolean_segments_registered_exact_bernoulli", ["store"]),
+        ("sequential_registered_breakout_continuous_bonferroni", ["store"]),
+        ("sequential_registered_breakout_discrete_bh", ["store"]),
+    )
+) + tuple(
+    ExpectedDifference(
+        scenario="triggered_encouragement_compliance_asof",
+        ingress=ingress,
+        field="refusal context",
+        key="context",
+        frozen={
+            "experiment": "<unknown>",
+            "method": "run_asof_lift",
+            "route": route,
+            "supported_sources": supported,
+            "trigger": None,
+        },
+        current={
+            "experiment": "frame",
+            "method": "run_asof_lift",
+            "route": route,
+            "supported_sources": ["from_definitions", "from_unit_day_artifact"],
+            "trigger": None,
+        },
+        reason=(
+            "The refusal names the experiment and the builders the whole-window triggered "
+            "refusal lists; the frozen refusal named no experiment and, on the moments route, "
+            "also listed from_moments."
+        ),
+    )
+    for ingress, route, supported in (
+        ("from_moments", "moments", ["from_definitions", "from_unit_day_artifact", "from_moments"]),
+        (
+            "from_unit_panel",
+            "moments",
+            ["from_definitions", "from_unit_day_artifact", "from_moments"],
+        ),
+        (
+            "from_unit_summary",
+            "moments",
+            ["from_definitions", "from_unit_day_artifact", "from_moments"],
+        ),
+        ("from_switchback_panel", "switchback", ["from_definitions", "from_unit_day_artifact"]),
+    )
+)
 # Typed consumer inputs are frozen separately from the outcomes above.
 _CONSUMER_INPUT_RECORDS = (
     ExpectedDifference(

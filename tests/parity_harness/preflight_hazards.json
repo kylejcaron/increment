@@ -390,9 +390,12 @@
     {
       "cell": "retention-breakout-sequential-utc-error-from_moments",
       "ingress": "from_moments",
-      "code": "sequential.route.unsupported",
+      "code": "evidence.breakout_unavailable",
       "context": [
-        "reason"
+        "constructor",
+        "offered",
+        "requested",
+        "route"
       ],
       "stage": "construction"
     },

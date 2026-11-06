@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from pydantic import TypeAdapter
@@ -109,6 +110,106 @@ def require_breakout_sources(experiment: Any, scope: Any) -> None:
     )
 
 
+# The public builder that constructs each declared source kind.
+_BUILDERS = MappingProxyType(
+    {
+        "unit_summary": "from_frame",
+        "unit_panel": "from_frame",
+        "switchback": "from_switchback_frame",
+        "definitions": "from_definitions",
+        "artifact": "from_unit_day_artifact",
+        "moments": "from_moments",
+    }
+)
+
+
+def _declared_capabilities(experiment: Any) -> tuple[EvidenceCapabilities, ...] | None:
+    """Every source reference's recorded capabilities, or None while any is unknown."""
+    capabilities = tuple(reference.capabilities for reference in experiment.source_refs)
+    if not capabilities or any(declared is None for declared in capabilities):
+        return None
+    return cast("tuple[EvidenceCapabilities, ...]", capabilities)
+
+
+def _refuse_trigger(experiment: Any, scope: Any, operation: str) -> None:
+    """Refuse a triggered view that no source can read.
+
+    Without a recorded trigger every view refuses. A recorded trigger keeps day-axis
+    and breakout views, a registered replay (which answers a missing triggered state
+    as unavailable rows) and a native or artifact whole-window run; a fixed-horizon
+    whole-window run over moments or a panel still refuses.
+    """
+    if scope.population != "triggered":
+        return
+    recorded = experiment.analysis_context
+    if recorded.get("family") == "contrast":
+        # A switchback value view refuses as contrast-unavailable instead.
+        if operation in _VALUE_OPERATIONS:
+            return
+        route = "switchback"
+    else:
+        capabilities = _declared_capabilities(experiment)
+        if (
+            capabilities is None
+            or "trigger_name" not in recorded
+            or any("triggered" in declared.populations for declared in capabilities)
+        ):
+            return
+        from increment.readouts._evidence import (
+            ARTIFACT_ROUTE,
+            NATIVE_ROUTE,
+            declared_day_axis_route,
+        )
+
+        route = declared_day_axis_route(capabilities[0])
+        inference = recorded.get("plan", {}).get("inference") or {}
+        if recorded["trigger_name"] is not None and (
+            operation != "run"
+            or inference.get("registration") is not None
+            or route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
+        ):
+            return
+    from increment._day_axis import _TRIGGER_UNSUPPORTED
+
+    refuse(
+        _TRIGGER_UNSUPPORTED,
+        method=operation,
+        experiment=experiment.experiment_id,
+        trigger=None,
+        route=route,
+        supported_sources=("from_definitions", "from_unit_day_artifact"),
+    )
+
+
+def _requested_breakouts(experiment: Any, scope: Any) -> tuple[str, ...]:
+    """The breakout properties a view reads: its selection, else its registered segment family's."""
+    if scope.segment:
+        return tuple(identity.property for identity in scope.segment)
+    inference = experiment.analysis_context.get("plan", {}).get("inference") or {}
+    roster = (inference.get("registration") or {}).get("roster", ())
+    return tuple(sorted({key for cell in roster for key, _ in cell.get("segment", ())}))
+
+
+def _refuse_undeclared_breakouts(experiment: Any, scope: Any) -> None:
+    """Refuse a breakout view on an experiment whose declarations name no breakout."""
+    from increment.kernel.contracts import View, declared_breakouts
+
+    capabilities = _declared_capabilities(experiment)
+    if capabilities is None or declared_breakouts(
+        experiment.source_refs, View(view="breakout"), experiment.analysis_context
+    ):
+        return
+    from increment._evidence_refusals import BREAKOUT_UNAVAILABLE
+
+    refuse(
+        BREAKOUT_UNAVAILABLE,
+        constructor=_BUILDERS.get(capabilities[0].kind, capabilities[0].kind),
+        requested=_requested_breakouts(experiment, scope),
+        offered=(),
+        route="declare breakouts=[...] on from_frame, or on the experiment in the definitions",
+    )
+
+
 def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     """Validate supported execution coordinates without acquiring evidence."""
     from increment.kernel.contracts import declared_breakouts
@@ -129,39 +230,23 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
                 context={"experiment_id": experiment.experiment_id, "field": "scope"},
             ),
         )
-    if experiment.analysis_context.get("family") == "contrast":
-        from increment._day_axis import _TRIGGER_UNSUPPORTED
-        from increment._evidence_refusals import CONTRAST_UNAVAILABLE
-
-        try:
-            if scope.population == "triggered" and operation not in _VALUE_OPERATIONS:
-                refuse(
-                    _TRIGGER_UNSUPPORTED,
-                    method=operation,
-                    experiment="<unknown>",
-                    trigger=None,
-                    route="switchback",
-                    supported_sources=("from_definitions", "from_unit_day_artifact"),
-                )
-            if operation != "run":
-                refuse(CONTRAST_UNAVAILABLE, method=operation)
-        except CodedError as refusal:
-            return (refusal,)
+    contrast = experiment.analysis_context.get("family") == "contrast"
     try:
+        _refuse_trigger(experiment, scope, operation)
+        if contrast and operation != "run":
+            from increment._evidence_refusals import CONTRAST_UNAVAILABLE
+
+            refuse(CONTRAST_UNAVAILABLE, method=operation)
         declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
         require_breakout_sources(experiment, scope)
-    except CodedError as refusal:
-        return (refusal,)
-    if scope.view == "switchback" and experiment.analysis_context.get("family") != "contrast":
-        try:
+        if scope.view == "breakout":
+            _refuse_undeclared_breakouts(experiment, scope)
+        if scope.view == "switchback" and not contrast:
             refuse(
                 _SCOPE_FAMILY_MISMATCH,
                 experiment_id=experiment.experiment_id,
                 view=scope.view,
             )
-        except CodedError as refusal:
-            return (refusal,)
-    try:
         operation_options(experiment, scope)
     except CodedError as refusal:
         return (refusal,)

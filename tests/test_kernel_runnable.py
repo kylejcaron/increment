@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pandas as pd
+import pytest
+
+from increment import run
+from increment.builders import from_frame, from_moments
+from increment.errors import CodedError
 from increment.evidence import EvidenceCapabilities
 from increment.kernel.contracts import Registration, View
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import resolve, runnable
+from increment.workflows import export_moments
 
 
 def test_resolve_refuses_scope_grain_missing_from_declared_capabilities():
@@ -239,3 +246,78 @@ def test_multicovariate_runnability_uses_alternative_evidence_routes():
         "evidence.unit_rows_unavailable",
     )
     assert alternative == ()
+
+
+def _frame_analysis(shape):
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(40)],
+            "arm": ["control", "treatment"] * 20,
+            "value": [float(i % 7) for i in range(40)],
+            "day": "2025-01-01",
+        }
+    )
+    if shape == "summary":
+        return from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics={"value": "mean"},
+        )
+    return from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+        observation_end="2025-01-02",
+    )
+
+
+def _moments_recording_a_trigger(tmp_path):
+    """Fixed-horizon moments rows that record a trigger but carry no triggered population."""
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "moments.parquet"
+    summary, summary_reader = _frame_analysis("summary")
+    export_moments(summary, summary_reader, path)
+    rows = [{**row, "trigger_name": "fired"} for row in pq.read_table(path).to_pylist()]
+    return from_moments(rows, metrics={"value": "mean"}, control="control")
+
+
+def _preflight_and_run(experiment, reader):
+    refusals = runnable(experiment, "value")["randomized.unadjusted"].static_refusals
+    with pytest.raises(CodedError) as executed:
+        run(experiment, reader)
+    return [(refusal.code, dict(refusal.context)) for refusal in refusals], executed.value
+
+
+@pytest.mark.parametrize("source", ["summary", "panel", "moments_with_trigger"])
+def test_triggered_view_without_triggered_evidence_refuses_identically(source, tmp_path):
+    experiment, reader = (
+        _moments_recording_a_trigger(tmp_path)
+        if source == "moments_with_trigger"
+        else _frame_analysis(source)
+    )
+    preflight, executed = _preflight_and_run(
+        experiment.with_views(View.overall(population="triggered")), reader
+    )
+
+    assert executed.code == "facade.analysis.trigger_unsupported"
+    assert preflight == [(executed.code, dict(executed.context))]
+    assert executed.context["experiment"] == experiment.experiment_id
+
+
+@pytest.mark.parametrize("shape", ["summary", "panel"])
+def test_breakout_view_without_declared_breakouts_refuses_identically(shape):
+    experiment, reader = _frame_analysis(shape)
+    preflight, executed = _preflight_and_run(experiment.with_views(View(view="breakout")), reader)
+
+    assert executed.code == "evidence.breakout_unavailable"
+    assert preflight == [(executed.code, dict(executed.context))]
+    assert executed.context["requested"] == ()
+    assert executed.context["constructor"] == "from_frame"

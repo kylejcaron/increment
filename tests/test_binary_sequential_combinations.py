@@ -42,8 +42,8 @@ CASES = [
     ),
     ("multiplicity_family", "always_valid", {"secondaries": 2}, "supported", None),
     ("multiplicity_family", "asymptotic_mean", {"secondaries": 2}, "supported", None),
-    ("breakout", "always_valid", {"breakout": "segment"}, "sequential.route.unsupported", None),
-    ("breakout", "asymptotic_mean", {"breakout": "segment"}, "sequential.route.unsupported", None),
+    ("breakout", "always_valid", {"breakout": "segment"}, "evidence.breakout_unavailable", None),
+    ("breakout", "asymptotic_mean", {"breakout": "segment"}, "evidence.breakout_unavailable", None),
     (
         "predeclared_segments",
         "always_valid",

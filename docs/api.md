@@ -207,6 +207,31 @@ values.
   secondary families use Benjamini-Hochberg at a fixed horizon and e-BH under
   sequential inference, including `AsymptoticMean`, not Bonferroni. Estimates,
   refusals and experiment identity are unchanged.
+- Release note (breaking bug fix): `runnable()` now reports two refusals that
+  `run()` raised only at execution, with the same code and context. A
+  triggered view, such as `View.overall(population="triggered")`, on a source
+  that declares no trigger, such as a `from_frame` source, and a fixed-horizon
+  triggered whole-window view on `from_moments` rows that record a trigger but
+  no triggered population refuse with
+  `facade.analysis.trigger_unsupported` for every estimator, where `runnable()`
+  reported `evidence.operation_unavailable` for the arm estimators; its
+  `experiment` now names the experiment, `"frame"` for `from_frame`, instead of
+  `'<unknown>'`. A breakout view on an experiment that declares no breakouts
+  refuses with `evidence.breakout_unavailable`, whose `constructor` is the
+  builder, such as `from_frame`; `requested` holds the view's selected
+  properties, or a registered sequential segment family's dimension, empty
+  when it has neither, `offered` is empty and the `route` names
+  `breakouts=[...]`. On such an experiment this code now precedes the
+  `sequential.route.unsupported` refusal a sequential breakout view could
+  raise while it ran. For a view without a selection `runnable()`
+  reported nothing, and `from_frame(shape="panel")`, `from_definitions` and
+  `from_unit_day_artifact` returned an empty breakout readout. Branch on
+  `facade.analysis.trigger_unsupported` for a triggered view, and declare
+  `breakouts=[...]` or drop the breakout view. Pickling or deep-copying a
+  reader refuses with `kernel.run.reader_unportable` (context `experiment_id`)
+  instead of raising a `TypeError`: a reader holds the frame or connection it
+  reads, so pickle the experiment and build a new reader where it runs.
+  Estimates and experiment identity are unchanged.
 - Release note (breaking numerical correction): a breakout or daily row
   flagged `low_reliability` (fewer than 50 units in its control or treatment
   arm) now keeps its verdict. `stat_sig()`, `rejection_side()`, the readout
