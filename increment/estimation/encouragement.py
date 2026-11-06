@@ -48,6 +48,7 @@ from increment.errors import (
     refuse,
 )
 from increment.estimation._adjust.overlap import IdentificationError
+from increment.estimation._fixed_horizon import ALPHA_EFF_TOO, DOF_POSITIVE_REFERENCE
 from increment.estimation._tails import student_t_isf, two_sided_critical_value
 from increment.estimation.adjust import MIXTURE_PRIORS_ARE
 from increment.estimation.armstats import (
@@ -153,8 +154,8 @@ _REFUSALS = refusals(
         "estimation.encouragement.prior_inference_are": "prior and inference are mutually exclusive: a conjugate posterior has no always-valid guarantee under repeated looks",
         "estimation.encouragement.one_sided_encouragement": "one_sided encouragement declared but control arm has uptake (uptake_total={control_uptake_total:g}, metric '{metric}') -- control must be structurally unable to take up; this is an instrumentation bug, refusing to estimate",
         "estimation.encouragement.cluster.arm_needs_two": "metric '{metric}': cluster contrast ('{cluster}') needs at least 2 clusters in EACH arm to estimate a between-cluster variance for that arm, got {k_t} treatment cluster(s) and {k_c} control cluster(s) -- a single cluster carries no between-cluster variance contribution to estimate its own arm's component from.",
-        "estimation.encouragement.alpha_eff_too": "alpha_eff is too small: alpha_eff / 2 underflows floating-point precision",
-        "estimation.encouragement.dof_positive_reference": "dof must be positive for a t reference, got {dof}",
+        "estimation.encouragement.alpha_eff_too": ALPHA_EFF_TOO,
+        "estimation.encouragement.dof_positive_reference": DOF_POSITIVE_REFERENCE,
         "estimation.encouragement.prior_cluster_robust": "prior and a cluster-robust t reference are mutually exclusive: a Normal prior has no coherent conjugate update against a t sampling distribution",
         "estimation.encouragement.sequential_inference_cluster": "sequential inference and a cluster-robust t reference are mutually exclusive -- the sequential boundaries assume independent units at unit grain",
     },
@@ -165,8 +166,6 @@ _REFUSALS["readout.encouragement.retention"] = READOUT_ENCOURAGEMENT_RETENTION
 _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
 
 ARM_NEEDS_TWO = _REFUSALS["estimation.encouragement.cluster.arm_needs_two"]
-ALPHA_EFF_TOO = _REFUSALS["estimation.encouragement.alpha_eff_too"]
-DOF_POSITIVE_REFERENCE = _REFUSALS["estimation.encouragement.dof_positive_reference"]
 SEQUENTIAL_INFERENCE_CLUSTER = _REFUSALS["estimation.encouragement.sequential_inference_cluster"]
 _REFUSALS[RETENTION_UNDER_ENCOURAGEMENT.code] = RETENTION_UNDER_ENCOURAGEMENT
 _REFUSALS.update(

@@ -13,10 +13,8 @@ from scipy.stats import t as _t_dist
 from increment.errors import InvalidRequestError
 from increment.estimation.armstats import ScoreStats
 from increment.estimation.inference import (
-    FixedHorizonReference,
     LiftGuardError,
     Normal,
-    SamplingReference,
     _resolve_fixed_horizon,
     infer_ate,
     infer_lift,
@@ -1624,8 +1622,7 @@ class TestResolveFixedHorizon:
             arm_ns=None,
             prior=None,
         )
-        assert isinstance(ref, FixedHorizonReference)
-        assert ref.reference == SamplingReference(kind="normal", df=None)
+        assert (ref.reference.kind, ref.reference.df) == ("normal", None)
         assert ref.crit == pytest.approx(float(_norm_dist.isf(0.025)))
         assert ref.alpha_eff == pytest.approx(0.05)
 

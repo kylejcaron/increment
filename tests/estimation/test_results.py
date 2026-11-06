@@ -1636,7 +1636,7 @@ def _registered_sequential_row():
 def test_winsor_confidence_set_cannot_carry_sequential_evidence():
     """A real winsor row must not bypass the sequential-authority invariant."""
     from increment.errors import CapabilityError
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from tests.estimation.test_winsor_bootstrap import _state
 
     raw = _state(stream=23)

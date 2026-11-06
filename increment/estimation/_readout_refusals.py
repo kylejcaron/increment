@@ -174,6 +174,29 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
 
 READOUT_REFUSALS: Mapping[str, RefusalSpec] = MappingProxyType(_REFUSALS)
 
+# Raised by result rows and checked by readout collections: one spec object for both.
+LEGACY_SAMPLING_UNRECONSTRUCTIBLE = refusals(
+    InvalidRequestError,
+    {
+        "readout.legacy.sampling_unreconstructible": "Legacy sampling cannot be reconstructed for {cell_key}: {missing_fields}; {remedy}",
+    },
+)["readout.legacy.sampling_unreconstructible"]
+
+
+def refuse_legacy_sampling(row: Any) -> NoReturn:
+    """Refuse a prior-bound row whose prior-free sampling reference was not persisted."""
+    refuse(
+        LEGACY_SAMPLING_UNRECONSTRUCTIBLE,
+        cell_key={
+            "metric": row.metric,
+            "group_id": row.group_id,
+            "method": row.method,
+            "estimand": row.estimand,
+        },
+        missing_fields=("prior_free_reference_kind", "prior_free_reference_df"),
+        remedy="recompute_from_source",
+    )
+
 
 def refuse_observational_quantile(
     metric: object, *, authenticate: Callable[[Any], Any] | None = None

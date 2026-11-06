@@ -285,7 +285,7 @@ def _atom_arms(rng, zeros_c, positives_c, zeros_t, positives_t):
 )
 def test_atom_and_sign_refusals_carry_stable_codes(method, builder, quantile, code):
     from increment.errors import CodedError
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
 
     arms = builder(np.random.default_rng(7))
     with pytest.raises(CodedError) as error:
@@ -296,7 +296,7 @@ def test_atom_and_sign_refusals_carry_stable_codes(method, builder, quantile, co
 def test_cutoff_straddle_is_the_refusal_boundary():
     """One more positive moves the lower type-7 neighbour out of the atom."""
     from increment.errors import CodedError
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
 
     rng = np.random.default_rng(11)
     # N = 200, q = 0.5: rank 99.5, neighbours 99 and 100. Exactly 100 zeros straddle.
@@ -339,11 +339,8 @@ def test_near_boundary_atom_replicates_fail_and_the_interval_is_unavailable():
 def test_analytic_interval_uses_the_existing_influence_studentization():
     from scipy.special import ndtr, ndtri
 
-    from increment.estimation.winsor import (
-        estimate_winsor_lift,
-        influence_reference,
-        influence_studentization,
-    )
+    from increment.estimation.results import estimate_winsor_lift
+    from increment.estimation.winsor import influence_reference, influence_studentization
     from increment.winsor import influence_p_value
 
     arms = _three_arm_zero_inflated()
@@ -388,7 +385,7 @@ def test_analytic_interval_uses_the_existing_influence_studentization():
 
 
 def test_analytic_reintervalization_preserves_smallest_positive_alpha():
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
 
     row = estimate_winsor_lift(
         _raw(_three_arm_zero_inflated(), 0.9, method="influence-normal-v1"), "C", "T"
@@ -441,7 +438,8 @@ def test_size_route_resolves_from_pool_size_and_quantile(sizes, quantile, expect
 def test_routed_row_records_the_executed_method_and_rejects_the_other_reference():
     from increment.errors import CodedError
     from increment.estimation._winsor_bootstrap import full_procedure_bootstrap_reference
-    from increment.estimation.winsor import estimate_winsor_lift, influence_reference
+    from increment.estimation.results import estimate_winsor_lift
+    from increment.estimation.winsor import influence_reference
     from increment.results import LiftEstimate
     from increment.winsor import InfluenceReference, WinsorInferenceSpec
 
@@ -482,7 +480,7 @@ def test_routed_row_records_the_executed_method_and_rejects_the_other_reference(
 
 @pytest.mark.slow
 def test_analytic_and_bootstrap_agree_at_a_large_pool_on_a_fixed_seed():
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import BootstrapReference, InfluenceReference
 
     rng = np.random.default_rng(777)
@@ -617,7 +615,7 @@ def test_overflowing_bootstrap_draws_in_a_zero_bearing_arm_are_failed_roots():
 
 def test_analytic_reference_is_scale_invariant_down_to_subnormal_outcomes():
     """The persisted density is dimensionless, so tiny outcomes stay representable."""
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
 
     rng = np.random.default_rng(6)
     base = {"C": rng.lognormal(0, 1, 6000), "T": rng.lognormal(0.05, 1, 6000)}
@@ -646,7 +644,8 @@ def test_analytic_reference_is_scale_invariant_down_to_subnormal_outcomes():
 def test_restored_references_apply_the_same_arm_refusals_as_fresh_construction(method):
     """Editing a saved pool into an inadmissible one refuses on load with the fresh code."""
     from increment.errors import CodedError
-    from increment.estimation.winsor import build_winsor_references, estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
+    from increment.estimation.winsor import build_winsor_references
     from increment.winsor import BootstrapReference, InfluenceReference, WinsorRawState
 
     arms = {"C": (1.0, 2.0, 3.0), "T": (1.0, 2.0, 4.0), "O": (0.1, 0.2, 0.3)}

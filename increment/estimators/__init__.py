@@ -9,7 +9,7 @@ _EXPORTS = {
     "impute": ("increment.impute", None),
     "moments_from_summaries": ("increment.summaries", "moments_from_summaries"),
     "MetricTrends": ("increment.reporting", "MetricTrends"),
-    "Normal": ("increment.estimation.inference", "Normal"),
+    "Normal": ("increment.estimation.priors", "Normal"),
     "MixturePrior": ("increment.estimation.priors", "MixturePrior"),
     "StudentTPrior": ("increment.estimation.priors", "StudentTPrior"),
     "AsymptoticMean": ("increment.estimation.sequential", "AsymptoticMean"),
@@ -212,8 +212,8 @@ if TYPE_CHECKING:
     from increment.estimation.family import (
         select_exploratory_family as select_exploratory_family,
     )
-    from increment.estimation.inference import Normal as Normal
     from increment.estimation.priors import MixturePrior as MixturePrior
+    from increment.estimation.priors import Normal as Normal
     from increment.estimation.priors import StudentTPrior as StudentTPrior
     from increment.estimation.sequential import (
         AlwaysValid as AlwaysValid,

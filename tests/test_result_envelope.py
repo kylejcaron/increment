@@ -1644,7 +1644,7 @@ def test_unsupported_sampling_constructions_refuse_without_losing_reason(seeded_
     from increment.errors import CodedError
     from increment.estimation.armstats import ArmStats
     from increment.estimation.inference import infer_independent_mean
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.result_envelope import ResultCell, compare_margin, relevel
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState
 
@@ -1834,7 +1834,7 @@ def test_dated_unavailable_winsor_projection_matches_arrow_readout_scope():
 def test_envelope_consumers_render_unavailable_winsor_with_valid_sibling(seeded_con, seeded_defs):
     from increment import Method
     from increment.breakout.estimates import LiftEstimates
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
     from increment.tables import readout_table
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState

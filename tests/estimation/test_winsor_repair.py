@@ -119,7 +119,7 @@ def test_empirical_studentization_matches_rational_centered_scores(contrast):
 
 
 def test_linear_quantile_and_point_near_overflow():
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
 
     raw = _raw((1, 2), (1, 2), quantile=0.5).model_dump()
     raw["support"]["lower"] = -1e308
@@ -443,8 +443,7 @@ def test_raw_warehouse_transform_roundtrip():
 
 
 def test_confidence_set_wire_unbounded_undefined_and_no_posterior():
-    from increment.estimation.results import LiftEstimate
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import LiftEstimate, estimate_winsor_lift
     from increment.tables import estimates_to_readout
 
     estimate = estimate_winsor_lift(_raw(quantile=0.99), "C", "T")
@@ -488,8 +487,8 @@ def test_rank_wire_rejects_competing_joint_relative_evidence(field):
         JointContrastReference,
         LiftEstimate,
         RelativeConfidenceSet,
+        estimate_winsor_lift,
     )
-    from increment.estimation.winsor import estimate_winsor_lift
 
     estimate = estimate_winsor_lift(_raw(quantile=0.99), "C", "T")
     payload = estimate.model_dump(mode="json")
@@ -1148,7 +1147,7 @@ def test_raw_missingness_precedes_support_validation(missing, expected):
 
 def test_finite_reference_roundtrip_and_allocation_mutation():
     from increment.errors import CodedError
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.results import LiftEstimate, WinsorConfidenceSet
     from increment.winsor import WinsorRawState
 
@@ -1169,7 +1168,7 @@ def test_finite_reference_roundtrip_and_allocation_mutation():
 
 
 def test_evaluation_reducer_keeps_nonfinite_rank_outcomes_in_denominator():
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.simulate.runner import _lift_outcome, _reduce_key
     from increment.winsor import WinsorRawState
 
@@ -1196,7 +1195,7 @@ def test_evaluation_reducer_keeps_nonfinite_rank_outcomes_in_denominator():
 
 @pytest.mark.parametrize("alpha", [math.ulp(0.0), 1e-300, 0.05])
 def test_exact_error_budget_and_wire_at_extreme_alpha(alpha):
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.results import LiftEstimate
     from increment.tables import estimates_to_readout
     from increment.winsor import WinsorRawState

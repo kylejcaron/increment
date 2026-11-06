@@ -81,7 +81,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
     "IndependentMeanReference": ("increment.estimation.armstats", "IndependentMeanReference"),
     "infer_independent_mean": ("increment.estimation.inference", "infer_independent_mean"),
     "SummaryStats": ("increment.estimation.armstats", "SummaryStats"),
-    "Normal": ("increment.estimation.inference", "Normal"),
+    "Normal": ("increment.estimation.priors", "Normal"),
     "LiftPosterior": ("increment.estimation.inference", "LiftPosterior"),
     "normal_posterior": ("increment.estimation.inference", "normal_posterior"),
     "Estimate": ("increment.estimation.results", "Estimate"),
@@ -183,7 +183,6 @@ if TYPE_CHECKING:
     from increment.estimation.engine import Method, estimate_lift
     from increment.estimation.inference import (
         LiftPosterior,
-        Normal,
         infer_independent_mean,
         infer_lift,
         normal_posterior,
@@ -195,6 +194,7 @@ if TYPE_CHECKING:
         hksj_pooled_mean,
         marginalized_segment_intervals,
     )
+    from increment.estimation.priors import Normal
     from increment.estimation.results import Estimate, LiftEstimate
     from increment.estimation.rollout import SegmentRollout, segment_rollout
     from increment.estimation.sequential import AsymptoticMean

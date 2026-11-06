@@ -21,7 +21,7 @@ from increment.estimation.diagnostics import (
     covariate_balance_boundary,
     covariate_balance_crosses_boundary,
 )
-from increment.estimation.results import LiftEstimate
+from increment.estimation.results import LiftEstimate, display_estimate
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,
     AlwaysValid,
@@ -94,58 +94,6 @@ def evaluate_checkpoint(
         alpha_ceiling=resolved_ceiling,
         point_reason=_point(checkpoint)[1],
     )
-
-
-def _outward(value: Fraction | None, *, lower: bool) -> float | None:
-    if value is None:
-        return None
-    exact = value - 1
-    try:
-        result = float(exact)
-    except OverflowError:
-        return None
-    if not math.isfinite(result):
-        return None
-    if (lower and Fraction(result) > exact) or (not lower and Fraction(result) < exact):
-        result = math.nextafter(result, -math.inf if lower else math.inf)
-    return result if math.isfinite(result) else None
-
-
-def display_estimate(result: SequentialResult):
-    from increment.estimation.results import Estimate
-
-    point, _ = _point(result.checkpoint)
-    bounds = result.bounds
-    lift = None
-    if point is not None:
-        # The full exact geometry remains in sequential_result even when a
-        # finite display cannot represent an endpoint or the alpha allocation.
-        lower, upper = _outward(bounds.lower, lower=True), _outward(bounds.upper, lower=False)
-        alpha = float(bounds.alpha)
-        open_side = (
-            "upper"
-            if upper is None and lower is not None
-            else "lower"
-            if lower is None and upper is not None
-            else None
-        )
-        if (
-            not (
-                isinstance(result, AsymptoticSequentialResult)
-                and len(result.bounds.components) != 1
-            )
-            and not bounds.empty
-            and (lower is not None or upper is not None)
-            and 0 < alpha < 1
-            and 0 < 1 - alpha < 1
-            and alpha / 2 > 0
-        ):
-            lift = Estimate(
-                value=point, lb=lower, ub=upper, open_side=open_side, alpha=alpha, level=1 - alpha
-            )
-        else:
-            lift = Estimate(value=point)
-    return lift
 
 
 def _note(result: SequentialResult) -> str | None:
@@ -441,35 +389,6 @@ def estimate_sequential(
         sequential_snapshot=snapshot,
         advisories=_sequential_advisories(evaluated_results),
     )
-
-
-def require_selected_widening(
-    result: SequentialResult,
-    *,
-    discovery: bool | None,
-    family_threshold: float | None,
-    family_nominal_alpha: float | None,
-) -> None:
-    """A row's decision alpha may pass its registered cell allocation only as a
-    selected family member, and never past ``min(family_threshold, family_nominal_alpha)``."""
-    if result.decision_alpha == result.checkpoint.cell.alpha:
-        return
-    if not discovery:
-        sequential_refuse(
-            "source.invalid",
-            "only a selected row may carry a decision alpha past its registered cell allocation",
-        )
-    if family_threshold is None or family_nominal_alpha is None:
-        sequential_refuse(
-            "source.invalid",
-            "a widened decision alpha requires a recorded family threshold and nominal alpha",
-        )
-    permitted = min(family_threshold, family_nominal_alpha)
-    if float(result.decision_alpha) > permitted * (1 + 1e-9):
-        sequential_refuse(
-            "source.invalid",
-            "reinverted decision alpha exceeds the family's realized threshold or nominal alpha",
-        )
 
 
 def reinvert_selected(
