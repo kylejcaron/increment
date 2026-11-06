@@ -137,13 +137,14 @@ values.
   record it. Warehouse CUPED tests for NaN with Ibis's own `isnan()`, which
   also translates for ClickHouse, Trino and Databricks, where CUPED stopped with
   Ibis's `OperationNotDefinedError`. When Ibis cannot translate a query for the
-  connection's SQL dialect, `run` and the `from_definitions` SQL previews
-  `increment.query.panel_sql` and `summary_sql` raise `CapabilityError` code
-  `query.backend.operation_unsupported` (context `backend`, `detail`, `route`)
-  instead of Ibis's own exception. It is raised where that query is reached,
-  so earlier queries in the run may already have read data; no result is
-  produced. The same failure while Increment writes a TEMP table raises this
-  code too, instead of a materialization warning or
+  SQL dialect in use, `run`, the `from_definitions` SQL previews
+  `increment.query.panel_sql` and `summary_sql`, and the SQL-computed summary
+  preview `increment.query.source.SqlPanelSource.summary_sql` raise
+  `CapabilityError` code `query.backend.operation_unsupported` (context
+  `backend`, `detail`, `route`) instead of Ibis's own exception. It is raised
+  where that query is reached, so earlier queries in the run may already have
+  read data; no result is produced. The same failure while Increment writes a
+  TEMP table raises this code too, instead of a materialization warning or
   `query.session.snapshot.materialization_failed`, whose message now says what
   needs TEMP tables and names `from_frame` as the route. Publishing and opening
   unit-day artifacts still refuse on unverified backends with

@@ -27,6 +27,7 @@ import ibis
 import ibis.expr.types as ir
 
 from increment._analysis_config import effective_methods
+from increment._compile_gaps import translating_compile_gaps
 from increment._frame_validation import _reject_windowed_specs
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics, synthesise_metric
 from increment.errors import CapabilityError, CodedError, refuse
@@ -524,7 +525,8 @@ class SqlPanelSource:
                 tuple(self.breakouts),
                 route="request summary SQL without breakouts",
             )
-        return self._summary_sql_for_metrics(breakouts=list(breakouts))
+        with translating_compile_gaps():
+            return self._summary_sql_for_metrics(breakouts=list(breakouts))
 
     def close(self) -> None:
         pass

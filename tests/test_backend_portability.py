@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import ibis
 import pytest
 
 from increment import from_definitions
 from increment.errors import CodedError
 from increment.query import panel_sql, summary_sql
+from increment.query.source import SqlPanelSource
+from increment.semantics.design import Randomized
+from tests.source_conformance import unit_summary_table
 
 pytestmark = pytest.mark.integration
 
@@ -43,3 +47,25 @@ def test_analysis_sql_translates_or_refuses_per_ibis_dialect(con, example_defini
                     preview(experiment, resolver)
                 assert refused.value.code == "query.backend.operation_unsupported"
                 assert refused.value.context["backend"] == dialect
+
+
+def test_sql_computed_summary_preview_refuses_a_dialect_without_a_translation(monkeypatch):
+    """A summary computed in SQL from a loaded dataframe compiles in Ibis's
+    default backend; SQLite has no translation of the NaN test it uses."""
+    con = ibis.sqlite.connect()
+    monkeypatch.setattr(ibis.options, "default_backend", con)
+    try:
+        source = SqlPanelSource.from_frame_via_memtable(
+            con,
+            unit_summary_table(),
+            unit="user_id",
+            group="variant",
+            metrics={"revenue": "mean"},
+            design=Randomized(control_group="control"),
+        )
+        with pytest.raises(CodedError) as refused:
+            source.summary_sql()
+    finally:
+        con.disconnect()
+    assert refused.value.code == "query.backend.operation_unsupported"
+    assert refused.value.context["backend"] == "sqlite"
