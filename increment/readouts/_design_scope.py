@@ -74,11 +74,17 @@ class ResolvedRoster:
     known_arms: frozenset[str]
 
     @property
+    def counted_arms(self) -> tuple[str, ...]:
+        """Roster arms the enrollment counts hold above zero; none without counts."""
+        counts = self.counts or {}
+        return tuple(arm for arm in self.arms if counts.get(arm, 0) > 0)
+
+    @property
     def enrolled_arms(self) -> tuple[str, ...]:
         """Roster arms with an enrolled unit: counted above zero, or observed by a metric."""
-        counts = self.counts or {}
+        counted = set(self.counted_arms)
         observed = set().union(*self.arms_by_metric.values())
-        return tuple(arm for arm in self.arms if counts.get(arm, 0) > 0 or arm in observed)
+        return tuple(arm for arm in self.arms if arm in counted or arm in observed)
 
     @property
     def unenrolled_arms(self) -> frozenset[str]:

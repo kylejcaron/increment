@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         DecisionFailure,
     )
     from increment.estimation.inference import Prior
+    from increment.readouts._design_scope import ResolvedRoster
     from increment.semantics.design import Observational
     from increment.semantics.models import Metric
 
@@ -147,7 +148,7 @@ def _estimate_observational(
     call_prior: Prior | None,
     evidence: ObservationalEvidence,
     unit_frame_memo: Any,
-    arms: Sequence[str],
+    roster: ResolvedRoster,
     computations: list[DecisionComputation[LiftEstimate]] | None = None,
 ) -> list[LiftEstimate]:
     """Estimate the observational phase after whole-window validation.
@@ -205,9 +206,10 @@ def _estimate_observational(
     for metric in non_secondary:
         config = config_by_name[metric.name]
         procedure = plan.procedures[metric.name]
-        # A primary's alpha is split across every arm its scope lists, observed or not.
+        # A primary's alpha is split across every arm the counts enroll, observed or not, and
+        # every arm its own moments read.
         n_arms = (
-            len(set(arms or evidence.arms(metric)) - {control})
+            len((set(roster.counted_arms) | evidence.arms(metric)) - {control})
             if procedure.role == "primary"
             else 0
         )
@@ -245,7 +247,7 @@ def _estimate_observational(
                 resolved_alternatives=resolved_alternatives,
                 evidence=evidence,
                 unit_frame_memo=unit_frame_memo,
-                arms=arms,
+                arms=roster.enrolled_arms,
                 computations=produced,
             )
         )

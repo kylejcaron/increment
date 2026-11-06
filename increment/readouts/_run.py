@@ -662,7 +662,7 @@ def _run_prepared(  # noqa: PLR0915
             call_prior=call_prior,
             evidence=evidence,
             unit_frame_memo=unit_frame_memo,
-            arms=roster.enrolled_arms,
+            roster=roster,
             computations=obs_computations,
         )
         return scope_design_results(
@@ -705,7 +705,7 @@ def _run_prepared(  # noqa: PLR0915
     computations: list[Any] = []
     # Every arm the counts enroll a unit in is a cell of each metric's family and alpha split,
     # whether or not that metric's moments read observed it.
-    counted_arms = () if preflight_roster is None else preflight_roster.enrolled_arms
+    counted_arms = () if preflight_roster is None else preflight_roster.counted_arms
     out, secondary_entries, computations = _estimate_randomized_non_secondary(
         src,
         selected,

@@ -163,17 +163,20 @@ values.
   family was sized by the arms each metric's read held, so `family_size` fell
   short of the scope's members, the threshold was too loose, and the family
   could report a discovery the full family does not support. A primary's alpha
-  is likewise split across every counted treatment arm under randomized and
-  observational designs, 0.025 for each of two arms at `alpha=0.05`, where an
-  arm missing from the read left 0.05. An arm the design's allocation declares
-  but no unit enrolled in is a count exclusion, as in a breakout family: its
-  cells stay unavailable rows with `readout.cell.missing_arm`, but leave the
-  run's family scope (`FamilyScope.members`) and carry no `family_id`, so
-  `family_size` equals the member count. A source without enrollment counts is
-  unchanged. Migration: none needed; in an affected family the threshold, the
-  discoveries and the intervals of selected cells follow the larger family, and
-  an affected primary's interval follows its split. Snapshot IDs, family IDs
-  and experiment identity are unchanged.
+  is likewise split across every counted treatment arm and every arm its own
+  read holds, under randomized and observational designs, 0.025 for each of
+  two arms at `alpha=0.05`, where an arm missing from the read left 0.05. An
+  arm the design's allocation declares but no unit enrolled in is a count
+  exclusion, as in a breakout family: its cells stay unavailable rows with
+  `readout.cell.missing_arm`, but leave the run's family scope
+  (`FamilyScope.members`) and carry no `family_id`, so `family_size` equals the
+  member count. A source without enrollment counts still sizes the split and
+  the family from the arms each metric's values reach; a declared arm that none
+  of its metrics observed leaves the family scope, and its cells carry no
+  `family_id`. Migration: none needed; in an affected family the threshold,
+  the discoveries and the intervals of selected cells follow the larger
+  family, and an affected primary's interval follows its split. Snapshot IDs,
+  family IDs and experiment identity are unchanged.
 - Release note (fix): the `from_definitions` SQL previews
   `increment.query.panel_sql` and `summary_sql` now load the Ibis compiler of
   the dialect named by `backend=`, as connecting to that backend does.

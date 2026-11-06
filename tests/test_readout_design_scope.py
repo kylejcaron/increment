@@ -408,6 +408,67 @@ def test_primary_alpha_split_counts_a_late_arm(mechanism):
     assert row.require_lift().alpha == pytest.approx(0.05 / 2)
 
 
+def test_primary_alpha_split_counts_an_arm_that_lands_after_the_counts():
+    """A randomized run reads its counts before its moments. T2 lands between the two reads, so
+    only the moments read holds it; the split still counts every arm the primary's scope lists."""
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import AnalysisPlan
+    from tests.analysis_factory import drifting_analysis
+
+    design = Randomized(control_group="C", allocation={"C": 0.34, "T1": 0.33, "T2": 0.33})
+    counted = _family_analysis(_family_frame(("C", "T1")), design, AnalysisPlan(primary="a"))
+    landed = _family_analysis(_family_frame(("C", "T1", "T2")), design, AnalysisPlan(primary="a"))
+    # The counts are counted's; each metric's first moments read is landed's.
+    (experiment, reader), _source = drifting_analysis(landed, counted)
+    try:
+        results = _family_readout(experiment, reader)
+    finally:
+        for _, analysis_reader in (counted, landed):
+            analysis_reader.close()
+    (primary,) = [family for family in results.metadata.scope.families if family.name == "primary"]
+    assert {cell.group_id for cell in primary.members} == {"T1", "T2"}
+    for arm in ("T1", "T2"):
+        (row,) = [row for row in results if (row.metric, row.group_id) == ("a", arm)]
+        assert row.require_lift().alpha == pytest.approx(0.05 / 2)
+
+
+@pytest.mark.parametrize("mechanism", ["randomized", "observational"])
+def test_primary_alpha_split_without_counts_follows_its_own_arms(mechanism, tmp_path):
+    """Without enrollment counts a primary's alpha is split across the arms its own moments
+    read: `b` reads T2 too, but `a` has no T2 values, so `a`'s T1 keeps the whole 0.05."""
+    import pyarrow.parquet as pq
+
+    from increment import from_moments
+    from increment.semantics.models import AnalysisPlan
+    from increment.workflows import export_moments
+
+    plan = AnalysisPlan(primary="a", secondaries=["b"], q=0.1)
+    frame = _family_frame(("C", "T1", "T2"), unobserved={"a": ("T2",)})
+    with pytest.warns(IncrementWarning):
+        experiment, reader = _family_analysis(frame, _family_design(mechanism), plan)
+    path = tmp_path / "moments.parquet"
+    try:
+        export_moments(experiment, reader, path)
+    finally:
+        reader.close()
+    rows = [
+        {key: value for key, value in row.items() if key != "assignment_counts"}
+        for row in pq.read_table(path).to_pylist()
+    ]
+    experiment, reader = from_moments(
+        rows,
+        metrics=[
+            MetricSpec(name="a", type="mean", missing="skip"),
+            MetricSpec(name="b", type="mean", missing="skip"),
+        ],
+        design=_family_design(mechanism),
+        plan=plan,
+    )
+    results = _family_readout(experiment, reader)
+    (row,) = [row for row in results if (row.metric, row.group_id) == ("a", "T1")]
+    assert row.require_lift().alpha == pytest.approx(0.05)
+
+
 def test_never_enrolled_arm_leaves_the_family_scope():
     """A declared arm without an enrolled unit is a count exclusion, not a hypothesis: its cells
     stay unavailable rows, outside the family, and the family is the two T1 contrasts."""

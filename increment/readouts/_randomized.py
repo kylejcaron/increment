@@ -259,9 +259,9 @@ def _unread_counted_arm_failures(metric, counted_arms, control_group, family_gro
 
 def _primary_split_arms(metric_rows, counted_arms, control_group) -> int:
     """Treatment arms a primary's alpha is split across: every counted arm, as its family
-    scope lists them, or without counts the arms its moments read."""
-    counted = sum(arm != str(control_group) for arm in counted_arms)
-    return counted or metric_rows.n_treatment_arms
+    scope lists them, and every arm its moments read, including one that enrolled after the
+    counts were read."""
+    return len((set(counted_arms) | metric_rows.observed_arms) - {str(control_group)})
 
 
 def _secondary_source_rows(metric_rows, is_quantile, control_group):
