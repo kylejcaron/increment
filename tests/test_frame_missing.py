@@ -1342,7 +1342,14 @@ def test_covariate_lost_in_one_arm_and_zero_filled_is_flagged() -> None:
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="y", decision_method=Method.cuped(covariates=covariate))],
+            # The unadjusted sibling is its own estimate and has no covariate to check.
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    decision_method=Method.cuped(covariates=covariate),
+                    sensitivity_methods=[Method(name="unadjusted")],
+                )
+            ],
         )
         result = run(experiment, resolver)
     assert "frame.validation.metric_covariate_missing_imputed" in warning_codes(recorded)

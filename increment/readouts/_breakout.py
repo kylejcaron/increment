@@ -223,7 +223,7 @@ def _encouragement_breakout_rows(
                     alpha=alpha,
                     method_roles=roles_by_metric[metric.name],
                 )
-                collect_advisories(segment_advisories, computation.advisories)
+                collect_advisories(segment_advisories, computation.advisories, (method.name,))
                 for estimate in computation.results:
                     if estimate.estimand == "compliance":
                         key = (estimate.group_id, estimate.method, estimate.value_scale)

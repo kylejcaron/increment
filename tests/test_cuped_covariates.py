@@ -19,6 +19,7 @@ from increment.semantics.models import (
     MethodSpec,
 )
 from tests.analysis_factory import view_readout
+from tests.warning_codes import allow_warning_codes
 
 
 def test_semantic_cuped_covariate_types_and_method_are_constructible():
@@ -382,6 +383,58 @@ def test_cuped_linear_level_support_failure_remains_a_cell():
     assert isinstance(result[0], LiftEstimate)
     assert result[0].failure_code == "estimation.cuped_linear.level_support"
     assert result[0].lift is None
+
+
+@allow_warning_codes("estimation.cuped.covariate_imbalance", "readouts.run.cell_refused")
+def test_a_failed_cuped_cell_keeps_its_own_balance_advisory():
+    import numpy as np
+    import pyarrow as pa
+
+    from increment.estimation.inference import Normal
+
+    # The covariate differs by arm and the outcome mean is negative, so the prior-backed
+    # relative CUPED decision fails while the unadjusted sensitivity, which never reads
+    # the covariate, reports its additive row.
+    rng = np.random.default_rng(3)
+    rows = []
+    for arm, shift in (("control", 0.0), ("treatment", 3.0)):
+        for index in range(400):
+            pre = 30.0 + shift + rng.normal(0.0, 2.0)
+            rows.append(
+                {
+                    "unit": f"{arm}-{index}",
+                    "arm": arm,
+                    "revenue": -40.0 + 0.9 * pre + rng.normal(0.0, 1.0),
+                    "pre": pre,
+                }
+            )
+    metric = MetricSpec(
+        name="revenue",
+        decision_method=Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous")),
+        sensitivity_methods=[Method(name="unadjusted")],
+        prior=Normal(mu=0.0, sigma=1.0),
+    )
+    result = view_readout(
+        *from_frame(
+            pa.Table.from_pylist(rows),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[metric],
+        )
+    )
+
+    assert result.metadata is not None
+    records = {record.cell.method: record for record in result.metadata.cells}
+    failure = records["cuped"].failure
+    assert failure is not None and failure.code == "estimation.engine.lift_guard"
+    flagged = {
+        method
+        for method, record in records.items()
+        if any(item.code == "estimation.cuped.covariate_imbalance" for item in record.advisories)
+    }
+    assert flagged == {"cuped"}
 
 
 def test_aggregate_lift_estimator_requires_per_unit_cuped_evidence():

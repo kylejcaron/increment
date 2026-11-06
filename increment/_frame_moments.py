@@ -269,9 +269,11 @@ def _apply_spec_missing(
     mean of the observed values (or 0 under ``missing="zero"``), computed from
     the covariate column alone -- BEFORE ``missing="skip"`` removes any
     outcome-null rows below, never from the arm or the outcome. The adjusted
-    estimate stays unbiased only when which values are missing is unrelated to
-    the arm (zero fill) or to their size (mean fill). NaN is normalized to null
-    first so every backend agrees on what "missing" is.
+    estimate stays unbiased when the filled covariate keeps equal means across
+    arms: for a zero fill, when values and their missingness are distributed alike
+    in both arms (equal missing shares are not enough); for a mean fill, when
+    which values are missing is unrelated to their size. NaN is normalized to
+    null first so every backend agrees on what "missing" is.
     """
     value_cols = ["y"] + (["y_den"] if has_den else [])
     if has_x:

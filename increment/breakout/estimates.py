@@ -139,7 +139,7 @@ from increment.semantics.sequential import ASYMPTOTIC_LAWS
 from increment.sequential_state import SequentialSnapshot, require_public_laws, sequential_refuse
 
 if TYPE_CHECKING:
-    from increment.decision import CompiledDecisionPlan, DecisionComputation
+    from increment.decision import AdvisoryKey, CompiledDecisionPlan, DecisionComputation
     from increment.estimation.advisory import ReadoutAdvisory
     from increment.estimation.readout_types import ReadoutMetadata
     from increment.result_envelope import ResultCell
@@ -2380,6 +2380,7 @@ def _rekey_segment_computation(
 ) -> DecisionComputation[LiftEstimate]:
     from increment.decision import (
         DecisionComputation,
+        MethodHypothesisKey,
         SegmentHypothesisKey,
     )
 
@@ -2391,6 +2392,11 @@ def _rekey_segment_computation(
             dimension,
             dimension_value,
         )
+
+    def advisory_key_for(key: Any) -> Any:
+        if isinstance(key, MethodHypothesisKey):
+            return MethodHypothesisKey(key_for(key.hypothesis), key.method)
+        return key_for(key)
 
     evidence: dict[Any, Any] = {}
     for value in bundle.evidence.values():
@@ -2404,7 +2410,9 @@ def _rekey_segment_computation(
         result.model_copy(update={"dimension": dimension, "dimension_value": dimension_value})
         for result in bundle.results
     )
-    advisories = {key_for(key): values for key, values in bundle.advisories.items() if values}
+    advisories = {
+        advisory_key_for(key): values for key, values in bundle.advisories.items() if values
+    }
     return DecisionComputation[LiftEstimate](
         results=cast(Sequence[LiftEstimate], results),
         evidence=evidence,
@@ -2542,7 +2550,7 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                     cache[cache_key] = (bundle, None)
                 results.extend(bundle.results)
                 evidence.update(bundle.evidence)
-                advisories.update(bundle.advisories)
+                collect_advisories(advisories, bundle.advisories, (method.name,))
                 failures.update(bundle.failures)
             except CodedError as exc:
                 if not exc.code.startswith("estimation.cuped_linear.") or exc.code == (
@@ -2647,7 +2655,10 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                 if reason is not None:
                     return part, reason
                 assert part is not None
-                parts.append(part)
+                # Bound here, a part without rows keeps its advisories on its own method.
+                bound: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]] = {}
+                collect_advisories(bound, part.advisories, (method.name,))
+                parts.append(replace(part, advisories=bound))
             return _merge_decision_computations(parts), None
         method = methods[0] if methods else Method(name="unadjusted")
         role = (method_roles or {}).get(method.name, "decision")
@@ -3010,8 +3021,8 @@ class _BreakoutMetricPass(NamedTuple):
     outcomes: tuple[_BreakoutCellOutcome, ...]
     computations: dict[tuple[str, str], DecisionComputation]
     metric_rows: dict[tuple[str, str], list[Mapping[str, Any]]]
-    # Every estimator invocation's advisories in this segment, keyed by its local hypothesis.
-    advisories: dict[Any, tuple[ReadoutAdvisory, ...]]
+    # Every estimator invocation's advisories in this segment, bound to its methods.
+    advisories: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]]
 
 
 class _BreakoutContext(NamedTuple):
@@ -3580,7 +3591,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
     skip_reason_by_metric: dict[str, str] = {}
     skip_failure_by_metric: dict[str, Any] = {}
     original_failures: dict[tuple[str, str], Any] = {}
-    advisories: dict[Any, tuple[ReadoutAdvisory, ...]] = {}
+    advisories: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]] = {}
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for metric in context.metrics:
@@ -3701,7 +3712,11 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     family_member=context.family_member,
                 )
                 if computation is not None:
-                    collect_advisories(advisories, computation.advisories)
+                    collect_advisories(
+                        advisories,
+                        computation.advisories,
+                        (method.name for method in method_group),
+                    )
                     decision_failures: dict[Any, Any] = {}
                     projected_results = list(computation.results)
                     for hypothesis, failure in computation.failures.items():
@@ -4926,8 +4941,8 @@ class _DailyMetricPass(NamedTuple):
     estimates: list[LiftEstimate]
     unestimable: dict[tuple[str, str], ExclusionReason]
     unavailable_methods: dict[tuple[str, str], set[str]]
-    # Every estimator invocation's advisories in this slice, keyed by its local hypothesis.
-    advisories: dict[Any, tuple[ReadoutAdvisory, ...]]
+    # Every estimator invocation's advisories in this slice, bound to its methods.
+    advisories: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]]
 
 
 def _plan_daily_lift_slices(
@@ -4958,7 +4973,7 @@ def _estimate_itt_slice_or_unavailable(
     unestimable = dict(prepared.unestimable)
     unavailable_methods: dict[tuple[str, str], set[str]] = {}
     estimates: list[LiftEstimate] = []
-    advisories: dict[Any, tuple[ReadoutAdvisory, ...]] = {}
+    advisories: dict[AdvisoryKey, tuple[ReadoutAdvisory, ...]] = {}
     for metric in slice_metrics:
         metric_rows = [row for row in prepared.live_rows if str(row["metric"]) == metric.name]
         policy = policy_by_metric[metric.name]
@@ -5015,7 +5030,9 @@ def _estimate_itt_slice_or_unavailable(
                     method_roles=resolved_roles,
                 )
             )
-            collect_advisories(advisories, metric_advisories)
+            collect_advisories(
+                advisories, metric_advisories, (method.name for method in method_group)
+            )
             if metric_failures and metric_estimates and context.view == "daily":
                 _warn(
                     "breakout.estimates.daily_partial_guarded_arms",

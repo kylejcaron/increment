@@ -406,11 +406,14 @@ values.
   Breakout segments and daily cells are each tested on their own data.
   An asymptotic sequential `adjusted_mean` or `adjusted_ratio_mean` cell carries
   the same advisory at a look where its squared covariate difference exceeds its
-  variance times the count-clock boundary the cell's intervals use, at level
-  0.001, so repeated looks do not accumulate false flags; its context also
-  reports that `boundary` in standard errors and the look's unit `count`. A look
-  without inference for the cell, such as one before `start_count`, is not
-  checked, and a predeclared pre-period adjustment retains no covariate to check.
+  variance times the count-clock boundary the cell's intervals use, at nominal
+  level 0.001; like those intervals the boundary is asymptotic, so early looks
+  can flag more often (about 0.0055 at a first look of two units per group with
+  normally distributed covariates, `rho = 0.1` and `start_count = 2`). Its
+  context also reports that `boundary` in standard errors and the look's unit
+  `count`. A look without inference for the cell, such as one before
+  `start_count`, is not checked, and a predeclared pre-period adjustment
+  retains no covariate to check.
   Estimates, intervals, sequential evidence and decisions are unchanged, and the
   advisory never withholds a result. Breakout, daily, as-of and sequential cells
   now carry every advisory their own estimate produced, for example a segment's
@@ -418,7 +421,12 @@ values.
   ratio-denominator advisories, rebuilt from row notes. Those keep their codes
   and messages, and their context now carries `threshold` (plus
   `relative_standard_errors` for `estimation.engine.ratio_denominator_precision`)
-  in place of the row's `note` text. The covariate-imputation warning
+  in place of the row's `note` text. Each advisory stays with the method that
+  produced it on run, breakout, daily, as-of and encouragement cells: a
+  covariate-balance advisory reaches only the CUPED method's cells, also where
+  an unadjusted method is estimated beside it for the same day, a method whose
+  cell fails keeps its advisory on that unavailable cell, and no other method's
+  cell receives it. The covariate-imputation warning
   `frame.validation.metric_covariate_missing_imputed` now states when the fill
   it applied keeps the adjusted estimate unbiased, separately for a zero fill
   and a mean fill; its code and context are unchanged. Experiment `to_json()`,

@@ -5352,7 +5352,7 @@ def test_frozen_day_axis_consumers_match_complete_ordered_old_rows():
 def test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows():
 
     from increment.estimation.encouragement import ESTIMANDS
-    from increment.estimation.readout_types import cell_advisories, collect_advisories
+    from increment.estimation.readout_types import cell_advisories
     from tests.evidence_fixtures.method_replay import (
         EncouragementReplayConfig,
         assert_encouragement_breakout_matches_old_row,
@@ -5421,8 +5421,7 @@ def test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows
         assert len(expected_by_key) == len(expected)
         observed = []
         projected_by_source = {}
-        segment_advisories = {}
-        segment_rows = {}
+        advisories_by_source = {}
         for request in requests:
             source = next(
                 source
@@ -5442,17 +5441,7 @@ def test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows
                 )
                 counts.setdefault(segment, {})[str(row["group_id"])] = float(row["n"])
             for segment in sorted(value for member, value in computed if member == request):
-                segment_key = (
-                    request.breakout.property,
-                    request.breakout.source,
-                    source,
-                    request.metric.name,
-                    segment,
-                )
-                collect_advisories(
-                    segment_advisories.setdefault(segment_key, {}),
-                    computed[(request, segment)].advisories,
-                )
+                invocation_rows = []
                 for result in computed[(request, segment)].results:
                     identity = (
                         request.metric.name,
@@ -5480,14 +5469,12 @@ def test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows
                         (request.breakout.property, request.breakout.source, source),
                         [],
                     ).append(projected)
-                    segment_rows.setdefault(segment_key, []).append(projected)
+                    invocation_rows.append(projected)
                     observed.append(identity)
+                advisories_by_source.setdefault(
+                    (request.breakout.property, request.breakout.source, source), {}
+                ).update(cell_advisories(invocation_rows, computed[(request, segment)].advisories))
         assert observed == [_full_readout_coordinate(row) for row in expected]
-        advisories_by_source = {}
-        for segment_key, rows in segment_rows.items():
-            advisories_by_source.setdefault(segment_key[:3], {}).update(
-                cell_advisories(rows, segment_advisories[segment_key])
-            )
         complete = []
         parts = []
         for (dimension, declared_source, stamp_source), rows in projected_by_source.items():

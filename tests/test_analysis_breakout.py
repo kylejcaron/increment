@@ -894,7 +894,7 @@ def test_breakout_cell_keeps_typed_advisory_through_payload_round_trip():
     assert code in render(result, "full")
 
 
-def test_breakout_covariate_imbalance_advisory_stays_on_its_own_segment():
+def test_breakout_covariate_imbalance_advisory_stays_on_its_own_segment_and_method():
     from increment import CupedCovariate, Method, MetricSpec, run
     from tests.analysis_factory import declare_views
 
@@ -910,11 +910,19 @@ def test_breakout_covariate_imbalance_advisory_stays_on_its_own_segment():
                         "arm": group,
                         "country": country,
                         "revenue": 2.0 + 0.9 * pre + rng.normal(0.0, 1.0),
+                        "kept": pre,
                         # One segment's join lost every control unit's pre-period value.
                         "pre": None if (country, group) == ("lost", "control") else pre,
                     }
                 )
-    covariate = CupedCovariate(name="pre", kind="continuous", missing="zero")
+    # A balanced decision covariate beside the zero-filled one, each its own estimate.
+    decision = Method.cuped_multicovariate(
+        covariates=[CupedCovariate(name="kept", kind="continuous")]
+    )
+    zero_filled = Method.cuped(
+        covariates=CupedCovariate(name="pre", kind="continuous", missing="zero"),
+        name="zero_filled",
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         experiment, resolver = from_frame(
@@ -924,7 +932,9 @@ def test_breakout_covariate_imbalance_advisory_stays_on_its_own_segment():
             group="arm",
             control="control",
             metrics=[
-                MetricSpec(name="revenue", decision_method=Method.cuped(covariates=covariate))
+                MetricSpec(
+                    name="revenue", decision_method=decision, sensitivity_methods=[zero_filled]
+                )
             ],
             breakouts=["country"],
         )
@@ -932,12 +942,12 @@ def test_breakout_covariate_imbalance_advisory_stays_on_its_own_segment():
     metadata = result.readout(_BREAKOUT).metadata
     assert metadata is not None
     flagged = {
-        record.cell.dimension_value
+        (record.cell.dimension_value, record.cell.method)
         for record in metadata.cells
         for advisory in record.advisories
         if advisory.code == "estimation.cuped.covariate_imbalance"
     }
-    assert flagged == {"lost"}
+    assert flagged == {("lost", "zero_filled")}
 
 
 # GB's covariate means differ by arm by construction, so its CUPED cell is flagged.

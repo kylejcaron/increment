@@ -30,7 +30,7 @@ from increment.estimation.cuped import (
     pooled_theta,
 )
 from increment.estimation.cuped.scalar import _within_arm_theta
-from increment.estimation.decision_types import ArmHypothesisKey
+from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.variance import ratio_abs_diff_se, ratio_log_mean_se
 from increment.semantics.models import MeanMetric, Measure, RatioMetric
@@ -1501,7 +1501,9 @@ def test_imbalanced_covariate_attaches_advisory_without_moving_the_estimate():
             _mean_metric(), _covariate_contrast(control_covariate=False)
         )
     assert _IMBALANCE in warning_codes(recorded)
-    advisories = computation.advisories[ArmHypothesisKey("rev", "treatment", "itt")]
+    advisories = computation.advisories[
+        MethodHypothesisKey(ArmHypothesisKey("rev", "treatment", "itt"), "cuped")
+    ]
     assert tuple(advisory.code for advisory in advisories) == (_IMBALANCE,)
     context = advisories[0].context
     assert context["statistic"] == pytest.approx(30.0 / math.sqrt(450.0 / 600.0))
@@ -1527,6 +1529,39 @@ def test_balanced_covariate_has_no_balance_advisory():
     )
 
 
+def test_imbalance_statistic_past_the_float_range_abstains_without_failing_the_cell():
+    """Covariate means 0 and 1e150 over a within-arm spread of 1e-160 put the Welch
+    statistic past the float range; with Cov(Y, X) = 0, theta = 0 and the CUPED
+    estimate is the raw difference of 1.0."""
+    arms = [
+        ArmStats(
+            study_id="e",
+            metric="rev",
+            group_id=group_id,
+            n=100,
+            ref_y=y_mean,
+            cy1=0.0,
+            cy2=99.0,
+            ref_x=x_mean,
+            cx1=0.0,
+            cx2=x_scatter,
+            cxy=0.0,
+            x_role="covariate",
+        )
+        for group_id, y_mean, x_mean, x_scatter in (
+            ("control", 10.0, 0.0, 99e-320),
+            ("treatment", 11.0, 1e150, 0.0),
+        )
+    ]
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        computation = _cuped_computation(_mean_metric(), arms)
+    assert _IMBALANCE not in warning_codes(recorded)
+    assert not computation.advisories
+    (result,) = computation.results
+    assert result.abs_diff == pytest.approx(1.0, rel=1e-12)
+
+
 def test_imbalanced_ratio_covariate_advisory_reports_both_slopes_without_a_shift():
     rng = np.random.default_rng(5)
     num_c, den_c, _ = _ratio_units(rng, 2000, load_num=0.4, load_den=0.5)
@@ -1535,7 +1570,9 @@ def test_imbalanced_ratio_covariate_advisory_reports_both_slopes_without_a_shift
     treatment = _ratio_arm("treatment", *_ratio_units(rng, 2000, load_num=0.4, load_den=0.5))
     with pytest.warns(IncrementRuntimeWarning):
         computation = _cuped_computation(_ratio_metric(), [control, treatment])
-    advisories = computation.advisories[ArmHypothesisKey("ratio_rev", "treatment", "itt")]
+    advisories = computation.advisories[
+        MethodHypothesisKey(ArmHypothesisKey("ratio_rev", "treatment", "itt"), "cuped")
+    ]
     (advisory,) = [advisory for advisory in advisories if advisory.code == _IMBALANCE]
     fit = fit_ratio_cuped([control, treatment])
     assert advisory.context["theta_numerator"] == pytest.approx(fit.numerator.theta)

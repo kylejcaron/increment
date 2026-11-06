@@ -5,7 +5,14 @@ from __future__ import annotations
 from increment.breakout.estimates import LiftEstimates
 from increment.decision import evidence_request_procedure
 from increment.estimation.assignment_integrity import assignment_integrity
-from increment.estimation.readout_types import CellKey, ReadoutScope, cell_order, freeze
+from increment.estimation.readout_types import (
+    CellKey,
+    ReadoutScope,
+    cell_order,
+    freeze,
+    index_advisories,
+    indexed_advisories,
+)
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean
 from increment.readouts._common import _raise
@@ -504,18 +511,7 @@ def _scoped_randomized_results(  # noqa: PLR0913, PLR0915
         selected, configs, design, plan, computations, roster_arms, population
     )
 
-    advisories_by_identity = {}
-    for computation in computations:
-        for hypothesis, advisories in computation.advisories.items():
-            identity = (
-                hypothesis.metric,
-                getattr(hypothesis, "group_id", None),
-                getattr(hypothesis, "estimand", None),
-                getattr(hypothesis, "dimension", None),
-                getattr(hypothesis, "dimension_value", None),
-            )
-            values = advisories_by_identity.setdefault(identity, {})
-            values.update({item.model_dump_json(): item for item in advisories})
+    advisory_index = index_advisories(computations)
     cell_failures, complete, scope_reason_context = _randomized_cell_failures(
         method_info,
         failure_by_cell,
@@ -618,15 +614,10 @@ def _scoped_randomized_results(  # noqa: PLR0913, PLR0915
                 }
             )
             output.append(row)
-        advisories = advisories_by_identity.get(
-            (
-                cell.metric,
-                cell.group_id,
-                cell.estimand,
-                cell.dimension,
-                cell.dimension_value,
-            ),
-            {},
+        advisories = indexed_advisories(
+            advisory_index,
+            cell,
+            failed=(cell.metric, cell.group_id, cell.method) in failure_by_cell,
         )
         records.append(
             _randomized_cell_record(
@@ -635,7 +626,7 @@ def _scoped_randomized_results(  # noqa: PLR0913, PLR0915
                 failure,
                 config,
                 snapshot_id,
-                tuple(advisories.values()),
+                advisories,
                 source_content_digest=source_content_digest,
                 artifact_provenance=artifact_provenance,
             )

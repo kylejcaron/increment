@@ -2228,6 +2228,57 @@ def test_native_daily_lift_mixed_methods_preserves_matrix(
     assert all(methods == {"unadjusted", "cuped"} for methods in methods_by_slice.values())
 
 
+def test_daily_covariate_imbalance_advisory_stays_on_the_cuped_cells(example_definitions):
+    """Every treatment unit gains a long pre-period web session, so each day's CUPED
+    contrast is flagged; the unadjusted cells estimated beside it carry no advisory."""
+    import ibis
+
+    from examples._seed import seed_event_log
+    from increment import Method, run
+    from tests.analysis_factory import declare_views
+
+    con = ibis.duckdb.connect()
+    seed_event_log(con, with_pre_period=True)
+    con.raw_sql(
+        """
+        INSERT INTO analytics.event_log BY NAME
+        SELECT event_at - INTERVAL 2 DAY AS event_at, user_id, session_id || '-pre' AS session_id,
+               'session_end' AS event, 5000.0 AS duration_s, country_code,
+               'web' AS device_type, plan
+        FROM analytics.event_log
+        WHERE event = 'page_view' AND experiment_id IS NOT NULL AND group_id = 'treatment'
+        """
+    )
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
+    )
+    view = View(view="daily", grain="daily")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = run(
+                declare_views(experiment, view),
+                resolver,
+                views=(view,),
+                decision_method=Method(name="cuped", variance_reduction="cuped"),
+                sensitivity_methods=(Method(name="unadjusted"),),
+                metrics=["avg_session_duration"],
+            )
+    finally:
+        resolver.close()
+        con.disconnect()
+    metadata = result.readout(view).metadata
+    assert metadata is not None
+    assert {record.cell.method for record in metadata.cells} == {"cuped", "unadjusted"}
+    flagged = {
+        record.cell.method
+        for record in metadata.cells
+        for advisory in record.advisories
+        if advisory.code == "estimation.cuped.covariate_imbalance"
+    }
+    assert flagged == {"cuped"}
+
+
 # Daily and as-of sweeps over a conversion metric, each inverting an exact
 # binomial interval per day and arm.
 @pytest.mark.slow

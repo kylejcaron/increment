@@ -151,8 +151,9 @@ def pooled_mean[FrameT: "IntoDataFrame"](
     even if the missing share differs by arm. The fill uses the pooled column
     only, never the arm or outcome, so imputed units only forgo variance
     reduction. Values lost selectively in one arm (a join that fails for low
-    values) bias the adjustment under any fill, and a zero fill is biased
-    whenever the missing share differs by arm. Not safe for an observational
+    values) bias the adjustment under any fill. A zero fill also scales each
+    arm's covariate mean by its observed share, so unequal missing shares bias
+    it unless the covariate's mean is zero. Not safe for an observational
     adjustment covariate, where imputing a confounder without its missingness
     indicator hides residual confounding; use
     `AdjustmentSet(missing="impute-indicator")` instead.

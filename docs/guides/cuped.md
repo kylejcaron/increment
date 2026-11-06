@@ -210,14 +210,18 @@ semantics apply to frame, definitions, and artifact readouts in either method
 role. A requested column that does not exist is instead a request incompatibility
 and is rejected before evidence acquisition.
 
-Either fill keeps the adjusted estimate unbiased only when the reason values
-are missing has nothing to do with the arm, in a sense that depends on the
-fill. A zero fill needs whether a value is missing to be unrelated to the arm,
-as it is for units with no history before the experiment; a join or logging
-step that lost more values in one arm breaks it. A mean fill tolerates one arm
-losing more values, as long as which values went missing is unrelated to their
-size; a join that fails only for low-spending users in one arm breaks it. The
-imputation warning states the condition for the fill it applied, and the
+The adjustment subtracts the fitted coefficient times the filled covariate's
+difference between arms, so either fill keeps the adjusted estimate unbiased
+only when the filled covariate has the same mean in both arms. What that
+requires of the missing values depends on the fill. A zero fill needs the
+values and which of them are missing to be distributed alike in both arms, as
+they are for units with no history before the experiment. Equal missing shares
+are not enough: if one arm lost its high values and the other its low values at
+the same rate, the zero-filled means differ. A join or logging step that lost
+more values in one arm breaks it too. A mean fill tolerates one arm losing more
+values, as long as which values went missing is unrelated to their size; a join
+that fails only for low-spending users in one arm breaks it. The imputation
+warning states the condition for the fill it applied, and the
 [covariate-balance advisory](#when-cuped-misleads-a-covariate-that-differs-by-arm)
 tests the filled covariate.
 
@@ -511,6 +515,14 @@ exceeds the boundary times its variance. Its context reports each group's
 covariate mean, the `difference` with its `standard_error`, the `statistic`, the
 `boundary` it is compared with (in the same standard errors; it depends on the
 `count` of units at the look and is wider at small counts) and `constant_arms`.
+Like the intervals, the boundary is an asymptotic approximation: 0.001 is its
+nominal asymptotic level, not the chance that a balanced covariate is ever
+flagged. At small counts the estimated covariate variance makes chance flags
+more likely: with normally distributed covariates and the boundary tuned at
+`rho = 0.1` and `start_count = 2`, a first look at two units per group flags a
+balanced covariate with probability about 0.0055. Later looks cannot undo a
+flag at an earlier one, so the chance of a flag at some look stays at least
+that of the first look however large the counts grow.
 A look without inference for the cell, such as one before
 `start_count` units in each group, is not checked. The advisory changes no
 interval, evidence value or decision, so checking it at every look leaves the
@@ -845,8 +857,10 @@ automatic sample-ratio check, the cell carries the advisory
 the same code. The estimate, interval and decision are unchanged: the advisory
 never withholds a result. Breakout segments and daily cells are each tested on
 their own data, so a join that fails for one segment flags that segment.
-Sequential cells on the asymptotic route use a form that stays valid across
-looks; see [the standard coefficient on the asymptotic route](#the-standard-coefficient-on-the-asymptotic-route).
+Sequential cells on the asymptotic route use a form built for repeated looks,
+with its own small-count limit; see [the standard coefficient on the asymptotic route](#the-standard-coefficient-on-the-asymptotic-route).
+In either form, a cell is not checked when a number the advisory would report
+exceeds the floating-point range (about $10^{308}$).
 
 The advisory's context reports each group's covariate mean (`mean_control`,
 `mean_treatment`), the `difference` with its `standard_error`, the Welch

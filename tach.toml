@@ -1133,6 +1133,7 @@ expose = [
 [[interfaces]]
 from = ["increment.estimation.decision_types"]
 expose = [
+  "AdvisoryKey",
   "ArmHypothesisKey",
   "DECISION_ARM_DECISION_ONE_SIDED_ALPHA",
   "exact_fraction",
@@ -1143,6 +1144,7 @@ expose = [
   "DecisionFailure",
   "EValueEvidence",
   "FixedInference",
+  "MethodHypothesisKey",
   "NoFamily",
   "PValueEvidence",
   "SegmentHypothesisKey",

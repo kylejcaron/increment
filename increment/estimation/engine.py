@@ -1280,8 +1280,9 @@ def _covariate_imbalance_advisory(
     covariate: str | None,
     slopes: Mapping[str, float],
     shifts: Mapping[str, float],
-) -> ReadoutAdvisory:
-    """Warn of, and return the advisory for, a CUPED cell whose covariate means differ.
+) -> ReadoutAdvisory | None:
+    """Warn of, and return the advisory for, a CUPED cell whose covariate means differ;
+    neither when one of its numbers is past the float range.
 
     *slopes* are the fitted CUPED coefficients and *shifts* the moves they made in
     the estimates, each keyed as reported.
@@ -1303,6 +1304,8 @@ def _covariate_imbalance_advisory(
         **shifts,
         "constant_arms": tuple(arm.group_id for arm in (control, treatment) if arm.var_x() <= 0.0),
     }
+    if not all(math.isfinite(value) for value in context.values() if isinstance(value, float)):
+        return None
     spec = _WARNINGS["estimation.cuped.covariate_imbalance"]
     warn(spec, skip_file_prefixes=PACKAGE_FRAMES, context=context)
     return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
@@ -1385,9 +1388,6 @@ def _lift_advisories(
                     message=note,
                 )
             )
-    imbalance_advisory = _lift_covariate_imbalance_advisory(treatment, control, strategy)
-    if imbalance_advisory is not None:
-        advisories.append(imbalance_advisory)
     if sequential:
         advisory = _open_ended_advisory(metric)
         if advisory is not None:
@@ -1407,11 +1407,24 @@ def _treatment_lift_advisories(metrics, treatment, control, strategy, cluster, s
     )
 
 
-def _attach_lift_advisories(advisory_map, treatment, advisories, result, failure):
-    if advisories and (result is not None or failure is not None):
-        from increment.estimation.decision_types import ArmHypothesisKey
+def _attach_lift_advisories(
+    advisory_map, treatment, method_strategy, advisories, imbalance, result, failure
+):
+    """Key a contrast's advisories for one method that produced a row or a failure.
 
-        advisory_map[ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")] = advisories
+    The contrast's advisories qualify every method's row, so they take the
+    invocation's hypothesis; the covariate-balance advisory qualifies only a CUPED
+    method's row, so it takes the hypothesis bound to that method.
+    """
+    if result is None and failure is None:
+        return
+    from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
+
+    hypothesis = ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")
+    if advisories:
+        advisory_map[hypothesis] = advisories
+    if imbalance is not None and method_strategy.use_cuped:
+        advisory_map[MethodHypothesisKey(hypothesis, method_strategy.method.name)] = (imbalance,)
 
 
 # Orchestrator
@@ -1606,19 +1619,20 @@ def merge_decision_computations(
     computations: Sequence[DecisionComputation[LiftEstimate]],
 ) -> DecisionComputation[LiftEstimate]:
     """Combine disjoint estimator bundles into one DecisionComputation,
-    dropping any retained sequential snapshot."""
+    dropping any retained sequential snapshot. Each bundle's advisories are bound
+    to the methods of its own rows, or to no method when it has none."""
     from increment.estimation.decision_types import DecisionComputation
+    from increment.estimation.readout_types import collect_advisories, result_methods
 
     results: list[Any] = []
     evidence: dict[Any, Any] = {}
     failures: dict[Any, Any] = {}
-    advisories: dict[Any, list[ReadoutAdvisory]] = {}
+    advisories: dict[Any, tuple[ReadoutAdvisory, ...]] = {}
     for computation in computations:
         results.extend(computation.results)
         evidence.update(computation.evidence)
         failures.update(computation.failures)
-        for hypothesis, items in computation.advisories.items():
-            advisories.setdefault(hypothesis, []).extend(items)
+        collect_advisories(advisories, computation.advisories, result_methods(computation.results))
     merged_advisories = {}
     for key, items in advisories.items():
         distinct = {item.model_dump_json(): item for item in items}
@@ -4474,6 +4488,7 @@ def _estimate_lift(  # noqa: PLR0913
         advisories = _treatment_lift_advisories(
             metrics, treatment, control, strategy, cluster, inference is not None
         )
+        imbalance = _lift_covariate_imbalance_advisory(treatment, control, strategy)
         metric_type = prepared.metric_types[treatment.metric]
         for method_strategy in strategy.methods:
             method_role = prepared.resolved_method_roles.get(
@@ -4496,7 +4511,9 @@ def _estimate_lift(  # noqa: PLR0913
                 family_member=family_member,
                 route_tail=route_tail,
             )
-            _attach_lift_advisories(advisory_map, treatment, advisories, result, failure)
+            _attach_lift_advisories(
+                advisory_map, treatment, method_strategy, advisories, imbalance, result, failure
+            )
             if failure is not None:
                 guard_failures[failure.hypothesis] = failure
             if result is not None:

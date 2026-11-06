@@ -1829,7 +1829,7 @@ def _estimate_encouragement(  # noqa: PLR0913
     out = list(prepared.results)
     late_failures: list[tuple[str, str, float]] = []
     contrast_advisories = {}
-    from increment.estimation.decision_types import ArmHypothesisKey
+    from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
     from increment.estimation.engine import _small_total_clusters_advisory
 
     reported_uptake_arms: set[str] = set()
@@ -1893,7 +1893,12 @@ def _estimate_encouragement(  # noqa: PLR0913
         imbalance_advisory = _late_covariate_imbalance_advisory(t, c, context, method_strategies)
         if imbalance_advisory is not None:
             late = ArmHypothesisKey(t.metric, t.group_id, "late")
-            contrast_advisories[late] = (*contrast_advisories.get(late, ()), imbalance_advisory)
+            # Only a CUPED method's LATE row is adjusted by the covariate.
+            for strategy in method_strategies:
+                if strategy.use_cuped:
+                    contrast_advisories[MethodHypothesisKey(late, strategy.method.name)] = (
+                        imbalance_advisory,
+                    )
     return _encouragement_decision_bundle(
         out,
         inference=inference,

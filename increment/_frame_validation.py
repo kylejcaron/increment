@@ -293,11 +293,11 @@ _register_warning(
     lambda *, name, covariate, n_missing, filled: (
         f"metric {name!r}: covariate column {covariate!r} has {n_missing} missing value(s), "
         + (
-            "each counted as zero. This keeps the adjusted estimate unbiased when whether a "
-            "value is missing is unrelated to the arm (for example, units with no history "
-            "before the experiment), but not when a join or logging step lost more values in "
-            "one arm. Compare the missing share across arms before relying on the adjusted "
-            "result"
+            "each counted as zero. This keeps the adjusted estimate unbiased when the values "
+            "and which of them are missing are distributed alike in both arms (for example, "
+            "units with no history before the experiment). It may not when a join or logging "
+            "step lost more values in one arm, or lost different values in each arm at the same "
+            "share. Check how the covariate was built for each arm"
             if filled == "zero"
             else f"each filled with {filled}. This keeps the adjusted estimate unbiased when "
             "which values went missing is unrelated to their size, even if one arm lost more "

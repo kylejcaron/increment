@@ -11,7 +11,7 @@ from increment.sequential_state import require_public_laws, sequential_refuse
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from increment.decision import HypothesisKey
+    from increment.decision import AdvisoryKey
     from increment.estimation.advisory import ReadoutAdvisory
 
 
@@ -25,7 +25,7 @@ def sequential_readout(
     _include_unrequested=False,
     population="assigned",
     configs=None,
-) -> tuple[list, Mapping[HypothesisKey, tuple[ReadoutAdvisory, ...]]]:
+) -> tuple[list, Mapping[AdvisoryKey, tuple[ReadoutAdvisory, ...]]]:
     """Run the registered decision and selection path on a source checkpoint.
 
     Returns the rows and each hypothesis' advisories; the hypotheses are local

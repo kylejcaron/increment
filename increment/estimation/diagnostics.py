@@ -9,7 +9,7 @@ bands on allocation share over time — a descriptive complement to the SRM
 test, not a substitute for it.
 
 ``covariate_balance`` compares a CUPED covariate's arm means with a Welch t test;
-``covariate_balance_crosses_boundary`` is its time-uniform form for sequential looks.
+``covariate_balance_crosses_boundary`` is its count-clock form for sequential looks.
 """
 
 from __future__ import annotations
@@ -530,10 +530,14 @@ def covariate_balance_crosses_boundary(
 
     ``difference**2 > K_N * (S_t / n_t**2 + S_c / n_c**2)`` with ``S`` each arm's
     retained covariate scatter and ``K_N = covariate_balance_boundary(count, rho)``,
-    the boundary of the cell's own sets at ``COVARIATE_BALANCE_ALPHA``. Being
-    time-uniform, it does not accumulate false flags over repeated looks as a
-    fixed-look test would. ``None`` under inference's readiness rule (an arm below 2
-    or ``start_count`` units) or when both scatters are zero.
+    the boundary of the cell's own sets at ``COVARIATE_BALANCE_ALPHA``. Like those
+    sets, it is asymptotic: the level is nominal, not the chance of a flag at some
+    look. For iid Normal covariates with ``rho = 1/10`` and ``start_count = 2``, the
+    squared statistic at a first look of two units per arm is distributed as
+    ``2 * t_2**2`` against ``K_4 ~ 360.2``, so that look alone flags with probability
+    about 0.0055, a floor later looks cannot lower. ``None`` under inference's
+    readiness rule (an arm below 2 or ``start_count`` units) or when both scatters
+    are zero.
     """
     if min(n_control, n_treatment) < max(2, start_count) or not (
         scatter_control or scatter_treatment

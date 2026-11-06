@@ -18,7 +18,7 @@ from increment import CupedCovariate
 from increment.errors import IncrementRuntimeWarning, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.armstats import ArmStats, centered_row_from_raw_sums
 from increment.estimation.cuped import cuped_adjust, pooled_theta
-from increment.estimation.decision_types import ArmHypothesisKey
+from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
 from increment.estimation.encouragement import (
     _first_stage,
     _late_additive_cuped,
@@ -202,7 +202,9 @@ def test_cuped_late_balance_advisory_reports_the_late_shift():
             estimands=("late",),
             methods=[Method(name="unadjusted"), *CUPED],
         )
-    advisories = computation.advisories[ArmHypothesisKey("rev", "treat", "late")]
+    advisories = computation.advisories[
+        MethodHypothesisKey(ArmHypothesisKey("rev", "treat", "late"), "cuped")
+    ]
     (advisory,) = [a for a in advisories if a.code == "estimation.cuped.covariate_imbalance"]
     late = {row.method: row.require_lift().value for row in _late(computation.results)}
     moved = late["unadjusted"] - late["cuped"]

@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from increment import CupedCovariate, Method, from_frame
+from increment.decision import ArmHypothesisKey
 from increment.errors import CodedError
 from increment.estimation._certified import log_interval
 from increment.estimation._sequential_likelihood import GaussianState
@@ -140,6 +141,21 @@ def test_adjusted_mean_with_an_orthogonal_covariate_is_the_scalar_set():
     assert joint == scalar
 
 
+def _balance_cell(shift, unit=F(1), rho=F(1, 10)):
+    """The advisories of one adjusted_mean cell of 100 units per arm whose covariate
+    alternates -1, +1 in multiples of *unit* and moves by *shift* units in treatment."""
+    n = 100
+    control = [(F(10 + i % 4), F((-1) ** i) * unit) for i in range(n)]
+    treatment = [(y, x + shift * unit) for y, x in control]
+    registration = mean_registration(
+        models=(mean_model("m", law="adjusted_mean", rho=rho),),
+        cells=(SequentialCell(metric="m", group_id="treatment"),),
+    )
+    snapshot = mean_capture(registration, mean_records(control, treatment, metrics=("m",)))
+    computation = estimate_sequential(snapshot, AsymptoticMean(registration=registration))
+    return [a for items in computation.advisories.values() for a in items]
+
+
 def _balance_advisories(scale):
     """K_N and the advisories of one adjusted_mean cell whose covariate difference d has
     d^2 / V = scale * K_N, with V = S_t/n_t^2 + S_c/n_c^2 over the retained
@@ -149,15 +165,7 @@ def _balance_advisories(scale):
     k = (1 + lam / (2 * n)) * (math.log1p(2 * n / lam) - 2 * math.log(1e-3))
     # X alternates -1, +1 in each group: S_xx = n per group, so V = 2 / n.
     shift = F(math.sqrt(scale * k * 2 / n))
-    control = [(F(10 + i % 4), F((-1) ** i)) for i in range(n)]
-    treatment = [(y, x + shift) for y, x in control]
-    registration = mean_registration(
-        models=(mean_model("m", law="adjusted_mean"),),
-        cells=(SequentialCell(metric="m", group_id="treatment"),),
-    )
-    snapshot = mean_capture(registration, mean_records(control, treatment, metrics=("m",)))
-    computation = estimate_sequential(snapshot, AsymptoticMean(registration=registration))
-    return k, [a for items in computation.advisories.values() for a in items]
+    return k, _balance_cell(shift)
 
 
 def test_adjusted_law_balance_advisory_uses_count_boundary():
@@ -169,6 +177,26 @@ def test_adjusted_law_balance_advisory_uses_count_boundary():
     assert context["boundary"] == pytest.approx(math.sqrt(k), rel=1e-9)
     assert context["count"] == 200
     assert below == []
+
+
+def test_balance_advisory_is_unit_free_past_binary64():
+    """At 10^200 and 10^-200 covariate units V leaves the float range, and at
+    rho = 10^-200 K_N does, while their roots do not: the statistic and boundary
+    are unit-free and the standard error scales with the unit."""
+    n = 100
+    for unit, rho in ((F(10) ** 200, F(1, 10)), (F(1, 10**200), F(1, 10)), (F(1), F(1, 10**200))):
+        # sqrt(K_N) = sqrt((rho^2 + 1/N)(log1p(N rho^2) - 2 log(1/1000))) / rho, rooted
+        # term by term; the shift puts d^2 / V at (1 + 1e-3) K_N with V = 2 / n.
+        r2 = float(rho**2)
+        root_k = float(1 / rho) * math.sqrt(
+            (r2 + 1 / (2 * n)) * (math.log1p(2 * n * r2) - 2 * math.log(1e-3))
+        )
+        flagged = _balance_cell(F(math.sqrt((1 + 1e-3) * 2 / n) * root_k), unit, rho)
+        assert [a.code for a in flagged] == ["estimation.cuped.covariate_imbalance"]
+        context = flagged[0].context
+        assert context["statistic"] == pytest.approx(math.sqrt(1 + 1e-3) * root_k, rel=1e-9)
+        assert context["boundary"] == pytest.approx(root_k, rel=1e-9)
+        assert context["standard_error"] == pytest.approx(float(unit) * math.sqrt(2 / n), rel=1e-9)
 
 
 def test_ratio_metric_is_monitored_sequentially_and_an_unresolved_denominator_withholds_it():
@@ -353,11 +381,14 @@ def test_an_unresolved_ratio_cell_withholds_only_itself_across_a_freeze():
 # contrast evidence is ~345. The scalar sibling is null unless its treatment arm shifts.
 _F7_Q = F(1, 20)
 _F7_NOISE = (F(-1, 10), F(1, 10)) * 5 + (F(0),)
+# A covariate summing to zero over each denominator block and against the noise, so
+# it is orthogonal within each group to the numerator and denominator: S_xx = 16.
+_F7_COVARIATE = (1, 1, -1, -1, 1, 1, -1, -1, 0, 0, 0) + (1, -1, 1, -1, 1, -1, 1, -1, 0)
 
 
-def _f7_registration(ratio_alpha=F(9, 200), scalar_alpha=F(1, 200)):
+def _f7_registration(ratio_alpha=F(9, 200), scalar_alpha=F(1, 200), law="ratio_mean"):
     return mean_registration(
-        models=(mean_model("ratio", law="ratio_mean"), mean_model("scalar")),
+        models=(mean_model("ratio", law=law), mean_model("scalar")),
         cells=(
             SequentialCell(metric="ratio", group_id="treatment", family=True, alpha=ratio_alpha),
             SequentialCell(metric="scalar", group_id="treatment", family=True, alpha=scalar_alpha),
@@ -366,13 +397,18 @@ def _f7_registration(ratio_alpha=F(9, 200), scalar_alpha=F(1, 200)):
     )
 
 
-def _f7_records(n=20, *, shift=0, offset=0):
+def _f7_records(n=20, *, shift=0, offset=0, covariate_shift=None):
+    """``covariate_shift`` adds ``_F7_COVARIATE``, moved by that much in treatment."""
     rows = []
     for i in range(n):
         d = F(i < 11)
         for arm, slope, lift in (("control", 2, 0), ("treatment", 4, shift)):
             numerator = slope * d + (_F7_NOISE[i] if i < 11 else 0)
-            values = {"ratio": (numerator, d), "scalar": 1 + i % 4 + lift}
+            ratio = (numerator, d)
+            if covariate_shift is not None:
+                moved = covariate_shift if arm == "treatment" else 0
+                ratio = (*ratio, _F7_COVARIATE[i] + moved)
+            values = {"ratio": ratio, "scalar": 1 + i % 4 + lift}
             rows.append({"unit_id": f"{offset + i:06d}-{arm}", "group_id": arm, "values": values})
     return rows
 
@@ -410,6 +446,23 @@ def test_a_selected_ratio_is_available_at_its_reporting_alpha():
     stopped = before.require_asymptotic_sequential_result()
     result = recovered["ratio"].require_asymptotic_sequential_result()
     assert result.checkpoint == stopped.checkpoint and result.log_e == stopped.log_e
+
+
+def test_a_reinverted_adjusted_ratio_is_checked_for_balance_at_its_reporting_alpha():
+    """An adjusted ratio whose registered 1/200 set is unavailable is not checked
+    there; selected and reported at 1/20, where its set is available, it is."""
+    tight = _f7_registration(F(1, 200), F(9, 200), law="adjusted_ratio_mean")
+    policy = AsymptoticMean(registration=tight)
+    snapshot = mean_capture(tight, _f7_records(shift=7, covariate_shift=3))
+    before = estimate_sequential(snapshot, policy)
+    assert before.results[0].note == "denominator_near_zero" and not before.advisories
+    rows, advisories = selected_snapshot_results(snapshot, policy, nominal_alpha=_F7_Q)
+    ratio = next(row for row in rows if row.metric == "ratio")
+    assert ratio.discovery and ratio.require_asymptotic_sequential_result().bounds.available
+    (advisory,) = advisories[ArmHypothesisKey("ratio", "treatment", "itt")]
+    assert advisory.code == "estimation.cuped.covariate_imbalance" and len(advisories) == 1
+    # d = 3 over V = (16 + 16) / 20^2.
+    assert advisory.context["statistic"] == pytest.approx(3 / math.sqrt(32 / 400), rel=1e-9)
 
 
 @pytest.mark.parametrize("nominal", [F(1, 40), F(1, 200)])
