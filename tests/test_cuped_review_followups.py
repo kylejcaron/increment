@@ -1022,9 +1022,20 @@ def test_no_covariate_metric_keeps_its_source_snapshot_identity():
     assert run.metadata.scope.snapshot_id == (
         "sha256:60b464aedd6d68490cecf4cc7820ab263123805ef319e601dc072f8f5fa21300"
     )
-    assert breakout.metadata.scope.snapshot_id == (
-        "sha256:f6e9391ebb457b8ac9efeaa8a0e831b77ec4bd3ec5b7febf5dd638b44e364b5d"
+    from tests.parity_harness.expected_differences import (
+        RENDERED_TEXT_SNAPSHOT_REASON,
+        ExpectedDifference,
     )
+
+    moved = ExpectedDifference(
+        scenario="no_covariate_breakout",
+        ingress="from_unit_panel",
+        field="breakout snapshot_id",
+        frozen="sha256:f6e9391ebb457b8ac9efeaa8a0e831b77ec4bd3ec5b7febf5dd638b44e364b5d",
+        current="sha256:f04145c025053c8789fbbd2df47d32d3ed3c1fe8536584f8f48ffae38d84860e",
+        reason=RENDERED_TEXT_SNAPSHOT_REASON,
+    )
+    assert breakout.metadata.scope.snapshot_id == moved.applied_to(moved.frozen)
 
 
 def test_unscoped_export_preserves_unknown_legacy_sampling_availability():

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterator, Mapping, Sequence
+import math
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, cast
 
 import narwhals as nw
@@ -34,7 +36,6 @@ from increment._moment_plan import (
     SLOTS,
     UNIT_GRAIN,
     X_SLOT_ROLES,
-    Moment,
     MomentPlan,
 )
 from increment._window import final_maturity_day as _final_maturity_day
@@ -92,6 +93,286 @@ if TYPE_CHECKING:
     from increment.frame import MetricSpec
 
 
+# A finite float is an integer times a power of two: integer parts summed on a shared
+# scale give one total in any order, partitioning or dataframe library, rounded once.
+
+#: Rows a float64 bincount bin may take while each partial sum stays an exact multiple
+#: of the bin's scale below 2**53 of it (27-bit high, 26-bit low mantissa halves).
+_BIN_ROWS = 1 << 26
+_EXPONENTS = 2048
+#: Biased exponents from which 2**26 binned values could overflow a float64 bin sum.
+_BIN_OVERFLOW = 2046 - 26
+_LOW_HALF = np.uint64((1 << 26) - 1)
+_FRACTION = np.uint64((1 << 52) - 1)
+_LIMB = np.uint64(32)
+_LIMB_MASK = np.uint64(0xFFFFFFFF)
+#: Limbs held per group: values up to 2**96 apart. A group whose values span more (such
+#: as 1e300 beside 1e-300) sums by ``exact_sum``, so memory stays at 8 limbs per group.
+_LIMB_WIDTH = 8
+
+
+def exact_sum(values: Iterable[float]) -> float:
+    """The sum of *values* rounded once to the nearest float, in any order.
+
+    ``math.fsum`` is exact unless a partial sum overflows; the rational fallback then
+    rounds the exact total, to ±inf beyond the largest float. Non-finite values follow
+    IEEE: nan if any is nan or both infinities occur, otherwise that infinity.
+    """
+    values = [float(value) for value in values]
+    special = [value for value in values if not math.isfinite(value)]
+    if special:
+        return sum(special, 0.0)
+    try:
+        return math.fsum(values) + 0.0
+    except OverflowError:
+        total = sum(map(Fraction, values), Fraction(0))
+        try:
+            return float(total)
+        except OverflowError:
+            return math.inf if total > 0 else -math.inf
+
+
+def _exact_group_sums(codes: np.ndarray, n_groups: int, values: np.ndarray) -> np.ndarray:
+    """``exact_sum`` of each group's *values*; *codes* holds each row's group in ``range(n_groups)``."""
+    values = np.ascontiguousarray(values, dtype=np.float64)
+    codes = np.asarray(codes, dtype=np.int64)
+    finite = np.isfinite(values)
+    special_codes, special = codes[~finite], values[~finite]
+    live = finite & (values != 0.0)
+    if not live.all():
+        codes, values = codes[live], values[live]
+    if n_groups * _EXPONENTS < len(values):
+        codes, values = _exponent_partials(codes, n_groups, values)
+    sums = _limb_sums(codes, n_groups, values)
+    if len(special):
+        nan = np.bincount(special_codes[np.isnan(special)], minlength=n_groups) > 0
+        high = np.bincount(special_codes[special == np.inf], minlength=n_groups) > 0
+        low = np.bincount(special_codes[special == -np.inf], minlength=n_groups) > 0
+        sums[high] = np.inf
+        sums[low] = -np.inf
+        sums[nan | (high & low)] = np.nan
+    return sums
+
+
+def _exponent_partials(
+    codes: np.ndarray, n_groups: int, values: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fewer finite nonzero values with the same group sums.
+
+    Per group and exponent, the high and low mantissa halves each sum to a multiple of
+    the bin's scale below 2**53 of it, so every float64 partial sum is exact. Exponents
+    whose bin sums could overflow pass through unchanged.
+    """
+    bits = values.view(np.uint64)
+    exponent = ((bits >> np.uint64(52)) & np.uint64(0x7FF)).astype(np.int64)
+    passed = exponent >= _BIN_OVERFLOW
+    kept = (codes[passed], values[passed])
+    if len(kept[1]):
+        binned = ~passed
+        codes, values, bits = codes[binned], values[binned], bits[binned]
+        exponent = exponent[binned]
+    bins = codes * _EXPONENTS + exponent
+    high = (bits & ~_LOW_HALF).view(np.float64)
+    low = values - high
+    size = n_groups * _EXPONENTS
+    partials = [np.zeros(0)]
+    for start in range(0, len(values), _BIN_ROWS):
+        rows = slice(start, start + _BIN_ROWS)
+        partials.append(np.bincount(bins[rows], weights=high[rows], minlength=size))
+        partials.append(np.bincount(bins[rows], weights=low[rows], minlength=size))
+    stacked = np.concatenate(partials)
+    nonzero = np.flatnonzero(stacked)
+    return (
+        np.concatenate([(nonzero % size) // _EXPONENTS, kept[0]]),
+        np.concatenate([stacked[nonzero], kept[1]]),
+    )
+
+
+def _limb_sums(codes: np.ndarray, n_groups: int, values: np.ndarray) -> np.ndarray:
+    """Group sums of finite nonzero *values* through exact 32-bit limb integers.
+
+    A value is ``±m * 2**(p - 1074)`` with ``m < 2**53``; ``m << (p % 32)`` splits into
+    three limbs from limb ``p // 32``. Each group adds its limbs in int64 (exact below
+    2**31 rows), carries them into 32-bit limbs and rounds the integer once.
+    """
+    if not len(values):
+        return np.zeros(n_groups)
+    bits = values.view(np.uint64)
+    biased = (bits >> np.uint64(52)) & np.uint64(0x7FF)
+    mantissa = (bits & _FRACTION) | ((biased != 0).astype(np.uint64) << np.uint64(52))
+    position = np.maximum(biased, np.uint64(1)) - np.uint64(1)
+    limb = (position >> np.uint64(5)).astype(np.int64)
+    offset = position & np.uint64(31)
+    sign = np.where(bits >> np.uint64(63) != 0, -1, 1)
+    parts = (
+        (mantissa & (_LIMB_MASK >> offset)) << offset,
+        (mantissa >> (_LIMB - offset)) & _LIMB_MASK,
+        (mantissa >> _LIMB) >> (_LIMB - offset),
+    )
+    bottom = np.full(n_groups, np.iinfo(np.int64).max)
+    np.minimum.at(bottom, codes, limb)
+    top = np.full(n_groups, -1)
+    np.maximum.at(top, codes, limb)
+    present = top >= 0
+    span = np.where(present, top - bottom, 0)
+    # Three limbs per value and two for carries: fewer than 2**31 rows add under 32 bits.
+    width = min(int(span.max()) + 5, _LIMB_WIDTH)
+    wide = span + 5 > width
+    bottom = np.where(present, bottom, 0)
+    column = codes * width + (limb - bottom[codes])
+    if wide.any():
+        narrow = ~wide[codes]
+        column, sign = column[narrow], sign[narrow]
+        parts = tuple(part[narrow] for part in parts)
+    limbs = np.zeros(n_groups * width, dtype=np.int64)
+    for shift, part in enumerate(parts):
+        np.add.at(limbs, column + shift, sign * part.astype(np.int64))
+    limbs = limbs.reshape(n_groups, width)
+    _carry(limbs)
+    negative = limbs[:, -1] < 0
+    limbs[negative] = -limbs[negative]
+    _carry(limbs)
+    magnitude = _round_limbs(limbs.astype(np.uint64), bottom)
+    sums = np.where(negative, -magnitude, magnitude)
+    for group in np.flatnonzero(wide):
+        sums[group] = exact_sum(values[codes == group].tolist())
+    return sums
+
+
+def _carry(cells: np.ndarray) -> None:
+    """Carry each limb's bits above 32 into the next, leaving lower limbs in [0, 2**32)."""
+    for column in range(cells.shape[1] - 1):
+        carry = cells[:, column] >> 32
+        cells[:, column] -= carry << 32
+        cells[:, column + 1] += carry
+
+
+def _round_limbs(cells: np.ndarray, bottom: np.ndarray) -> np.ndarray:
+    """Each row's nonnegative limb integer as the nearest float, ties to even.
+
+    Row ``i`` holds ``sum(cells[i, j] * 2**(32 * (bottom[i] + j)))`` in units of
+    ``2**-1074``. A sum below the smallest normal float is a multiple of that unit and
+    so exact; otherwise its top 53 bits are rounded on the bits below them.
+    """
+    rows = np.arange(len(cells))
+    padded = np.concatenate([np.zeros((len(cells), 2), dtype=np.uint64), cells], axis=1)
+    nonzero = padded != 0
+    lead = np.maximum(padded.shape[1] - 1 - np.argmax(nonzero[:, ::-1], axis=1), 2)
+    head, middle, tail = padded[rows, lead], padded[rows, lead - 1], padded[rows, lead - 2]
+    sticky = (nonzero & (np.arange(padded.shape[1]) < (lead - 2)[:, None])).any(axis=1)
+    window = (head << _LIMB) | middle
+    # Drop the low bits of the 96-bit window (head, middle, tail) past 53 significant bits.
+    dropped = np.frexp(head.astype(np.float64))[1].astype(np.uint64) + np.uint64(11)
+    short = dropped <= _LIMB
+    inner = np.where(short, dropped, _LIMB)
+    outer = np.where(short, _LIMB + np.uint64(1), dropped) - _LIMB
+    kept = np.where(short, (window << (_LIMB - inner)) | (tail >> inner), window >> outer)
+    rest = np.where(
+        short,
+        tail & ((np.uint64(1) << inner) - np.uint64(1)),
+        ((window & ((np.uint64(1) << outer) - np.uint64(1))) << _LIMB) | tail,
+    )
+    half = np.uint64(1) << (dropped - np.uint64(1))
+    kept += (rest > half) | ((rest == half) & (sticky | ((kept & np.uint64(1)) != 0)))
+    exponent = 32 * (bottom + lead - 4) + dropped.astype(np.int64) - 1074
+    with np.errstate(over="ignore"):
+        rounded = np.ldexp(kept.astype(np.float64), exponent)
+    return np.where(nonzero.any(axis=1), rounded, 0.0)
+
+
+def _float_values(series: nw.Series[Any]) -> tuple[np.ndarray, np.ndarray | None]:
+    """A column's float64 values and, when it has nulls, which rows hold a value."""
+    series = series.cast(nw.Float64)
+    if not series.null_count():
+        return np.ascontiguousarray(series.to_numpy(), dtype=np.float64), None
+    valid = ~np.asarray(series.is_null().to_numpy(), dtype=bool)
+    return np.ascontiguousarray(series.fill_null(0.0).to_numpy(), dtype=np.float64), valid
+
+
+def _group_totals(
+    codes: np.ndarray, n_groups: int, values: np.ndarray, valid: np.ndarray | None
+) -> np.ndarray:
+    """Exact per-group sums of the rows of *values* that hold a value."""
+    if valid is None:
+        return _exact_group_sums(codes, n_groups, values)
+    return _exact_group_sums(codes[valid], n_groups, values[valid])
+
+
+def _exact_mean(series: nw.Series[Any]) -> float | None:
+    """The mean of a column's non-null values from their exact sum; None when it has none."""
+    values, valid = _float_values(series)
+    if valid is not None:
+        values = values[valid]
+    if not len(values):
+        return None
+    return float(_exact_group_sums(np.zeros(len(values), dtype=np.int64), 1, values)[0]) / len(
+        values
+    )
+
+
+def _grouped(
+    frame: nw.DataFrame[Any],
+    keys: Sequence[str],
+    aggregations: Mapping[str, nw.Expr] | None = None,
+) -> tuple[np.ndarray, nw.DataFrame[Any]]:
+    """Each row's dense group code, and one row per group in code order: its *keys* and
+    *aggregations*, each evaluated over the group."""
+    row = _scratch_name(frame, "__row__")
+    first = _scratch_name(frame, "__first__")
+    indexed = frame.with_row_index(row).with_columns(
+        nw.col(row).min().over(*keys).alias(first),
+        *(expression.over(*keys).alias(name) for name, expression in (aggregations or {}).items()),
+    )
+    leading = np.asarray(indexed.get_column(first).to_numpy(), dtype=np.int64)
+    leaders = np.flatnonzero(leading == np.arange(len(leading)))
+    lookup = np.zeros(len(leading), dtype=np.int64)
+    lookup[leaders] = np.arange(len(leaders))
+    groups = indexed.filter(nw.col(row) == nw.col(first)).select(*keys, *(aggregations or {}))
+    return lookup[leading], groups
+
+
+def _exact_totals(
+    frame: nw.DataFrame[Any],
+    keys: Sequence[str],
+    sums: Mapping[str, str],
+    *,
+    maxima: Mapping[str, str] | None = None,
+    counts: Sequence[str] = (),
+) -> nw.DataFrame[Any]:
+    """One row per *keys* group: the *sums* columns' totals, *maxima* and row *counts*.
+
+    Float columns sum exactly; integer and other columns sum natively, which is already
+    independent of row order.
+    """
+    maxima = maxima or {}
+    floats = {name: column for name, column in sums.items() if frame.schema[column].is_float()}
+    native = {
+        **{name: nw.col(column).sum() for name, column in sums.items() if name not in floats},
+        **{name: nw.col(column).max() for name, column in maxima.items()},
+    }
+    needed = dict.fromkeys([*keys, *sums.values(), *maxima.values()])
+    codes, groups = _grouped(frame.select(*needed), keys, native)
+    n_groups = len(groups)
+    backend = groups.implementation
+    columns = [
+        nw.new_series(
+            name,
+            _group_totals(codes, n_groups, *_float_values(frame.get_column(column))),
+            frame.schema[column],
+            backend=backend,
+        )
+        for name, column in floats.items()
+    ]
+    columns += [
+        nw.new_series(name, np.bincount(codes, minlength=n_groups), nw.Int64, backend=backend)
+        for name in counts
+    ]
+    return groups.with_columns(*columns) if columns else groups
+
+
+# Residuals and products overflow to inf as native column arithmetic does; an estimator
+# reads an overflowed moment as unavailable and refuses with its own code.
+@np.errstate(over="ignore", invalid="ignore", divide="ignore")
 def emit_centered_moments(
     long: nw.DataFrame[Any],
     plan: MomentPlan,
@@ -99,79 +380,75 @@ def emit_centered_moments(
     keys: Sequence[str],
     columns: Mapping[str, str],
     successes_of: str | None = None,
-) -> nw.DataFrame[Any]:
-    """Two-phase centered moments of *plan*'s materialized variables, one row per *keys*.
+) -> list[dict[str, Any]]:
+    """Two-phase centered moments of *plan*'s materialized variables, one record per *keys*.
 
     *columns* maps each materialized plan variable and mask to its column
     in *long*; a plan variable absent from it is not emitted at all (never
-    a column of nulls -- see ``_moment_fields``). Phase 1 aggregates each
-    variable's per-partition mean over the same rows and keys and joins it
-    back (a join, not a ``.over()`` window: narwhals windows are not
-    portable to pyarrow); phase 2 materializes residuals and their products
-    with ``with_columns`` before the aggregate, so every ``agg`` term is a
-    plain column sum inside pyarrow's restricted group-by support. Masked
-    moments stay centered on the partition reference, never on the masked
-    subgroup's own mean (see ``ArmStats``). Count fields stay raw.
+    a column of nulls -- see ``_moment_fields``). Phase 1 takes each
+    variable's per-partition mean over the same rows and keys; phase 2 sums
+    residuals and their products. Every sum is exact (``exact_sum``), so the
+    moments are a function of the rows, whatever their order, partitioning or
+    dataframe library. Masked moments stay centered on the partition reference,
+    never on the masked subgroup's own mean (see ``ArmStats``). Count fields
+    stay raw; a null value leaves its row out of that variable's sums.
 
     *successes_of* names a plan variable whose per-row values are a declared
     0/1 outcome at the grain *long* is reduced at. The aggregate then also
-    carries :data:`_SUCCESSES` (the exact int64 sum of rows equal to 1) and
+    carries :data:`_SUCCESSES` (the exact integer count of rows equal to 1) and
     :data:`_NONBINARY` (rows equal to neither 0 nor 1, nulls and NaN
     included); the count is meaningful only where ``_NONBINARY`` is 0 (see
-    :func:`_exact_successes`). Both are integer sums of integer indicators,
-    never routed through float. Callers declare the outcome from the metric
-    type, never from the values: 0/1-valued mean data is not a conversion.
+    :func:`_exact_successes`). Both are integer counts, never routed through
+    float. Callers declare the outcome from the metric type, never from the
+    values: 0/1-valued mean data is not a conversion.
     """
     group_cols = list(keys)
+    codes, groups = _grouped(long.select(*group_cols), group_cols)
+    n_groups = len(groups)
     live = [variable for variable in plan.variables if variable in columns]
     masks = [mask for mask in plan.masked if mask in columns]
-    ref_name = {variable: plan.name(("ref", (variable,), None)) for variable in live}
-    references = [nw.col(columns[v]).mean().alias(ref_name[v]) for v in live]
-    long = long.join(long.group_by(group_cols).agg(*references), on=group_cols, how="left")
-    residual = {variable: f"__residual_{variable}" for variable in live}
-    long = long.with_columns(
-        *[(nw.col(columns[v]) - nw.col(ref_name[v])).alias(residual[v]) for v in live]
-    )
-
-    def materialized(moment: Moment) -> bool:
-        _kind, variables, mask = moment
-        return all(v in residual for v in variables) and (mask is None or mask in masks)
-
-    products: list[nw.Expr] = []
-    aggs: list[nw.Expr] = [nw.len().alias(plan.name(("n", (), None)))]
+    data = {name: _float_values(long.get_column(columns[name])) for name in (*live, *masks)}
+    references: dict[str, np.ndarray] = {}
+    residuals: dict[str, tuple[np.ndarray, np.ndarray | None]] = {}
+    for variable in live:
+        values, valid = data[variable]
+        count = np.bincount(codes if valid is None else codes[valid], minlength=n_groups)
+        references[variable] = _group_totals(codes, n_groups, values, valid) / count
+        residuals[variable] = (values - references[variable][codes], valid)
+    aggregates: dict[str, np.ndarray] = {
+        plan.name(("n", (), None)): np.bincount(codes, minlength=n_groups)
+    }
     for moment in (*plan.unmasked_moments(), *plan.masked_moments()):
-        if not materialized(moment):
-            continue
         kind, variables, mask = moment
+        if not all(v in residuals for v in variables) or (mask is not None and mask not in masks):
+            continue
         name = plan.name(moment)
         if kind == "ref":
-            # Constant within the group (phase 1 grouped on these very keys);
-            # max() is simply how a constant is carried through the agg.
-            aggs.append(nw.col(name).max().alias(name))
+            aggregates[name] = references[variables[0]]
         elif kind == "count":
             assert mask is not None  # a count is always some mask's count
-            aggs.append(nw.col(columns[mask]).sum().alias(name))
-        elif kind == "c1" and mask is None:
-            aggs.append(nw.col(residual[variables[0]]).sum().alias(name))
+            aggregates[name] = _group_totals(codes, n_groups, *data[mask])
         else:
-            product: nw.Expr | None = nw.col(columns[mask]) if mask is not None else None
+            product, valid = data[mask] if mask is not None else (None, None)
             for variable in variables:
-                term = nw.col(residual[variable])
+                term, present = residuals[variable]
                 product = term if product is None else product * term
+                valid = present if valid is None else valid if present is None else valid & present
             assert product is not None
-            products.append(product.alias(f"__product_{name}"))
-            aggs.append(nw.col(f"__product_{name}").sum().alias(name))
+            aggregates[name] = _group_totals(codes, n_groups, product, valid)
     if successes_of is not None:
-        outcome = nw.col(columns[successes_of])
-        is_one = (outcome == 1.0).fill_null(False)
-        is_zero = (outcome == 0.0).fill_null(False)
-        products.append(is_one.cast(nw.Int64).alias("__success"))
-        products.append((~(is_one | is_zero)).cast(nw.Int64).alias("__nonbinary"))
-        aggs.append(nw.col("__success").sum().alias(_SUCCESSES))
-        aggs.append(nw.col("__nonbinary").sum().alias(_NONBINARY))
-    if products:
-        long = long.with_columns(*products)
-    return long.group_by(group_cols).agg(*aggs)
+        outcome, valid = data[successes_of]
+        is_one = outcome == 1.0
+        is_zero = outcome == 0.0
+        if valid is not None:
+            is_one &= valid
+            is_zero &= valid
+        aggregates[_SUCCESSES] = np.bincount(codes[is_one], minlength=n_groups)
+        aggregates[_NONBINARY] = np.bincount(codes[~(is_one | is_zero)], minlength=n_groups)
+    return [
+        {**key, **{name: values[index].item() for name, values in aggregates.items()}}
+        for index, key in enumerate(groups.iter_rows(named=True))
+    ]
 
 
 #: Aggregate columns :func:`emit_centered_moments` adds for a declared binary outcome.
@@ -292,7 +569,7 @@ def _apply_spec_missing(
             if covariate.missing == "zero":
                 fill = 0.0
             else:
-                mean = long.select(nw.col("x").fill_nan(None).mean()).item()
+                mean = _exact_mean(long.get_column("x").fill_nan(None))
                 if mean is None:
                     refuse(
                         COVARIATE_IMPUTE_ALL_NULL,
@@ -466,7 +743,7 @@ def _day_moment_records(
             columns=columns,
             successes_of=_binary_outcome(spec),
         )
-        for record in summary.iter_rows(named=True):
+        for record in summary:
             yield record, _winsor_metadata_for_record(record, metadata, key_cols=key_cols)
 
 
@@ -584,13 +861,15 @@ def _moment_rows(
             long = frame.select(*select_exprs)
             long = _apply_spec_missing(long, spec, has_x=False, has_den=has_den, covariate=None)
             long, winsor_metadata = _apply_winsorization(long, spec, key_cols=key_cols)
-            cluster_aggs = [
-                nw.col("y").sum().alias("y"),
-                nw.col("y_den").sum().alias("y_den") if has_den else nw.len().alias("y_den"),
-                nw.col("d").sum().alias("x") if has_uptake else nw.len().alias("x"),
-            ]
-            per_cluster = long.group_by(_moment_group_cols("group_id", "__cluster__", by=by)).agg(
-                *cluster_aggs
+            per_cluster = _exact_totals(
+                long,
+                _moment_group_cols("group_id", "__cluster__", by=by),
+                {
+                    "y": "y",
+                    **({"y_den": "y_den"} if has_den else {}),
+                    **({"x": "d"} if has_uptake else {}),
+                },
+                counts=[*(() if has_den else ("y_den",)), *(() if has_uptake else ("x",))],
             )
             plan = CLUSTER_UPTAKE_GRAIN if has_uptake else CLUSTER_SIZE_GRAIN
             x_var = plan.x_variable()
@@ -607,7 +886,7 @@ def _moment_rows(
                 keys=_moment_group_cols("group_id", by=by),
                 columns={"y": "y", "den": "y_den", x_var: "x"},
             )
-            for record in summary.iter_rows(named=True):
+            for record in summary:
                 rows.append(
                     {
                         "experiment_id": experiment_id,
@@ -667,7 +946,7 @@ def _moment_rows(
             successes_of=_binary_outcome(spec),
         )
 
-        for record in summary.iter_rows(named=True):
+        for record in summary:
             rows.append(
                 {
                     "experiment_id": experiment_id,
@@ -1299,12 +1578,11 @@ def _collapse_to_unit_totals(
     window_days)``, with no end if unbounded. Without one, every observed uptake
     row counts; a bounded uptake window always comes with its exposure anchor.
     """
-    sum_cols = sorted({c for s in specs for c in (s.y_column, s.denominator) if c})
-    aggs = [nw.col(c).sum().alias(c) for c in sum_cols]
+    sums = {c: c for c in sorted({c for s in specs for c in (s.y_column, s.denominator) if c})}
     unit_keys = _moment_group_cols("unit_id", "group_id", by=by)
 
     if uptake is None:
-        return panel.group_by(unit_keys).agg(*aggs)
+        return _exact_totals(panel, unit_keys, sums)
 
     assert window_days is None or exposure is not None
     scoped = panel
@@ -1325,8 +1603,7 @@ def _collapse_to_unit_totals(
             nw.when(in_band).then(nw.col(uptake)).otherwise(0.0).alias(uptake)
         )
 
-    aggs.append(nw.col(uptake).max().alias(uptake))
-    return scoped.group_by(unit_keys).agg(*aggs)
+    return _exact_totals(scoped, unit_keys, sums, maxima={uptake: uptake})
 
 
 def _reduce_spec(
@@ -1371,12 +1648,12 @@ def _reduce_spec(
         )
         fill_zero = ("__y__",)
     else:
-        aggs = [nw.col(spec.y_column).sum().alias("__y__")]
+        sums = {"__y__": spec.y_column}
         fill_zero = ("__y__",)
         if spec.denominator is not None:
-            aggs.append(nw.col(spec.denominator).sum().alias("__y_den__"))
+            sums["__y_den__"] = spec.denominator
             fill_zero = ("__y__", "__y_den__")
-        per_unit = windowed.group_by(unit_keys).agg(*aggs)
+        per_unit = _exact_totals(windowed, unit_keys, sums)
 
     if units_source is None:
         return per_unit
@@ -1455,7 +1732,7 @@ def _windowed_moment_rows(
             successes_of=_binary_outcome(spec),
         )
 
-        for record in summary.iter_rows(named=True):
+        for record in summary:
             rows.append(
                 {
                     "experiment_id": experiment_id,
@@ -1552,9 +1829,9 @@ def _total_moment_rows(
         for name, per_unit in ((None if covariates is None else covariates.tables) or {}).items():
             covariate_aliases[name] = _scratch_name(collapsed, f"__covariate__{name}")
             if name in imputed_names:
-                covariate_means[covariate_aliases[name]] = per_unit.select(
-                    nw.col(name).fill_nan(None).mean()
-                ).item()
+                covariate_means[covariate_aliases[name]] = _exact_mean(
+                    per_unit.get_column(name).fill_nan(None)
+                )
             collapsed = collapsed.join(
                 per_unit.rename({name: covariate_aliases[name]}), on="unit_id", how="left"
             )
@@ -1662,7 +1939,7 @@ def _compliance_arm_rows_totals(
         cluster_moments = emit_centered_moments(
             per_cluster, COMPLIANCE_CLUSTER, keys=["group_id"], columns={"uptake": "u", "size": "m"}
         )
-        for record in cluster_moments.iter_rows(named=True):
+        for record in cluster_moments:
             rows[str(record["group_id"])].update(
                 {
                     name: int(record[name]) if name == "n_clusters" else float(record[name])

@@ -127,6 +127,19 @@ values.
 
 ### Earlier release notes
 
+- Release note (identity cutover): a readout's `source_snapshot_id`, and every
+  family ID built from it, no longer changes when a message is reworded. A
+  snapshot keeps reason codes and their structured context but not rendered
+  messages or notes. A health report's `source_snapshot_id` keeps each check's
+  codes, statuses and evidence (counts, rates, thresholds, refusal context) but
+  not its rendered reasons, routes, descriptions, risks or assumption
+  statements, which the report itself still carries. A dataframe readout's
+  `source_snapshot_id` and `source_content_digest` no longer change with row
+  order, engine threading or the dataframe library (pandas, polars or
+  pyarrow): its moment and per-unit sums are exact, rounded once, and a
+  multicovariate fit is identified by its unit rows. Previously saved IDs for
+  these runs change once. Estimates are unchanged except that dataframe
+  moments can move in their last bits, within the parity tolerance.
 - Release note (feature): analyses run on any Ibis SQL backend. DuckDB,
   PostgreSQL, Snowflake and BigQuery remain the verified warehouses. The first
   time Increment uses a connection to any other backend, it shows one

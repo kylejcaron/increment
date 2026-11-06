@@ -5,6 +5,7 @@ from typing import Any, cast
 import pytest
 
 from tests.parity_harness.expected_differences import (
+    RENDERED_TEXT_SNAPSHOT_REASON,
     VALUE_SCALE_SNAPSHOT_REASON,
     ExpectedDifference,
 )
@@ -91,6 +92,61 @@ VALUE_SCALE_SNAPSHOT_DIFFERENCES = tuple(
         ),
     )
 )
+# Chained after the records above: `frozen` is the ID main produced.
+RENDERED_TEXT_SNAPSHOT_DIFFERENCES = tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress=ingress,
+        field=f"{view} snapshot_id",
+        frozen=f"sha256:{frozen}",
+        current=f"sha256:{current}",
+        reason=RENDERED_TEXT_SNAPSHOT_REASON,
+    )
+    for scenario, ingress, view, frozen, current in (
+        (
+            "breakout_store_dimension",
+            "from_definitions",
+            "daily_lift",
+            "13f1c31232d63f01b6b85f537d2c72c53baf79c64d25cfa5abcbe3072371506f",
+            "523a596eea7d8d43ca3054691d7cc8e2d52bee3d6c3260aac9b6860685f3dba0",
+        ),
+        (
+            "breakout_store_dimension",
+            "from_definitions",
+            "asof_lift",
+            "413112f6af4bd1914c5cc492225adfe810f961262ab19a22347b3c4f07e7c649",
+            "6ab3f60b6f8d3a17e87fdb047e0369bed2b4bb42d2726f0acd72b63812806403",
+        ),
+        (
+            "breakout_store_dimension",
+            "from_definitions",
+            "breakout",
+            "fd017e16f0999da4f298a1692e00322a54d7335ce7c4d1b0f467675ee82feddb",
+            "fc78b0670004494b2671ad816cbdfc4c86d808e8c75b3fde147623611a20f32c",
+        ),
+        (
+            "frame_panel_analysis",
+            "from_unit_panel",
+            "daily_lift",
+            "007ee88da88cf335a7221f24d2f86af55d0decfe94741840e01b375c7fda0501",
+            "5b9fa8a804081e358c5cd6e49a8781ee3347dd370f2ec01c3c41c02cb362be68",
+        ),
+        (
+            "frame_panel_analysis",
+            "from_unit_panel",
+            "asof_lift",
+            "0a93345621af45231054d32b1f7f15d6179af35e35a7a843f6d5cd925f72bfd1",
+            "3e5b3e98de8032267f79c033b948797241f78ce27d25498ce268976b84c10048",
+        ),
+        (
+            "frame_panel_analysis",
+            "from_unit_panel",
+            "breakout",
+            "f6f58be83b5f50d0566a84ef089be07d4af68a2a57994ed6ba0177e870b71508",
+            "3f460da54e60c8b360f12cebc66f681b6fa0539c6924ad90a69ed7023b3013fb",
+        ),
+    )
+)
 
 
 @pytest.mark.parametrize(
@@ -141,7 +197,11 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
             "asof_lift": View(view="asof", grain="asof"),
             "breakout": View(view="breakout", grain="total"),
         }
-        for difference in (*BINOMIAL_ROW_SNAPSHOT_DIFFERENCES, *VALUE_SCALE_SNAPSHOT_DIFFERENCES):
+        for difference in (
+            *BINOMIAL_ROW_SNAPSHOT_DIFFERENCES,
+            *VALUE_SCALE_SNAPSHOT_DIFFERENCES,
+            *RENDERED_TEXT_SNAPSHOT_DIFFERENCES,
+        ):
             if difference.ingress == ingress:
                 expected = difference.applied_to(expected)
         assert {

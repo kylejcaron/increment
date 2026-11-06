@@ -248,7 +248,7 @@ def test_emitter_counts_only_a_declared_outcome_and_only_when_every_row_is_binar
         out = emit_centered_moments(
             long, UNIT_GRAIN, keys=["group_id"], columns={"y": "y"}, **kwargs
         )
-        return {r["group_id"]: _moment_fields(r) for r in out.iter_rows(named=True)}
+        return {r["group_id"]: _moment_fields(r) for r in out}
 
     declared = emit(successes_of="y")
     assert declared["a"]["successes"] == 2

@@ -1264,8 +1264,13 @@ def _audit_metric_identity(record, records):
     has_linear = any(
         method["variance_reduction"] == "cuped_multicovariate" for method in request["methods"]
     )
+    # Unit rows identify a local linear fit; other linear fits digest their moment rows raw.
+    raw_moments = has_linear and not any(
+        component == "unit_evidence_rows"
+        for component, _digest, _count in answer["evidence_components"]
+    )
     available = {
-        "moments_rows": _digest_input_rows(answer["rows"], raw=has_linear),
+        "moments_rows": _digest_input_rows(answer["rows"], raw=raw_moments),
     }
     available.update(
         {
@@ -1336,11 +1341,7 @@ def _audit_metric_identity(record, records):
         assert answer["evidence_sha256"] == ""
     for field in ("evidence_components", "decision_evidence_components"):
         for component, digest, count in answer[field]:
-            if component == "moments_rows" and not has_linear:
-                expected = _digest_input_rows(answer["rows"])
-            else:
-                expected = available[component]
-            assert (digest, count) == expected, (request, field, component)
+            assert (digest, count) == available[component], (request, field, component)
     return answer
 
 
@@ -1666,6 +1667,7 @@ def _assert_coordinate_inputs(live, frozen):
     )
     from tests.parity_harness.expected_differences import (
         CONSUMER_INPUT_DIFFERENCES,
+        TRANSCRIPT_ANSWER_DIFFERENCES,
         TYPED_INPUT_DIFFERENCES,
         through_observation_end,
         with_declared_favorable_sides,
@@ -1674,6 +1676,15 @@ def _assert_coordinate_inputs(live, frozen):
         without_metric_outcome_columns,
     )
 
+    frozen = replace(
+        frozen,
+        records=with_expected_difference(
+            frozen.scenario_id,
+            frozen.ingress,
+            frozen.records,
+            differences=TRANSCRIPT_ANSWER_DIFFERENCES,
+        ),
+    )
     expected = through_observation_end(
         frozen.scenario_id, frozen.ingress, _comparison_records(frozen)
     )
@@ -2305,6 +2316,8 @@ def _input_evidence_projection(value, *, field=None):
             "metric_type",
             "mean_control",
             "mean_treat",
+            "display",
+            "note",
         }
         return {
             key: _input_evidence_projection(item, field=key)
