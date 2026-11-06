@@ -207,6 +207,33 @@ values.
   secondary families use Benjamini-Hochberg at a fixed horizon and e-BH under
   sequential inference, including `AsymptoticMean`, not Bonferroni. Estimates,
   refusals and experiment identity are unchanged.
+- Release note (breaking numerical correction): a breakout or daily row
+  flagged `low_reliability` (fewer than 50 units in its control or treatment
+  arm) now keeps its verdict. `stat_sig()`, `rejection_side()`, the readout
+  frame's `stat_sig` and `decision_available`, and decisions rebuilt from a
+  run's cells decide it from its own interval, as for any other row; before,
+  a flagged segment selected by its BH family still reported
+  `stat_sig() == False` and was called inconclusive. Its interpretation line
+  now ends with a caveat naming the 50-unit criterion, and
+  [Reading results](guides/reading-results.md#small-segments-are-flagged-not-withheld)
+  states it. A fixed-horizon Bonferroni breakout divides each metric's alpha
+  by its (treatment arm, segment) cells estimable by their arm counts under
+  its decision method, so a sensitivity method never changes it, and its
+  family lists only those cells: with four segments, one of them a single
+  unit per arm, the other three are read at `1 - 0.05/3` instead of
+  `1 - 0.05/4`, and the sparse one is an unavailable `few_units` row outside
+  the family. With several treatment arms every arm of every segment counts,
+  so the familywise guarantee holds over all of them: three segments of two
+  arms are read at `1 - 0.05/6`, not `1 - 0.05/3`, and the family and its
+  rows report `family_axes == ("arm", "segment")` instead of `("segment",)`.
+  Under `conversion_inference="auto"` a conversion or retention comparison
+  takes the delta-method or exact binomial route by comparing its counts with
+  a threshold that depends on its level, so a comparison near that threshold
+  can change route, interval and p-value with the corrected level.
+  Daily-breakout Bonferroni, point estimates, BH families and experiment
+  identity are unchanged.
+  Migration: read `r.low_reliability` for the caveat; a flagged row's
+  `stat_sig()` is no longer a withheld verdict.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded

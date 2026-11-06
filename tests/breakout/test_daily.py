@@ -1007,8 +1007,8 @@ class TestRunDailyLiftConfidenceIntervals:
         assert (big_lift.ub - big_lift.lb) < (small_lift.ub - small_lift.lb)
 
 
-# run_daily_lift: reliability_floor - a thin day's estimate is returned
-# but flagged low_reliability=True, and readout suppresses its stat_sig
+# run_daily_lift: reliability_floor - a thin day's estimate is returned,
+# flagged low_reliability=True, and decided like any other day
 
 
 DAY1 = date(2025, 1, 1)
@@ -1068,9 +1068,9 @@ class TestRunDailyLiftReliabilityFloor:
         )
         assert all(e.low_reliability is False for e in out)
 
-    def test_readout_suppresses_stat_sig_for_low_reliability_daily_row(self):
-        """tables.py's stat_sig is forced False for a flagged
-        DailyLiftEstimate even when the interval excludes 0."""
+    def test_low_reliability_daily_row_decides_normally(self):
+        """A flagged DailyLiftEstimate whose interval excludes 0 is significant in the
+        readout frame, and that verdict is a usable decision, as on an unflagged day."""
         pytest.importorskip("coeftable")
         from increment.tables import estimates_to_readout
 
@@ -1080,10 +1080,10 @@ class TestRunDailyLiftReliabilityFloor:
             control_group="control",
         )
         by_ds = {est.ds: row for est, row in zip(out, estimates_to_readout(out), strict=True)}
-        assert by_ds[DAY1]["low_reliability"] is True
-        assert by_ds[DAY1]["stat_sig"] is False
-        assert by_ds[DAY2]["low_reliability"] is False
-        assert by_ds[DAY2]["stat_sig"] is True
+        flagged = {ds: row["low_reliability"] for ds, row in by_ds.items()}
+        assert flagged == {DAY1: True, DAY2: False}
+        for row in by_ds.values():
+            assert (row["stat_sig"], row["decision_available"]) == (True, True)
 
 
 # alternative= forwarding: one-sided per-day testing

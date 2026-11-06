@@ -94,10 +94,15 @@ from increment.estimation.engine import (
 from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.inference import LiftGuardError, Prior
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
-from increment.estimation.multiplicity import design_excluded, stamp_multiplicity_status
+from increment.estimation.multiplicity import (
+    DESIGN_EXCLUSIONS,
+    design_excluded,
+    stamp_multiplicity_status,
+)
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.readout_types import register_collection_types
 from increment.estimation.results import (
+    DEFAULT_RELIABILITY_FLOOR,
     BinomialConfidenceSet,
     DeltaConversionEvidence,
     Estimate,
@@ -632,8 +637,8 @@ class BreakoutEstimate(_RowIdentity):
     :data:`ExclusionReason`).
 
     ``low_reliability`` flags a real estimate whose control or
-    treatment arm has fewer than ``reliability_floor`` units: estimable,
-    but the Wald interval's nominal coverage is not trustworthy there.
+    treatment arm has fewer than ``reliability_floor`` units: a caveat on
+    an approximate interval's coverage that leaves its verdict unchanged.
 
     Call ``.to_frame()`` on the :class:`BreakoutEstimates` this returns
     rather than constructing a plain ``list[BreakoutEstimate]``.
@@ -808,9 +813,8 @@ class BreakoutEstimate(_RowIdentity):
 
     def stat_sig(self) -> bool | None:
         """Whether this cell's own interval excludes its own null; ``None`` for an
-        excluded or failed cell. Fixed-horizon ``low_reliability`` cells report
-        ``False``; sequential cells use their retained confidence-sequence verdict.
-        The same verdict ``LiftEstimate.stat_sig()`` and the readout frame report."""
+        excluded or failed cell. Sequential cells use their retained confidence-sequence
+        verdict. The same verdict ``LiftEstimate.stat_sig()`` and the readout frame report."""
         return row_stat_sig(self)
 
     def rejection_side(self) -> RejectionSide | None:
@@ -1352,7 +1356,8 @@ class DailyLiftEstimate(_RowIdentity):
     ``ds`` retains calendar dates, numeric day indices, or structured string
     labels for as-of frame readouts.
     ``low_reliability`` marks a real estimate whose control or
-    treatment arm has fewer than ``reliability_floor`` units that day.
+    treatment arm has fewer than ``reliability_floor`` units that day; it is
+    a caveat and leaves the verdict unchanged.
 
     ``dimension``/``dimension_value``/``source`` are populated together
     when :func:`run_daily_lift` is given a ``dimension``, and ``None``
@@ -2883,11 +2888,6 @@ def _breakout_estimate_row(
     )
 
 
-# Per-arm unit floor under which a real estimate is flagged low_reliability;
-# shared by run_breakout, run_daily_lift, and readouts' encouragement branch.
-DEFAULT_RELIABILITY_FLOOR = 50
-
-
 def _derive_method_roles(
     methods: Sequence[Method] | None,
     roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
@@ -3014,7 +3014,8 @@ class _BreakoutContext(NamedTuple):
     methods_by_metric: Mapping[str, list[Method]] | None
     prior: Prior | None
     prior_by_metric: Mapping[str, Prior | None] | None
-    alpha: float
+    # Each metric's per-cell level; Bonferroni divides alpha by its count-estimable cells.
+    alpha_by_metric: Mapping[str, float]
     alternative: str
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None
@@ -3148,6 +3149,75 @@ def _prepare_lift_slice(
             stacklevel=3,
         )
     return _PreparedLiftSlice(part.live, control_n, arm_n, unestimable, route2_pairs, part)
+
+
+def _scalar_cuped_decision_metrics(
+    metrics: Sequence[Metric],
+    *,
+    methods: list[Method] | None,
+    methods_by_metric: Mapping[str, list[Method]] | None,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
+    method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None,
+    prior: Prior | None,
+    prior_by_metric: Mapping[str, Prior | None] | None,
+) -> frozenset[str]:
+    """Fixed-horizon metrics whose decision method is scalar CUPED beside an exact or linear
+    lane: the shared gate admits their one-unit binary arms for that lane, and the decision
+    lane gates them again at two units."""
+    regated: set[str] = set()
+    for metric in metrics:
+        configured = _configured_methods_for_metric(
+            metric.name, methods=methods, methods_by_metric=methods_by_metric
+        )
+        metric_prior = (prior_by_metric or {}).get(metric.name, prior)
+        mixed = _mixed_binomial_method_groups(
+            metric, configured, inference=None, prior=metric_prior
+        )
+        if mixed is not None:
+            roles = _derive_method_roles(
+                configured, (method_roles_by_metric or {}).get(metric.name, method_roles)
+            )
+            if any(
+                method.variance_reduction == "cuped" and roles.get(method.name) == "decision"
+                for method in configured
+            ):
+                regated.add(metric.name)
+    return frozenset(regated)
+
+
+def _count_estimable_cells(
+    segments: Mapping[str, Sequence[Mapping[str, Any]]],
+    prepared_by_segment: Mapping[str, _PreparedLiftSlice],
+    all_pairs: set[tuple[str, str]],
+    *,
+    control_group: str,
+    metric_types: Mapping[str, str],
+    scalar_cuped_decisions: frozenset[str],
+) -> dict[str, int]:
+    """Per metric, how many (treatment arm, segment) cells its decision method's arm counts
+    can estimate: that metric's Bonferroni ``k``, known before any outcome is read, and the
+    size of its family. The cells it leaves out are the design-excluded ones a fixed-horizon
+    BH family leaves out; a sensitivity method never changes them."""
+    counts: dict[str, int] = {}
+    for value, prepared in prepared_by_segment.items():
+        rows = segments[value]
+        regated = (
+            _prepare_lift_slice(
+                [row for row in rows if str(row["metric"]) in scalar_cuped_decisions],
+                control_group=control_group,
+                metric_types=metric_types,
+                binomial_gate_exempt_metrics=frozenset(),
+                unobserved_control_missing=True,
+            ).unestimable
+            if scalar_cuped_decisions
+            else {}
+        )
+        present = {(str(row["metric"]), str(row.get("group_id"))) for row in rows}
+        for metric_name, group_id in all_pairs & present:
+            unestimable = regated if metric_name in scalar_cuped_decisions else prepared.unestimable
+            if unestimable.get((metric_name, group_id)) not in DESIGN_EXCLUSIONS:
+                counts[metric_name] = counts.get(metric_name, 0) + 1
+    return counts
 
 
 def _finalize_breakout_metric_warnings(
@@ -3605,7 +3675,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     summary=method_rows,
                     control_group=context.control_group,
                     prior=metric_prior,
-                    alpha=context.alpha,
+                    alpha=context.alpha_by_metric[metric.name],
                     alternative=context.alternative,
                     methods=method_group,
                     inference=context.inference,
@@ -4339,7 +4409,9 @@ def run_breakout(  # noqa: PLR0913
         Per-segment level, Bonferroni-adjusted if requested; the nominal
         (pass-1) level under ``correction="bh"``.
     correction : Correction
-        ``"bonferroni"`` divides *alpha* by the segment count.
+        ``"bonferroni"`` divides *alpha*, per metric, by that metric's
+        (treatment arm, segment) cells that its decision method does not
+        design-exclude (below).
         ``"bh"`` selects a flat family and reinverts selected intervals at
         min(q*R/m, nominal alpha). Sequential inputs use the predeclared full
         roster and current/frozen likelihood, including missing cells with
@@ -4358,7 +4430,8 @@ def run_breakout(  # noqa: PLR0913
     inference : AsymptoticMean | AlwaysValid | MixedFamily | None
         Registered sequential evidence for the full predeclared roster.
     reliability_floor : int
-        Per-arm floor flagging ``low_reliability=True`` (default 50).
+        Per-arm floor flagging ``low_reliability=True`` (default 50), a caveat
+        that leaves the row's verdict and family membership unchanged.
     _prior_by_metric : Mapping[str, Prior | None] | None
         Internal per-metric prior override used by compiled-plan callers.
     unit_frames_by_metric : Mapping[str, Mapping[str, Any]] | None
@@ -4458,17 +4531,47 @@ def run_breakout(  # noqa: PLR0913
         control_group=control_group,
         methods_by_metric=methods_by_metric,
     )
-    segment_count = len(segments)
-    k = max(segment_count, 1) if correction == "bonferroni" else 1
-    alpha_seg = _conservative_divide(alpha, k)
+    prepared_by_segment: dict[str, _PreparedLiftSlice] = {}
+    for value in sorted(segments):
+        prepared_by_segment[value] = _prepare_lift_slice(
+            segments[value],
+            control_group=control_group,
+            metric_types={m.name: m.type for m in metrics},
+            binomial_gate_exempt_metrics=binomial_gate_exempt_metrics,
+            warning_label=f"run_breakout: segment {dimension}={value!r}",
+            unobserved_control_missing=True,
+        )
+    estimable = (
+        _count_estimable_cells(
+            segments,
+            prepared_by_segment,
+            all_pairs,
+            control_group=control_group,
+            metric_types={m.name: m.type for m in metrics},
+            scalar_cuped_decisions=_scalar_cuped_decision_metrics(
+                metrics,
+                methods=methods,
+                methods_by_metric=methods_by_metric,
+                method_roles=method_roles,
+                method_roles_by_metric=method_roles_by_metric,
+                prior=prior,
+                prior_by_metric=_prior_by_metric,
+            ),
+        )
+        if correction == "bonferroni"
+        else {}
+    )
+    alpha_by_metric = {
+        metric.name: _conservative_divide(alpha, max(estimable.get(metric.name, 0), 1))
+        for metric in metrics
+    }
     results: list[BreakoutEstimate] = []
     segment_computations: dict[tuple[str, str], DecisionComputation[LiftEstimate]] = {}
     warned_open_ended: set[str] = set()
     rewarn_registry: dict[Any, int] = {}
     family_entries: list[tuple[str, LiftEstimate, int]] = []
     metric_rows_by_segment_metric: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
-    for value in sorted(segments):
-        segment_rows = segments[value]
+    for value, prepared in prepared_by_segment.items():
         context = _BreakoutContext(
             metrics,
             correction,
@@ -4480,7 +4583,7 @@ def run_breakout(  # noqa: PLR0913
             methods_by_metric,
             prior,
             _prior_by_metric,
-            alpha_seg,
+            alpha_by_metric,
             alternative,
             inference,
             method_roles,
@@ -4494,14 +4597,6 @@ def run_breakout(  # noqa: PLR0913
             covariates_by_metric,
             correction == "bh",
             _method_evidence_by_metric,
-        )
-        prepared = _prepare_lift_slice(
-            segment_rows,
-            control_group=control_group,
-            metric_types={m.name: m.type for m in metrics},
-            binomial_gate_exempt_metrics=binomial_gate_exempt_metrics,
-            warning_label=f"run_breakout: segment {dimension}={value!r}",
-            unobserved_control_missing=True,
         )
         pass_result = _estimate_breakout_slice_metrics(prepared, context)
         segment_computations.update(pass_result.computations)
@@ -5384,7 +5479,8 @@ def run_daily_lift(  # noqa: PLR0913
         Defaults to ``("itt", "compliance", "late")`` under asof
         encouragement, else ``("itt",)``.
     reliability_floor : int
-        Per-arm floor flagging ``low_reliability=True`` (default 50).
+        Per-arm floor flagging ``low_reliability=True`` (default 50), a caveat
+        that leaves the row's verdict unchanged.
     segment_roster_by_metric : Mapping[str, Sequence[str]] | None
         Optional full dimension-value roster per metric, used when empty cells have
         been removed from ``summary`` before fitting.

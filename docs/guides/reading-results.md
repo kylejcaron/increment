@@ -208,8 +208,7 @@ two-sided or open-sided interval, half of it for a closed one-sided interval
 exact conversion row, and the single-tail `r.abs_alpha` for an additive decision.
 A Bonferroni-split primary or a family reissue sets it below the plan's nominal
 alpha, so `p_value() <= decision_alpha` holds exactly when `stat_sig()` (an exact
-binomial row decides with a strict `<`; a `low_reliability` breakout cell reports
-its p-value but withholds the verdict). The family verdict is `r.discovery`. The ordinary
+binomial row decides with a strict `<`). The family verdict is `r.discovery`. The ordinary
 representation and `readout_table` place a selection qualification next to
 that result, including its procedure, exploratory/confirmatory role, retained
 family, and applicable guarantee or assumption. These disclosures do not
@@ -588,7 +587,7 @@ For a `LiftEstimate` row `r`:
 | How big is the effect? | `r.lift.value` | `r.lift` is `None` when no finite point exists. |
 | How uncertain is it? | `r.lift.lb`, `r.lift.ub`, `r.lift.level` | An endpoint is `None` on the side named by `r.lift.open_side`. Both are `None` when relative inference is unavailable. |
 | Where is the interval when `r.lift` is `None`? | `r.binomial_set`, `r.relative_confidence_set`, `r.confidence_set`, `r.sequential_result.bounds`; the additive `r.abs_lb`, `r.abs_ub` | The set that owns the row's interval, if the row has one. A `None` upper bound on a binomial set means unbounded. Some rows have no relative set at all; see [below](#fixed-horizon-guard-the-missing-point). |
-| Is it significant? | `r.stat_sig()` | Tri-state: `True` means the row meets its decision rule; `False` means it does not, or a low-reliability breakout suppresses its Wald verdict even when its p-value is below the decision level; `None` means the row has no usable sampling evidence (a failed cell, or `r.sampling_available` False, as for a percentile-winsorized primary), matching the readout frame's `stat_sig`; never read `None` as a non-rejection. Honors direction and the row's inference. `BreakoutEstimate` and `DailyLiftEstimate` rows carry the same `stat_sig()` and `p_value()`. |
+| Is it significant? | `r.stat_sig()` | Tri-state: `True` means the row meets its decision rule; `False` means it does not; `None` means the row has no usable sampling evidence (a failed cell, or `r.sampling_available` False, as for a percentile-winsorized primary), matching the readout frame's `stat_sig`; never read `None` as a non-rejection. Honors direction and the row's inference. `BreakoutEstimate` and `DailyLiftEstimate` rows carry the same `stat_sig()` and `p_value()`; a [low-reliability](#small-segments-are-flagged-not-withheld) row decides the same way. |
 | Was it selected within a family? | `r.role`, `r.discovery`, `r.family_procedure`, `r.family_q` | See [Multiplicity](multiplicity.md). |
 | Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason`; `row.reason` for a coded cell failure | The exact persisted reason. For a coded cell failure only, `row.reason` returns the persisted `failure_context["reason"]` when present, or the failure code otherwise. It is derived from the failure fields and is not persisted; other unavailable sampling, posterior, point, and interval reasons remain on their own fields. |
 | Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. `"always_valid"` has a finite-sample anytime-valid guarantee; `"asymptotic_mean"` supports repeated monitoring only under its asymptotic assumptions, without a finite-start guarantee. See [Sequential inference](sequential-inference.md). |
@@ -627,10 +626,8 @@ to change the planned alpha instead of widening a result after analysis.
     `r.abs_alpha / 2` for a one-sided alternative.
     A Bonferroni-split primary or a family reissue sets it below the plan's nominal
     alpha, so `p_value() <= decision_alpha` holds exactly when `stat_sig()` (an exact
-    binomial row decides with a strict `<`; a fixed-horizon `low_reliability`
-    breakout cell reports its p-value but withholds its Wald verdict).
-    Sequential rows instead decide from their retained confidence sequence:
-    a small segment's unit-count flag does not invalidate that construction.
+    binomial row decides with a strict `<`).
+    Sequential rows instead decide from their retained confidence sequence.
 
     A conversion family member carrying `delta_evidence.composite` reports
     its count-based composite p-value. Its exact reading retains its nominal
@@ -681,6 +678,20 @@ to change the planned alpha instead of widening a result after analysis.
     across constructors and aggregation orders. Compare estimates and intervals
     using the numerical tolerance appropriate to the quantity, not by comparing
     fingerprints.
+
+### Small segments are flagged, not withheld
+
+A `BreakoutEstimate` or `DailyLiftEstimate` whose control or treatment arm has
+fewer than 50 units carries `r.low_reliability=True`. The flag is a caveat:
+with so few units an approximate interval's coverage can drift from its stated
+level, most for skewed outcomes. It does not change the row: its interval,
+`p_value()`, `stat_sig()` and family membership are computed as for any other
+row, so a flagged segment can be selected and significant. The interpretation
+line of a fixed-horizon flagged row ends with the caveat; read the interval
+with that sample size in mind. A cell with fewer than 2 units in an arm, under a
+method that estimates its variance, is different: it has no estimate and comes
+back as an unavailable `few_units` row outside the family (see
+[Multiplicity](multiplicity.md)).
 
 ## Before you act
 

@@ -16,11 +16,17 @@ from increment.estimation.readout_types import (
 )
 from increment.estimation.results import (
     _FAMILY_PROCEDURE_LABELS,
+    DEFAULT_RELIABILITY_FLOOR,
     _selection_qualification,
     row_chance_to_beat,
     row_chance_to_beat_favorable,
     row_favorable_side,
     row_verdict,
+)
+
+#: Follows a fixed-horizon ``low_reliability`` row's interpretation; the verdict stands.
+LOW_RELIABILITY_CAVEAT = (
+    f"Caveat: low reliability, fewer than {DEFAULT_RELIABILITY_FLOOR} units in an arm."
 )
 
 
@@ -1403,11 +1409,6 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
         return (
             "Interpretation: does not reject; the retained sequential procedure has not rejected."
         )
-    if sequential_result is None and bool(getattr(row, "low_reliability", False)):
-        return (
-            "Interpretation: inconclusive; the nominal interval is not trustworthy "
-            "because this row is flagged low reliability."
-        )
     if sequential_result is None and getattr(row, "stat_sig", None) is False and not contains_null:
         return (
             "Interpretation: does not reject; the retained statistical verdict "
@@ -1474,7 +1475,14 @@ def render_effect_interpretation(row) -> str | None:
         else "relative"
     )
     estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
-    return _interval_interpretation(row, estimate, scale, contrast=contrast)
+    interpretation = _interval_interpretation(row, estimate, scale, contrast=contrast)
+    if (
+        interpretation is not None
+        and getattr(row, "sequential_result", None) is None
+        and bool(getattr(row, "low_reliability", False))
+    ):
+        return f"{interpretation} {LOW_RELIABILITY_CAVEAT}"
+    return interpretation
 
 
 def _reason(context):

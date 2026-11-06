@@ -28,14 +28,19 @@ from tests.analysis_factory import view_readout
 
 
 def test_low_reliability_interval_is_qualified_in_shared_interpretation():
+    from increment.estimation.results import DEFAULT_RELIABILITY_FLOOR
     from increment.tables import estimates_to_readout
 
-    row = _run_mean(_mean_frame())[0].model_copy(update={"low_reliability": True})
-    interpretation = estimates_to_readout([row])[0]["effect_interpretation"]
+    row = _run_mean(_mean_frame())[0]
+    plain, flagged = (
+        estimates_to_readout([r])[0]["effect_interpretation"]
+        for r in (row, row.model_copy(update={"low_reliability": True}))
+    )
 
-    assert isinstance(interpretation, str)
-    assert "low reliability" in interpretation.lower()
-    assert "increase" not in interpretation.lower()
+    assert isinstance(plain, str) and isinstance(flagged, str)
+    caveat = flagged.removeprefix(plain)
+    assert caveat != flagged
+    assert str(DEFAULT_RELIABILITY_FLOOR) in caveat
 
 
 def test_sequential_breakout_rejection_overrides_low_reliability_suppression():

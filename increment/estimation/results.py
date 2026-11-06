@@ -2368,6 +2368,12 @@ def _require_fixed_horizon(row: DecisionRow, reason: str) -> None:
         sequential_refuse("route.unsupported", reason)
 
 
+#: Per-arm unit count below which a breakout or daily estimate is flagged ``low_reliability``:
+#: a disclosed caveat on an approximate interval's coverage. The row's verdict, p-value and
+#: family membership are those of any other row.
+DEFAULT_RELIABILITY_FLOOR = 50
+
+
 #: The side of the null a rejecting confidence set lies on: above it, below it, or on both
 #: sides (a set disconnected around the null, or an empty one), where no side is established.
 RejectionSide = Literal["greater", "less", "split"]
@@ -2422,8 +2428,6 @@ def _row_decision(row: DecisionRow) -> RejectionSide | Literal[False] | None:
         return None
     if row.sequential_result is not None:
         return _sequential_decision(row.sequential_result)
-    if getattr(row, "low_reliability", False):
-        return False
     confidence_set = getattr(row, "confidence_set", None)
     if confidence_set is not None:
         null = row.null_abs if row.null_abs is not None else row.null_lift
@@ -2467,8 +2471,8 @@ def row_stat_sig(row: DecisionRow) -> bool | None:
 
     ``None`` means no usable sampling verdict: an explicit producer failure,
     sampling marked unavailable, or a breakout cell excluded before estimation.
-    ``False`` is a genuine non-rejection; a fixed-horizon ``low_reliability``
-    cell reports it too, because its Wald interval's coverage is not trustworthy.
+    ``False`` is a genuine non-rejection. A ``low_reliability`` cell decides the
+    same way: the flag is a caveat, not a verdict.
 
     A ``null_abs`` row decides against the additive interval
     (``abs_lb``/``abs_ub``) instead of the relative one, and that takes
@@ -2519,9 +2523,8 @@ def row_p_value(row: DecisionRow) -> float | None:
     multiplicity factor; the row's decision alpha is what it is compared with.
     A fixed-horizon row with an interval satisfies ``p_value() <= alpha``
     (``<`` for an exact binomial row) exactly when ``stat_sig()``, for the
-    alpha its construction decides at (:func:`row_decision_alpha`), except on a
-    ``low_reliability`` cell, whose statistic is reported while its verdict is
-    withheld. A delta-route conversion row read by a multiplicity family
+    alpha its construction decides at (:func:`row_decision_alpha`). A
+    delta-route conversion row read by a multiplicity family
     (``delta_evidence.composite``) reports the composite p-value of its counts
     (`conversion_route.composite_p_value`): its delta p-value when that is at
     least the level its counts become dense at, else the smaller of its exact
@@ -2716,8 +2719,6 @@ def row_decision_available(row: DecisionRow, *, verdict: bool | None = None) -> 
         return (
             verdict or getattr(sequential.bounds, "status", None) in DECIDABLE_SEQUENTIAL_STATUSES
         )
-    if getattr(row, "low_reliability", False):
-        return False
     if verdict:
         return True
     absolute = _additive_sidecar_decides(row)
