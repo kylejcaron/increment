@@ -2051,6 +2051,82 @@ def test_densified_cells_counts_declared_zero_null_fills() -> None:
     assert src.densified_cells == 2
 
 
+def test_densified_cells_counts_only_eligible_cells() -> None:
+    """Only a unit's own days from its exposure through the last day can be zero filled.
+
+    Every unit has a row on each day from its exposure (day u % 3) through day 6, so no
+    eligible cell is missing; removing one of those rows leaves exactly one.
+    """
+    first = date(2026, 2, 1)
+    rows = [
+        {
+            "unit": u,
+            "arm": "control" if u % 2 else "treatment",
+            "day": first + timedelta(days=k),
+            "exposed": first + timedelta(days=u % 3),
+            "value": 1.0,
+        }
+        for u in range(60)
+        for k in range(u % 3, 7)
+    ]
+
+    def densified(table_rows: list[dict[str, Any]]) -> int:
+        return from_unit_panel(
+            pa.Table.from_pylist(table_rows),
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            exposure_date="exposed",
+            metrics={"value": "mean"},
+        ).densified_cells
+
+    assert densified(rows) == 0
+    assert densified(rows[:3] + rows[4:]) == 1
+
+
+def test_densified_cells_memory_does_not_grow_with_distinct_exposure_dates() -> None:
+    """Counting eligible cells reads each day and each exposure date once.
+
+    Two panels with the same rows and days differ only in how many distinct exposure
+    dates they hold (one, or one per day). Pairing every exposure date with every day
+    would allocate 1500 x 1500 rows (18 MB per 8-byte column) for the second.
+    """
+    import tracemalloc
+
+    import pandas as pd
+
+    n = 1500
+
+    def peak_bytes(exposed: list[int]) -> int:
+        frame = pd.DataFrame(
+            {
+                "unit": range(n),
+                "arm": ["control" if u % 2 else "treatment" for u in range(n)],
+                "day": range(n),
+                "exposed": exposed,
+                "value": [1.0] * n,
+            }
+        )
+        tracemalloc.start()
+        try:
+            from_unit_panel(
+                frame,
+                unit="unit",
+                group="arm",
+                date="day",
+                control="control",
+                exposure_date="exposed",
+                metrics={"value": "mean"},
+            )
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    peak_bytes([0] * n)  # warm imports and caches
+    assert peak_bytes(list(range(n))) - peak_bytes([0] * n) < 4 * 2**20
+
+
 def test_single_unit_arm_error_names_metric_and_arm() -> None:
     """A one-unit treatment arm within the declared roster is refused at estimation time.
     The moment-grain read is legitimate; the arm's only cell is an unavailable row whose

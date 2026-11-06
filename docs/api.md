@@ -331,6 +331,48 @@ values.
   identity are unchanged.
   Migration: read `r.low_reliability` for the caveat; a flagged row's
   `stat_sig()` is no longer a withheld verdict.
+- Release note (breaking): sequential refusals say where and what. A
+  continuation that rewrites a finalized record still refuses with
+  `sequential.continuation.rewrite`, and its context now names the first
+  differing reveal `position`, the `unit_id` the earlier capture revealed there
+  and what `changed` (`missing`, `order`, `assignment` or
+  `values_or_definitions`). Reading a panel, native, artifact or moments source
+  before it holds a finalized checkpoint refuses with the new
+  `sequential.capture.required` (context `reason`, `route`) instead of
+  `sequential.continuation.legacy`, which keeps meaning a checkpoint, plan or
+  cube from an earlier format. A registered segment on a Boolean column whose
+  declared levels include none of `"true"`, `"false"` and `"__null__"` refuses
+  when the experiment is built with `sequential.registration.invalid` (context
+  `dimension`, `declared`, `canonical`) instead of retaining only empty cells,
+  and a whole-window or as-of read of a segmented family names the
+  `View.breakout(...)` route in its `sequential.source.invalid` context. To
+  migrate, catch `sequential.capture.required` where code caught
+  `sequential.continuation.legacy` before a first capture, and declare Boolean
+  segment levels as `"true"`, `"false"` and `"__null__"`.
+- Release note (breaking bug fix): a `from_frame(shape="panel")` or
+  `increment.frame.from_unit_panel` panel checks `observation_end=` when it is
+  built, and the end bounds every result. On a calendar date column an ISO-8601
+  string such as `"2026-02-04"` names that day on every backend; Polars used to
+  fail at `run` with a backend `InvalidOperationError`. A string day column takes
+  a label spelled like its own, which may name a day with no rows (`"d9"` after
+  `"d1"` to `"d8"`), and a numeric day index a number. An end that cannot be
+  read, is of the wrong kind, falls before the panel's first day or cannot be
+  ordered among a string column's labels refuses with
+  `source.panel.observation_end` (context `value`, `axis_kind`, `issue`), which
+  replaces the run-time
+  `frame.panel.observable_end_dtype`. Values dated after the end no longer enter
+  unwindowed whole-window, open-ended retention, daily or as-of results; daily
+  and as-of rows stop at the end; units exposed after it are not analysed and
+  leave the unit counts; and a sequential capture or as-of compliance read at a
+  later `as_of` stops at it. Results move for panels whose end precedes their
+  last day; metrics with a bounded window keep their numbers. `densified_cells`
+  now counts only cells inside each unit's eligible days, from its exposure date
+  (or the first day) through the end (or the last day), so a staggered panel
+  without pre-exposure rows no longer counts its pre-exposure cells. A sequential
+  plan on a panel without `exposure_date=` refuses at construction with
+  `source.frame.sequential_exposure_date`, as the summary shape does, instead of
+  failing at `run`. Experiment `to_json()` and `hash()` are unchanged. To
+  migrate, set `observation_end` to the last day whose data should count.
 - Release note (documentation): the switchback guide names the codes its
   refusals carry. Duplicate metric specifications refuse with
   `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded

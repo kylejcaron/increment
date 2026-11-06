@@ -1656,15 +1656,19 @@ def _assert_coordinate_inputs(live, frozen):
     _assert_daily_consumer_inputs(live)
     _audit_warehouse_input_receipts(live)
     actual = _comparison_records(live)
-    expected = _comparison_records(frozen)
     assert live.source_input_hashes == tuple(
         item["sha256"] for item in live.provenance["source_inputs"]
     )
     from tests.parity_harness.expected_differences import (
         CONSUMER_INPUT_DIFFERENCES,
+        through_observation_end,
         with_declared_favorable_sides,
         with_expected_difference,
         without_metric_outcome_columns,
+    )
+
+    expected = through_observation_end(
+        frozen.scenario_id, frozen.ingress, _comparison_records(frozen)
     )
     from tests.test_evidence_identity_parity import _capture
 

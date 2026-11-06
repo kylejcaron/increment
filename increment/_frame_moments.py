@@ -1527,6 +1527,7 @@ def _total_moment_rows(
             value_columns=sorted(
                 {c for spec in plain for c in (spec.y_column, spec.denominator) if c}
             ),
+            observation_end=observation_end,
         )
         collapsed = _collapse_to_unit_totals(
             admitted,

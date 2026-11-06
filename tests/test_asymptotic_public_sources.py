@@ -238,6 +238,47 @@ def test_public_stopping_freezes_first_crossing_and_rejects_rewritten_prefix():
     assert isinstance(records, pd.DataFrame)
 
 
+@pytest.mark.parametrize(
+    ("mutation", "row", "changed"),
+    [
+        ("flip", 500, "values_or_definitions"),
+        ("delete", 10, "missing"),
+        ("reassign", 20, "assignment"),
+        ("insert", 5, "order"),
+    ],
+)
+def test_continuation_rewrite_names_first_difference(mutation, row, changed):
+    """A continuation that rewrites the parent's finalized records names the first reveal
+    position whose record differs, the unit the parent revealed there and what changed.
+
+    Units reveal in exposure order, one per row, so row k is reveal position k; a late unit
+    exposed between rows 4 and 5 displaces row 5's unit.
+    """
+    import pandas as pd
+
+    specs = [MetricSpec(name="outcome", type="mean")]
+    plan = _plan(specs)
+    records = _frame([1, 2] * 250, [5, 7] * 250)
+    records["exposure"] *= 2
+    parent = sequential_snapshot(*_analysis(records, specs, plan))
+    unit = records.loc[row, "unit"]
+    mutated = records.copy()
+    if mutation == "flip":
+        mutated.loc[row, "outcome"] = 99
+    elif mutation == "delete":
+        mutated = mutated.drop(index=row)
+    elif mutation == "reassign":
+        mutated.loc[row, "arm"] = "treatment" if mutated.loc[row, "arm"] == "control" else "control"
+    else:
+        late = {"unit": "late", "arm": "control", "outcome": 3, "exposure": 2 * row - 1}
+        mutated = pd.concat([mutated, pd.DataFrame([late])], ignore_index=True)
+    with pytest.raises(CapabilityError) as raised:
+        sequential_snapshot(*_analysis(mutated, specs, plan), previous=parent)
+    assert raised.value.code == "sequential.continuation.rewrite"
+    context = raised.value.context
+    assert (context["position"], context["unit_id"], context["changed"]) == (row, unit, changed)
+
+
 @pytest.mark.slow
 def test_freeze_declared_next_look_and_later_look_all_agree():
     """The required declare -> next look -> later look sequence: a freeze

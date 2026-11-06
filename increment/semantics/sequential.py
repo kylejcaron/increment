@@ -13,7 +13,7 @@ from increment.errors import CapabilityError, CodedModel, InvalidRequestError, R
 from increment.semantics.rational import DeclaredRational, PortableRational
 
 _INVALID = RefusalSpec(
-    "sequential.registration.invalid", InvalidRequestError, lambda *, reason: reason
+    "sequential.registration.invalid", InvalidRequestError, lambda *, reason, **context: reason
 )
 _LEGACY_CONTINUATION = RefusalSpec(
     "sequential.continuation.legacy", CapabilityError, lambda *, reason: reason
@@ -61,8 +61,8 @@ def refuse_segmented_family_compliance(
     )
 
 
-def invalid_registration(reason: str) -> NoReturn:
-    refuse(_INVALID, reason=reason)
+def invalid_registration(reason: str, **context: object) -> NoReturn:
+    refuse(_INVALID, reason=reason, **context)
 
 
 class _Declaration(CodedModel, BaseModel):
