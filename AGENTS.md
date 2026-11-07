@@ -159,15 +159,17 @@ every loader.
   from the specification, not from running the implementation.
 - Commands: `make test TESTS=<nodeid>` while editing; before committing,
   `make lint`, `uv run ty check` and the test modules the change touches
-  (`make test TESTS=<paths>`). CI is the gate: every PR runs the fast and slow
-  tiers. Work kept local with no CI runs `make test-affected BASE=<base-sha>`
-  and the same with `TIER=slow` once on its integrated head, never in each
-  parallel worktree. `make check` (full fast and slow tiers) runs at most once
-  per pushed head, never again on an unchanged tree. Collected-item growth
-  needs a `tests: +N items — reason` line in the PR body; removing or
-  weakening tests needs the `test-reduction-approved` label. Mutation evidence
-  comes from `scripts/mutation_campaign.py`, nightly or on demand, never per
-  push.
+  (`make test TESTS=<paths>`). CI is the gate: every PR runs the fast tier,
+  and the slow tier once the `ready-to-merge` label is added; `ci-ok` fails
+  until a slow tier the change needs has passed, so add the label when the
+  fast tier is green. Work kept local with no CI runs
+  `make test-affected BASE=<base-sha>` and the same with `TIER=slow` once on
+  its integrated head, never in each parallel worktree. `make check` (full
+  fast and slow tiers) runs at most once per pushed head, never again on an
+  unchanged tree. Collected-item growth needs a `tests: +N items — reason`
+  line in the PR body; removing or weakening tests needs the
+  `test-reduction-approved` label. Mutation evidence comes from
+  `scripts/mutation_campaign.py`, nightly or on demand, never per push.
 - The affected selection misses two checks. When imports reachable from
   warehouse compilation change, regenerate the record with
   `scripts/trace_compile_dependencies.py` and run

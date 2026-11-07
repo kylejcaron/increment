@@ -671,7 +671,6 @@ def test_pr_slow_job_excludes_exhaustive_unless_required() -> None:
 
     jobs = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())["jobs"]
     slow_job = jobs["slow"]
-    assert "if" not in slow_job
     step = next(step for step in slow_job["steps"] if step.get("name") == "Run slow tests")
     assert step["run"].startswith("make test-slow ")
     slow = markers["slow"]
@@ -699,6 +698,70 @@ def test_pr_slow_job_excludes_exhaustive_unless_required() -> None:
         'check_conditional_job "$EXHAUSTIVE_REQUIRED" "$EXHAUSTIVE_RESULT" exhaustive'
         in gate_step["run"]
     )
+
+
+def _slow_tier_runs(condition: str, event: str, required: str, labels: tuple[str, ...]) -> bool:
+    """Evaluate the slow job's ``if`` for one event, selector decision and label set."""
+    expression = condition.strip().removeprefix("${{").removesuffix("}}")
+    expression = re.sub(
+        r"contains\(github\.event\.pull_request\.labels\.\*\.name, '([\w-]+)'\)",
+        lambda match: str(match.group(1) in labels),
+        expression,
+    )
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    outputs = SimpleNamespace(slow_required=required)
+    scope = {
+        "github": SimpleNamespace(event_name=event),
+        "needs": SimpleNamespace(changes=SimpleNamespace(outputs=outputs)),
+    }
+    return eval(expression, {"__builtins__": {}}, scope)
+
+
+def test_pull_request_slow_tier_runs_once_labeled_ready_when_the_change_needs_it() -> None:
+    jobs = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())["jobs"]
+    selector = next(step for step in jobs["changes"]["steps"] if step.get("id") == "slow")
+    assert "scripts.slow_required" in selector["run"]
+    assert jobs["changes"]["outputs"]["slow_required"] == "${{ steps.slow.outputs.required }}"
+    condition = jobs["slow"]["if"]
+    ready = ("ready-to-merge",)
+
+    assert _slow_tier_runs(condition, "pull_request", "true", ready)
+    assert not _slow_tier_runs(condition, "pull_request", "true", ())
+    assert not _slow_tier_runs(condition, "pull_request", "false", ready)
+    for event in ("push", "workflow_dispatch"):
+        assert _slow_tier_runs(condition, event, "true", ()), event
+
+
+@pytest.mark.integration
+def test_ci_ok_fails_a_required_slow_tier_that_did_not_run() -> None:
+    gate = next(
+        step
+        for step in yaml.safe_load(Path(".github/workflows/ci.yml").read_text())["jobs"]["ci-ok"][
+            "steps"
+        ]
+        if step.get("name") == "Check required jobs and gate decisions"
+    )
+    script = re.sub(r"\$\{\{ needs\.[\w-]+\.result \}\}", "success", gate["run"])
+    # Every other gate passed or was not selected.
+    passing = {name: "skipped" if name.endswith("_RESULT") else "false" for name in gate["env"]}
+    passing["CORE_INSTALL_RESULT"] = "success"
+
+    def ci_ok(required: str, result: str, ready: str) -> subprocess.CompletedProcess[str]:
+        slow = {"SLOW_REQUIRED": required, "SLOW_RESULT": result, "READY_TO_MERGE": ready}
+        return subprocess.run(
+            ["bash", "-c", script],
+            env=os.environ | passing | slow,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    unlabeled = ci_ok("true", "skipped", "false")
+    assert unlabeled.returncode != 0
+    assert "ready-to-merge" in unlabeled.stdout
+    assert ci_ok("true", "failure", "true").returncode != 0
+    assert ci_ok("true", "success", "true").returncode == 0
+    assert ci_ok("false", "skipped", "false").returncode == 0
 
 
 def _makefile_recipes() -> dict[str, str]:
