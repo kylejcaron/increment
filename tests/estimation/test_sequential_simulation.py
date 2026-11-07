@@ -396,6 +396,7 @@ def _grid_records(resolved, counts):
 @pytest.mark.parametrize(
     "arm_counts", [(6, 6), (6, 0), (0, 6)], ids=["both", "no-treated", "no-control"]
 )
+@pytest.mark.numerical_certification
 def test_every_grid_state_gives_the_public_decision(arm_counts):
     """Exhaustive over the whole sufficient-state grid at one look.
 
@@ -849,7 +850,10 @@ def test_case_outcome_sums_the_replication_records():
 
 # Replays a full uncurtailed replication stream against a fresh rule.
 @pytest.mark.slow
-def test_curtailment_truncates_the_stream_without_moving_a_decision():
+@pytest.mark.parameter_recovery
+def test_curtailment_truncates_the_stream_without_moving_a_decision(
+    replications=256, design_repetitions=4000
+):
     """A curtailed gate reaches the same verdict at the same draw as the full run.
 
     The rule stops at its first boundary crossing, so consuming more of the
@@ -861,12 +865,14 @@ def test_curtailment_truncates_the_stream_without_moving_a_decision():
     case = RuntimeCase(name="curtail", looks=3, batch=4, stopping="first_rejection")
     gates = sim.curtailable_gates(case)
     assert "ever_null_rejection" in gates
-    design = FixedDesign.resolve(nominal_error=0.05, tolerance=0.02, eta=0.01, repetitions=4000)
+    design = FixedDesign.resolve(
+        nominal_error=0.05, tolerance=0.02, eta=0.01, repetitions=design_repetitions
+    )
 
     flags = []
     uncurtailed = sim.simulate_case(
         case,
-        replications=256,
+        replications=replications,
         seed=77,
         chunk_size=8,
         observer=lambda event, index, payload: (
@@ -875,12 +881,12 @@ def test_curtailment_truncates_the_stream_without_moving_a_decision():
             else None
         ),
     )
-    assert uncurtailed.replications == 256
+    assert uncurtailed.replications == replications
     assert not uncurtailed.gate_streams
 
     curtailed = sim.simulate_case(
         case,
-        replications=256,
+        replications=replications,
         seed=77,
         chunk_size=8,
         floor=0,
@@ -902,6 +908,13 @@ def test_curtailment_truncates_the_stream_without_moving_a_decision():
     # stream's over the same number of draws.
     assert stream.misses == sum(flags[: stream.draws])
     assert stream.hits + stream.misses == stream.draws
+
+
+@pytest.mark.slow
+def test_curtailment_truncates_the_stream_without_moving_a_decision_smoke():
+    test_curtailment_truncates_the_stream_without_moving_a_decision(
+        replications=32, design_repetitions=4000
+    )
 
 
 @pytest.mark.parametrize(

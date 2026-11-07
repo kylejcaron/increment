@@ -139,6 +139,7 @@ def test_zero_inclusive_observed_statistics_match_scalar_brute_force():
 
 
 @pytest.mark.slow
+@pytest.mark.numerical_certification
 def test_hurdle_pilot_target_matches_numerical_integration():
     from scipy.integrate import quad
     from scipy.optimize import brentq

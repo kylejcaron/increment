@@ -172,6 +172,7 @@ class TestMultiLookSimpsonReference:
         assert enclosure.lower <= reference.both <= enclosure.upper
 
     @pytest.mark.parametrize("drift", [40.0, 37.0, 0.0])
+    @pytest.mark.numerical_certification
     def test_tiny_alpha_five_looks(self, drift):
         fractions = _fractions(5)
         bounds = planning_bounds(GaussianScoreMixture(), fractions, 0.02, 1e-300)
@@ -180,6 +181,7 @@ class TestMultiLookSimpsonReference:
         assert enclosure.resolved
         assert enclosure.lower <= reference.both <= enclosure.upper
 
+    @pytest.mark.numerical_certification
     def test_tiny_alpha_fourteen_looks_keeps_a_tight_enclosure(self):
         fractions = _fractions(14)
         bounds = planning_bounds(GaussianScoreMixture(), fractions, 0.02, 1e-300)
@@ -209,6 +211,7 @@ class TestNodeFloor:
         assert floor & (floor - 1) == 0
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_not_resolved_below_the_floor(self):
         fractions = _fractions(14)
         bounds = planning_bounds(GaussianScoreMixture(), fractions, 0.02, 1e-300)
@@ -293,6 +296,7 @@ class TestSlope:
     @pytest.mark.parametrize("looks", [5, 14])
     @pytest.mark.parametrize("label", ["av05"])
     @pytest.mark.parametrize("drift", [0.3, 2.8])
+    @pytest.mark.numerical_certification
     def test_multi_look_slope_matches_the_simpson_finite_difference(self, looks, label, drift):
         bounds, fractions = _design_bounds(label, looks)
         h = 1e-4
@@ -365,6 +369,7 @@ class TestBoxVariationBound:
     @pytest.mark.parametrize(
         ("half_drift", "half_boundary"), [(0.05, 0.0), (0.01, 0.02), (0.2, 0.05), (0.5, 0.0)]
     )
+    @pytest.mark.numerical_certification
     def test_always_valid_fourteen_looks_at_drift_2_8(self, half_drift, half_boundary):
         bounds, fractions = _design_bounds("av05", 14)
         ratio = self._check(bounds, fractions, 2.8, half_drift, [half_boundary] * 14)

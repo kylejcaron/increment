@@ -468,17 +468,29 @@ def _policy_value_witness(grain, weight):
     )
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize(
     "grain,weight", tuple(product(("unit", "cluster"), ("member_count", "equal")))
 )
-def test_public_policy_and_selection_values_match_nonzero_causal_targets(grain, weight):
+@pytest.mark.parametrize(
+    "repetitions",
+    [
+        pytest.param(
+            99,
+            marks=[pytest.mark.slow, pytest.mark.parameter_recovery],
+            id="recovery",
+        ),
+        pytest.param(50, marks=pytest.mark.slow, id="smoke"),
+    ],
+)
+def test_public_policy_and_selection_values_match_nonzero_causal_targets(
+    grain, weight, repetitions
+):
     data = _policy_value_witness(grain, weight)
     options: dict[str, Any] = {
         "control": "control",
         "interact": ["x0"],
         "cluster_weight": weight,
-        "bootstrap": ClusterBootstrap(seed=57, repetitions=99),
+        "bootstrap": ClusterBootstrap(seed=57, repetitions=repetitions),
         "include_evaluation_population": True,
     }
     experiment, resolver = _experiment(data.table, grain=grain)
@@ -1162,7 +1174,10 @@ def test_unequal_size_design_uptake_metric_order_and_complete_wire_parity(tmp_pa
 
 @pytest.mark.slow
 @pytest.mark.parametrize("k,members,grain", list(product((16, 80), (5, 100), ("unit", "cluster"))))
-def test_original_varying_noise_witness_retained_with_independent_truth(k, members, grain):
+@pytest.mark.parameter_recovery
+def test_original_varying_noise_witness_retained_with_independent_truth(
+    k, members, grain, bootstrap_repetitions=999
+):
     s = _scenario(
         n_clusters=k,
         members_per_cluster=members,
@@ -1189,7 +1204,7 @@ def test_original_varying_noise_witness_retained_with_independent_truth(k, membe
     assert fit.ate == pytest.approx(beta[1])
     assert fit.se**2 == pytest.approx(covariance[1, 1])
     assert fit.se > 0
-    bootstrap = ClusterBootstrap(seed=0, repetitions=999)
+    bootstrap = ClusterBootstrap(seed=0, repetitions=bootstrap_repetitions)
     validation = validate_cate(experiment, resolver, "y", bootstrap=bootstrap, **options)
     assert validation.holdout_ate_se is not None and validation.holdout_ate_se > 0
     assert validation.autoc.se is not None and validation.autoc.se > 0
@@ -1210,6 +1225,10 @@ def test_original_varying_noise_witness_retained_with_independent_truth(k, membe
     np.testing.assert_array_equal(
         restored.predict(data.covariates, cluster_ids=np.asarray(data.table["cluster_id"])), actions
     )
+
+
+def test_original_varying_noise_witness_retained_with_independent_truth_smoke():
+    test_original_varying_noise_witness_retained_with_independent_truth(16, 5, "unit", 5)
 
 
 def test_manifest_controls_statistics_intersections_and_prospective_seeds():
@@ -1316,15 +1335,24 @@ def _homogeneous_calibration_cell():
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null():
+@pytest.mark.parameter_recovery
+def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null(
+    attempts_count=2, n_clusters=200
+):
     cell = _homogeneous_calibration_cell()
+    cell = replace(
+        cell,
+        scenario=cell.scenario.model_copy(update={"n_clusters": n_clusters}),
+    )
     registration = ClusteredRegistration((cell,), 2, 99, 57, 12)
-    attempts = [evaluate_clustered_replication(registration, cell.name, r) for r in range(2)]
+    attempts = [
+        evaluate_clustered_replication(registration, cell.name, r) for r in range(attempts_count)
+    ]
     report = reduce_clustered_observations(tuple(o for run in attempts for o in run.observations))
     assert set(report) == {spec.name for spec in cell.statistics}
     for stats in report.values():
-        assert stats.attempted == 2
-        assert stats.point_estimable + stats.excluded + stats.failed == 2
+        assert stats.attempted == attempts_count
+        assert stats.point_estimable + stats.excluded + stats.failed == attempts_count
         assert sum(stats.failure_reasons.values()) == stats.failed
         assert sum(stats.exclusion_reasons.values()) == stats.excluded
         assert (
@@ -1333,11 +1361,18 @@ def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all
         )
     for name in ("fit.ate", "validation.ate"):
         stats = report[name]
-        assert stats.point_estimable == stats.interval_estimable == 2
+        assert stats.point_estimable == stats.interval_estimable == attempts_count
         assert stats.bias is not None and math.isfinite(stats.bias)
         assert stats.bias_mcse is not None and stats.bias_mcse >= 0
     assert all(run.registration == registration.fingerprint for run in attempts)
     assert all(run.policy_oracles for run in attempts)
+
+
+@pytest.mark.slow
+def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null_smoke():
+    test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null(
+        attempts_count=2, n_clusters=40
+    )
 
 
 def _accounting_evidence_table():

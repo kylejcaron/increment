@@ -2419,7 +2419,10 @@ def _assert_c01_public_fit_covariance(data, fit, weighting):
 @pytest.mark.slow
 @pytest.mark.parametrize("weighting", ["member_count", "equal"])
 @pytest.mark.parametrize("replication", [1, 5, 20, 100])
-def test_cluster_complete_five_row_pattern_full_public_pipeline(weighting, replication):
+@pytest.mark.parameter_recovery
+def test_cluster_complete_five_row_pattern_full_public_pipeline(
+    weighting, replication, bootstrap_repetitions=99
+):
     from increment.estimation.crossfit import outer_split
     from increment.estimators import ClusterBootstrap
 
@@ -2438,7 +2441,7 @@ def test_cluster_complete_five_row_pattern_full_public_pipeline(weighting, repli
     assert np.isfinite(shrunk.score_state.score(data["cols"])).all()
 
     # Each fit relearns its continuous basis; no equality of refitted p-values is asserted.
-    bootstrap = ClusterBootstrap(seed=57, repetitions=99)
+    bootstrap = ClusterBootstrap(seed=57, repetitions=bootstrap_repetitions)
     validation = validate_cate(
         experiment,
         resolver,
@@ -2478,6 +2481,10 @@ def test_cluster_complete_five_row_pattern_full_public_pipeline(weighting, repli
         assert policy.intervention_grain == policy.deploy_grain == "cluster"
         assert policy.achieved_fraction <= policy.fraction
         _assert_policy_roundtrip(policy, data["cols"], ids)
+
+
+def test_cluster_complete_five_row_pattern_full_public_pipeline_smoke():
+    test_cluster_complete_five_row_pattern_full_public_pipeline("member_count", 1, 5)
 
 
 @pytest.mark.slow

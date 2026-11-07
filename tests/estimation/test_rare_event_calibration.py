@@ -206,6 +206,7 @@ def test_p_minus_matches_independent_grid_oracle_as_a_lower_bound(x_c, n_c, x_t,
 
 
 @pytest.mark.slow
+@pytest.mark.numerical_certification
 def test_rare_event_large_arm_matches_full_support_grid_oracle_in_both_tails():
     """The same lower-bound gate at ``x_c = 10`` in 100,000 control units, where production
     scans only a Chernoff window of the control support: a 2001-point grid over the

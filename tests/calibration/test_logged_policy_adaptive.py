@@ -232,11 +232,16 @@ def test_fixed_logger_contrast_interval_is_nominal(cell: Cell):
 
 @pytest.mark.slow
 @pytest.mark.parametrize("cell", ADAPTIVE_GRID, ids=lambda c: f"{c[0]}-T{c[1]}-n{c[2]}")
-def test_adaptive_logger_traces_are_refused(cell: Cell):
-    result = study(cell, ADAPTIVE_REPS, cell_seed(*cell))
+@pytest.mark.parameter_recovery
+def test_adaptive_logger_traces_are_refused(cell: Cell, repetitions=ADAPTIVE_REPS):
+    result = study(cell, repetitions, cell_seed(*cell))
     assert result["emitted"] == 0, result
-    assert sum(result["codes"].values()) == ADAPTIVE_REPS
+    assert sum(result["codes"].values()) == repetitions
     assert set(result["codes"]) <= ADAPTIVE_CODES, result["codes"]
+
+
+def test_adaptive_logger_traces_are_refused_smoke():
+    test_adaptive_logger_traces_are_refused(ADAPTIVE_GRID[0], repetitions=1)
 
 
 @pytest.mark.parametrize(
