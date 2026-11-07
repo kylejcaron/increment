@@ -34,7 +34,7 @@ from dataclasses import replace
 
 import pytest
 
-from tests.parity_harness import matrix, matrix_cases
+from tests.parity_harness import matrix, matrix_cases, publications
 from tests.parity_harness.cases import ParityCase
 from tests.parity_harness.runner import CaseResult, assert_parity, run_case
 
@@ -569,9 +569,10 @@ def test_cell(cell: matrix.Cell) -> None:
     """Each leg of the cell (a day-axis view has a value leg and a lift leg) runs on its own,
     so one leg refusing never hides the other's rows."""
     disposition = matrix.classify(cell)
-    for method in disposition.legs:
-        _matched(cell, method, disposition)
-        _switchback(cell, method, disposition)
+    with publications.shared():
+        for method in disposition.legs:
+            _matched(cell, method, disposition)
+            _switchback(cell, method, disposition)
 
 
 def test_asymptotic_retention_variant_enumerates_every_retention_sequential_cell():
@@ -614,8 +615,9 @@ def test_asymptotic_retention_cell(cell: matrix.Cell) -> None:
     Bernoulli monitoring, so each live ingress's retained state must name the scalar-mean
     law."""
     disposition = matrix.classify(cell)
-    for method in disposition.legs:
-        merged = _matched(cell, method, disposition)
-        _switchback(cell, method, disposition)
-        for name, capture in merged.sequential_state.items():
-            assert {state[3] for state in capture.fingerprint[0]} == {"scalar_mean"}, name
+    with publications.shared():
+        for method in disposition.legs:
+            merged = _matched(cell, method, disposition)
+            _switchback(cell, method, disposition)
+            for name, capture in merged.sequential_state.items():
+                assert {state[3] for state in capture.fingerprint[0]} == {"scalar_mean"}, name
