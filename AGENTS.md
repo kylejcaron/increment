@@ -175,10 +175,12 @@ every loader.
   when README or docs change, run `make test-doc-snippets`.
 - A change to refusals, scopes or breakout selection runs
   `tests/test_parity_matrix.py::test_runnable_preserves_preflight_refusals`
-  in the full scope (`INCREMENT_PARITY_MATRIX=full make test TESTS=<that node ID>`)
-  once on the head about to be pushed, not in each parallel worktree (CI runs
-  the full scope nightly, not per PR):
-  `runnable()` and `run()` report the same code and context. A new or changed
+  in the full scope (`INCREMENT_PARITY_MATRIX=full make test TESTS=<that node ID>`):
+  `runnable()` and `run()` report the same code and context. Run it once per
+  integrated head (before pushing, or on the integration branch of local-only
+  work), not in each parallel worktree. CI runs that scope on a PR only when
+  the change reaches the exhaustive gate's paths
+  (`scripts/certification_ci_changes.py`), and nightly. A new or changed
   hazard regenerates `tests/parity_harness/preflight_hazards.json` with
   `scripts/record_preflight_hazards.py`.
 - Tests never pass `examples/definitions` to a builder: builders write a
