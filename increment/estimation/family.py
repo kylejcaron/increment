@@ -63,6 +63,7 @@ from fractions import Fraction
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, cast
 
+from increment._multiplicity import registered_cell, registered_family_members
 from increment.compatibility import _conservative_ratio
 from increment.errors import (
     CapabilityError,
@@ -526,7 +527,8 @@ def select_sequential_family(
 
     registration = inference.registration
     registered = {sequential_hypothesis_key(cell): cell for cell in registration.roster}
-    roster = {key: cell for key, cell in registered.items() if cell.family}
+    members = set(registered_family_members(registration, secondary_keys=()))
+    roster = {key: cell for key, cell in registered.items() if registered_cell(cell) in members}
     order = list(roster)
     if not order or not {key for key, _ in cells}.issubset(roster):
         sequential_refuse("source.invalid", "family keys differ from the registered roster")
