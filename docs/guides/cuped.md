@@ -863,8 +863,12 @@ never withholds a result. Breakout segments and daily cells are each tested on
 their own data, so a join that fails for one segment flags that segment.
 Sequential cells on the asymptotic route use a form built for repeated looks,
 with its own small-count limit; see [the standard coefficient on the asymptotic route](#the-standard-coefficient-on-the-asymptotic-route).
-In either form, a cell is not checked when a number the advisory would report
-exceeds the floating-point range (about $10^{308}$).
+A sequential look is not checked when a number the advisory would report
+exceeds the floating-point range (about $10^{308}$). A fixed-horizon cell whose
+Welch statistic alone exceeds that range is still flagged: its context reports
+`statistic` as null with `statistic_unavailable_reason="past_float_range"`. It
+is not checked only when a covariate mean, the difference or a shift exceeds
+that range.
 
 The advisory's context reports each group's covariate mean (`mean_control`,
 `mean_treatment`), the `difference` with its `standard_error`, the Welch
@@ -915,9 +919,9 @@ context reports `statistic_kind="hotelling"`, the `covariates` tested, the F
 `statistic` with `numerator_dof` and `denominator_dof`, and the `p_value`; it
 reports no adjustment shift. The F reference assumes both groups share one
 covariance, so the level is nominal. The statistic does not depend on the
-covariates' units, and as for one covariate, a cell whose statistic exceeds
-the floating-point range is not checked. Fitted evidence exported before this
-check carries no within-group covariance, so its cells are not tested.
+covariates' units, and a cell whose statistic exceeds the floating-point range
+is not checked. Fitted evidence exported before this check carries no
+within-group covariance, so its cells are not tested.
 
 ## Mixed numeric and categorical covariates
 

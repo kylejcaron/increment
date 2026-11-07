@@ -1255,6 +1255,7 @@ def _covariate_imbalance_advisory(
             "difference": balance.difference,
             "standard_error": balance.standard_error,
             "statistic": balance.statistic,
+            "statistic_unavailable_reason": balance.statistic_unavailable_reason,
             "dof": balance.dof,
             "p_value": balance.p_value,
             "alpha": COVARIATE_BALANCE_ALPHA,

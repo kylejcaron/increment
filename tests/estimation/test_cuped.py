@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 
 from increment.errors import IncrementRuntimeWarning, InvalidRequestError
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.armstats import CENTERED_FIELDS, ArmStats
 from increment.estimation.cuped import (
     CupedFit,
@@ -1529,10 +1530,11 @@ def test_balanced_covariate_has_no_balance_advisory():
     )
 
 
-def test_imbalance_statistic_past_the_float_range_abstains_without_failing_the_cell():
+def test_imbalance_statistic_past_the_float_range_is_flagged_with_a_null_statistic():
     """Covariate means 0 and 1e150 over a within-arm spread of 1e-160 put the Welch
-    statistic past the float range; with Cov(Y, X) = 0, theta = 0 and the CUPED
-    estimate is the raw difference of 1.0."""
+    statistic past the float range: the cell is flagged with the statistic as a null
+    and its reason. With Cov(Y, X) = 0, theta = 0 and the CUPED estimate is the raw
+    difference of 1.0."""
     arms = [
         ArmStats(
             study_id="e",
@@ -1553,11 +1555,20 @@ def test_imbalance_statistic_past_the_float_range_abstains_without_failing_the_c
             ("treatment", 11.0, 1e150, 0.0),
         )
     ]
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
+    with pytest.warns(IncrementRuntimeWarning) as recorded:
         computation = _cuped_computation(_mean_metric(), arms)
-    assert _IMBALANCE not in warning_codes(recorded)
-    assert not computation.advisories
+    assert _IMBALANCE in warning_codes(recorded)
+    (advisory,) = computation.advisories[
+        MethodHypothesisKey(ArmHypothesisKey("rev", "treatment", "itt"), "cuped")
+    ]
+    assert advisory.code == _IMBALANCE
+    context = advisory.context
+    assert context["statistic"] is None
+    assert context["statistic_unavailable_reason"] == "past_float_range"
+    assert context["p_value"] == 0.0
+    assert context["adjustment_shift"] == 0.0
+    assert context["constant_arms"] == ("treatment",)
+    assert ReadoutAdvisory.model_validate_json(advisory.model_dump_json()) == advisory
     (result,) = computation.results
     assert result.abs_diff == pytest.approx(1.0, rel=1e-12)
 
