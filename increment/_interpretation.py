@@ -18,6 +18,7 @@ from increment.estimation.results import (
     _FAMILY_PROCEDURE_LABELS,
     DEFAULT_RELIABILITY_FLOOR,
     _selection_qualification,
+    contrast_stat_sig,
     row_chance_to_beat,
     row_chance_to_beat_favorable,
     row_favorable_side,
@@ -1036,8 +1037,6 @@ def _decision_line(row, *, control_group: str | None, treatment_group: str | Non
     if dimension is not None and dimension_value is not None:
         parts.append(f"{dimension}={dimension_value}")
     if hasattr(row, "control_group") and hasattr(row, "estimate"):
-        from increment.estimation.contrast import contrast_stat_sig
-
         verdict = contrast_stat_sig(row)
     else:
         verdict = row_verdict(row)

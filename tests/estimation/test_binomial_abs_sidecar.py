@@ -14,10 +14,11 @@ from scipy.optimize import brentq
 from scipy.stats import binom, norm
 
 from increment.errors import InvalidRequestError
-from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
+from increment.estimation._fcr_reinterval import classify
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.engine import binomial_abs_interval, estimate_lift
-from increment.estimation.family import select_exploratory_family
+from increment.estimation.exploratory_family import select_exploratory_family
+from increment.estimation.results import reinterval_at_fcr
 from increment.estimation.risk_difference import score_bounds, score_p_value
 from increment.result_envelope import AnalysisEnvelope, ResultCell
 from increment.semantics.models import ConversionMetric

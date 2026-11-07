@@ -34,7 +34,12 @@ from ibis.backends.sql import SQLBackend
 from ibis.common.exceptions import TableNotFound
 from ibis.expr import operations as ops
 
-from increment._warehouse_namespace import ensure_schema, schema_exists
+from increment._warehouse_namespace import (
+    MAX_IDENTIFIER_BYTES,
+    check_schema_name_length,
+    ensure_schema,
+    schema_exists,
+)
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
@@ -398,6 +403,9 @@ class WarehouseArtifactStore:
     and are dropped when the snapshot closes. A declared schema and the store's
     tables are created by its first write, a publication or an abandoned
     generation; reading a store whose schema does not exist creates nothing.
+    A catalog or schema name longer than the warehouse allows (PostgreSQL 63
+    bytes, Snowflake 255 characters, BigQuery 1,024 bytes) refuses at
+    construction with ``store.schema_name_too_long``.
     """
 
     _INDEX_TABLE_COLUMNS = (
@@ -447,6 +455,9 @@ class WarehouseArtifactStore:
                     schema=self._schema,
                     table="ud_manifest_index",
                 )
+        check_schema_name_length(
+            self._con, store="WarehouseArtifactStore", catalog=self._catalog, schema=self._schema
+        )
         self._database: str | tuple[str, str] | None = (
             (self._catalog, self._schema)
             if self._catalog is not None and self._schema is not None
@@ -596,6 +607,8 @@ class WarehouseArtifactStore:
         self._meta_columns: tuple[str, ...] = self._validated_columns(
             table, self._meta_name, self._INDEX_TABLE_COLUMNS
         )
+        # Reads reuse the validated handle; their rows are still queried each time.
+        self._meta_table: ir.Table = table
 
     def _ensure_dropped_table(self) -> None:
         try:
@@ -639,6 +652,7 @@ class WarehouseArtifactStore:
         self._dropped_columns: tuple[str, ...] = self._validated_columns(
             table, self._dropped_name, self._DROPPED_TABLE_COLUMNS
         )
+        self._dropped_table: ir.Table = table
 
     def _validated_columns(
         self, table: ir.Table, name: str, expected_columns: tuple[str, ...]
@@ -669,7 +683,7 @@ class WarehouseArtifactStore:
     def _is_dropped(self, artifact_id: uuid.UUID, generation_id: uuid.UUID) -> bool:
         if not self._adopt_tables():
             return False
-        dropped = self._con.table(self._dropped_name, database=self._database)
+        dropped = self._dropped_table
         matched = dropped.filter(
             (dropped.artifact_id == str(artifact_id))
             & (dropped.generation_id == str(generation_id))
@@ -694,8 +708,8 @@ class WarehouseArtifactStore:
 
         if not self._adopt_tables():
             return ()
-        metadata = self._con.table(self._meta_name, database=self._database)
-        dropped = self._con.table(self._dropped_name, database=self._database)
+        metadata = self._meta_table
+        dropped = self._dropped_table
         visible = metadata.anti_join(dropped, ["artifact_id", "generation_id"])
         rows = self._con.to_pyarrow(visible).to_pylist()
         seen: set[tuple[str, str]] = set()
@@ -1054,13 +1068,12 @@ class WarehouseArtifactStore:
             )
         generation.unregistered[locator.name] = locator
         try:
-            self._con.create_table(
+            persisted = self._con.create_table(
                 self._create_table_name(locator.name),
                 table,
                 database=cast("Any", self._create_database),
                 overwrite=False,
             )
-            persisted = self._con.table(locator.name, database=cast("Any", self._database))
             digest = self._digest_table_for_write(persisted, role)
         except BaseException:
             try:
@@ -1169,7 +1182,7 @@ class WarehouseArtifactStore:
         if generation is None:
             if not self._adopt_tables():
                 return None
-            metadata = self._con.table(self._meta_name, database=self._database)
+            metadata = self._meta_table
             persisted = metadata.filter(
                 (metadata.artifact_id == str(ref.artifact_id))
                 & (metadata.generation_id == str(ref.generation_id))
@@ -1465,7 +1478,7 @@ class WarehouseArtifactStore:
 
         if not self._adopt_tables():
             return
-        metadata = self._con.table(self._meta_name, database=self._database)
+        metadata = self._meta_table
         persisted = metadata.filter(
             (metadata.artifact_id == str(artifact_id))
             & (metadata.generation_id == str(generation_id))
@@ -1530,8 +1543,6 @@ class WarehouseArtifactStore:
         # through leaves the generation retrievable for a retry.
         self._generations.pop(key, None)
 
-
-_MAX_IDENTIFIER_LEN = 63  # Postgres's limit - the tightest among supported backends
 
 # Admission budgets on cached Arrow payload bytes (``nbytes``), per result and per snapshot.
 _MAX_ARROW_RESULT_BYTES = 16 * 1024 * 1024
@@ -1961,6 +1972,7 @@ class WarehouseSession:
         self._arrow_cache_bytes = 0
         self._captured_relations: frozenset[Any] | None = None
         self._postgres_temp_privilege_checked = False
+        self._capture_resolutions: dict[str, Table] | None = None
 
     @property
     def con(self) -> SQLBackend:
@@ -2160,6 +2172,29 @@ class WarehouseSession:
             if sql not in self._source_tables:
                 _raise("query.session.snapshot.source_missing")
             return self._source_tables[sql]
+        if self._capture_resolutions is None:
+            return self._live_relation(sql)
+        relation = self._capture_resolutions.get(sql)
+        if relation is None:
+            relation = self._capture_resolutions[sql] = self._live_relation(sql)
+        return relation
+
+    @contextmanager
+    def resolving_each_source_once(self) -> Iterator[None]:
+        """Resolve each declared source query against the warehouse at most once in the block.
+
+        One capture describes a live source once; its scoping, validation and pin all read
+        that relation. The resolutions are discarded when the block ends, so no later
+        capture reuses them.
+        """
+        previous = self._capture_resolutions
+        self._capture_resolutions = {}
+        try:
+            yield
+        finally:
+            self._capture_resolutions = previous
+
+    def _live_relation(self, sql: str) -> Table:
         if self._con.name == "postgres":
             relation = self._postgres_plain_relation(sql)
             if relation is not None:
@@ -2327,7 +2362,7 @@ class WarehouseSession:
         debuggability for guaranteed uniqueness.
         """
         raw = "_".join((*parts, self._suffix))
-        if len(raw.encode()) <= _MAX_IDENTIFIER_LEN:
+        if len(raw.encode()) <= MAX_IDENTIFIER_BYTES:
             return raw
         return f"cr_{hashlib.sha256(raw.encode()).hexdigest()[:24]}"
 

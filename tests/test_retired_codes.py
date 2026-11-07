@@ -51,7 +51,7 @@ def test_definition_codes_are_registered_without_being_raised() -> None:
 def test_retired_winsor_positivity_code_resolves_to_the_negative_outcome_code() -> None:
     """A consumer branching on the retired positivity refusal finds its replacement."""
     from increment.errors import CodedError
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import RawArm, WinsorRawState
 
     replacement = RETIRED_CODES["estimation.winsor.pilot_nonpositive_outcome"]

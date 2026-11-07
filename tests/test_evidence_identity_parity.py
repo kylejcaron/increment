@@ -1232,7 +1232,7 @@ def _line1_family_selection(results: Any, cells: list[Any]) -> dict[str, object]
     family_selection: dict[str, object] = {"status": "unavailable"}
     if cells:
         try:
-            from increment.estimation.family import select_exploratory_family
+            from increment.estimation.exploratory_family import select_exploratory_family
 
             selected = select_exploratory_family(list(results), q=0.05)
             family_selection = {

@@ -2148,10 +2148,25 @@ def _assert_daily_consumer_inputs(coordinate):
         _audit_breakout_scope_inputs(coordinate)
 
 
-def _old_coordinate_rows(scenario_id, ingress):
+@cache
+def _captured_outcome(scenario_id, ingress):
+    """A frozen outcome, migrated by its case's recorded family scope differences."""
+    from tests.parity_harness.expected_differences import (
+        FAMILY_SCOPE_DIFFERENCES,
+        with_expected_difference,
+    )
     from tests.test_evidence_identity_parity import _capture
 
-    outcome = _capture()["scenarios"][scenario_id][ingress]
+    return with_expected_difference(
+        scenario_id,
+        ingress,
+        _capture()["scenarios"][scenario_id][ingress],
+        differences=FAMILY_SCOPE_DIFFERENCES,
+    )
+
+
+def _old_coordinate_rows(scenario_id, ingress):
+    outcome = _captured_outcome(scenario_id, ingress)
     return [
         cell["result_cell"]["retained_row"]
         for cell in outcome["cells"].values()
@@ -3436,17 +3451,17 @@ def _rebind_source_descriptor(expected, actual, source_id):
 
 
 def _captured_metadata(scenario_id, ingress):
-    """A frozen outcome's metadata, migrated by its case's recorded cell-key differences."""
+    """A frozen outcome's metadata, migrated by its case's recorded family scope and cell-key
+    differences."""
     from tests.parity_harness.expected_differences import (
         CELL_KEY_DIFFERENCES,
         with_expected_difference,
     )
-    from tests.test_evidence_identity_parity import _capture
 
     return with_expected_difference(
         scenario_id,
         ingress,
-        _capture()["scenarios"][scenario_id][ingress]["metadata"],
+        _captured_outcome(scenario_id, ingress)["metadata"],
         differences=CELL_KEY_DIFFERENCES,
     )
 

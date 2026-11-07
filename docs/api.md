@@ -143,6 +143,79 @@ values.
   a unit's daily values 1e16, 1, -1e16 and 1, the exact total (2) replaces a
   floating-point sum that could lose the small values (0 or 1), so estimates
   from such data can change by more.
+- Release note (bug fix): when a sequential plan's
+  `SequentialCompliancePolicy(family=True)` registers the uptake cell in the
+  secondaries' e-BH family, the family now lists that cell, which its
+  selection already counted. The `secondary` family in
+  `results.metadata.scope.families` holds the uptake cell among its members,
+  so the member count equals the rows' `family_size`. A registered as-of
+  look's families list every registered cell, including those a request
+  narrowed to `estimands=("itt",)`, `("compliance",)` or some metrics leaves
+  out, as whole-window readouts already did; only the requested rows are
+  returned. The uptake row carries the family's `family_id`, `family_axes`,
+  `family_procedure`, `family_q` and `family_guarantee`, and its
+  `multiplicity_status` is `declared_plan` instead of `undeclared_plan`; its
+  `role` stays `None`. With no secondaries, the uptake cell is the one member
+  of a `secondary` family, whose `family_guarantee` is `finite_sample`.
+  A decision on a stored run selects over the same members: the uptake cell's
+  own verdict stays `not_evaluated`
+  (`decision.not_evaluated.monitoring_view`), its discovery counts toward the
+  family's rejections, and it no longer makes a whole-window family's verdict
+  `not_evaluated`. Before, that decision selected over the secondaries alone,
+  a smaller family than the rows report. A run that requests
+  `estimands=("itt",)` lists the uptake cell as an unselected member, so its
+  family verdict is `not_evaluated` with `decision.family.member_missing`, as
+  for any narrowed registered family; request `("itt", "compliance")` to
+  decide the family. Estimates, thresholds and discoveries are unchanged. An
+  as-of readout that returns the uptake row gets a new snapshot ID once, and
+  with it new family IDs, because its snapshot covers that row's
+  `family_guarantee`, which was empty before; every other snapshot and family
+  ID is unchanged. Saved run envelopes and readout metadata record the added
+  member. Migration: none needed.
+- Release note (fix): the `from_definitions` SQL previews
+  `increment.query.panel_sql` and `summary_sql` now load the Ibis compiler of
+  the dialect named by `backend=`, as connecting to that backend does.
+  `backend="singlestoredb"` over another connection therefore reaches Ibis's
+  SingleStoreDB compiler, which refuses today's analysis SQL with
+  `query.backend.operation_unsupported` as MySQL's does, instead of raising
+  `ValueError: Unknown dialect singlestoredb`. A name the installed Ibis cannot
+  write SQL for refuses with the new `CapabilityError` code
+  `query.backend.compiler_unavailable` (context `backend`, `route`) before the
+  preview reads anything. Migration: where code caught `ValueError` from these
+  previews, catch `CodedError` and branch on its code.
+- Release note (fix): on a backend other than DuckDB, PostgreSQL, Snowflake
+  and BigQuery, an analysis whose event times carry a time zone still stops
+  with `query.backend.operation_unsupported`, and its `detail` now reads
+  "converting event times that carry a time zone to UTC (convert them to UTC
+  timestamps without a time zone in the source SQL)" in every session, instead
+  of naming an internal operation. Ordinary Databricks tables take this route:
+  Ibis reads a plain Databricks `TIMESTAMP` as carrying a time zone.
+  [Event times with a time zone](guides/data-model.md#event-times-with-a-time-zone)
+  explains the conversion to make in the source SQL. The code and its context
+  keys, estimates and experiment identity are unchanged.
+- Release note (breaking bug fix): `WarehouseResultsStore` names each run's
+  table `increment_run_` plus the first 49 hex digits of its run key, 63
+  characters on every warehouse, within PostgreSQL's 63-byte identifier limit.
+  PostgreSQL cut the 78-character names written before to 63 bytes, so on
+  PostgreSQL `run(..., results_store=...)` stopped with `store.run.not_found`
+  after saving, a saved run never reopened or appeared in `history`, and saving
+  the same run again failed with an uncoded backend error instead of
+  `store.run.duplicate`. Runs PostgreSQL already saved, including those whose
+  `run` stopped with `store.run.not_found`, now reopen by ID and as the latest
+  run and appear in `history`, with no migration; a run whose `run` stopped has
+  no logged decisions. Migration: tables a development build before this change
+  saved on DuckDB, Snowflake, BigQuery or SQLite keep 78-character names, which
+  this release does not read; rename each such `increment_run_` table to its
+  first 63 characters. No release wrote them. A schema or catalog name longer
+  than the warehouse allows (63 bytes on PostgreSQL, 255 characters on
+  Snowflake, 1,024 bytes on BigQuery) now refuses when a `WarehouseResultsStore`
+  or `WarehouseArtifactStore` is created, before it reads or writes anything,
+  with `store.schema_name_too_long` (`InvalidRequestError`, context `store`,
+  `schema`, `backend`, `limit`); before, PostgreSQL shortened it, so two long
+  names sharing their first 63 bytes used one schema. An artifact store schema
+  name over the Snowflake or BigQuery limit, which refused with
+  `artifact.store.namespace`, now refuses with this code. Estimates and
+  experiment identity are unchanged.
 - Release note (feature): analyses run on any Ibis SQL backend. DuckDB,
   PostgreSQL, Snowflake and BigQuery remain the verified warehouses. The first
   time Increment uses a connection to any other backend, it shows one

@@ -52,6 +52,7 @@ def test_every_registered_code_appears_once() -> None:
                 f"`{module}`"
                 for module in (
                     "increment.breakout.estimates",
+                    "increment.estimation._fixed_horizon",
                     "increment.estimation.absorption",
                     "increment.estimation.cate",
                     "increment.estimation.diagnostics",

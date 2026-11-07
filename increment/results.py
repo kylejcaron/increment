@@ -222,6 +222,8 @@ _LAZY_IMPORTS = {
     "ResultCell": ("increment.result_envelope", "ResultCell"),
     "ReadoutResults": ("increment.estimation.readout_types", "ReadoutResults"),
 }
+# Saved collections decode to the classes their defining modules register on import.
+_REGISTRANTS = {"ReadoutResults": ("increment.breakout.estimates",)}
 
 
 def __getattr__(name: str):
@@ -229,6 +231,8 @@ def __getattr__(name: str):
         module_name, attr_name = _LAZY_IMPORTS[name]
     except KeyError:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    for registrant in _REGISTRANTS.get(name, ()):
+        importlib.import_module(registrant)
     module = importlib.import_module(module_name)
     value = getattr(module, attr_name)
     globals()[name] = value

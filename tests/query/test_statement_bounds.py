@@ -6,38 +6,38 @@ from tests.query.statement_census import JOURNEYS, count_statements
 
 pytestmark = pytest.mark.integration
 
-# First-observed bounds; production changes may only tighten them.
+# Observed counts; production changes may only tighten them.
 BOUND = {
     "native_scalar": {
-        "total": 15,
+        "total": 12,
         "select": 6,
         "create_temp": 1,
         "drop": 1,
-        "schema": 6,
+        "schema": 3,
         "other": 1,
     },
     "native_breakout": {
-        "total": 14,
+        "total": 11,
         "select": 5,
         "create_temp": 1,
         "drop": 1,
-        "schema": 6,
+        "schema": 3,
         "other": 1,
     },
     "artifact_cuped_breakout": {
-        "total": 2794,
-        "select": 1321,
-        "create_temp": 255,
-        "drop": 244,
-        "schema": 719,
-        "other": 255,
+        "total": 1259,
+        "select": 567,
+        "create_temp": 139,
+        "drop": 128,
+        "schema": 286,
+        "other": 139,
     },
     "dashboard": {
-        "total": 82,
+        "total": 79,
         "select": 73,
         "create_temp": 1,
         "drop": 1,
-        "schema": 6,
+        "schema": 3,
         "other": 1,
     },
 }
@@ -109,7 +109,7 @@ def test_census_counts_each_execution_path_exactly():
         pytest.param(
             "artifact_cuped_breakout",
             marks=pytest.mark.slow(
-                reason="artifact publication, adoption and breakout read take about 17 s locally"
+                reason="artifact publication, adoption and breakout read take about 11 s locally"
             ),
         ),
         pytest.param(

@@ -15,7 +15,17 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal, localcontext
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Self, TypedDict, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    NoReturn,
+    Self,
+    TypedDict,
+    assert_never,
+    cast,
+)
 
 from pydantic import (
     BaseModel,
@@ -29,7 +39,9 @@ from pydantic import (
     model_validator,
 )
 
+from increment._canonical import canonical_json_bytes, canonical_json_loads
 from increment._display import format_interval
+from increment._immutable import _FrozenMapping
 from increment._literals import (
     ALTERNATIVE_VALUES,
     Alternative,
@@ -46,20 +58,41 @@ from increment.errors import (
     raiser,
     refusals,
 )
+from increment.estimation import binomial_rr, conversion_route
+from increment.estimation._fcr_reinterval import (
+    _additive_reference_df,
+    _has_additive_interval,
+    classify,
+    nominal_alpha,
+)
+from increment.estimation._fixed_horizon import (
+    _alpha_eff_for,
+    _joint_additive_bounds,
+    _resolve_fixed_horizon,
+    binomial_abs_interval,
+)
+from increment.estimation._readout_refusals import refuse_legacy_sampling
 from increment.estimation._student_t import _log_tail_bounds
 from increment.estimation._tails import resolvable_expm1, student_t_isf, tail_isf, wald_bounds
+from increment.estimation._winsor_bootstrap import bootstrap_p_value
 from increment.estimation.armstats import IndependentMeanReference
-from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimation.conversion_route import CAPPED_NOTE_PREFIX, ESCALATED_NOTE_PREFIX
+from increment.estimation.priors import MixturePosterior, MixturePrior, Normal, StudentTPrior
+from increment.estimation.risk_difference import score_p_value
 from increment.estimation.sequential_result import (
     AsymptoticSequentialResult,
     SequentialInferenceResult,
     SequentialResult,
+    _point,
 )
+from increment.estimation.winsor import winsor_lift_parts
 from increment.semantics.models import favorable_alternative
+from increment.sequential_state import require_public_laws, sequential_refuse
 from increment.winsor import (
     BootstrapReference,
     InfluenceReference,
     WinsorConfidenceSet,
+    influence_p_value,
     winsor_refuse,
 )
 
@@ -111,10 +144,12 @@ _ADDITIVE_DECISION_REASONS = frozenset(
 
 
 if TYPE_CHECKING:
+    from increment.estimation._fcr_reinterval import Construction
     from increment.estimation.binomial_rr import BinomialInterval
     from increment.estimation.inference import LiftPosterior
     from increment.estimation.readout_types import ReadoutMetadata
     from increment.result_envelope import ResultCell
+    from increment.winsor import WinsorRawState
 
 
 class Estimate(CodedModel, BaseModel):
@@ -317,8 +352,6 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _validate_binomial_set(self):
-        from increment.estimation.binomial_rr import nuisance_beta as _nuisance_beta
-
         expected_level = math.fsum((1.0, -self.alpha))
         if not math.isclose(self.level, expected_level, rel_tol=0.0, abs_tol=1e-15):
             _raise(
@@ -339,7 +372,7 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
                     f"alpha={self.alpha!r} and geometry={self.geometry!r}"
                 ),
             )
-        expected_beta = _nuisance_beta(self.decision_alpha)
+        expected_beta = binomial_rr.nuisance_beta(self.decision_alpha)
         if self.nuisance_beta != expected_beta:
             _raise(
                 "estimation.results.binomial.decision_metadata",
@@ -388,10 +421,8 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
         ``estimation.binomial.tail_unrepresentable`` exactly where a fresh inversion of these
         counts at this null and level is: a set admitted because its own null was rejected on
         the nuisance domain alone does not answer a null the float margin leaves undecidable."""
-        from increment.estimation.binomial_rr import null_p_value
-
         tail = self.decision_alpha / 2.0 if alternative == "two-sided" else self.decision_alpha
-        return null_p_value(
+        return binomial_rr.null_p_value(
             1.0 + null_lift,
             self.x_c,
             self.n_c,
@@ -405,9 +436,7 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     def null_rejection_tail(self, null_lift: float) -> Literal["greater", "less"]:
         """The tail a two-sided rejection of ``H0: R = 1 + null_lift`` lies on: the
         smaller of the two one-sided p-values the two-sided ``null_p_value`` doubles."""
-        from increment.estimation.binomial_rr import null_rejection_tail
-
-        return null_rejection_tail(
+        return binomial_rr.null_rejection_tail(
             1.0 + null_lift,
             self.x_c,
             self.n_c,
@@ -706,8 +735,6 @@ def _validate_delta_evidence(row: Any) -> Any:
     evidence = row.delta_evidence
     if evidence is None:
         return row
-    from increment.estimation.conversion_route import dense_level_holds
-
     if (
         row.reference_kind != "t"
         or getattr(row, "scale", "log") != "log"
@@ -719,7 +746,7 @@ def _validate_delta_evidence(row: Any) -> Any:
             group_id=row.group_id,
             reference_kind=row.reference_kind,
         )
-    if not dense_level_holds(
+    if not conversion_route.dense_level_holds(
         *evidence.counts, level=evidence.dense_level, alternative=row.alternative
     ):
         _raise(
@@ -807,8 +834,6 @@ _ROW_CONTEXT_FIELDS = frozenset(
 def _freeze_row_contexts(row: Any) -> None:
     """Replace each reason context on *row* with an immutable, canonical,
     picklable mapping, so a refusal survives pickle, deepcopy and JSON."""
-    from increment._canonical import canonical_json_bytes
-    from increment._immutable import _FrozenMapping
 
     def freeze(value):
         if isinstance(value, Mapping):
@@ -914,13 +939,9 @@ class _RowIdentity(CodedModel, BaseModel):
         if self.posterior_model == "normal":
             if self.posterior_latent_mean is None or self.posterior_latent_sd is None:
                 return None
-            from increment.estimation.inference import Normal
-
             return Normal(mu=self.posterior_latent_mean, sigma=self.posterior_latent_sd)
         if self.posterior_model == "mixture" and self.posterior_components is not None:
             import numpy as np
-
-            from increment.estimation.priors import MixturePosterior
 
             return MixturePosterior(
                 weights=np.asarray(self.posterior_components.weights, dtype=float),
@@ -1023,9 +1044,7 @@ class _RowIdentity(CodedModel, BaseModel):
     @field_validator("alternative", mode="before")
     @classmethod
     def _validated_alternative(cls, value: object) -> object:
-        from increment.estimation.binomial_rr import validate_alternative
-
-        return validate_alternative(value) if isinstance(value, str) else value
+        return binomial_rr.validate_alternative(value) if isinstance(value, str) else value
 
     @field_validator("posterior_components", mode="before")
     @classmethod
@@ -1033,8 +1052,6 @@ class _RowIdentity(CodedModel, BaseModel):
         if value is None or isinstance(value, PosteriorComponents):
             return value
         if isinstance(value, str):
-            from increment._canonical import canonical_json_bytes, canonical_json_loads
-
             metric = str(info.data.get("metric", "<frame>"))
             group_id = str(info.data.get("group_id", "<frame>"))
             try:
@@ -1086,16 +1103,16 @@ class _RowIdentity(CodedModel, BaseModel):
         evidence = evidence.model_copy(
             update={"escalated_p_value": None, "exact_unavailable": None}
         )
-        from increment.estimation.conversion_route import without_composite_note
-        from increment.estimation.engine import _composite_evidence
-
         delta_row = copied.model_copy(update={"delta_evidence": None})
         retested_evidence, composite_note = _composite_evidence(
             cast(LiftEstimate, delta_row), evidence, evidence.reading_alpha, copied.alternative
         )
         note_parts = [
             part
-            for part in (without_composite_note(getattr(copied, "note", None)), composite_note)
+            for part in (
+                conversion_route.without_composite_note(getattr(copied, "note", None)),
+                composite_note,
+            )
             if part is not None
         ]
         return super(_RowIdentity, copied).model_copy(
@@ -1393,8 +1410,6 @@ class LiftEstimate(_RowIdentity):
                 "invalid_state", "Independent mean component references require that method."
             )
         if self.independent_mean_reference is not None:
-            from increment.estimation.inference import _resolve_fixed_horizon
-
             ref = self.independent_mean_reference
             lift = self.lift
 
@@ -1619,9 +1634,7 @@ class LiftEstimate(_RowIdentity):
                 metric=self.metric,
                 reason="lift is a finite point but binomial_set has no available point (x_c == 0)",
             )
-        from increment.estimation.binomial_rr import point_lift as _point_lift
-
-        expected_value = _point_lift(bset.x_c, bset.n_c, bset.x_t, bset.n_t)
+        expected_value = binomial_rr.point_lift(bset.x_c, bset.n_c, bset.x_t, bset.n_t)
         if expected_value is None or not math.isclose(
             self.lift.value, expected_value, rel_tol=0.0, abs_tol=1e-9
         ):
@@ -1659,8 +1672,6 @@ class LiftEstimate(_RowIdentity):
     @model_validator(mode="after")
     def _sequential_consistency(self):
         """Keep checkpoint authority independent of fixed-kind early returns."""
-        from increment.sequential_state import require_public_laws, sequential_refuse
-
         result = self.sequential_result
         if self.reference_kind != "sequential":
             if result is not None:
@@ -1723,12 +1734,6 @@ class LiftEstimate(_RowIdentity):
             float(cell.null_lift),
         ):
             sequential_refuse("source.invalid", "result and checkpoint hypothesis disagree")
-        from increment.estimation.sequential_result import _point
-        from increment.estimation.sequential_runtime import (
-            display_estimate,
-            require_selected_widening,
-        )
-
         if (
             self.lift != display_estimate(result)
             or result.point_reason != _point(result.checkpoint)[1]
@@ -1763,8 +1768,6 @@ class LiftEstimate(_RowIdentity):
                     reason=self.relative_confidence_set.point_unavailable_reason,
                 )
             if self.sequential_result is not None:
-                from increment.sequential_state import sequential_refuse
-
                 sequential_refuse(
                     "route.unsupported",
                     self.sequential_result.point_reason
@@ -1791,6 +1794,7 @@ class LiftEstimate(_RowIdentity):
         """Return this finished row as one portable result cell."""
         from importlib import import_module
 
+        # Upward: as_cells builds a ResultCell, and ResultCell.retained_row rebuilds this row.
         ResultCell = import_module("increment.result_envelope").ResultCell
 
         return [ResultCell.from_row(self, metadata, created_at=created_at)]
@@ -1875,8 +1879,6 @@ class LiftEstimate(_RowIdentity):
                         "reason": "family reissue cannot change the registered alternative",
                     },
                 )
-            from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
-
             construction, reason = classify(self)
             if construction is None:
                 raise CodedError(
@@ -1914,8 +1916,6 @@ class LiftEstimate(_RowIdentity):
             winsor_refuse(
                 "reinversion_required", "This operation requires a persisted winsor confidence set."
             )
-        from increment.estimation.winsor import estimate_winsor_lift
-
         region = self.confidence_set
         result = estimate_winsor_lift(
             region.raw,
@@ -2194,8 +2194,6 @@ class LiftEstimate(_RowIdentity):
     def _refuse_selected_sequential_probability(self) -> None:
         result = self.sequential_result
         if result is not None and result.bounds.alpha != result.checkpoint.cell.alpha:
-            from increment.sequential_state import sequential_refuse
-
             sequential_refuse(
                 "route.unsupported",
                 "selected sequential intervals do not define posterior decision probabilities",
@@ -2271,8 +2269,6 @@ class LiftEstimate(_RowIdentity):
     def require_sequential_result(self) -> SequentialResult:
         """Return the authoritative stopped likelihood state or refuse a fixed row."""
         if self.sequential_result is None:
-            from increment.sequential_state import sequential_refuse
-
             sequential_refuse("source.invalid", "result has no registered sequential checkpoint")
         return self.sequential_result
 
@@ -2280,8 +2276,6 @@ class LiftEstimate(_RowIdentity):
         """Narrow to exact likelihood evidence without relabeling an AsympCS."""
         result = self.require_sequential_result()
         if not isinstance(result, SequentialInferenceResult):
-            from increment.sequential_state import sequential_refuse
-
             sequential_refuse(
                 "route.unsupported", "asymptotic confidence sets are not exact evidence"
             )
@@ -2291,8 +2285,6 @@ class LiftEstimate(_RowIdentity):
         """Return the scalar mean construction and its complete confidence geometry."""
         result = self.require_sequential_result()
         if not isinstance(result, AsymptoticSequentialResult):
-            from increment.sequential_state import sequential_refuse
-
             sequential_refuse("route.unsupported", "result is not a scalar mean AsympCS")
         return result
 
@@ -2369,6 +2361,7 @@ def failed_cell_row(
 
 if TYPE_CHECKING:
     from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
+    from increment.estimation.contrast_results import ContrastResult
 
     type DecisionRow = LiftEstimate | BreakoutEstimate | DailyLiftEstimate
 
@@ -2408,8 +2401,6 @@ def _require_fixed_horizon(row: DecisionRow, reason: str) -> None:
     """Refuse a sequential row: a confidence sequence has no fixed-look endpoint
     distribution or posterior to summarize."""
     if row.inference != "fixed":
-        from increment.sequential_state import sequential_refuse
-
         sequential_refuse("route.unsupported", reason)
 
 
@@ -2561,6 +2552,37 @@ def row_verdict(row: Any) -> bool | None:
         return None
 
 
+def contrast_evidence_available(result: ContrastResult) -> bool:
+    """Whether the declared reference supplies typed evidence.
+
+    Envelope evidence does not depend on the descriptive sample standard error.
+    """
+    return (
+        result.residual_p_value is not None
+        if result.method == "switchback_unit_variance_envelope"
+        else result.standard_error is not None and result.standard_error > 0.0
+    )
+
+
+def contrast_stat_sig(result: ContrastResult) -> bool:
+    """Return the contrast's table/readout decision verdict."""
+    if not contrast_evidence_available(result):
+        return False
+    estimate = result.estimate
+    if result.method == "switchback_unit_variance_envelope":
+        assert result.residual_p_value is not None
+        return result.residual_p_value < result.alpha
+    if result.alternative == "greater":
+        return estimate.lb is not None and estimate.lb > result.null_abs
+    if result.alternative == "less":
+        return estimate.ub is not None and estimate.ub < result.null_abs
+    return (
+        estimate.lb is not None
+        and estimate.ub is not None
+        and not (estimate.lb <= result.null_abs <= estimate.ub)
+    )
+
+
 def row_p_value(row: DecisionRow) -> float | None:
     """``row``'s prior-free sampling p-value against its own null, or ``None``
     when the row carries no usable sampling evidence (the cases
@@ -2587,12 +2609,8 @@ def row_p_value(row: DecisionRow) -> float | None:
         reference = confidence_set.reference
         null = row.null_abs if row.null_abs is not None else row.null_lift
         if isinstance(reference, BootstrapReference):
-            from increment.estimation._winsor_bootstrap import bootstrap_p_value
-
             return bootstrap_p_value(reference, null, relative=row.null_abs is None)
         if isinstance(reference, InfluenceReference):
-            from increment.winsor import influence_p_value
-
             return influence_p_value(reference, null, relative=row.null_abs is None)
         return confidence_set.alpha if row_stat_sig(row) else 1.0
     if row.null_abs is not None:
@@ -2660,19 +2678,17 @@ def row_p_value(row: DecisionRow) -> float | None:
     evidence = row.delta_evidence
     if evidence is None or not evidence.composite:
         return p_delta
-    from increment.estimation.conversion_route import composite_exact_reading, composite_p_value
-
     exact = evidence.escalated_p_value
     if p_delta < evidence.dense_level and row.null_lift != evidence.reading_null_lift:
         assert evidence.reading_alpha is not None
-        exact, _reason = composite_exact_reading(
+        exact, _reason = conversion_route.composite_exact_reading(
             evidence.counts,
             dense_level=evidence.dense_level,
             alpha=evidence.reading_alpha,
             null_lift=row.null_lift,
             alternative=row.alternative,
         )
-    return composite_p_value(p_delta, evidence.dense_level, exact)
+    return conversion_route.composite_p_value(p_delta, evidence.dense_level, exact)
 
 
 def _sampling_availability(row: DecisionRow) -> bool | None:
@@ -2680,8 +2696,6 @@ def _sampling_availability(row: DecisionRow) -> bool | None:
     serialized before the marker existed is refused rather than guessed."""
     available = row.sampling_available
     if available is None and getattr(row, "prior_shrunk", False):
-        from increment.estimation.readout_types import refuse_legacy_sampling
-
         refuse_legacy_sampling(row)
     return available
 
@@ -2864,8 +2878,6 @@ def _null_abs_p_value(row: DecisionRow) -> float:
     the binomial counts for a score interval, else the Normal or t tail of ``abs_diff``."""
     assert row.null_abs is not None
     if row.abs_reference_kind == "score":
-        from increment.estimation.risk_difference import score_p_value
-
         bset = row.binomial_set
         assert bset is not None, "validated: a score reference rides on a binomial set"
         return score_p_value(bset.x_c, bset.n_c, bset.x_t, bset.n_t, row.null_abs, row.alternative)
@@ -2944,14 +2956,6 @@ def _fcr_alpha_for(alternative: str, fcr_alpha: float | Fraction) -> float:
     exact = Fraction(fcr_alpha) / (2 if alternative != "two-sided" else 1)
     value = float(exact)
     return math.nextafter(value, 0.0) if Fraction(value) > exact else value
-
-
-def _alpha_eff_for(alternative: str, alpha: float) -> float:
-    """The central-equivalent alpha a call-level *alpha* displays under.
-
-    The inverse of ``_fcr_alpha_for``: directional alternatives double it.
-    """
-    return alpha if alternative == "two-sided" else 2.0 * alpha
 
 
 def _working_value(estimate: LiftEstimate, value: float) -> float:
@@ -3036,9 +3040,12 @@ def _open_joint_far_bound(relative: RelativeConfidenceSet) -> Estimate | None:
 
 def _reinverted_binomial_note(note: str | None, ci: BinomialInterval) -> str | None:
     """*note* with any superseded precision disclosure replaced by *ci*'s own."""
-    from increment.estimation.binomial_rr import precision_note, without_precision_note
-
-    return " | ".join(filter(None, (without_precision_note(note), precision_note(ci)))) or None
+    return (
+        " | ".join(
+            filter(None, (binomial_rr.without_precision_note(note), binomial_rr.precision_note(ci)))
+        )
+        or None
+    )
 
 
 def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
@@ -3088,24 +3095,19 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
     if estimate.alternative == "two-sided":
         return estimate
     if estimate.reference_kind == "binomial":
-        from increment.estimation.binomial_rr import confidence_interval as _binomial_ci
-        from increment.estimation.binomial_rr import nuisance_beta as _nuisance_beta
-        from increment.estimation.binomial_rr import to_lift_bounds as _to_lift_bounds
-        from increment.estimation.binomial_rr import validate_alternative as _validate_alternative
-
         bset = estimate.binomial_set
         assert bset is not None, "validated: reference_kind='binomial' rows carry a set"
 
-        ci = _binomial_ci(
+        ci = binomial_rr.confidence_interval(
             bset.x_c,
             bset.n_c,
             bset.x_t,
             bset.n_t,
             alpha=bset.alpha,
-            alternative=_validate_alternative(estimate.alternative),
+            alternative=binomial_rr.validate_alternative(estimate.alternative),
             null_r=1.0 + estimate.null_lift,
         )
-        ci_lower, ci_upper = _to_lift_bounds(ci)
+        ci_lower, ci_upper = binomial_rr.to_lift_bounds(ci)
         new_lift = (
             None
             if e is None
@@ -3123,7 +3125,7 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
                 "upper": ci_upper,
                 "geometry": ci.geometry,
                 "decision_alpha": bset.alpha,
-                "nuisance_beta": _nuisance_beta(bset.alpha),
+                "nuisance_beta": binomial_rr.nuisance_beta(bset.alpha),
             }
         )
         return estimate.model_copy(
@@ -3580,8 +3582,6 @@ def _validate_joint_relative_row(row: Any) -> bool:
                 "estimation.results.joint.invalid_set",
                 reason="display, reference, alternative or prior contradicts the joint set",
             )
-        from increment.estimation.inference import _joint_additive_bounds
-
         # Producers use this same projection; binary64 serialization is exact.
         ref = relative.reference
         if row.abs_diff != ref.a:
@@ -3697,3 +3697,496 @@ def _relative_inversion(reference: JointContrastReference, alpha: float, alterna
 
 
 LiftEstimate.model_rebuild()
+
+
+def estimate_winsor_lift(
+    raw: WinsorRawState,
+    control: str,
+    treatment: str,
+    *,
+    alpha: float = 0.05,
+    method: str = "unadjusted",
+    method_role: Literal["decision", "sensitivity"] = "decision",
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
+    preferred_direction: PreferredDirection | None = None,
+    reference: BootstrapReference | InfluenceReference | None = None,
+) -> LiftEstimate:
+    """Build the public row without manufacturing a posterior or a standard error."""
+    parts = winsor_lift_parts(raw, control, treatment, alpha=alpha, reference=reference)
+    region = parts.region
+    point = None
+    if region.point is not None:
+        if region.lower is not None and region.upper is not None and alpha / 2 > 0:
+            point = Estimate(
+                value=region.point,
+                lb=region.lower,
+                ub=region.upper,
+                alpha=alpha,
+                level=region.level,
+            )
+        else:
+            point = Estimate(value=region.point)
+    row = {
+        "metric": raw.metric,
+        "group_id": treatment,
+        "method": method,
+        "method_role": method_role,
+        "reference_kind": "confidence_set",
+        "confidence_set": region,
+        "lift": point,
+        "abs_diff": region.additive_point,
+        "abs_lb": region.additive.lower.value,
+        "abs_ub": region.additive.upper.value,
+        "abs_alpha": (
+            region.alpha
+            if region.additive.lower.value is not None and region.additive.upper.value is not None
+            else None
+        ),
+        "null_lift": null_lift,
+        "null_abs": null_abs,
+        "preferred_direction": preferred_direction,
+        "analysis_population": raw.population,
+        "winsor_upper_percentile": raw.quantile,
+        "winsor_upper_bound": parts.cutoff,
+        "winsor_control_n_lower": 0,
+        "winsor_treatment_n_lower": 0,
+        "winsor_control_n_upper": parts.control_n_upper,
+        "winsor_treatment_n_upper": parts.treatment_n_upper,
+        "winsor_control_n": parts.control_n,
+        "winsor_treatment_n": parts.treatment_n,
+    }
+    return LiftEstimate.model_validate(row, context=parts.validation_context)
+
+
+def _outward(value: Fraction | None, *, lower: bool) -> float | None:
+    if value is None:
+        return None
+    exact = value - 1
+    try:
+        result = float(exact)
+    except OverflowError:
+        return None
+    if not math.isfinite(result):
+        return None
+    if (lower and Fraction(result) > exact) or (not lower and Fraction(result) < exact):
+        result = math.nextafter(result, -math.inf if lower else math.inf)
+    return result if math.isfinite(result) else None
+
+
+def display_estimate(result: SequentialResult):
+    point, _ = _point(result.checkpoint)
+    bounds = result.bounds
+    lift = None
+    if point is not None:
+        # The full exact geometry remains in sequential_result even when a
+        # finite display cannot represent an endpoint or the alpha allocation.
+        lower, upper = _outward(bounds.lower, lower=True), _outward(bounds.upper, lower=False)
+        alpha = float(bounds.alpha)
+        open_side = (
+            "upper"
+            if upper is None and lower is not None
+            else "lower"
+            if lower is None and upper is not None
+            else None
+        )
+        if (
+            not (
+                isinstance(result, AsymptoticSequentialResult)
+                and len(result.bounds.components) != 1
+            )
+            and not bounds.empty
+            and (lower is not None or upper is not None)
+            and 0 < alpha < 1
+            and 0 < 1 - alpha < 1
+            and alpha / 2 > 0
+        ):
+            lift = Estimate(
+                value=point, lb=lower, ub=upper, open_side=open_side, alpha=alpha, level=1 - alpha
+            )
+        else:
+            lift = Estimate(value=point)
+    return lift
+
+
+def require_selected_widening(
+    result: SequentialResult,
+    *,
+    discovery: bool | None,
+    family_threshold: float | None,
+    family_nominal_alpha: float | None,
+) -> None:
+    """A row's decision alpha may pass its registered cell allocation only as a
+    selected family member, and never past ``min(family_threshold, family_nominal_alpha)``."""
+    if result.decision_alpha == result.checkpoint.cell.alpha:
+        return
+    if not discovery:
+        sequential_refuse(
+            "source.invalid",
+            "only a selected row may carry a decision alpha past its registered cell allocation",
+        )
+    if family_threshold is None or family_nominal_alpha is None:
+        sequential_refuse(
+            "source.invalid",
+            "a widened decision alpha requires a recorded family threshold and nominal alpha",
+        )
+    permitted = min(family_threshold, family_nominal_alpha)
+    if float(result.decision_alpha) > permitted * (1 + 1e-9):
+        sequential_refuse(
+            "source.invalid",
+            "reinverted decision alpha exceeds the family's realized threshold or nominal alpha",
+        )
+
+
+def _composite_evidence(
+    row: LiftEstimate,
+    evidence: DeltaConversionEvidence,
+    alpha: float,
+    alternative: Alternative,
+) -> tuple[DeltaConversionEvidence, str | None]:
+    """The composite evidence of a family-member conversion row routed to the delta method, and
+    the note it carries when its p-value is not its delta p-value.
+
+    ``U`` is the smallest level at which the counts are dense (`conversion_route.dense_level`).
+    A delta p-value at or above ``U`` is the row's p-value. Below ``U`` the exact p-value is read
+    at the row's nominal tail with its nominal nuisance budget ``beta`` -- only where it can
+    matter: when ``U <= beta`` no exact p-value falls below ``U``, and the row reports ``U``
+    without the work. The exact route's own refusals (an arm above `FINITE_SAMPLE_MAX_ARM_SIZE`,
+    a tail its float margin dominates) are recorded as the reason the row reports ``U``: a
+    p-value of ``U`` is valid at every level (the row rejects nowhere below ``U``, and at ``U``
+    and above only where its delta p-value does), and is never a silent fallback.
+    """
+    level = evidence.dense_level
+    null_lift = row.null_lift
+    p_delta = row_p_value(row)
+    assert p_delta is not None, "a delta-route row carries its sampling reference"
+    evidence = evidence.model_copy(
+        update={"composite": True, "reading_null_lift": null_lift, "reading_alpha": alpha}
+    )
+    if p_delta >= level:
+        return evidence, None
+    below = (
+        f"the delta p-value {p_delta:.3g} lies below {level:.3g}, the smallest level at "
+        "which these counts are dense"
+    )
+    beta = binomial_rr.nuisance_beta(alpha)
+    if level <= beta:
+        return evidence, (
+            f"{CAPPED_NOTE_PREFIX}: {below}, and no exact p-value falls below the nuisance "
+            f"budget {beta:.3g}, so the row reports {level:.3g}"
+        )
+    exact, code = conversion_route.composite_exact_reading(
+        evidence.counts,
+        dense_level=level,
+        alpha=alpha,
+        null_lift=null_lift,
+        alternative=alternative,
+    )
+    if exact is not None:
+        evidence = evidence.model_copy(update={"escalated_p_value": exact})
+        if exact < level:
+            return evidence, (
+                f"{ESCALATED_NOTE_PREFIX}: {below}, so the row reports the exact p-value "
+                f"{exact:.3g} read at its nominal tail"
+            )
+        return evidence, (
+            f"{CAPPED_NOTE_PREFIX}: {below}, and the exact p-value {exact:.3g} does not, "
+            f"so the row reports {level:.3g}"
+        )
+    assert code is not None, "a readable dense level either has exact evidence or a refusal"
+    return evidence.model_copy(update={"exact_unavailable": code}), (
+        f"{CAPPED_NOTE_PREFIX}: {below}, and the exact route is unavailable ({code}), so the "
+        f"row reports {level:.3g}"
+    )
+
+
+# FCR reissue rebuilds each persisted construction as its estimator does, then opens it
+# with ``open_bound_from_two_sided_at_target`` exactly as the moment path does.
+
+
+def _wald_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
+    """``infer_lift``'s interval from persisted constructor moments at *alpha*."""
+    assert view.lift is not None
+    parameters = _fixed_fcr_parameters(view)
+    assert parameters is not None, "classified: raw statistics are persisted"
+    mu, sigma = parameters
+    reference = _resolve_fixed_horizon(
+        alpha,
+        view.alternative,
+        dof=view.reference_df if view.reference_kind == "t" else None,
+        arm_ns=None,
+        prior=None,
+    )
+    assert reference.crit is not None
+    updates: dict[str, object] = {}
+    try:
+        lower, upper = wald_bounds(mu, reference.crit * sigma, 1.0, what="FCR relative interval")
+        if view.scale == "log":
+            lower = resolvable_expm1(lower, what="FCR relative lower bound")
+            upper = resolvable_expm1(upper, what="FCR relative upper bound")
+    except CodedError as exc:
+        updates.update(
+            {
+                "lift": view.lift.model_copy(
+                    update={
+                        "lb": None,
+                        "ub": None,
+                        "alpha": None,
+                        "level": None,
+                        "open_side": None,
+                    }
+                ),
+                "relative_error_code": exc.code,
+                "relative_error_context": exc.context,
+            }
+        )
+    else:
+        updates["lift"] = view.lift.model_copy(
+            update={
+                "lb": lower,
+                "ub": upper,
+                "level": math.fsum((1.0, -reference.alpha_eff)),
+                "alpha": reference.alpha_eff,
+            }
+        )
+    if view.abs_lb is not None or view.abs_ub is not None:
+        assert view.abs_diff is not None and view.abs_se is not None
+        abs_reference = _resolve_fixed_horizon(
+            alpha,
+            view.alternative,
+            dof=view.abs_reference_df if view.abs_reference_kind == "t" else None,
+            arm_ns=None,
+            prior=None,
+        )
+        assert abs_reference.crit is not None
+        updates["abs_lb"], updates["abs_ub"] = wald_bounds(
+            view.abs_diff, abs_reference.crit, view.abs_se, what="FCR additive interval"
+        )
+        updates["abs_alpha"] = abs_reference.alpha_eff
+    return view.model_copy(update=updates)
+
+
+def _score_additive(x_c: int, n_c: int, x_t: int, n_t: int, alpha_eff: float) -> dict[str, object]:
+    """The additive fields of a binomial row cut at its central-equivalent *alpha_eff*."""
+    lower, upper, kind = binomial_abs_interval(x_c, n_c, x_t, n_t, alpha_eff)
+    return {"abs_lb": lower, "abs_ub": upper, "abs_reference_kind": kind, "abs_alpha": alpha_eff}
+
+
+def with_score_margin(view: LiftEstimate) -> LiftEstimate:
+    """*view* as a family member: a binomial margin row saved with Wald additive bounds and no
+    reference is read with the score interval its own level cuts, so a family selects it on the
+    score test its reissued interval inverts. Any other row is returned unchanged."""
+    bset = view.binomial_set
+    if (
+        view.null_abs is None
+        or view.abs_reference_kind is not None
+        or view.reference_kind != "binomial"
+        or bset is None
+    ):
+        return view
+    return view.model_copy(
+        update=_score_additive(bset.x_c, bset.n_c, bset.x_t, bset.n_t, bset.alpha)
+    )
+
+
+def _binomial_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
+    """The exact binomial row ``estimate_lift`` builds at *alpha* from the persisted counts, its
+    score additive interval included (a row persisted with Wald additive bounds gets one too)."""
+    bset = view.binomial_set
+    assert bset is not None
+    alpha_eff = alpha if view.alternative == "two-sided" else 2.0 * alpha
+    interval = binomial_rr.confidence_interval(
+        bset.x_c,
+        bset.n_c,
+        bset.x_t,
+        bset.n_t,
+        alpha=alpha,
+        alternative=binomial_rr.validate_alternative(view.alternative),
+        null_r=1.0 + view.null_lift,
+    )
+    lower, upper = binomial_rr.to_lift_bounds(interval)
+    level = math.fsum((1.0, -alpha_eff))
+    updates: dict[str, object] = {
+        "binomial_set": BinomialConfidenceSet(
+            lower=lower,
+            upper=upper,
+            alpha=alpha_eff,
+            level=level,
+            geometry=interval.geometry,
+            method=bset.method,
+            numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
+            x_c=bset.x_c,
+            n_c=bset.n_c,
+            x_t=bset.x_t,
+            n_t=bset.n_t,
+            nuisance_beta=binomial_rr.nuisance_beta(alpha),
+            decision_alpha=alpha,
+        ),
+        "note": _reinverted_binomial_note(view.note, interval),
+    }
+    if view.lift is not None:
+        updates["lift"] = view.lift.model_copy(
+            update={
+                "lb": lower,
+                "ub": upper,
+                "open_side": "upper" if upper is None else None,
+                "level": level,
+                "alpha": alpha_eff,
+            }
+        )
+    updates.update(_score_additive(bset.x_c, bset.n_c, bset.x_t, bset.n_t, alpha_eff))
+    return view.model_copy(update=updates)
+
+
+def _conversion_parent(
+    view: LiftEstimate, alpha: float, fcr_alpha: float | Fraction
+) -> LiftEstimate:
+    """The row ``estimate_lift`` builds at *alpha* for a conversion contrast the count rule
+    routed to the delta method: routed again by its persisted counts at the tail of the bound
+    the row finally reports at the corrected level *fcr_alpha* (`fcr_route_tail`), the Wald
+    row where they are dense there and the exact binomial row from the counts where they are
+    not (the corrected level fell below the row's dense level), as a fresh finite-sample row
+    would be cut: the score additive interval with no t reference, and only the disclosures
+    that still apply."""
+    evidence = view.delta_evidence
+    assert evidence is not None, "classified: the row carries its counts"
+    tail = conversion_route.fcr_route_tail(view.alternative, float(fcr_alpha))
+    if (
+        conversion_route.route_for_counts(*evidence.counts, tail_alpha=tail, mode="auto")
+        == "asymptotic"
+    ):
+        return _wald_parent(view, alpha)
+    x_c, n_c, x_t, n_t = evidence.counts
+    alternative = binomial_rr.validate_alternative(view.alternative)
+    interval = binomial_rr.confidence_interval(
+        x_c, n_c, x_t, n_t, alpha=alpha, alternative=alternative, null_r=1.0 + view.null_lift
+    )
+    point = binomial_rr.point_lift(x_c, n_c, x_t, n_t)
+    assert point is not None, "a delta-route row has a positive control count"
+    lower, upper = binomial_rr.to_lift_bounds(interval)
+    alpha_eff = _alpha_eff_for(view.alternative, alpha)
+    level = math.fsum((1.0, -alpha_eff))
+    updates: dict[str, object] = {
+        "lift": Estimate(
+            value=point,
+            lb=lower,
+            ub=upper,
+            open_side="upper" if upper is None else None,
+            level=level,
+            alpha=alpha_eff,
+        ),
+        "binomial_set": BinomialConfidenceSet(
+            lower=lower,
+            upper=upper,
+            alpha=alpha_eff,
+            level=level,
+            geometry=interval.geometry,
+            method=BINOMIAL_METHOD,
+            numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
+            x_c=x_c,
+            n_c=n_c,
+            x_t=x_t,
+            n_t=n_t,
+            nuisance_beta=binomial_rr.nuisance_beta(alpha),
+            decision_alpha=alpha,
+        ),
+        "delta_evidence": None,
+        "reference_kind": "binomial",
+        "reference_df": None,
+        "dof": None,
+        "scale": "linear",
+        "abs_reference_df": None,
+        "note": " | ".join(
+            part
+            for part in (
+                conversion_route.without_composite_note(view.note),
+                binomial_rr.precision_note(interval),
+            )
+            if part is not None
+        )
+        or None,
+    }
+    updates.update(_score_additive(x_c, n_c, x_t, n_t, alpha_eff))
+    return view.model_copy(update=updates)
+
+
+def _joint_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
+    """The Fieller row ``infer_ate`` builds at *alpha* from the persisted joint reference."""
+    relative = view.relative_confidence_set
+    assert relative is not None
+    reissued = relative_confidence_set(
+        relative.reference, alpha=alpha, alternative=view.alternative
+    )
+    abs_lb, abs_ub = _joint_additive_bounds(
+        view.abs_diff,
+        view.abs_se,
+        reissued.alpha,
+        view.alternative,
+        view.abs_reference_df if view.abs_reference_kind == "t" else None,
+    )
+    return view.model_copy(
+        update={
+            "relative_confidence_set": reissued,
+            "lift": reissued.estimate(),
+            "abs_lb": abs_lb,
+            "abs_ub": abs_ub,
+            "abs_alpha": reissued.alpha_eff if abs_lb is not None else None,
+        }
+    )
+
+
+def _unavailable_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
+    """The central additive interval an estimator cuts for such a row at *alpha*."""
+    if not _has_additive_interval(view):
+        return view
+    assert view.abs_diff is not None and view.abs_se is not None
+    abs_lb, abs_ub = _joint_additive_bounds(
+        view.abs_diff, view.abs_se, alpha, view.alternative, _additive_reference_df(view)
+    )
+    return view.model_copy(
+        update={
+            "abs_lb": abs_lb,
+            "abs_ub": abs_ub,
+            "abs_alpha": _alpha_eff_for(view.alternative, alpha) if abs_lb is not None else None,
+        }
+    )
+
+
+def reinterval_at_fcr(
+    view: LiftEstimate, construction: Construction, fcr_alpha: float | Fraction
+) -> LiftEstimate:
+    """*view* reissued at the total noncoverage budget *fcr_alpha*.
+
+    Two-sided rows get a central interval at *fcr_alpha*; a directional row gets the open bound
+    ``open_bound_from_two_sided_at_target`` derives from the parent built at the halved alpha. A
+    row without a relative interval has its additive interval reissued centrally.
+    """
+    alpha = _fcr_alpha_for(view.alternative, fcr_alpha)
+    match construction:
+        case "wald":
+            parent = _wald_parent(view, alpha)
+        case "conversion":
+            parent = _conversion_parent(view, alpha, fcr_alpha)
+        case "binomial":
+            parent = _binomial_parent(view, alpha)
+        case "joint":
+            parent = _joint_parent(view, alpha)
+        case "unavailable":
+            parent = _unavailable_parent(view, alpha)
+        case _:
+            assert_never(construction)
+    return open_bound_from_two_sided_at_target(parent)
+
+
+def reinterval_selected(
+    view: LiftEstimate, construction: Construction, realized_threshold: float
+) -> LiftEstimate:
+    """*view* reissued at ``min(realized_threshold, nominal)``, the level a selected row reports.
+
+    A row with no relative and no additive interval has nothing to reissue.
+    """
+    if construction == "unavailable" and not _has_additive_interval(view):
+        return view
+    return reinterval_at_fcr(
+        view, construction, min(realized_threshold, nominal_alpha(view, construction))
+    )

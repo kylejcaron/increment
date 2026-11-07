@@ -1,7 +1,6 @@
 """Bayesian Normal-Normal inference for lift estimation.
 
-``Normal`` is a small frozen pydantic model for scalar distributions;
-``normal_posterior`` performs a conjugate update.
+``normal_posterior`` performs the conjugate update of a ``Normal`` prior.
 
 ``infer_lift`` is the shared tail for every delta-metric lift: a joint
 ``log_rr`` point estimate and the two per-arm standard errors update a
@@ -17,13 +16,9 @@ log transform, and lifts ``<= -1`` are representable.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from increment._literals import (
-    ALTERNATIVE_VALUES,
     VALUE_SCALE_VALUES,
     Alternative,
     PreferredDirection,
@@ -31,19 +26,29 @@ from increment._literals import (
 )
 from increment.errors import (
     CodedError,
-    CodedModel,
     InvalidRequestError,
     RefusalSpec,
     raiser,
     refusals,
     refuse,
 )
-from increment.estimation.binomial_rr import UNKNOWN_ALTERNATIVE
+from increment.estimation._fixed_horizon import (
+    ARM_NS_EACH,
+    INFER_LIFT_ABS_DIFF_FINITE,
+    INFER_LIFT_ABS_SE_FINITE,
+    INFER_LIFT_ABS_SE_POSITIVE,
+    ONE_SIDED_ALPHA_DOUBLES,
+    PRIOR_EXCLUDES_CLUSTER_ROBUST_T,
+    PRIOR_EXCLUDES_WELCH_REFERENCE,
+    _alpha_eff_for,
+    _joint_additive_bounds,
+    _resolve_fixed_horizon,
+)
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.priors import (
-    EXPECTED_NEGATIVE_PART_SCALE,
-    EXPECTED_POSITIVE_PART_SCALE,
     MixturePrior,
+    Normal,
+    Prior,
     StudentTPrior,
     mixture_posterior,
 )
@@ -53,7 +58,6 @@ if TYPE_CHECKING:
 
 from increment.estimation._tails import (
     resolvable_expm1,
-    student_t_isf,
     two_sided_critical_value,
     wald_bounds,
 )
@@ -69,7 +73,6 @@ from increment.estimation.results import (
     LiftEstimate,
     PosteriorComponents,
     RelativeUnavailableReason,
-    _alpha_eff_for,
     relative_confidence_set,
 )
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
@@ -77,21 +80,21 @@ from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFa
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "estimation.inference.arm_ns_each": "arm_ns must each be > 1 for a Welch-Satterthwaite df, got {arm_ns}",
-        "estimation.inference.prior_excludes_welch_reference": "arm_ns={arm_ns!r} requests a Welch-Satterthwaite sampling reference, which cannot be combined with an informative prior: a t critical value on a prior-updated scale is neither a sampling interval nor a posterior interval",
+        "estimation.inference.arm_ns_each": ARM_NS_EACH,
+        "estimation.inference.prior_excludes_welch_reference": PRIOR_EXCLUDES_WELCH_REFERENCE,
         "estimation.inference.null_lift_log": "null_lift must be > -1.0 (log scale), got {null_lift}",
         "estimation.diagnostics.alpha": "alpha must be in (0, 1), got {alpha}",
-        "estimation.inference.one_sided_alpha_doubles": "one-sided alpha={alpha} doubles to alpha_eff={alpha_eff} >= 1: no displayable two-sided interval exists at that level",
-        "estimation.inference.prior_excludes_cluster_robust_t": "prior and a cluster-robust t or joint reference are mutually exclusive: the available covariance does not specify the requested Normal conjugate update",
+        "estimation.inference.one_sided_alpha_doubles": ONE_SIDED_ALPHA_DOUBLES,
+        "estimation.inference.prior_excludes_cluster_robust_t": PRIOR_EXCLUDES_CLUSTER_ROBUST_T,
         "estimation.inference.prior_excludes_joint_reference": "an informative prior cannot be combined with a joint frequentist relative set",
         "estimation.inference.joint_reference_invalid": RefusalSpec(
             "estimation.inference.joint_reference_invalid",
             InvalidRequestError,
             lambda *, reason: reason,
         ),
-        "estimation.inference.infer_lift_abs_diff_finite": "abs_diff must be finite, got {abs_diff}",
-        "estimation.inference.infer_lift_abs_se_finite": "abs_se must be finite, got {abs_se}",
-        "estimation.inference.infer_lift_abs_se_positive": "abs_se must be > 0.0, got {abs_se}",
+        "estimation.inference.infer_lift_abs_diff_finite": INFER_LIFT_ABS_DIFF_FINITE,
+        "estimation.inference.infer_lift_abs_se_finite": INFER_LIFT_ABS_SE_FINITE,
+        "estimation.inference.infer_lift_abs_se_positive": INFER_LIFT_ABS_SE_POSITIVE,
         "estimation.inference.unknown_value_scale": 'Unknown value_scale={value_scale!r}: must be "relative" or "absolute"',
         "estimation.inference.infer_ate_null_abs_on_absolute_metric": RefusalSpec(
             "estimation.inference.infer_ate_null_abs_on_absolute_metric",
@@ -107,18 +110,22 @@ _REFUSALS = refusals(
         "estimation.inference.abs_dof_requires_dof": "abs_dof is only meaningful alongside a cluster-robust dof (the absolute sidecar's own reference df exists only when the primary contrast is already on the cluster-robust t-reference path); got abs_dof set with dof=None.",
         "estimation.inference.infer_ate_null_lift_finite": "null_lift must be finite, got {null_lift}",
         "estimation.inference.infer_ate_null_abs_finite": "null_abs must be finite, got {null_abs}",
+        "estimation.adjust.prior.type": (
+            "mixture priors are only supported on the relative (log-RR) lift scale served by"
+            " infer_lift/estimate_lift: this path reports rows whose raw pre-prior statistics are"
+            " not persisted, so the mixture posterior could not be recomputed for decision"
+            " statistics. Pass a Normal prior here, or estimate the metric through the"
+            " relative-lift path."
+        ),
     },
 )
 
-INFER_LIFT_ABS_DIFF_FINITE = _REFUSALS["estimation.inference.infer_lift_abs_diff_finite"]
-INFER_LIFT_ABS_SE_FINITE = _REFUSALS["estimation.inference.infer_lift_abs_se_finite"]
-INFER_LIFT_ABS_SE_POSITIVE = _REFUSALS["estimation.inference.infer_lift_abs_se_positive"]
 INFER_ATE_ABS_DIFF_FINITE = INFER_LIFT_ABS_DIFF_FINITE
 INFER_ATE_ABS_SE_FINITE = INFER_LIFT_ABS_SE_FINITE
 INFER_ATE_ABS_SE_POSITIVE = INFER_LIFT_ABS_SE_POSITIVE
 INFER_ATE_NULL_LIFT_FINITE = _REFUSALS["estimation.inference.infer_ate_null_lift_finite"]
 INFER_ATE_NULL_ABS_FINITE = _REFUSALS["estimation.inference.infer_ate_null_abs_finite"]
-ONE_SIDED_ALPHA_DOUBLES = _REFUSALS["estimation.inference.one_sided_alpha_doubles"]
+MIXTURE_PRIORS_ARE = _REFUSALS["estimation.adjust.prior.type"]
 
 _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
 _raise = raiser(_REFUSALS)
@@ -192,84 +199,6 @@ class LiftPosterior(Protocol):
 
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float: ...
 
-
-class Normal(CodedModel, BaseModel):
-    """Normal distribution: scalar parameters (no array support needed;
-    estimates are scalar per metric x method x arm).
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    mu: float
-    sigma: float = Field(gt=0)  # positivity via pydantic validation
-
-    @property
-    def precision(self) -> float:
-        """Inverse variance."""
-        return 1.0 / self.sigma**2
-
-    def cdf(self, value: float) -> float:
-        """Probability mass at or below ``value``."""
-        from scipy.stats import norm as _norm
-
-        return float(_norm.cdf((value - self.mu) / self.sigma))
-
-    def survival(self, value: float) -> float:
-        """Probability mass strictly above ``value``."""
-        from scipy.stats import norm as _norm
-
-        return float(_norm.sf((value - self.mu) / self.sigma))
-
-    def quantile(self, probability: float) -> float:
-        """Value whose cumulative probability is ``probability``."""
-        from scipy.stats import norm as _norm
-
-        return self.mu + self.sigma * float(_norm.ppf(probability))
-
-    def isf(self, tail_probability: float) -> float:
-        """Value whose upper-tail probability is ``tail_probability``."""
-        from scipy.stats import norm as _norm
-
-        return self.mu + self.sigma * float(_norm.isf(tail_probability))
-
-    def probability_between(self, lower: float, upper: float) -> float:
-        """Probability mass between two inclusive bounds."""
-        if lower >= self.mu:
-            return self.survival(lower) - self.survival(upper)
-        return self.cdf(upper) - self.cdf(lower)
-
-    def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float:
-        """Expected magnitude below zero on the requested reporting scale."""
-        from scipy.stats import norm as _norm
-
-        z = self.mu / self.sigma
-        if scale == "linear":
-            return float(self.sigma * _norm.pdf(z) - self.mu * _norm.cdf(-z))
-        if scale == "log":
-            a = -z
-            return float(
-                _norm.cdf(a) - math.exp(self.mu + 0.5 * self.sigma**2) * _norm.cdf(a - self.sigma)
-            )
-        refuse(EXPECTED_NEGATIVE_PART_SCALE, scale=scale)
-
-    def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
-        """Expected magnitude above zero on the requested reporting scale."""
-        from scipy.stats import norm as _norm
-
-        z = self.mu / self.sigma
-        if scale == "linear":
-            return float(self.sigma * _norm.pdf(z) + self.mu * _norm.cdf(z))
-        if scale == "log":
-            a = -z
-            return float(
-                math.exp(self.mu + 0.5 * self.sigma**2) * _norm.cdf(self.sigma - a) - _norm.cdf(-a)
-            )
-        refuse(EXPECTED_POSITIVE_PART_SCALE, scale=scale)
-
-
-type Prior = Normal | StudentTPrior | MixturePrior
-# Composes with a mixture everywhere except normal_posterior (the single-
-# Normal update) and paths that don't persist state to recompute it.
 
 _DEFAULT_PRIOR = Normal(mu=0.0, sigma=1e6)
 
@@ -415,109 +344,6 @@ def posterior_fields(
         "posterior_components": posterior_components,
         "prior_spec": prior if isinstance(prior, (StudentTPrior, MixturePrior)) else None,
     }
-
-
-@dataclass(frozen=True, slots=True)
-class SamplingReference:
-    """Distribution used to cut an interval or sequential boundary."""
-
-    kind: Literal["normal", "t", "sequential"]
-    df: float | None
-
-
-@dataclass(frozen=True, slots=True)
-class FixedHorizonReference:
-    """Resolved alpha, critical value, and sampling reference."""
-
-    alpha_eff: float
-    crit: float | None
-    reference: SamplingReference
-
-
-def _resolve_fixed_horizon(
-    alpha: float,
-    alternative: str,
-    *,
-    dof: float | None,
-    arm_ns: tuple[int, int] | None,
-    se_t: float | None = None,
-    se_c: float | None = None,
-    prior: Prior | None,
-    independent_means: IndependentMeanReference | None = None,
-) -> FixedHorizonReference:
-    """Validate shared options and resolve one interval reference."""
-    from scipy.stats import norm as _norm
-
-    if alternative not in ALTERNATIVE_VALUES:
-        refuse(UNKNOWN_ALTERNATIVE, alternative=alternative)
-    if not 0.0 < alpha < 1.0:
-        _raise("estimation.diagnostics.alpha", alpha=alpha)
-    alpha_eff = _alpha_eff_for(alternative, alpha)
-    if alpha_eff >= 1.0:
-        _raise("estimation.inference.one_sided_alpha_doubles", alpha=alpha, alpha_eff=alpha_eff)
-    if alpha_eff / 2.0 == 0.0:
-        from increment.estimation.encouragement import ALPHA_EFF_TOO
-
-        refuse(ALPHA_EFF_TOO)
-    if independent_means is not None:
-        from increment.estimation.armstats import _raise as component_refuse
-
-        if dof is not None or arm_ns is not None or prior is not None:
-            component_refuse(
-                "estimation.armstats.independent_mean_contract",
-                reason="Independent mean reference cannot be combined with another sampling reference.",
-            )
-        df = independent_means.df
-        return FixedHorizonReference(
-            alpha_eff=alpha_eff,
-            crit=two_sided_critical_value(
-                student_t_isf, alpha_eff, df, what="independent mean Welch reference"
-            ),
-            reference=SamplingReference(kind="t", df=df),
-        )
-    if dof is not None:
-        if dof <= 0:
-            from increment.estimation.encouragement import DOF_POSITIVE_REFERENCE
-
-            refuse(DOF_POSITIVE_REFERENCE, dof=dof)
-        if prior is not None:
-            _raise("estimation.inference.prior_excludes_cluster_robust_t")
-    if dof is not None:
-        crit = two_sided_critical_value(
-            student_t_isf,
-            alpha_eff,
-            dof,
-            what="infer_lift dof reference",
-        )
-        reference = SamplingReference(kind="t", df=dof)
-    elif arm_ns is not None:
-        n_t, n_c = arm_ns
-        if n_t <= 1 or n_c <= 1:
-            _raise("estimation.inference.arm_ns_each", arm_ns=arm_ns)
-        if prior is not None:
-            _raise("estimation.inference.prior_excludes_welch_reference", arm_ns=arm_ns)
-        assert se_t is not None and se_c is not None, "unreachable: arm_ns callers pass se_t/se_c"
-        # Welch-Satterthwaite df is a ratio of degree-4 homogeneous SE polynomials, so dividing
-        # by the larger SE cancels algebraically while keeping terms near O(1) instead of
-        # under/overflowing at extreme SE magnitudes.
-        se_scale = max(se_t, se_c)
-        a, b = se_t / se_scale, se_c / se_scale
-        welch_df = (a * a + b * b) ** 2 / (a**4 / (n_t - 1) + b**4 / (n_c - 1))
-        crit = two_sided_critical_value(
-            student_t_isf,
-            alpha_eff,
-            welch_df,
-            what="infer_lift Welch-Satterthwaite reference",
-        )
-        reference = SamplingReference(kind="t", df=welch_df)
-    else:
-        crit = two_sided_critical_value(
-            _norm.isf,
-            alpha_eff,
-            what="infer_lift Normal reference",
-        )
-        reference = SamplingReference(kind="normal", df=None)
-    return FixedHorizonReference(alpha_eff=alpha_eff, crit=crit, reference=reference)
 
 
 # Shared lift-inference function
@@ -743,27 +569,6 @@ def infer_lift(  # noqa: PLR0913
     )
 
 
-def _joint_additive_bounds(
-    point: float | None, se: float | None, alpha: float, alternative: str, df: float | None
-) -> tuple[float | None, float | None]:
-    if point is None or se is None:
-        return None, None
-    if not math.isfinite(point):
-        refuse(INFER_ATE_ABS_DIFF_FINITE, abs_diff=point)
-    if not math.isfinite(se):
-        refuse(INFER_ATE_ABS_SE_FINITE, abs_se=se)
-    if se < 0.0:
-        refuse(INFER_ATE_ABS_SE_POSITIVE, abs_se=se)
-    if se == 0.0:
-        return None, None
-    reference = _resolve_fixed_horizon(alpha, alternative, dof=df, arm_ns=None, prior=None)
-    return (
-        wald_bounds(point, reference.crit, se, what="joint additive sidecar")
-        if reference.crit is not None
-        else (None, None)
-    )
-
-
 def _validate_additive_sidecar(abs_diff: float, abs_se: float) -> None:
     """Require finite additive inputs and positive uncertainty."""
     if not math.isfinite(abs_diff):
@@ -859,8 +664,6 @@ def infer_ate(  # noqa: PLR0913
     ``"late"``.
     """
     if isinstance(prior, (StudentTPrior, MixturePrior)):
-        from increment.estimation.adjust import MIXTURE_PRIORS_ARE
-
         refuse(MIXTURE_PRIORS_ARE)
     has_joint_result = joint_reference is not None or relative_unavailable_reason is not None
     if has_joint_result and (

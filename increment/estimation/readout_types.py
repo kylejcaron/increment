@@ -50,6 +50,10 @@ from increment.errors import (
     refusals,
     refuse,
 )
+from increment.estimation._readout_refusals import LEGACY_SAMPLING_UNRECONSTRUCTIBLE
+from increment.estimation._readout_refusals import (
+    refuse_legacy_sampling as refuse_legacy_sampling,
+)
 from increment.estimation._sequential_likelihood import LikelihoodCertificate
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.decision_types import (
@@ -60,10 +64,9 @@ from increment.estimation.decision_types import (
     MethodHypothesisKey,
     PValueEvidence,
 )
-from increment.estimation.inference import Normal
-from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimation.priors import MixturePrior, Normal, StudentTPrior
 from increment.estimation.sequential_result import AsymptoticSequentialResult
-from increment.sequential_state import SequentialCheckpoint
+from increment.sequential_state import SequentialCheckpoint, SequentialSnapshot
 
 if TYPE_CHECKING:
     from increment.kernel.contracts import View
@@ -98,7 +101,7 @@ _REFUSALS = refusals(
         "readout.collection.duplicate_cell_key": "Duplicate cell {cell_key} in source {source_snapshot_id}",
         "readout.failure.hypothesis_key_collision": "Failure hypothesis {hypothesis} maps to multiple cells {cell_keys}",
         "readout.collection.concat_metadata_mismatch": "Metadata differs for snapshots {snapshot_ids}: {fields}",
-        "readout.legacy.sampling_unreconstructible": "Legacy sampling cannot be reconstructed for {cell_key}: {missing_fields}; {remedy}",
+        "readout.legacy.sampling_unreconstructible": LEGACY_SAMPLING_UNRECONSTRUCTIBLE,
     },
 )
 _UNSUPPORTED_REFUSALS = refusals(
@@ -131,7 +134,7 @@ _WIRE_REFUSALS = refusals(
     WireFormatError,
     {
         "readout.serialization.unsupported_version": "Unsupported envelope {kind} version {received}; supported {supported}. {remedy}",
-        "readout.serialization.model_mismatch": "Collection {collection} does not contain row model {row_model}",
+        "readout.serialization.model_mismatch": "Collection {collection} does not contain row model {row_model}{route_suffix}",
         "readout.serialization.duplicate_cell_key": "Duplicate serialized cell {cell_key} in {source_snapshot_id}",
         "readout.serialization.noncanonical_order": "Serialized {section} is not canonically ordered",
         "readout.serialization.identity_mismatch": "Serialized identity mismatch for {source_snapshot_id}: {reason} ({cell_key})",
@@ -962,21 +965,6 @@ def refuse_readout(code: str, **context: object) -> NoReturn:
     refuse(registry[code], **context)
 
 
-def refuse_legacy_sampling(row: Any) -> NoReturn:
-    """Refuse a prior-bound row whose prior-free sampling reference was not persisted."""
-    refuse_readout(
-        "readout.legacy.sampling_unreconstructible",
-        cell_key={
-            "metric": row.metric,
-            "group_id": row.group_id,
-            "method": row.method,
-            "estimand": row.estimand,
-        },
-        missing_fields=("prior_free_reference_kind", "prior_free_reference_df"),
-        remedy="recompute_from_source",
-    )
-
-
 def _restore_collection(
     collection_type,
     rows,
@@ -1566,11 +1554,10 @@ def register_collection_types(*collection_types: type) -> None:
 
 
 def registered_collection(model: type) -> Any | None:
-    """Return the registered result collection whose rows are ``model``, if any."""
-    from importlib import import_module
+    """Return the registered result collection whose rows are ``model``, if any.
 
-    # The breakout module registers its collection classes at import time.
-    import_module("increment.breakout.estimates")
+    A collection's defining module registers it on import; this module never loads it.
+    """
     return next(
         (collection for collection in _COLLECTION_TYPES.values() if collection._model is model),
         None,
@@ -1578,19 +1565,18 @@ def registered_collection(model: type) -> Any | None:
 
 
 class ReadoutResults:
-    """Versioned saved-result boundary; decoding returns the existing collection."""
+    """Versioned saved-result boundary; decoding returns the existing collection.
+
+    ``increment.results.ReadoutResults`` loads the modules that register collections.
+    """
 
     @staticmethod
     def model_validate_json(text):
         import json
-        from importlib import import_module
 
-        # The breakout module registers its collection classes at import time.
-        # Load it only during decoding to avoid a static dependency cycle.
-        import_module("increment.breakout.estimates")
-
+        # Upward: the saved-result boundary returns ContrastResults, whose concat and
+        # validation build this module's ReadoutMetadata.
         from increment.estimation.contrast_results import ContrastResult, ContrastResults
-        from increment.sequential_state import SequentialSnapshot
 
         payload = json.loads(text, object_pairs_hook=_unique_object)
         if payload.get("kind") != "increment.readout" or payload.get("schema_version") != 2:
@@ -1617,6 +1603,12 @@ class ReadoutResults:
                 "readout.serialization.model_mismatch",
                 collection=collection_name,
                 row_model=payload.get("row_model"),
+                route=("increment.results.ReadoutResults" if collection_type is None else ""),
+                route_suffix=(
+                    "; decode saved collections via increment.results.ReadoutResults"
+                    if collection_type is None
+                    else ""
+                ),
             )
         metadata = (
             None
@@ -1670,6 +1662,7 @@ class ReadoutResults:
         if persisted is not None:
             from importlib import import_module
 
+            # Upward: persisted cells decode through ResultCell, which rebuilds this metadata.
             ResultCell = import_module("increment.result_envelope").ResultCell
             persisted_cells = tuple(ResultCell.from_payload(cell) for cell in persisted)
             if len(persisted_cells) != len(rows):

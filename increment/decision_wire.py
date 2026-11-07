@@ -48,7 +48,7 @@ from increment.decision import (
 )
 from increment.declarations import Method
 from increment.errors import CodedError, CodedModel, WireFormatError
-from increment.estimation.inference import Normal
+from increment.estimation.priors import Normal
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,
     SEQUENTIAL_POLICIES,
@@ -341,7 +341,7 @@ class WireCompiledDecisionPlan(_WireBase):
     def _validate_compiled_invariants(self) -> WireCompiledDecisionPlan:
         if isinstance(self.inference, (WireAsymptoticMean, WireAlwaysValid)):
             from increment.errors import CapabilityError
-            from increment.sequential_source import validate_compliance_allocation
+            from increment.sequential_state import validate_compliance_allocation
 
             try:
                 validate_compliance_allocation(
