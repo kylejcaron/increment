@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, cast
+import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
 
 import ibis
 import pytest
 
 from increment import View, from_definitions, run
-from increment._run_spines import run_spines
+from increment.errors import IncrementWarning
 from increment.evidence import BreakoutIdentity
-from increment.query import _cuped_qr
 from increment.query.session import SourceSnapshotEvidence
-from tests.analysis_factory import declare_views, held_source
+from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import declare_views
 from tests.parity_harness import matrix_data
 from tests.query.statement_census import count_statements
 from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
@@ -28,7 +31,7 @@ _LATE = dt.datetime(2025, 1, 13, tzinfo=dt.UTC)
 _EARLY = dt.datetime(2025, 1, 11, tzinfo=dt.UTC)
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def warehouse(tmp_path_factory):
     units = matrix_data.linear_cuped_rows(n_per_arm=60)
     events = mixed_cuped_event_rows(units)
@@ -132,68 +135,108 @@ def test_identical_spine_requests_materialize_once(warehouse):
     assert _estimates(result.readout(region)) == _estimates(result.readout(every))
 
 
-def _revenue_fit(con, pinned, population: str):
-    config = next(item for item in pinned.context.configs if item.metric.name == "revenue")
-    with count_statements(con) as census:
-        _, envelope = pinned.fit_cuped_multicovariate(
-            config.metric,
-            config.decision_method,
-            control="control",
-            arm_order=("control", "treatment"),
-            population=population,
-        )
-    return envelope.fit, census.by_kind["create_temp"]
+def _cells(readout) -> dict[object, Any]:
+    return {row.dimension_value: row for row in readout if row.method == "linear"}
 
 
 def test_spines_differ_by_population_and_horizon(warehouse):
     con, _ = warehouse
-    with run_spines():
-        _, reader = _reader(warehouse)
-        with reader:
-            source = cast(Any, held_source(reader))
-            metrics = [item.metric for item in source.context.configs]
-            with source.readout_snapshot(metrics=metrics, population="assigned") as pinned:
-                assigned, assigned_created = _revenue_fit(con, pinned, "assigned")
-                triggered, triggered_created = _revenue_fit(con, pinned, "triggered")
-        _, earlier_reader = _reader(warehouse, _EARLY)
-        with earlier_reader:
-            source = cast(Any, held_source(earlier_reader))
-            with source.readout_snapshot(metrics=metrics, population="assigned") as pinned:
-                earlier, earlier_created = _revenue_fit(con, pinned, "assigned")
+    assigned_view = View(view="breakout", population="assigned")
+    triggered_view = View(view="breakout", population="triggered")
+    experiment, reader = _reader(warehouse)
+    experiment = declare_views(experiment, assigned_view, triggered_view)
+    with reader:
+        with count_statements(con) as assigned_only:
+            run(experiment, reader, views=(assigned_view,), metrics=["revenue"])
+        # The triggered east cell's 24 units per arm fall outside the fit's support region;
+        # its exclusion advisory is asserted below through the cell's failure code.
+        with count_statements(con) as both, warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            result = run(
+                experiment, reader, views=(assigned_view, triggered_view), metrics=["revenue"]
+            )
+    # One run reads one capture, so an earlier as-of is read by its own run.
+    earlier_experiment, earlier_reader = _reader(warehouse, _EARLY)
+    earlier_experiment = declare_views(earlier_experiment, assigned_view)
+    with earlier_reader, count_statements(con) as earlier_run:
+        earlier_result = run(
+            earlier_experiment, earlier_reader, views=(assigned_view,), metrics=["revenue"]
+        )
+    assigned = _cells(result.readout(assigned_view))
+    triggered = _cells(result.readout(triggered_view))
+    earlier = _cells(earlier_result.readout(assigned_view))
 
-    assert assigned_created > 0
-    assert triggered_created > 0
-    assert earlier_created > 0
-    assert assigned.n_by_arm == (60, 60)
-    assert triggered.n_by_arm == (48, 48)
-    assert earlier.n_by_arm == assigned.n_by_arm
-    # The earlier snapshot excludes the second-day revenue events.
-    assert all(
-        before < after
-        for before, after in zip(earlier.adjusted_means, assigned.adjusted_means, strict=True)
-    )
+    # The triggered view fits its own spines in the run that already fitted the assigned ones.
+    assert both.by_kind["create_temp"] > assigned_only.by_kind["create_temp"]
+    assert earlier_run.by_kind["create_temp"] > 0
+    assert {cell: (row.n_control, row.n_treat) for cell, row in assigned.items()} == {
+        "east": (30, 30),
+        "west": (30, 30),
+    }
+    # Every fifth unit of each arm, alternating between regions, is untriggered.
+    assert triggered["east"].failure_code == "estimation.cuped_linear.support_region"
+    assert (triggered["west"].n_control, triggered["west"].n_treat) == (24, 24)
+    assert triggered["west"].lift.value != assigned["west"].lift.value
+    for cell, row in earlier.items():
+        assert (row.n_control, row.n_treat) == (30, 30)
+        # The earlier snapshot excludes the second-day revenue events, which carry the effect.
+        assert abs(row.abs_diff) < abs(assigned[cell].abs_diff)
 
 
-def test_failed_run_drops_every_spine(warehouse, monkeypatch):
+class _LosingConnection:
+    """Delegate to the warehouse connection, failing at one chosen statement."""
+
+    def __init__(self, connection: Any, marker: str, occurrence: int, hits: list[str]):
+        self._connection = connection
+        self._marker = marker
+        self._occurrence = occurrence
+        self._hits = hits
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self._connection, name)
+        if name not in {"execute", "sql"} or not callable(attribute):
+            return attribute
+
+        def checked(*args: Any, **kwargs: Any) -> Any:
+            if args and self._marker in str(args[0]):
+                self._hits.append(str(args[0]))
+                if len(self._hits) == self._occurrence:
+                    raise RuntimeError("warehouse connection lost")
+            result = attribute(*args, **kwargs)
+            if result is self._connection:
+                return _LosingConnection(result, self._marker, self._occurrence, self._hits)
+            return result
+
+        return checked
+
+
+@contextmanager
+def _connection_lost_at(backend: Any, marker: str, occurrence: int) -> Iterator[list[str]]:
+    original = backend.con
+    hits: list[str] = []
+    backend.con = _LosingConnection(original, marker, occurrence, hits)
+    try:
+        yield hits
+    finally:
+        backend.con = original
+
+
+def test_failed_run_drops_every_spine(warehouse):
     con, _ = warehouse
     every = View(view="breakout")
     overall = View(view="run")
     experiment, reader = _reader(warehouse)
     experiment = declare_views(experiment, every, overall)
-    summaries = []
-    summarize = _cuped_qr.warehouse_qr_unit_summary
+    with reader:
+        before = _tables(con)
+        # Each fit reads its leverage summary once, after its work relations exist: the
+        # breakout view fits its two cells and the overall view's fit stops mid-way.
+        with (
+            _connection_lost_at(con, "_qr_max_leverage", 3) as hits,
+            pytest.raises(RuntimeError, match="warehouse connection lost"),
+        ):
+            run(experiment, reader, views=(every, overall), metrics=["revenue"])
+        after = _tables(con)
 
-    def interrupted(*args, **kwargs):
-        summaries.append(None)
-        # The breakout view fitted its two cells; the overall view's fit stops mid-way.
-        if len(summaries) == 3:
-            raise RuntimeError("interrupted fit")
-        return summarize(*args, **kwargs)
-
-    monkeypatch.setattr(_cuped_qr, "warehouse_qr_unit_summary", interrupted)
-    before = _tables(con)
-    with reader, pytest.raises(RuntimeError, match="interrupted fit"):
-        run(experiment, reader, views=(every, overall), metrics=["revenue"])
-
-    assert len(summaries) == 3
-    assert _tables(con) == before
+    assert len(hits) == 3
+    assert after == before
