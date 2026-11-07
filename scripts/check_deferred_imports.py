@@ -142,12 +142,15 @@ class _Imports(ast.NodeVisitor):
         if isinstance(node.ctx, ast.Store):
             self._bind(node.id, None)
 
-    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-        self.visit(node.value)
+    def _binding_scope(self) -> int:
         depth = len(self.scope_kinds) - 1
         while self.scope_kinds[depth] == "comprehension":
             depth -= 1
-        self.alias_scopes[depth][node.target.id] = None
+        return depth
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self.alias_scopes[self._binding_scope()][node.target.id] = None
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
@@ -161,8 +164,12 @@ class _Imports(ast.NodeVisitor):
         self.visit(node.annotation)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        # An attribute or subscript target is evaluated before the value; a name is rebound after.
+        if not isinstance(node.target, ast.Name):
+            self.visit(node.target)
         self.visit(node.value)
-        self.visit(node.target)
+        if isinstance(node.target, ast.Name):
+            self.visit(node.target)
 
     def _visit_for(self, node: ast.For | ast.AsyncFor) -> None:
         self.visit(node.iter)
@@ -182,10 +189,13 @@ class _Imports(ast.NodeVisitor):
     ) -> None:
         # The outermost iterable runs in the enclosing scope, even for a lazy generator.
         self.visit(node.generators[0].iter)
+        lazy = isinstance(node, ast.GeneratorExp)
+        owner = self._binding_scope()
+        runtime_bindings = dict(self.alias_scopes[owner]) if lazy else None
         self.alias_scopes.append({})
         self.scope_kinds.append("comprehension")
         previous = self.deferred
-        self.deferred = previous or isinstance(node, ast.GeneratorExp)
+        self.deferred = previous or lazy
         for index, generator in enumerate(node.generators):
             if index:
                 self.visit(generator.iter)
@@ -200,6 +210,9 @@ class _Imports(ast.NodeVisitor):
         self.deferred = previous
         self.alias_scopes.pop()
         self.scope_kinds.pop()
+        if runtime_bindings is not None:
+            # A generator body has not run yet, so its bindings do not reach the enclosing scope.
+            self.alias_scopes[owner] = runtime_bindings
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self._visit_comprehension(node)

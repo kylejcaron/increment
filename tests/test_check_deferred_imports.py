@@ -235,6 +235,22 @@ def test_comprehension_walrus_rebinding_applies_to_enclosing_scope(tmp_path: Pat
     assert result.returncode == 0
 
 
+def test_generator_walrus_rebinding_leaves_enclosing_scope_unchanged(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    (package / "a.py").write_text(
+        "from importlib import import_module\n"
+        "pending = ((import_module := lambda _: None) for _ in (0,))\n"
+        "def load():\n    import_module('pkg.b')\n"
+    )
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "deferred import: pkg.a -> pkg.b" in result.stdout
+
+
 def test_method_body_uses_module_alias_not_class_namespace(
     tmp_path: Path,
 ) -> None:
@@ -287,9 +303,12 @@ def test_literal_import_module_call_closes_cycle(tmp_path: Path, source: str) ->
         "loader: object = loader.import_module('pkg.b')",
         "loader += loader.import_module('pkg.b')",
         "for loader in [loader.import_module('pkg.b')]:\n    pass",
+        "cache = {}\ncache[loader.import_module('pkg.b').KEY] += ((loader := lambda _: None), 1)[1]",
     ],
 )
-def test_import_in_value_of_alias_rebinding_closes_cycle(tmp_path: Path, rebinding: str) -> None:
+def test_import_evaluated_before_alias_rebinding_closes_cycle(
+    tmp_path: Path, rebinding: str
+) -> None:
     package = _package(tmp_path)
     (package / "a.py").write_text(f"import importlib as loader\n{rebinding}\n")
     (package / "b.py").write_text("import pkg.a\n")
