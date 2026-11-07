@@ -418,7 +418,7 @@ def test_ratio_and_cuped_rows_survive_detached_json_arrow_operations(
 def test_family_reissue_caps_threshold_at_each_rows_allocated_alpha(seeded_con, seeded_defs):
     from increment import Method
     from increment.breakout.estimates import LiftEstimates
-    from increment.estimation.family import select_exploratory_family
+    from increment.estimation.exploratory_family import select_exploratory_family
     from increment.estimation.results import LiftEstimate
 
     rows = view_readout(
@@ -637,7 +637,7 @@ def _relevel_test_family_rows(data, design):
     from typing import cast
 
     from increment import MetricSpec
-    from increment.estimation.family import select_exploratory_family
+    from increment.estimation.exploratory_family import select_exploratory_family
     from increment.estimation.results import LiftEstimate
 
     rows = cast(
@@ -1577,7 +1577,7 @@ def test_directional_family_selection_retains_effective_alpha_and_advisory(seede
 
     from increment import Method
     from increment.breakout.estimates import LiftEstimates
-    from increment.estimation.family import select_exploratory_family
+    from increment.estimation.exploratory_family import select_exploratory_family
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import ComponentStatus, Operation, ResultCell
 
@@ -1644,7 +1644,7 @@ def test_unsupported_sampling_constructions_refuse_without_losing_reason(seeded_
     from increment.errors import CodedError
     from increment.estimation.armstats import ArmStats
     from increment.estimation.inference import infer_independent_mean
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.result_envelope import ResultCell, compare_margin, relevel
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState
 
@@ -1834,7 +1834,7 @@ def test_dated_unavailable_winsor_projection_matches_arrow_readout_scope():
 def test_envelope_consumers_render_unavailable_winsor_with_valid_sibling(seeded_con, seeded_defs):
     from increment import Method
     from increment.breakout.estimates import LiftEstimates
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
     from increment.tables import readout_table
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState
@@ -2033,7 +2033,7 @@ def test_prechange_public_interval_reference_is_frozen():
 def test_family_threshold_reinterval_matches_frozen_public_reference(seeded_con, seeded_defs):
     from increment import Method
     from increment.breakout.estimates import LiftEstimates
-    from increment.estimation.family import select_exploratory_family
+    from increment.estimation.exploratory_family import select_exploratory_family
     from increment.result_envelope import ResultCell
 
     rows = view_readout(
@@ -2368,7 +2368,7 @@ def test_brief_projection_keeps_selection_status_failure_reason_and_roundtrip_id
     import pandas as pd
 
     from increment import MetricSpec
-    from increment.estimation.family import select_exploratory_family
+    from increment.estimation.exploratory_family import select_exploratory_family
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
     from increment.semantics.design import Randomized

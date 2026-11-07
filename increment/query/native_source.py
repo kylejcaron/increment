@@ -1183,22 +1183,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
         if queries:
             self._session._require_snapshot_temp_privilege()
-        enrolled = self._scope_enrolled_units()
-        # The generous lower margin limits only the snapshot copy, not builder
-        # windows, and absorbs day-boundary edge cases. Add no upper ts bound:
-        # `_data_as_of` needs later events to prove freshness; a horizon cap would
-        # stop it at the last in-window event and censor every enrolled unit.
-        window_start = self._experiment.start - dt.timedelta(
-            days=self._experiment.n_pre_periods + 1
-        )
-        scope = SourceScope(enrolled_units=enrolled, window_start=window_start)
-        for source in sources.values():
-            self._session.preflight_fact_source_schema(
-                source, require_event=source.name in event_source_names
+        # Scoping, preflight validation and the pin read one resolution of each live source.
+        with self._session.resolving_each_source_once():
+            enrolled = self._scope_enrolled_units()
+            # The generous lower margin limits only the snapshot copy, not builder
+            # windows, and absorbs day-boundary edge cases. Add no upper ts bound:
+            # `_data_as_of` needs later events to prove freshness; a horizon cap would
+            # stop it at the last in-window event and censor every enrolled unit.
+            window_start = self._experiment.start - dt.timedelta(
+                days=self._experiment.n_pre_periods + 1
             )
-
-        pinned = DefinitionsMomentSource(
-            self._session.pin_sources(
+            scope = SourceScope(enrolled_units=enrolled, window_start=window_start)
+            for source in sources.values():
+                self._session.preflight_fact_source_schema(
+                    source, require_event=source.name in event_source_names
+                )
+            pinned_session = self._session.pin_sources(
                 tuple(queries),
                 column_hints=column_hints,
                 column_projections=column_projections,
@@ -1208,7 +1208,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     if snapshot_horizon_relation is None
                     else {_SNAPSHOT_HORIZON_RELATION_KEY: snapshot_horizon_relation}
                 ),
-            ),
+            )
+            mixed_timestamp_kinds = self._timestamp_kinds_mixed()
+
+        pinned = DefinitionsMomentSource(
+            pinned_session,
             self._experiment,
             self._metrics,
             store="none",
@@ -1217,7 +1221,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             design=self._context.design,
             plan=self._context.plan,
         )
-        pinned._mixed_timestamp_kinds = self._timestamp_kinds_mixed()
+        pinned._mixed_timestamp_kinds = mixed_timestamp_kinds
         for source in sources.values():
             validate_fact_source_schema(
                 pinned._session.source_sql(source.sql),

@@ -696,8 +696,6 @@ def _pattern_propensities(
             # is intercept-only (the pattern's arm share); the overlap gate still fires on it.
             e[rows] = float(d[train].mean())
         else:
-            from increment.estimation._adjust.common import _prediction_shape_guard
-
             model = restricted(learner, observed)
             model.fit(X[np.ix_(train, observed)], d[train])
             X_rows = X[np.ix_(rows, observed)]
@@ -927,8 +925,6 @@ def _allow_fit_predict(
                 "error": str(err),
             },
         ) from err
-    from increment.estimation._adjust.common import _prediction_shape_guard
-
     return _prediction_shape_guard(
         pred,
         expected_n=X_test.shape[0],
@@ -939,6 +935,46 @@ def _allow_fit_predict(
         control_group=control_group,
         method=method,
     )
+
+
+def _prediction_shape_guard(
+    pred: object,
+    *,
+    expected_n: int,
+    learner_name: str,
+    what: str,
+    metric_name: str,
+    treatment_groups: tuple[str, ...],
+    control_group: str,
+    method: str,
+) -> np.ndarray:
+    """Coerce a learner's prediction to a finite-shaped array, or refuse.
+
+    A scalar (Python float, 0-d array) or wrong-length array silently
+    broadcasts against a later elementwise op instead of raising -- a
+    learner returning a constant reads as perfect balance, not a broken fit.
+    """
+    arr = np.asarray(pred, dtype=float)
+    if arr.ndim != 1 or arr.shape[0] != expected_n:
+        raise IdentificationError(
+            f"{method}: learner {learner_name} returned a {what} prediction of "
+            f"shape {arr.shape} for metric {metric_name!r} "
+            f"({_contrast_text(treatment_groups, control_group)}), expected a 1-D array of "
+            f"length {expected_n} -- a scalar or mis-shaped prediction silently "
+            "broadcasts against later elementwise ops",
+            code="estimation.adjust.learner.prediction_shape",
+            context={
+                "learner_name": learner_name,
+                "what": what,
+                "metric_name": metric_name,
+                "treatment_groups": treatment_groups,
+                "control_group": control_group,
+                "method": method,
+                "shape": arr.shape,
+                "expected_n": expected_n,
+            },
+        )
+    return arr
 
 
 def _finite_guard(

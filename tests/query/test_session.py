@@ -638,6 +638,21 @@ def test_overlapping_non_lifo_readouts_leave_no_connection_cache():
 
 
 @pytest.mark.integration
+def test_live_source_resolution_ends_with_its_capture():
+    con, session = _session()
+    sql = "select * from t"
+    try:
+        with session.resolving_each_source_once():
+            assert session.source_sql(sql).columns == ("x",)
+        con.raw_sql("ALTER TABLE t ADD COLUMN y INTEGER")
+        assert session.source_sql(sql).columns == ("x", "y")
+        with session.resolving_each_source_once():
+            assert session.source_sql(sql).columns == ("x", "y")
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
 def test_dropped_generation_refusal_stays_visible_during_pinned_snapshot():
     con = ibis.duckdb.connect()
     con.create_table("t", ibis.memtable({"x": [1]}))

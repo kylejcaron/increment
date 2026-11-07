@@ -340,7 +340,7 @@ depends_on = [
   "increment._plan_compatibility", "increment._source_types", "increment._study",
   "increment.compatibility", "increment.errors", "increment.estimation",
   "increment.estimation.decision_types", "increment.estimation.sequential", "increment.semantics",
-  "increment.sequential_source", "increment.sequential_state",
+  "increment.sequential_state",
   "increment.declarations",
 ]
 
@@ -362,7 +362,7 @@ depends_on = [
   "increment._immutable",
   "increment.compatibility", "increment.decision", "increment.errors", "increment.estimation",
   "increment.estimation.sequential", "increment.semantics",
-  "increment.sequential_source", "increment.sequential_state",
+  "increment.sequential_state",
   "increment.declarations",
 ]
 
@@ -924,7 +924,7 @@ depends_on = ["increment.estimation", "increment.sequential_source", "increment.
 path = "increment.readouts"
 layer = "core"
 depends_on = [
-  "increment._literals",
+  "increment._literals", "increment._multiplicity",
   "increment._frame_panel",
   "increment._frame_validation",
   "increment._source_types", "increment._labels", "increment._canonical", "increment._immutable",
@@ -1258,7 +1258,10 @@ from = ["increment._immutable"]
 expose = ["_FrozenMapping"]
 [[interfaces]]
 from = ["increment._multiplicity"]
-expose = ["MultiplicityFamily", "guarantee_for_correction"]
+expose = [
+  "MultiplicityFamily", "RegisteredCell", "guarantee_for_correction", "registered_cell",
+  "registered_family_members",
+]
 
 [[interfaces]]
 from = ["increment._evidence_types"]

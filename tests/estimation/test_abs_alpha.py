@@ -151,7 +151,7 @@ def _cluster_row_estimate(**kwargs):
 
 
 def _winsor_row(alpha=0.05):
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState, WinsorSupport
 
     raw = WinsorRawState(

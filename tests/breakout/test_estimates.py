@@ -30,7 +30,8 @@ from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE
 from increment.estimation.conversion_route import dense_min_count
 from increment.estimation.engine import Method, estimate_lift
-from increment.estimation.family import bh_select, e_bh_select, select_exploratory_family
+from increment.estimation.exploratory_family import select_exploratory_family
+from increment.estimation.family import bh_select, e_bh_select
 from increment.estimation.inference import Normal
 from increment.estimation.results import Estimate, LiftEstimate
 from increment.estimation.sequential import AlwaysValid
@@ -1611,7 +1612,7 @@ class TestRunBreakoutBHRoutesEachCellAtItsOwnLevel:
         ``correction="bh"`` for cells dense at the nominal level but not at ``q / m``, selected
         and not: both read the composite p-value from the same persisted counts, and both
         reissue a selected cell by its counts at the corrected level."""
-        from increment.estimation.family import select_exploratory_family
+        from increment.estimation.exploratory_family import select_exploratory_family
 
         nominal, family = dense_min_count(0.1), dense_min_count(0.05)
         between = (nominal + family) // 2
@@ -1665,7 +1666,7 @@ class TestRunBreakoutBHRoutesEachCellAtItsOwnLevel:
         its counts are dense at that tail but not at half of it, so the reissued cell keeps
         the delta route with its bound opened at ``0.03`` -- on the moment path and on the
         exploratory path alike."""
-        from increment.estimation.family import select_exploratory_family
+        from increment.estimation.exploratory_family import select_exploratory_family
 
         rows = [
             *(

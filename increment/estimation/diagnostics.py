@@ -28,7 +28,14 @@ from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
-from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
+from increment.errors import (
+    IncrementRuntimeWarning,
+    InvalidRequestError,
+    RefusalSpec,
+    WarningSpec,
+    raiser,
+    refusals,
+)
 from increment.estimation._tails import tail_isf
 from increment.estimation.armstats import welch_satterthwaite_df
 from increment.estimation.asymptotic_mean import count_boundary
@@ -620,6 +627,91 @@ def covariate_balance_crosses_boundary(
         return None
     variance = scatter_treatment / n_treatment**2 + scatter_control / n_control**2
     return difference * difference > covariate_balance_boundary(count, rho) * variance
+
+
+def _covariate_imbalance_message(**context: Any) -> str:
+    """The covariate-imbalance warning: a mixed CUPED cell's joint test of its covariates,
+    else one covariate's means."""
+    if context.get("statistic_kind") == "hotelling":
+        return _joint_covariate_imbalance_message(**context)
+    return _single_covariate_imbalance_message(**context)
+
+
+def _single_covariate_imbalance_message(
+    *,
+    metric_name: str,
+    control_group: str,
+    treatment_group: str,
+    covariate: str | None,
+    mean_control: float,
+    mean_treatment: float,
+    statistic: float,
+    alpha: float,
+    adjustment_shift: float | None = None,
+    late_adjustment_shift: float | None = None,
+    **_details: object,
+) -> str:
+    """The move is reported on the absolute scale it was made on, the LATE's own for a
+    LATE; a ratio, whose move is not a multiple of the difference, reports none."""
+    subject = "the covariate" if covariate is None else f"the covariate '{covariate}'"
+    shift, moved_scale = (
+        (adjustment_shift, "absolute difference")
+        if late_adjustment_shift is None
+        else (late_adjustment_shift, "LATE")
+    )
+    moved = (
+        ""
+        if shift is None
+        else f" The adjustment moved the {moved_scale} by {abs(shift):.4g}; if the covariate "
+        f"is at fault, the adjusted {moved_scale} is off by about that much."
+    )
+    return (
+        f"metric '{metric_name}', {treatment_group} vs {control_group}: {subject} used for "
+        f"CUPED averages {mean_treatment:.4g} in {treatment_group} and {mean_control:.4g} in "
+        f"{control_group}, a difference of {abs(statistic):.3g} standard errors (nominal "
+        f"p < {alpha:g}). A difference this large in a value measured before the experiment "
+        "is unusual. It can arise by chance, and more often the more cells are checked. It is "
+        "also what a covariate built differently for one arm produces (values lost or "
+        "zero-filled in one arm, a rescaled join, a window that overlaps the experiment), and "
+        f"what a failed assignment produces.{moved} Check how the covariate was built for each "
+        "arm before relying on either estimate."
+    )
+
+
+def _joint_covariate_imbalance_message(
+    *,
+    metric_name: str,
+    control_group: str,
+    treatment_group: str,
+    covariates: tuple[str, ...],
+    statistic: float,
+    numerator_dof: int,
+    denominator_dof: int,
+    alpha: float,
+    **_details: object,
+) -> str:
+    names = ", ".join(f"'{name}'" for name in covariates)
+    return (
+        f"metric '{metric_name}', {treatment_group} vs {control_group}: the means of the "
+        f"CUPED covariates ({names}) differ between {treatment_group} and {control_group}, "
+        f"tested jointly across {numerator_dof} encoded columns "
+        f"(F = {statistic:.3g} on {numerator_dof} and {denominator_dof} degrees of freedom, "
+        f"nominal p < {alpha:g}). Differences this large in values measured before the "
+        "experiment are unusual. They can arise by chance, and more often the more cells are "
+        "checked. They are also what a covariate built differently for one arm produces "
+        "(values lost or zero-filled in one arm, a rescaled join, a window that overlaps the "
+        "experiment), and what a failed assignment produces. Check how each covariate was "
+        "built for each arm before relying on either estimate."
+    )
+
+
+#: The warning a flagged covariate balance raises, fixed-horizon or at a sequential look.
+COVARIATE_IMBALANCE = WarningSpec(
+    "estimation.cuped.covariate_imbalance",
+    IncrementRuntimeWarning,
+    _covariate_imbalance_message,
+    dedupe_fields=("metric_name", "treatment_group"),
+)
 
 
 class AllocationBand(BaseModel):

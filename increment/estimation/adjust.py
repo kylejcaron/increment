@@ -45,6 +45,7 @@ from increment.estimation.engine import (
     _winsorization_result_fields,
 )
 from increment.estimation.inference import (
+    MIXTURE_PRIORS_ARE,
     Prior,
 )
 from increment.estimation.priors import MixturePrior, StudentTPrior
@@ -100,13 +101,7 @@ _REFUSALS = (
     refusals(
         InvalidRequestError,
         {
-            "estimation.adjust.prior.type": (
-                "mixture priors are only supported on the relative (log-RR) lift scale served by"
-                " infer_lift/estimate_lift: this path reports rows whose raw pre-prior statistics are"
-                " not persisted, so the mixture posterior could not be recomputed for decision"
-                " statistics. Pass a Normal prior here, or estimate the metric through the"
-                " relative-lift path."
-            ),
+            "estimation.adjust.prior.type": MIXTURE_PRIORS_ARE,
             "estimation.adjust.prior.method_scale": (
                 "prior= cannot span unadjusted log-RR and adjusted linear-relative methods in one"
                 " request; run separate calls with priors declared on each method's parameterization"
@@ -249,9 +244,6 @@ def _null_weight_diagnostics() -> dict[str, None]:
         "control_weight_max_share": None,
         "treatment_weight_max_share": None,
     }
-
-
-MIXTURE_PRIORS_ARE = _REFUSALS["estimation.adjust.prior.type"]
 
 
 _WARNINGS: dict[str, WarningSpec] = {}
@@ -637,8 +629,6 @@ def _refuse_observational_quantiles(
 
 def validate_readout_adjustment(request: ReadoutRequest) -> None:
     """Validate static adjustment/value-scale compatibility at the seam."""
-    from increment.estimation.inference import MixturePrior, StudentTPrior
-
     design = request.design
     mechanism = getattr(design, "mechanism", None)
     metrics = tuple(request.metrics)

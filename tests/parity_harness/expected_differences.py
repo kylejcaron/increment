@@ -143,7 +143,75 @@ class GuardrailMigration:
         return migrated
 
 
-Difference = ExpectedDifference | GuardrailMigration
+@dataclass(frozen=True, slots=True)
+class RegisteredFamilyMember:
+    """A cell a registered sequential family counted but the frozen capture's family scope did
+    not list, migrated into that family.
+
+    The family's e-BH selection already counted the cell, so its size, threshold and
+    discoveries are as captured. Every family scope named ``family`` gains the cell's key, the
+    ``cell`` of the capture's metadata record naming ``metric`` and ``estimand``, in canonical
+    member order. Every mapping naming the cell, or the ``projection_fields`` of its result
+    cell, that holds each ``frozen`` value takes the ``current`` values. Refuses an outcome
+    holding no such scope or row, or a scope that already lists the cell.
+    """
+
+    scenario: str
+    ingress: str
+    metric: str
+    estimand: str
+    family: str
+    frozen: Mapping[str, Any]
+    current: Mapping[str, Any]
+    reason: str
+
+    def applied_to(self, expected: Any) -> Any:
+        from increment.declarations import CellKey
+        from increment.estimation.readout_types import cell_order
+
+        found = {"members": False, "row": False}
+
+        def names(value: Mapping[str, Any]) -> bool:
+            return value.get("metric") == self.metric and value.get("estimand") == self.estimand
+
+        (member,) = [
+            record["cell"] for record in expected["metadata"]["cells"] if names(record["cell"])
+        ]
+
+        def migrate(value: Any, held_under: Any = None, *, in_cell: bool = False) -> Any:
+            if isinstance(value, dict):
+                row = value.get("retained_row")
+                cell = isinstance(row, dict) and names(row)
+                migrated = {key: migrate(item, key, in_cell=cell) for key, item in value.items()}
+                if (names(migrated) or (in_cell and held_under == "projection_fields")) and all(
+                    name in migrated and migrated[name] == item
+                    for name, item in self.frozen.items()
+                ):
+                    found["row"] = True
+                    migrated.update(self.current)
+                members = migrated.get("members")
+                if migrated.get("name") == self.family and isinstance(members, list):
+                    assert member not in members, f"{self.family} already lists {member}"
+                    found["members"] = True
+                    migrated["members"] = sorted(
+                        [*members, member], key=lambda key: cell_order(CellKey.model_validate(key))
+                    )
+                return migrated
+            if isinstance(value, list):
+                return [migrate(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(migrate(item) for item in value)
+            return value
+
+        migrated = migrate(expected)
+        assert found["members"], f"{self.scenario}/{self.ingress} has no {self.family} scope"
+        assert found["row"], (
+            f"{self.scenario}/{self.ingress} no longer records {self.metric} as {self.frozen}"
+        )
+        return migrated
+
+
+Difference = ExpectedDifference | GuardrailMigration | RegisteredFamilyMember
 
 # The favorable side each declared direction names; any other declaration names none.
 _DECLARED_SIDES = {"increase": "greater", "decrease": "less"}
@@ -507,6 +575,59 @@ _CELL_KEY_RECORDS = tuple(
         ),
     )
 )
+# Each registered family member a frozen sequential capture counted but left out of its scope.
+_FAMILY_SCOPE_RECORDS = tuple(
+    RegisteredFamilyMember(
+        scenario="sequential_composed_family_ebh",
+        ingress=ingress,
+        metric="uptake",
+        estimand="compliance",
+        family="secondary",
+        frozen={
+            "family_id": None,
+            "family_axes": None,
+            "family_procedure": None,
+            "family_q": None,
+            "family_guarantee": None,
+            "multiplicity_status": "undeclared_plan",
+        },
+        current={
+            "family_id": family_id,
+            "family_axes": ["metric", "arm"],
+            "family_procedure": "e_bh",
+            "family_q": 0.08,
+            "family_guarantee": "asymptotic_sequential",
+            "multiplicity_status": "declared_plan",
+        },
+        reason=(
+            "The compliance policy registers the uptake cell in the secondaries' e-BH family, "
+            "whose selection already counted it (m = 3); the family now lists it and its row "
+            "carries the family's provenance. Sizes, thresholds and discoveries are unchanged."
+        ),
+    )
+    for ingress, family_id in (
+        (
+            "from_definitions",
+            "sha256:26fd4c2666c745fe967741b141769e9b0ebb9a70464f34d9846a0aa781f43efc",
+        ),
+        (
+            "from_moments",
+            "sha256:a611de50348a40955e49ecc1b378abbdb6b10031b2195d7eca20a0479a53840f",
+        ),
+        (
+            "from_unit_day_artifact",
+            "sha256:3461a942d947f9cc16c693db64fec6520795e346f7c59b66e50ac5f257055a23",
+        ),
+        (
+            "from_unit_panel",
+            "sha256:51d1e6d95ea7388aba61a4baa581bff41678911078fba9c84a6968a97da4ff89",
+        ),
+        (
+            "from_unit_summary",
+            "sha256:a611de50348a40955e49ecc1b378abbdb6b10031b2195d7eca20a0479a53840f",
+        ),
+    )
+)
 # Typed consumer inputs are frozen separately from the outcomes above.
 _CONSUMER_INPUT_RECORDS: tuple[Difference, ...] = (
     ExpectedDifference(
@@ -793,6 +914,7 @@ EXPECTED_DIFFERENCES = _by_case(_RECORDS)
 CONSUMER_INPUT_DIFFERENCES = _by_case(_CONSUMER_INPUT_RECORDS)
 TYPED_INPUT_DIFFERENCES = _by_case(_TYPED_INPUT_RECORDS)
 CELL_KEY_DIFFERENCES = _by_case(_CELL_KEY_RECORDS)
+FAMILY_SCOPE_DIFFERENCES = _by_case(_FAMILY_SCOPE_RECORDS)
 DISPOSITION_DIFFERENCES = _by_case(_DISPOSITION_RECORDS)
 
 

@@ -127,6 +127,35 @@ values.
 
 ### Earlier release notes
 
+- Release note (bug fix): when a sequential plan's
+  `SequentialCompliancePolicy(family=True)` registers the uptake cell in the
+  secondaries' e-BH family, the family now lists that cell, which its
+  selection already counted. The `secondary` family in
+  `results.metadata.scope.families` holds the uptake cell among its members,
+  so the member count equals the rows' `family_size`. A registered as-of
+  look's families list every registered cell, including those a request
+  narrowed to `estimands=("itt",)`, `("compliance",)` or some metrics leaves
+  out, as whole-window readouts already did; only the requested rows are
+  returned. The uptake row carries the family's `family_id`, `family_axes`,
+  `family_procedure`, `family_q` and `family_guarantee`, and its
+  `multiplicity_status` is `declared_plan` instead of `undeclared_plan`; its
+  `role` stays `None`. With no secondaries, the uptake cell is the one member
+  of a `secondary` family, whose `family_guarantee` is `finite_sample`.
+  A decision on a stored run selects over the same members: the uptake cell's
+  own verdict stays `not_evaluated`
+  (`decision.not_evaluated.monitoring_view`), its discovery counts toward the
+  family's rejections, and it no longer makes a whole-window family's verdict
+  `not_evaluated`. Before, that decision selected over the secondaries alone,
+  a smaller family than the rows report. A run that requests
+  `estimands=("itt",)` lists the uptake cell as an unselected member, so its
+  family verdict is `not_evaluated` with `decision.family.member_missing`, as
+  for any narrowed registered family; request `("itt", "compliance")` to
+  decide the family. Estimates, thresholds and discoveries are unchanged. An
+  as-of readout that returns the uptake row gets a new snapshot ID once, and
+  with it new family IDs, because its snapshot covers that row's
+  `family_guarantee`, which was empty before; every other snapshot and family
+  ID is unchanged. Saved run envelopes and readout metadata record the added
+  member. Migration: none needed.
 - Release note (breaking): a quantile cell whose combined log-scale standard
   error is 0.5 or more is now an unavailable row instead of refusing the whole
   `run` with the estimator's internal `LiftGuardError`. The row keeps its

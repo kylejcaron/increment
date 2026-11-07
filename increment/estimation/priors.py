@@ -26,6 +26,7 @@ from increment.errors import (
     InvalidRequestError,
     raiser,
     refusals,
+    refuse,
 )
 
 _MIN_POSITIVE_FLOAT = math.nextafter(0.0, 1.0)
@@ -56,6 +57,80 @@ EXPECTED_NEGATIVE_PART_SCALE = _REFUSALS[
 EXPECTED_POSITIVE_PART_SCALE = _REFUSALS[
     "estimation.priors.mixture_posterior.expected_positive_part_scale"
 ]
+
+
+class Normal(CodedModel, BaseModel):
+    """Normal distribution: scalar parameters (no array support needed;
+    estimates are scalar per metric x method x arm).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    mu: float
+    sigma: float = Field(gt=0)  # positivity via pydantic validation
+
+    @property
+    def precision(self) -> float:
+        """Inverse variance."""
+        return 1.0 / self.sigma**2
+
+    def cdf(self, value: float) -> float:
+        """Probability mass at or below ``value``."""
+        from scipy.stats import norm as _norm
+
+        return float(_norm.cdf((value - self.mu) / self.sigma))
+
+    def survival(self, value: float) -> float:
+        """Probability mass strictly above ``value``."""
+        from scipy.stats import norm as _norm
+
+        return float(_norm.sf((value - self.mu) / self.sigma))
+
+    def quantile(self, probability: float) -> float:
+        """Value whose cumulative probability is ``probability``."""
+        from scipy.stats import norm as _norm
+
+        return self.mu + self.sigma * float(_norm.ppf(probability))
+
+    def isf(self, tail_probability: float) -> float:
+        """Value whose upper-tail probability is ``tail_probability``."""
+        from scipy.stats import norm as _norm
+
+        return self.mu + self.sigma * float(_norm.isf(tail_probability))
+
+    def probability_between(self, lower: float, upper: float) -> float:
+        """Probability mass between two inclusive bounds."""
+        if lower >= self.mu:
+            return self.survival(lower) - self.survival(upper)
+        return self.cdf(upper) - self.cdf(lower)
+
+    def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float:
+        """Expected magnitude below zero on the requested reporting scale."""
+        from scipy.stats import norm as _norm
+
+        z = self.mu / self.sigma
+        if scale == "linear":
+            return float(self.sigma * _norm.pdf(z) - self.mu * _norm.cdf(-z))
+        if scale == "log":
+            a = -z
+            return float(
+                _norm.cdf(a) - math.exp(self.mu + 0.5 * self.sigma**2) * _norm.cdf(a - self.sigma)
+            )
+        refuse(EXPECTED_NEGATIVE_PART_SCALE, scale=scale)
+
+    def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
+        """Expected magnitude above zero on the requested reporting scale."""
+        from scipy.stats import norm as _norm
+
+        z = self.mu / self.sigma
+        if scale == "linear":
+            return float(self.sigma * _norm.pdf(z) + self.mu * _norm.cdf(z))
+        if scale == "log":
+            a = -z
+            return float(
+                math.exp(self.mu + 0.5 * self.sigma**2) * _norm.cdf(self.sigma - a) - _norm.cdf(-a)
+            )
+        refuse(EXPECTED_POSITIVE_PART_SCALE, scale=scale)
 
 
 class MixturePrior(CodedModel, BaseModel):
@@ -157,6 +232,11 @@ class StudentTPrior(CodedModel, BaseModel):
             means=(0.0,) * self.k,
             sigmas=tuple(self.scale * s for s in unit_sigmas),
         )
+
+
+type Prior = Normal | StudentTPrior | MixturePrior
+# Composes with a mixture everywhere except normal_posterior (the single-
+# Normal update) and paths that don't persist state to recompute it.
 
 
 @dataclass(frozen=True)

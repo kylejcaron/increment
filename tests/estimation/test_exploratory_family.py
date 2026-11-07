@@ -19,11 +19,11 @@ from increment.decision import ArmHypothesisKey, PValueEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning
 from increment.estimation.armstats import ScoreStats, centered_row_from_raw_sums
 from increment.estimation.engine import Method, estimate_lift
-from increment.estimation.family import (
-    bh_select,
+from increment.estimation.exploratory_family import (
     exploratory_family_exclusion,
     select_exploratory_family,
 )
+from increment.estimation.family import bh_select
 from increment.estimation.inference import Normal, infer_ate, infer_lift
 from increment.estimation.multiplicity import stamp_multiplicity_status
 from increment.estimation.results import (
@@ -956,7 +956,7 @@ def _sequential_row():
 
 
 def _winsor_row():
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState, WinsorSupport
 
     raw = WinsorRawState(

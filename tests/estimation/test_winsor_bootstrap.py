@@ -1113,7 +1113,7 @@ def test_bootstrap_observed_log_point_matches_reference_validation_when_ratio_ro
 @pytest.mark.slow
 def test_full_reference_stream_centering_wire_and_reinversion():
     from increment._interpretation import interpret_readout, render_readout_text
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.results import LiftEstimate
     from increment.winsor import BootstrapReference
 
@@ -1198,7 +1198,7 @@ def test_full_reference_stream_centering_wire_and_reinversion():
 @pytest.mark.slow
 def test_failed_root_is_persisted_without_retry_and_invalid_wire_refuses():
     from increment.errors import CodedError
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import BootstrapReference, WinsorConfidenceSet
 
     raw = _state()
@@ -1271,7 +1271,7 @@ def test_failed_root_is_persisted_without_retry_and_invalid_wire_refuses():
 )
 def test_pilot_applicability_is_explicit(values, reason):
     from increment.errors import CodedError
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import WinsorRawState
 
     payload = _state().model_dump()
@@ -1284,7 +1284,7 @@ def test_pilot_applicability_is_explicit(values, reason):
 
 def test_unresolved_neighboring_logs_refuse_without_density_floor():
     from increment.errors import CodedError
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import WinsorRawState
 
     payload = _state().model_dump()
@@ -1381,7 +1381,7 @@ def test_empirical_population_center_is_not_mean_type7_bootstrap():
 @pytest.mark.slow
 def test_relative_numeric_failure_does_not_hide_additive_availability():
     from increment.estimation._winsor_bootstrap import full_procedure_bootstrap_reference
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.simulate.runner import _lift_outcome, _reduce_key
     from increment.tables import _liftestimate_to_row
     from increment.winsor import BootstrapReference

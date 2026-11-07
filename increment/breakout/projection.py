@@ -197,7 +197,7 @@ def _append_frame_value(
         )
         data["open_side"].append(None if value is None else value.open_side)
     elif name == "sequential_result":
-        from increment.estimation.sequential_runtime import _outward
+        from increment.estimation.results import _outward
 
         data[name].append(None if value is None else value.model_dump_json())
         data["sequential_lower"].append(
