@@ -1609,7 +1609,7 @@ def _apply_pivoted_r_rank(
 
 @dataclass(frozen=True, slots=True)
 class EncodedQRDesign:
-    """Retained, arm-centered covariates and their local-encoder layout."""
+    """Arm-centered covariates over the fit's input and their local-encoder layout."""
 
     relation: ir.Table
     layout: Any
@@ -2350,21 +2350,16 @@ def fit_warehouse_qr(  # noqa: PLR0915
             execute=execute,
         )
     row_identity_columns = ("unit_id",)
+    # Every later statement reads this retained copy, so none recompiles the source
+    # relation and rows arriving mid-fit never reach it; the encoded design is a
+    # projection over the copy.
+    relation = scratch.materialize_input(relation)
     encoded = encode_qr_covariates(
         relation,
         declarations,
         arms=arms,
         row_identity_columns=row_identity_columns,
         execute=execute,
-    )
-    encoded = EncodedQRDesign(
-        scratch.materialize_input(encoded.relation),
-        encoded.layout,
-        encoded.columns,
-        encoded.offsets,
-        encoded.scales,
-        encoded.centered_means,
-        encoded.anchor,
     )
     outcome_columns = ("y", "y_den") if metric.type == "ratio" else ("y",)
     prepared = prepare_qr_factor_input(

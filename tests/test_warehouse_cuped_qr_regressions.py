@@ -406,6 +406,51 @@ def test_warehouse_qr_scale_equivariance_sweep(scale_exponent, scale_warehouse):
     _check_scale_equivariance(scale_exponent, scale_warehouse)
 
 
+def test_range_checked_fit_never_reads_rows_that_arrive_after_it_starts(tmp_path):
+    rows = _mixed_scale_rows(0)
+    _, declarations = _probe_covariates(categorical=True)
+    request = _ResolvedCupedRequest(
+        identity=("warehouse_qr_regression",),
+        control=THREE_ARMS[0],
+        arm_order=THREE_ARMS,
+        method=Method.cuped_multicovariate(covariates=list(declarations)),
+    )
+    with _QRWarehouse(tmp_path, {"live": rows, "fixed": rows}) as warehouse:
+        connection = warehouse.connection
+        arrivals = iter(range(1_000))
+
+        def execute_then_append(expression):
+            result = connection.to_pyarrow(expression)
+            index = next(arrivals)
+            connection.insert(
+                "live",
+                [
+                    {
+                        "unit_id": f"late-{index:03d}",
+                        "group_id": THREE_ARMS[index % 3],
+                        "x": 40.0 + index,
+                        "category": "north",
+                        "y": 500.0 + index,
+                        "y_den": 2.0,
+                    }
+                ],
+            )
+            return result
+
+        with warehouse.session.qr_scratch() as scratch:
+            live = fit_warehouse_qr(
+                connection.table("live"),
+                metric=SimpleNamespace(name="probe", type="mean"),
+                request=request,
+                execute=execute_then_append,
+                scratch=scratch,
+                magnitude_checked=True,
+            )
+        fixed = warehouse.fit("fixed", ratio=False, arms=THREE_ARMS, declarations=declarations)
+    assert next(arrivals) > 1
+    assert _same_scale_projection(live, fixed, 1.0, ratio=False)
+
+
 def test_out_of_range_same_sign_means_refuse(tmp_path):
     rows = [
         {
