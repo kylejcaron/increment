@@ -214,8 +214,10 @@ def _check(cell: matrix.Cell, ingress: str, mode: str) -> list[str]:
 
 @pytest.mark.slow
 @pytest.mark.integration
+# Draws from every matrix cell, so refusing cells stay in the mix and the
+# expected cost per run does not depend on which cells a pull request selects.
 @settings(max_examples=60, deadline=None)
-@given(cell=st.sampled_from(matrix.parity_matrix_cells()))
+@given(cell=st.sampled_from(tuple(matrix.iter_cells())))
 @example(cell=matrix.Cell("mean", "run", "none", "utc", "error"))
 def test_forwarding_provider_matches_matrix_cell(cell: matrix.Cell) -> None:
     disposition = matrix.classify(cell)
