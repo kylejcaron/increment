@@ -767,6 +767,36 @@ def test_moments_replay_cannot_declare_skip_for_a_metric_the_export_did_not_skip
     assert refused.value.code == "moments.plan.conflict"
 
 
+def test_moments_exports_of_different_metrics_share_one_column_schema(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    frame = pa.table(
+        {
+            "unit": list(range(40)),
+            "arm": ["control", "treatment"] * 20,
+            "value": [float(i % 7) for i in range(40)],
+            "den": [1.0 + i % 3 for i in range(40)],
+        }
+    )
+    specs = {
+        "mean": MetricSpec(name="value"),
+        "ratio": MetricSpec(name="per_den", type="ratio", numerator="value", denominator="den"),
+    }
+    tables = []
+    for label, spec in specs.items():
+        experiment, resolver = from_frame(
+            frame, shape="summary", unit="unit", group="arm", control="control", metrics=[spec]
+        )
+        export_moments(experiment, resolver, tmp_path / f"{label}.parquet")
+        tables.append(pq.read_table(tmp_path / f"{label}.parquet"))
+
+    combined = pa.concat_tables(tables)
+    declared = {"n": "int64", "successes": "int64", "ref_den": "double", "cden3": "double"}
+    assert {name: str(combined.schema.field(name).type) for name in declared} == declared
+    assert combined.schema.field("x_role").type == pa.string()
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 def test_mixed_winsorization_metrics_survive_run_and_export(tmp_path):

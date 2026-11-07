@@ -2343,6 +2343,62 @@ def stamp_fixed_rows(
     return rows
 
 
+# Outcome and transport columns in a fixed order and type, so exports of different metrics
+# concatenate; ``group_id`` keeps its label type, and any other column its inferred type.
+_MOMENTS_COLUMNS: tuple[tuple[str, str | None], ...] = (
+    ("experiment_id", "string"),
+    ("metric", "string"),
+    ("group_id", None),
+    ("x_role", "string"),
+    ("n", "int64"),
+    ("successes", "int64"),
+    *(
+        (name, "float64")
+        for name in (
+            "ref_y",
+            "cy1",
+            "cy2",
+            "ref_x",
+            "cx1",
+            "cx2",
+            "cxy",
+            "cxden",
+            "ref_den",
+            "cden1",
+            "cden2",
+            "cden3",
+            "cyden",
+            "sum_d",
+            "cyd",
+            "cy2d",
+            "cxd",
+            "winsor_lower_percentile",
+            "winsor_upper_percentile",
+            "winsor_lower_bound",
+            "winsor_upper_bound",
+        )
+    ),
+    ("winsor_n", "int64"),
+    ("winsor_n_lower", "int64"),
+    ("winsor_n_upper", "int64"),
+    ("moments_format", "int64"),
+    *(
+        (name, "string")
+        for name in (
+            DECISION_PLAN_FIELD,
+            ASSIGNMENT_COUNTS_FIELD,
+            SOURCE_IDENTITY_FIELD,
+            COMPLIANCE_SUMMARY_FIELD,
+            TRIGGER_NAME_FIELD,
+            METRIC_MISSINGNESS_FIELD,
+            "covariate_name",
+            "record_kind",
+            CUPED_EVIDENCE_FIELD,
+        )
+    ),
+)
+
+
 def write_moments_table(
     path: str | Path, rows: Sequence[Mapping[str, object]], version: int
 ) -> None:
@@ -2350,12 +2406,18 @@ def write_moments_table(
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    columns = list(dict.fromkeys(key for row in rows for key in row))
+    present = dict.fromkeys(key for row in rows for key in row)
+    declared = dict(_MOMENTS_COLUMNS)
+    columns = [name for name, _ in _MOMENTS_COLUMNS if name in present] + [
+        name for name in present if name not in declared
+    ]
     table = pa.Table.from_pylist([{key: row.get(key) for key in columns} for row in rows])
+    types = {"string": pa.string(), "int64": pa.int64(), "float64": pa.float64()}
+    for index, name in enumerate(columns):
+        kind = declared.get(name)
+        if kind is not None:
+            table = table.set_column(index, name, table[name].cast(types[kind]))
     table = table.replace_schema_metadata({b"increment.moments_format": str(version).encode()})
-    if "successes" in table.column_names:
-        index = table.schema.get_field_index("successes")
-        table = table.set_column(index, "successes", table["successes"].cast(pa.int64()))
     pq.write_table(table, str(path))
 
 
