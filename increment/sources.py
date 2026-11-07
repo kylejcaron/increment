@@ -1032,8 +1032,9 @@ def _replay_metric_missingness(
     """Each replayed metric's skip policy, declared on replay or recorded by the rows.
 
     A policy the rows record holds for its metric. Rows that record which metrics
-    skip, and omit one, were reduced over every unit for it, so declaring skip for
-    that metric is refused rather than relabelling them.
+    skip were reduced over observed units for those metrics and over every unit
+    for the rest, so a declared policy that disagrees, in either direction, is
+    refused rather than relabelling them.
     """
     declared = dict(declared or {})
     if recorded is not None:
@@ -1042,7 +1043,7 @@ def _replay_metric_missingness(
             sorted(
                 name
                 for name, policy in declared.items()
-                if policy == "skip" and name in present and name not in recorded
+                if name in present and (policy == "skip") != (name in recorded)
             )
         )
         if conflicting:
@@ -1050,8 +1051,8 @@ def _replay_metric_missingness(
                 _MOMENTS_PLAN_CONFLICT,
                 field=METRIC_MISSINGNESS_FIELD,
                 value=conflicting,
-                constraint="the export did not skip missing values for these metrics; "
-                "replay them without missing='skip' or re-export from the source",
+                constraint="the export recorded which of these metrics skip missing values; "
+                "declare that policy on replay or none, or re-export from the source",
             )
     names = {metric.name for metric in metrics}
     return {**{name: "skip" for name in recorded or {} if name in names}, **declared}

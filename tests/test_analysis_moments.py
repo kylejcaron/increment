@@ -767,6 +767,25 @@ def test_moments_replay_cannot_declare_skip_for_a_metric_the_export_did_not_skip
     assert refused.value.code == "moments.plan.conflict"
 
 
+@pytest.mark.parametrize("policy", ["zero", "error"])
+def test_moments_source_cannot_declare_another_policy_for_a_metric_the_export_skipped(
+    tmp_path, policy
+):
+    from increment.frame import synthesise_metric
+    from increment.sources import MomentsSource
+
+    rows = _exported_score_rows(tmp_path, cuped=False)
+
+    with pytest.raises(WireFormatError) as refused:
+        MomentsSource(
+            rows,
+            metrics=[synthesise_metric(_score_spec(cuped=False))],
+            study_id="moments",
+            metric_missingness={"score": policy},
+        )
+    assert refused.value.code == "moments.plan.conflict"
+
+
 def test_moments_exports_of_different_metrics_share_one_column_schema(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
