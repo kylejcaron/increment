@@ -33,8 +33,9 @@ def worker_project(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "\n[tool.pytest.ini_options]\n"
     )
     env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTEST_ADDOPTS", None)
+    # The isolated sample loads no caller plugins and imports only its own tree.
+    for key in ("PYTHONPATH", "PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
+        env.pop(key, None)
     env.update(MUTANT_UNDER_TEST="", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
     log = tmp_path / "generate.log"
     code, _ = execute("generate", "sample/value.py", [], tmp_path, env, log, 30)
@@ -230,8 +231,13 @@ class TestKillMatrix:
 
         from scripts import mutation_campaign
 
-        # The isolated sample uses its own pytest configuration and import path.
+        # An external pytest plugin must remain importable from each stage's caller environment.
         monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+        plugin_path = tmp_path / "plugins"
+        plugin_path.mkdir()
+        (plugin_path / "campaign_plugin.py").write_text("")
+        monkeypatch.setenv("PYTHONPATH", str(plugin_path))
+        monkeypatch.setenv("PYTEST_PLUGINS", "campaign_plugin")
 
         work, _ = worker_project
         pyproject = work / "pyproject.toml"

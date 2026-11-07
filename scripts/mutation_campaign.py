@@ -398,8 +398,8 @@ def execute(
 
 def campaign(name: str, output: Path, *, kill_matrix: bool = False) -> None:
     source, selection, functions = CAMPAIGNS[name]
+    # Stage workers inherit caller imports, including explicitly configured pytest plugins.
     env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
     env.pop("PYTEST_ADDOPTS", None)
     env["MUTANT_UNDER_TEST"] = ""
     for key in (
