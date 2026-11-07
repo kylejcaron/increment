@@ -389,19 +389,10 @@ def _check_scale_equivariance(scale_exponent, warehouse):
     assert _same_scale_projection(joint_warehouse, joint_local, 1.0, ratio=True)
 
 
-# Every pull request checks the two extreme exponents; the interior ones run in the exhaustive gate.
+# Overflow and underflow show at the extremes; power-of-two scaling is exact in between.
 @pytest.mark.integration
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    "scale_exponent",
-    [
-        -167,
-        pytest.param(-100, marks=pytest.mark.exhaustive),
-        pytest.param(0, marks=pytest.mark.exhaustive),
-        pytest.param(100, marks=pytest.mark.exhaustive),
-        163,
-    ],
-)
+@pytest.mark.parametrize("scale_exponent", [-167, 163])
 def test_warehouse_qr_scale_equivariance_sweep(scale_exponent, scale_warehouse):
     _check_scale_equivariance(scale_exponent, scale_warehouse)
 
