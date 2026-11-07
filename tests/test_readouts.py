@@ -827,6 +827,29 @@ def test_input_evidence_keeps_float_counts_and_day_coordinates():
     }
 
 
+def test_input_evidence_keeps_reason_codes_without_rendered_text():
+    from increment.readouts._source_digest import input_evidence
+
+    reason_context = {
+        "metric": "d7_retention",
+        "group_id": "treatment",
+        "method": "unadjusted",
+        "reason": "delta_method_unreliable",
+    }
+    assert input_evidence(
+        {
+            "metric": "d7_retention",
+            "posterior_reason_code": "estimation.engine.lift_guard",
+            "posterior_reason_context": {**reason_context, "display": "any rendered message"},
+            "note": "any rendered note",
+        }
+    ) == {
+        "metric": "d7_retention",
+        "posterior_reason_code": "estimation.engine.lift_guard",
+        "posterior_reason_context": reason_context,
+    }
+
+
 def test_moment_count_changes_snapshot_identity():
     from increment import readouts
     from increment.sources import MomentsSource

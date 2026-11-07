@@ -363,8 +363,6 @@ def _load_metric_evidence(  # noqa: PLR0915
         )
     observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
     ordinary_component = ("moments_rows", moments_sha256, moments_count)
-    if has_linear:
-        observed, moments_sha256, moments_count = _rows_raw_digest_and_arms(rows)
     method_components = tuple(
         (f"scalar_method:{name}", *_rows_raw_digest_and_arms(family_rows)[1:])
         for name, family_rows in method_rows
@@ -381,9 +379,7 @@ def _load_metric_evidence(  # noqa: PLR0915
     )
     decision_is_linear = bool(methods and methods[0].variance_reduction == "cuped_multicovariate")
     decision_components = (
-        ("moments_rows", moments_sha256, moments_count)
-        if decision_is_linear
-        else ordinary_component,
+        ordinary_component,
         *(
             item
             for item in method_components
@@ -409,6 +405,16 @@ def _load_metric_evidence(  # noqa: PLR0915
             method_rows=method_rows,
             method_refusals=tuple(method_refusals),
         )
+
+    # A linear fit from retained categorical cells or a warehouse has no unit rows to
+    # identify it; its moment rows are the evidence, digested raw. A local fit's unit
+    # rows identify it exactly, so its moment rows keep the ordinary digest. The decision
+    # fit's origin picks the digest even when another method loads unit rows.
+    raw_moments = ("moments_rows", *_rows_raw_digest_and_arms(rows)[1:])
+    fitted_components = (
+        raw_moments if decision_is_linear else ordinary_component,
+        *decision_components[1:],
+    )
 
     arm_order = (str(control_group), *sorted(observed - {str(control_group)}))
     population = request.population
@@ -457,7 +463,7 @@ def _load_metric_evidence(  # noqa: PLR0915
     }
     if mixed_names <= retained_names:
         if decision_is_linear:
-            decision_components += tuple(
+            fitted_components += tuple(
                 item
                 for item in categorical_components
                 if item[0] == f"categorical_cells:{methods[0].name}"
@@ -472,9 +478,9 @@ def _load_metric_evidence(  # noqa: PLR0915
             evidence_kind="mixed_rows",
             evidence_sha256="",
             evidence_count=moments_count + len(categorical_components),
-            decision_evidence_components=decision_components,
+            decision_evidence_components=fitted_components,
             evidence_components=(
-                ("moments_rows", moments_sha256, moments_count),
+                raw_moments,
                 *categorical_components,
                 *method_components,
             ),
@@ -561,7 +567,7 @@ def _load_metric_evidence(  # noqa: PLR0915
                 evidence_sha256="",
                 evidence_count=moments_count + len(evidence_components),
                 decision_evidence_components=(
-                    decision_components
+                    fitted_components
                     + tuple(
                         item
                         for item in evidence_components
@@ -573,7 +579,7 @@ def _load_metric_evidence(  # noqa: PLR0915
                     )
                 ),
                 evidence_components=(
-                    ("moments_rows", moments_sha256, moments_count),
+                    raw_moments,
                     *evidence_components,
                     *method_components,
                 ),
@@ -612,6 +618,8 @@ def _load_metric_evidence(  # noqa: PLR0915
     if decision_is_linear:
         if decision_fitted_locally:
             decision_components += (_decision_unit_component(frame, methods[0], acquired_columns),)
+        else:
+            decision_components = fitted_components
         decision_components += tuple(
             item
             for item in local_fit_components

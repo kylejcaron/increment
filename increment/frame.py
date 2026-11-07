@@ -50,6 +50,7 @@ from increment._frame_moments import (
     _CovariateReduction,
     _daily_moment_rows,
     _DeferredRefusal,
+    _exact_mean,
     _moment_rows,
     _total_moment_rows,
 )
@@ -2175,7 +2176,7 @@ class FramePanelSource(SequentialSourceMixin):
             if covariate.missing == "impute":
                 column = acquired_columns[covariate.name]
                 full_values = self._resolve_panel_covariate(covariate.name)
-                mean_value = full_values.select(nw.col(covariate.name).mean()).item()
+                mean_value = _exact_mean(full_values.get_column(covariate.name))
                 unit_data = unit_data.with_columns(
                     nw.col(column).fill_null(mean_value).alias(column)
                 )

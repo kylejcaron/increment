@@ -1067,3 +1067,90 @@ def test_health_snapshot_fingerprint_canonicalizes_nonfinite_evidence() -> None:
         _health_snapshot_id(source, "2024-01-16T00:00:00+00:00", evidence)
         == "sha256:" + hashlib.sha256(canonical_json_bytes(expected)).hexdigest()
     )
+
+
+def test_health_snapshot_id_ignores_wording_and_tracks_evidence() -> None:
+    from increment import _health, from_moments
+    from increment._binding import binding_for
+    from increment.errors import CapabilityError
+    from tests.test_analysis_moments import _legacy_fixed10_rows
+
+    binding = binding_for(
+        *from_moments(
+            _legacy_fixed10_rows(trigger_name="saw_surface"),
+            metrics={"revenue": "mean"},
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+        )
+    )
+
+    def report(
+        *,
+        observed: Mapping[str, int] | None = None,
+        alpha: float = 0.001,
+        rates: Mapping[str, float] | None = None,
+        code: str = "evidence.operation_unavailable",
+        message: str = "This source keeps no triggered counts.",
+    ) -> ExperimentHealth:
+        allocation = SRMResult(
+            inference="always_valid",
+            chi2_stat=0.0,
+            fixed_p_value=1.0,
+            log_e_value=0.0,
+            df=1,
+            is_srm=False,
+            alpha=alpha,
+            observed=observed or {"control": 20, "treatment": 20},
+            expected={"control": 0.5, "treatment": 0.5},
+        )
+
+        def allocation_check(_binding: Any, population: str) -> SRMResult:
+            if population == "triggered":
+                raise CapabilityError(message, code=code, context={"requested": "triggered_counts"})
+            return allocation
+
+        return _health.check_health(
+            binding,
+            expected_allocation=None,
+            srm=allocation_check,
+            trigger_rates=lambda _binding: dict(rates or {"control": 0.4, "treatment": 0.5}),
+        )
+
+    baseline = report()
+    baseline_id = baseline.source_snapshot_id
+    assert baseline_id is not None
+    assert report(message="Triggered counts were not kept.").source_snapshot_id == baseline_id
+
+    prose = {
+        "reason",
+        "route",
+        "description",
+        "risk",
+        "counterfactual_trigger_invariance",
+        "trigger_order_stationarity",
+        "no_effect_before_trigger",
+        "triggered_look_predictability",
+        "family_guarantee_status",
+    }
+
+    def reworded(check: HealthCheck) -> HealthCheck:
+        fields = {name: getattr(check, name) for name in HealthCheck.model_fields}
+        fields["context"] = {
+            key: f"Reworded {key}." if key in prose and value is not None else value
+            for key, value in check.context.items()
+        }
+        return HealthCheck(**fields)
+
+    rewritten = [reworded(check) for check in baseline.checks]
+    assert rewritten != list(baseline.checks)
+    assert [_health.health_identity(check) for check in rewritten] == [
+        _health.health_identity(check) for check in baseline.checks
+    ]
+
+    assert report(observed={"control": 20, "treatment": 21}).source_snapshot_id != baseline_id
+    assert report(rates={"control": 0.4, "treatment": 0.6}).source_snapshot_id != baseline_id
+    assert report(alpha=0.01).source_snapshot_id != baseline_id
+    assert report(code="source.native.trigger_evidence_required").source_snapshot_id != baseline_id

@@ -127,6 +127,22 @@ values.
 
 ### Earlier release notes
 
+- Release note (breaking bug fix): a readout's `source_snapshot_id`, and every
+  family ID built from it, no longer changes when a message is reworded. A
+  snapshot keeps reason codes and their structured context but not rendered
+  messages or notes. A health report's `source_snapshot_id` keeps each check's
+  codes, statuses and evidence (counts, rates, thresholds, refusal context) but
+  not its rendered reasons, routes, descriptions, risks or assumption
+  statements, which the report itself still carries. A dataframe readout's
+  `source_snapshot_id` and `source_content_digest` no longer change with row
+  order, engine threading or the dataframe library (pandas, polars or
+  pyarrow): its moment and per-unit sums are exact, rounded once, and a
+  multicovariate fit is identified by its unit rows. Previously saved IDs for
+  these runs change once. Dataframe moments can move in their last bits, within
+  the parity tolerance on the pinned baseline cases. Where values cancel, as in
+  a unit's daily values 1e16, 1, -1e16 and 1, the exact total (2) replaces a
+  floating-point sum that could lose the small values (0 or 1), so estimates
+  from such data can change by more.
 - Release note (breaking): an observational run whose unadjusted contrast
   meets an arm of one unit, or a ratio arm whose denominator mean is not
   positive, returns that cell as an unavailable row with its own

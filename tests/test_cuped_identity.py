@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+import math
 import pickle
+from collections.abc import Iterable
 from copy import deepcopy
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import numpy as np
 import pyarrow as pa
 import pytest
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 from increment import AnalysisPlan, CupedCovariate, Method, MetricSpec, from_definitions, from_frame
 from increment.errors import CodedError
@@ -363,3 +369,206 @@ def test_family_scope_copy_preserves_nonempty_decision_snapshot(copy_kind):
     assert copied.family_id == family.family_id
     assert copied.decision_snapshot_id == family.decision_snapshot_id
     assert copied.model_dump_json() == family.model_dump_json()
+
+
+# Offsets that cancel within an arm (summary) or within a unit's days (panel): a summation
+# order that adds the small values between them keeps their sum, another loses it.
+_CANCELLING = (1e16, -1e16)
+_COVARIATES = (
+    CupedCovariate(name="x1", kind="continuous"),
+    CupedCovariate(name="x2", kind="continuous"),
+)
+_IDENTITY_METHODS = {
+    "unadjusted": Method.unadjusted(),
+    "scalar": Method.cuped(covariates=_COVARIATES[0]),
+    "mixed": Method.cuped_multicovariate(name="linear", covariates=_COVARIATES),
+}
+
+
+def _identity_rows(*, days: int = 1, n_units: int = 2000) -> list[dict[str, Any]]:
+    """Non-integer outcomes and covariates: integer data sums exactly in any order."""
+    rng = np.random.default_rng(11)
+    rows = []
+    for unit in range(n_units):
+        treated = unit % 2
+        x1, x2 = rng.normal(50.0, 10.0), rng.normal(3.0, 1.0)
+        total = 100.0 + 0.8 * x1 + 2.0 * x2 + 1.5 * treated + rng.normal(0.0, 5.0)
+        shares = rng.dirichlet(np.ones(days)) if days > 1 else (1.0,)
+        for day, share in enumerate(shares):
+            value = total * share
+            if days > 1 and day < len(_CANCELLING):
+                value += _CANCELLING[day]
+            elif days == 1 and unit < 2 * len(_CANCELLING):
+                value += _CANCELLING[unit // 2]
+            rows.append(
+                {
+                    "unit": f"u{unit}",
+                    "arm": "treatment" if treated else "control",
+                    "day": day + 1,
+                    "y": value,
+                    "x1": x1,
+                    "x2": x2,
+                }
+            )
+    return rows
+
+
+def _identity(frame: Any, method: str, *, panel: bool) -> tuple[str, str | None]:
+    """The snapshot id and source content digest of one frame readout."""
+    import warnings
+
+    from increment.errors import IncrementWarning
+
+    kwargs: dict[str, Any] = {
+        "unit": "unit",
+        "group": "arm",
+        "control": "control",
+        "metrics": [MetricSpec(name="y", decision_method=_IDENTITY_METHODS[method])],
+    }
+    experiment, resolver = (
+        from_frame(frame, shape="panel", date="day", **kwargs)
+        if panel
+        else from_frame(frame, shape="summary", **kwargs)
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = view_readout(experiment, resolver)
+    assert result.metadata is not None
+    return result.metadata.scope.snapshot_id, result.metadata.source_content_digest
+
+
+def _polars(rows: list[dict[str, Any]], *, chunk: int | None = None) -> Any:
+    import polars as pl
+
+    if chunk is None:
+        return pl.DataFrame(rows)
+    parts = [pl.DataFrame(rows[start : start + chunk]) for start in range(0, len(rows), chunk)]
+    return pl.concat(parts, rechunk=False)
+
+
+def _record_batches(rows: list[dict[str, Any]], *, chunk: int = 16) -> pa.Table:
+    """A pyarrow table of many record batches, as data read from files arrives."""
+    return pa.Table.from_batches(
+        [
+            pa.RecordBatch.from_pylist(rows[start : start + chunk])
+            for start in range(0, len(rows), chunk)
+        ]
+    )
+
+
+@pytest.fixture
+def arrow_threads():
+    """Arrow's multithreaded execution, which the test session limits to one thread."""
+    previous = pa.cpu_count()
+    pa.set_cpu_count(4)
+    yield
+    pa.set_cpu_count(previous)
+
+
+@pytest.mark.parametrize("panel", [False, True], ids=["summary", "panel"])
+@pytest.mark.parametrize("decision", ["scalar", "mixed"])
+def test_frame_cuped_snapshot_id_is_a_function_of_the_rows(decision, panel):
+    rows = _identity_rows()
+    shuffled = [rows[index] for index in np.random.default_rng(3).permutation(len(rows))]
+    frames = (_polars(rows), _polars(rows), _polars(shuffled), _polars(rows, chunk=64))
+    identities = {_identity(frame, decision, panel=panel) for frame in frames}
+    assert len(identities) == 1, identities
+
+
+@pytest.mark.parametrize("library", ["polars", "pandas", "pyarrow"])
+def test_panel_snapshot_id_survives_reordering_days_within_units(library, arrow_threads):
+    import pandas as pd
+
+    rows = _identity_rows(days=3, n_units=600)
+    reordered = [
+        row for start in range(0, len(rows), 3) for row in reversed(rows[start : start + 3])
+    ]
+    rotated = [
+        row
+        for start in range(0, len(rows), 3)
+        for row in (*rows[start + 1 : start + 3], rows[start])
+    ]
+    build = {
+        "polars": _polars,
+        "pandas": pd.DataFrame,
+        "pyarrow": _record_batches,
+    }[library]
+    identities = {
+        method: {
+            _identity(build(order), method, panel=True) for order in (rows, reordered, rotated)
+        }
+        for method in ("unadjusted", "mixed")
+    }
+    assert all(len(found) == 1 for found in identities.values()), identities
+
+
+@pytest.mark.parametrize("method", ["unadjusted", "scalar", "mixed"])
+def test_frame_snapshot_id_is_the_same_across_dataframe_libraries(method):
+    import pandas as pd
+
+    rows = _identity_rows()
+    frames = (_polars(rows), pd.DataFrame(rows), pa.Table.from_pylist(rows))
+    identities = {_identity(frame, method, panel=False) for frame in frames}
+    assert len(identities) == 1, identities
+
+
+def _rounded_once(values: Iterable[float]) -> float:
+    """The exact sum of *values* rounded once, to ±inf beyond the largest float."""
+    total = Fraction(0)
+    for value in values:
+        total += Fraction(value)
+    try:
+        return float(total)
+    except OverflowError:
+        return math.inf if total > 0 else -math.inf
+
+
+_FINITE = st.floats(allow_nan=False, allow_infinity=False)
+
+
+@settings(max_examples=300, deadline=None)
+@given(
+    values=st.lists(
+        st.one_of(
+            _FINITE,
+            st.sampled_from([1e16, -1e16, 1.0, 1e308, -1e308, 1.7976931348623157e308, 5e-324]),
+        ),
+        max_size=40,
+    ),
+    data=st.data(),
+)
+@example(values=[1e16, 1.0, -1e16], data=None)
+@example(values=[1e308, 1e308, -1e308], data=None)
+@example(values=[1.7976931348623157e308, 1.7976931348623157e308], data=None)
+@example(values=[5e-324, -5e-324, 2.2250738585072014e-308], data=None)
+@example(values=[1e300, 3.0, 4.0, 1e-300, 5.0, 6.0, -1e300], data=None)
+@example(values=[1e300, 1e200, 7.0, 1e-300, 1e-200, 8.0, -1e300, -1e200], data=None)
+def test_exact_sum_rounds_the_exact_total_once_in_any_order(values, data):
+    from increment._frame_moments import _exact_group_sums, exact_sum
+
+    groups = [index % 3 for index in range(len(values))]
+    if data is not None:
+        groups = data.draw(st.lists(st.integers(0, 2), min_size=len(values), max_size=len(values)))
+        order = data.draw(st.permutations(range(len(values))))
+    else:
+        order = list(reversed(range(len(values))))
+    assert exact_sum(values) == _rounded_once(values)
+    assert exact_sum([values[index] for index in order]) == _rounded_once(values)
+    codes = np.asarray([groups[index] for index in order], dtype=np.int64)
+    permuted = np.asarray([values[index] for index in order], dtype=np.float64)
+    # Pairs of 1.0 and -1.0 leave each group's total unchanged and outnumber the 3 x 2048
+    # group-exponent bins, so the padded sums take the binned route.
+    padding_codes = np.repeat(np.arange(3, dtype=np.int64), 2 * 2048)
+    padding = np.tile([1.0, -1.0], 3 * 2048)
+    # Values more than 2**96 apart in one group (1e300 beside 1e-300) take the exact_sum route.
+    routes = (
+        _exact_group_sums(codes, 3, permuted),
+        _exact_group_sums(
+            np.concatenate([codes, padding_codes]), 3, np.concatenate([permuted, padding])
+        ),
+    )
+    for group in range(3):
+        expected = _rounded_once(
+            value for value, label in zip(values, groups, strict=True) if label == group
+        )
+        assert [route[group] for route in routes] == [expected] * len(routes)

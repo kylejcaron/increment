@@ -45,6 +45,9 @@ def input_evidence(value: Any, *, field: str | None = None) -> Any:
                 # Display copies of arm means already summarized by the input rows.
                 "mean_control",
                 "mean_treat",
+                # Rendered text: identity keeps codes and structured context.
+                "display",
+                "note",
             }
         }
     if isinstance(value, (list, tuple)):

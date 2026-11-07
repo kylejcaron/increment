@@ -229,6 +229,9 @@ tests/test_compliance_summary.py 1
 tests/test_cuped_covariate_sources.py 1
 tests/test_cuped_covariates.py 2
 tests/test_cuped_evidence.py 19
+# The exact-sum property checks exact_sum and the grouped exact sums frame moments are built
+# from against a rational total; a readout exposes no unrounded sum.
+tests/test_cuped_identity.py 2
 tests/test_cuped_portable_journey.py 1
 tests/test_cuped_review_followups.py 1
 tests/test_cuped_route_admission.py 4
@@ -243,7 +246,9 @@ tests/test_dashboard_population.py 6
 tests/test_dashboard_result_evidence.py 11
 tests/test_errors.py 1
 tests/test_evidence_identity_parity.py 4
-tests/test_experiment_health.py 2
+# The health snapshot test injects allocation and trigger-rate results into one binding's
+# health checks and compares each check's identity projection; health_check takes neither.
+tests/test_experiment_health.py 4
 tests/test_exploratory_metrics.py 2
 tests/test_frame_exact_successes.py 4
 # The skip tests compare a row's population with the one private label formatter applied to
@@ -266,7 +271,9 @@ tests/test_readout_interpretation.py 11
 tests/test_readout_metadata.py 4
 tests/test_readout_public_scope.py 8
 tests/test_readout_request.py 5
-tests/test_readouts.py 9
+# The readout snapshot preimage projection, input_evidence, is pinned on plain rows; no public
+# name exposes it.
+tests/test_readouts.py 10
 tests/test_readouts_encouragement.py 4
 tests/test_readouts_plan.py 2
 tests/test_readouts_switchback.py 2

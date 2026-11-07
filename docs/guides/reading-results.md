@@ -304,16 +304,22 @@ For a `ContrastResult` row `c`, read `c.estimate.value`, `c.estimate.lb`,
 Scoped readouts carry a `source_snapshot_id` identifying the canonical request,
 pinned source evidence, and source identity. Ordinary moment evidence filters
 floating aggregate values from snapshot components, so harmless reduction-order
-differences do not change those components. Multicovariate linear readouts use
-raw moment-row fingerprints instead; their exact canonical fingerprints can
+differences do not change those components. A multicovariate linear readout
+fitted from unit rows identifies those rows. One fitted in a warehouse or from
+retained categorical cells uses raw moment-row fingerprints instead, which can
 differ when numerically equivalent aggregate moments differ in low bits.
 Counts, categorical evidence, request, methods, populations, and other declared
-identity inputs remain part of the snapshot. A saved result retains the identity
-it was created with.
+identity inputs remain part of the snapshot, as do reason codes and their
+structured context. Rendered messages and notes are not, so rewording one leaves
+the snapshot unchanged; the same holds for a health report's checks. A saved
+result retains the identity it was created with.
 
 The separate `source_content_digest` records exact canonical estimation inputs
-as provenance. It does not round moment values or promise equality across
-constructors and aggregation orders. Compare estimates and intervals using the
+as provenance. A dataframe readout sums its rows exactly, so the same rows give
+the same `source_snapshot_id` and `source_content_digest` in any row order and
+with pandas, polars or pyarrow. The digest does not round moment values or
+promise equality across constructors; warehouse and moments-cube aggregates can
+differ in low bits across engines. Compare estimates and intervals using the
 numerical tolerance appropriate to the quantity, not by comparing fingerprints.
 
 ## Read the result as a decision, not just a number
@@ -702,18 +708,24 @@ to change the planned alpha instead of widening a result after analysis.
 
     Scoped readouts carry a `source_snapshot_id` identifying the canonical
     request, pinned source evidence, and source identity. Ordinary moment
-    evidence filters floating aggregate values from snapshot components, while
-    multicovariate linear readouts use raw moment-row fingerprints. The latter
-    can differ when numerically equivalent aggregate moments differ in low bits.
+    evidence filters floating aggregate values from snapshot components. A
+    multicovariate linear readout fitted from unit rows identifies those rows;
+    one fitted in a warehouse or from retained categorical cells uses raw
+    moment-row fingerprints, which can differ when numerically equivalent
+    aggregate moments differ in low bits.
     Counts, categorical evidence, request, methods, populations, and other
-    declared identity inputs remain part of the snapshot. A saved result retains
-    the identity it was created with.
+    declared identity inputs remain part of the snapshot, as do reason codes and
+    their structured context. Rendered messages and notes are not, so rewording
+    one leaves the snapshot unchanged. A saved result retains the identity it was
+    created with.
 
     The separate `source_content_digest` records exact canonical estimation
-    inputs as provenance. It does not round moment values or promise equality
-    across constructors and aggregation orders. Compare estimates and intervals
-    using the numerical tolerance appropriate to the quantity, not by comparing
-    fingerprints.
+    inputs as provenance. A dataframe readout sums its rows exactly, so the same
+    rows give the same `source_snapshot_id` and `source_content_digest` in any
+    row order and with pandas, polars or pyarrow. The digest does not round
+    moment values or promise equality across constructors. Compare estimates and
+    intervals using the numerical tolerance appropriate to the quantity, not by
+    comparing fingerprints.
 
 ### Small segments are flagged, not withheld
 

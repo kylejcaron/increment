@@ -468,6 +468,107 @@ _RECORDS += tuple(
         ("from_switchback_panel", "switchback", ["from_definitions", "from_unit_day_artifact"]),
     )
 )
+RENDERED_TEXT_SNAPSHOT_REASON = (
+    "A snapshot no longer digests rendered messages and notes (a row's `note` and a "
+    "reason context's `display`), only reason codes and their structured context; the "
+    "rows are otherwise unchanged."
+)
+# Chained after the records above: `frozen` is the ID main produced.
+_RECORDS += tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress="from_definitions",
+        field=field,
+        frozen=f"sha256:{frozen}",
+        current=f"sha256:{current}",
+        reason=RENDERED_TEXT_SNAPSHOT_REASON,
+    )
+    for scenario, field, frozen, current in (
+        (
+            "breakout_store_dimension",
+            "source_snapshot_id",
+            "fd017e16f0999da4f298a1692e00322a54d7335ce7c4d1b0f467675ee82feddb",
+            "fc78b0670004494b2671ad816cbdfc4c86d808e8c75b3fde147623611a20f32c",
+        ),
+        (
+            "breakout_store_dimension",
+            "family_id",
+            "fd2bc5d54f902f2d2daa1c0f8c18079b9f139218e47f508d75fbac5bb7849f36",
+            "eb5efd152a4e754f30dfe1b32bdb39668afd89d348b6fcf75e2836bbf4873841",
+        ),
+        (
+            "triggered_daily_lift",
+            "source_snapshot_id",
+            "906d69949cd2699bf8eea037e0148c8558b5d62b1de8a9ea2427190b54d68eb7",
+            "5ab9e7eebd08ec8cf5dd9e32afc6296133bd45b1724cd10d003d3b635f0ab7bd",
+        ),
+        (
+            "triggered_asof_lift",
+            "source_snapshot_id",
+            "2eef1a7eb816cca7d6300424b35dba4058e14e9f5e3bf92e6dbd2d400fb6e08b",
+            "e72f34508d37d08669b93677759e7778fb46562bb6b5eb3cd3c35f3e07d311b5",
+        ),
+        (
+            "triggered_encouragement_compliance_asof",
+            "source_snapshot_id",
+            "555fa9fd774dee87a087655dc870ca4bf2123da6d3298bb69e83ba7c9ad9c782",
+            "28df0d5365181f13c8c8261fa0d8d258031950170622b489cd2ea23b5d44aacf",
+        ),
+    )
+)
+_RECORDS += (
+    ExpectedDifference(
+        scenario="mean_ratio_conversion_cuped_fixed_horizon",
+        ingress="from_moments",
+        field="source_snapshot_id",
+        frozen="sha256:e9911963f356b2ee991dac2840f7d6750a7c48f772a6047b8668ebfbe65464d6",
+        current="sha256:5e605fb49a229f146c09b9f93807fd5584b392d415b00e8e28ccb27ae1789fbd",
+        reason=(
+            "Frame CUPED moments exported to the cube are now exact sums rounded once, so their "
+            "raw scalar-method digest moves in its last bits; estimates agree within tolerance."
+        ),
+    ),
+    *(
+        ExpectedDifference(
+            scenario="mean_ratio_conversion_cuped_fixed_horizon",
+            ingress="from_moments",
+            field=f"{cell} cell key",
+            frozen=frozen,
+            current=current,
+            reason=(
+                "A cell key digests its cell's snapshot ID, which the exact frame CUPED sums "
+                "above move; the cells are otherwise unchanged."
+            ),
+        )
+        for cell, frozen, current in (
+            (
+                "purchase_rate unadjusted",
+                "d07d898ae4b712f66b6bf5c4a81fc6eb485ddefd6a0241590309c36d20b20577",
+                "36f5d6c5e4717788030b21f3122148393a55c208678dd888d87268a867a9c847",
+            ),
+            (
+                "revenue unadjusted",
+                "b5fc835a9a9ba9d0dc18b97512a325d64ed52fcf637bc6a7fe29e96dc8c26840",
+                "75bb6f6b3b5d659f7f19c882ac5574c19c608b5f25a6cc43b6481a70248c403a",
+            ),
+            (
+                "revenue_cuped cuped",
+                "98f90c44706ee6776cd9868d8fd976878af63202794c0abd5295d30bf8bc94e7",
+                "33d1eed2ca957c2fed0865a848fcbd07952c7d023da657f1efa6bf28e56e6317",
+            ),
+            (
+                "revenue_cuped unadjusted",
+                "c7efe80e2c9552dffdffbd09bf8f8bf497e55e42b7ee5d94dd8c319c17e39161",
+                "6b4737dcbb16b15da7e07a6fce26d06e28930f572b7c9e876c173b53250c3185",
+            ),
+            (
+                "rps unadjusted",
+                "7ddcf9ad26f22a187186920fb7c465d82163657f8cb004af0cf4a8143c568bf4",
+                "b162e8fb7afc862d1db078b36896f5566aa23517bc46abf3609851c4e6a33aab",
+            ),
+        )
+    ),
+)
 
 
 def _rpo_margin(ingress: str, *, declared: bool) -> GuardrailMigration:
@@ -759,6 +860,61 @@ _TYPED_INPUT_RECORDS: tuple[Difference, ...] = (
         "0d4bf8c70eceb016860bad056fd756941a66299c22d79467749fe6073659a140",
     ),
 )
+LOCAL_LINEAR_MOMENTS_REASON = (
+    "A multicovariate fit from unit rows is identified by those rows, so its moment rows keep "
+    "the count-only digest instead of raw floats; the rows are unchanged."
+)
+# The mixed CUPED case's moment-row digests from unit rows: main's raw-float digest, then the
+# count-only digest of the same rows.
+_MIXED_LOCAL_MOMENTS = (
+    (
+        "revenue",
+        "415a0f44f1110b8ca1beb28ca5781f2f1cb571f35e33a620c69ec719af6ad17e",
+        "3e43bd3edd2dc402c3aa18573ff9c2896fe0be843f902d810b11221df0af1619",
+    ),
+    (
+        "rpo",
+        "db03ceacc816a2791cbd9c9b06145c72f4b6bd61deaeaf94c0b3913a01e3ec14",
+        "7284658a0be6ca02ca961ee1bb2a4534a38c3c082b9cf79a0bccd729ea82bdad",
+    ),
+    (
+        "signups",
+        "b99e90af61066de61f995506a0300c2292c8547e35e5d0d45aea655945687ceb",
+        "7298f1e50ff1228de8fa7a5f53b11d8e43877d4a5c8f3e31654c8a1a200c3d2a",
+    ),
+)
+# Digests a frozen transcript's answers recorded under an earlier identity format, migrated
+# before the transcript is audited against the current one.
+_TRANSCRIPT_ANSWER_RECORDS: tuple[Difference, ...] = tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress=ingress,
+        field=f"{metric} moments_rows sha256",
+        frozen=frozen,
+        current=current,
+        reason=LOCAL_LINEAR_MOMENTS_REASON,
+    )
+    for scenario, moved in (
+        (
+            "categorical-cuped-moments-format-13",
+            (
+                (
+                    "revenue",
+                    "6b7b8109234c31085d11243e503b1b5d887e0d088701d2151dd3dd9878b056d1",
+                    "3b6537c482a62634be3923604af311dc9fcc7d12b7ceb4dc52c67ba961a8ce23",
+                ),
+                (
+                    "revenue_per_spend",
+                    "7dd101fa186763d1471be5eda6c6b2dccd334cc42ba7a83a1e2fd70f9cbaf601",
+                    "70e368d9b70e1ab254b4aa73e8beea87a874ac21f509ade1820e85b649343868",
+                ),
+            ),
+        ),
+        ("mixed-cuped-multicovariate-fixed-horizon", _MIXED_LOCAL_MOMENTS),
+    )
+    for ingress in ("from_unit_panel", "from_unit_summary")
+    for metric, frozen, current in moved
+)
 # A whole frozen disposition the current route replaces with another one.
 _PANEL_ASOF_WITHOUT_EXPOSURE_DATE = {
     "kind": "refusal",
@@ -913,6 +1069,7 @@ def _by_case(
 EXPECTED_DIFFERENCES = _by_case(_RECORDS)
 CONSUMER_INPUT_DIFFERENCES = _by_case(_CONSUMER_INPUT_RECORDS)
 TYPED_INPUT_DIFFERENCES = _by_case(_TYPED_INPUT_RECORDS)
+TRANSCRIPT_ANSWER_DIFFERENCES = _by_case(_TRANSCRIPT_ANSWER_RECORDS)
 CELL_KEY_DIFFERENCES = _by_case(_CELL_KEY_RECORDS)
 FAMILY_SCOPE_DIFFERENCES = _by_case(_FAMILY_SCOPE_RECORDS)
 DISPOSITION_DIFFERENCES = _by_case(_DISPOSITION_RECORDS)
@@ -1111,6 +1268,56 @@ READOUT_IDENTITY_DIFFERENCES = tuple(
             "7b8283b81486fedb3b7a55ae9725c6ab446b3ed22138cee48acc5daf967f34c8",
         ),
     )
+)
+# Chained after the margin records: `frozen` is the ID main produced.
+READOUT_IDENTITY_DIFFERENCES += tuple(
+    ExpectedDifference(
+        scenario="parity_baseline",
+        ingress="from_definitions",
+        field=f"{view} source_snapshot_id",
+        frozen=f"sha256:{frozen}",
+        current=f"sha256:{current}",
+        reason=RENDERED_TEXT_SNAPSHOT_REASON,
+    )
+    for view, frozen, current in (
+        (
+            "run_daily_lift",
+            "09d04ee429a1573a5dffbcd8ac0851cc2c1f5592a305188ce89ee42955ee923e",
+            "0d5eba835cc7ca68e4e040db671c7275a7de6a014ab541282b4876ab976f4eb2",
+        ),
+        (
+            "run_asof_lift",
+            "d6621f8cfbf4cd5f268b8e275435a888a1d8d304096c489d7905989edf2b177c",
+            "87b5ad9c9518005ab9e2bdb58fa8c16443f4b8749a67291814acb23127593dcf",
+        ),
+        (
+            "run_breakout",
+            "420fe58001a95f2c39c28bcb2369036c8a4087bd843b632c169da22f1cbba523",
+            "4be663abd421a2aa160890cb38aa80b6d4c190a6ac118925d89714fe917df59c",
+        ),
+    )
+)
+READOUT_IDENTITY_DIFFERENCES += (
+    ExpectedDifference(
+        scenario="mixed_local",
+        ingress="from_unit_summary",
+        field="run source_snapshot_id",
+        frozen="sha256:7b8283b81486fedb3b7a55ae9725c6ab446b3ed22138cee48acc5daf967f34c8",
+        current="sha256:69f18cc4db7cd39039544330c0b9e72e2be2239e661b10e2517eaa1e02dae8dc",
+        reason=LOCAL_LINEAR_MOMENTS_REASON,
+    ),
+    *(
+        ExpectedDifference(
+            scenario="mixed_local",
+            ingress="from_unit_summary",
+            field=f"run {metric} moments_rows sha256",
+            key="sha256",
+            frozen=frozen,
+            current=current,
+            reason=LOCAL_LINEAR_MOMENTS_REASON,
+        )
+        for metric, frozen, current in _MIXED_LOCAL_MOMENTS
+    ),
 )
 
 

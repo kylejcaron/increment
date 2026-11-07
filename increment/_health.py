@@ -33,6 +33,31 @@ _CHECK_ORDER = (
     "trigger_assumptions",
 )
 
+# Context a check renders for readers: refusal text, remedies, descriptions and
+# assumption statements. The codes, statuses and values beside them are its evidence.
+_PROSE_CONTEXT = frozenset(
+    {
+        "reason",
+        "route",
+        "description",
+        "risk",
+        "counterfactual_trigger_invariance",
+        "trigger_order_stationarity",
+        "no_effect_before_trigger",
+        "triggered_look_predictability",
+        "family_guarantee_status",
+    }
+)
+
+
+def health_identity(check: HealthCheck) -> dict[str, Any]:
+    """The part of *check* a snapshot id covers: codes, statuses and structured evidence."""
+    identity = check.model_dump(mode="json")
+    identity["context"] = {
+        key: value for key, value in identity["context"].items() if key not in _PROSE_CONTEXT
+    }
+    return identity
+
 
 def srm_observation_key(
     population: Population,
@@ -149,7 +174,7 @@ def _collect(
     return ExperimentHealth(
         checks=tuple(checks),
         source_snapshot_id=_health_snapshot_id(
-            binding.source, cutoff, [check.model_dump(mode="json") for check in checks]
+            binding.source, cutoff, [health_identity(check) for check in checks]
         ),
         source_cutoff=cutoff,
     )
