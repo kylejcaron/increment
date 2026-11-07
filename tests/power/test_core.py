@@ -3254,6 +3254,30 @@ class TestSmallestAdmissibleSize:
         assert (at_size.n_total, at_size.power) == (sized.n_total, sized.power)
         assert (sized.n_per_arm, sized.n_total) == (4 * 367 + 1, 4 * 367 + 1 + 368)
 
+    def test_rare_trigger_quantile_search_work_does_not_scale_with_the_trigger_rate(
+        self, monkeypatch
+    ):
+        """Power and the readout's guard read only each arm's analyzed count,
+        ``round(assigned * trigger_rate)``, which stays put for about ``1 /
+        trigger_rate`` consecutive assigned sizes. The search plans such a run of
+        sizes once, so at a 1-in-10,000 trigger it plans fewer than twice the
+        tests the untriggered search plans for the same pilot and effect."""
+        planned = 0
+        power = _ArmPlan.power
+
+        def counted(plan: Any, distance: float, theta: float) -> float:
+            nonlocal planned
+            planned += 1
+            return power(plan, distance, theta)
+
+        monkeypatch.setattr(_ArmPlan, "power", counted)
+        pilot = np.random.default_rng(0).lognormal(5.0, 0.6, 5000)
+        baseline = _quantile_baseline("latency", 0.5, pilot)
+        required_sample_size(0.03, baseline)
+        untriggered, planned = planned, 0
+        required_sample_size(0.03, baseline.model_copy(update={"trigger_rate": 1e-4}))
+        assert planned < 2 * untriggered
+
 
 class TestRuntimeLogSeGuard:
     """The runtime's log-ratio lift estimate refuses a combined log-scale SE

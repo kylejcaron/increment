@@ -1800,12 +1800,13 @@ def _quantile_size_search(  # noqa: PLR0915
     def _arms(n_t: int) -> tuple[int, int]:
         return _compute_arms(n_t, design, minimum_per_arm=minimum)
 
-    def _analyzed(n_t: int, arm: int) -> int:
-        """One arm's analyzed count at ``n_t``, as its projection reads it."""
-        return int(round(_arms(n_t)[arm] * trigger))
+    def _analyzed(n_t: int) -> tuple[int, int]:
+        """Both arms' analyzed counts at ``n_t``, as their projections read them."""
+        assigned_t, assigned_c = _arms(n_t)
+        return int(round(assigned_t * trigger)), int(round(assigned_c * trigger))
 
     def _bracketed(n_t: int) -> bool:
-        return min(_analyzed(n_t, 0), _analyzed(n_t, 1)) >= bracket
+        return min(_analyzed(n_t)) >= bracket
 
     # An allocation within rounding of one can leave the smaller arm without a
     # bracket at every size; the search then evaluates the limit alone, which
@@ -1838,18 +1839,26 @@ def _quantile_size_search(  # noqa: PLR0915
             and evaluated[1].passes_log_guard(mean_t)
         )
 
+    def _run_start(n_t: int) -> int:
+        """The smallest size from ``floor`` analyzing the counts ``n_t`` does.
+        Power and the guard read only those counts, so every size from there
+        to ``n_t`` plans the same test."""
+        counts = _analyzed(n_t)
+        return bisect_first_true(floor, n_t, lambda n: _analyzed(n) == counts)
+
     def _first_reaching(lo: int, hi: int) -> tuple[int, int, bool]:
-        lo = bisect_first_true(lo, hi, _reaches)
-        # Below a crossing, power wavers with the runtime's bracket ranks:
-        # walk down until a whole turn of sizes past the last reaching one falls short.
-        first = n_t = lo
+        # Below a crossing, power wavers with the runtime's bracket ranks: walk
+        # down a run of equally analyzed sizes at a time until a whole turn of
+        # sizes past the last reaching one falls short.
+        first = n_t = _run_start(bisect_first_true(lo, hi, _reaches))
         misses = 0
         while n_t > floor and misses < turn:
-            n_t -= 1
-            if _reaches(n_t):
-                first, misses = n_t, 0
+            start = _run_start(n_t - 1)
+            if _reaches(start):
+                first, misses = start, 0
             else:
-                misses += 1
+                misses += n_t - start
+            n_t = start
         # The walk-down rejected ``first - 1``; reaching the target there, it
         # failed the guard alone.
         below = _evaluate(first - 1) if first > floor else None
@@ -1857,7 +1866,7 @@ def _quantile_size_search(  # noqa: PLR0915
 
     def _last_resolved(arm: int) -> int | None:
         def resolved(n_t: int) -> bool:
-            return projection.arm_at(_analyzed(n_t, arm)).resolved
+            return projection.arm_at(_analyzed(n_t)[arm]).resolved
 
         if not resolved(floor) or resolved(limit):
             return None
