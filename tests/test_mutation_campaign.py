@@ -230,8 +230,13 @@ class TestKillMatrix:
 
         from scripts import mutation_campaign
 
-        # The isolated sample uses its own pytest configuration and import path.
+        # An external pytest plugin must remain importable from each stage's caller environment.
         monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+        plugin_path = tmp_path / "plugins"
+        plugin_path.mkdir()
+        (plugin_path / "campaign_plugin.py").write_text("")
+        monkeypatch.setenv("PYTHONPATH", str(plugin_path))
+        monkeypatch.setenv("PYTEST_PLUGINS", "campaign_plugin")
 
         work, _ = worker_project
         pyproject = work / "pyproject.toml"
