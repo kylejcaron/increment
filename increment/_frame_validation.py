@@ -1382,13 +1382,14 @@ def _validate_day_grain_columns(
             dtypes["date"], dtypes["exposure_date"], ds_name="date", anchor_name="exposure_date"
         )
     if "date" in dtypes:
-        beyond = [
-            (role, col, int(largest))
-            for role, col in columns
-            if dtypes[role].is_unsigned_integer()
-            and (largest := frame.get_column(col).max()) is not None
-            and largest > _SIGNED_DAY_MAX
-        ]
+        beyond = []
+        for role, col in columns:
+            if not dtypes[role].is_unsigned_integer():
+                continue
+            # A column with no values (an empty panel) has no maximum to check.
+            observed = frame.get_column(col).drop_nulls()
+            if not observed.is_empty() and (largest := int(observed.max())) > _SIGNED_DAY_MAX:
+                beyond.append((role, col, largest))
         if beyond:
             refuse(
                 _DAY_GRAIN_COLUMNS,
