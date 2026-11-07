@@ -58,6 +58,15 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Cache rewritten test bytecode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pytest_cache/rewritten-bytecode
+          key: rewritten-bytecode-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('uv.lock', 'conftest.py', 'tests/**/*.py') }}
+          restore-keys: rewritten-bytecode-${{ runner.os }}-${{ matrix.python-version }}-
+      - name: Reuse rewritten bytecode of unchanged tests
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py restore .pytest_cache/rewritten-bytecode
       - id: fast-tests
         env:
           INCREMENT_COLLECT_OUTPUT: junit-collection.json
@@ -71,6 +80,9 @@ jobs:
             coverage_args="--cov=increment --cov-report=json:coverage.json"
           fi
           make test-fast WORKERS=auto PYTEST_ARGS="-p scripts.collect_items_plugin --durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
+      - name: Stage rewritten test bytecode for the cache
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py save .pytest_cache/rewritten-bytecode
       - name: Record fast coverage shard metadata
         if: always() && matrix.python-version == '3.12'
         env:
@@ -148,7 +160,19 @@ jobs:
           enable-cache: true
           python-version: "3.14"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Cache rewritten test bytecode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pytest_cache/rewritten-bytecode
+          key: rewritten-bytecode-${{ runner.os }}-3.14-${{ hashFiles('uv.lock', 'conftest.py', 'tests/**/*.py') }}
+          restore-keys: rewritten-bytecode-${{ runner.os }}-3.14-
+      - name: Reuse rewritten bytecode of unchanged tests
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py restore .pytest_cache/rewritten-bytecode
       - run: make test-unit WORKERS=auto PYTEST_ARGS="--cpu-report cpu.json"
+      - name: Stage rewritten test bytecode for the cache
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py save .pytest_cache/rewritten-bytecode
       - name: Retain newest-Python unit CPU usage
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -254,6 +278,15 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Cache rewritten test bytecode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pytest_cache/rewritten-bytecode
+          key: rewritten-bytecode-${{ runner.os }}-3.12-${{ hashFiles('uv.lock', 'conftest.py', 'tests/**/*.py') }}
+          restore-keys: rewritten-bytecode-${{ runner.os }}-3.12-
+      - name: Reuse rewritten bytecode of unchanged tests
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py restore .pytest_cache/rewritten-bytecode
       - name: Run slow tests
         id: slow-tests
         env:
@@ -261,6 +294,9 @@ jobs:
           INCREMENT_COLLECT_TIERS: '{"slow":"slow and not exhaustive and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark and not tooling"}'
           INCREMENT_COLLECT_SHARD_ID: slow-${{ matrix.group }}
         run: make test-slow WORKERS=auto PYTEST_ARGS="-p scripts.collect_items_plugin --durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits 8 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
+      - name: Stage rewritten test bytecode for the cache
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py save .pytest_cache/rewritten-bytecode
       - name: Record slow JUnit shard metadata
         if: always()
         env:
@@ -315,7 +351,19 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Cache rewritten test bytecode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pytest_cache/rewritten-bytecode
+          key: rewritten-bytecode-${{ runner.os }}-3.12-${{ hashFiles('uv.lock', 'conftest.py', 'tests/**/*.py') }}
+          restore-keys: rewritten-bytecode-${{ runner.os }}-3.12-
+      - name: Reuse rewritten bytecode of unchanged tests
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py restore .pytest_cache/rewritten-bytecode
       - run: make test-exhaustive WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/exhaustive-test-durations.json"
+      - name: Stage rewritten test bytecode for the cache
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py save .pytest_cache/rewritten-bytecode
       - name: Retain exhaustive JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -374,7 +422,19 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Cache rewritten test bytecode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pytest_cache/rewritten-bytecode
+          key: rewritten-bytecode-${{ runner.os }}-3.12-${{ hashFiles('uv.lock', 'conftest.py', 'tests/**/*.py') }}
+          restore-keys: rewritten-bytecode-${{ runner.os }}-3.12-
+      - name: Reuse rewritten bytecode of unchanged tests
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py restore .pytest_cache/rewritten-bytecode
       - run: make test-tier TIER=tooling WORKERS=auto PYTEST_ARGS="--durations=25 --cpu-report cpu.json"
+      - name: Stage rewritten test bytecode for the cache
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py save .pytest_cache/rewritten-bytecode
       - name: Retain tooling CPU usage
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -416,6 +476,15 @@ jobs:
         with:
           path: .pytest_cache/warehouse_compile_registry
           key: compile-registry-${{ matrix.dialect }}-${{ steps.key.outputs.value }}
+      - name: Cache rewritten test bytecode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pytest_cache/rewritten-bytecode
+          key: rewritten-bytecode-${{ runner.os }}-3.12-${{ hashFiles('uv.lock', 'conftest.py', 'tests/**/*.py') }}
+          restore-keys: rewritten-bytecode-${{ runner.os }}-3.12-
+      - name: Reuse rewritten bytecode of unchanged tests
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py restore .pytest_cache/rewritten-bytecode
       - name: Compile registered statements
         env:
           DIALECT: ${{ matrix.dialect }}
@@ -430,6 +499,9 @@ jobs:
             args+=(--deselect tests/test_warehouse_compile_registry.py::test_recorded_compile_dependencies_are_current)
           fi
           make test-tier TIER=compile-registry WORKERS=auto PYTEST_ARGS="--durations=25 ${args[*]@Q}"
+      - name: Stage rewritten test bytecode for the cache
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py save .pytest_cache/rewritten-bytecode
 
   # Catches packaging breakage on every push/PR rather than at release time,
   # using the same gates release.yml applies before publishing.
@@ -562,7 +634,19 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Cache rewritten test bytecode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pytest_cache/rewritten-bytecode
+          key: rewritten-bytecode-${{ runner.os }}-3.12-${{ hashFiles('uv.lock', 'conftest.py', 'tests/**/*.py') }}
+          restore-keys: rewritten-bytecode-${{ runner.os }}-3.12-
+      - name: Reuse rewritten bytecode of unchanged tests
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py restore .pytest_cache/rewritten-bytecode
       - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/certification-test-durations.json"
+      - name: Stage rewritten test bytecode for the cache
+        continue-on-error: true
+        run: uv run --no-sync python scripts/rewritten_bytecode_cache.py save .pytest_cache/rewritten-bytecode
       - name: Retain certification JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
