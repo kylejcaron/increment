@@ -2587,18 +2587,22 @@ def test_report_payload_with_unknown_sampling_marker_is_unavailable():
     assert report.components["sampling"][0].state == "available"
 
 
-def test_unrecorded_sampling_breakout_offers_no_margin_or_family_evidence():
+def test_unrecorded_sampling_breakout_is_unavailable_to_every_consumer():
     from increment.breakout.estimates import BreakoutEstimates
     from increment.errors import CodedError
     from increment.result_envelope import (
+        AnalysisEnvelope,
         Operation,
         ResultCell,
         combine_family_evidence,
         compare_margin,
         family_evidence,
+        render,
     )
+    from increment.tables import readout_table
     from tests.breakout.test_heterogeneity import _breakout_estimate
 
+    code = "readout.legacy.sampling_unreconstructible"
     # A fixed-horizon breakout row whose sampling availability was never recorded.
     row = _breakout_estimate("US", 0.20, 0.05)
     assert row.sampling_available is None and row.sequential_result is None
@@ -2615,10 +2619,18 @@ def test_unrecorded_sampling_breakout_offers_no_margin_or_family_evidence():
         assert raised.value.code == "results.operation.unsupported"
         evidence = family_evidence(candidate)
         assert evidence.evidence is None
-        assert evidence.reason_code == "readout.legacy.sampling_unreconstructible"
+        assert evidence.reason_code == code
         with pytest.raises(CodedError) as raised:
             combine_family_evidence([evidence], procedure="bh", level=0.05)
         assert raised.value.code == "results.operation.unsupported"
+
+        # Presentation rebuilds the row and draws no verdict from it.
+        envelope = AnalysisEnvelope((candidate,), None)
+        (shown,) = readout_table(envelope).data.to_dict("records")
+        assert shown["stat_sig"] is None and shown["effect_interpretation"] is None
+        assert shown["sampling_reason_code"] == code
+        text = render(envelope, "full")
+        assert "stat_sig=unavailable" in text and "stat_sig=True" not in text
 
 
 def test_payload_summary_is_rederived_from_retained_lift_row():

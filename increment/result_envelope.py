@@ -390,7 +390,6 @@ class ResultCell:
                 name == "sampling"
                 and self.row_payload is not None
                 and self.row_kind in {"breakout", "daily_lift", "asof_lift"}
-                and status.code != _UNRECORDED_SAMPLING
             ):
                 row = self._projection_row()
                 if getattr(row, "sampling_available", True) is not False:
@@ -862,7 +861,19 @@ class ResultCell:
             "switchback_block_t",
             "switchback_unit_variance_envelope",
         }:
-            return _restore_typed_report_row(self.row_kind, self.row_payload)
+            row = _restore_typed_report_row(self.row_kind, self.row_payload)
+            status = self.components["sampling"][0]
+            if status.code != _UNRECORDED_SAMPLING:
+                return row
+            # The row never recorded its sampling availability; it reads as the cell's
+            # status says, so no consumer draws a verdict from its retained statistics.
+            return row.model_copy(
+                update={
+                    "sampling_available": False,
+                    "sampling_reason_code": status.code,
+                    "sampling_reason_context": _plain(status.context),
+                }
+            )
         if self.row_payload is not None and self.row_kind in {
             "cate",
             "cate_validation",
