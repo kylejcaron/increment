@@ -284,6 +284,9 @@ DECISION_PLAN_FIELD = "decision_plan"
 COMPLIANCE_SUMMARY_FIELD = "compliance_summary"
 SEQUENTIAL_SNAPSHOT_FIELD = "sequential_snapshot"
 TRIGGER_NAME_FIELD = "trigger_name"
+# Canonical compact JSON mapping each metric declared ``missing="skip"`` to ``"skip"``,
+# omitted when none is; it restores the observed-only population on reopening.
+METRIC_MISSINGNESS_FIELD = "metric_missingness"
 WINSORIZATION_MOMENT_FIELDS = (
     "winsor_lower_percentile",
     "winsor_upper_percentile",
@@ -692,6 +695,32 @@ def _parse_source_identity(payload: object) -> dict[str, object] | None:
     return dict(cast("Mapping[str, object]", identity))
 
 
+_METRIC_MISSINGNESS_REQUIRED = "a JSON object mapping metric names to 'skip'"
+
+
+def _parse_metric_missingness(payload: object) -> dict[str, str] | None:
+    """The skip policy a row records per metric; ``None`` when the row records none."""
+    if _is_null(payload):
+        return None
+    if not isinstance(payload, str):
+        _refuse(_MOMENTS_FORMAT_INVALID, received=payload, required=_METRIC_MISSINGNESS_REQUIRED)
+    try:
+        policies = json.loads(payload, object_pairs_hook=_reject_duplicate_keys)
+    except _CodedError:
+        raise
+    except (json.JSONDecodeError, ValueError):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="invalid metric missingness JSON",
+            required=_METRIC_MISSINGNESS_REQUIRED,
+        )
+    if not isinstance(policies, dict) or any(
+        not name or policy != "skip" for name, policy in policies.items()
+    ):
+        _refuse(_MOMENTS_FORMAT_INVALID, received=policies, required=_METRIC_MISSINGNESS_REQUIRED)
+    return policies
+
+
 def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool):
     stripped = dict(row)
     if "moments_format" not in stripped:
@@ -703,6 +732,7 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
         _refuse(_MOMENTS_FORMAT_INVALID, received=payload, required=MOMENTS_FORMAT)
     stripped.pop(ASSIGNMENT_COUNTS_FIELD, None)
     stripped.pop(COMPLIANCE_SUMMARY_FIELD, None)
+    stripped.pop(METRIC_MISSINGNESS_FIELD, None)
     source_identity = _parse_source_identity(stripped.pop(SOURCE_IDENTITY_FIELD, None))
     has_trigger = TRIGGER_NAME_FIELD in stripped
     trigger_name = stripped.pop(TRIGGER_NAME_FIELD, None)
@@ -834,6 +864,7 @@ def _check_moments_format(
     str | None,
     str | None,
     dict[str, object] | None,
+    dict[str, str],
     tuple[CupedEvidence, ...],
 ]:
     """Validate and strip moments format, plan, count, and source envelopes."""
@@ -945,6 +976,7 @@ def _check_moments_format(
         envelope_identity,
         trigger_name,
         cube_identity,
+        _cube_metric_missingness(rows),
         evidence,
     )
 
@@ -968,6 +1000,27 @@ def _cube_source_identity(
             required="one consistent source identity across the moments cube",
         )
     return identities[0] if identities else None
+
+
+def _cube_metric_missingness(rows: Sequence[Mapping[str, object]]) -> dict[str, str]:
+    """The one skip map every row carries, or an empty map when no row carries one."""
+    maps = [
+        parsed
+        for row in rows
+        if (parsed := _parse_metric_missingness(row.get(METRIC_MISSINGNESS_FIELD))) is not None
+    ]
+    required = "one consistent metric missingness declaration across the moments cube"
+    if maps and len(maps) != len(rows):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="metric missingness missing from some rows",
+            required=required,
+        )
+    if any(item != maps[0] for item in maps[1:]):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID, received="conflicting metric missingness", required=required
+        )
+    return maps[0] if maps else {}
 
 
 def _cube_evidence(
@@ -1554,6 +1607,7 @@ class MomentsSource(SequentialSourceMixin):
             envelope_identity,
             embedded_trigger_name,
             source_identity_record,
+            _recorded_missingness,
             evidence,
         ) = _check_moments_format(
             rows,
@@ -2204,6 +2258,7 @@ def export_source_moments(
             counts=counts,
             compliance=payload,
             trigger_name=context.trigger_name,
+            metric_missingness=context.metric_missingness,
         )
     write_moments_table(path, rows, version)
 
@@ -2212,23 +2267,36 @@ def stamp_fixed_rows(
     raw_rows: Iterable[Mapping[str, object]],
     *,
     version: int,
-    identity: str,
+    identity: str | None,
     counts: str | None,
     plan: str | None = None,
     compliance: str | None = None,
     trigger_name: str | None = None,
+    metric_missingness: Mapping[str, str] | None = None,
 ) -> list[dict[str, object]]:
-    """Fixed-horizon transport fields on every outcome and envelope row."""
+    """Fixed-horizon transport fields on every outcome and envelope row.
+
+    ``identity`` is ``None`` only for rows read in process, never for an export.
+    """
     stamps: dict[str, object] = {"moments_format": version}
     if plan is not None:
         stamps[DECISION_PLAN_FIELD] = plan
     if counts is not None:
         stamps[ASSIGNMENT_COUNTS_FIELD] = counts
-    stamps[SOURCE_IDENTITY_FIELD] = identity
+    if identity is not None:
+        stamps[SOURCE_IDENTITY_FIELD] = identity
     if compliance is not None:
         stamps[COMPLIANCE_SUMMARY_FIELD] = compliance
     if trigger_name is not None:
         stamps[TRIGGER_NAME_FIELD] = trigger_name
+    skipped = {
+        name: "skip" for name, policy in (metric_missingness or {}).items() if policy == "skip"
+    }
+    if skipped:
+        # Only a skip policy qualifies the rows' population, so no other policy is recorded.
+        stamps[METRIC_MISSINGNESS_FIELD] = json.dumps(
+            skipped, sort_keys=True, separators=(",", ":")
+        )
     rows = []
     for raw in raw_rows:
         row = dict(raw)
@@ -2255,15 +2323,16 @@ def write_moments_table(
     pq.write_table(table, str(path))
 
 
-def cuped_evidence_items(
+def cube_declarations(
     rows: Sequence[Mapping[str, object]], *, require_plan: bool
-) -> dict[str, dict[str, CupedEvidence]]:
-    """Validated evidence by metric and method, retaining decoded cells for admission checks."""
-    evidence = _check_moments_format(rows, require_plan=require_plan)[-1]
+) -> tuple[dict[str, dict[str, CupedEvidence]], dict[str, str]]:
+    """Validated evidence by metric and method, retaining decoded cells for admission checks,
+    and the skip policy the rows record per metric."""
+    *_, metric_missingness, evidence = _check_moments_format(rows, require_plan=require_plan)
     items: dict[str, dict[str, CupedEvidence]] = {}
     for item in evidence:
         items.setdefault(item.metric, {})[item.method_key] = item
-    return items
+    return items, metric_missingness
 
 
 def _categorical_cells_for(source: Any) -> Callable[[Any, Any], Any]:

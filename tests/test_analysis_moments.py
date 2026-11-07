@@ -632,6 +632,117 @@ def test_portable_subset_validates_only_selected_winsorization_declarations(tmp_
     assert global_refusal.value.code == "moments.format.mixed"
 
 
+def _score_spec(*, cuped: bool, missing: Any = "error") -> MetricSpec:
+    """``score``, with two scalar CUPED families when ``cuped``: those export in format 13."""
+    from increment import Method
+    from increment.frame import CupedCovariate
+
+    methods = tuple(
+        Method.cuped(name=column, covariates=CupedCovariate(name=column, kind="continuous"))
+        for column in (("history_a", "history_b") if cuped else ())
+    )
+    return MetricSpec(
+        name="score",
+        type="mean",
+        missing=missing,
+        decision_method=methods[0] if methods else None,
+        sensitivity_methods=methods[1:],
+    )
+
+
+def _exported_score_rows(tmp_path, *, cuped: bool) -> list[dict[str, Any]]:
+    """Export a unit summary of 40 units per arm whose every tenth ``score`` is missing."""
+    import math
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    records = [
+        {
+            "unit": f"{arm}-{i}",
+            "arm": arm,
+            "score": None if i % 10 == 0 else 5.0 + a + math.sin(i + a),
+            "history_a": 4.0 + math.sin(i + a),
+            "history_b": float((i * 7) % 13),
+        }
+        for a, arm in enumerate(("control", "treatment"))
+        for i in range(40)
+    ]
+    experiment, resolver = from_frame(
+        pa.Table.from_pylist(records),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[_score_spec(cuped=cuped, missing="skip")],
+    )
+    path = tmp_path / "score.parquet"
+    export_moments(experiment, resolver, path)
+    rows = pq.read_table(path).to_pylist()
+    assert {row["moments_format"] for row in rows} == {13 if cuped else 12}
+    return rows
+
+
+def _score_populations(rows: list[dict[str, Any]], spec: MetricSpec) -> set[str | None]:
+    experiment, resolver = from_moments(rows, metrics=[spec], control="control")
+    return {
+        row.population
+        for row in _lift_rows(view_readout(experiment, resolver))
+        if row.metric == "score"
+    }
+
+
+def test_frame_moments_export_reopen_preserves_skip_population_label(tmp_path):
+    rows = _exported_score_rows(tmp_path, cuped=False)
+    declared = _score_populations(rows, _score_spec(cuped=False, missing="skip"))
+
+    assert None not in declared
+    assert _score_populations(rows, _score_spec(cuped=False)) == declared
+
+
+def test_cuped_evidence_moments_export_preserves_skip_missingness(tmp_path):
+    rows = _exported_score_rows(tmp_path, cuped=True)
+    declared = _score_populations(rows, _score_spec(cuped=True, missing="skip"))
+
+    assert None not in declared
+    assert _score_populations(rows, _score_spec(cuped=True)) == declared
+    # Each outcome row and evidence envelope carries the same canonical map.
+    assert {row.get("record_kind") for row in rows} == {None, "cuped_evidence"}
+    assert {row.get("metric_missingness") for row in rows} == {'{"score":"skip"}'}
+
+
+@pytest.mark.parametrize("cuped", [False, True], ids=["format-12", "format-13"])
+def test_moments_exports_without_the_map_still_reopen(tmp_path, cuped):
+    earlier = [
+        {key: value for key, value in row.items() if key != "metric_missingness"}
+        for row in _exported_score_rows(tmp_path, cuped=cuped)
+    ]
+
+    assert _score_populations(earlier, _score_spec(cuped=cuped)) == {None}
+    assert None not in _score_populations(earlier, _score_spec(cuped=cuped, missing="skip"))
+
+
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        ("score", "moments.format.invalid"),
+        ('["score"]', "moments.format.invalid"),
+        ('{"score":"zero"}', "moments.format.invalid"),
+        ('{"score":"skip","score":"skip"}', "moments.duplicate_key"),
+        ('{"other":"skip","score":"skip"}', "moments.format.invalid"),
+        (None, "moments.format.invalid"),
+    ],
+    ids=["not-json", "not-an-object", "other-policy", "duplicate", "conflicting", "partial"],
+)
+def test_moments_rows_with_an_invalid_or_disagreeing_skip_map_refuse(tmp_path, payload, code):
+    rows = _exported_score_rows(tmp_path, cuped=False)
+    rows[0] = {**rows[0], "metric_missingness": payload}
+
+    with pytest.raises(WireFormatError) as refused:
+        from_moments(rows, metrics=[_score_spec(cuped=False)], control="control")
+    assert refused.value.code == code
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 def test_mixed_winsorization_metrics_survive_run_and_export(tmp_path):

@@ -411,7 +411,7 @@ def _bind_moments(
     from increment.frame import synthesise_metric
     from increment.query.fact_resolution import _require_design
     from increment.semantics.design import Encouragement, Randomized
-    from increment.sources import MomentsSource, cuped_evidence_items
+    from increment.sources import MomentsSource, cube_declarations
 
     design = canonical_design_for_moments(design)
     _require_design(control, design, constructor="from_moments")
@@ -426,7 +426,7 @@ def _bind_moments(
             control_group=control
         )
     specs = _coerce_source_metrics(metrics, design=design)
-    evidence_items = cuped_evidence_items(rows, require_plan=plan is None)
+    evidence_items, recorded_missingness = cube_declarations(rows, require_plan=plan is None)
     evidence = {
         metric: {key: item.kind for key, item in items.items()}
         for metric, items in evidence_items.items()
@@ -516,6 +516,7 @@ def _bind_moments(
         )
     # Only a skip policy is recorded: it qualifies the rows' population, and
     # recording any other policy would change every moments experiment's identity.
+    # A policy the rows record holds for its metric whatever the replay declares.
     source = MomentsSource(
         rows,
         metrics=metric_catalog,
@@ -523,7 +524,11 @@ def _bind_moments(
         design=design,
         plan=plan,
         configs=configs,
-        metric_missingness={spec.name: "skip" for spec in specs if spec.missing == "skip"},
+        metric_missingness={
+            spec.name: "skip"
+            for spec in specs
+            if spec.missing == "skip" or recorded_missingness.get(spec.name) == "skip"
+        },
     )
     return bind_source(source, design)
 

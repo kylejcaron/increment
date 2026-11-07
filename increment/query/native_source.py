@@ -182,8 +182,6 @@ from increment.semantics.models import (
 )
 from increment.sequential_source import SequentialSourceMixin
 from increment.sources import (
-    ASSIGNMENT_COUNTS_FIELD,
-    COMPLIANCE_SUMMARY_FIELD,
     MIXED_ASSIGNMENT_LABEL,
     UNASSIGNED_LABEL,
     BreakoutMomentsSource,
@@ -4451,11 +4449,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     "preserves cluster-grain degrees of freedom and counts"
                 ),
             )
-        import pyarrow as pa
-
         from increment._source_identity import source_identity
         from increment.decision_wire import compiled_plan_to_json
-        from increment.sources import ASSIGNMENT_COUNTS_FIELD, MOMENTS_FORMAT
+        from increment.sources import MOMENTS_FORMAT, stamp_fixed_rows
 
         identity_record = source_identity(self)
         identity_payload = json.dumps(identity_record, sort_keys=True, separators=(",", ":"))
@@ -4466,8 +4462,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             categorical=False,
         )
         if requests is not None:
-            from increment.sources import stamp_fixed_rows
-
             view = self if population == "assigned" else self.triggered_source()
             portable = portable_cuped_rows(
                 cast(_BuiltinMomentSource, view),
@@ -4485,6 +4479,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 identity=identity_payload,
                 counts=json.dumps(assignment_counts, sort_keys=True, separators=(",", ":")),
                 compliance=self._compliance_wire_payload(population=population),
+                metric_missingness=self._context.metric_missingness,
             )
             return self._rehydrated_moments(rows, identity_record, view)
         cube = self._moments_for_metrics(
@@ -4494,35 +4489,27 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             population=population,
             narrow_cuped=narrow_cuped,
         )
-        cube = cube.append_column(
-            "moments_format",
-            pa.array([MOMENTS_FORMAT] * cube.num_rows, type=pa.int64()),
-        )
         _grain, assignment_counts, unit_counts = self._counts_for_population(
             population, operation="moments_source"
         )
         assignment_counts.update(unit_counts)
-        cube = cube.append_column(
-            ASSIGNMENT_COUNTS_FIELD,
-            pa.array(
-                [json.dumps(assignment_counts, sort_keys=True, separators=(",", ":"))]
-                * cube.num_rows,
-                type=pa.string(),
-            ),
-        )
+        counts_payload = json.dumps(assignment_counts, sort_keys=True, separators=(",", ":"))
         compliance_payload = self._compliance_wire_payload(population=population)
-        if compliance_payload is not None:
-            cube = cube.append_column(
-                COMPLIANCE_SUMMARY_FIELD,
-                pa.array([compliance_payload] * cube.num_rows, type=pa.string()),
-            )
-        if cube.num_rows == 0 and not self._metrics:
+        rows = stamp_fixed_rows(
+            cube.to_pylist(),
+            version=MOMENTS_FORMAT,
+            identity=None,
+            counts=counts_payload,
+            compliance=compliance_payload,
+            metric_missingness=self._context.metric_missingness,
+        )
+        if not rows and not self._metrics:
             from increment.sources import MomentsSource, _design_summary_row
 
             row = _design_summary_row(
                 self._experiment_name,
                 compiled_plan_to_json(self._context.plan),
-                json.dumps(assignment_counts, sort_keys=True, separators=(",", ":")),
+                counts_payload,
                 compliance_payload,
                 self.context.trigger_name,
                 identity_payload,
@@ -4540,7 +4527,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 _source_identity_record=identity_record,
             )
         return self._rehydrated_moments(
-            cube.to_pylist(),
+            rows,
             identity_record,
             self if population == "assigned" else self.triggered_source(),
         )
@@ -4662,7 +4649,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             categorical_request_cells,
             portable_qr_requests,
         )
-        from increment.sources import stamp_fixed_rows, write_moments_table
+        from increment.sources import MOMENTS_FORMAT, stamp_fixed_rows, write_moments_table
 
         identity_record = source_identity(self)
         identity_payload = json.dumps(identity_record, sort_keys=True, separators=(",", ":"))
@@ -4695,59 +4682,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     identity=pinned_identity_payload,
                     counts=json.dumps(pinned.unit_counts(), sort_keys=True, separators=(",", ":")),
                     compliance=cast("DefinitionsMomentSource", pinned)._compliance_wire_payload(),
+                    metric_missingness=self._context.metric_missingness,
                 )
                 write_moments_table(path, rows, CUPED_EVIDENCE_FORMAT)
             return
-        # Import lazily because parquet export requires the live ibis session.
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-
-        from increment.sources import (
-            DECISION_PLAN_FIELD,
-            MOMENTS_FORMAT,
-            SOURCE_IDENTITY_FIELD,
-            _validate_moment_counts,
+        moments = self._moments_for_metrics().to_pylist()
+        counts = json.dumps(self.unit_counts(), sort_keys=True, separators=(",", ":"))
+        rows = stamp_fixed_rows(
+            moments,
+            version=MOMENTS_FORMAT,
+            plan=compiled_plan_to_json(self._context.plan),
+            identity=identity_payload,
+            counts=counts,
+            compliance=self._compliance_wire_payload(),
+            metric_missingness=self._context.metric_missingness,
         )
-
-        moments = self._moments_for_metrics()
-        for row in moments.to_pylist():
-            _validate_moment_counts(row)
-        moments = moments.append_column(
-            "moments_format", pa.array([MOMENTS_FORMAT] * moments.num_rows, type=pa.int64())
-        )
-        assignment_counts = self.unit_counts()
-        moments = moments.append_column(
-            ASSIGNMENT_COUNTS_FIELD,
-            pa.array(
-                [json.dumps(assignment_counts, sort_keys=True, separators=(",", ":"))]
-                * moments.num_rows,
-                type=pa.string(),
-            ),
-        )
-        moments = moments.append_column(
-            DECISION_PLAN_FIELD,
-            pa.array(
-                [compiled_plan_to_json(self._context.plan)] * moments.num_rows,
-                type=pa.string(),
-            ),
-        )
-        moments = moments.append_column(
-            SOURCE_IDENTITY_FIELD,
-            pa.array([identity_payload] * moments.num_rows, type=pa.string()),
-        )
-        compliance_payload = self._compliance_wire_payload()
-        if compliance_payload is not None:
-            moments = moments.append_column(
-                COMPLIANCE_SUMMARY_FIELD,
-                pa.array([compliance_payload] * moments.num_rows, type=pa.string()),
-            )
-        moments = moments.replace_schema_metadata(
-            {
-                **(moments.schema.metadata or {}),
-                b"increment.moments_format": str(MOMENTS_FORMAT).encode(),
-            }
-        )
-        pq.write_table(moments, str(path))
+        write_moments_table(path, rows, MOMENTS_FORMAT)
 
     # - integrity/counting helpers ------------------------------------
 
