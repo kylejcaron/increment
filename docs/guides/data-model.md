@@ -1246,12 +1246,15 @@ unit-day artifact boundary.
     metrics in an optional `metric_missingness` field, a JSON object such as
     `{"score":"skip"}`, so a replay that names the metric and its type keeps
     the observed-only population without declaring `missing="skip"` again,
-    and a replay declaring another policy does not relabel those rows. The
-    field is absent when no metric skips. A cube exported before the field
-    existed reopens unchanged; declare `missing="skip"` on replay to qualify
-    its population. A field that is not such an object, names another policy,
-    or differs between rows is refused with `moments.format.invalid`, and one
-    that repeats a metric with `moments.duplicate_key`.
+    and a replay declaring another policy does not relabel those rows. A
+    replay that declares `missing="skip"` for a metric the field leaves out
+    is refused with `moments.plan.conflict`: the export reduced that metric
+    over every unit. The field is absent when no metric skips. A cube exported
+    before the field existed reopens unchanged; declare `missing="skip"` on
+    replay to qualify its population. A field that is not such an object,
+    names another policy, or differs between rows is refused with
+    `moments.format.invalid`, and one that repeats a metric with
+    `moments.duplicate_key`.
 
     An empty-metric fixed-horizon Encouragement export carries one current
     format-12 `design_summary` envelope instead of outcome rows. It includes
