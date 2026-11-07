@@ -33,8 +33,9 @@ def worker_project(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "\n[tool.pytest.ini_options]\n"
     )
     env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTEST_ADDOPTS", None)
+    # The isolated sample loads no caller plugins and imports only its own tree.
+    for key in ("PYTHONPATH", "PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
+        env.pop(key, None)
     env.update(MUTANT_UNDER_TEST="", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
     log = tmp_path / "generate.log"
     code, _ = execute("generate", "sample/value.py", [], tmp_path, env, log, 30)
