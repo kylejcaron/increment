@@ -422,10 +422,12 @@ def test_missing_schema_run_lookup_is_not_found_and_history_is_empty(lists_schem
     ],
     ids=["privileges", "not-authorized", "other-object"],
 )
-def test_unrelated_table_listing_errors_propagate(message):
+# A role's schema listing omits a schema it may not read, so the listing cannot prove absence.
+@pytest.mark.parametrize("lists_schemas", [True, False], ids=["schema-listing", "no-listing"])
+def test_unrelated_table_listing_errors_propagate(message, lists_schemas):
     error = _SchemaLookupError(message)
     store = WarehouseResultsStore(
-        _listing_backend(error, lists_schemas=False), schema="absent_schema"
+        _listing_backend(error, lists_schemas=lists_schemas), schema="absent_schema"
     )
 
     with pytest.raises(_SchemaLookupError) as raised:

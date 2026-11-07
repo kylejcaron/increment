@@ -14,7 +14,6 @@ from increment._warehouse_namespace import (
     MAX_IDENTIFIER_BYTES,
     check_schema_name_length,
     ensure_schema,
-    schema_exists,
     split_schema,
 )
 from increment.kernel.program_refusals import refuse_store, refuse_unavailable_results_schema
@@ -238,16 +237,15 @@ class WarehouseResultsStore:
             )
 
     def _table_names(self) -> list[str]:
-        """The store's tables; none in a declared schema that does not exist."""
-        location = None if self.schema is None else split_schema(self.schema)
-        if (
-            location is not None
-            and schema_exists(self.backend, schema=location[1], catalog=location[0]) is False
-        ):
-            return []
+        """The store's tables; none in a declared schema the warehouse reports does not exist.
+
+        A schema listing is not consulted: a role's listing omits a schema it may
+        not read, so absence there does not prove the schema is missing.
+        """
         try:
             return list(self.backend.list_tables(database=self.schema))
         except Exception as error:
+            location = None if self.schema is None else split_schema(self.schema)
             if location is not None and _reports_missing_schema(error, location[1]):
                 return []
             raise
