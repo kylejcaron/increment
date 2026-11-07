@@ -1888,7 +1888,7 @@ def test_tz_aware_date_column_refused_with_day_grain_contract() -> None:
             "variant": ["control", "control", "treatment", "treatment"],
             "day": pd.to_datetime(
                 ["2025-01-01", "2025-01-02", "2025-01-01", "2025-01-02"]
-            ).tz_localize("US/Eastern"),
+            ).tz_localize("America/New_York"),
             "revenue": [1.0, 2.0, 3.0, 4.0],
         }
     )

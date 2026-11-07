@@ -835,6 +835,18 @@ def _is_native_inferred_null(frame: nw.DataFrame[Any], column: str) -> bool:
     return False
 
 
+def _time_zone(frame: nw.DataFrame[Any], column: str) -> str | None:
+    """Return the column's time zone, including zones whose pandas dtype the frame
+    library reports as ``Unknown`` (names with ``_``, ``-`` or digits)."""
+    dtype = frame.schema[column]
+    if isinstance(dtype, nw.Datetime):
+        return dtype.time_zone
+    if isinstance(dtype, nw.Unknown) and frame.implementation.value == "pandas":
+        zone = getattr(frame.to_native()[column].dtype, "tz", None)
+        return None if zone is None else str(zone)
+    return None
+
+
 def _coerce_metric_columns(frame: nw.DataFrame[Any], columns: Sequence[str]) -> nw.DataFrame[Any]:
     """Preserve numeric/null inputs and parse textual metrics consistently across backends."""
     for column in dict.fromkeys(columns):
@@ -1352,9 +1364,7 @@ def _validate_day_grain_columns(
         )
 
     offenders = [
-        (role, col, dtype.time_zone)
-        for role, col in columns
-        if isinstance(dtype := frame.schema[col], nw.Datetime) and dtype.time_zone is not None
+        (role, col, zone) for role, col in columns if (zone := _time_zone(frame, col)) is not None
     ]
     if offenders:
         refuse(
