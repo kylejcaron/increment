@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import itertools
+import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from tests.parity_harness import covering, matrix
+
+ROOT = Path(__file__).resolve().parents[1]
 
 pytestmark = pytest.mark.integration
 
@@ -20,53 +23,78 @@ AXES = (
 )
 
 
-def _values(cell: matrix.Cell) -> tuple[str, ...]:
-    return cell.metric, cell.view, cell.option, cell.day_boundary, cell.missing
-
-
-def _full_cells() -> tuple[tuple[str, ...], ...]:
-    return tuple(_values(cell) for cell in matrix.iter_cells())
-
-
-def _signature(disposition: matrix.Disposition) -> tuple[object, ...]:
-    verdicts = tuple(
-        (method, ingress, verdict.status)
-        for method, leg in disposition.legs.items()
-        for ingress, verdict in leg.items()
+def _runs_on(cell: matrix.Cell, method: str) -> bool:
+    return any(
+        isinstance(outcome, matrix.Runs)
+        for outcome in matrix.classify(cell).outcomes(method).values()
     )
-    refusal_codes = tuple(
-        (method, ingress, verdict.outcome.code)
-        for method, leg in disposition.legs.items()
-        for ingress, verdict in leg.items()
-        if isinstance(verdict.outcome, matrix.Refuses)
+
+
+def test_pr_subset_selects_the_cheapest_cell_per_capability_and_keeps_hazards() -> None:
+    durations = json.loads((ROOT / ".github/slow-test-durations.json").read_text())
+    cells = tuple(matrix.iter_cells())
+    by_capability: dict[tuple[str, str, str], list[matrix.Cell]] = {}
+    for cell in cells:
+        for method in matrix.methods(cell):
+            if _runs_on(cell, method):
+                by_capability.setdefault((cell.metric, method, cell.option), []).append(cell)
+
+    def duration(cell: matrix.Cell) -> float:
+        return durations.get(f"tests/test_parity_matrix.py::test_cell[{cell.id}]", float("inf"))
+
+    hazard_cell_ids = {hazard.cell.rsplit("-", 1)[0] for hazard in matrix.preflight_hazards()}
+    expected = {min(candidates, key=duration) for candidates in by_capability.values()} | {
+        cell for cell in cells if cell.id in hazard_cell_ids
+    }
+    assert set(matrix.pr_matrix_cells()) == expected
+
+
+def test_pr_subset_covers_every_supported_matrix_capability_with_a_running_cell() -> None:
+    supported_capabilities = {
+        (cell.metric, method, cell.option)
+        for cell in matrix.iter_cells()
+        for method in matrix.methods(cell)
+        if _runs_on(cell, method)
+    }
+    pr_running_capabilities = {
+        (cell.metric, method, cell.option)
+        for cell in matrix.pr_matrix_cells()
+        for method in matrix.methods(cell)
+        if _runs_on(cell, method)
+    }
+    assert supported_capabilities <= pr_running_capabilities
+
+    ratio_cuped_pair = any(
+        {"from_definitions", "from_unit_day_artifact"}
+        <= {
+            ingress
+            for ingress, outcome in matrix.classify(cell).outcomes("lift").items()
+            if isinstance(outcome, matrix.Runs)
+        }
+        for cell in matrix.pr_matrix_cells()
+        if cell.metric == "ratio" and cell.option == "cuped" and "lift" in matrix.methods(cell)
     )
-    waived_ingresses = frozenset(
-        ingress
-        for leg in disposition.legs.values()
-        for ingress, verdict in leg.items()
-        if not isinstance(verdict.outcome, matrix.Runs)
-    )
-    return verdicts, refusal_codes, waived_ingresses
+    assert ratio_cuped_pair
 
 
-def test_covering_cells_cover_every_three_way_combination() -> None:
-    full = _full_cells()
-    triples = tuple(itertools.combinations(range(len(AXES)), 3))
-    required = {
-        (indices, tuple(cell[index] for index in indices)) for indices in triples for cell in full
-    }
-    covered = {
-        (indices, tuple(cell[index] for index in indices))
-        for cell in covering.covering_cells(AXES, strength=3)
-        for indices in triples
-    }
-    assert required <= covered
+def test_pr_asymptotic_subset_selects_the_cheapest_cell_per_code_path() -> None:
+    durations = json.loads((ROOT / ".github/slow-test-durations.json").read_text())
+    variants = tuple(matrix.iter_asymptotic_retention_cells())
+    by_code_path: dict[tuple[str, str, str], list[matrix.Cell]] = {}
+    for cell in variants:
+        for method in matrix.methods(cell):
+            if _runs_on(cell, method):
+                by_code_path.setdefault((cell.metric, method, cell.option), []).append(cell)
 
-    scoped = {_values(cell) for cell in matrix.pr_matrix_cells()}
-    scope_coverage = {
-        (indices, tuple(cell[index] for index in indices)) for cell in scoped for indices in triples
-    }
-    assert required <= scope_coverage
+    def duration(cell: matrix.Cell) -> float:
+        return durations.get(
+            f"tests/test_parity_matrix.py::test_asymptotic_retention_cell[{cell.id}]",
+            float("inf"),
+        )
+
+    expected = {min(candidates, key=duration) for candidates in by_code_path.values()}
+    assert set(matrix.pr_asymptotic_retention_cells()) == expected
+    assert len(by_code_path) == 3
 
 
 def test_covering_cells_are_deterministic() -> None:
@@ -83,13 +111,3 @@ def test_covering_cells_are_deterministic() -> None:
         [sys.executable, "-c", script], text=True, env=environment
     )
     assert other_process == f"{first!r}\n"
-
-
-def test_pr_scope_keeps_every_disposition() -> None:
-    full_by_signature: dict[tuple[object, ...], matrix.Cell] = {}
-    for cell in matrix.iter_cells():
-        full_by_signature.setdefault(_signature(matrix.classify(cell)), cell)
-
-    pr_cells = matrix.pr_matrix_cells()
-    pr_signatures = {_signature(matrix.classify(cell)) for cell in pr_cells}
-    assert set(full_by_signature) <= pr_signatures

@@ -9,11 +9,13 @@ exist but never compared. ``test_cell`` builds the cell on each ingress, runs it
 exactly that, so a stale refusal code, a refusal that became a number, a number that became a
 refusal and a numeric disagreement all fail.
 
-By default every pull request generates the primary cells of a strength-3 covering array with
-one sentinel per disposition and the pinned CUPED cells (``matrix.pr_matrix_cells()``), and one
-preflight cell per recorded refusal hazard. ``INCREMENT_PARITY_MATRIX=full`` (the exhaustive
-gate, nightly and full local runs) also generates every other cell, marked ``exhaustive``. The
-64 asymptotic-retention variants always run.
+The pull-request subset contains the cheapest cell that runs for each supported (metric
+type, method, design feature) capability, plus one representative per recorded
+preflight-refusal hazard. Costs come from ``.github/slow-test-durations.json``; missing
+weights sort after measured cells and ties follow matrix order. Other primary cells remain in
+the full matrix and are marked ``exhaustive``. The 64 asymptotic-retention variants have three
+running metric/method code paths; two cheapest running cells cover all three on PRs, while the
+other 62 stay in full scope as ``exhaustive``.
 
 Cells in which any ingress builds and reads data (an ingress runs, or refuses only once a
 request is read) are ``slow``. In the remaining cells no ingress runs or reaches the request
@@ -70,7 +72,8 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         )
     elif metafunc.function.__name__ == "test_asymptotic_retention_cell":
         variants = tuple(matrix.iter_asymptotic_retention_cells())
-        metafunc.parametrize("cell", _params(variants, frozenset(variants)))
+        pr_variants = frozenset(matrix.pr_asymptotic_retention_cells())
+        metafunc.parametrize("cell", _params(variants, pr_variants))
 
 
 def _preflight_refusal_params() -> list:
@@ -111,6 +114,15 @@ def test_each_scope_generates_its_cells_and_marks_the_rest_exhaustive(
             for param in params
             if any(mark.name == "exhaustive" for mark in param.marks)
         } == cells - pr_cells, scope
+        variants = tuple(matrix.iter_asymptotic_retention_cells())
+        pr_variants = frozenset(matrix.pr_asymptotic_retention_cells())
+        variant_params = _params(variants, pr_variants)
+        assert {param.values[0] for param in variant_params} == set(variants), scope
+        assert {
+            param.values[0]
+            for param in variant_params
+            if any(mark.name == "exhaustive" for mark in param.marks)
+        } == set(variants) - pr_variants, scope
         generated = _preflight_refusal_params()
         assert {param.id for param in generated} == preflight, scope
         assert {
@@ -341,20 +353,6 @@ def test_qr_cuped_ingress_contract_is_enumerated_separately_from_scalar_cells():
         "from_switchback_panel": "source.frame.switchback.metric"
     }
     assert "mixed-cuped-multicovariate-fixed-horizon" in matrix.QR_CUPED_ROWS
-
-
-def test_pr_scope_runs_every_pinned_cuped_cell() -> None:
-    """The covering array may select only a refusing variant of a CUPED shape; a pinned cell
-    keeps that shape's cross-source comparison on every pull request, with its lift compared
-    across the definitions and unit-day artifact readers."""
-    selected = set(matrix.pr_matrix_cells())
-    assert matrix.PR_CUPED_CELLS
-    for cell in matrix.PR_CUPED_CELLS:
-        assert cell in selected, cell.id
-        assert cell.option == "cuped"
-        lift = matrix.classify(cell).legs["lift" if cell.view in ("daily", "asof") else "rows"]
-        running = {name for name, v in lift.items() if isinstance(v.outcome, matrix.Runs)}
-        assert {"from_definitions", "from_unit_day_artifact"} <= running, cell.id
 
 
 def test_observational_quantile_is_refused_with_one_code_on_every_ingress_that_reads_it():

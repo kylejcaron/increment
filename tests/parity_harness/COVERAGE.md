@@ -2,8 +2,11 @@
 
 Counts and trackers only. Every per-ingress outcome, reason and authority lives in
 `tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs
-the covering cells (`matrix.pr_matrix_cells()`) on every pull request; with
-`INCREMENT_PARITY_MATRIX=full` it also generates the other cells, marked `exhaustive`.
+the cheapest cell with a running ingress per supported (metric, method, design-feature)
+capability, plus one cell per recorded preflight-refusal hazard, on pull requests.
+Asymptotic-retention variants use the cheapest running cell per code path.
+`INCREMENT_PARITY_MATRIX=full` also generates all remaining cells and variants, marked
+`exhaustive`.
 
 Every count below is generated from `matrix.iter_cells()` and `matrix.classify()`.
 
@@ -82,11 +85,12 @@ Only `run()` can reach an estimator: breakout and day-axis requests are refused 
 
 ## Inference-route variants
 
-The `sequential` option declares exact Bernoulli monitoring (`always_valid`) for conversion and retention and the asymptotic mean for the other metrics. A bounded retention band also runs under the asymptotic scalar-mean route, so every retention and windowed-retention `sequential` cell is enumerated a second time with `Cell.inference = "asymptotic_mean"` (`matrix.iter_asymptotic_retention_cells`; ids end in `-asymptotic_mean`). A variant cell takes the disposition of its default cell, which `test_asymptotic_retention_variant_enumerates_every_retention_sequential_cell` asserts; `test_asymptotic_retention_cell` executes each one on every ingress, holds the ingresses to that disposition, and requires every ingress that captures sequential state to retain the `scalar_mean` law. No other metric or option has a variant.
+The `sequential` option declares exact Bernoulli monitoring (`always_valid`) for conversion and retention and the asymptotic mean for the other metrics. A bounded retention band also runs under the asymptotic scalar-mean route, so every retention and windowed-retention `sequential` cell is enumerated a second time with `Cell.inference = "asymptotic_mean"` (`matrix.iter_asymptotic_retention_cells`; ids end in `-asymptotic_mean`). A variant cell takes the disposition of its default cell, which `test_asymptotic_retention_variant_enumerates_every_retention_sequential_cell` asserts; the full scope executes every variant, while the PR scope runs the cheapest cell per `(metric, method, sequential design)` code path and marks the other variants `exhaustive`.
 
-The variant cells are separate from the 3,584 cells counted above. Counted from `matrix.classify` over `matrix.iter_asymptotic_retention_cells()` when this section was last changed; the enumeration test pins only that the set is the retention `sequential` cells, once each.
+The variant cells are separate from the 3,584 cells counted above. The enumeration test pins all 64 retention `sequential` cells. Three running metric/method code paths are covered by two unique PR variants; the other 62 are marked `exhaustive` in the full scope.
 
 Variant cells: 64 (2 metrics x 4 views x 2 day boundaries x 4 missing policies), 96 legs. 12 are supported, 20 construction_limited and 32 not_expressible; none is source_limited as a cell status. 16 read data (slow) and 48 do not (fast).
+
 
 | Ingress | supported | source_limited | construction_limited | not_expressible | unfinished | unsound |
 |---|---|---|---|---|---|---|
@@ -112,7 +116,7 @@ Every cell builds and runs each of its ingresses itself; no result is shared bet
 
 ## Collapse proofs
 
-No cells are collapsed in full scope; PR scope uses covering cells, disposition sentinels and the pinned CUPED cells (`matrix.PR_CUPED_CELLS`).
+The full scope retains every cell. The PR scope selects the cheapest cell with a running ingress per supported `(metric, method, option)` capability; missing weights rank after measured cells and ties follow matrix order. It also retains one cell per recorded preflight-refusal hazard. Those selected cells are not removed from the full matrix.
 
 ## Existing scenario cases
 
