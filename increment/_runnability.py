@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import TypeAdapter
 
@@ -27,8 +27,11 @@ from increment.decision import (
     refuse_margin_less_procedures,
 )
 from increment.declarations import VARIANCE_REDUCTION, estimator_refs, thaw
-from increment.errors import CapabilityError, CodedError, RefusalSpec, refuse
+from increment.errors import CapabilityError, CodedError, InvalidRequestError, RefusalSpec, refuse
 from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
+
+if TYPE_CHECKING:
+    from increment._evidence_types import BreakoutIdentity
 
 _CONFIGS = TypeAdapter(tuple[ResolvedMetricConfig, ...])
 
@@ -69,6 +72,12 @@ _SCOPE_FAMILY_MISMATCH = RefusalSpec(
         "use run, daily, asof, or breakout with this experiment."
     ),
     keys=frozenset({"experiment_id", "view"}),
+)
+
+_UNDECLARED_BREAKOUT = RefusalSpec(
+    "facade.analysis.undeclared_breakout",
+    InvalidRequestError,
+    template="breakout {requested!r} is not declared by this experiment; declared: {declared!r}",
 )
 
 
@@ -112,6 +121,34 @@ def require_breakout_sources(experiment: Any, scope: Any) -> None:
         ),
         route="select the breakout by property alone; this source names no fact sources",
     )
+
+
+def validate_breakout_identities(experiment: Any, scope: Any) -> tuple[BreakoutIdentity, ...]:
+    """The breakout identities a scope selects, refusing a fact source no declaration names.
+
+    A selection by property alone matches every declared source of that property. A
+    property no declaration names is left to the evidence validators, which refuse it
+    with the source's declared dimensions.
+    """
+    from increment.kernel.contracts import View, declared_breakouts
+
+    identities = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
+    require_breakout_sources(experiment, scope)
+    if not records_breakout_sources(experiment):
+        return identities
+    declared = declared_breakouts(
+        experiment.source_refs, View(view="breakout"), experiment.analysis_context
+    )
+    properties = {item.property for item in declared}
+    if all(identity.property in properties for identity in identities) and any(
+        identity not in declared for identity in identities
+    ):
+        refuse(
+            _UNDECLARED_BREAKOUT,
+            requested=tuple((identity.source, identity.property) for identity in identities),
+            declared=tuple((item.source, item.property) for item in declared),
+        )
+    return identities
 
 
 # The public builder that constructs each declared source kind.
@@ -216,8 +253,6 @@ def _refuse_undeclared_breakouts(experiment: Any, scope: Any) -> None:
 
 def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     """Validate supported execution coordinates without acquiring evidence."""
-    from increment.kernel.contracts import declared_breakouts
-
     operation = scope_operation(experiment, scope)
     if (
         operation not in _SCOPE_OPERATIONS[scope.view]
@@ -241,8 +276,7 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
             from increment._evidence_refusals import CONTRAST_UNAVAILABLE
 
             refuse(CONTRAST_UNAVAILABLE, method=operation)
-        declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
-        require_breakout_sources(experiment, scope)
+        validate_breakout_identities(experiment, scope)
         if scope.view == "breakout":
             _refuse_undeclared_breakouts(experiment, scope)
         if scope.view == "switchback" and not contrast:

@@ -29,8 +29,8 @@ from increment._run_spines import run_spines
 from increment._runnability import (
     operation_options,
     records_breakout_sources,
-    require_breakout_sources,
     scope_operation,
+    validate_breakout_identities,
 )
 from increment._source_admission import (
     _arm_experiment,
@@ -622,11 +622,9 @@ def selected_binding(binding: SourceBinding, experiment: Experiment, scope: View
     ):
         return binding
     from increment._evidence_refusals import require_evidence
-    from increment.kernel.contracts import declared_breakouts
     from increment.semantics.models import Breakout
 
-    identities = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
-    require_breakout_sources(experiment, scope)
+    identities = validate_breakout_identities(experiment, scope)
     by_source = records_breakout_sources(experiment)
     declared = binding.declared_breakouts
     if not {identity.property for identity in identities} <= {item.property for item in declared}:
