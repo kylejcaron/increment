@@ -87,7 +87,7 @@ Only `run()` can reach an estimator: breakout and day-axis requests are refused 
 
 The `sequential` option declares exact Bernoulli monitoring (`always_valid`) for conversion and retention and the asymptotic mean for the other metrics. A bounded retention band also runs under the asymptotic scalar-mean route, so every retention and windowed-retention `sequential` cell is enumerated a second time with `Cell.inference = "asymptotic_mean"` (`matrix.iter_asymptotic_retention_cells`; ids end in `-asymptotic_mean`). A variant cell takes the disposition of its default cell, which `test_asymptotic_retention_variant_enumerates_every_retention_sequential_cell` asserts; the full scope executes every variant, while the PR scope runs the cheapest cell per `(metric, method, sequential design)` code path and marks the other variants `exhaustive`.
 
-The variant cells are separate from the 3,584 cells counted above. The enumeration test pins all 64 retention `sequential` cells. Four PR variants cover six metric/method code paths; the other 60 are marked `exhaustive` in the full scope.
+The variant cells are separate from the 3,584 cells counted above. The enumeration test pins all 64 retention `sequential` cells. Three running metric/method code paths are covered by two unique PR variants; the other 62 are marked `exhaustive` in the full scope.
 
 Variant cells: 64 (2 metrics x 4 views x 2 day boundaries x 4 missing policies), 96 legs. 12 are supported, 20 construction_limited and 32 not_expressible; none is source_limited as a cell status. 16 read data (slow) and 48 do not (fast).
 

@@ -64,6 +64,18 @@ def test_pr_subset_covers_every_supported_matrix_capability_with_a_running_cell(
     }
     assert supported_capabilities <= pr_running_capabilities
 
+    ratio_cuped_pair = any(
+        {"from_definitions", "from_unit_day_artifact"}
+        <= {
+            ingress
+            for ingress, outcome in matrix.classify(cell).outcomes("lift").items()
+            if isinstance(outcome, matrix.Runs)
+        }
+        for cell in matrix.pr_matrix_cells()
+        if cell.metric == "ratio" and cell.option == "cuped" and "lift" in matrix.methods(cell)
+    )
+    assert ratio_cuped_pair
+
 
 def test_pr_asymptotic_subset_selects_the_cheapest_cell_per_code_path() -> None:
     durations = json.loads((ROOT / ".github/slow-test-durations.json").read_text())
