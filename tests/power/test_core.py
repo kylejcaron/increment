@@ -3196,13 +3196,14 @@ class TestIndependentArmVariance:
         assert abs(sized.n_per_arm - math.ceil(expected_total * allocation)) <= 1
 
 
-def _assert_smallest_reaching_target(relative_lift: float, baseline: Any, design: Any) -> None:
+def _assert_smallest_reaching_target(relative_lift: float, baseline: Any, design: Any) -> Any:
     sized = required_sample_size(relative_lift, baseline, design=design)
     assert sized.power >= 0.8
     at_size = achieved_power(sized.n_per_arm, relative_lift, baseline, design=design)
     assert at_size.power == sized.power
     below = achieved_power(sized.n_per_arm - 1, relative_lift, baseline, design=design)
     assert below.power < 0.8
+    return sized
 
 
 class TestSmallestAdmissibleSize:
@@ -3254,29 +3255,23 @@ class TestSmallestAdmissibleSize:
         assert (at_size.n_total, at_size.power) == (sized.n_total, sized.power)
         assert (sized.n_per_arm, sized.n_total) == (4 * 367 + 1, 4 * 367 + 1 + 368)
 
-    def test_rare_trigger_quantile_search_work_does_not_scale_with_the_trigger_rate(
-        self, monkeypatch
-    ):
+    @pytest.mark.timeout(60)
+    def test_a_rare_trigger_quantile_plan_analyzes_the_untriggered_size(self):
         """Power and the readout's guard read only each arm's analyzed count,
-        ``round(assigned * trigger_rate)``, which stays put for about ``1 /
-        trigger_rate`` consecutive assigned sizes. The search plans such a run of
-        sizes once, so at a 1-in-10,000 trigger it plans fewer than twice the
-        tests the untriggered search plans for the same pilot and effect."""
-        planned = 0
-        power = _ArmPlan.power
-
-        def counted(plan: Any, distance: float, theta: float) -> float:
-            nonlocal planned
-            planned += 1
-            return power(plan, distance, theta)
-
-        monkeypatch.setattr(_ArmPlan, "power", counted)
+        ``round(assigned * trigger_rate)``. At a one-in-a-hundred-million trigger
+        the smallest assigned size reaching the target is therefore the first
+        that analyzes the untriggered answer. That count stays put for about
+        ``1 / trigger_rate`` assigned sizes, and the search plans each such run
+        once: it answers in well under the minute this test allows, where
+        planning each assigned size below the crossing takes hours."""
         pilot = np.random.default_rng(0).lognormal(5.0, 0.6, 5000)
         baseline = _quantile_baseline("latency", 0.5, pilot)
-        required_sample_size(0.03, baseline)
-        untriggered, planned = planned, 0
-        required_sample_size(0.03, baseline.model_copy(update={"trigger_rate": 1e-4}))
-        assert planned < 2 * untriggered
+        design = PowerDesign(power=0.8)
+        untriggered = _assert_smallest_reaching_target(0.03, baseline, design)
+        trigger = 1e-8
+        rare = baseline.model_copy(update={"trigger_rate": trigger})
+        sized = _assert_smallest_reaching_target(0.03, rare, design)
+        assert round(sized.n_per_arm * trigger) == untriggered.n_per_arm
 
 
 class TestRuntimeLogSeGuard:
