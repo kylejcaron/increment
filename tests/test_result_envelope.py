@@ -2588,6 +2588,10 @@ def test_report_payload_with_unknown_sampling_marker_is_unavailable():
 
 
 def test_unrecorded_sampling_breakout_is_unavailable_to_every_consumer():
+    import narwhals as nw
+    import pandas as pd
+
+    from increment import AnalysisPlan, MetricSpec, RunResult, run
     from increment.breakout.estimates import BreakoutEstimates
     from increment.errors import CodedError
     from increment.result_envelope import (
@@ -2599,6 +2603,7 @@ def test_unrecorded_sampling_breakout_is_unavailable_to_every_consumer():
         family_evidence,
         render,
     )
+    from increment.semantics.design import Randomized
     from increment.tables import readout_table
     from tests.breakout.test_heterogeneity import _breakout_estimate
 
@@ -2612,6 +2617,28 @@ def test_unrecorded_sampling_breakout_is_unavailable_to_every_consumer():
         ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
         ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
     )
+    # A saved run reopens with its portable cells and no live rows; this one holds the cell.
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            [
+                {"unit": f"{arm}-{index}", "arm": arm, "value": float(index)}
+                for arm in ("control", "treatment")
+                for index in range(8)
+            ]
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+        plan=AnalysisPlan(primary="value"),
+    )
+    with reader:
+        live = run(experiment, reader)
     for candidate in restored:
         assert Operation.COMPARE_MARGIN not in candidate.supports["sampling"]
         with pytest.raises(CodedError) as raised:
@@ -2631,6 +2658,24 @@ def test_unrecorded_sampling_breakout_is_unavailable_to_every_consumer():
         assert shown["sampling_reason_code"] == code
         text = render(envelope, "full")
         assert "stat_sig=unavailable" in text and "stat_sig=True" not in text
+        # Every unavailable-cell disclosure names the missing fields of the legacy context.
+        unavailable = [line for line in text.splitlines() if "Unavailable rev" in line]
+        assert unavailable and all("prior_free_reference_kind" in line for line in unavailable)
+
+        reopened = RunResult(
+            cells=(candidate,),
+            effects=(candidate.summary,),
+            decisions=live.decisions,
+            run=live.run,
+            live_rows=(None,),
+        )
+        (line,) = (line for line in repr(reopened).splitlines() if line.startswith("rev"))
+        assert f"status=unavailable; code={code}" in line
+        assert str(reopened) == repr(reopened)
+        (projected,) = nw.from_native(reopened.to_frame(backend="polars"), eager_only=True).rows(
+            named=True
+        )
+        assert projected["stat_sig"] is None and projected["sampling_available"] is False
 
 
 def test_payload_summary_is_rederived_from_retained_lift_row():
