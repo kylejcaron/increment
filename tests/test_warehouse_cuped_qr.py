@@ -74,30 +74,23 @@ def _assert_no_transferred_extreme(expression):
 
 @contextmanager
 def _select_lists_at_most(limit: int, monkeypatch):
-    """Fail when a SELECT that DuckDB fetches or materializes lists more than ``limit`` entries."""
+    """Fail when a SELECT that DuckDB is sent lists more than ``limit`` entries.
+
+    Widths come from the tree each statement's text is generated from.
+    """
     import sqlglot
-    from ibis.backends.duckdb import Backend
+    from ibis.backends.sql.compilers.duckdb import DuckDBCompiler
 
     widths: list[int] = []
-    to_pyarrow = Backend.to_pyarrow
-    create_table = Backend.create_table
+    to_sqlglot = DuckDBCompiler.to_sqlglot
 
-    def record(expression) -> None:
-        statement = sqlglot.parse_one(ibis.to_sql(expression, dialect="duckdb"), read="duckdb")
+    def compiled(self, expression, *args, **kwargs):
+        statement = to_sqlglot(self, expression, *args, **kwargs)
         widths.extend(len(select.expressions) for select in statement.find_all(sqlglot.exp.Select))
-
-    def fetch(self, expression, *args, **kwargs):
-        record(expression)
-        return to_pyarrow(self, expression, *args, **kwargs)
-
-    def create(self, name, /, obj=None, **kwargs):
-        if isinstance(obj, ibis.Table):
-            record(obj)
-        return create_table(self, name, obj, **kwargs)
+        return statement
 
     with monkeypatch.context() as patch:
-        patch.setattr(Backend, "to_pyarrow", fetch)
-        patch.setattr(Backend, "create_table", create)
+        patch.setattr(DuckDBCompiler, "to_sqlglot", compiled)
         yield
     assert widths
     assert max(widths) <= limit
