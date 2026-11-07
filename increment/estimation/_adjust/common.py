@@ -64,6 +64,7 @@ from increment.estimation._adjust.overlap import (
     _missing_covariate_refusal,
     _moment_dicts,
     _overlap_refusal_message,
+    _prediction_shape_guard,
     _probe_nan_capability,
     _propensity_range_guard,
     _propensity_ranges,
@@ -171,46 +172,6 @@ _REFUSALS = refusals(
 )
 _raise = raiser(_REFUSALS)
 SUPPORTED_RATIO_METRIC = _REFUSALS["estimation.adjust_common.supported_ratio_metric"]
-
-
-def _prediction_shape_guard(
-    pred: object,
-    *,
-    expected_n: int,
-    learner_name: str,
-    what: str,
-    metric_name: str,
-    treatment_groups: tuple[str, ...],
-    control_group: str,
-    method: str,
-) -> np.ndarray:
-    """Coerce a learner's prediction to a finite-shaped array, or refuse.
-
-    A scalar (Python float, 0-d array) or wrong-length array silently
-    broadcasts against a later elementwise op instead of raising -- a
-    learner returning a constant reads as perfect balance, not a broken fit.
-    """
-    arr = np.asarray(pred, dtype=float)
-    if arr.ndim != 1 or arr.shape[0] != expected_n:
-        raise IdentificationError(
-            f"{method}: learner {learner_name} returned a {what} prediction of "
-            f"shape {arr.shape} for metric {metric_name!r} "
-            f"({_contrast_text(treatment_groups, control_group)}), expected a 1-D array of "
-            f"length {expected_n} -- a scalar or mis-shaped prediction silently "
-            "broadcasts against later elementwise ops",
-            code="estimation.adjust.learner.prediction_shape",
-            context={
-                "learner_name": learner_name,
-                "what": what,
-                "metric_name": metric_name,
-                "treatment_groups": treatment_groups,
-                "control_group": control_group,
-                "method": method,
-                "shape": arr.shape,
-                "expected_n": expected_n,
-            },
-        )
-    return arr
 
 
 @dataclass(frozen=True, slots=True)

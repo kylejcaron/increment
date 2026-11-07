@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from functools import partial
@@ -1423,6 +1423,7 @@ def validate_extension(
     exposure_keys: Iterable[tuple[Any, ...]] | None = None,
     exposure_relation: Any | None = None,
     _relation_only: bool = False,
+    _verified: MutableMapping[tuple[str, ArtifactRelationRef], Any] | None = None,
 ) -> Any:
     """Verify one extension relation and return rows from the same snapshot."""
     if extension is None:
@@ -1486,6 +1487,9 @@ def validate_extension(
         _reject(
             "artifact.extension.invalid", "extension identity does not match selected catalog entry"
         )
+    verified_key = (kind, ext.relation)
+    if _relation_only and _verified is not None and verified_key in _verified:
+        return _verified[verified_key]
     raw = _validate_relation_ref(snapshot, ext, expected_role=handler.role)
     if hasattr(raw, "schema") and hasattr(raw, "execute"):
         _verify_extension_relation_sql(snapshot, ext, raw, kind, experiment_id, exposure_relation)
@@ -1497,6 +1501,8 @@ def validate_extension(
                 "artifact.extension.invalid",
                 "relation verification requires an exposure relation",
             )
+        if _verified is not None:
+            _verified[verified_key] = raw
         return raw
     result = _rows(snapshot.execute(raw))
     _validate_rows(kind, result, experiment_id=experiment_id)
@@ -1517,8 +1523,14 @@ def verify_extension_relation(
     context: Any | None = None,
     experiment_id: str,
     exposure_relation: Any,
+    verified: MutableMapping[tuple[str, ArtifactRelationRef], Any] | None = None,
 ) -> Any:
-    """Verify extension integrity in SQL and return its pinned relation."""
+    """Verify extension integrity in SQL and return its pinned relation.
+
+    ``verified`` holds the relations one reader already verified against the same
+    snapshot, experiment and exposure relation; a held relation is returned after
+    the request identity checks, without repeating its snapshot and SQL verification.
+    """
     return validate_extension(
         snapshot,
         extension,
@@ -1527,6 +1539,7 @@ def verify_extension_relation(
         experiment_id=experiment_id,
         exposure_relation=exposure_relation,
         _relation_only=True,
+        _verified=verified,
     )
 
 

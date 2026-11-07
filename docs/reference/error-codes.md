@@ -370,7 +370,7 @@ Retired codes and their replacements are listed below.
 | `estimation.adjust.method_name_unadjusted` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.plan` |
 | `estimation.adjust.names_metrics_source` | `InvalidRequestError` | `by_name`, `label`, `unknown` | `increment.estimation.adjust`, `increment.plan` |
 | `estimation.adjust.prior.method_scale` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.plan` |
-| `estimation.adjust.prior.type` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.plan` |
+| `estimation.adjust.prior.type` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.inference`, `increment.plan` |
 | `estimation.adjust.prior_interpreted_call` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.plan` |
 | `estimation.adjust.resolve_value_scales_null_abs_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust`, `increment.plan` |
 | `estimation.adjust.resolve_value_scales_null_lift_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust`, `increment.plan` |
@@ -460,7 +460,7 @@ Retired codes and their replacements are listed below.
 | `estimation.binomial.invalid_counts` | `BinomialDataError` | `n`, `x` | `increment.estimation.binomial_rr` |
 | `estimation.binomial.reconstructed_counts_not_binary` | `BinomialDataError` | `group_id`, `metric`, `n`, `sum_y` | `increment.estimation.armstats` |
 | `estimation.binomial.tail_unrepresentable` | `BinomialDataError` | — | `increment.estimation.binomial_rr` |
-| `estimation.binomial.unknown_alternative` | `InvalidRequestError` | `alternative` | `increment.estimation.binomial_rr`, `increment.estimation.encouragement`, `increment.estimation.inference` |
+| `estimation.binomial.unknown_alternative` | `InvalidRequestError` | `alternative` | `increment.estimation._fixed_horizon`, `increment.estimation.binomial_rr`, `increment.estimation.encouragement` |
 | `estimation.cate.cate.covariate_missing_from` | `InvalidRequestError` | `names`, `transform` | `increment.estimation.cate` |
 | `estimation.cate.cate.level_contradicts_alpha` | `InvalidRequestError` | `alpha`, `expected`, `level` | `increment.estimation.cate` |
 | `estimation.cate.cluster_count` | `InvalidRequestError` | `n`, `n_clusters` | `increment.estimation.cate` |
@@ -597,7 +597,7 @@ Retired codes and their replacements are listed below.
 | `estimation.cuped_linear.support_region` | `InvalidRequestError` | `region`, `violations` | `increment.estimation.cuped._numeric` |
 | `estimation.diagnostics.allocation_band_ds` | `InvalidRequestError` | `a`, `b`, `credible_level`, `ds`, `group_id`, `lower`, `upper` | `increment.estimation.diagnostics` |
 | `estimation.diagnostics.allocation_posterior_bands` | `InvalidRequestError` | `experiment_ids` | `increment.estimation.diagnostics` |
-| `estimation.diagnostics.alpha` | `InvalidRequestError` | `alpha` | `increment.breakout.estimates`, `increment.estimation.absorption`, `increment.estimation.cate`, `increment.estimation.diagnostics`, `increment.estimation.encouragement`, `increment.estimation.inference`, `increment.estimation.quantile`, `increment.estimation.targeting`, `increment.power.core` |
+| `estimation.diagnostics.alpha` | `InvalidRequestError` | `alpha` | `increment.breakout.estimates`, `increment.estimation._fixed_horizon`, `increment.estimation.absorption`, `increment.estimation.cate`, `increment.estimation.diagnostics`, `increment.estimation.encouragement`, `increment.estimation.inference`, `increment.estimation.quantile`, `increment.estimation.targeting`, `increment.power.core` |
 | `estimation.diagnostics.always_srm_predeclared` | `InvalidRequestError` | `route` | `increment.estimation.diagnostics` |
 | `estimation.diagnostics.counts_missing_columns` | `InvalidRequestError` | `missing` | `increment.estimation.diagnostics` |
 | `estimation.diagnostics.counts_non_negative` | `InvalidRequestError` | `negative` | `increment.estimation.diagnostics` |
@@ -618,12 +618,12 @@ Retired codes and their replacements are listed below.
 | `estimation.diagnostics.prior_alpha_finite` | `InvalidRequestError` | `prior_a` | `increment.estimation.diagnostics` |
 | `estimation.diagnostics.prior_beta_finite` | `InvalidRequestError` | `prior_b` | `increment.estimation.diagnostics` |
 | `estimation.diagnostics.total_observed_count` | `InvalidRequestError` | — | `increment.estimation.diagnostics` |
-| `estimation.encouragement.alpha_eff_too` | `InvalidRequestError` | — | `increment.estimation.encouragement` |
-| `estimation.encouragement.cluster.arm_needs_two` | `InvalidRequestError` | `cluster`, `k_c`, `k_t`, `metric` | `increment.estimation.encouragement` |
+| `estimation.encouragement.alpha_eff_too` | `InvalidRequestError` | — | `increment.estimation._fixed_horizon`, `increment.estimation.encouragement` |
+| `estimation.encouragement.cluster.arm_needs_two` | `InvalidRequestError` | `cluster`, `k_c`, `k_t`, `metric` | `increment.estimation.encouragement`, `increment.estimation.engine` |
 | `estimation.encouragement.cluster.ratio` | `CapabilityError` | `cluster`, `names` | `increment.estimation.encouragement` |
 | `estimation.encouragement.control.missing` | `InvalidRequestError` | `control_group` | `increment.estimation.encouragement` |
 | `estimation.encouragement.cuped_adjusted_late` | `InvalidRequestError` | `arm_group`, `arm_metric` | `increment.estimation.encouragement` |
-| `estimation.encouragement.dof_positive_reference` | `InvalidRequestError` | `dof` | `increment.estimation.encouragement` |
+| `estimation.encouragement.dof_positive_reference` | `InvalidRequestError` | `dof` | `increment.estimation._fixed_horizon`, `increment.estimation.encouragement` |
 | `estimation.encouragement.late.ratio` | `UnsupportedRequestError` | `metric` | `increment.estimation.encouragement` |
 | `estimation.encouragement.needs_uptake_cyd` | `InvalidRequestError` | — | `increment.estimation.encouragement` |
 | `estimation.encouragement.negative_variance` | `InvalidRequestError` | `slack`, `value`, `what` | `increment.estimation.encouragement` |
@@ -666,11 +666,11 @@ Retired codes and their replacements are listed below.
 | `estimation.estimator.ref.raw_rows_unsupported` | `InvalidRequestError` | `estimator_id` | `increment.declarations` |
 | `estimation.family.bh_select_q_finite` | `InvalidRequestError` | `q` | `increment.estimation.family` |
 | `estimation.family.e_values_finite` | `InvalidRequestError` | `e`, `i` | `increment.estimation.family` |
-| `estimation.family.exploratory_construction` | `UnsupportedRequestError` | `constructions`, `rows` | `increment.estimation.family` |
-| `estimation.family.exploratory_non_decision` | `InvalidRequestError` | `rows` | `increment.estimation.family` |
-| `estimation.family.exploratory_pre_corrected` | `InvalidRequestError` | `rows` | `increment.estimation.family` |
-| `estimation.family.exploratory_row` | `InvalidRequestError` | `rows` | `increment.estimation.family` |
-| `estimation.family.exploratory_sequential` | `UnsupportedRequestError` | `rows` | `increment.estimation.family` |
+| `estimation.family.exploratory_construction` | `UnsupportedRequestError` | `constructions`, `rows` | `increment.estimation.exploratory_family` |
+| `estimation.family.exploratory_non_decision` | `InvalidRequestError` | `rows` | `increment.estimation.exploratory_family` |
+| `estimation.family.exploratory_pre_corrected` | `InvalidRequestError` | `rows` | `increment.estimation.exploratory_family` |
+| `estimation.family.exploratory_row` | `InvalidRequestError` | `rows` | `increment.estimation.exploratory_family` |
+| `estimation.family.exploratory_sequential` | `UnsupportedRequestError` | `rows` | `increment.estimation.exploratory_family` |
 | `estimation.family.nominal_alpha_finite` | `InvalidRequestError` | `nominal_alpha` | `increment.estimation.family` |
 | `estimation.family.p_values_finite` | `InvalidRequestError` | `i`, `p` | `increment.estimation.family` |
 | `estimation.health.check.available_conclusion` | `InvalidRequestError` | — | `increment.estimation.health` |
@@ -679,21 +679,21 @@ Retired codes and their replacements are listed below.
 | `estimation.health.experiment.checks_type` | `InvalidRequestError` | `received` | `increment.estimation.health` |
 | `estimation.health.experiment.stable_order` | `InvalidRequestError` | — | `increment.estimation.health` |
 | `estimation.inference.abs_dof_requires_dof` | `InvalidRequestError` | — | `increment.estimation.inference` |
-| `estimation.inference.arm_ns_each` | `InvalidRequestError` | `arm_ns` | `increment.estimation.inference` |
+| `estimation.inference.arm_ns_each` | `InvalidRequestError` | `arm_ns` | `increment.estimation._fixed_horizon`, `increment.estimation.inference` |
 | `estimation.inference.degenerate_data_zero` | `InvalidRequestError` | — | `increment.estimation.inference` |
 | `estimation.inference.infer_ate_null_abs_finite` | `InvalidRequestError` | `null_abs` | `increment.estimation.inference` |
 | `estimation.inference.infer_ate_null_abs_on_absolute_metric` | `InvalidRequestError` | `name` | `increment.estimation.inference` |
 | `estimation.inference.infer_ate_null_lift_finite` | `InvalidRequestError` | `null_lift` | `increment.estimation.inference` |
 | `estimation.inference.infer_ate_null_lift_on_absolute_metric` | `InvalidRequestError` | `name` | `increment.estimation.inference` |
-| `estimation.inference.infer_lift_abs_diff_finite` | `InvalidRequestError` | `abs_diff` | `increment.estimation.inference` |
-| `estimation.inference.infer_lift_abs_se_finite` | `InvalidRequestError` | `abs_se` | `increment.estimation.inference` |
-| `estimation.inference.infer_lift_abs_se_positive` | `InvalidRequestError` | `abs_se` | `increment.estimation.inference` |
+| `estimation.inference.infer_lift_abs_diff_finite` | `InvalidRequestError` | `abs_diff` | `increment.estimation._fixed_horizon`, `increment.estimation.inference` |
+| `estimation.inference.infer_lift_abs_se_finite` | `InvalidRequestError` | `abs_se` | `increment.estimation._fixed_horizon`, `increment.estimation.inference` |
+| `estimation.inference.infer_lift_abs_se_positive` | `InvalidRequestError` | `abs_se` | `increment.estimation._fixed_horizon`, `increment.estimation.inference` |
 | `estimation.inference.joint_reference_invalid` | `InvalidRequestError` | `reason` | `increment.estimation.inference` |
 | `estimation.inference.null_lift_log` | `InvalidRequestError` | `null_lift` | `increment.estimation.inference` |
-| `estimation.inference.one_sided_alpha_doubles` | `InvalidRequestError` | `alpha`, `alpha_eff` | `increment.estimation.encouragement`, `increment.estimation.inference` |
-| `estimation.inference.prior_excludes_cluster_robust_t` | `InvalidRequestError` | — | `increment.estimation.inference` |
+| `estimation.inference.one_sided_alpha_doubles` | `InvalidRequestError` | `alpha`, `alpha_eff` | `increment.estimation._fixed_horizon`, `increment.estimation.encouragement`, `increment.estimation.inference` |
+| `estimation.inference.prior_excludes_cluster_robust_t` | `InvalidRequestError` | — | `increment.estimation._fixed_horizon`, `increment.estimation.inference` |
 | `estimation.inference.prior_excludes_joint_reference` | `InvalidRequestError` | — | `increment.estimation.inference` |
-| `estimation.inference.prior_excludes_welch_reference` | `InvalidRequestError` | `arm_ns` | `increment.estimation.inference` |
+| `estimation.inference.prior_excludes_welch_reference` | `InvalidRequestError` | `arm_ns` | `increment.estimation._fixed_horizon`, `increment.estimation.inference` |
 | `estimation.inference.unknown_value_scale` | `InvalidRequestError` | `value_scale` | `increment.estimation.inference` |
 | `estimation.meta.alpha_strictly_between` | `InvalidRequestError` | `alpha` | `increment.estimation.meta` |
 | `estimation.meta.alpha_too_small` | `InvalidRequestError` | — | `increment.breakout.estimates`, `increment.estimation.meta`, `increment.estimation.quantile` |
@@ -719,8 +719,8 @@ Retired codes and their replacements are listed below.
 | `estimation.priors.mixture.prior_needs_least` | `InvalidRequestError` | — | `increment.estimation.priors` |
 | `estimation.priors.mixture.weights_means_sigmas` | `InvalidRequestError` | `k`, `means`, `sigmas` | `increment.estimation.priors` |
 | `estimation.priors.mixture.weights_sum` | `InvalidRequestError` | `total` | `increment.estimation.priors` |
-| `estimation.priors.mixture_posterior.expected_negative_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.inference`, `increment.estimation.priors` |
-| `estimation.priors.mixture_posterior.expected_positive_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.inference`, `increment.estimation.priors` |
+| `estimation.priors.mixture_posterior.expected_negative_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.priors` |
+| `estimation.priors.mixture_posterior.expected_positive_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.priors` |
 | `estimation.priors.mixture_posterior.probability` | `InvalidRequestError` | `probability` | `increment.estimation.priors` |
 | `estimation.priors.mixture_posterior.tail_probability` | `InvalidRequestError` | `tail_probability` | `increment.estimation.priors` |
 | `estimation.priors.standard_error` | `InvalidRequestError` | `standard_error` | `increment.estimation.priors` |
@@ -1412,7 +1412,7 @@ Retired codes and their replacements are listed below.
 | `readout.inference.disjoint_slices` | `UnsupportedRequestError` | `inference`, `view` | `increment.breakout.estimates` |
 | `readout.inference.observational_run` | `UnsupportedRequestError` | `route` | `increment.plan` |
 | `readout.inference.sequential_view` | `UnsupportedRequestError` | `view` | `increment.estimation.encouragement` |
-| `readout.legacy.sampling_unreconstructible` | `InvalidRequestError` | `cell_key`, `missing_fields`, `remedy` | `increment.estimation.readout_types` |
+| `readout.legacy.sampling_unreconstructible` | `InvalidRequestError` | `cell_key`, `missing_fields`, `remedy` | `increment.estimation._readout_refusals`, `increment.estimation.readout_types` |
 | `readout.legacy.scope_unreconstructible` | `UnsupportedRequestError` | `missing_fields`, `remedy`, `source` | `increment.estimation.readout_types` |
 | `readout.margin.breakout` | `UnsupportedRequestError` | `names` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.metric.percentile_winsorization` | `CapabilityError` | `names`, `view` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
@@ -1437,7 +1437,7 @@ Retired codes and their replacements are listed below.
 | `readout.serialization.duplicate_cell_key` | `WireFormatError` | `cell_key`, `source_snapshot_id` | `increment.estimation.readout_types` |
 | `readout.serialization.duplicate_object_key` | `WireFormatError` | `key` | `increment.estimation.readout_types` |
 | `readout.serialization.identity_mismatch` | `WireFormatError` | `cell_key`, `reason`, `source_snapshot_id` | `increment.estimation.readout_types` |
-| `readout.serialization.model_mismatch` | `WireFormatError` | `collection`, `row_model` | `increment.estimation.readout_types` |
+| `readout.serialization.model_mismatch` | `WireFormatError` | `collection`, `route_suffix`, `row_model` | `increment.estimation.readout_types` |
 | `readout.serialization.noncanonical_order` | `WireFormatError` | `section` | `increment.estimation.readout_types` |
 | `readout.serialization.sequential_snapshot_required` | `WireFormatError` | `checkpoint_ids` | `increment.estimation.readout_types` |
 | `readout.serialization.unsupported_version` | `WireFormatError` | `kind`, `received`, `remedy`, `supported` | `increment.estimation.readout_types` |

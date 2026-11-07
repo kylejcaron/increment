@@ -49,7 +49,12 @@ from increment.estimation.contrast_results import (
     _validate_retained_window,
 )
 from increment.estimation.decision_types import ContrastDecisionProcedure, FixedInference, NoFamily
-from increment.estimation.results import Estimate, RejectionSide
+from increment.estimation.results import (
+    Estimate,
+    RejectionSide,
+    contrast_evidence_available,
+    contrast_stat_sig,
+)
 from increment.semantics.unit_cycle import UnitCycleVarianceEnvelope
 
 if TYPE_CHECKING:
@@ -885,37 +890,6 @@ def _t_reference_result(
         mean_slope=stats.mean_slope,
         minimum_cycles_per_unit=stats.minimum_cycles_per_unit,
         maximum_cycles_per_unit=stats.maximum_cycles_per_unit,
-    )
-
-
-def contrast_evidence_available(result: ContrastResult) -> bool:
-    """Whether the declared reference supplies typed evidence.
-
-    Envelope evidence does not depend on the descriptive sample standard error.
-    """
-    return (
-        result.residual_p_value is not None
-        if result.method == "switchback_unit_variance_envelope"
-        else result.standard_error is not None and result.standard_error > 0.0
-    )
-
-
-def contrast_stat_sig(result: ContrastResult) -> bool:
-    """Return the contrast's table/readout decision verdict."""
-    if not contrast_evidence_available(result):
-        return False
-    estimate = result.estimate
-    if result.method == "switchback_unit_variance_envelope":
-        assert result.residual_p_value is not None
-        return result.residual_p_value < result.alpha
-    if result.alternative == "greater":
-        return estimate.lb is not None and estimate.lb > result.null_abs
-    if result.alternative == "less":
-        return estimate.ub is not None and estimate.ub < result.null_abs
-    return (
-        estimate.lb is not None
-        and estimate.ub is not None
-        and not (estimate.lb <= result.null_abs <= estimate.ub)
     )
 
 

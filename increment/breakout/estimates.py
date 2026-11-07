@@ -129,7 +129,9 @@ from increment.estimation.results import (
     _validate_reference_fields,
     carry_nominal_evidence,
     conversion_route_label,
+    display_estimate,
     open_bound_from_two_sided_at_target,
+    require_selected_widening,
     row_p_value,
     row_rejection_side,
     row_stat_sig,
@@ -738,11 +740,6 @@ class BreakoutEstimate(_RowIdentity):
             require_public_laws(
                 (self.sequential_result.checkpoint.model,), "BreakoutEstimate replay"
             )
-            from increment.estimation.sequential_runtime import (
-                display_estimate,
-                require_selected_widening,
-            )
-
             if self.lift != display_estimate(self.sequential_result):
                 sequential_refuse(
                     "source.invalid", "view point or interval differs from its stopped state"
@@ -1508,11 +1505,6 @@ class DailyLiftEstimate(_RowIdentity):
             )
             if self.analysis_population != self.sequential_result.checkpoint.population:
                 sequential_refuse("source.invalid", "view and checkpoint populations disagree")
-            from increment.estimation.sequential_runtime import (
-                display_estimate,
-                require_selected_widening,
-            )
-
             if self.lift != display_estimate(self.sequential_result):
                 sequential_refuse(
                     "source.invalid", "view point or interval differs from its stopped state"

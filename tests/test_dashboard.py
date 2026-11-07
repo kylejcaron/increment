@@ -869,7 +869,7 @@ def test_readout_csv_preserves_undefined_geometry_without_retained_samples(
     storefront: DashboardSnapshot,
 ) -> None:
     from increment.estimation._winsor_bootstrap import full_procedure_bootstrap_reference
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import BootstrapReference
     from tests.estimation.test_winsor_bootstrap import _state
 

@@ -120,7 +120,7 @@ from increment.estimation.decision_types import (
     SegmentHypothesisKey,
     TestEvidence,
 )
-from increment.estimation.inference import Prior
+from increment.estimation.priors import Prior
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,
     SEQUENTIAL_POLICIES,
@@ -437,7 +437,7 @@ class CompiledDecisionPlan(CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _compliance_allocation(self):
-        from increment.sequential_source import validate_compliance_allocation
+        from increment.sequential_state import validate_compliance_allocation
 
         if isinstance(self.inference, SEQUENTIAL_POLICIES):
             validate_compliance_allocation(

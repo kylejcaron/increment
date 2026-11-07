@@ -81,6 +81,7 @@ Check `multiplicity_status` and `family_id` to see which correction applies. Fil
     | `role` | `multiplicity_status` | Interpretation |
     |---|---|---|
     | `None` | `undeclared_plan` | No metric role was declared; unadjusted. |
+    | `None`, a sequential uptake cell whose compliance policy has `family=True` | `declared_plan` | Registered in the secondary e-BH family, which lists it and counts it in `family_size`. |
     | `unassigned` | `unassigned_in_plan` | A plan exists, but this metric has no assigned role; unadjusted. |
     | `primary`, `secondary`, `guardrail` | `declared_plan` | Retains the existing role-specific allocation and procedure. |
     | `exploratory`, outside a BH/e-BH or Bonferroni family | `exploratory_unadjusted` | Exploratory, without family adjustment. |

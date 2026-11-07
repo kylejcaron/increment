@@ -11,6 +11,8 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from increment._canonical import canonical_json_bytes
+from increment._immutable import _FrozenMapping
 from increment._literals import (
     Alternative,
     Backend,
@@ -19,7 +21,17 @@ from increment._literals import (
     Role,
     default_frame_backend,
 )
+from increment._unit_cycle import unit_cycle_envelope_cutoff
+from increment.declarations import thaw
 from increment.errors import CodedModel, InvalidRequestError, RefusalSpec, refuse
+from increment.estimation.readout_types import (
+    _restore_collection,
+    concat_collection,
+    dump_collection,
+    partial_metadata,
+    refuse_readout,
+    validate_collection,
+)
 from increment.estimation.results import Estimate
 from increment.semantics.unit_cycle import (
     ProspectiveAssumptionProvenance,
@@ -207,8 +219,6 @@ class ContrastResult(CodedModel, BaseModel):
     @model_validator(mode="after")
     def _freeze_scope_context(self):
         if self.decision_scope_reason_context is not None:
-            from increment._canonical import canonical_json_bytes
-            from increment._immutable import _FrozenMapping
 
             def freeze(value):
                 if isinstance(value, Mapping):
@@ -291,8 +301,6 @@ class ContrastResult(CodedModel, BaseModel):
                 )
             )
             if valid:
-                from increment._unit_cycle import unit_cycle_envelope_cutoff
-
                 assert isinstance(envelope, UnitCycleVarianceEnvelope)
                 cutoff = unit_cycle_envelope_cutoff(
                     envelope, n=self.n_units, alpha=self.alpha, alternative=self.alternative
@@ -459,8 +467,6 @@ class ContrastResults(list[ContrastResult]):
         sequential_snapshot=None,
         default_backend: Backend | None = None,
     ):
-        from increment.estimation.readout_types import validate_collection
-
         super().__init__(rows)
         self._metadata = metadata
         self.source = source
@@ -481,8 +487,6 @@ class ContrastResults(list[ContrastResult]):
         self._mutation("metadata_delete")
 
     def __reduce_ex__(self, protocol):
-        from increment.estimation.readout_types import _restore_collection
-
         return _restore_collection, (
             type(self),
             tuple(self),
@@ -497,6 +501,7 @@ class ContrastResults(list[ContrastResult]):
         from importlib import import_module
 
         contracts = import_module("increment.kernel.contracts")
+        # Upward: as_cells builds ResultCells, which restore these rows for portable reads.
         ResultCell = import_module("increment.result_envelope").ResultCell
 
         def cell_identity(row):
@@ -519,8 +524,6 @@ class ContrastResults(list[ContrastResult]):
         ]
 
     def model_dump_json(self):
-        from increment.estimation.readout_types import dump_collection
-
         return dump_collection(self)
 
     @overload
@@ -531,8 +534,6 @@ class ContrastResults(list[ContrastResult]):
 
     def __getitem__(self, key: SupportsIndex | slice) -> ContrastResult | ContrastResults:
         if isinstance(key, slice):
-            from increment.estimation.readout_types import partial_metadata
-
             rows = super().__getitem__(key)
             return type(self)(
                 rows,
@@ -544,8 +545,6 @@ class ContrastResults(list[ContrastResult]):
         return super().__getitem__(index(key))
 
     def filter(self, predicate):
-        from increment.estimation.readout_types import partial_metadata
-
         rows = [row for row in self if predicate(row)]
         return type(self)(
             rows,
@@ -556,8 +555,6 @@ class ContrastResults(list[ContrastResult]):
         )
 
     def concat(self, other):
-        from increment.estimation.readout_types import concat_collection
-
         return concat_collection(self, other)
 
     def __repr__(self) -> str:
@@ -576,8 +573,6 @@ class ContrastResults(list[ContrastResult]):
         return self.concat(other)
 
     def _mutation(self, operation):
-        from increment.estimation.readout_types import refuse_readout
-
         refuse_readout(
             "readout.collection.mutation_unsupported",
             operation=operation,
@@ -643,8 +638,6 @@ class ContrastResults(list[ContrastResult]):
                         )
                     )
                 elif name == "decision_scope_reason_context":
-                    from increment.estimation.readout_types import thaw
-
                     value = getattr(result, name)
                     data[name].append(
                         None

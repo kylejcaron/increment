@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Iterable
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -8,6 +9,8 @@ from increment._literals import MultiplicityCorrection
 from increment.errors import CodedModel, InvalidRequestError, raiser, refusals
 
 _MultiplicityGuarantee = Literal["none", "fwer", "fdr"]
+#: A registered hypothesis by its roster coordinates: metric, arm, estimand and segment.
+RegisteredCell = tuple[str, str, str, tuple[tuple[str, str], ...]]
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -26,6 +29,24 @@ def guarantee_for_correction(correction: MultiplicityCorrection) -> _Multiplicit
     if correction == "bonferroni":
         return "fwer"
     return "none"
+
+
+def registered_cell(cell: Any) -> RegisteredCell:
+    """A registration roster cell's coordinates."""
+    return cell.metric, cell.group_id, cell.estimand, tuple(cell.segment)
+
+
+def registered_family_members(
+    registration: Any, *, secondary_keys: Iterable[RegisteredCell]
+) -> tuple[RegisteredCell, ...]:
+    """The hypotheses of a registered sequential family, without repeats.
+
+    They are the plan's secondary cells and every roster cell the registration
+    marks ``family=True``, which includes an uptake cell whose compliance policy
+    joins the family. The family's e-BH size ``m`` is the number of members.
+    """
+    roster = (registered_cell(cell) for cell in registration.roster if cell.family)
+    return tuple(dict.fromkeys((*secondary_keys, *roster)))
 
 
 class MultiplicityFamily(CodedModel, BaseModel):
