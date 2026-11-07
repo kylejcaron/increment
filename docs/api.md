@@ -127,7 +127,7 @@ values.
 
 ### Earlier release notes
 
-- Release note (identity cutover): a readout's `source_snapshot_id`, and every
+- Release note (breaking bug fix): a readout's `source_snapshot_id`, and every
   family ID built from it, no longer changes when a message is reworded. A
   snapshot keeps reason codes and their structured context but not rendered
   messages or notes. A health report's `source_snapshot_id` keeps each check's
