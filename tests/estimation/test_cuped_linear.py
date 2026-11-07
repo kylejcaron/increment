@@ -678,6 +678,66 @@ def test_covariate_zero_filled_in_one_arm_flags_the_multicovariate_cell():
     assert row.require_lift().log_mean == pytest.approx(fit.relative("treatment").estimate)
 
 
+def test_joint_imbalance_names_the_covariate_behind_a_retained_missingness_indicator():
+    """``x`` is all zero where observed, so it owns only its missing-value indicator, whose
+    means are 0.9 in control and 0.1 in treatment; the constant ``z`` owns no column. The
+    one encoded column's T² is ``n_c n_t / N * d² / S`` with ``d = -0.8`` and
+    ``S = (200 * 0.09 + 200 * 0.09) / 398``: 100 * 0.64 * 398 / 36."""
+    import warnings
+
+    import polars as pl
+
+    from increment import CupedCovariate, Method, from_frame, run
+    from tests.warning_codes import warning_codes
+
+    arm = np.repeat(["control", "treatment"], 200)
+    position = np.r_[np.arange(200), np.arange(200)]
+    missing = np.where(arm == "control", position < 180, position < 20)
+    x = np.where(missing, np.nan, 0.0)
+    z = np.full(400, 5.0)
+    y = 3.0 + np.random.default_rng(29).normal(0.0, 1.0, 400)
+    fit = fit_cuped_multicovariate(
+        y,
+        arm,
+        control="control",
+        arm_order=("control", "treatment"),
+        covariates={"x": x, "z": z},
+        kinds={"x": "continuous", "z": "continuous"},
+        missing={"x": "impute-indicator"},
+    )
+    assert fit.layout.structural_omissions == ("x", "z")
+    assert fit.layout.shared_indicators == (("x",),)
+    assert fit.layout.column_owners() == ("x",)
+    frame = pl.DataFrame(
+        {
+            "u": [f"u{i}" for i in range(400)],
+            "g": arm,
+            "y": y,
+            "x": [None if gap else 0.0 for gap in missing],
+            "z": z,
+        }
+    )
+    experiment, reader = from_frame(
+        frame, shape="summary", unit="u", group="g", control="control", metrics={"y": "mean"}
+    )
+    method = Method.cuped_multicovariate(
+        name="linear",
+        covariates=[
+            CupedCovariate(name="x", kind="continuous", missing="impute-indicator"),
+            CupedCovariate(name="z", kind="continuous"),
+        ],
+    )
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        result = run(experiment, reader, decision_method=method)
+    assert "estimation.cuped.covariate_imbalance" in warning_codes(recorded)
+    (advisory,) = _imbalance_advisories(result)
+    assert advisory.context["covariates"] == ("x",)
+    assert advisory.context["numerator_dof"] == 1
+    assert advisory.context["p_value"] < 0.001
+    assert advisory.context["statistic"] == pytest.approx(100 * 0.64 * 398 / 36, rel=1e-9)
+
+
 def test_balanced_multicovariate_cell_carries_no_imbalance_advisory():
     result, _, _ = _zero_filled_run(zero_fill=False)
     assert _imbalance_advisories(result) == []

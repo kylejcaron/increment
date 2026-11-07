@@ -38,6 +38,13 @@ class MulticovariateCupedLayout:
     structural_omissions: tuple[str, ...]
     shared_indicators: tuple[tuple[str, ...], ...]
 
+    def column_owners(self) -> tuple[str, ...]:
+        """Covariates with at least one encoded column: those not structurally omitted
+        and the owners of a retained missingness indicator, in declaration order."""
+        owned = {name for name in self.names if name not in self.structural_omissions}
+        owned.update(owner for owners in self.shared_indicators for owner in owners)
+        return tuple(name for name in self.names if name in owned)
+
 
 def _normalized_offset_difference(offset, reference, scale):
     exponent = max(math.frexp(abs(value))[1] for value in (offset, reference, scale) if value != 0)

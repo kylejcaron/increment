@@ -1291,9 +1291,7 @@ def _multicovariate_imbalance_advisory(
             "metric_name": metric_name,
             "control_group": control_group,
             "treatment_group": treatment_group,
-            "covariates": tuple(
-                name for name in fit.layout.names if name not in fit.layout.structural_omissions
-            ),
+            "covariates": fit.layout.column_owners(),
             "statistic_kind": "hotelling",
             "statistic": balance.statistic,
             "numerator_dof": balance.numerator_dof,
