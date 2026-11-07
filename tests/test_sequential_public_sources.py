@@ -881,6 +881,67 @@ def test_sparse_panel_sequential_cohort_and_continuation_match_dense() -> None:
     assert continued[0].states == continued[1].states
 
 
+def test_panel_capture_clamps_cursor_to_observation_end_and_continues_after_extension():
+    """A capture requested after the declared observation end is dated at that end, and a
+    source whose end is later extended continues from it."""
+    import pandas as pd
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
+    plan = _plan(specs, "bernoulli", date="day", exposure_date="exposed")
+    registration = plan.inference.registration
+    assert registration is not None
+    reveal = registration.reveal.model_copy(update={"longest_window_days": 2})
+    plan = plan.model_copy(
+        update={
+            "inference": InferenceSpec(
+                kind="always_valid",
+                registration=registration.model_copy(update={"reveal": reveal}),
+            )
+        }
+    )
+    days = [date(2026, 1, day) for day in range(1, 5)]
+    rows = []
+    for unit_index in range(8):
+        exposure = days[0] if unit_index % 2 == 0 else days[2]
+        rows.extend(
+            {
+                "unit": f"u{unit_index}",
+                "arm": "control" if unit_index < 4 else "treatment",
+                "day": day,
+                "exposed": exposure,
+                "outcome": float(unit_index % 3 == 0) if day == exposure else 0.0,
+            }
+            for day in days
+        )
+
+    def source(observation_end):
+        return from_frame(
+            pd.DataFrame(rows),
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="day",
+            exposure_date="exposed",
+            control="control",
+            metrics=specs,
+            experiment_id="experiment",
+            observation_end=observation_end,
+            plan=plan,
+        )
+
+    experiment, resolver = source(days[1])
+    snapshot = workflows.capture_sequential(experiment, resolver, finalized=True, as_of=days[3])
+    assert snapshot.reveal_cursor == days[1]
+    asof = View(view="asof", grain="asof", completion_policy=True)
+    (row,) = view_readout(experiment, resolver, asof)
+    assert row.ds == days[1]
+    continued = workflows.capture_sequential(
+        *source(days[3]), finalized=True, as_of=days[3], previous=snapshot
+    )
+    assert continued.reveal_cursor == days[3]
+    assert continued.parent_id == snapshot.prefix_id
+
+
 @pytest.mark.parametrize("scratch_budget", [0, 64 * 1024 * 1024])
 def test_sparse_panel_sequential_state_matches_dense_and_streamed_kernels(
     scratch_budget: int, monkeypatch: pytest.MonkeyPatch
