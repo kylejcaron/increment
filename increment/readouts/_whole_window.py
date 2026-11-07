@@ -183,8 +183,6 @@ def validate_whole_window(
             route=route,
             supported_sources=("from_definitions", "from_unit_day_artifact"),
         )
-    if route != NATIVE_ROUTE and req.metrics:
-        return
     if route == NATIVE_ROUTE and req.value_scale:
         _raise_readout("readout.randomized.value_scale")
 
@@ -236,7 +234,7 @@ class WholeWindowReadouts:
             and self._experiment.trigger is not None
             and req.population in (None, "triggered")
         ):
-            if not is_custom_source(self._src) and not validates_populations(self._src):
+            if not validates_populations(self._src):
                 _refuse(
                     _TRIGGER_UNSUPPORTED,
                     method="run",

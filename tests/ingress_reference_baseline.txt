@@ -25,6 +25,6 @@ increment/readouts/_line3.py custom 1
 increment/readouts/_metric_rows.py custom 2
 increment/readouts/_run.py unwrap 2
 increment/readouts/_run_acquisition.py custom 1
-increment/readouts/_whole_window.py custom 2
-increment/readouts/_whole_window.py route 9
+increment/readouts/_whole_window.py custom 1
+increment/readouts/_whole_window.py route 8
 increment/readouts/_whole_window.py unwrap 2
