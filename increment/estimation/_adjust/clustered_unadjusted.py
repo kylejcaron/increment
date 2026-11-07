@@ -445,9 +445,8 @@ def estimate_clustered_unadjusted(
     import narwhals as nw
 
     from increment.errors import refuse
-    from increment.estimation.encouragement import ARM_NEEDS_TWO
+    from increment.estimation.engine import ARM_NEEDS_TWO, check_total_clusters
     from increment.estimation.engine import _refuse as engine_refuse
-    from increment.estimation.engine import check_total_clusters
 
     if preflight is None:
         preflight = clustered_unadjusted_preflight(

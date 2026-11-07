@@ -18,6 +18,7 @@ from increment.estimation.decision_types import (
 )
 from increment.estimation.diagnostics import (
     COVARIATE_BALANCE_ALPHA,
+    COVARIATE_IMBALANCE,
     covariate_balance_boundary,
     covariate_balance_crosses_boundary,
 )
@@ -286,8 +287,6 @@ def _covariate_imbalance_advisory(result: AsymptoticSequentialResult) -> Readout
         start_count=model.start_count,
     ):
         return None
-    from increment.estimation.engine import _WARNINGS
-
     # A crossing has a positive variance and a nonzero difference. The variance
     # scales with the covariate's squared units and the boundary with 1/rho^2, so
     # roots are taken of the exact ratios; a number past the float range abstains.
@@ -321,7 +320,7 @@ def _covariate_imbalance_advisory(result: AsymptoticSequentialResult) -> Readout
             if not arm.scatter[x][x]
         ),
     }
-    spec = _WARNINGS["estimation.cuped.covariate_imbalance"]
+    spec = COVARIATE_IMBALANCE
     return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
 
 

@@ -47,13 +47,14 @@ from increment._literals import Alternative, PreferredDirection
 from increment._literals import ConversionInference as ConversionInference
 from increment._moment_plan import CORE_SLOTS, OPTIONAL_SLOTS, X_ROLE_VARIABLES
 from increment.declarations import (
+    ADJUSTMENTS,
+    Method,
+)
+from increment.declarations import (
     VARIANCE_REDUCTION as VARIANCE_REDUCTION,
 )
 from increment.declarations import (
     CovariateArg as CovariateArg,
-)
-from increment.declarations import (
-    Method,
 )
 from increment.declarations import (
     _as_covariate as _as_covariate,
@@ -108,6 +109,7 @@ from increment.estimation.conversion_route import (
 from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_ratio_cuped
 from increment.estimation.diagnostics import (
     COVARIATE_BALANCE_ALPHA,
+    COVARIATE_IMBALANCE,
     CovariateBalance,
     covariate_balance,
 )
@@ -243,9 +245,11 @@ _REFUSALS = refusals(
         "estimation.engine.method_name_observational": "Method(name={m!r}) is an observational adjustment (estimate_ate / Observational design); this randomized path would label an unadjusted randomized estimate with it.",
         "estimation.engine.metric_found_group": "Metric(s) {unknown} found in group_summary but not in the metrics list. Declared metrics: {metric_types}",
         "estimation.engine.control_group_found": "control_group '{control_group}' not found in arms. Available groups: {known_groups}",
+        "estimation.encouragement.cluster.arm_needs_two": "metric '{metric}': cluster contrast ('{cluster}') needs at least 2 clusters in EACH arm to estimate a between-cluster variance for that arm, got {k_t} treatment cluster(s) and {k_c} control cluster(s) -- a single cluster carries no between-cluster variance contribution to estimate its own arm's component from.",
     },
 )
 _refuse = raiser(_REFUSALS)
+ARM_NEEDS_TWO = _REFUSALS["estimation.encouragement.cluster.arm_needs_two"]
 
 
 _REFUSALS.update(
@@ -340,88 +344,7 @@ _register_warning(
 )
 
 
-def _covariate_imbalance_message(**context: Any) -> str:
-    """The covariate-imbalance warning: a mixed CUPED cell's joint test of its covariates,
-    else one covariate's means."""
-    if context.get("statistic_kind") == "hotelling":
-        return _joint_covariate_imbalance_message(**context)
-    return _single_covariate_imbalance_message(**context)
-
-
-def _single_covariate_imbalance_message(
-    *,
-    metric_name: str,
-    control_group: str,
-    treatment_group: str,
-    covariate: str | None,
-    mean_control: float,
-    mean_treatment: float,
-    statistic: float,
-    alpha: float,
-    adjustment_shift: float | None = None,
-    late_adjustment_shift: float | None = None,
-    **_details: object,
-) -> str:
-    """The move is reported on the absolute scale it was made on, the LATE's own for a
-    LATE; a ratio, whose move is not a multiple of the difference, reports none."""
-    subject = "the covariate" if covariate is None else f"the covariate '{covariate}'"
-    shift, moved_scale = (
-        (adjustment_shift, "absolute difference")
-        if late_adjustment_shift is None
-        else (late_adjustment_shift, "LATE")
-    )
-    moved = (
-        ""
-        if shift is None
-        else f" The adjustment moved the {moved_scale} by {abs(shift):.4g}; if the covariate "
-        f"is at fault, the adjusted {moved_scale} is off by about that much."
-    )
-    return (
-        f"metric '{metric_name}', {treatment_group} vs {control_group}: {subject} used for "
-        f"CUPED averages {mean_treatment:.4g} in {treatment_group} and {mean_control:.4g} in "
-        f"{control_group}, a difference of {abs(statistic):.3g} standard errors (nominal "
-        f"p < {alpha:g}). A difference this large in a value measured before the experiment "
-        "is unusual. It can arise by chance, and more often the more cells are checked. It is "
-        "also what a covariate built differently for one arm produces (values lost or "
-        "zero-filled in one arm, a rescaled join, a window that overlaps the experiment), and "
-        f"what a failed assignment produces.{moved} Check how the covariate was built for each "
-        "arm before relying on either estimate."
-    )
-
-
-def _joint_covariate_imbalance_message(
-    *,
-    metric_name: str,
-    control_group: str,
-    treatment_group: str,
-    covariates: tuple[str, ...],
-    statistic: float,
-    numerator_dof: int,
-    denominator_dof: int,
-    alpha: float,
-    **_details: object,
-) -> str:
-    names = ", ".join(f"'{name}'" for name in covariates)
-    return (
-        f"metric '{metric_name}', {treatment_group} vs {control_group}: the means of the "
-        f"CUPED covariates ({names}) differ between {treatment_group} and {control_group}, "
-        f"tested jointly across {numerator_dof} encoded columns "
-        f"(F = {statistic:.3g} on {numerator_dof} and {denominator_dof} degrees of freedom, "
-        f"nominal p < {alpha:g}). Differences this large in values measured before the "
-        "experiment are unusual. They can arise by chance, and more often the more cells are "
-        "checked. They are also what a covariate built differently for one arm produces "
-        "(values lost or zero-filled in one arm, a rescaled join, a window that overlaps the "
-        "experiment), and what a failed assignment produces. Check how each covariate was "
-        "built for each arm before relying on either estimate."
-    )
-
-
-_register_warning(
-    "estimation.cuped.covariate_imbalance",
-    IncrementRuntimeWarning,
-    _covariate_imbalance_message,
-    dedupe_fields=("metric_name", "treatment_group"),
-)
+_WARNINGS[COVARIATE_IMBALANCE.code] = COVARIATE_IMBALANCE
 
 
 def check_total_clusters(
@@ -810,8 +733,6 @@ def _validate_methods(methods: Sequence[Method]) -> None:
     whose ``estimands=("late",)`` calls never reach ``estimate_lift``.
     """
     _validate_unique_method_names(methods, caller="estimate_lift")
-    from increment.declarations import ADJUSTMENTS
-
     for m in methods:
         if m.name in ADJUSTMENTS:
             _refuse("estimation.engine.method_name_observational", m=m.name)
@@ -827,8 +748,6 @@ def _validate_conversion_inference(
 ) -> None:
     """Refuse an explicit ``finite_sample`` method on a metric whose request the
     finite-sample route cannot serve, before any source is read."""
-    from increment.estimation.adjust import ADJUSTMENTS
-
     for metric, methods, prior in zip(metrics, methods_by_metric, priors, strict=True):
         explicit = [method for method in methods if method.conversion_inference == "finite_sample"]
         if not explicit:
@@ -2387,8 +2306,6 @@ def _select_lift_variance_strategy(
         n_clusters = k_t + k_c
         check_total_clusters(treatment.metric, cluster, n_clusters)
         if k_t < 2 or k_c < 2:
-            from increment.estimation.encouragement import ARM_NEEDS_TWO
-
             refuse(
                 ARM_NEEDS_TWO,
                 metric=treatment.metric,

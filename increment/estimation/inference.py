@@ -110,6 +110,13 @@ _REFUSALS = refusals(
         "estimation.inference.abs_dof_requires_dof": "abs_dof is only meaningful alongside a cluster-robust dof (the absolute sidecar's own reference df exists only when the primary contrast is already on the cluster-robust t-reference path); got abs_dof set with dof=None.",
         "estimation.inference.infer_ate_null_lift_finite": "null_lift must be finite, got {null_lift}",
         "estimation.inference.infer_ate_null_abs_finite": "null_abs must be finite, got {null_abs}",
+        "estimation.adjust.prior.type": (
+            "mixture priors are only supported on the relative (log-RR) lift scale served by"
+            " infer_lift/estimate_lift: this path reports rows whose raw pre-prior statistics are"
+            " not persisted, so the mixture posterior could not be recomputed for decision"
+            " statistics. Pass a Normal prior here, or estimate the metric through the"
+            " relative-lift path."
+        ),
     },
 )
 
@@ -118,6 +125,7 @@ INFER_ATE_ABS_SE_FINITE = INFER_LIFT_ABS_SE_FINITE
 INFER_ATE_ABS_SE_POSITIVE = INFER_LIFT_ABS_SE_POSITIVE
 INFER_ATE_NULL_LIFT_FINITE = _REFUSALS["estimation.inference.infer_ate_null_lift_finite"]
 INFER_ATE_NULL_ABS_FINITE = _REFUSALS["estimation.inference.infer_ate_null_abs_finite"]
+MIXTURE_PRIORS_ARE = _REFUSALS["estimation.adjust.prior.type"]
 
 _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
 _raise = raiser(_REFUSALS)
@@ -655,8 +663,6 @@ def infer_ate(  # noqa: PLR0913
     ``"late"``.
     """
     if isinstance(prior, (StudentTPrior, MixturePrior)):
-        from increment.estimation.adjust import MIXTURE_PRIORS_ARE
-
         refuse(MIXTURE_PRIORS_ARE)
     has_joint_result = joint_reference is not None or relative_unavailable_reason is not None
     if has_joint_result and (

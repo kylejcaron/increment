@@ -533,7 +533,7 @@ def test_failure_passthrough_is_escaped_in_complete_html_table():
     assert "&lt;img src=x onerror=alert(1)&gt;" in html
 
 
-def test_saved_results_decode_when_only_the_boundary_module_is_imported():
+def test_saved_results_decode_when_only_the_public_results_namespace_is_imported():
     experiment, resolver = _analysis(_frame())
     try:
         payload = view_readout(experiment, resolver, metrics=["rev"]).model_dump_json()
@@ -542,9 +542,9 @@ def test_saved_results_decode_when_only_the_boundary_module_is_imported():
 
     code = (
         "import sys; "
-        "from increment.estimation.readout_types import ReadoutResults; "
+        "import increment.results; "
         "assert 'increment.breakout.estimates' not in sys.modules; "
-        "results = ReadoutResults.model_validate_json(sys.argv[1]); "
+        "results = increment.results.ReadoutResults.model_validate_json(sys.argv[1]); "
         "assert results[0].metric == 'rev'"
     )
     child = subprocess.run([sys.executable, "-c", code, payload], capture_output=True, text=True)

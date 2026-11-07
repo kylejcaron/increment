@@ -143,7 +143,7 @@ tests/estimation/test_exploratory_family.py 1
 tests/estimation/test_family.py 3
 tests/estimation/test_fcr_calibration.py 1
 tests/estimation/test_i13_independent_witnesses.py 5
-tests/estimation/test_inference.py 1
+tests/estimation/test_inference.py 2
 tests/estimation/test_inference_calibration.py 10
 tests/estimation/test_joint_relative_reference.py 2
 tests/estimation/test_late_cluster.py 4

@@ -123,7 +123,7 @@ def line2_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]
         family_selection: dict[str, object] = {"status": "unavailable"}
         if cells:
             try:
-                from increment.estimation.family import select_exploratory_family
+                from increment.estimation.exploratory_family import select_exploratory_family
 
                 selected = select_exploratory_family(list(results), q=0.05)
                 family_selection = {

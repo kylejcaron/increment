@@ -370,7 +370,7 @@ Retired codes and their replacements are listed below.
 | `estimation.adjust.method_name_unadjusted` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.plan` |
 | `estimation.adjust.names_metrics_source` | `InvalidRequestError` | `by_name`, `label`, `unknown` | `increment.estimation.adjust`, `increment.plan` |
 | `estimation.adjust.prior.method_scale` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.plan` |
-| `estimation.adjust.prior.type` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.plan` |
+| `estimation.adjust.prior.type` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.inference`, `increment.plan` |
 | `estimation.adjust.prior_interpreted_call` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.plan` |
 | `estimation.adjust.resolve_value_scales_null_abs_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust`, `increment.plan` |
 | `estimation.adjust.resolve_value_scales_null_lift_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust`, `increment.plan` |
@@ -619,7 +619,7 @@ Retired codes and their replacements are listed below.
 | `estimation.diagnostics.prior_beta_finite` | `InvalidRequestError` | `prior_b` | `increment.estimation.diagnostics` |
 | `estimation.diagnostics.total_observed_count` | `InvalidRequestError` | — | `increment.estimation.diagnostics` |
 | `estimation.encouragement.alpha_eff_too` | `InvalidRequestError` | — | `increment.estimation._fixed_horizon`, `increment.estimation.encouragement` |
-| `estimation.encouragement.cluster.arm_needs_two` | `InvalidRequestError` | `cluster`, `k_c`, `k_t`, `metric` | `increment.estimation.encouragement` |
+| `estimation.encouragement.cluster.arm_needs_two` | `InvalidRequestError` | `cluster`, `k_c`, `k_t`, `metric` | `increment.estimation.encouragement`, `increment.estimation.engine` |
 | `estimation.encouragement.cluster.ratio` | `CapabilityError` | `cluster`, `names` | `increment.estimation.encouragement` |
 | `estimation.encouragement.control.missing` | `InvalidRequestError` | `control_group` | `increment.estimation.encouragement` |
 | `estimation.encouragement.cuped_adjusted_late` | `InvalidRequestError` | `arm_group`, `arm_metric` | `increment.estimation.encouragement` |
@@ -666,11 +666,11 @@ Retired codes and their replacements are listed below.
 | `estimation.estimator.ref.raw_rows_unsupported` | `InvalidRequestError` | `estimator_id` | `increment.declarations` |
 | `estimation.family.bh_select_q_finite` | `InvalidRequestError` | `q` | `increment.estimation.family` |
 | `estimation.family.e_values_finite` | `InvalidRequestError` | `e`, `i` | `increment.estimation.family` |
-| `estimation.family.exploratory_construction` | `UnsupportedRequestError` | `constructions`, `rows` | `increment.estimation.family` |
-| `estimation.family.exploratory_non_decision` | `InvalidRequestError` | `rows` | `increment.estimation.family` |
-| `estimation.family.exploratory_pre_corrected` | `InvalidRequestError` | `rows` | `increment.estimation.family` |
-| `estimation.family.exploratory_row` | `InvalidRequestError` | `rows` | `increment.estimation.family` |
-| `estimation.family.exploratory_sequential` | `UnsupportedRequestError` | `rows` | `increment.estimation.family` |
+| `estimation.family.exploratory_construction` | `UnsupportedRequestError` | `constructions`, `rows` | `increment.estimation.exploratory_family` |
+| `estimation.family.exploratory_non_decision` | `InvalidRequestError` | `rows` | `increment.estimation.exploratory_family` |
+| `estimation.family.exploratory_pre_corrected` | `InvalidRequestError` | `rows` | `increment.estimation.exploratory_family` |
+| `estimation.family.exploratory_row` | `InvalidRequestError` | `rows` | `increment.estimation.exploratory_family` |
+| `estimation.family.exploratory_sequential` | `UnsupportedRequestError` | `rows` | `increment.estimation.exploratory_family` |
 | `estimation.family.nominal_alpha_finite` | `InvalidRequestError` | `nominal_alpha` | `increment.estimation.family` |
 | `estimation.family.p_values_finite` | `InvalidRequestError` | `i`, `p` | `increment.estimation.family` |
 | `estimation.health.check.available_conclusion` | `InvalidRequestError` | — | `increment.estimation.health` |
@@ -1437,7 +1437,7 @@ Retired codes and their replacements are listed below.
 | `readout.serialization.duplicate_cell_key` | `WireFormatError` | `cell_key`, `source_snapshot_id` | `increment.estimation.readout_types` |
 | `readout.serialization.duplicate_object_key` | `WireFormatError` | `key` | `increment.estimation.readout_types` |
 | `readout.serialization.identity_mismatch` | `WireFormatError` | `cell_key`, `reason`, `source_snapshot_id` | `increment.estimation.readout_types` |
-| `readout.serialization.model_mismatch` | `WireFormatError` | `collection`, `row_model` | `increment.estimation.readout_types` |
+| `readout.serialization.model_mismatch` | `WireFormatError` | `collection`, `route_suffix`, `row_model` | `increment.estimation.readout_types` |
 | `readout.serialization.noncanonical_order` | `WireFormatError` | `section` | `increment.estimation.readout_types` |
 | `readout.serialization.sequential_snapshot_required` | `WireFormatError` | `checkpoint_ids` | `increment.estimation.readout_types` |
 | `readout.serialization.unsupported_version` | `WireFormatError` | `kind`, `received`, `remedy`, `supported` | `increment.estimation.readout_types` |
