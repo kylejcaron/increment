@@ -48,6 +48,7 @@
   "refusal_probability_upper": 0.0,
   "residual_cutoff": 1.0,
   "residual_p_value": 0.0625,
+  "residual_side": "greater",
   "reference_spec": {
     "kind": "unit_cycle_residual_variance_v1",
     "assignment": {

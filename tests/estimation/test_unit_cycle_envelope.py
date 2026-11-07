@@ -3,6 +3,7 @@
 import json
 import math
 from fractions import Fraction
+from pathlib import Path
 
 import pytest
 
@@ -95,6 +96,11 @@ def procedure(reference, **changes):
     return ContrastDecisionProcedure.model_validate(values)
 
 
+def _wire_fixture():
+    path = Path(__file__).resolve().parents[1] / "fixtures" / "unit_cycle_envelope_result.json"
+    return json.loads(path.read_text())
+
+
 def test_observed_slope_interval_does_not_hull_the_ht_point():
     computation = estimate_contrast(stats(), procedure(envelope()))
     result = computation.results[0]
@@ -150,6 +156,48 @@ def test_envelope_rejection_side_is_the_sign_of_the_slope_scaled_residual():
 
     assert contrast_stat_sig(result) is True
     assert contrast_rejection_side(result) == "greater"
+
+
+def test_envelope_rejection_side_survives_point_and_slope_rounding():
+    from increment.estimation.contrast import contrast_rejection_side, contrast_stat_sig
+
+    # Exact point 2 - 2**-54 and slope 2/3: residual = (2 - 2**-54) - 3 * (2/3) = -2**-54, and
+    # zero variance rejects every nonzero residual. The stored point and slope round to 2.0 and
+    # the float nearest 2/3, from which the residual would be rebuilt as +2**-53.
+    result = estimate_contrast(
+        stats(
+            probability_ct=0.75,
+            ct_cycles=4,
+            tc_cycles=0,
+            mean_slope=2 / 3,
+            reference_delta=2.0,
+            exact_delta_total=(8 * 2**52 - 1, 2**52),
+        ),
+        procedure(envelope(p=0.75, variance=0.0), null_abs=3.0),
+    ).results[0]
+    assert (result.estimate.value, result.mean_slope) == (2.0, 2 / 3)
+    assert contrast_stat_sig(result) is True
+    assert contrast_rejection_side(result) == "less"
+    restored = ContrastResult.model_validate_json(result.model_dump_json())
+    assert contrast_rejection_side(restored) == "less"
+    assert result.residual_side == "less"
+
+
+def test_envelope_payload_without_residual_side_refuses():
+    payload = _wire_fixture()
+    del payload["residual_side"]
+    with pytest.raises(InvalidRequestError) as caught:
+        ContrastResult.model_validate_json(json.dumps(payload))
+    assert caught.value.code == "estimation.contrast.legacy_envelope"
+    assert caught.value.context["missing_fields"] == ("residual_side",)
+    assert caught.value.context["remedy"] == "recompute_from_source"
+
+
+def test_t_payload_saved_without_residual_side_still_loads():
+    result = estimate_contrast(stats(m2_delta=4), procedure(UnitCycleTApproximation())).results[0]
+    payload = result.model_dump(mode="json")
+    del payload["residual_side"]
+    assert ContrastResult.model_validate_json(json.dumps(payload)) == result
 
 
 def test_zero_envelope_identifies_singleton_with_nonzero_sample_variance():
@@ -342,6 +390,7 @@ def test_provenance_and_numeric_nulls_survive_result_json_and_frames(backend):
     assert result.reference_spec is not None
     assert json.loads(output["reference_spec"][0]) == result.reference_spec.model_dump(mode="json")
     assert output["open_side"][0] == "upper"
+    assert output["residual_side"].to_list() == ["greater"]
     row = contrast_results_to_readout([result])[0]
     reference_spec = result.reference_spec.model_dump(mode="json")
     assert row["reference_spec"] == reference_spec
@@ -357,10 +406,7 @@ def test_probability_arithmetic_never_overflows_a_huge_null_product():
 
 
 def test_hand_calculated_envelope_wire_fixture():
-    from pathlib import Path
-
-    path = Path(__file__).resolve().parents[1] / "fixtures" / "unit_cycle_envelope_result.json"
-    payload = json.loads(path.read_text())
+    payload = _wire_fixture()
     expected = ContrastResult.model_validate(payload)
     actual = estimate_contrast(
         stats(probability_ct=0.5, mean_slope=1, reference_delta=2, ct_cycles=2, tc_cycles=2),
@@ -386,6 +432,7 @@ def test_one_sided_inference_does_not_compute_the_unbounded_endpoint():
         ("refusal_probability_upper", 0.001),
         ("residual_cutoff", 1.0),
         ("residual_p_value", 0.0),
+        ("residual_side", "greater"),
         ("standard_error_unavailable_reason", "insufficient_replicates"),
         ("provenance", envelope().provenance.model_dump(mode="json")),
         ("response_meaning", "retained_total"),

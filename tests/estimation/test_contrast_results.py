@@ -186,6 +186,7 @@ def test_to_frame_supports_declared_backends(backend):
         "refusal_probability_upper",
         "residual_cutoff",
         "residual_p_value",
+        "residual_side",
         "reference_spec",
         "provenance",
         "response_meaning",

@@ -541,6 +541,7 @@ Retired codes and their replacements are listed below.
 | `estimation.contrast.contrast_stats_reconstructed` | `InvalidRequestError` | — | `increment.estimation.contrast` |
 | `estimation.contrast.contrast_stats_reference` | `InvalidRequestError` | — | `increment.estimation.contrast` |
 | `estimation.contrast.contrast_stats_standard` | `InvalidRequestError` | — | `increment.estimation.contrast` |
+| `estimation.contrast.legacy_envelope` | `InvalidRequestError` | `missing_fields`, `remedy` | `increment.estimation.contrast_results` |
 | `estimation.contrast.one_sided_alpha` | `InvalidRequestError` | `alpha_eff`, `procedure` | `increment.estimation.contrast` |
 | `estimation.contrast.order_counts` | `InvalidRequestError` | — | `increment.estimation.contrast_results` |
 | `estimation.contrast.procedure_alpha` | `InvalidRequestError` | `procedure` | `increment.estimation.contrast` |
