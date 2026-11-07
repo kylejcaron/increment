@@ -999,7 +999,7 @@ def test_evidence_payload_must_match_its_declared_method(tmp_path, mismatch):
 
 
 def test_cancellation_partitions_refuse_merge_without_absolute_sums():
-    from increment.estimation.cuped.cells import _merge_cells, categorical_cells
+    from increment.estimation.cuped.cells import categorical_cells
 
     parts = []
     for k in (2.0, 3.0):
@@ -1016,7 +1016,7 @@ def test_cancellation_partitions_refuse_merge_without_absolute_sums():
             )
         )
     with pytest.raises(CodedError) as merged:
-        _merge_cells(*parts)
+        parts[0].merge(parts[1])
     assert merged.value.code == "estimation.cuped_linear.merge_precision"
 
 

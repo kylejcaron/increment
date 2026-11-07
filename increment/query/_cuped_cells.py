@@ -14,8 +14,7 @@ import numpy as np
 
 from increment.errors import CapabilityError, RefusalSpec, refuse
 from increment.estimation.cuped._numeric import _fail
-from increment.estimation.cuped.cells import _pattern_key
-from increment.estimation.cuped.types import CategoricalCells, _freeze_payload
+from increment.estimation.cuped.types import CategoricalCells, _freeze_payload, _pattern_key
 from increment.query._float_literals import exact_double
 from increment.query._nonfinite import nonfinite_parts
 from increment.semantics.loader import sqlglot_dialect_name

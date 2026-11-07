@@ -321,13 +321,7 @@ increment.estimation.conversion_delta -> increment.estimation.inference
 increment.estimation.conversion_delta -> increment.estimation.variance
 increment.estimation.conversion_route -> increment.estimation
 increment.estimation.conversion_route -> increment.estimation.binomial_rr
-increment.estimation.cuped.inference -> increment.estimation
-increment.estimation.cuped.inference -> increment.estimation.cuped
-increment.estimation.cuped.inference -> increment.estimation.cuped.multicovariate
 increment.estimation.cuped.types -> increment.estimation
-increment.estimation.cuped.types -> increment.estimation.cuped
-increment.estimation.cuped.types -> increment.estimation.cuped.cells
-increment.estimation.cuped.types -> increment.estimation.cuped.projections
 increment.estimation.cuped.types -> increment.estimation.diagnostics
 increment.estimation.decision_types -> increment.estimation
 increment.estimation.decision_types -> increment.estimation._certified
@@ -658,8 +652,6 @@ increment.readouts._multiplicity_scope -> increment._canonical
 increment.readouts._multiplicity_scope -> increment.estimation
 increment.readouts._multiplicity_scope -> increment.estimation.decision_types
 increment.readouts._multiplicity_scope -> increment.estimation.readout_types
-increment.readouts._multiplicity_scope -> increment.readouts
-increment.readouts._multiplicity_scope -> increment.readouts._design_scope
 increment.readouts._observational -> increment.decision
 increment.readouts._observational -> increment.readouts
 increment.readouts._observational -> increment.readouts._design_scope
@@ -759,7 +751,6 @@ increment.simulate.cluster_dgp -> increment.semantics.assignment
 increment.simulate.cluster_dgp -> increment.semantics.design
 increment.simulate.cluster_dgp -> increment.semantics.models
 increment.simulate.cluster_dgp -> increment.simulate
-increment.simulate.cluster_dgp -> increment.simulate._cluster_reconstruction
 increment.simulate.cluster_dgp -> increment.simulate.runner
 increment.simulate.runner -> increment._run
 increment.simulate.runner -> increment.builders
@@ -830,15 +821,3 @@ increment.estimation.contrast_results
 increment.estimation.readout_types
 increment.estimation.results
 increment.result_envelope
-
-increment.estimation.cuped.cells
-increment.estimation.cuped.inference
-increment.estimation.cuped.multicovariate
-increment.estimation.cuped.projections
-increment.estimation.cuped.types
-
-increment.readouts._design_scope
-increment.readouts._multiplicity_scope
-
-increment.simulate._cluster_reconstruction
-increment.simulate.cluster_dgp

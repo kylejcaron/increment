@@ -228,7 +228,7 @@ tests/test_compliance_artifacts.py 1
 tests/test_compliance_summary.py 1
 tests/test_cuped_covariate_sources.py 1
 tests/test_cuped_covariates.py 2
-tests/test_cuped_evidence.py 19
+tests/test_cuped_evidence.py 18
 # The exact-sum property checks exact_sum and the grouped exact sums frame moments are built
 # from against a rational total; a readout exposes no unrounded sum.
 tests/test_cuped_identity.py 2

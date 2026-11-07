@@ -25,6 +25,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
 from increment.errors import CodedError, CodedModel, InvalidRequestError, RefusalSpec, refuse
+from increment.simulate._cluster_reconstruction import (
+    _INVALID,
+    _rank_truth,
+    point_roundoff_bound,
+    reconstruct_reporting,
+)
 
 if TYPE_CHECKING:
     from increment._binding import ExperimentReader
@@ -37,11 +43,6 @@ Role = Literal["training", "holdout", "oracle"]
 Weight = Literal["member_count", "equal"]
 Grain = Literal["unit", "cluster"]
 
-_INVALID = RefusalSpec(
-    "simulate.cluster_dgp.invalid_scenario",
-    InvalidRequestError,
-    template="invalid clustered CATE request: {reason}",
-)
 _OVERLAP_ROSTER = RefusalSpec(
     "simulate.cluster_dgp.overlap_roster_unavailable",
     InvalidRequestError,
@@ -739,8 +740,6 @@ def reconstruct_affine_point(  # noqa: PLR0915
     rather than manufacturing a zero point; all-selected uplift is exactly
     zero by construction.
     """
-    from increment.simulate._cluster_reconstruction import point_roundoff_bound
-
     if statistic not in ("effect", "uplift"):
         refuse(_INVALID, reason="unknown policy point statistic")
     if population.scenario.witness == "random" and (
@@ -889,8 +888,6 @@ def check_policy_reconstruction(
     This is an arithmetic check only. PointAccuracy and the unresolved joint
     reporting/conditional-risk obligations remain separate release gates.
     """
-    from increment.simulate._cluster_reconstruction import reconstruct_reporting
-
     roster = _evaluation_roster(rule, population)
     snapshot = rule.validation.evaluation_population
     assert snapshot is not None
@@ -2048,45 +2045,6 @@ def _original_varying_noise(
         tuple(ids),
         (scenario.members_per_cluster * scenario.clone_factor,) * scenario.n_clusters,
     )
-
-
-def _rank_truth(
-    score: np.ndarray, tau: np.ndarray, weights: np.ndarray, *, clustered: bool
-) -> tuple[float, float]:
-    """Integrate top-share causal contrasts, without calling inference helpers.
-
-    For a tied block with mass h and mean effect t, cumulative mass a and
-    cumulative effect R, TOC(q)=t-ATE+(R-a*t)/q on (a,a+h]. Integrate TOC
-    The unclustered statistic uses a discrete right-endpoint Riemann sum,
-    averaging rank coefficients within ties.
-    """
-    order = np.argsort(-score, kind="stable")
-    score, tau, weights = score[order], tau[order], weights[order]
-    if not clustered:
-        n = len(tau)
-        rank = np.arange(1, n + 1, dtype=float)
-        autoc_weights = (np.cumsum((1 / rank)[::-1])[::-1] - 1) / n
-        qini_weights = ((n + 1) / 2 - rank) / n**2
-        starts = np.r_[0, np.flatnonzero(score[1:] != score[:-1]) + 1]
-        counts = np.diff(np.r_[starts, n])
-        autoc_weights = np.repeat(np.add.reduceat(autoc_weights, starts) / counts, counts)
-        qini_weights = np.repeat(np.add.reduceat(qini_weights, starts) / counts, counts)
-        return float(autoc_weights @ tau), float(qini_weights @ tau)
-    overall = float(np.average(tau, weights=weights))
-    a, response, autoc, qini = 0.0, 0.0, 0.0, 0.0
-    starts = np.r_[0, np.flatnonzero(score[1:] != score[:-1]) + 1]
-    block_mass = np.add.reduceat(weights, starts)
-    block_effect = np.add.reduceat(weights * tau, starts) / block_mass
-    block_mass /= weights.sum()
-    for mass, effect in zip(block_mass, block_effect, strict=True):
-        correction = response - a * effect
-        autoc += (effect - overall) * mass
-        if a:
-            autoc += correction * math.log1p(mass / a)
-        qini += (effect - overall) * (a * mass + mass * mass / 2) + correction * mass
-        response += mass * effect
-        a += mass
-    return autoc, qini
 
 
 def _causal_weighted_cut(score: np.ndarray, weights: np.ndarray, quantile: float) -> float:

@@ -36,6 +36,11 @@ from increment.estimation.cuped.encoding import (
     _normalized_offset_difference,
 )
 from increment.estimation.cuped.inference import (
+    M1_MAX_CATEGORICAL_LEVELS,
+    M1_MAX_ENCODED_COVARIATES,
+    M1_MAX_LEVERAGE,
+    M1_MAX_LEVERAGE_RATIO,
+    M1_MAX_RATIO_DENOMINATOR_PRECISION,
     _bm,
     _bm_reductions,
     _bm_terms,
@@ -43,21 +48,16 @@ from increment.estimation.cuped.inference import (
     _mean_covariance,
     finalize_fit,
 )
-from increment.estimation.cuped.projections import _cache_projections, _interval
+from increment.estimation.cuped.projections import _cache_projections
 from increment.estimation.cuped.types import (
     FitState,
     InferenceSummary,
     MulticovariateCupedFit,
     MulticovariateCupedProjection,
     ProjectionSpec,
+    _interval,
 )
 from increment.estimation.variance import ratio_denominator_precision
-
-M1_MAX_ENCODED_COVARIATES = 203
-M1_MAX_CATEGORICAL_LEVELS = 200
-M1_MAX_LEVERAGE_RATIO = 0.20
-M1_MAX_LEVERAGE = 0.45
-M1_MAX_RATIO_DENOMINATOR_PRECISION = 0.15
 
 
 @dataclass(frozen=True, slots=True)

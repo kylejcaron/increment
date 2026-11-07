@@ -30,6 +30,7 @@ from increment.estimators import (
 )
 from increment.frame import MetricSpec, from_unit_summary
 from increment.semantics.design import Randomized
+from increment.simulate._cluster_reconstruction import _rank_truth
 from increment.simulate.cluster_dgp import (
     ClusteredCATEResult,
     ClusteredCATEScenario,
@@ -41,7 +42,6 @@ from increment.simulate.cluster_dgp import (
     _causal_weighted_cut,
     _clustered_sizing_plan,
     _point_accuracy_observations,
-    _rank_truth,
     _record,
     _statistics,
     _validation_targets,
