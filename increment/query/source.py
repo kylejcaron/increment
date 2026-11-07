@@ -1550,6 +1550,14 @@ class _ArtifactFacadeSource(_ArtifactBase):
 
         return method_fit_input_digest(self, method_request)
 
+    def _spine_scope(self) -> tuple[dict[str, object], dict[str, str]]:
+        """The horizon and population of this immutable reader's published relations."""
+        horizon = {
+            "observation_horizon": self._artifact_experiment.observation_horizon_day,
+            "last_ds": self._manifest.last_ds,
+        }
+        return horizon, {"population": self._population}
+
     @contextmanager
     def cuped_relation(self, metric: Metric, request):
         """Expose only a verified warehouse relation to compact CUPED reduction."""

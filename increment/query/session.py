@@ -1990,6 +1990,13 @@ class WarehouseSession:
     def source_snapshot_evidence(self) -> SourceSnapshotEvidence | None:
         return self._source_snapshot_evidence
 
+    @property
+    def captured_relation_names(self) -> tuple[str, ...] | None:
+        """The relations this execution captured its sources into; None while reads are live."""
+        if self._source_tables is None or not self._captured_relations:
+            return None
+        return tuple(sorted(relation.name for relation in self._captured_relations))
+
     def _is_captured_expression(self, expression: ir.Expr) -> bool:
         if self._captured_relations is None:
             return False
