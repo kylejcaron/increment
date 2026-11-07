@@ -59,6 +59,30 @@ def test_type_checking_import_is_excluded_from_runtime_cycle(tmp_path: Path, gua
     assert result.returncode == 0
 
 
+@pytest.mark.parametrize(
+    "runtime_use",
+    [
+        "def load():\n    loader.import_module('pkg.b')",
+        "else:\n    def load():\n        loader.import_module('pkg.b')",
+    ],
+)
+def test_type_checking_rebinding_does_not_hide_runtime_importlib_alias(
+    tmp_path: Path, runtime_use: str
+) -> None:
+    package = _package(tmp_path)
+    (package / "a.py").write_text(
+        "from typing import TYPE_CHECKING\nimport importlib as loader\n"
+        f"if TYPE_CHECKING:\n    from typing import Any as loader\n{runtime_use}\n"
+    )
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "deferred import: pkg.a -> pkg.b" in result.stdout
+
+
 def test_deferred_cycle_is_rejected_until_its_members_are_baselined(
     tmp_path: Path,
 ) -> None:
@@ -109,16 +133,41 @@ def test_from_import_of_only_submodule_keeps_package_cycle(tmp_path: Path) -> No
     assert "runtime cycle: pkg.a, pkg.p" in result.stdout
 
 
-def test_package_reexport_edges_do_not_form_runtime_cycle(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "child_source",
+    ["from pkg.p.sibling import VALUE\n", "from . import sibling\nVALUE = sibling.VALUE\n"],
+)
+def test_package_reexport_edges_do_not_form_runtime_cycle(
+    tmp_path: Path, child_source: str
+) -> None:
     package = _package(tmp_path)
-    (package / "__init__.py").write_text("VALUE = 1\nfrom pkg import child\n")
-    (package / "child.py").write_text("from pkg import VALUE\n")
+    (package / "p").mkdir()
+    (package / "p" / "__init__.py").write_text("from .child import VALUE\n")
+    (package / "p" / "child.py").write_text(child_source)
+    (package / "p" / "sibling.py").write_text("VALUE = 1\n")
     baseline = tmp_path / "baseline.txt"
     baseline.write_text("# deferred\n# cycle\n")
 
     result = _run(package, baseline)
 
     assert result.returncode == 0
+
+
+def test_package_initializer_child_import_closes_cycle_through_another_module(
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path)
+    (package / "p").mkdir()
+    (package / "p" / "__init__.py").write_text("from .child import VALUE\n")
+    (package / "p" / "child.py").write_text("from pkg.a import VALUE\n")
+    (package / "a.py").write_text("from pkg.p import VALUE\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "runtime cycle: pkg.a, pkg.p, pkg.p.child" in result.stdout
 
 
 def test_dotted_child_import_still_detects_ancestor_package_cycle(tmp_path: Path) -> None:
@@ -155,6 +204,37 @@ def test_comprehension_target_does_not_shadow_module_importlib_alias(
     assert "runtime cycle: pkg.a, pkg.b" in result.stdout
 
 
+def test_comprehension_target_expression_import_is_recorded(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    (package / "a.py").write_text(
+        "from importlib import import_module\n"
+        "def load():\n    cache = {}\n    [None for cache[import_module('pkg.b')] in (1,)]\n"
+    )
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "deferred import: pkg.a -> pkg.b" in result.stdout
+
+
+def test_comprehension_walrus_rebinding_applies_to_enclosing_scope(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    (package / "a.py").write_text(
+        "from importlib import import_module\n"
+        "[(import_module := lambda name: None) for _ in (0,)]\n"
+        "def load():\n    import_module('pkg.b')\n"
+    )
+    (package / "b.py").write_text("import pkg.a\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 0
+
+
 def test_method_body_uses_module_alias_not_class_namespace(
     tmp_path: Path,
 ) -> None:
@@ -184,6 +264,7 @@ def test_method_body_uses_module_alias_not_class_namespace(
         "from importlib import import_module\ndef load():\n    import_module('.b', package='pkg')",
         "from importlib import import_module\ndef load():\n    import_module(name='pkg.b')",
         "from importlib import import_module\ndef load():\n    import_module('.b', 'pkg')",
+        "import importlib.util\ndef load():\n    importlib.import_module('pkg.b')",
     ],
 )
 def test_literal_import_module_call_closes_cycle(tmp_path: Path, source: str) -> None:
@@ -197,6 +278,51 @@ def test_literal_import_module_call_closes_cycle(tmp_path: Path, source: str) ->
 
     assert result.returncode == 1
     assert "runtime cycle: pkg.a, pkg.b" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    [
+        "loader = loader.import_module('pkg.b')",
+        "loader: object = loader.import_module('pkg.b')",
+        "loader += loader.import_module('pkg.b')",
+        "for loader in [loader.import_module('pkg.b')]:\n    pass",
+    ],
+)
+def test_import_in_value_of_alias_rebinding_closes_cycle(tmp_path: Path, rebinding: str) -> None:
+    package = _package(tmp_path)
+    (package / "a.py").write_text(f"import importlib as loader\n{rebinding}\n")
+    (package / "b.py").write_text("import pkg.a\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "runtime cycle: pkg.a, pkg.b" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "load = lambda value=import_module('pkg.c'): import_module('pkg.b')",
+        "values = (import_module('pkg.b') for _ in import_module('pkg.c').__name__)",
+    ],
+)
+def test_lambda_and_generator_bodies_defer_imports_but_not_their_eager_parts(
+    tmp_path: Path, source: str
+) -> None:
+    package = _package(tmp_path)
+    (package / "c.py").write_text("")
+    (package / "a.py").write_text(f"from importlib import import_module\n{source}\n")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# deferred\n# cycle\n")
+
+    result = _run(package, baseline)
+
+    assert result.returncode == 1
+    assert "deferred import: pkg.a -> pkg.b" in result.stdout
+    assert "pkg.a -> pkg.c" not in result.stdout
 
 
 def test_importlib_alias_shadowed_by_function_parameter_is_not_dynamic_import(
