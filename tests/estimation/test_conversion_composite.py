@@ -594,7 +594,8 @@ class TestReissueRoutesAtTheReportedTail:
         return row
 
     def test_the_persisted_reissue_keeps_the_delta_route_where_the_reported_tail_is_dense(self):
-        from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
+        from increment.estimation._fcr_reinterval import classify
+        from increment.estimation.results import reinterval_at_fcr
 
         row = self._member()
         construction, _ = classify(row)
@@ -626,7 +627,8 @@ class TestReissueRoutesAtTheReportedTail:
     def test_an_arm_above_the_exact_ceiling_is_not_refused_where_the_reported_tail_is_dense(
         self,
     ):
-        from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
+        from increment.estimation._fcr_reinterval import classify
+        from increment.estimation.results import reinterval_at_fcr
 
         n = 2 * FINITE_SAMPLE_MAX_ARM_SIZE
         row = member_row((50_000, n, 60_000, n), alternative="greater")
@@ -643,7 +645,8 @@ class TestReissueRoutesAtTheReportedTail:
     def test_a_reissue_below_the_dense_level_is_cut_as_a_fresh_finite_sample_row(self):
         """Score additive bounds with no t reference, and the row's other disclosures kept
         while the composite note, which no longer applies, is dropped."""
-        from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
+        from increment.estimation._fcr_reinterval import classify
+        from increment.estimation.results import reinterval_at_fcr
 
         warning = (
             "unadjusted group-mean comparison under an Observational design -- confounded; "

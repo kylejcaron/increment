@@ -36,6 +36,7 @@ from increment.estimation.contrast_results import ContrastResult
 from increment.estimation.results import (
     DECIDABLE_SEQUENTIAL_STATUSES,
     LiftEstimate,
+    _outward,
     _selection_qualification,
     conversion_route_label,
     row_decision_available,
@@ -273,7 +274,6 @@ def _liftestimate_to_row(
     result = est.sequential_result
     if result is not None:
         from increment.estimation.sequential_result import SequentialInferenceResult
-        from increment.estimation.sequential_runtime import _outward
 
         row.update(
             lower=_outward(result.bounds.lower, lower=True),

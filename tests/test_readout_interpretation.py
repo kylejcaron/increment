@@ -1280,7 +1280,7 @@ def test_missing_additive_interval_is_not_reported_as_an_unbounded_set():
 
 
 def test_signed_support_rank_set_uses_correct_unbounded_endpoint_direction():
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState, WinsorSupport
 
     raw = WinsorRawState(

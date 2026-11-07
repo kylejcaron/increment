@@ -12,8 +12,7 @@ from increment.estimation.adjust import ObservationalEvidence, _estimate_ate_dat
 from increment.estimation.encouragement import estimate_compliance, estimate_encouragement
 from increment.estimation.engine import Method
 from increment.estimation.quantile import quantile_lift_from_rows
-from increment.estimation.results import LiftEstimate
-from increment.estimation.winsor import estimate_winsor_lift
+from increment.estimation.results import LiftEstimate, estimate_winsor_lift
 from increment.evidence import (
     BreakoutMethodMomentsRequest,
     ComplianceRequest,

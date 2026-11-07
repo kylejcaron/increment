@@ -82,11 +82,15 @@ from increment.errors import (
 from increment.errors import (
     CodedModel as CodedModel,
 )
-from increment.estimation import binomial_rr, risk_difference
+from increment.estimation import binomial_rr
+from increment.estimation._fixed_horizon import (
+    _alpha_eff_for,
+    _joint_additive_bounds,
+    binomial_abs_interval,
+)
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
 from increment.estimation._tails import (
     resolvable_expm1,
-    two_sided_critical_value,
 )
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.armstats import (
@@ -96,8 +100,6 @@ from increment.estimation.armstats import (
     welch_satterthwaite_df,
 )
 from increment.estimation.conversion_route import (
-    CAPPED_NOTE_PREFIX,
-    ESCALATED_NOTE_PREFIX,
     dense_level,
     finite_sample_blocker,
     refuse_finite_sample_unavailable,
@@ -116,6 +118,7 @@ from increment.estimation.inference import (
     infer_lift,
     posterior_fields,
 )
+from increment.estimation.readout_types import collect_advisories, result_methods
 from increment.estimation.results import (
     BINOMIAL_METHOD,
     BINOMIAL_NUMERICAL_QUALIFICATION,
@@ -123,9 +126,12 @@ from increment.estimation.results import (
     DeltaConversionEvidence,
     Estimate,
     LiftEstimate,
-    _alpha_eff_for,
+    _additive_zero_reference,
+    _composite_evidence,
+    _joint_reference_from_exact,
+    estimate_winsor_lift,
+    relative_confidence_set,
     row_decision_alpha,
-    row_p_value,
 )
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,
@@ -1593,7 +1599,6 @@ def _raw_stats_evidence(
     summaries block the log scale and no margin is declared -- the additive
     difference against zero under the reference its interval was cut from."""
     from increment.estimation.decision_types import DecisionFailure, PValueEvidence
-    from increment.estimation.results import _additive_zero_reference
 
     if result.relative_confidence_set is not None or result.relative_unavailable_reason is not None:
         try:
@@ -1689,7 +1694,6 @@ def merge_decision_computations(
     dropping any retained sequential snapshot. Each bundle's advisories are bound
     to the methods of its own rows, or to no method when it has none."""
     from increment.estimation.decision_types import DecisionComputation
-    from increment.estimation.readout_types import collect_advisories, result_methods
 
     results: list[Any] = []
     evidence: dict[Any, Any] = {}
@@ -1936,9 +1940,6 @@ def _infer_clustered_lift_result(
     preferred_direction: PreferredDirection | None,
 ) -> LiftEstimate:
     from fractions import Fraction
-
-    from increment.estimation.inference import _joint_additive_bounds
-    from increment.estimation.results import _joint_reference_from_exact, relative_confidence_set
 
     treatment, control = contrast
     assert strategy.absolute_moments is not None and strategy.dof is not None
@@ -2619,21 +2620,6 @@ def _binomial_abs_sidecar(treatment: ArmStats, control: ArmStats) -> tuple[float
     return abs_diff, (abs_se if abs_se > 0.0 else None)
 
 
-def binomial_abs_interval(
-    x_c: int, n_c: int, x_t: int, n_t: int, alpha_eff: float
-) -> tuple[float, float, Literal["score"]]:
-    """``(abs_lb, abs_ub, abs_reference_kind)`` of a binomial row at its central-equivalent
-    ``alpha_eff``: the Miettinen-Nurminen score interval for ``p_t - p_c`` from the four
-    counts. Every binomial row's additive bounds come from here, so a fresh row, a family
-    reissue and a rerouted delta row agree. The critical value takes the shared survival
-    form: an alpha below its resolution refuses with ``estimation.tails.unresolvable``."""
-    from scipy.stats import norm
-
-    crit = two_sided_critical_value(norm.isf, alpha_eff, what="binomial additive interval")
-    lower, upper = risk_difference.score_bounds(x_c, n_c, x_t, n_t, crit)
-    return lower, upper, "score"
-
-
 def _validate_binomial_request(
     treatment: ArmStats,
     *,
@@ -3145,8 +3131,6 @@ def _relative_unavailable_additive_row(
     nor its reference. ``advisories`` (a ratio metric's denominator notes)
     lead the row's note.
     """
-    from increment.estimation.inference import _joint_additive_bounds
-
     treatment, control = contrast
     reason = _RELATIVE_UNAVAILABLE_REASONS[exc.reason]
     abs_se = math.hypot(exc.abs_se_t, exc.abs_se_c)
@@ -3298,7 +3282,6 @@ def _raw_winsor_lift_bundle(
         DecisionComputation,
         DecisionFailure,
     )
-    from increment.estimation.winsor import estimate_winsor_lift
     from increment.winsor import winsor_refuse
 
     resolved = methods
@@ -3621,70 +3604,6 @@ def escalate_family_member(row: LiftEstimate) -> LiftEstimate:
     )
     notes = [part for part in (row.note, note) if part is not None]
     return row.model_copy(update={"delta_evidence": composite, "note": "; ".join(notes) or None})
-
-
-def _composite_evidence(
-    row: LiftEstimate,
-    evidence: DeltaConversionEvidence,
-    alpha: float,
-    alternative: Alternative,
-) -> tuple[DeltaConversionEvidence, str | None]:
-    """The composite evidence of a family-member conversion row routed to the delta method, and
-    the note it carries when its p-value is not its delta p-value.
-
-    ``U`` is the smallest level at which the counts are dense (`conversion_route.dense_level`).
-    A delta p-value at or above ``U`` is the row's p-value. Below ``U`` the exact p-value is read
-    at the row's nominal tail with its nominal nuisance budget ``beta`` -- only where it can
-    matter: when ``U <= beta`` no exact p-value falls below ``U``, and the row reports ``U``
-    without the work. The exact route's own refusals (an arm above `FINITE_SAMPLE_MAX_ARM_SIZE`,
-    a tail its float margin dominates) are recorded as the reason the row reports ``U``: a
-    p-value of ``U`` is valid at every level (the row rejects nowhere below ``U``, and at ``U``
-    and above only where its delta p-value does), and is never a silent fallback.
-    """
-    level = evidence.dense_level
-    null_lift = row.null_lift
-    p_delta = row_p_value(row)
-    assert p_delta is not None, "a delta-route row carries its sampling reference"
-    evidence = evidence.model_copy(
-        update={"composite": True, "reading_null_lift": null_lift, "reading_alpha": alpha}
-    )
-    if p_delta >= level:
-        return evidence, None
-    below = (
-        f"the delta p-value {p_delta:.3g} lies below {level:.3g}, the smallest level at "
-        "which these counts are dense"
-    )
-    beta = binomial_rr.nuisance_beta(alpha)
-    if level <= beta:
-        return evidence, (
-            f"{CAPPED_NOTE_PREFIX}: {below}, and no exact p-value falls below the nuisance "
-            f"budget {beta:.3g}, so the row reports {level:.3g}"
-        )
-    from increment.estimation.conversion_route import composite_exact_reading
-
-    exact, code = composite_exact_reading(
-        evidence.counts,
-        dense_level=level,
-        alpha=alpha,
-        null_lift=null_lift,
-        alternative=alternative,
-    )
-    if exact is not None:
-        evidence = evidence.model_copy(update={"escalated_p_value": exact})
-        if exact < level:
-            return evidence, (
-                f"{ESCALATED_NOTE_PREFIX}: {below}, so the row reports the exact p-value "
-                f"{exact:.3g} read at its nominal tail"
-            )
-        return evidence, (
-            f"{CAPPED_NOTE_PREFIX}: {below}, and the exact p-value {exact:.3g} does not, "
-            f"so the row reports {level:.3g}"
-        )
-    assert code is not None, "a readable dense level either has exact evidence or a refusal"
-    return evidence.model_copy(update={"exact_unavailable": code}), (
-        f"{CAPPED_NOTE_PREFIX}: {below}, and the exact route is unavailable ({code}), so the "
-        f"row reports {level:.3g}"
-    )
 
 
 def _ratio_denominator_refusals(frame: Any, metric_name: str) -> dict[str, CodedError]:
