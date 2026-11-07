@@ -16,7 +16,6 @@ from increment.estimation.readout_types import (
 )
 from increment.estimation.results import (
     _FAMILY_PROCEDURE_LABELS,
-    DEFAULT_RELIABILITY_FLOOR,
     _selection_qualification,
     contrast_stat_sig,
     row_chance_to_beat,
@@ -25,9 +24,10 @@ from increment.estimation.results import (
     row_verdict,
 )
 
-#: Follows a fixed-horizon ``low_reliability`` row's interpretation; the verdict stands.
+#: Follows a fixed-horizon ``low_reliability`` row's interpretation; the verdict stands. The
+#: row keeps the flag but not the threshold it was configured with, so no number is named.
 LOW_RELIABILITY_CAVEAT = (
-    f"Caveat: low reliability, fewer than {DEFAULT_RELIABILITY_FLOOR} units in an arm."
+    "Caveat: low reliability, an arm has fewer units than the configured reliability threshold."
 )
 
 

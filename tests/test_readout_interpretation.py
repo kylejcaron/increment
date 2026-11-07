@@ -28,20 +28,36 @@ from increment.workflows import capture_sequential
 from tests.analysis_factory import view_readout
 
 
-def test_low_reliability_interval_is_qualified_in_shared_interpretation():
+def test_low_reliability_caveat_does_not_claim_the_default_floor():
+    from increment.breakout.estimates import run_breakout
     from increment.estimation.results import DEFAULT_RELIABILITY_FLOOR
     from increment.tables import estimates_to_readout
+    from tests.breakout.test_estimates import _make_arm_row, _windowed_mean_metric
 
-    row = _run_mean(_mean_frame())[0]
+    # 75 units per arm clears the default floor but not the configured one.
+    summary = pd.DataFrame(
+        [
+            _make_arm_row(n=75, mean=mean, var=4.0, country="thin", group_id=group)
+            for group, mean in (("control", 10.0), ("treatment", 11.0))
+        ]
+    )
+    (row,) = run_breakout(
+        summary=summary,
+        metrics=[_windowed_mean_metric()],
+        control_group="control",
+        dimension="country",
+        reliability_floor=100,
+    )
+    assert row.low_reliability is True
     plain, flagged = (
         estimates_to_readout([r])[0]["effect_interpretation"]
-        for r in (row, row.model_copy(update={"low_reliability": True}))
+        for r in (row.model_copy(update={"low_reliability": False}), row)
     )
 
     assert isinstance(plain, str) and isinstance(flagged, str)
     caveat = flagged.removeprefix(plain)
     assert caveat != flagged
-    assert str(DEFAULT_RELIABILITY_FLOOR) in caveat
+    assert str(DEFAULT_RELIABILITY_FLOOR) not in caveat
 
 
 def test_sequential_breakout_rejection_overrides_low_reliability_suppression():

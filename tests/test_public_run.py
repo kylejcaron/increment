@@ -1668,6 +1668,40 @@ def test_run_result_repr_is_a_compact_readout(tmp_path):
     assert all(endpoint.reason in line.split("set=", 1)[1] for endpoint in endpoints)
 
 
+def test_run_result_repr_qualifies_absolute_fallback():
+    from increment import Randomized
+
+    # Every arm mean is negative, so the relative lift is undefined and the run shows
+    # the additive difference of the arm means: -1.5 - (-2.5) = 1.
+    values = {"control": (-3.0, -2.0, -1.0, -4.0), "treatment": (-2.0, -1.0, 0.0, -3.0)}
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            [
+                {"unit": f"{arm}-{index}", "arm": arm, "value": value}
+                for arm, arm_values in values.items()
+                for index, value in enumerate(arm_values)
+            ]
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+        plan=AnalysisPlan(primary="value"),
+    )
+    with reader:
+        result = run(experiment, reader)
+
+    line = _printed_line(result, "value")
+    assert "scale=absolute" in line
+    assert "nonpositive_arm_mean" in line
+    assert "effect=1;" in line and "%" not in line
+
+
 def test_run_result_summary_frame_matches_view_summaries(tmp_path):
     import narwhals as nw
 
