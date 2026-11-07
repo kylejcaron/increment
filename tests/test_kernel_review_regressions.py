@@ -309,10 +309,15 @@ def test_registered_sequential_breakout_refuses_declared_breakouts_it_cannot_sup
             experiment, views=(View(view="breakout", grain="total", segment=identities),)
         )
 
+    every_breakout = selected()
+    preflight = runnable(every_breakout, "value")["randomized.unadjusted"].static_refusals
     for requested_capture in (None, capture):
         with _frame_read_calls() as reads, pytest.raises(CodedError) as raised:
-            run(selected(), resolver, capture=requested_capture)
+            run(every_breakout, resolver, capture=requested_capture)
         assert raised.value.code == "sequential.route.unsupported"
+        assert [(refusal.code, dict(refusal.context)) for refusal in preflight] == [
+            (raised.value.code, dict(raised.value.context))
+        ]
         assert reads == []
     with pytest.raises(CodedError) as uncaptured:
         sequential_snapshot(experiment, resolver)

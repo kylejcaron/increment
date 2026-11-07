@@ -677,10 +677,13 @@ def readout_refusals(
         )
         capture = options.get("capture")
         if scope.view == "breakout":
-            from increment.sequential_source import registered_breakout_dimension
+            from increment.sequential_source import require_registered_breakout_selection
 
             check(
-                registered_breakout_dimension, inference.registration, population=scope.population
+                require_registered_breakout_selection,
+                inference.registration,
+                by,
+                population=scope.population,
             )
         if capture is not None:
             from increment._window import resolve_window_days
