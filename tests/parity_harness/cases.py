@@ -345,6 +345,21 @@ def _close_parity_binding(bound: Bound) -> None:
         cleanup.callback(bound[1].close)
 
 
+def _publish(
+    con: Any, native: Bound, kinds: tuple[str, ...]
+) -> tuple[ArtifactContext, ArtifactStore, UnitDayArtifactRef]:
+    """Publish `native`'s unit-day artifact into the `artifacts` schema of `con`, with the
+    catalog extensions of `kinds`; return its expected context, store and reference."""
+    context = artifact_context(*native)
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    requests = [
+        entry.request
+        for entry in unit_day_artifact_extension_catalog(context)
+        if entry.request.kind in kinds
+    ]
+    return context, store, publish_unit_day_artifact(*native, store, extensions=requests)
+
+
 def _publish_and_adopt(
     con: Any, native: Bound, kinds: tuple[str, ...] = _ARTIFACT_EXTENSION_KINDS
 ) -> Bound:
@@ -357,14 +372,7 @@ def _publish_and_adopt(
     """
     _track_connection(native, con)
     try:
-        context = artifact_context(*native)
-        store = WarehouseArtifactStore(con, schema_name="artifacts")
-        requests = [
-            entry.request
-            for entry in unit_day_artifact_extension_catalog(context)
-            if entry.request.kind in kinds
-        ]
-        ref = publish_unit_day_artifact(*native, store, extensions=requests)
+        context, store, ref = _publish(con, native, kinds)
         _owned(native).artifacts = ((con, store, ref),)
         adopted = builders.from_unit_day_artifact(store, ref, expected_context=context)
     except BaseException:

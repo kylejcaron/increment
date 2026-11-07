@@ -32,6 +32,7 @@ from increment.semantics.models import (
 from tests.capability_contracts import CONSTRUCTORS
 
 from . import matrix_data as md
+from . import publications
 from .cases import (
     Absence,
     Bound,
@@ -40,7 +41,6 @@ from .cases import (
     _definitions_file_binding,
     _export_and_replay,
     _mark_as_of,
-    _publish_and_adopt,
     _track_connection,
 )
 from .matrix import Cell, Outcome, Refuses, Runs, StructuralAbsence
@@ -334,13 +334,13 @@ class _Ingress:
 
     def artifact(self) -> Bound:
         defs = self._definitions()
-        con = self.connection()
-        try:
-            native = self._native(con, defs)
-        except BaseException:
-            con.disconnect()
-            raise
-        adopted = _publish_and_adopt(con, native, _extension_kinds(self.cell))
+        kinds = _extension_kinds(self.cell)
+        adopted = publications.adopt(
+            publications.publication_key(defs, self.rows, kinds),
+            connect=self.connection,
+            declare=lambda con: self._native(con, defs),
+            kinds=kinds,
+        )
         if self.cell.option == "sequential":
             _mark_as_of(adopted, _SEQUENTIAL_AS_OF)
         return adopted

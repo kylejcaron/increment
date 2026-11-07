@@ -22,7 +22,10 @@ request is read) are ``slow``. In the remaining cells no ingress runs or reaches
 stage: each declaration either refuses with a code or is structurally absent (a schema or
 keyword the ingress cannot express, with the declared field named by the error), so they run
 in the fast tier. Every cell builds and runs each of its ingresses itself: no result is
-shared between cells, so a cell never depends on test order or on a sibling having run.
+shared between cells, so a cell never depends on test order or on a sibling having run. The
+unit-day artifact a cell adopts may come from a publication its test process already made
+from the same definitions, rows and extensions; adopting one is read-only and checked
+(``parity_harness/publications.py``).
 """
 
 from __future__ import annotations
