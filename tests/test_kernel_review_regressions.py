@@ -523,15 +523,19 @@ def test_encouragement_daily_preflight_matches_saved_estimands(estimands):
 
 def test_compliance_cell_identity_uses_declared_uptake_fact():
     from increment import Encouragement, ExclusionRestriction, UptakeSpec
+    from increment.kernel.contracts import BreakoutIdentity, metric_hash
 
     frame = _frame().assign(
         day="2025-01-01",
         exposed_on="2025-01-01",
         uptake=[0, 1] * 20,
         clicked=[1, 0] * 20,
+        country=["us", "us", "ca", "ca"] * 10,
     )
     metric_hashes = []
+    outcome_named_hashes = []
     for fact in ("uptake", "clicked"):
+        uptake = UptakeSpec(fact=fact, window_days=1)
         experiment, resolver = from_frame(
             frame,
             shape="panel",
@@ -539,9 +543,10 @@ def test_compliance_cell_identity_uses_declared_uptake_fact():
             group="arm",
             date="day",
             metrics={"value": "mean"},
+            breakouts=["country"],
             design=Encouragement(
                 control_group="control",
-                uptake=UptakeSpec(fact=fact, window_days=1),
+                uptake=uptake,
                 exclusion_restriction=ExclusionRestriction(
                     justification="assignment affects outcomes only through uptake"
                 ),
@@ -551,8 +556,21 @@ def test_compliance_cell_identity_uses_declared_uptake_fact():
         result = run(experiment, resolver, estimands=("compliance",))
         cell = next(cell for cell in result.cells if cell.identity.key.estimand == "compliance")
         metric_hashes.append(cell.identity.metric_hash)
+        # A breakout names each compliance cell by the outcome it segments.
+        segmented = replace(
+            experiment,
+            views=(View.breakout((BreakoutIdentity(property="country", source=None),)),),
+        )
+        outcome_named = {
+            cell.identity.metric_hash
+            for cell in run(segmented, resolver).cells
+            if cell.identity.key.metric == "value" and cell.identity.key.estimand == "compliance"
+        }
+        assert outcome_named == {metric_hash(uptake)}
+        outcome_named_hashes.extend(outcome_named)
 
     assert len(set(metric_hashes)) == 2
+    assert len(set(outcome_named_hashes)) == 2
 
 
 def test_daily_lift_run_decisions_are_not_evaluated_against_registered_plan():
@@ -712,6 +730,42 @@ def test_empty_run_cannot_be_saved_with_registered_refusal(tmp_path):
 
     assert raised.value.code == "store.run.empty"
     assert "empty" in str(raised.value).lower()
+    assert reads == []
+    assert not tuple((tmp_path / "results").rglob("*.parquet"))
+
+
+def test_persisted_run_rejects_narrowed_experiment_metric_roster_before_reads(tmp_path):
+    from increment.store import ParquetResultsStore
+
+    experiment, resolver = from_frame(
+        _frame().assign(other=lambda rows: rows["value"] + 1),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean", "other": "mean"},
+    )
+    narrowed = replace(experiment, metrics={"value": experiment.metrics["value"]})
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as raised:
+        run(narrowed, resolver, results_store=ParquetResultsStore(tmp_path / "results"))
+
+    assert raised.value.code == "store.decision.reference_invalid"
+    assert reads == []
+    assert not tuple((tmp_path / "results").rglob("*.parquet"))
+
+
+def test_persisted_run_with_an_empty_metric_selection_keeps_its_existing_route(tmp_path):
+    from increment.store import ParquetResultsStore
+
+    experiment, resolver = _experiment()
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as raised:
+        run(
+            replace(experiment, metrics={}),
+            resolver,
+            results_store=ParquetResultsStore(tmp_path / "results"),
+        )
+
+    assert raised.value.code == "store.run.empty"
     assert reads == []
     assert not tuple((tmp_path / "results").rglob("*.parquet"))
 
