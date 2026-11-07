@@ -210,7 +210,10 @@ the binomial rows' additive `abs_lb`/`abs_ub` interval remains approximate.
     resolving its denominator mean to a relative standard error `sqrt(var_d / n) / d_bar`
     above 0.15 carries the older `ratio_denominator_precision` note; a scalar CUPED row reads
     its CUPED-adjusted denominator mean instead, whose standard error includes that of the
-    covariate mean pooled over both arms. Both are advisory qualifications, not refusals or
+    covariate mean pooled over both arms. A CUPED ratio row's `ratio_denominator_skew` note
+    still describes the skew of the raw denominator, because the third moment of the
+    CUPED-adjusted denominator is not available, while its `ratio_denominator_precision` note
+    describes the CUPED-adjusted mean. Both are advisory qualifications, not refusals or
     corrected intervals: the estimate and interval are emitted unchanged. The measured
     flagged regimes show undercoverage, but this is not universal: correlated numerator and
     denominator can retain near-nominal coverage.

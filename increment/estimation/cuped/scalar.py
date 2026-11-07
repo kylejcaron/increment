@@ -135,6 +135,7 @@ from increment.estimation.armstats import (
     assert_cauchy_schwarz,
     clamp_negative_variance,
 )
+from increment.estimation.variance import require_positive_denominator_mean
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -444,8 +445,11 @@ class RatioCupedFit:
     def denominator_precision(self, arm: ArmStats) -> float:
         """Relative standard error of *arm*'s adjusted denominator mean, the pooled
         anchor's noise included: the precision of the denominator a CUPED ratio row
-        divides by. Defined where that mean is positive."""
-        return self.denominator.adjusted_mean_se(arm) / self.denominator.adjusted_mean(arm)
+        divides by. A non-positive adjusted mean refuses as a non-positive raw
+        denominator mean does."""
+        mean = self.denominator.adjusted_mean(arm)
+        require_positive_denominator_mean(metric=arm.metric, group_id=arm.group_id, d_bar=mean)
+        return self.denominator.adjusted_mean_se(arm) / mean
 
     def relative_moments(
         self, treatment: ArmStats, control: ArmStats

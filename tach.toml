@@ -780,7 +780,11 @@ depends_on = ["increment.errors"]
 [[modules]]
 path = "increment.estimation.cuped.scalar"
 layer = "core"
-depends_on = ["increment.errors", "increment.estimation.armstats"]
+depends_on = [
+  "increment.errors",
+  "increment.estimation.armstats",
+  "increment.estimation.variance",
+]
 
 [[modules]]
 path = "increment.estimation.cuped.types"

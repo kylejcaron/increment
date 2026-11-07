@@ -33,7 +33,11 @@ from increment.estimation.cuped import (
 from increment.estimation.cuped.scalar import _within_arm_theta
 from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
 from increment.estimation.engine import Method, estimate_lift
-from increment.estimation.variance import ratio_abs_diff_se, ratio_log_mean_se
+from increment.estimation.variance import (
+    ratio_abs_diff_se,
+    ratio_denominator_precision,
+    ratio_log_mean_se,
+)
 from increment.semantics.models import MeanMetric, Measure, RatioMetric
 from tests.mc import nominal_band, replicate
 from tests.warning_codes import allow_warning_codes, warning_codes
@@ -1782,6 +1786,43 @@ def test_adjusted_mean_se_includes_the_pooled_anchor_noise():
         assert fit.denominator_precision(arm) == pytest.approx(
             math.sqrt(var_d / 400) / pooled, rel=1e-12
         )
+
+
+def test_adjusted_denominator_precision_refuses_a_nonpositive_adjusted_denominator():
+    """With the denominator as its own covariate (theta = 1), covariate means 0 and 4 put
+    the pooled anchor at 2, so the adjusted denominator means are 1 + 2 = 3 and 1 - 2 = -1.
+    A relative standard error of a non-positive mean is no precision: the adjusted mean
+    refuses with the code and context an unadjusted denominator mean of -1 refuses with."""
+    from tests.ratio_arms import covariate_ratio_arm
+
+    def arm(group_id, *, d_bar, x_bar):
+        return covariate_ratio_arm(
+            group_id,
+            n=50,
+            y_bar=1.0,
+            d_bar=d_bar,
+            var_d=2.0,
+            x_bar=x_bar,
+            var_x=2.0,
+            cov_dx=2.0,
+            metric="ratio_rev",
+        )
+
+    control, treatment = (
+        arm("control", d_bar=1.0, x_bar=0.0),
+        arm("treatment", d_bar=1.0, x_bar=4.0),
+    )
+    fit = fit_ratio_cuped([control, treatment])
+    assert fit.denominator_precision(control) == pytest.approx(math.sqrt(2.0 / 100) / 3.0)
+    with pytest.raises(InvalidRequestError) as adjusted:
+        fit.denominator_precision(treatment)
+    with pytest.raises(InvalidRequestError) as unadjusted:
+        ratio_denominator_precision(arm("treatment", d_bar=-1.0, x_bar=0.0))
+    assert adjusted.value.code == "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+    assert unadjusted.value.code == adjusted.value.code
+    assert dict(adjusted.value.context) == pytest.approx(dict(unadjusted.value.context))
+    assert adjusted.value.context["group_id"] == "treatment"
+    assert adjusted.value.context["d_bar"] == pytest.approx(-1.0)
 
 
 @pytest.mark.parametrize("unit", [1e-155, 1e150])
