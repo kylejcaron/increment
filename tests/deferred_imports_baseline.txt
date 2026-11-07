@@ -505,7 +505,6 @@ increment.query.artifact_reader -> increment.sequential_state
 increment.query.artifact_reader -> increment.sources
 increment.query.artifact_reader -> increment.winsor
 increment.query.builders -> increment.errors
-increment.query.cuped -> increment._source_identity
 increment.query.cuped -> increment.errors
 increment.query.cuped -> increment.estimation
 increment.query.cuped -> increment.estimation.variance
@@ -816,8 +815,70 @@ increment.tables -> increment.result_envelope
 increment.winsor -> increment._winsor_rank
 
 # cycle
+increment._analysis_config
+increment._binding
+increment._breakout_readouts
+increment._cuped_evidence
+increment._day_axis
+increment._evidence_dispatch
+increment._execute
+increment._exploratory
+increment._frame_panel
+increment._frame_validation
 increment._interpretation
+increment._lift_options
+increment._metric_specs
+increment._readout_request
+increment._runnability
+increment._sequential_readouts
+increment._source_admission
+increment.breakout.estimates
+increment.breakout.projection
+increment.estimation._adjust.clustered_unadjusted
+increment.estimation._adjust.common
+increment.estimation.adjust
+increment.estimation.assignment_integrity
+increment.estimation.contrast
 increment.estimation.contrast_results
+increment.estimation.encouragement
+increment.estimation.engine
+increment.estimation.inference
+increment.estimation.quantile
 increment.estimation.readout_types
 increment.estimation.results
+increment.estimation.sequential_runtime
+increment.evidence
+increment.kernel
+increment.kernel.experiment
+increment.kernel.resolver
+increment.plan
+increment.query
+increment.query._workflows
+increment.readouts
+increment.readouts._asof
+increment.readouts._breakout
+increment.readouts._common
+increment.readouts._contrast_scope
+increment.readouts._daily
+increment.readouts._design_scope
+increment.readouts._encouragement
+increment.readouts._evidence
+increment.readouts._line2
+increment.readouts._line3
+increment.readouts._metric_rows
+increment.readouts._metric_type
+increment.readouts._multiplicity_scope
+increment.readouts._observational
+increment.readouts._passes
+increment.readouts._provider
+increment.readouts._randomized
+increment.readouts._randomized_scope
+increment.readouts._requests
+increment.readouts._run
+increment.readouts._run_acquisition
+increment.readouts._sequential_scope
+increment.readouts._srm
+increment.readouts._whole_window
 increment.result_envelope
+increment.sequential_source
+increment.sources

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Ratchet deferred imports and cycles; omit lazy facade and package re-export edges."""
+"""Ratchet deferred imports and cycles; omit the lazy facade and enclosing-package edges."""
 
 import argparse
 import ast
 import importlib.util
+from collections.abc import Sequence
 from pathlib import Path
 
 
@@ -38,11 +39,9 @@ def _targets(
         else:
             base = node.module or ""
         if base == package or base.startswith(package + "."):
-            targets.add(base)
             for alias in node.names:
                 candidate = f"{base}.{alias.name}"
-                if _module_exists(candidate, root):
-                    targets.add(candidate)
+                targets.add(candidate if _module_exists(candidate, root) else base)
     return targets
 
 
@@ -123,9 +122,9 @@ class _Imports(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            bound = alias.asname or alias.name.split(".")[0]
-            target = alias.name if alias.name in {"typing", "importlib"} else None
-            self._bind(bound, target)
+            module = alias.name if alias.asname else alias.name.partition(".")[0]
+            target = module if module in {"typing", "importlib"} else None
+            self._bind(alias.asname or module, target)
         self._record(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -143,18 +142,64 @@ class _Imports(ast.NodeVisitor):
         if isinstance(node.ctx, ast.Store):
             self._bind(node.id, None)
 
+    def _binding_scope(self) -> int:
+        depth = len(self.scope_kinds) - 1
+        while self.scope_kinds[depth] == "comprehension":
+            depth -= 1
+        return depth
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self.alias_scopes[self._binding_scope()][node.target.id] = None
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        for target in node.targets:
+            self.visit(target)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.visit(node.value)
+        self.visit(node.target)
+        self.visit(node.annotation)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        # An attribute or subscript target is evaluated before the value; a name is rebound after.
+        if not isinstance(node.target, ast.Name):
+            self.visit(node.target)
+        self.visit(node.value)
+        if isinstance(node.target, ast.Name):
+            self.visit(node.target)
+
+    def _visit_for(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        self.visit(node.target)
+        for statement in (*node.body, *node.orelse):
+            self.visit(statement)
+
+    def visit_For(self, node: ast.For) -> None:
+        self._visit_for(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self._visit_for(node)
+
     def _visit_comprehension(
         self,
         node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
     ) -> None:
-        self.alias_scopes.append(dict(self.alias_scopes[-1]))
+        # The outermost iterable runs in the enclosing scope, even for a lazy generator.
+        self.visit(node.generators[0].iter)
+        lazy = isinstance(node, ast.GeneratorExp)
+        owner = self._binding_scope()
+        runtime_bindings = dict(self.alias_scopes[owner]) if lazy else None
+        self.alias_scopes.append({})
         self.scope_kinds.append("comprehension")
-        for generator in node.generators:
-            self.visit(generator.iter)
-            target_names = _BoundNames()
-            target_names.visit(generator.target)
-            for name in target_names.names:
-                self._bind(name, None)
+        previous = self.deferred
+        self.deferred = previous or lazy
+        for index, generator in enumerate(node.generators):
+            if index:
+                self.visit(generator.iter)
+            self.visit(generator.target)
             for condition in generator.ifs:
                 self.visit(condition)
         if isinstance(node, ast.DictComp):
@@ -162,8 +207,12 @@ class _Imports(ast.NodeVisitor):
             self.visit(node.value)
         else:
             self.visit(node.elt)
+        self.deferred = previous
         self.alias_scopes.pop()
         self.scope_kinds.pop()
+        if runtime_bindings is not None:
+            # A generator body has not run yet, so its bindings do not reach the enclosing scope.
+            self.alias_scopes[owner] = runtime_bindings
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self._visit_comprehension(node)
@@ -228,25 +277,62 @@ class _Imports(ast.NodeVisitor):
     def _record_targets(self, targets: set[str]) -> None:
         if self.type_checking:
             return
-        expanded = set(targets)
+        ancestors: set[str] = set()
         for target in targets:
-            parts = target.split(".")
+            parts = target.split(".")[:-1]
             while len(parts) > 1:
+                ancestors.add(".".join(parts))
                 parts.pop()
-                parent = ".".join(parts)
-                if parent == self.package:
-                    break
-                expanded.add(parent)
-        self.edges.update(expanded)
+        implied = ancestors - targets
+        self.edges.update(targets)
+        # An enclosing package's __init__ is already running, so importing its
+        # submodule adds no runtime dependency on it.
+        self.edges.update(
+            parent
+            for parent in implied
+            if parent != self.module and not self.module.startswith(parent + ".")
+        )
         if self.deferred:
-            self.deferred_edges.update(expanded)
+            self.deferred_edges.update(targets | implied)
+
+    def _visit_defaults(self, arguments: ast.arguments) -> None:
+        for expression in (*arguments.defaults, *arguments.kw_defaults):
+            if expression is not None:
+                self.visit(expression)
+
+    def _visit_deferred_body(self, arguments: ast.arguments, body: Sequence[ast.AST]) -> None:
+        names = _BoundNames()
+        names.names.update(
+            argument.arg
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                *filter(None, (arguments.vararg, arguments.kwarg)),
+            )
+        )
+        for item in body:
+            names.visit(item)
+        inherited: dict[str, str | None] = {}
+        for scope, kind in zip(self.alias_scopes, self.scope_kinds, strict=True):
+            if kind != "class":
+                inherited.update(scope)
+        for name in names.names:
+            inherited[name] = None
+        self.alias_scopes.append(inherited)
+        self.scope_kinds.append("function")
+        previous = self.deferred
+        self.deferred = True
+        for item in body:
+            self.visit(item)
+        self.deferred = previous
+        self.alias_scopes.pop()
+        self.scope_kinds.pop()
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         for expression in node.decorator_list:
             self.visit(expression)
-        for expression in (*node.args.defaults, *node.args.kw_defaults):
-            if expression is not None:
-                self.visit(expression)
+        self._visit_defaults(node.args)
         for argument in (
             *node.args.posonlyargs,
             *node.args.args,
@@ -260,35 +346,11 @@ class _Imports(ast.NodeVisitor):
             self.visit(node.args.kwarg.annotation)
         if node.returns:
             self.visit(node.returns)
+        self._visit_deferred_body(node.args, node.body)
 
-        names = _BoundNames()
-        for argument in (
-            *node.args.posonlyargs,
-            *node.args.args,
-            *node.args.kwonlyargs,
-        ):
-            names.names.add(argument.arg)
-        if node.args.vararg:
-            names.names.add(node.args.vararg.arg)
-        if node.args.kwarg:
-            names.names.add(node.args.kwarg.arg)
-        for statement in node.body:
-            names.visit(statement)
-        inherited: dict[str, str | None] = {}
-        for scope, kind in zip(self.alias_scopes, self.scope_kinds, strict=True):
-            if kind != "class":
-                inherited.update(scope)
-        for name in names.names:
-            inherited[name] = None
-        self.alias_scopes.append(inherited)
-        self.scope_kinds.append("function")
-        previous = self.deferred
-        self.deferred = True
-        for item in node.body:
-            self.visit(item)
-        self.deferred = previous
-        self.alias_scopes.pop()
-        self.scope_kinds.pop()
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._visit_defaults(node.args)
+        self._visit_deferred_body(node.args, [node.body])
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -321,10 +383,12 @@ class _Imports(ast.NodeVisitor):
         )
         previous = self.type_checking
         if is_tc:
+            runtime_bindings = dict(self.alias_scopes[-1])
             self.type_checking = True
             for item in node.body:
                 self.visit(item)
             self.type_checking = previous
+            self.alias_scopes[-1] = runtime_bindings
             for item in node.orelse:
                 self.visit(item)
             return
@@ -356,7 +420,7 @@ def runtime_graph(root: Path) -> dict[str, set[str]]:
 
 
 def deferred_edges(root: Path) -> set[tuple[str, str]]:
-    """Return internal imports located inside functions or methods."""
+    """Return internal imports inside function, lambda or generator-expression bodies."""
     return _graphs(Path(root))[1]
 
 
@@ -376,8 +440,6 @@ def cycles(graph: dict[str, set[str]]) -> list[frozenset[str]]:
         stack.append(node)
         on_stack.add(node)
         for target in graph.get(node, set()):
-            if target.startswith(node + "."):
-                continue
             if target not in indices:
                 connect(target)
                 lowlinks[node] = min(lowlinks[node], lowlinks[target])
