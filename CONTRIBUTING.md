@@ -124,25 +124,22 @@ changes, and always runs for pushes and manual dispatches. Renames consider
 both paths, so moving a module into documentation still requires compilation.
 The functional slow tier always runs for pushes to main and manual dispatches.
 On a pull request it runs only with the `ready-to-merge` label, and only when
-`scripts/slow_required.py` finds a change that can reach it: `pyproject.toml`,
-`uv.lock`, `Makefile`, `noxfile.py`, `ci.yml`, the selector and the import graph
-it reads (`scripts/check_deferred_imports.py`), any `conftest.py`,
-`integration/`, `tests/fixtures/`, `tests/parity_harness/`,
-`tests/evidence_fixtures/`, `tests/query/`, a test module holding slow tests,
-repository code one imports or a data file one names, or an `increment/`
-module in the warehouse path or imported by it at runtime, deferred imports
-included. The warehouse path is `increment.query`, `increment.readouts`,
-`increment.kernel`, `increment.breakout`, `increment.dashboard`,
-`increment.estimation`, `increment.artifacts`, `increment.store`,
-`increment.reporting`, `increment.workflows`, `increment._execute`,
-`increment.builders`, `increment.sources`, `increment.evidence` and
-`increment.result_envelope`. Power planning is inside that closure (the
-builders reach it through `increment.switchback`, and the dashboard through
-`increment._planning_baseline`), so a change to `increment/power/` needs the
-slow tier; `increment/simulate/` and documentation alone do not.
-An unavailable diff or a failed decision requires the tier. Run
+`scripts/slow_required.py` finds a change the slow tests can exercise. That is
+`pyproject.toml`, `uv.lock`, `Makefile`, `noxfile.py`, `ci.yml`, the selector
+and the import graph it reads (`scripts/check_deferred_imports.py`), any
+`conftest.py`, `integration/`, `tests/fixtures/`, `tests/parity_harness/`,
+`tests/evidence_fixtures/` and `tests/query/`; or any module under
+`increment/`, `calibration/`, `tests/`, `scripts/` or `examples/` that a test
+module holding slow tests, or a `conftest.py`, reaches at run time; or a data
+file such code names. A module is reached when it is imported, directly or
+through other modules, deferred imports and lazy package exports included; run
+as `python -m <module>` or with `runpy.run_module`; or loaded through one of the
+project's entry points. Today nearly every `increment/` module is reached, so a
+change to the package, power and simulation included, needs the tier; a change
+to documentation alone, or to code only tooling tests use, does not. An
+unavailable diff or a failed decision requires the tier. Run
 `uv run --no-sync python -m scripts.slow_required --base <sha> --head <sha>`
-to see the decision and its reason.
+to see the decision and the slow test that reaches the change.
 Tagging requires successful `ci-ok` and a successful nightly run on the exact
 tagged SHA. The existing `force` input bypasses both checks; hosted
 branch-protection activation is an owner gate.

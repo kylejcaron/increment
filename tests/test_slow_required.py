@@ -14,9 +14,15 @@ pytestmark = pytest.mark.tooling
 
 @pytest.fixture
 def tree(tmp_path: Path) -> Path:
-    """A package whose query layer imports a helper chain, and a slow test with its support."""
+    """A package with a lazy root export and a slow test that imports, runs and reads support."""
     files = {
-        "increment/__init__.py": "",
+        "increment/__init__.py": (
+            "import importlib\n\n"
+            '_LAZY_IMPORTS = {"build": ("increment.query.builders", "build")}\n\n\n'
+            "def __getattr__(name):\n"
+            "    module_name, attribute = _LAZY_IMPORTS[name]\n"
+            "    return getattr(importlib.import_module(module_name), attribute)\n"
+        ),
         "increment/query/__init__.py": "",
         "increment/query/builders.py": (
             "def build():\n    from increment._shape import shape\n\n    return shape\n"
@@ -25,12 +31,31 @@ def tree(tmp_path: Path) -> Path:
         "increment/_leaf.py": "LEAF = 1\n",
         "increment/power/__init__.py": "",
         "increment/power/core.py": "from increment.query import builders\n",
+        "increment/simulate/__init__.py": "",
+        "increment/simulate/runner.py": (
+            "from importlib.metadata import entry_points\n\n\n"
+            "def run_end_to_end():\n"
+            '    return entry_points(group="increment.ports")\n'
+        ),
+        "increment/ports_impl.py": "def load():\n    return 1\n",
+        "pyproject.toml": (
+            '[project.entry-points."increment.ports"]\nbuiltin = "increment.ports_impl:load"\n'
+        ),
+        "calibration/__init__.py": "",
+        "calibration/unit_cycle.py": "print('campaign')\n",
+        "calibration/journal.py": "print('journal')\n",
         "tests/__init__.py": "",
         "tests/power/__init__.py": "",
         "tests/power/test_curve.py": (
-            "from pathlib import Path\n\nimport pytest\n\nfrom ._procedures import oracle\n\n"
+            "import runpy\nimport subprocess\nimport sys\nfrom pathlib import Path\n\n"
+            "import pytest\n\n"
+            "from increment import build\nfrom increment.simulate.runner import run_end_to_end\n\n"
+            "from ._procedures import oracle\n\n"
             "pytestmark = pytest.mark.slow\n"
-            'GOLDENS = Path(__file__).parents[1] / "goldens"\n'
+            'GOLDENS = Path(__file__).parents[1] / "goldens"\n\n\n'
+            "def test_campaign():\n"
+            '    subprocess.run([sys.executable, "-m", "calibration.unit_cycle"], check=True)\n'
+            '    runpy.run_module("calibration.journal")\n'
         ),
         "tests/power/_procedures.py": "from scripts.oracle import oracle\n",
         "tests/goldens/curve.json": "{}\n",
@@ -52,20 +77,34 @@ def test_dependency_change_requires_the_slow_tier(tree: Path) -> None:
     assert required
 
 
-def test_module_that_only_imports_the_warehouse_path_skips_the_slow_tier(tree: Path) -> None:
-    # increment.power.core imports the query layer, but nothing there imports it.
+def test_module_no_slow_test_reaches_skips_the_slow_tier(tree: Path) -> None:
+    # increment.power.core imports what the slow test uses, but nothing imports it.
     required, _ = decide_paths(["increment/power/core.py"], tree)
     assert not required
 
 
-def test_module_the_query_layer_imports_transitively_requires_the_slow_tier(tree: Path) -> None:
-    # query.builders imports _shape inside a function; _shape imports _leaf.
+def test_module_reached_through_a_lazy_export_and_deferred_imports_requires_the_slow_tier(
+    tree: Path,
+) -> None:
+    # increment.build resolves to query.builders, which imports _shape inside a function.
     required, _ = decide_paths(["increment/_leaf.py"], tree)
     assert required
 
 
-@pytest.mark.parametrize("path", ["scripts/oracle.py", "tests/goldens/curve.json"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "increment/simulate/runner.py",
+        "increment/ports_impl.py",
+        "calibration/unit_cycle.py",
+        "calibration/journal.py",
+        "scripts/oracle.py",
+        "tests/goldens/curve.json",
+    ],
+)
 def test_code_and_data_a_slow_test_uses_require_the_slow_tier(tree: Path, path: str) -> None:
+    # Imported directly, loaded as an entry point, run with -m, run with runpy, imported
+    # through a helper, read.
     required, _ = decide_paths([path], tree)
     assert required
 

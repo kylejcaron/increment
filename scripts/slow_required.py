@@ -1,7 +1,7 @@
 """Decide whether a pull request needs the functional slow tier; uncertainty requires it.
 
-The tier is required when a change can reach warehouse or cross-source behaviour, a slow
-test or what it imports or reads, or the configuration that selects and runs the tier.
+The tier is required when a change touches the configuration that selects and runs it, a
+slow test, or code or data a slow test reaches through imports or module invocations.
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ import ast
 import os
 import re
 import subprocess
+import tomllib
 from collections import deque
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from pathlib import Path
 
 _GATE_FILES = frozenset(
@@ -33,31 +34,9 @@ _SUPPORT_TREES = (
     "tests/evidence_fixtures/",
     "tests/query/",
 )
-# Every source runs through these modules or they query a warehouse themselves;
-# estimation changes the answer on every source.
-_WAREHOUSE_PACKAGES = (
-    "increment.query",
-    "increment.readouts",
-    "increment.kernel",
-    "increment.breakout",
-    "increment.dashboard",
-    "increment.estimation",
-    "increment.artifacts",
-    "increment.store",
-    "increment.reporting",
-    "increment.workflows",
-)
-_WAREHOUSE_MODULES = frozenset(
-    {
-        "increment._execute",
-        "increment.builders",
-        "increment.sources",
-        "increment.evidence",
-        "increment.result_envelope",
-    }
-)
-# Repository packages that slow tests and conftest files import.
-_LOCAL_PACKAGES = ("tests", "scripts", "examples", "calibration")
+_PRODUCTION_PACKAGES = ("increment", "calibration")
+# Slow tests also import and run test, script and example code.
+_PACKAGES = (*_PRODUCTION_PACKAGES, "tests", "scripts", "examples")
 _SLOW_MARK = "pytest.mark.slow"
 # Marks the functional slow tier deselects; each belongs to its own gate.
 _OTHER_TIERS = (
@@ -69,12 +48,10 @@ _OTHER_TIERS = (
     "compile_registry",
     "benchmark",
 )
-
-
-def _is_warehouse(module: str) -> bool:
-    return module in _WAREHOUSE_MODULES or any(
-        module == package or module.startswith(f"{package}.") for package in _WAREHOUSE_PACKAGES
-    )
+# A module an import statement names, and the names it imports from it.
+type Import = tuple[str, tuple[str, ...]]
+# Literal module runs: a "-m", "<module>" argument pair or run_module("<module>").
+_INVOCATION = re.compile(r"""["']-m["']\s*,\s*["']([\w.]+)["']|run_module\(\s*["']([\w.]+)["']""")
 
 
 def _reach(graph: Mapping[str, Collection[str]], roots: Iterable[str]) -> dict[str, str | None]:
@@ -98,7 +75,7 @@ def _chain(importer: Mapping[str, str | None], module: str) -> str:
 
 
 def _module_of(path: str, known: Collection[str]) -> str:
-    """The module a file defines or, for a deleted file or data, the nearest enclosing one."""
+    """The module a file defines or, for package data, the nearest enclosing package."""
     stem = path.removesuffix(".py") if path.endswith(".py") else path.rpartition("/")[0]
     module = stem.replace("/", ".").removesuffix(".__init__")
     while module not in known and "." in module:
@@ -106,44 +83,90 @@ def _module_of(path: str, known: Collection[str]) -> str:
     return module
 
 
-def _warehouse_reason(paths: list[str], root: Path) -> str | None:
-    # Imported here so that a missing or broken graph module fails closed in main().
-    from scripts.check_deferred_imports import runtime_graph
-
-    graph = runtime_graph(root / "increment")
-    importer = _reach(graph, (module for module in graph if _is_warehouse(module)))
-    for path in paths:
-        module = _module_of(path, graph)
-        if _is_warehouse(module):
-            return f"{path} is in the warehouse path ({module})"
-        if module in importer:
-            return f"{path} is imported by the warehouse path ({_chain(importer, module)})"
-    return None
-
-
 def _local_modules(root: Path) -> dict[str, Path]:
     modules = {"conftest": root / "conftest.py"} if (root / "conftest.py").is_file() else {}
-    for package in _LOCAL_PACKAGES:
+    for package in _PACKAGES:
         for path in sorted((root / package).rglob("*.py")):
             parts = path.relative_to(root).with_suffix("").parts
             modules[".".join(parts[:-1] if parts[-1] == "__init__" else parts)] = path
     return modules
 
 
-def _imports(module: str, tree: ast.Module, *, package: bool, modules: Collection[str]) -> set[str]:
-    """Repository modules an import in ``module`` executes, with the packages holding them."""
+def _is_type_checking(test: ast.expr) -> bool:
+    name = test.attr if isinstance(test, ast.Attribute) else getattr(test, "id", None)
+    return name == "TYPE_CHECKING"
+
+
+def _statements(tree: ast.Module) -> Iterator[ast.stmt]:
+    """Every statement, skipping the bodies of ``if TYPE_CHECKING:`` blocks."""
+    pending: list[ast.stmt] = list(tree.body)
+    while pending:
+        node = pending.pop()
+        yield node
+        if isinstance(node, ast.If) and _is_type_checking(node.test):
+            pending.extend(node.orelse)
+            continue
+        for field in ("body", "orelse", "finalbody"):
+            pending.extend(getattr(node, field, ()))
+        for clause in (*getattr(node, "handlers", ()), *getattr(node, "cases", ())):
+            pending.extend(clause.body)
+
+
+def _text(node: ast.AST) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _lazy_exports(tree: ast.Module, modules: Collection[str]) -> dict[str, str]:
+    """Names a module-level ``__getattr__`` loads from a literal ``{name: (module, ...)}`` table."""
+    if not any(
+        isinstance(node, ast.FunctionDef) and node.name == "__getattr__" for node in tree.body
+    ):
+        return {}
+    exports: dict[str, str] = {}
+    for node in tree.body:
+        table = node.value if isinstance(node, ast.Assign | ast.AnnAssign) else None
+        if not isinstance(table, ast.Dict):
+            continue
+        for key, value in zip(table.keys, table.values, strict=True):
+            name = _text(key) if key is not None else None
+            target = _text(value.elts[0]) if isinstance(value, ast.Tuple) and value.elts else None
+            if name and target and target in modules:
+                exports[name] = target
+    return exports
+
+
+def _import_records(module: str, tree: ast.Module, *, package: bool) -> list[Import]:
+    """Each import as ``(module, names)``; ``names`` is empty for ``import module``."""
     context = module if package else module.rpartition(".")[0]
-    names: list[str] = []
-    for node in ast.walk(tree):
+    records: list[Import] = []
+    for node in _statements(tree):
         if isinstance(node, ast.Import):
-            names.extend(alias.name for alias in node.names)
+            records.extend((alias.name, ()) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             base = node.module or ""
             if node.level:
                 parts = context.split(".")[: len(context.split(".")) - node.level + 1]
                 base = ".".join([*parts, base] if base else parts)
-            names.append(base)
-            names.extend(f"{base}.{alias.name}" for alias in node.names)
+            records.append((base, tuple(alias.name for alias in node.names)))
+    return records
+
+
+def _targets(
+    records: Iterable[Import],
+    invoked: Iterable[str],
+    modules: Collection[str],
+    exports: Mapping[str, Mapping[str, str]],
+) -> set[str]:
+    """Repository modules imported or run, with the packages holding them."""
+    names = list(invoked)
+    for base, imported in records:
+        lazy = exports.get(base, {})
+        names.append(base)
+        if not imported:
+            # Attribute access on an imported lazy package can load any of its exports.
+            names.extend(lazy.values())
+        for name in imported:
+            names.extend([f"{base}.{name}", lazy.get(name, "")])
     found: set[str] = set()
     for name in names:
         while name:
@@ -173,29 +196,71 @@ def _mentions(path: str, sources: Iterable[str]) -> bool:
     return any(pattern.search(source) for source in sources)
 
 
-def _slow_test_reason(paths: list[str], root: Path) -> str | None:
+def _entry_point_modules(root: Path) -> list[str]:
+    """Modules named by the project's entry points, which the package loads at run time."""
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return []
+    groups = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {})
+    return sorted(
+        target.partition(":")[0].strip()
+        for group in groups.get("entry-points", {}).values()
+        for target in group.values()
+    )
+
+
+def _runs(source: str, plugins: list[str]) -> list[str]:
+    """Modules a source runs other than by import: literal module runs and entry points."""
+    invoked = [first or second for first, second in _INVOCATION.findall(source)]
+    return invoked + plugins if "entry_points" in source else invoked
+
+
+def _slow_reach(root: Path) -> tuple[dict[str, str | None], dict[str, str]]:
+    """Modules the slow tier reaches from its test modules and conftest files, with sources."""
+    # Imported here so that a missing or broken graph module fails closed in main().
+    from scripts.check_deferred_imports import runtime_graph
+
     modules = _local_modules(root)
-    sources = {module: path.read_text(encoding="utf-8") for module, path in modules.items()}
-    trees = {module: ast.parse(sources[module], str(path)) for module, path in modules.items()}
-    roots = [
-        module
-        for module, path in modules.items()
-        if path.name == "conftest.py"
-        or (module.startswith("tests.") and _in_slow_tier(trees[module], sources[module]))
-    ]
+    plugins = _entry_point_modules(root)
+    sources: dict[str, str] = {}
+    records: dict[str, list[Import]] = {}
+    exports: dict[str, dict[str, str]] = {}
+    roots: list[str] = []
+    for module, path in modules.items():
+        sources[module] = source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, str(path))
+        records[module] = _import_records(module, tree, package=path.name == "__init__.py")
+        if lazy := _lazy_exports(tree, modules):
+            exports[module] = lazy
+        if path.name == "conftest.py" or (
+            module.startswith("tests.") and _in_slow_tier(tree, source)
+        ):
+            roots.append(module)
     graph = {
-        module: _imports(module, trees[module], package=path.name == "__init__.py", modules=modules)
-        for module, path in modules.items()
+        module: _targets(records[module], _runs(sources[module], plugins), modules, exports)
+        for module in modules
     }
-    importer = _reach(graph, roots)
-    reached = [sources[module] for module in importer]
+    for package in _PRODUCTION_PACKAGES:
+        if (root / package).is_dir():
+            for module, targets in runtime_graph(root / package).items():
+                graph.setdefault(module, set()).update(targets)
+    return _reach(graph, roots), sources
+
+
+def _slow_reason(paths: list[str], root: Path) -> str | None:
+    importer, sources = _slow_reach(root)
+    reached = [sources[module] for module in importer if module in sources]
     for path in paths:
         if path.endswith(".py"):
             module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
-            if module in importer:
-                return f"{path} is a slow test or imported by one ({_chain(importer, module)})"
+        elif path.partition("/")[0] in _PRODUCTION_PACKAGES:
+            module = _module_of(path, sources)
         elif _mentions(path, reached):
-            return f"{path} is read by a slow test or a module it imports"
+            return f"{path} is read by a slow test or a module it uses"
+        else:
+            continue
+        if module in importer:
+            return f"{path} is used by the slow tier ({_chain(importer, module)})"
     return None
 
 
@@ -206,11 +271,8 @@ def decide_paths(paths: list[str], root: Path) -> tuple[bool, str]:
             return True, f"{path} selects or configures the slow tier"
         if path.startswith(_SUPPORT_TREES):
             return True, f"{path} supports the slow tests"
-    package_paths = [path for path in paths if path.startswith("increment/")]
-    if package_paths and (reason := _warehouse_reason(package_paths, root)):
-        return True, reason
-    local_paths = [path for path in paths if path.partition("/")[0] in _LOCAL_PACKAGES]
-    if local_paths and (reason := _slow_test_reason(local_paths, root)):
+    code_paths = [path for path in paths if path.partition("/")[0] in _PACKAGES]
+    if code_paths and (reason := _slow_reason(code_paths, root)):
         return True, reason
     return False, "no changed path reaches the slow tier"
 
