@@ -446,6 +446,25 @@ def _polars(rows: list[dict[str, Any]], *, chunk: int | None = None) -> Any:
     return pl.concat(parts, rechunk=False)
 
 
+def _record_batches(rows: list[dict[str, Any]], *, chunk: int = 16) -> pa.Table:
+    """A pyarrow table of many record batches, as data read from files arrives."""
+    return pa.Table.from_batches(
+        [
+            pa.RecordBatch.from_pylist(rows[start : start + chunk])
+            for start in range(0, len(rows), chunk)
+        ]
+    )
+
+
+@pytest.fixture
+def arrow_threads():
+    """Arrow's multithreaded execution, which the test session limits to one thread."""
+    previous = pa.cpu_count()
+    pa.set_cpu_count(4)
+    yield
+    pa.set_cpu_count(previous)
+
+
 @pytest.mark.parametrize("panel", [False, True], ids=["summary", "panel"])
 @pytest.mark.parametrize("decision", ["scalar", "mixed"])
 def test_frame_cuped_snapshot_id_is_a_function_of_the_rows(decision, panel):
@@ -457,7 +476,7 @@ def test_frame_cuped_snapshot_id_is_a_function_of_the_rows(decision, panel):
 
 
 @pytest.mark.parametrize("library", ["polars", "pandas", "pyarrow"])
-def test_panel_snapshot_id_survives_reordering_days_within_units(library):
+def test_panel_snapshot_id_survives_reordering_days_within_units(library, arrow_threads):
     import pandas as pd
 
     rows = _identity_rows(days=3, n_units=600)
@@ -472,7 +491,7 @@ def test_panel_snapshot_id_survives_reordering_days_within_units(library):
     build = {
         "polars": _polars,
         "pandas": pd.DataFrame,
-        "pyarrow": pa.Table.from_pylist,
+        "pyarrow": _record_batches,
     }[library]
     identities = {
         method: {

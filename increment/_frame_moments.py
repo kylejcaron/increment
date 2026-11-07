@@ -316,19 +316,42 @@ def _grouped(
     aggregations: Mapping[str, nw.Expr] | None = None,
 ) -> tuple[np.ndarray, nw.DataFrame[Any]]:
     """Each row's dense group code, and one row per group in code order: its *keys* and
-    *aggregations*, each evaluated over the group."""
+    *aggregations*, each evaluated over the group. Codes follow each group's first row."""
+    aggregations = aggregations or {}
     row = _scratch_name(frame, "__row__")
     first = _scratch_name(frame, "__first__")
-    indexed = frame.with_row_index(row).with_columns(
-        nw.col(row).min().over(*keys).alias(first),
-        *(expression.over(*keys).alias(name) for name, expression in (aggregations or {}).items()),
+    indexed = frame.with_row_index(row)
+    implementation = frame.implementation
+    if implementation.is_polars() or implementation.is_pandas_like():
+        # These evaluate a window on the rows in place. pyarrow joins a window's values
+        # back in thread order, so elsewhere each row's index travels through the join.
+        windowed = indexed.with_columns(
+            nw.col(row).min().over(*keys).alias(first),
+            *(expression.over(*keys).alias(name) for name, expression in aggregations.items()),
+        )
+        leading = np.asarray(windowed.get_column(first).to_numpy(), dtype=np.int64)
+        leaders = np.flatnonzero(leading == np.arange(len(leading)))
+        lookup = np.zeros(len(leading), dtype=np.int64)
+        lookup[leaders] = np.arange(len(leaders))
+        groups = windowed.filter(nw.col(row) == nw.col(first)).select(*keys, *aggregations)
+        return lookup[leading], groups
+    code = _scratch_name(frame, "__code__")
+    groups = (
+        indexed.group_by(*keys)
+        .agg(
+            nw.col(row).min().alias(first),
+            *(expression.alias(name) for name, expression in aggregations.items()),
+        )
+        .sort(first)
     )
-    leading = np.asarray(indexed.get_column(first).to_numpy(), dtype=np.int64)
-    leaders = np.flatnonzero(leading == np.arange(len(leading)))
-    lookup = np.zeros(len(leading), dtype=np.int64)
-    lookup[leaders] = np.arange(len(leaders))
-    groups = indexed.filter(nw.col(row) == nw.col(first)).select(*keys, *(aggregations or {}))
-    return lookup[leading], groups
+    coded = indexed.select(row, *keys).join(
+        groups.select(*keys).with_row_index(code), on=list(keys), how="inner"
+    )
+    # Identity keys are validated non-null, so every row joins its own group.
+    assert len(coded) == len(frame)
+    codes = np.empty(len(frame), dtype=np.int64)
+    codes[coded.get_column(row).to_numpy()] = coded.get_column(code).to_numpy()
+    return codes, groups.select(*keys, *aggregations)
 
 
 def _exact_totals(
