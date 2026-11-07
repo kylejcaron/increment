@@ -9,13 +9,13 @@ exist but never compared. ``test_cell`` builds the cell on each ingress, runs it
 exactly that, so a stale refusal code, a refusal that became a number, a number that became a
 refusal and a numeric disagreement all fail.
 
-The pull-request subset contains the cheapest cell for each (metric type, method, design
-feature) capability, plus one representative per recorded preflight-refusal hazard. Costs
-come from ``.github/slow-test-durations.json``; unweighted fast cells rank at zero and ties
-follow matrix order. Other primary cells remain in the full matrix and are marked
-``exhaustive``. The 64 asymptotic-retention variants span six metric/method code paths; four
-cheapest variants cover those paths on PRs, while the other 60 stay in full scope as
-``exhaustive``.
+The pull-request subset contains the cheapest cell that runs for each supported (metric
+type, method, design feature) capability, plus one representative per recorded
+preflight-refusal hazard. Costs come from ``.github/slow-test-durations.json``; missing
+weights sort after measured cells and ties follow matrix order. Other primary cells remain in
+the full matrix and are marked ``exhaustive``. The 64 asymptotic-retention variants have three
+running metric/method code paths; two cheapest running cells cover all three on PRs, while the
+other 62 stay in full scope as ``exhaustive``.
 
 Cells in which any ingress builds and reads data (an ingress runs, or refuses only once a
 request is read) are ``slow``. In the remaining cells no ingress runs or reaches the request

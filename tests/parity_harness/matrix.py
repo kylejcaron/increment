@@ -1379,11 +1379,15 @@ def _cheapest_cells_per_capability(cells: tuple[Cell, ...], test_name: str) -> t
     candidates: dict[tuple[str, str, str], list[Cell]] = {}
     for cell in cells:
         for method in methods(cell):
+            if not any(
+                isinstance(outcome, Runs) for outcome in classify(cell).outcomes(method).values()
+            ):
+                continue
             candidates.setdefault((cell.metric, method, cell.option), []).append(cell)
 
     def duration(cell: Cell) -> float:
         nodeid = f"tests/test_parity_matrix.py::{test_name}[{cell.id}]"
-        return durations.get(nodeid, 0.0)
+        return durations.get(nodeid, float("inf"))
 
     selected = {min(group, key=duration) for group in candidates.values()}
     return tuple(cell for cell in cells if cell in selected)
@@ -1391,10 +1395,9 @@ def _cheapest_cells_per_capability(cells: tuple[Cell, ...], test_name: str) -> t
 
 @cache
 def pr_matrix_cells() -> tuple[Cell, ...]:
-    """Cheapest cell per (metric, method, design) capability, plus the PR refusal hazards.
+    """Cheapest running cell per supported (metric, method, design) capability, plus hazards.
 
-    Missing duration weights are unmeasured fast cells and rank at zero. Ties use matrix
-    iteration order. Other cells remain in the exhaustive matrix.
+    Missing duration weights sort after measured cells. Ties follow matrix iteration order.
     """
     cells = tuple(iter_cells())
     selected = set(_cheapest_cells_per_capability(cells, "test_cell"))

@@ -23,16 +23,24 @@ AXES = (
 )
 
 
+def _runs_on(cell: matrix.Cell, method: str) -> bool:
+    return any(
+        isinstance(outcome, matrix.Runs)
+        for outcome in matrix.classify(cell).outcomes(method).values()
+    )
+
+
 def test_pr_subset_selects_the_cheapest_cell_per_capability_and_keeps_hazards() -> None:
     durations = json.loads((ROOT / ".github/slow-test-durations.json").read_text())
     cells = tuple(matrix.iter_cells())
     by_capability: dict[tuple[str, str, str], list[matrix.Cell]] = {}
     for cell in cells:
         for method in matrix.methods(cell):
-            by_capability.setdefault((cell.metric, method, cell.option), []).append(cell)
+            if _runs_on(cell, method):
+                by_capability.setdefault((cell.metric, method, cell.option), []).append(cell)
 
     def duration(cell: matrix.Cell) -> float:
-        return durations.get(f"tests/test_parity_matrix.py::test_cell[{cell.id}]", 0.0)
+        return durations.get(f"tests/test_parity_matrix.py::test_cell[{cell.id}]", float("inf"))
 
     hazard_cell_ids = {hazard.cell.rsplit("-", 1)[0] for hazard in matrix.preflight_hazards()}
     expected = {min(candidates, key=duration) for candidates in by_capability.values()} | {
@@ -41,18 +49,20 @@ def test_pr_subset_selects_the_cheapest_cell_per_capability_and_keeps_hazards() 
     assert set(matrix.pr_matrix_cells()) == expected
 
 
-def test_pr_subset_covers_every_full_matrix_capability() -> None:
-    full_capabilities = {
+def test_pr_subset_covers_every_supported_matrix_capability_with_a_running_cell() -> None:
+    supported_capabilities = {
         (cell.metric, method, cell.option)
         for cell in matrix.iter_cells()
         for method in matrix.methods(cell)
+        if _runs_on(cell, method)
     }
-    pr_capabilities = {
+    pr_running_capabilities = {
         (cell.metric, method, cell.option)
         for cell in matrix.pr_matrix_cells()
         for method in matrix.methods(cell)
+        if _runs_on(cell, method)
     }
-    assert full_capabilities <= pr_capabilities
+    assert supported_capabilities <= pr_running_capabilities
 
 
 def test_pr_asymptotic_subset_selects_the_cheapest_cell_per_code_path() -> None:
@@ -61,16 +71,18 @@ def test_pr_asymptotic_subset_selects_the_cheapest_cell_per_code_path() -> None:
     by_code_path: dict[tuple[str, str, str], list[matrix.Cell]] = {}
     for cell in variants:
         for method in matrix.methods(cell):
-            by_code_path.setdefault((cell.metric, method, cell.option), []).append(cell)
+            if _runs_on(cell, method):
+                by_code_path.setdefault((cell.metric, method, cell.option), []).append(cell)
 
     def duration(cell: matrix.Cell) -> float:
         return durations.get(
-            f"tests/test_parity_matrix.py::test_asymptotic_retention_cell[{cell.id}]", 0.0
+            f"tests/test_parity_matrix.py::test_asymptotic_retention_cell[{cell.id}]",
+            float("inf"),
         )
 
     expected = {min(candidates, key=duration) for candidates in by_code_path.values()}
     assert set(matrix.pr_asymptotic_retention_cells()) == expected
-    assert len(by_code_path) == 6
+    assert len(by_code_path) == 3
 
 
 def test_covering_cells_are_deterministic() -> None:

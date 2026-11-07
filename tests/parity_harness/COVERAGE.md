@@ -2,9 +2,11 @@
 
 Counts and trackers only. Every per-ingress outcome, reason and authority lives in
 `tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs
-the cheapest cell per (metric, method, design-feature) capability, plus every
-recorded preflight-refusal hazard, on every pull request. `INCREMENT_PARITY_MATRIX=full`
-also generates every remaining cell, marked `exhaustive`.
+the cheapest cell with a running ingress per supported (metric, method, design-feature)
+capability, plus one cell per recorded preflight-refusal hazard, on pull requests.
+Asymptotic-retention variants use the cheapest running cell per code path.
+`INCREMENT_PARITY_MATRIX=full` also generates all remaining cells and variants, marked
+`exhaustive`.
 
 Every count below is generated from `matrix.iter_cells()` and `matrix.classify()`.
 
@@ -114,7 +116,7 @@ Every cell builds and runs each of its ingresses itself; no result is shared bet
 
 ## Collapse proofs
 
-The full scope retains every cell. The PR scope selects the cheapest cell per `(metric, method, option)` capability, with ties following matrix order; unweighted fast cells rank at zero. It also retains one cell per recorded preflight-refusal hazard. Those selected cells are not removed from the full matrix.
+The full scope retains every cell. The PR scope selects the cheapest cell with a running ingress per supported `(metric, method, option)` capability; missing weights rank after measured cells and ties follow matrix order. It also retains one cell per recorded preflight-refusal hazard. Those selected cells are not removed from the full matrix.
 
 ## Existing scenario cases
 
