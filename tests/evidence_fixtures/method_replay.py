@@ -89,7 +89,6 @@ class ObservationalReplayConfig:
     scales: Mapping[str, Literal["relative", "absolute"]]
     raise_if_empty: bool
     resolved_method_roles: Mapping[str, Literal["decision", "sensitivity"]]
-    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None
     family_member: bool
     route_tail: float | None
     prewarned_unsupported: frozenset[tuple[str, str]]
@@ -249,7 +248,6 @@ def estimate_observational_transcript(
         scales=config.scales,
         _raise_if_empty=config.raise_if_empty,
         resolved_method_roles=config.resolved_method_roles,
-        method_roles=config.method_roles,
         evidence=evidence,
         family_member=config.family_member,
         route_tail=config.route_tail,

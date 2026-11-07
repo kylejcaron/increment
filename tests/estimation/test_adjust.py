@@ -678,6 +678,29 @@ def test_estimate_ate_unadjusted_explicit_optin():
     assert ests[0].require_lift().value == pytest.approx(1.0, rel=1e-2)
 
 
+def test_estimate_ate_keeps_the_decision_methods_failure_for_a_constant_metric():
+    """Both arms are constant, so neither scale of the contrast has an uncertainty. Of the two
+    unadjusted methods the first takes the decision role, so the one failure names it."""
+    tbl = pa.table(
+        {
+            "user_id": ["u1", "u2", "u3", "u4", "u5", "u6"],
+            "variant": ["T", "T", "T", "C", "C", "C"],
+            "revenue": [2.0] * 6,
+            "z": [1.0] * 6,
+        }
+    )
+    src = from_unit_summary(
+        tbl, unit="user_id", group="variant", control="C", metrics={"revenue": "mean"}
+    )
+    computation = estimate_ate(
+        src, _DESIGN, methods=[Method(name="unadjusted"), Method(name="naive")]
+    )
+    assert computation.results == ()
+    (failure,) = computation.failures.values()
+    assert failure.code == "estimation.engine.lift_guard"
+    assert failure.context["method"] == "unadjusted"
+
+
 def test_estimate_ate_unadjusted_undeclared_metric_preferred_direction_is_none():
     """The unadjusted branch's own `estimate_lift(...)` call
     used to unconditionally stamp `preferred_direction=metric.preferred_direction`,

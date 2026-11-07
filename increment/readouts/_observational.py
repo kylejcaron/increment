@@ -81,7 +81,6 @@ def _estimate_ate_from_evidence(  # noqa: PLR0913
             scales={metric.name: (value_scale or {}).get(metric.name, "relative")},
             _raise_if_empty=False,
             resolved_method_roles=roles,
-            method_roles=roles,
             evidence=cell_evidence,
             family_member=family_member,
             route_tail=route_tail,

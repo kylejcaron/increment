@@ -3885,7 +3885,6 @@ def _method_family_results(
         scales={metric.name: "relative"},
         raise_if_empty=False,
         resolved_method_roles=roles,
-        method_roles=roles,
         family_member=procedure.family.member,
         route_tail=None,
         prewarned_unsupported=frozenset(),
