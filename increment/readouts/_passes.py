@@ -183,6 +183,62 @@ def _append_lift_cell_failure(  # noqa: PLR0913
         )
 
 
+def _record_cell_refusal(
+    exc: CodedError,
+    *,
+    results: list[LiftEstimate],
+    computations: list[DecisionComputation[LiftEstimate]] | None,
+    metric: Metric,
+    group_id: str,
+    method: Method,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
+    alternative: str,
+    null_lift: float,
+    null_abs: float | None,
+    preferred_direction: PreferredDirection | None,
+    prior: Prior | None,
+) -> None:
+    """Keep a refusal local to one (arm, method) cell as that cell's failure, and warn.
+
+    Only ``LiftGuardError`` and the classified numeric guard codes are cell-local; any other
+    refusal is raised again."""
+    if isinstance(exc, LiftGuardError):
+        code = "estimation.engine.lift_guard"
+        context: Mapping[str, object] = {
+            "metric": metric.name,
+            "group_id": group_id,
+            "reason": exc.reason,
+            "display": str(exc),
+        }
+    elif exc.code in _CELL_ESTIMATION_GUARD_CODES:
+        code, context = exc.code, exc.context
+    else:
+        raise exc
+    _append_lift_cell_failure(
+        results=results,
+        computations=computations,
+        metric=metric,
+        group_id=group_id,
+        method=method,
+        alternative=alternative,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        preferred_direction=preferred_direction,
+        method_roles=method_roles,
+        code=code,
+        context=context,
+        prior=prior,
+    )
+    _warn(
+        "readouts.run.cell_refused",
+        metric_name=metric.name,
+        group_id=group_id,
+        method_name=method.name,
+        reason=str(exc),
+        stacklevel=4,
+    )
+
+
 def _estimate_lift_cells(  # noqa: PLR0913
     *,
     metric: Metric,
@@ -209,9 +265,9 @@ def _estimate_lift_cells(  # noqa: PLR0913
     ``estimate_lift`` accepts a whole metric slice and therefore aborts its
     entire result when one treatment arm hits an expected ``LiftGuardError``.
     A readout has a denser contract: a bad arm/method cell is warned and
-    excluded while its siblings remain usable. Only ``LiftGuardError`` and
-    the explicitly classified numeric guard codes below are cell-local;
-    all other coded and non-coded errors propagate.
+    excluded while its siblings remain usable. Only the refusals
+    ``_record_cell_refusal`` classifies are cell-local; all other coded and
+    non-coded errors propagate.
     """
     if advisory_seen is None:
         advisory_seen = set()
@@ -295,64 +351,21 @@ def _estimate_lift_cells(  # noqa: PLR0913
                                 reason=reason,
                                 stacklevel=3,
                             )
-            except LiftGuardError as exc:
-                _emit_captured_lift_warnings(captured, advisory_seen)
-                reason = str(exc)
-                _append_lift_cell_failure(
-                    results=results,
-                    computations=computations,
-                    metric=metric,
-                    group_id=group_id,
-                    method=method,
-                    alternative=alternative,
-                    null_lift=null_lift,
-                    null_abs=null_abs,
-                    preferred_direction=preferred_direction,
-                    method_roles=method_roles,
-                    code="estimation.engine.lift_guard",
-                    context={
-                        "metric": metric.name,
-                        "group_id": group_id,
-                        "reason": exc.reason,
-                        "display": reason,
-                    },
-                    prior=prior,
-                )
-                _warn(
-                    "readouts.run.cell_refused",
-                    metric_name=metric.name,
-                    group_id=group_id,
-                    method_name=method.name,
-                    reason=reason,
-                    stacklevel=3,
-                )
             except CodedError as exc:
                 _emit_captured_lift_warnings(captured, advisory_seen)
-                if exc.code not in _CELL_ESTIMATION_GUARD_CODES:
-                    raise
-                reason = str(exc)
-                _append_lift_cell_failure(
+                _record_cell_refusal(
+                    exc,
                     results=results,
                     computations=computations,
                     metric=metric,
                     group_id=group_id,
                     method=method,
+                    method_roles=method_roles,
                     alternative=alternative,
                     null_lift=null_lift,
                     null_abs=null_abs,
                     preferred_direction=preferred_direction,
-                    method_roles=method_roles,
-                    code=exc.code,
-                    context=exc.context,
                     prior=prior,
-                )
-                _warn(
-                    "readouts.run.cell_refused",
-                    metric_name=metric.name,
-                    group_id=group_id,
-                    method_name=method.name,
-                    reason=reason,
-                    stacklevel=3,
                 )
             except Exception:
                 _emit_captured_lift_warnings(captured, advisory_seen)

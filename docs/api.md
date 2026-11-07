@@ -143,6 +143,62 @@ values.
   a unit's daily values 1e16, 1, -1e16 and 1, the exact total (2) replaces a
   floating-point sum that could lose the small values (0 or 1), so estimates
   from such data can change by more.
+- Release note (breaking): an observational run whose unadjusted contrast
+  meets an arm of one unit, or a ratio arm whose denominator mean is not
+  positive, returns that cell as an unavailable row with its own
+  `failure_code` and context, as a randomized run does, instead of refusing
+  the whole run with that code. Each unadjusted, unclustered contrast now reads
+  only its treatment arm and the control arm, which gives the estimate it gave
+  over every arm; a one-unit control arm leaves every cell of its metric
+  unavailable. The adjusted methods (`iptw`, `aipw`, `dml`) fit their models
+  across every arm and still refuse such a run with their own refusal, also
+  when they are a sensitivity method beside an unadjusted decision method. In
+  a declared secondary family, a metric whose control arm has enrolled units
+  but no values stays in the family: each of its cells is a non-rejection with
+  p-value 1, an unavailable row carrying `readout.cell.missing_metric_observations`
+  with `unobserved_arm` naming the control, where the run refused with
+  `estimation.engine.control_group_found` (or
+  `estimation.adjust_common.control_group_found` under an adjusted method). A
+  family member whose cell is refused for either reason refuses the run with
+  `family.evidence.incomplete`, as under a randomized design, where it refused
+  with the cell's own code. A cell whose two arms each hold one constant
+  value is an unavailable row carrying `estimation.engine.lift_guard` with
+  reason `zero_variance` and warns, as under a randomized design, where it
+  carried `readout.cell.unsupported_request` or the run refused with
+  `estimation.adjust.estimate_ate_every`; in a declared secondary family it is
+  a non-rejection with p-value 1 that `family_size` counts, where the family
+  left it out.
+  `estimation.adjust.estimate_ate_every` is raised only when the adjustment
+  method refuses every metric. Observational family rows now report
+  `family_size`, and a selected row reissued at the family's FCR level reports
+  `family_nominal_alpha`, as randomized rows do. Migration: where code caught
+  these refusals from an observational `run`, read each row's `failure_code`
+  and `failure_context`. A run that used to refuse has a snapshot ID for the
+  first time; estimates of runs that did not refuse, their snapshot IDs and
+  experiment identity are unchanged.
+- Release note (breaking numerical correction): a fixed-horizon secondary
+  family under a randomized design now counts every arm the source's unit or
+  assignment counts enroll, as an observational family already did. A cell of
+  an arm the counts list but a metric's moments read lacks, such as an arm that
+  started after that read, is a member with p-value 1, a non-rejection, and
+  its row carries `readout.cell.missing_metric_observations`. Before, the
+  family was sized by the arms each metric's read held, so `family_size` fell
+  short of the scope's members, the threshold was too loose, and the family
+  could report a discovery the full family does not support. A primary's alpha
+  is likewise split across every counted treatment arm and every arm its own
+  read holds, under randomized and observational designs, 0.025 for each of
+  two arms at `alpha=0.05`, where an arm missing from the read left 0.05. An
+  arm the design's allocation declares but no unit enrolled in is a count
+  exclusion, as in a breakout family: its cells stay unavailable rows with
+  `readout.cell.missing_arm`, but leave the run's family scope
+  (`FamilyScope.members`) and carry no `family_id`, so `family_size` equals the
+  member count. A source without enrollment counts still sizes the split and
+  the family from the arms each metric's values reach; a declared arm that none
+  of its metrics observed leaves the family scope, and its cells carry no
+  `family_id`. Migration: none needed; in an affected family the threshold,
+  the discoveries and the intervals of selected cells follow the larger
+  family, and an affected primary's interval follows its split. Snapshot IDs,
+  family IDs and experiment identity are unchanged.
 - Release note (bug fix): when a sequential plan's
   `SequentialCompliancePolicy(family=True)` registers the uptake cell in the
   secondaries' e-BH family, the family now lists that cell, which its
