@@ -227,8 +227,9 @@ values.
   with it new family IDs, because its snapshot covers that row's
   `family_guarantee`, which was empty before; every other snapshot and family
   ID is unchanged. Saved run envelopes and readout metadata record the added
-  member. Migration: none needed.
-- Release note (breaking): a quantile cell whose combined log-scale standard
+  member; an envelope saved before this change keeps the family scope it
+  recorded, without the uptake cell, when it is decided. Migration: none needed.
+- Release note (breaking bug fix): a quantile cell whose combined log-scale standard
   error is 0.5 or more is now an unavailable row instead of refusing the whole
   `run` with the estimator's internal `LiftGuardError`. The row keeps its
   `metric`, `group_id` and `method`, for a decision and a sensitivity method
@@ -279,7 +280,7 @@ values.
   quantile metrics for large lifts or small samples to expect the larger sizes,
   the warning and the refusal. Readout estimates and experiment identity are
   unchanged.
-- Release note (fix): the `from_definitions` SQL previews
+- Release note (breaking bug fix): the `from_definitions` SQL previews
   `increment.query.panel_sql` and `summary_sql` now load the Ibis compiler of
   the dialect named by `backend=`, as connecting to that backend does.
   `backend="singlestoredb"` over another connection therefore reaches Ibis's
@@ -290,7 +291,7 @@ values.
   `query.backend.compiler_unavailable` (context `backend`, `route`) before the
   preview reads anything. Migration: where code caught `ValueError` from these
   previews, catch `CodedError` and branch on its code.
-- Release note (fix): on a backend other than DuckDB, PostgreSQL, Snowflake
+- Release note (bug fix): on a backend other than DuckDB, PostgreSQL, Snowflake
   and BigQuery, an analysis whose event times carry a time zone still stops
   with `query.backend.operation_unsupported`, and its `detail` now reads
   "converting event times that carry a time zone to UTC (convert them to UTC
