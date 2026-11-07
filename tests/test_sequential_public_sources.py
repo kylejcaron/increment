@@ -1202,6 +1202,41 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     assert type(replayed_daily[0].ds) is type(label(14))
 
 
+def test_empty_registered_panel_with_observation_end_can_capture_before_enrollment():
+    """A registered panel with no rows yet keeps its declared observation end, and a capture
+    before enrollment reveals no unit through the requested day."""
+    import pyarrow as pa
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
+    frame = pa.table(
+        {
+            "unit": pa.array([], pa.string()),
+            "arm": pa.array([], pa.string()),
+            "day": pa.array([], pa.date32()),
+            "exposed": pa.array([], pa.date32()),
+            "outcome": pa.array([], pa.float64()),
+        }
+    )
+    experiment, resolver = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=specs,
+        experiment_id="experiment",
+        observation_end=date(2026, 1, 4),
+        plan=_plan(specs, "bernoulli", date="day", exposure_date="exposed"),
+    )
+    snapshot = workflows.capture_sequential(
+        experiment, resolver, finalized=True, as_of=date(2026, 1, 1)
+    )
+    assert not snapshot.records
+    assert snapshot.reveal_cursor == date(2026, 1, 1)
+
+
 @pytest.mark.slow
 def test_registered_asof_secondary_family_is_joint_per_look():
     specs = [
