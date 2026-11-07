@@ -897,7 +897,7 @@ depends_on = [
   "increment.estimation.multiplicity",
   "increment.estimation.sequential",
   "increment.semantics",
-  "increment.sequential_state",
+  "increment.sequential_state", "increment._multiplicity",
 ]
 
 [[modules]]
