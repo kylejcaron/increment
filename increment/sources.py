@@ -864,7 +864,7 @@ def _check_moments_format(
     str | None,
     str | None,
     dict[str, object] | None,
-    dict[str, str],
+    dict[str, str] | None,
     tuple[CupedEvidence, ...],
 ]:
     """Validate and strip moments format, plan, count, and source envelopes."""
@@ -1002,8 +1002,8 @@ def _cube_source_identity(
     return identities[0] if identities else None
 
 
-def _cube_metric_missingness(rows: Sequence[Mapping[str, object]]) -> dict[str, str]:
-    """The one skip map every row carries, or an empty map when no row carries one."""
+def _cube_metric_missingness(rows: Sequence[Mapping[str, object]]) -> dict[str, str] | None:
+    """The one skip map every row carries, or ``None`` when no row carries one."""
     maps = [
         parsed
         for row in rows
@@ -1020,7 +1020,41 @@ def _cube_metric_missingness(rows: Sequence[Mapping[str, object]]) -> dict[str, 
         _refuse(
             _MOMENTS_FORMAT_INVALID, received="conflicting metric missingness", required=required
         )
-    return maps[0] if maps else {}
+    return maps[0] if maps else None
+
+
+def _replay_metric_missingness(
+    declared: Mapping[str, str] | None,
+    recorded: Mapping[str, str] | None,
+    metrics: Sequence[Metric],
+    rows: Sequence[Mapping[str, object]],
+) -> dict[str, str]:
+    """Each replayed metric's skip policy, declared on replay or recorded by the rows.
+
+    A policy the rows record holds for its metric. Rows that record which metrics
+    skip, and omit one, were reduced over every unit for it, so declaring skip for
+    that metric is refused rather than relabelling them.
+    """
+    declared = dict(declared or {})
+    if recorded is not None:
+        present = {str(row.get("metric")) for row in rows}
+        conflicting = tuple(
+            sorted(
+                name
+                for name, policy in declared.items()
+                if policy == "skip" and name in present and name not in recorded
+            )
+        )
+        if conflicting:
+            _refuse(
+                _MOMENTS_PLAN_CONFLICT,
+                field=METRIC_MISSINGNESS_FIELD,
+                value=conflicting,
+                constraint="the export did not skip missing values for these metrics; "
+                "replay them without missing='skip' or re-export from the source",
+            )
+    names = {metric.name for metric in metrics}
+    return {**{name: "skip" for name in recorded or {} if name in names}, **declared}
 
 
 def _cube_evidence(
@@ -1607,7 +1641,7 @@ class MomentsSource(SequentialSourceMixin):
             envelope_identity,
             embedded_trigger_name,
             source_identity_record,
-            _recorded_missingness,
+            recorded_missingness,
             evidence,
         ) = _check_moments_format(
             rows,
@@ -1756,7 +1790,9 @@ class MomentsSource(SequentialSourceMixin):
             configs=base_configs,
             cluster=self._compliance.cluster if self._compliance is not None else None,
             trigger_name=trigger_name,
-            metric_missingness={} if metric_missingness is None else metric_missingness,
+            metric_missingness=_replay_metric_missingness(
+                metric_missingness, recorded_missingness, metric_catalog, stripped
+            ),
         )
         if self.scalar_recipe_fixed:
             recorded = {config.metric.name for config in self.scalar_recipe_configs}
@@ -2323,16 +2359,15 @@ def write_moments_table(
     pq.write_table(table, str(path))
 
 
-def cube_declarations(
+def cuped_evidence_items(
     rows: Sequence[Mapping[str, object]], *, require_plan: bool
-) -> tuple[dict[str, dict[str, CupedEvidence]], dict[str, str]]:
-    """Validated evidence by metric and method, retaining decoded cells for admission checks,
-    and the skip policy the rows record per metric."""
-    *_, metric_missingness, evidence = _check_moments_format(rows, require_plan=require_plan)
+) -> dict[str, dict[str, CupedEvidence]]:
+    """Validated evidence by metric and method, retaining decoded cells for admission checks."""
+    evidence = _check_moments_format(rows, require_plan=require_plan)[-1]
     items: dict[str, dict[str, CupedEvidence]] = {}
     for item in evidence:
         items.setdefault(item.metric, {})[item.method_key] = item
-    return items, metric_missingness
+    return items
 
 
 def _categorical_cells_for(source: Any) -> Callable[[Any, Any], Any]:

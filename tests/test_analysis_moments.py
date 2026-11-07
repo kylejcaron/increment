@@ -650,8 +650,13 @@ def _score_spec(*, cuped: bool, missing: Any = "error") -> MetricSpec:
     )
 
 
-def _exported_score_rows(tmp_path, *, cuped: bool) -> list[dict[str, Any]]:
-    """Export a unit summary of 40 units per arm whose every tenth ``score`` is missing."""
+def _exported_score_rows(
+    tmp_path, *, cuped: bool, zero_filled: bool = False
+) -> list[dict[str, Any]]:
+    """Export a unit summary of 40 units per arm whose every tenth ``score`` is missing.
+
+    ``zero_filled`` also exports ``filled``, the same column read with missing values as 0.
+    """
     import math
 
     import pyarrow as pa
@@ -674,7 +679,14 @@ def _exported_score_rows(tmp_path, *, cuped: bool) -> list[dict[str, Any]]:
         unit="unit",
         group="arm",
         control="control",
-        metrics=[_score_spec(cuped=cuped, missing="skip")],
+        metrics=[
+            _score_spec(cuped=cuped, missing="skip"),
+            *(
+                [MetricSpec(name="filled", value_column="score", missing="zero")]
+                if zero_filled
+                else []
+            ),
+        ],
     )
     path = tmp_path / "score.parquet"
     export_moments(experiment, resolver, path)
@@ -741,6 +753,18 @@ def test_moments_rows_with_an_invalid_or_disagreeing_skip_map_refuse(tmp_path, p
     with pytest.raises(WireFormatError) as refused:
         from_moments(rows, metrics=[_score_spec(cuped=False)], control="control")
     assert refused.value.code == code
+
+
+def test_moments_replay_cannot_declare_skip_for_a_metric_the_export_did_not_skip(tmp_path):
+    rows = _exported_score_rows(tmp_path, cuped=False, zero_filled=True)
+
+    with pytest.raises(WireFormatError) as refused:
+        from_moments(
+            rows,
+            metrics=[_score_spec(cuped=False), MetricSpec(name="filled", missing="skip")],
+            control="control",
+        )
+    assert refused.value.code == "moments.plan.conflict"
 
 
 @pytest.mark.slow
