@@ -3,7 +3,7 @@
 # in a comparison with a route; custom: custom-versus-built-in predicates; unwrap: loader
 # unwrapping through _builtin_source.
 increment/_breakout_readouts.py custom 3
-increment/_breakout_readouts.py route 16
+increment/_breakout_readouts.py route 10
 increment/_breakout_readouts.py unwrap 1
 increment/_dashboard_capture.py unwrap 1
 increment/_day_axis.py custom 1
