@@ -1,21 +1,22 @@
-"""Unit-day publications the parity matrix's artifact ingress shares between adoptions.
+"""Unit-day publications the parity matrix's artifact ingress shares within a test process.
 
 A publication is fixed by the definitions it is published from, the warehouse rows and the
-extension kinds it carries (``publication_key``). Inside ``shared()``, the first adoption of a
-key builds its warehouse, declares a native binding over it and publishes; that warehouse and
-generation stay open until the block ends. Every adoption, the first included, opens its own
-resolver through ``from_unit_day_artifact`` against the expected context of a native binding it
-declares itself, so declaration warnings and refusals and the adoption checks run on each one.
-A shared publication is read-only: when an adopted pair is released (or its adoption refuses),
-every table and view of the warehouse must be unchanged since publication, or the release fails
-and the publication is discarded. Outside ``shared()``, each adoption publishes its own.
+extension kinds it carries (``publication_key``). The first adoption of a key in a process
+builds its warehouse, declares a native binding over it and publishes; the process keeps the
+``_CAPACITY`` most recently adopted publications, so each xdist worker keeps its own. Every
+adoption, the first included, opens its own resolver through ``from_unit_day_artifact`` against
+the expected context of a native binding it declares itself, so declaration warnings and
+refusals and the adoption checks run on each one. A shared publication is read-only: when an
+adopted pair is released (or its adoption refuses), every table and view of the warehouse must
+be unchanged since publication, or the release fails and the publication is discarded, so the
+next adoption of that key publishes afresh.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -31,7 +32,6 @@ from .cases import (
     _close_parity_binding,
     _owned,
     _publish,
-    _publish_and_adopt,
     _track_cleanup,
     _track_connection,
 )
@@ -40,6 +40,11 @@ if TYPE_CHECKING:
     from increment.query.artifact_contract import ArtifactContext
     from increment.semantics.artifact import UnitDayArtifactRef
     from increment.semantics.models import Definitions
+
+# In matrix order a publication's key recurs within 30 other keys. Evicting the least recently
+# adopted publication disconnects it, which closes a warehouse in use only if a test held an
+# adopted pair while adopting this many other publications.
+_CAPACITY = 32
 
 Fingerprint = dict[str, tuple[Any, ...]]
 
@@ -51,7 +56,7 @@ class _Publication:
     fingerprint: Fingerprint
 
 
-_SHARED: dict[str, _Publication] | None = None
+_SHARED: OrderedDict[str, _Publication] = OrderedDict()
 
 
 def publication_key(
@@ -59,19 +64,6 @@ def publication_key(
 ) -> str:
     """Everything a publication is built from: definitions, warehouse rows, extension kinds."""
     return hashlib.sha256(repr((definitions.model_dump_json(), rows, kinds)).encode()).hexdigest()
-
-
-@contextmanager
-def shared() -> Iterator[None]:
-    """Publish each key once for the adoptions made inside this block."""
-    global _SHARED
-    _SHARED = {}
-    try:
-        yield
-    finally:
-        publications, _SHARED = _SHARED, None
-        for publication in publications.values():
-            publication.connection.disconnect()
 
 
 def adopt(
@@ -84,19 +76,14 @@ def adopt(
     """Adopt the publication of *key*, publishing it from ``declare(connect())`` on first use.
 
     *declare* builds the native binding over a connection; *kinds* names the extensions."""
-    if _SHARED is None:
-        con = connect()
-        try:
-            native = declare(con)
-        except BaseException:
-            con.disconnect()
-            raise
-        return _publish_and_adopt(con, native, kinds)
     publication = _SHARED.get(key)
     if publication is None:
         publication, context = _publish_shared(connect, declare, kinds)
         _SHARED[key] = publication
+        if len(_SHARED) > _CAPACITY:
+            _SHARED.popitem(last=False)[1].connection.disconnect()
     else:
+        _SHARED.move_to_end(key)
         native = declare(publication.connection)
         try:
             context = artifact_context(*native)
@@ -131,9 +118,13 @@ def _publish_shared(
 
 
 def _fingerprint(con: Any) -> Fingerprint:
-    """Row count and order-independent content hash of every table, and every view's SQL."""
+    """Row count and order-independent content hash of every table, and every view's SQL.
+
+    Ibis registers each in-memory input a query reads as a temporary view under a fresh name;
+    those registrations store nothing another read could see, so they are left out."""
     views = con.raw_sql(
-        "SELECT database_name, schema_name, view_name, sql FROM duckdb_views() WHERE NOT internal"
+        "SELECT database_name, schema_name, view_name, sql FROM duckdb_views() "
+        "WHERE NOT internal AND NOT (temporary AND view_name SIMILAR TO 'ibis_\\w+_memtable_\\w+')"
     ).fetchall()
     state: Fingerprint = {f"view {d}.{s}.{name}": (sql,) for d, s, name, sql in views}
     tables = con.raw_sql(
@@ -158,7 +149,7 @@ def _check_unchanged(key: str, publication: _Publication) -> None:
     )
     if not changed:
         return
-    if _SHARED is not None and _SHARED.get(key) is publication:
+    if _SHARED.get(key) is publication:
         del _SHARED[key]
     publication.connection.disconnect()
     raise AssertionError(
