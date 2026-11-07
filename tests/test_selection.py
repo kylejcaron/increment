@@ -685,7 +685,8 @@ def _real_tach_decision(root: Path, base: str, test_path: str) -> dict[str, obje
 @pytest.mark.slow
 def test_real_tach_function_local_import_is_an_edge(scratch_worktree: Path) -> None:
     base = _scratch_map(scratch_worktree)
-    _scratch_change(scratch_worktree, "increment/estimation/adjust.py")
+    # engine imports arm_contract only inside a function; nothing test_engine imports reaches it eagerly.
+    _scratch_change(scratch_worktree, "increment/estimation/arm_contract.py")
 
     decision = _real_tach_decision(scratch_worktree, base, "tests/estimation/test_engine.py")
 
