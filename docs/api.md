@@ -135,7 +135,9 @@ values.
   and reason `delta_method_unreliable`, as a mean cell refused by the same
   limit has, and the run warns with `readouts.run.cell_refused`; the other
   cells of the run, including other arms of the same quantile metric, are
-  estimated. Migration: where code caught that exception from a quantile run,
+  estimated. A secondary family reissues only its selected arms at its
+  false-coverage level, so an arm it did not select keeps its nominal row.
+  Migration: where code caught that exception from a quantile run,
   read each row's `failure_code` and `reason`. Experiment identity is
   unchanged.
 - Release note (breaking numerical correction): quantile

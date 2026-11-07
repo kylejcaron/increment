@@ -340,6 +340,39 @@ def _reintervalize_cuped_secondary(  # noqa: PLR0913
     ] + ordinary_rows
 
 
+def _fcr_pass_evidence(
+    evidence: Any, selected_groups: set[str], control_group: str, *, is_quantile: bool
+) -> Any:
+    """The evidence a family's FCR pass reissues its selected cells from: the
+    control and selected arms' units of a quantile metric, or rows of a summary
+    metric; a unit-grain moments metric keeps every arm. A quantile interval
+    widens at the FCR level, so an unselected arm, not reissued, keeps its
+    nominal cell."""
+    arms = {str(control_group), *selected_groups}
+    if is_quantile:
+        import narwhals as nw
+
+        units = nw.from_native(evidence.unit_frame, eager_only=True)
+        return replace(
+            evidence,
+            unit_frame=units.filter(
+                nw.col("group_id").cast(nw.String).is_in(sorted(arms))
+            ).to_native(),
+        )
+    if evidence.unit_frame is not None:
+        return evidence
+    if not isinstance(evidence, MetricEvidence):
+        raise AssertionError("Scalar secondary evidence lost its MetricEvidence contract.")
+    return replace(
+        evidence,
+        rows=tuple(row for row in evidence.rows if str(row["group_id"]) in arms),
+        method_rows=tuple(
+            (name, tuple(row for row in rows_for_method if str(row["group_id"]) in arms))
+            for name, rows_for_method in evidence.method_rows
+        ),
+    )
+
+
 def _estimate_randomized_secondary_family(  # noqa: PLR0913
     src: EvidenceSource,
     secondary_entries: Sequence[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
@@ -470,28 +503,12 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
             continue
         selected_groups = {key.group_id for key in selected_cells if key.metric == metric.name}
         metric_rows = loaded[metric.name]
-        selected_evidence = evidence_by_metric[metric.name]
-        if not is_quantile and metric_rows.unit_frame is None:
-
-            def keep(row: Any, groups: set[str]) -> bool:
-                return (
-                    str(row["group_id"]) == design.control_group or str(row["group_id"]) in groups
-                )
-
-            if isinstance(selected_evidence, MetricEvidence):
-                selected_evidence = replace(
-                    selected_evidence,
-                    rows=tuple(row for row in selected_evidence.rows if keep(row, selected_groups)),
-                    method_rows=tuple(
-                        (
-                            name,
-                            tuple(row for row in rows_for_method if keep(row, selected_groups)),
-                        )
-                        for name, rows_for_method in selected_evidence.method_rows
-                    ),
-                )
-            else:
-                raise AssertionError("Scalar secondary evidence lost its MetricEvidence contract.")
+        selected_evidence = _fcr_pass_evidence(
+            evidence_by_metric[metric.name],
+            selected_groups,
+            design.control_group,
+            is_quantile=is_quantile,
+        )
         selected_alternative = (
             "two-sided"
             if _joint_relative_rows(nominal_by_metric[metric.name])

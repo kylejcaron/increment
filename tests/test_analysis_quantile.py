@@ -735,3 +735,39 @@ def test_a_quantile_cell_past_the_log_scale_guard_is_an_unavailable_row():
         assert rows["wide", method].lift is None
         assert rows["wide", method].failure_code == "estimation.engine.lift_guard"
         assert rows["wide", method].reason == "delta_method_unreliable"
+
+
+def test_an_unselected_secondary_arm_keeps_its_nominal_quantile_cell():
+    """Only the selected cells of a secondary family are reissued at its FCR
+    level. A 25-unit arm spaced ``exp(0.19 k)`` has median bracket ranks (8, 18)
+    at alpha 0.05 and (7, 19) at 0.025, so its log SE is ``10 * 0.19 / (2 *
+    1.960) = 0.485`` at the nominal level, inside the readout's guard, and ``12 *
+    0.19 / (2 * 2.241) = 0.509`` at the level ``0.05 * 1 / 2`` one selection of
+    two cells gives, past it. Unselected, that arm keeps its nominal estimate."""
+    import pyarrow as pa
+
+    k = np.arange(1, 26)
+    experiment, reader = inc.from_frame(
+        pa.table(
+            {
+                "unit": list(range(75)),
+                "arm": ["C"] * 25 + ["shifted"] * 25 + ["wide"] * 25,
+                "y": np.concatenate(
+                    [np.exp(0.001 * k), np.exp(5.0 + 0.001 * k), np.exp(0.19 * (k - 13))]
+                ),
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="C",
+        metrics=[inc.MetricSpec(name="median", type="quantile", value_column="y", quantile=0.5)],
+        plan=inc.AnalysisPlan(secondaries=["median"], alpha=0.05, q=0.05),
+    )
+    rows = {row.group_id: row for row in lift_rows(view_readout(experiment, reader))}
+    assert rows["shifted"].discovery is True
+    assert rows["shifted"].lift is not None
+    assert rows["wide"].discovery is False
+    assert rows["wide"].lift is not None
+    assert rows["wide"].failure_code is None
+    assert rows["wide"].sampling_available is True

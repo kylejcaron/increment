@@ -191,9 +191,9 @@ Multiplicity (secondary): declared_plan; family secondary.
 A discovered secondary or breakout already carries a selection-adjusted interval. Do not treat it as the same width as an unselected row's interval.
 
 For routes that filter estimation evidence to selected hypotheses, only selected
-hypotheses are re-estimated. Quantile families are re-estimated without filtering
-the unit frame to selected arms, so a stricter corrected level can make a
-quantile estimate unavailable even for an unselected arm.
+hypotheses are re-estimated. A quantile family filters its unit frame to the
+control and selected arms, so an unselected arm keeps its nominal estimate even
+where its interval at the stricter corrected level would be too wide to report.
 
 ??? info "FCR interval construction"
     A secondary or breakout cell selected under BH (fixed-horizon p-values) or e-BH (sequential e-values) gets a reported interval re-estimated at `fcr_alpha = min(q * R / m, nominal_alpha)`. Here, `R` is the number of selected cells and `m` is the family size. The interval is wider than the nominal interval when few cells are selected from a large family, and narrower as more cells are selected, up to the nominal-alpha cap.
