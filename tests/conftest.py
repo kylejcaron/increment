@@ -157,7 +157,12 @@ def pytest_configure(config: pytest.Config) -> None:
     from tach.pytest_plugin import tach_state_key
 
     state = config.stash.get(tach_state_key, None)
-    if state is None or not state.skip_enabled:
+    if state is None:
+        return
+    if not state.skip_enabled:
+        # Without a selection flag tach only reports what it would skip, checking every
+        # collected item (about 30 s per process); its hooks are no-ops without this state.
+        del config.stash[tach_state_key]
         return
     base = config.getoption("--tach-base", default=None)
     if base is None:
