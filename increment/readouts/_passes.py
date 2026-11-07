@@ -133,18 +133,23 @@ def _lift_cells_missing_control(  # noqa: PLR0913
 
 
 def _warn_guarded_cells(metric: Metric, computation: DecisionComputation[LiftEstimate]) -> None:
-    """Warn once per cell the estimator kept as a lift-guard failure, as a
-    moments cell refused by the same guard warns."""
-    for failure in computation.failures.values():
-        if failure.code == "estimation.engine.lift_guard":
-            _warn(
-                "readouts.run.cell_refused",
-                metric_name=metric.name,
-                group_id=str(failure.context["group_id"]),
-                method_name=str(failure.context["method"]),
-                reason=failure.display(),
-                stacklevel=4,
-            )
+    """Warn once per cell the estimator kept as a lift-guard failure, a
+    decision cell's keyed failure or a sensitivity cell's row, as a moments
+    cell refused by the same guard warns."""
+    guard = "estimation.engine.lift_guard"
+    for context in (
+        *(failure.context for failure in computation.failures.values() if failure.code == guard),
+        *(row.failure_context for row in computation.results if row.failure_code == guard),
+    ):
+        assert context is not None
+        _warn(
+            "readouts.run.cell_refused",
+            metric_name=metric.name,
+            group_id=str(context["group_id"]),
+            method_name=str(context["method"]),
+            reason=str(context["display"]),
+            stacklevel=4,
+        )
 
 
 def _append_lift_cell_failure(  # noqa: PLR0913

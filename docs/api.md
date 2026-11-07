@@ -130,7 +130,8 @@ values.
 - Release note (breaking): a quantile cell whose combined log-scale standard
   error is 0.5 or more is now an unavailable row instead of refusing the whole
   `run` with the estimator's internal `LiftGuardError`. The row keeps its
-  `metric` and `group_id`, with `failure_code` `estimation.engine.lift_guard`
+  `metric`, `group_id` and `method`, for a decision and a sensitivity method
+  alike, with `failure_code` `estimation.engine.lift_guard`
   and reason `delta_method_unreliable`, as a mean cell refused by the same
   limit has, and the run warns with `readouts.run.cell_refused`; the other
   cells of the run, including other arms of the same quantile metric, are

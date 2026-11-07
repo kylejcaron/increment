@@ -697,8 +697,9 @@ def test_a_quantile_cell_past_the_log_scale_guard_is_an_unavailable_row():
     or more. A 40-unit arm spaced ``exp(0.2 k)`` has median SE ``13 * 0.2 /
     (2 * 1.96) = 0.663`` (bracket ranks 14 and 27), past the guard on its own;
     a 200-unit arm spaced ``exp(0.01 k)`` like control combines with it to
-    about 0.1. Each cell is kept: the wide arm as an unavailable row with the
-    moments path's own lift-guard code and reason, the narrow arm estimated."""
+    about 0.1. Each cell is kept: the wide arm's decision and sensitivity cells
+    as unavailable rows with the moments path's own lift-guard code and reason,
+    the narrow arm's estimated."""
     import pyarrow as pa
 
     narrow = np.exp(0.01 * np.arange(1, 201))
@@ -716,13 +717,21 @@ def test_a_quantile_cell_past_the_log_scale_guard_is_an_unavailable_row():
         group="arm",
         control="C",
         metrics=[
-            inc.MetricSpec(name="median", type="quantile", value_column="outcome", quantile=0.5)
+            inc.MetricSpec(
+                name="median",
+                type="quantile",
+                value_column="outcome",
+                quantile=0.5,
+                sensitivity_methods=[inc.Method(name="check")],
+            )
         ],
     )
-    rows = {row.group_id: row for row in lift_rows(view_readout(experiment, reader))}
-    assert set(rows) == {"narrow", "wide"}
-    assert rows["narrow"].lift is not None
-    assert rows["narrow"].failure_code is None
-    assert rows["wide"].lift is None
-    assert rows["wide"].failure_code == "estimation.engine.lift_guard"
-    assert rows["wide"].reason == "delta_method_unreliable"
+    rows = {(row.group_id, row.method): row for row in lift_rows(view_readout(experiment, reader))}
+    methods = ("unadjusted", "check")
+    assert set(rows) == {(arm, method) for arm in ("narrow", "wide") for method in methods}
+    for method in methods:
+        assert rows["narrow", method].lift is not None
+        assert rows["narrow", method].failure_code is None
+        assert rows["wide", method].lift is None
+        assert rows["wide", method].failure_code == "estimation.engine.lift_guard"
+        assert rows["wide", method].reason == "delta_method_unreliable"

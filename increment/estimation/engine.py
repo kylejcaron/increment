@@ -2173,9 +2173,7 @@ def _infer_lift_result(
                 preferred_direction,
             )
         else:
-            return _lift_guard_failure(
-                treatment.metric, treatment.group_id, method.name, method_role, exc
-            )
+            return _lift_guard_failure(treatment, method.name, method_role, exc)
     update: dict[str, Any] = dict(_winsorization_result_fields(control, treatment))
     if strategy.n_clusters is None:
         if strategy.metric_type == "ratio":
@@ -2874,8 +2872,7 @@ def _ratio_denominator_unresolved(
 
 
 def _lift_guard_failure(
-    metric: str,
-    group_id: str,
+    treatment: ArmStats,
     method_name: str,
     method_role: Literal["decision", "sensitivity"],
     exc: LiftGuardError,
@@ -2884,9 +2881,17 @@ def _lift_guard_failure(
     scale; a sensitivity cell is omitted."""
     if method_role != "decision":
         return None, None
+    return None, _lift_guard_cell_failure(treatment.metric, treatment.group_id, method_name, exc)
+
+
+def _lift_guard_cell_failure(
+    metric: str, group_id: str, method_name: str, exc: LiftGuardError
+) -> DecisionFailure:
+    """The failure of a cell a lift guard refused on every scale, keyed by
+    its arm hypothesis."""
     from increment.estimation.decision_types import ArmHypothesisKey, DecisionFailure
 
-    return None, DecisionFailure(
+    return DecisionFailure(
         ArmHypothesisKey(metric, group_id, "itt"),
         "estimation.engine.lift_guard",
         {
@@ -3439,13 +3444,7 @@ def _asymptotic_lift_outcome(
         )
     except _RelativeScaleUnavailable as exc:
         if _ratio_denominator_unresolved(contrast, strategy):
-            return _lift_guard_failure(
-                treatment.metric,
-                treatment.group_id,
-                method_strategy.method.name,
-                method_role,
-                exc,
-            )
+            return _lift_guard_failure(treatment, method_strategy.method.name, method_role, exc)
         row = _relative_unavailable_outcome(
             exc,
             contrast,
