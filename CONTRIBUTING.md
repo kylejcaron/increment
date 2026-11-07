@@ -285,7 +285,9 @@ Start with the exact regression:
 make test TESTS=tests/file.py::test_name
 ```
 
-Then run the affected fast tier against the task's immutable base:
+CI runs the fast and slow tiers on every PR. Work kept local with no CI runs
+the affected tiers once on its integrated head, against its immutable base,
+not in each parallel worktree:
 
 ```bash
 make test-affected BASE=<task-base-sha>
@@ -314,8 +316,9 @@ about 2.5 to 6 minutes. A change to a widely imported module such as
 `increment/estimation/engine.py`, `increment/semantics/models.py` or
 `increment/_unit_cycle.py` reaches more than 90% of the fast tier through the
 lazy root exports and dynamic imports, so it costs about as much as the whole
-tier, which is also what a stale map costs. Iterate with `make test
-TESTS=<node ID or file>` and run `make test-affected` once before committing.
+tier, which is also what a stale map costs; parallel worktrees each running it
+multiply that on one machine. Iterate with `make test TESTS=<node ID or file>`
+and, before committing, run the test modules the change touches.
 
 Affected checks are local feedback, not a replacement for required slow,
 parity, fixtures, public-smoke, documentation, scientific or full-suite gates.

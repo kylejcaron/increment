@@ -158,13 +158,16 @@ every loader.
   a detached worktree at the base, never `git stash`). Expected values come
   from the specification, not from running the implementation.
 - Commands: `make test TESTS=<nodeid>` while editing; before committing,
-  `make lint`, `uv run ty check`, `make test-affected BASE=<task-base-sha>`
-  and the same with `TIER=slow`. `make check` (full fast and slow tiers) runs
-  at most once per pushed head, never again on an unchanged tree; CI is the
-  gate. Collected-item growth needs a `tests: +N items — reason` line in the
-  PR body; removing or weakening tests needs the `test-reduction-approved`
-  label. Mutation evidence comes
-  from `scripts/mutation_campaign.py`, nightly or on demand, never per push.
+  `make lint`, `uv run ty check` and the test modules the change touches
+  (`make test TESTS=<paths>`). CI is the gate: every PR runs the fast and slow
+  tiers. Work kept local with no CI runs `make test-affected BASE=<base-sha>`
+  and the same with `TIER=slow` once on its integrated head, never in each
+  parallel worktree. `make check` (full fast and slow tiers) runs at most once
+  per pushed head, never again on an unchanged tree. Collected-item growth
+  needs a `tests: +N items — reason` line in the PR body; removing or
+  weakening tests needs the `test-reduction-approved` label. Mutation evidence
+  comes from `scripts/mutation_campaign.py`, nightly or on demand, never per
+  push.
 - The affected selection misses two checks. When imports reachable from
   warehouse compilation change, regenerate the record with
   `scripts/trace_compile_dependencies.py` and run
@@ -173,7 +176,11 @@ every loader.
 - A change to refusals, scopes or breakout selection runs
   `tests/test_parity_matrix.py::test_runnable_preserves_preflight_refusals`
   in the full scope (`INCREMENT_PARITY_MATRIX=full make test TESTS=<that node ID>`):
-  `runnable()` and `run()` report the same code and context. A new or changed
+  `runnable()` and `run()` report the same code and context. Run it once per
+  integrated head (before pushing, or on the integration branch of local-only
+  work), not in each parallel worktree. CI runs that scope on a PR only when
+  the change reaches the exhaustive gate's paths
+  (`scripts/certification_ci_changes.py`), and nightly. A new or changed
   hazard regenerates `tests/parity_harness/preflight_hazards.json` with
   `scripts/record_preflight_hazards.py`.
 - Tests never pass `examples/definitions` to a builder: builders write a
