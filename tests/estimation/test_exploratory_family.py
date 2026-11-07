@@ -956,7 +956,7 @@ def _sequential_row():
 
 
 def _winsor_row():
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState, WinsorSupport
 
     raw = WinsorRawState(

@@ -798,6 +798,8 @@ class _ArtifactFacadeSource(_ArtifactBase):
         validate_source_mapping(source_context, self._sequential_observation_mapping())
         self._population_units = population_units
         self._trigger_anchors = trigger_anchors
+        # Like the base relations, each extension relation is verified once per reader.
+        self._verified_extensions: dict[tuple[str, Any], ir.Table] = {}
         self._population: Literal["assigned", "triggered"] = (
             "assigned" if population_units is None else "triggered"
         )
@@ -1307,6 +1309,7 @@ class _ArtifactFacadeSource(_ArtifactBase):
                 context=self._manifest.context,
                 experiment_id=self._manifest.experiment_id,
                 exposure_relation=self._ensure("exposures"),
+                verified=self._verified_extensions,
             ),
         )
 

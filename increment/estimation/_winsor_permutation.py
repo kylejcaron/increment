@@ -6,14 +6,13 @@ from itertools import combinations
 
 import numpy as np
 
+from increment._winsor_rank import _linear_cutoff
 from increment.winsor import WinsorPermutationTest, WinsorRawState, winsor_refuse
 
 
 def conditional_permutation_test(
     raw: WinsorRawState, control: str, treatment: str, *, seed: int = 2729, stream: int = 0
 ) -> WinsorPermutationTest:
-    from increment.estimation.winsor import _linear_cutoff
-
     if control == treatment or seed < 0 or stream < 0:
         winsor_refuse(
             "invalid_state",

@@ -88,6 +88,7 @@ from increment.estimation.decision_types import (
     exact_fraction,
 )
 from increment.estimation.multiplicity import design_excluded, outcome_non_rejection
+from increment.estimation.results import reinterval_selected, with_score_margin
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.semantics.sequential import SequentialRegistration
 
@@ -867,9 +868,9 @@ def _members(rows: Sequence[LiftEstimate | BreakoutEstimate]) -> list[_Member]:
     delta-route conversion row is read as a family member: its view carries the composite
     p-value of its persisted counts (`engine.escalate_family_member`), the evidence
     ``run_breakout(correction="bh")`` reads for the same cell. A binomial margin row saved with
-    Wald additive bounds is read with its score interval (`_fcr_reinterval.with_score_margin`),
+    Wald additive bounds is read with its score interval (`results.with_score_margin`),
     the test its reissue inverts."""
-    from increment.estimation._fcr_reinterval import classify, with_score_margin
+    from increment.estimation._fcr_reinterval import classify
     from increment.estimation.engine import escalate_family_member
 
     members: list[_Member] = []
@@ -1040,7 +1041,7 @@ def select_exploratory_family(
         selected = family_discovery(outcome, member.key)
         view = member.view
         if selected and view is not None:
-            from increment.estimation._fcr_reinterval import nominal_alpha, reinterval_selected
+            from increment.estimation._fcr_reinterval import nominal_alpha
 
             construction = member.construction
             threshold = outcome.realized_threshold

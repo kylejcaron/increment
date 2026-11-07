@@ -1,4 +1,4 @@
-# Traced on commit: ea5dd3734287986ff927382003fd7ac65b79644f
+# Traced on commit: 54bb913621006b8a83fc7146aac7785597fd457e
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -52,6 +52,7 @@ increment._unit_cycle
 increment._warehouse_namespace
 increment._window
 increment._winsor_errors
+increment._winsor_rank
 increment.artifacts
 increment.artifacts._query
 increment.breakout
@@ -76,11 +77,16 @@ increment.estimation._adjust.value_scale
 increment.estimation._binomial_support
 increment.estimation._certified
 increment.estimation._fcr_reinterval
+increment.estimation._fixed_horizon
 increment.estimation._readout_refusals
+increment.estimation._result_types
 increment.estimation._sequential_inversion
 increment.estimation._sequential_likelihood
 increment.estimation._student_t
 increment.estimation._tails
+increment.estimation._winsor_bootstrap
+increment.estimation._winsor_influence
+increment.estimation._winsor_permutation
 increment.estimation.adjust
 increment.estimation.advisory
 increment.estimation.arm_contract
@@ -120,6 +126,7 @@ increment.estimation.risk_difference
 increment.estimation.sequential
 increment.estimation.sequential_result
 increment.estimation.variance
+increment.estimation.winsor
 increment.estimators
 increment.estimators.registry
 increment.evidence

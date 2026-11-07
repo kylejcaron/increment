@@ -1221,7 +1221,7 @@ def test_manifest_regeneration_is_complete_and_deterministic():
 def test_captured_array_kernel_matches_complete_public_output(
     winsor_connection, control, treatment, q, stream
 ):
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.results import LiftEstimate
 
     region = _winsor_array_region(control, treatment, q, stream=stream)
@@ -1277,7 +1277,7 @@ def test_aa_allocation_swap_is_pathwise_equivariant(case_id):
     Only the lift-scale relative endpoints carry rounding, and only from the
     expm1/log1p round trip; a broken identity sits ~1e13 ulps away, not eight.
     """
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import BootstrapReference
 
     case = CASES[case_id]
@@ -1340,7 +1340,7 @@ def test_shared_quantile_draw_matches_the_production_kernel(case_id, quantiles):
     and refusal reason, so this pins the shared-draw evaluator to the frozen
     kernel rather than to a summary of it.
     """
-    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.estimation.results import estimate_winsor_lift
 
     control, treatment = _campaign_sample(CASES[case_id], draw=2)
     shared = _winsor_shared_quantile_regions(control, treatment, quantiles, stream=11)

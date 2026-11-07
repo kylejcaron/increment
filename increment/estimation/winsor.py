@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 
-from increment._literals import PreferredDirection
 from increment._winsor_rank import (
     RankBand,
     _mean,
@@ -31,6 +30,7 @@ from increment._winsor_rank import (
 from increment._winsor_rank import (
     project_bands as _project_bands,
 )
+from increment.estimation._result_types import WinsorLiftParts
 from increment.estimation._winsor_bootstrap import (
     bootstrap_confidence_set as bootstrap_confidence_set,
 )
@@ -67,7 +67,6 @@ if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
 
     from increment._evidence_types import EvidenceSource, SourceContext
-    from increment.estimation.results import LiftEstimate
     from increment.semantics.models import Metric, Winsorization
 
 
@@ -397,22 +396,15 @@ def build_winsor_references(
     return {}
 
 
-def estimate_winsor_lift(
+def winsor_lift_parts(
     raw: WinsorRawState,
     control: str,
     treatment: str,
     *,
-    alpha: float = 0.05,
-    method: str = "unadjusted",
-    method_role: Literal["decision", "sensitivity"] = "decision",
-    null_lift: float = 0.0,
-    null_abs: float | None = None,
-    preferred_direction: PreferredDirection | None = None,
-    reference: ComputedWinsorReference | None = None,
-) -> LiftEstimate:
-    """Build the public row without manufacturing a posterior or a standard error."""
-    from increment.estimation.results import Estimate, LiftEstimate
-
+    alpha: float,
+    reference: ComputedWinsorReference | None,
+) -> WinsorLiftParts:
+    """The region, cutoff and clipped arm counts one winsorized lift row reports."""
     executed = raw.executed_method
     validation_context: dict[object, object] | None = None
     if executed == "joint-rank-projection-v1":
@@ -440,48 +432,15 @@ def estimate_winsor_lift(
             else influence_confidence_set(reference, alpha, validation_context=validation_context)
         )
     cutoff = reference.observed_cutoff if reference is not None else _linear_cutoff(raw)
-    point = None
-    if region.point is not None:
-        if region.lower is not None and region.upper is not None and alpha / 2 > 0:
-            point = Estimate(
-                value=region.point,
-                lb=region.lower,
-                ub=region.upper,
-                alpha=alpha,
-                level=region.level,
-            )
-        else:
-            point = Estimate(value=region.point)
-    row = {
-        "metric": raw.metric,
-        "group_id": treatment,
-        "method": method,
-        "method_role": method_role,
-        "reference_kind": "confidence_set",
-        "confidence_set": region,
-        "lift": point,
-        "abs_diff": region.additive_point,
-        "abs_lb": region.additive.lower.value,
-        "abs_ub": region.additive.upper.value,
-        "abs_alpha": (
-            region.alpha
-            if region.additive.lower.value is not None and region.additive.upper.value is not None
-            else None
-        ),
-        "null_lift": null_lift,
-        "null_abs": null_abs,
-        "preferred_direction": preferred_direction,
-        "analysis_population": raw.population,
-        "winsor_upper_percentile": raw.quantile,
-        "winsor_upper_bound": cutoff,
-        "winsor_control_n_lower": 0,
-        "winsor_treatment_n_lower": 0,
-        "winsor_control_n_upper": _count_above(raw.arm(control).values, cutoff),
-        "winsor_treatment_n_upper": _count_above(raw.arm(treatment).values, cutoff),
-        "winsor_control_n": len(raw.arm(control).values),
-        "winsor_treatment_n": len(raw.arm(treatment).values),
-    }
-    return LiftEstimate.model_validate(row, context=validation_context)
+    return WinsorLiftParts(
+        region=region,
+        validation_context=validation_context,
+        cutoff=cutoff,
+        control_n_upper=_count_above(raw.arm(control).values, cutoff),
+        treatment_n_upper=_count_above(raw.arm(treatment).values, cutoff),
+        control_n=len(raw.arm(control).values),
+        treatment_n=len(raw.arm(treatment).values),
+    )
 
 
 def _count_above(values: tuple[float, ...], cutoff: float) -> int:

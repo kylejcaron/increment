@@ -22,10 +22,10 @@ from increment._interpretation import (
     project_effect,
 )
 from increment.errors import CodedError
-from increment.estimation._fcr_reinterval import Construction, classify, reinterval_selected
+from increment.estimation._fcr_reinterval import Construction, classify
 from increment.estimation.readout_types import FamilyScope, ReadoutMetadata
 from increment.estimation.readout_types import cell_order as _readout_cell_order
-from increment.estimation.results import LiftEstimate
+from increment.estimation.results import LiftEstimate, reinterval_selected
 from increment.kernel.contracts import CellIdentity
 
 
@@ -36,6 +36,7 @@ def _cell_order(cell: Any) -> bytes:
 if TYPE_CHECKING:
     from increment._evidence_types import JsonValue
     from increment._run import RunResult
+    from increment.estimation.targeting import TargetingSelection
 
 _SCHEMA_VERSION = 3
 _METADATA_KEY = b"increment.readout_metadata"
@@ -758,9 +759,7 @@ class ResultCell:
                 required_columns=getattr(policy, "required_columns", ()),
             )
             if row_kind == "targeting_selection":
-                from increment.estimation.targeting import TargetingSelection
-
-                selection = cast(TargetingSelection, row)
+                selection = cast("TargetingSelection", row)
                 method_config.update(
                     fractions=getattr(row, "fractions", ()),
                     n_folds=getattr(row, "n_folds", None),
