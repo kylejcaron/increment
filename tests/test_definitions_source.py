@@ -1136,4 +1136,91 @@ def test_null_fact_exports_follow_non_error_policies(tmp_path, route, missing):
     assert isinstance(export, ibis.Table if route == "trend_table" else str)
 
 
+def test_panel_preview_checks_every_day_it_exports(tmp_path):
+    """Each NULL-revenue purchase is made on 2025-01-04, after the three-day windows of
+    exposure on 2025-01-01 but inside the panel, which runs through the observation end on
+    2025-01-05: the panel preview refuses, and the summary preview, which reads only the
+    windows, returns its SQL."""
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", _null_revenue_events(null_at=dt.timedelta(days=3, hours=2)))
+    experiment, reader = from_definitions(
+        _null_revenue_definitions(tmp_path), connection, experiment_name="x"
+    )
+    with pytest.raises(InvalidRequestError) as refused:
+        panel_sql(experiment, reader)
+    assert refused.value.code == "source.native.fact_null_values"
+    assert dict(refused.value.context) == {
+        "fact": "purchase",
+        "column": "revenue",
+        "null_rows": 40,
+    }
+    assert set(summary_sql(experiment, reader)) == {"avg_order", "aov"}
+
+
+def test_running_panel_preview_ends_on_the_latest_valued_event(tmp_path):
+    """A running experiment's panel ends on the latest day a metric has a valued event, here
+    each unit's purchase on 2025-01-01, so the NULL-revenue purchases on 2025-01-03 fall
+    after every panel day and the panel preview returns its SQL."""
+    connection = ibis.duckdb.connect()
+    connection.create_table(
+        "events", _null_revenue_events(null_at=dt.timedelta(days=2, hours=2), loaded=False)
+    )
+    definitions = tmp_path / "running.yaml"
+    definitions.write_text(
+        """
+fact_sources:
+  - {name: events, sql: SELECT * FROM events, timestamp_column: event_at, entities: [user_id],
+     facts: [{name: page_view, column: null}, {name: purchase, column: revenue}]}
+exposures: [{name: enrolled, fact: page_view}]
+metrics:
+  - {name: avg_order, type: mean, entity: user_id, fact: purchase, aggregation: avg_event,
+     window_days: 3}
+experiments:
+  - {name: x, exposure: enrolled, unit: user_id, start: 2025-01-01, control_group: control,
+     plan: {primary: avg_order}}
+"""
+    )
+    experiment, reader = from_definitions(definitions, connection, experiment_name="x")
+    assert set(panel_sql(experiment, reader)) == {"avg_order"}
+
+
+def test_panel_preview_reads_only_the_ratio_numerator(tmp_path):
+    """Every enrolled unit checks out a day after exposure, and each checkout carries a NULL
+    revenue that only the denominator of revenue per checkout reads: the panel preview, which
+    exports the numerator's purchases alone, returns its SQL, and the summary preview, which
+    also reads the denominator, refuses."""
+    connection = ibis.duckdb.connect()
+    connection.create_table(
+        "events", _null_revenue_events(null_owner="nobody", trigger_at=dt.timedelta(days=1))
+    )
+    definitions = tmp_path / "revenue-per-checkout.yaml"
+    definitions.write_text(
+        """
+fact_sources:
+  - {name: events, sql: SELECT * FROM events, timestamp_column: event_at, entities: [user_id],
+     facts: [{name: page_view, column: null}, {name: purchase, column: revenue},
+             {name: checkout, column: revenue}]}
+exposures: [{name: enrolled, fact: page_view}]
+metrics:
+  - {name: revenue_per_checkout, type: ratio, entity: user_id,
+     numerator: {fact: purchase, aggregation: sum, window_days: 3},
+     denominator: {fact: checkout, aggregation: count, window_days: 3}}
+experiments:
+  - {name: x, exposure: enrolled, unit: user_id, start: 2025-01-01, end: 2025-01-01,
+     observation_end: 2025-01-05, control_group: control,
+     plan: {primary: revenue_per_checkout}}
+"""
+    )
+    experiment, reader = from_definitions(definitions, connection, experiment_name="x")
+    assert set(panel_sql(experiment, reader)) == {"revenue_per_checkout"}
+    with pytest.raises(InvalidRequestError) as refused:
+        summary_sql(experiment, reader)
+    assert refused.value.code == "source.native.fact_null_values"
+    assert dict(refused.value.context) == {
+        "fact": "checkout",
+        "column": "revenue",
+        "null_rows": 40,
+    }
+
+
 pytestmark = pytest.mark.integration
