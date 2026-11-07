@@ -310,7 +310,7 @@ _REFUSALS = refusals(
         "power.quantile_size_search_delta_method_unreliable": RefusalSpec(
             "power.quantile_size_search_delta_method_unreliable",
             InvalidRequestError,
-            template="no sample size gives this quantile metric a lift the readout can report: wherever power reaches {power}, the pilot's recording grid keeps the planned combined log-scale standard error at {log_se:.4g} or more, and the readout refuses a relative lift whose log-scale standard error is {log_se_limit} or more (delta_method_unreliable) -- record the metric at a finer resolution",
+            template="no sample size gives this quantile metric a lift the readout can report: wherever power reaches {power}, the pilot's recording grid keeps the planned combined log-scale standard error at about {log_se:.4g} or more, and the readout refuses a relative lift whose log-scale standard error is {log_se_limit} or more (delta_method_unreliable) -- record the metric at a finer resolution",
         ),
         "power.power.check": "power must be in [0, 1], got {power}",
         "power.power.effective_var": "effective_var must be > 0, got {effective_var}",
