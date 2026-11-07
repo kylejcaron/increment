@@ -1150,6 +1150,30 @@ def test_breakout_slice_request_without_metric_configurations_is_refused(loader,
     assert Refused(refused.value.code, _context(refused.value)) == Refused(code, context)
 
 
+# A run of several switchback views validates each view's contrast request against a
+# borrowed scope; a contrast request names no metric configurations.
+def test_multiple_switchback_scopes_accept_borrowed_execution_context():
+    from increment import View, run
+    from tests.test_switchback_execution_context import _analysis
+
+    experiment, resolver = _analysis(include_other=True)
+    source = bound_source(resolver)
+    metrics = tuple(source.context.metrics)
+    context = EvidenceExecutionContext(
+        provider=switchback_scope_provider(source),
+        scope=EvidenceScope(grain="total", population="assigned", metrics=metrics),
+        run_id="multiple-switchback-scopes",
+    )
+    requested = experiment.with_views(View(view="run", grain="total"))
+    assert len(requested.views) == 2
+
+    with context.evidence_scope():
+        result = run(requested, resolver, execution_context=context)
+
+    for scope in requested.views:
+        assert {row.metric for row in result.readout(scope)} == {"value", "other"}
+
+
 # -- Declared capabilities this fixture cannot exercise ------------------------
 
 

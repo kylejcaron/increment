@@ -598,7 +598,7 @@ def _borrowed(
 ) -> AbstractContextManager[object]:
     for request in requests:
         execution_context.validate_request(
-            source, request.metrics, request.configs, population=request.population
+            source, request.metrics, request.configs or (), population=request.population
         )
         for population in request.populations:
             execution_context.validate_population(population)
