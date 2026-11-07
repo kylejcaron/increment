@@ -542,6 +542,7 @@ _FINITE = st.floats(allow_nan=False, allow_infinity=False)
 @example(values=[1.7976931348623157e308, 1.7976931348623157e308], data=None)
 @example(values=[5e-324, -5e-324, 2.2250738585072014e-308], data=None)
 @example(values=[1e300, 3.0, 4.0, 1e-300, 5.0, 6.0, -1e300], data=None)
+@example(values=[1e300, 1e200, 7.0, 1e-300, 1e-200, 8.0, -1e300, -1e200], data=None)
 def test_exact_sum_rounds_the_exact_total_once_in_any_order(values, data):
     from increment._frame_moments import _exact_group_sums, exact_sum
 

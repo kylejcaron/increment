@@ -220,8 +220,9 @@ def _limb_sums(codes: np.ndarray, n_groups: int, values: np.ndarray) -> np.ndarr
     wide = span + 5 > width
     bottom = np.where(present, bottom, 0)
     column = codes * width + (limb - bottom[codes])
-    if wide.any():
-        narrow = ~wide[codes]
+    wide_rows = wide[codes]
+    if wide_rows.any():
+        narrow = ~wide_rows
         column, sign = column[narrow], sign[narrow]
         parts = tuple(part[narrow] for part in parts)
     limbs = np.zeros(n_groups * width, dtype=np.int64)
@@ -234,8 +235,12 @@ def _limb_sums(codes: np.ndarray, n_groups: int, values: np.ndarray) -> np.ndarr
     _carry(limbs)
     magnitude = _round_limbs(limbs.astype(np.uint64), bottom)
     sums = np.where(negative, -magnitude, magnitude)
-    for group in np.flatnonzero(wide):
-        sums[group] = exact_sum(values[codes == group].tolist())
+    if wide_rows.any():
+        # One sort splits the wide groups' rows: the cost grows with rows, not rows x groups.
+        rows = np.flatnonzero(wide_rows)
+        rows = rows[np.argsort(codes[rows])]
+        for group_rows in np.split(rows, np.flatnonzero(np.diff(codes[rows])) + 1):
+            sums[codes[group_rows[0]]] = exact_sum(values[group_rows].tolist())
     return sums
 
 
