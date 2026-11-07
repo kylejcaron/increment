@@ -31,8 +31,11 @@ from increment.store.types import (
 _RUN_TABLE_PREFIX = "increment_run_"
 _RUN_KEY_DIGITS = MAX_IDENTIFIER_BYTES - len(_RUN_TABLE_PREFIX)
 _RUN_TABLE_NAME = re.compile(rf"{_RUN_TABLE_PREFIX}[0-9a-f]{{{_RUN_KEY_DIGITS}}}")
+# BigQuery reports a missing dataset as 404 "Not found: Dataset <project>:<dataset>" and a
+# dataset it may not read as 403 "Access Denied: ...", so the 404 form names absence alone.
 _MISSING_NAMESPACE = re.compile(
-    r"\b(?:schema|database|dataset)\b.*\b(?:does not exist|not found)\b", re.IGNORECASE | re.DOTALL
+    r"\b(?:schema|database|dataset)\b.*\b(?:does not exist|not found)\b|\bnot found:\s*dataset\b",
+    re.IGNORECASE | re.DOTALL,
 )
 # Snowflake reports a schema the role may not read as "does not exist or not authorized".
 _UNAUTHORIZED = re.compile(r"authori[sz]|permission|privilege|access denied", re.IGNORECASE)

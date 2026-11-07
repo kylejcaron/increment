@@ -438,6 +438,63 @@ def test_unrelated_table_listing_errors_propagate(message, lists_schemas):
     assert raised.value is error
 
 
+_BIGQUERY_DATASET = "data-project.default_dataset"
+
+
+def _bigquery_backend(error: Exception) -> Any:
+    """A BigQuery-shaped backend whose dataset listing omits the store's dataset.
+
+    Its client reports an error as ``"<HTTP status> <message>"``.
+    """
+
+    def list_tables(database=None):
+        assert database == _BIGQUERY_DATASET
+        raise error
+
+    return SimpleNamespace(
+        name="bigquery",
+        list_tables=list_tables,
+        list_databases=lambda catalog=None: [],
+        create_database=_no_table_operations,
+        **dict.fromkeys(("table", "create_table"), _no_table_operations),
+    )
+
+
+def test_missing_bigquery_dataset_run_lookup_is_not_found_and_history_is_empty():
+    store = WarehouseResultsStore(
+        _bigquery_backend(
+            _SchemaLookupError("404 Not found: Dataset data-project:default_dataset")
+        ),
+        schema=_BIGQUERY_DATASET,
+    )
+
+    for run_id in ("run-id", None):
+        with pytest.raises(CodedError) as missing:
+            store.open_run("exp", "spec-hash", run_id)
+        assert missing.value.code == "store.run.not_found"
+    assert store.history("exp", _history_selector()).num_rows == 0
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "403 Access Denied: Dataset data-project:default_dataset",
+        "404 Not found: Table data-project:default_dataset.increment_run_0",
+    ],
+    ids=["access-denied", "other-object"],
+)
+def test_bigquery_dataset_access_and_other_object_errors_propagate(message):
+    error = _SchemaLookupError(message)
+    store = WarehouseResultsStore(_bigquery_backend(error), schema=_BIGQUERY_DATASET)
+
+    with pytest.raises(_SchemaLookupError) as raised:
+        store.open_run("exp", "spec-hash", "run-id")
+    assert raised.value is error
+    with pytest.raises(_SchemaLookupError) as raised:
+        store.history("exp", _history_selector())
+    assert raised.value is error
+
+
 @pytest.mark.integration
 def test_results_store_saves_into_an_existing_sqlite_schema():
     backend = ibis.sqlite.connect()
