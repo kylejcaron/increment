@@ -76,9 +76,9 @@ def _digest_builder(key, stage, fields_override=None):
     def build(table_names, dialect):
         from increment.query.artifact_digest import (
             _BUCKET_HEX_LEN,
+            _row_hash_relation,
             _row_token_expr,
             _sql_binary_hex_expr,
-            _sql_digest_sha256_binary_expr,
         )
         from increment.query.schemas import UNIT_DAY_ARTIFACT_RELATION_SCHEMAS
 
@@ -93,16 +93,17 @@ def _digest_builder(key, stage, fields_override=None):
             "BOOLEAN": (6, "other"),
         }
         tagged = [(name, *tags[tag]) for name, tag, _nullable in fields]
-        token = _row_token_expr(table, tagged, dialect=dialect, digest_format=4)
         if stage == "row_token":
-            return table.select(row_token=token)
-        hashed = _sql_digest_sha256_binary_expr(token, dialect=dialect)
+            return table.select(
+                row_token=_row_token_expr(table, tagged, dialect=dialect, digest_format=4)
+            )
+        hashed = _row_hash_relation(table, tagged, dialect=dialect, digest_format=4)
         if stage == "row_hash":
-            return table.select(row_hash=hashed)
-        hex_hash = _sql_binary_hex_expr(hashed, dialect=dialect)
+            return hashed
+        hex_hash = _sql_binary_hex_expr(hashed.h, dialect=dialect)
         if stage == "bucket":
-            return table.select(bucket=hex_hash.substr(0, _BUCKET_HEX_LEN), row_hash=hex_hash)
-        bucketed = table.select(bucket=hex_hash.substr(0, _BUCKET_HEX_LEN), row_hash=hex_hash)
+            return hashed.select(bucket=hex_hash.substr(0, _BUCKET_HEX_LEN), row_hash=hex_hash)
+        bucketed = hashed.select(bucket=hex_hash.substr(0, _BUCKET_HEX_LEN), row_hash=hex_hash)
         if stage == "bucket_digest":
             order = ibis.asc(bucketed.row_hash, nulls_first=dialect == "bigquery")
             return bucketed.group_by("bucket").aggregate(

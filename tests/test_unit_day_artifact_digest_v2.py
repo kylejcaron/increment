@@ -246,6 +246,32 @@ def test_sql_digest_format4_positive_zero_content_is_pinned(con):
     )
 
 
+def test_sql_digest_row_hash_statement_classifies_each_float_once(con, monkeypatch):
+    """The row-hash statement computes each FLOAT64 payload once per row. Inlined into
+    its token, the payload's length prefix (and DuckDB's LPAD) repeats the whole
+    exact-binary64 expression five times per field, in every statement a warehouse plans."""
+    table = con.create_table("portable_digest_payload_once", _portable_digest_arrow())
+    statements = []
+    create_table = con.create_table
+
+    def recording(name, obj=None, **kwargs):
+        statements.append(con.compile(obj))
+        return create_table(name, obj, **kwargs)
+
+    monkeypatch.setattr(con, "create_table", recording)
+    for digest_format in (2, 4):
+        digest_relation_sql_v2(
+            con,
+            table,
+            "portable_spec",
+            _PORTABLE_SCHEMA,
+            primary_key=("id",),
+            digest_format=digest_format,
+        )
+    floats = sum(tag == "FLOAT64" for _name, tag, _nullable in _PORTABLE_SCHEMA)
+    assert [statement.count("ISNAN(") for statement in statements] == [floats, floats]
+
+
 def test_sql_digest_detects_row_mutation(con):
     baseline = digest_relation_sql_v2(
         con, _table(con, _ROWS), "exposures", _SCHEMA, primary_key=_PK
