@@ -664,6 +664,7 @@ def _scoped_randomized_results(  # noqa: PLR0913, PLR0915
         configs,
         snapshot_id,
         decision_snapshot_id=decision_snapshot_id,
+        unenrolled_arms=roster.unenrolled_arms,
     )
     scope = ReadoutScope(
         snapshot_id=snapshot_id,

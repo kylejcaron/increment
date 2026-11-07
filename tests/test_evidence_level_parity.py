@@ -3900,7 +3900,6 @@ def _method_family_results(
         scales={metric.name: "relative"},
         raise_if_empty=False,
         resolved_method_roles=roles,
-        method_roles=roles,
         family_member=procedure.family.member,
         route_tail=None,
         prewarned_unsupported=frozenset(),
@@ -4404,7 +4403,7 @@ def _project_design_results(
                     unit_frame_memo=unit_frame,
                     arms=resolve_roster(
                         declaration, design, population, observed, base_roster=base_roster
-                    ).arms,
+                    ).enrolled_arms,
                     computations=computations,
                 )
                 return family_rows, computations
@@ -4622,6 +4621,10 @@ def _project_fixed_results(transcript):
 )
 def test_frozen_scalar_and_cuped_consumers_match_all_old_owned_fields():
     from tests.evidence_fixtures.replay import assert_estimator_matches_old_row
+    from tests.parity_harness.expected_differences import (
+        OBSERVATIONAL_FAMILY_SIZE_DIFFERENCES,
+        with_expected_difference,
+    )
 
     for entry in scenario_roster():
         if entry.disposition != "source" or entry.family not in {
@@ -4668,9 +4671,17 @@ def test_frozen_scalar_and_cuped_consumers_match_all_old_owned_fields():
                     key[0],
                 ]
                 assert published is not None
+                retained = expected_by_key[key]
+                if retained.get("family_q") is not None:
+                    retained = with_expected_difference(
+                        entry.scenario_id,
+                        entry.ingress,
+                        retained,
+                        differences=OBSERVATIONAL_FAMILY_SIZE_DIFFERENCES,
+                    )
                 _assert_old_readout_rows(
                     (published,),
-                    (expected_by_key[key],),
+                    (retained,),
                     nominal_alpha=_consumer_context(transcript)[4].alpha,
                 )
             except AssertionError as error:

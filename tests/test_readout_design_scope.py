@@ -245,21 +245,19 @@ def test_observational_counted_arm_without_outcome_is_incomplete():
     assert missing == {("other", "T2")}
 
 
-def _secondary_family_readout(design):
-    """`a` has no values in T3 and `b` none in T2 or T3. `b`'s T1 contrast has sd 0.5 in both
-    arms and a 0.1 shift at n = 150, so t = sqrt(3) and p is about 0.084."""
-    from increment import Method
-    from increment.semantics.models import AnalysisPlan
+# Each arm's (a, b) shifts from control. `b`'s T1 contrast has sd 0.5 in both arms and a 0.1
+# shift at n = 150, so t = sqrt(3) and p is about 0.084; `a`'s contrasts have p near 0.
+_FAMILY_SHIFTS = {"C": (0.0, 0.0), "T1": (2.0, 0.1), "T2": (3.0, 0.0), "T3": (0.0, 0.0)}
 
+
+def _family_frame(arms, *, unobserved=None):
+    """150 units in each of *arms*; *unobserved* maps a metric to the arms it has no values in."""
+    unobserved = unobserved or {}
     rng = np.random.default_rng(17)
     n = 150
     frames = []
-    for arm, shift_a, shift_b in (
-        ("C", 0.0, 0.0),
-        ("T1", 2.0, 0.1),
-        ("T2", 3.0, 0.0),
-        ("T3", 0.0, 0.0),
-    ):
+    for arm in arms:
+        shift_a, shift_b = _FAMILY_SHIFTS[arm]
         noise = rng.normal(size=n)
         frames.append(
             pd.DataFrame(
@@ -267,34 +265,76 @@ def _secondary_family_readout(design):
                     "unit": [f"{arm}{i}" for i in range(n)],
                     "arm": arm,
                     "x": rng.normal(size=n),
-                    "a": np.nan if arm == "T3" else 1.0 + shift_a + rng.normal(0, 0.5, n),
+                    "a": np.nan
+                    if arm in unobserved.get("a", ())
+                    else 1.0 + shift_a + rng.normal(0, 0.5, n),
                     "b": np.nan
-                    if arm in ("T2", "T3")
+                    if arm in unobserved.get("b", ())
                     else 2.0 + shift_b + (noise - noise.mean()) / noise.std(ddof=1) * 0.5,
                 }
             )
         )
+    return pd.concat(frames, ignore_index=True)
+
+
+def _family_design(mechanism):
+    from increment.semantics.design import Randomized
+
+    if mechanism == "randomized":
+        return Randomized(control_group="C")
+    return Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+
+
+def _family_analysis(frame, design, plan=None, **options):
+    from increment.semantics.models import AnalysisPlan
+
+    return from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        metrics=[
+            MetricSpec(name="a", type="mean", missing="skip"),
+            MetricSpec(name="b", type="mean", missing="skip"),
+        ],
+        design=design,
+        plan=AnalysisPlan(secondaries=["a", "b"], q=0.1) if plan is None else plan,
+        **options,
+    )
+
+
+def _family_readout(experiment, reader, scope=None):
+    from increment import Method
+
+    return view_readout(experiment, reader, scope, decision_method=Method(name="unadjusted"))
+
+
+def _secondary_family_readout(design, *, unobserved=None):
     with pytest.warns(IncrementWarning):
-        experiment, reader = from_frame(
-            pd.concat(frames, ignore_index=True),
-            shape="summary",
-            unit="unit",
-            group="arm",
-            metrics=[
-                MetricSpec(name="a", type="mean", missing="skip"),
-                MetricSpec(name="b", type="mean", missing="skip"),
-            ],
-            design=design,
-            plan=AnalysisPlan(secondaries=["a", "b"], q=0.1),
+        analysis = _family_analysis(
+            _family_frame(("C", "T1", "T2", "T3"), unobserved=unobserved), design
         )
-    return view_readout(experiment, reader, decision_method=Method(name="unadjusted"))
+    return _family_readout(*analysis)
+
+
+def _late_arm_readout(mechanism, plan=None):
+    """The family's first moments read of each metric holds C and T1; the counts, and every
+    later read, hold the late arm T2 too."""
+    from tests.analysis_factory import drifting_analysis
+
+    early = _family_analysis(_family_frame(("C", "T1")), _family_design(mechanism), plan)
+    late = _family_analysis(_family_frame(("C", "T1", "T2")), _family_design(mechanism), plan)
+    (experiment, reader), _source = drifting_analysis(early, late)
+    try:
+        return _family_readout(experiment, reader)
+    finally:
+        for _, analysis_reader in (early, late):
+            analysis_reader.close()
 
 
 def test_observational_family_counts_every_scoped_member():
-    from increment.semantics.design import Randomized
-
     results = _secondary_family_readout(
-        Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+        _family_design("observational"), unobserved={"a": ("T3",), "b": ("T2", "T3")}
     )
     (family,) = results.metadata.scope.families
     assert len(family.members) == 6
@@ -303,8 +343,203 @@ def test_observational_family_counts_every_scoped_member():
     # b in T1, is above 3 * 0.1 / 6, so only the two `a` contrasts are discoveries.
     assert rows[("a", "T1")].family_threshold == pytest.approx(2 * 0.1 / len(family.members))
     assert rows[("b", "T1")].discovery is False
-    randomized = _secondary_family_readout(Randomized(control_group="C"))
+    assert {rows[cell].family_size for cell in (("a", "T1"), ("a", "T2"), ("b", "T1"))} == {
+        len(family.members)
+    }
+    # Only the selected cells are reissued at the FCR level, from the nominal 0.05.
+    assert rows[("a", "T1")].family_nominal_alpha == 0.05
+    assert rows[("b", "T1")].family_nominal_alpha is None
+    randomized = _secondary_family_readout(
+        _family_design("randomized"), unobserved={"a": ("T3",), "b": ("T2", "T3")}
+    )
     assert next(r for r in randomized if (r.metric, r.group_id) == ("b", "T1")).discovery is False
+
+
+def test_observational_family_keeps_a_member_without_control_values():
+    """`b` has no control values, so each of its three cells is a p = 1 member, as under a
+    randomized design: BH at q = 0.1 over six members selects the two `a` contrasts."""
+    by_mechanism = {}
+    for mechanism in ("observational", "randomized"):
+        results = _secondary_family_readout(
+            _family_design(mechanism), unobserved={"a": ("T3",), "b": ("C",)}
+        )
+        (family,) = results.metadata.scope.families
+        assert len(family.members) == 6
+        rows = {(row.metric, row.group_id): row for row in results}
+        for arm in ("T1", "T2", "T3"):
+            assert rows[("b", arm)].failure_code == "readout.cell.missing_metric_observations"
+            assert (rows[("b", arm)].failure_context or {})["unobserved_arm"] == "C"
+        by_mechanism[mechanism] = {
+            (cell, rows[cell].family_size, rows[cell].family_threshold, rows[cell].discovery)
+            for cell in (("a", "T1"), ("a", "T2"))
+        }
+    assert by_mechanism["observational"] == by_mechanism["randomized"]
+    assert {size for _cell, size, _thr, _disc in by_mechanism["observational"]} == {6}
+    for _cell, _size, threshold, discovery in by_mechanism["observational"]:
+        assert threshold == pytest.approx(2 * 0.1 / 6)
+        assert discovery is True
+
+
+def test_randomized_family_counts_a_late_arm_as_a_non_rejection():
+    results = _late_arm_readout("randomized")
+    (family,) = results.metadata.scope.families
+    assert len(family.members) == 4
+    rows = {(row.metric, row.group_id): row for row in results}
+    for metric in ("a", "b"):
+        assert rows[(metric, "T2")].failure_code == "readout.cell.missing_metric_observations"
+    # BH at q = 0.1 over {~0, 0.084, 1, 1}: at k = 2 the cutoff 2 * 0.1 / 4 is below 0.084, so
+    # one cell is selected and the threshold is 1 * 0.1 / 4.
+    for cell in (("a", "T1"), ("b", "T1")):
+        assert rows[cell].family_size == 4
+        assert rows[cell].family_threshold == pytest.approx(0.1 * 1 / 4)
+    assert rows[("a", "T1")].discovery is True
+    assert rows[("b", "T1")].discovery is False
+
+
+@pytest.mark.parametrize("mechanism", ["randomized", "observational"])
+def test_primary_alpha_split_counts_a_late_arm(mechanism):
+    from increment.semantics.models import AnalysisPlan
+
+    results = _late_arm_readout(mechanism, AnalysisPlan(primary="a", secondaries=["b"], q=0.1))
+    (primary,) = [family for family in results.metadata.scope.families if family.name == "primary"]
+    assert {cell.group_id for cell in primary.members} == {"T1", "T2"}
+    (row,) = [row for row in results if (row.metric, row.group_id) == ("a", "T1")]
+    # One primary split across its two counted treatment arms: 0.05 / 2.
+    assert row.require_lift().alpha == pytest.approx(0.05 / 2)
+
+
+def test_primary_alpha_split_counts_an_arm_that_lands_after_the_counts():
+    """A randomized run reads its counts before its moments. T2 lands between the two reads, so
+    only the moments read holds it; the split still counts every arm the primary's scope lists."""
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import AnalysisPlan
+    from tests.analysis_factory import drifting_analysis
+
+    design = Randomized(control_group="C", allocation={"C": 0.34, "T1": 0.33, "T2": 0.33})
+    counted = _family_analysis(_family_frame(("C", "T1")), design, AnalysisPlan(primary="a"))
+    landed = _family_analysis(_family_frame(("C", "T1", "T2")), design, AnalysisPlan(primary="a"))
+    # The counts are counted's; each metric's first moments read is landed's.
+    (experiment, reader), _source = drifting_analysis(landed, counted)
+    try:
+        results = _family_readout(experiment, reader)
+    finally:
+        for _, analysis_reader in (counted, landed):
+            analysis_reader.close()
+    (primary,) = [family for family in results.metadata.scope.families if family.name == "primary"]
+    assert {cell.group_id for cell in primary.members} == {"T1", "T2"}
+    for arm in ("T1", "T2"):
+        (row,) = [row for row in results if (row.metric, row.group_id) == ("a", arm)]
+        assert row.require_lift().alpha == pytest.approx(0.05 / 2)
+
+
+@pytest.mark.parametrize("mechanism", ["randomized", "observational"])
+def test_primary_alpha_split_without_counts_follows_its_own_arms(mechanism, tmp_path):
+    """Without enrollment counts a primary's alpha is split across the arms its own moments
+    read: `b` reads T2 too, but `a` has no T2 values, so `a`'s T1 keeps the whole 0.05."""
+    import pyarrow.parquet as pq
+
+    from increment import from_moments
+    from increment.semantics.models import AnalysisPlan
+    from increment.workflows import export_moments
+
+    plan = AnalysisPlan(primary="a", secondaries=["b"], q=0.1)
+    frame = _family_frame(("C", "T1", "T2"), unobserved={"a": ("T2",)})
+    with pytest.warns(IncrementWarning):
+        experiment, reader = _family_analysis(frame, _family_design(mechanism), plan)
+    path = tmp_path / "moments.parquet"
+    try:
+        export_moments(experiment, reader, path)
+    finally:
+        reader.close()
+    rows = [
+        {key: value for key, value in row.items() if key != "assignment_counts"}
+        for row in pq.read_table(path).to_pylist()
+    ]
+    experiment, reader = from_moments(
+        rows,
+        metrics=[
+            MetricSpec(name="a", type="mean", missing="skip"),
+            MetricSpec(name="b", type="mean", missing="skip"),
+        ],
+        design=_family_design(mechanism),
+        plan=plan,
+    )
+    results = _family_readout(experiment, reader)
+    (row,) = [row for row in results if (row.metric, row.group_id) == ("a", "T1")]
+    assert row.require_lift().alpha == pytest.approx(0.05)
+
+
+@pytest.mark.parametrize("mechanism", ["randomized", "observational"])
+def test_constant_family_member_keeps_its_reason_and_its_slot(mechanism):
+    """`b` is constant in every arm, so neither scale of its contrasts has an uncertainty: each
+    `b` cell is refused, an unavailable row carrying the lift guard, and a p = 1 member. BH at
+    q = 0.1 over {~0, ~0, 1, 1} selects the two `a` contrasts at the threshold 2 * 0.1 / 4."""
+    frame = _family_frame(("C", "T1", "T2")).assign(b=2.0)
+    with pytest.warns(IncrementWarning) as captured:
+        results = _family_readout(*_family_analysis(frame, _family_design(mechanism)))
+    assert set(warning_codes(captured)) == {"readouts.run.cell_refused"}
+    (family,) = results.metadata.scope.families
+    assert len(family.members) == 4
+    rows = {(row.metric, row.group_id): row for row in results}
+    for arm in ("T1", "T2"):
+        assert rows[("b", arm)].failure_code == "estimation.engine.lift_guard"
+        assert (rows[("b", arm)].failure_context or {})["reason"] == "zero_variance"
+        assert rows[("a", arm)].family_size == len(family.members)
+        assert rows[("a", arm)].family_threshold == pytest.approx(2 * 0.1 / 4)
+        assert rows[("a", arm)].discovery is True
+
+
+def test_never_enrolled_arm_leaves_the_family_scope():
+    """A declared arm without an enrolled unit is a count exclusion, not a hypothesis: its cells
+    stay unavailable rows, outside the family, and the family is the two T1 contrasts."""
+    from increment.semantics.design import Randomized
+
+    design = Randomized(control_group="C", allocation={"C": 0.34, "T1": 0.33, "T2": 0.33})
+    results = _family_readout(*_family_analysis(_family_frame(("C", "T1")), design))
+    (family,) = results.metadata.scope.families
+    assert {(cell.metric, cell.group_id) for cell in family.members} == {("a", "T1"), ("b", "T1")}
+    rows = {(row.metric, row.group_id): row for row in results}
+    for metric in ("a", "b"):
+        assert rows[(metric, "T2")].failure_code == "readout.cell.missing_arm"
+        assert rows[(metric, "T2")].family_id is None
+        # BH at q = 0.1 over {~0, 0.084}: both are selected.
+        assert rows[(metric, "T1")].family_size == len(family.members)
+        assert rows[(metric, "T1")].family_threshold == pytest.approx(0.1 * 2 / 2)
+
+
+def test_breakout_family_counts_a_late_arm_per_segment():
+    """The late arm T2 has enrolled in segment A only: its segment B cells are count
+    exclusions, and the family is every other segment's cells, as many as its size."""
+    from increment import View
+
+    frame = pd.concat(
+        [
+            _family_frame(arms).assign(seg=seg, unit=lambda f, seg=seg: seg + f["unit"])
+            for seg, arms in (("A", ("C", "T1", "T2")), ("B", ("C", "T1")))
+        ],
+        ignore_index=True,
+    )
+    experiment, reader = _family_analysis(frame, _family_design("randomized"), breakouts=["seg"])
+    with pytest.warns(IncrementWarning) as captured:
+        results = _family_readout(experiment, reader, View(view="breakout", grain="total"))
+    assert set(warning_codes(captured)) == {"breakout.estimates.no_row_for_group_metric"}
+    (family,) = results.metadata.scope.families
+    assert {(cell.metric, cell.group_id, cell.dimension_value) for cell in family.members} == {
+        (metric, arm, seg)
+        for metric in ("a", "b")
+        for arm, seg in (("T1", "A"), ("T2", "A"), ("T1", "B"))
+    }
+    rows = {(row.metric, row.group_id, row.dimension_value): row for row in results}
+    for cell in family.members:
+        key = (cell.metric, cell.group_id, cell.dimension_value)
+        assert rows[key].family_size == len(family.members)
+    for metric in ("a", "b"):
+        excluded = rows[(metric, "T2", "B")]
+        assert (excluded.excluded, excluded.family_id, excluded.family_size) == (
+            "no_treatment_arm",
+            None,
+            None,
+        )
 
 
 def test_single_refused_metric_returns_unavailable_row():

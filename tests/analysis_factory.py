@@ -82,6 +82,35 @@ def replace_bound_source(resolver: Any, source: object) -> None:
     object.__setattr__(resolver._binding.state, "source", source)
 
 
+class DriftingMoments:
+    """A source whose arm inventory changes after each metric's first moments read, as a
+    warehouse does when a late arm lands between a readout's reads. Every other attribute is
+    the late source's."""
+
+    def __init__(self, early: Any, late: Any) -> None:
+        self._late = late
+        self._early_moments = early.moments
+        self._late_moments = late.moments
+        self.reads: dict[str, int] = {}
+
+    def moments(self, metric: Any, **options: Any) -> Any:
+        self.reads[metric.name] = self.reads.get(metric.name, 0) + 1
+        moments = self._early_moments if self.reads[metric.name] == 1 else self._late_moments
+        return moments(metric, **options)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._late, name)
+
+
+def drifting_analysis(early: Any, late: Any) -> tuple[Any, DriftingMoments]:
+    """*late*'s ``(experiment, resolver)`` whose moments reads drift from *early*'s arms to
+    *late*'s after each metric's first read, and the drifting source that counts the reads."""
+    source = DriftingMoments(bound_source(early[1]), bound_source(late[1]))
+    # Capture both original reductions before substituting the drifting read behavior.
+    bound_source(late[1]).moments = source.moments
+    return late, source
+
+
 def lift_rows(results: object) -> LiftEstimates:
     """Narrow a run's result collection to lift rows."""
     assert isinstance(results, LiftEstimates)
