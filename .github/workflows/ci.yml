@@ -233,9 +233,12 @@ jobs:
           retention-days: 90
   slow:
     name: functional slow (3.12, shard ${{ matrix.group }}/8)
+    needs: [changes]
+    # A pull request runs this tier only once it carries the ready-to-merge label, and
+    # only when the change can reach it; ci-ok fails a required tier that did not run.
+    # It does not wait for lint, which ci-ok still requires.
+    if: ${{ needs.changes.outputs.slow_required == 'true' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ready-to-merge')) }}
     runs-on: ubuntu-latest
-    # Starts beside lint rather than after it: this job sets the PR wall clock,
-    # and ci-ok still requires lint.
     timeout-minutes: 60
     permissions:
       contents: read
@@ -486,6 +489,8 @@ jobs:
       wheel_smoke_required: ${{ steps.packaging.outputs.required }}
       snippets: ${{ steps.docs.outputs.snippets }}
       strict_docs: ${{ steps.docs.outputs.strict_docs }}
+      slow_required: ${{ steps.slow.outputs.required }}
+      slow_reason: ${{ steps.slow.outputs.reason }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
@@ -532,6 +537,12 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+      - id: slow
+        run: python -m scripts.slow_required --event "$EVENT" --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
 
   numerical-certification:
     name: numerical certification (shard ${{ matrix.group }}/2)
@@ -759,10 +770,14 @@ jobs:
           TOOLING_REQUIRED: ${{ needs.changes.outputs.tooling_required }}
           TOOLING_RESULT: ${{ needs.tooling.result }}
           CORE_INSTALL_RESULT: ${{ needs.core-install.result }}
+          SLOW_REQUIRED: ${{ needs.changes.outputs.slow_required }}
+          SLOW_RESULT: ${{ needs.slow.result }}
+          SLOW_REASON: ${{ needs.changes.outputs.slow_reason }}
+          READY_TO_MERGE: ${{ contains(github.event.pull_request.labels.*.name, 'ready-to-merge') }}
         run: |
           set -euo pipefail
-          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.duration-ratchet.result }} ${{ needs.build.result }} ${{ needs.changes.result }} $CORE_INSTALL_RESULT"
-          echo "lint/test/slow/build/decision/wheel-smoke jobs -> $results"
+          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.duration-ratchet.result }} ${{ needs.build.result }} ${{ needs.changes.result }} $CORE_INSTALL_RESULT"
+          echo "lint/test/build/decision/wheel-smoke jobs -> $results"
           for r in $results; do
             [ "$r" = "success" ] || { echo "::error::a required job reported '$r'"; exit 1; }
           done
@@ -786,3 +801,8 @@ jobs:
           check_conditional_job "$WHEEL_SMOKE_REQUIRED" "$WHEEL_SMOKE_MACOS_RESULT" wheel-smoke-macos
           check_conditional_job "$WHEEL_SMOKE_REQUIRED" "$WHEEL_SMOKE_WINDOWS_RESULT" wheel-smoke-windows
           check_conditional_job "$TEST_WEAKENING_REQUIRED" "$TEST_WEAKENING_RESULT" test-weakening
+          if [ "$SLOW_REQUIRED:$SLOW_RESULT" = true:skipped ] && [ "$READY_TO_MERGE" != true ]; then
+            echo "::error::This change needs the slow test tier ($SLOW_REASON). Add the ready-to-merge label when the pull request is ready to merge; the tier then runs on every push until it merges."
+            exit 1
+          fi
+          check_conditional_job "$SLOW_REQUIRED" "$SLOW_RESULT" slow

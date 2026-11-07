@@ -10,6 +10,15 @@ fork, and open a pull request into `main`.
 A pull request can merge only when CI (`ci-ok`) and the CLA check pass and a
 code owner has approved it. Commits are squash-merged.
 
+Each push to a pull request runs lint, the fast tier and the gates its changes
+select; fix what fails and push again. When the pull request is ready to
+merge, add the `ready-to-merge` label: the functional slow tier then runs on
+the current head and again on every later push. While a change that needs the
+slow tier has no passing run, `ci-ok` fails and names the label; removing the
+label after a push does not lift the requirement. A change that cannot reach
+the slow tier, such as documentation alone, skips it and passes without the
+label.
+
 Release notes are generated from merged PR titles. Choose one change category:
 
 | Label | Use |
@@ -113,6 +122,24 @@ Ordinary runs generate only the pull-request parity-matrix cells; the gate sets
 The warehouse compile registry runs for every PR except documentation-only
 changes, and always runs for pushes and manual dispatches. Renames consider
 both paths, so moving a module into documentation still requires compilation.
+The functional slow tier always runs for pushes to main and manual dispatches.
+On a pull request it runs only with the `ready-to-merge` label, and only when
+`scripts/slow_required.py` finds a change the slow tests can exercise. That is
+`pyproject.toml`, `uv.lock`, `Makefile`, `noxfile.py`, `ci.yml`, the selector
+and the import graph it reads (`scripts/check_deferred_imports.py`), any
+`conftest.py`, `integration/`, `tests/fixtures/`, `tests/parity_harness/`,
+`tests/evidence_fixtures/` and `tests/query/`; or any module under
+`increment/`, `calibration/`, `tests/`, `scripts/` or `examples/` that a test
+module holding slow tests, or a `conftest.py`, reaches at run time; or a data
+file such code names. A module is reached when it is imported, directly or
+through other modules, deferred imports and lazy package exports included; run
+as `python -m <module>` or with `runpy.run_module`; or loaded through one of the
+project's entry points. Today nearly every `increment/` module is reached, so a
+change to the package, power and simulation included, needs the tier; a change
+to documentation alone, or to code only tooling tests use, does not. An
+unavailable diff or a failed decision requires the tier. Run
+`uv run --no-sync python -m scripts.slow_required --base <sha> --head <sha>`
+to see the decision and the slow test that reaches the change.
 Tagging requires successful `ci-ok` and a successful nightly run on the exact
 tagged SHA. The existing `force` input bypasses both checks; hosted
 branch-protection activation is an owner gate.
@@ -285,7 +312,8 @@ Start with the exact regression:
 make test TESTS=tests/file.py::test_name
 ```
 
-CI runs the fast and slow tiers on every PR. Work kept local with no CI runs
+CI runs the fast tier on every PR and the slow tier once the PR carries
+`ready-to-merge` (see above). Work kept local with no CI runs
 the affected tiers once on its integrated head, against its immutable base,
 not in each parallel worktree:
 
