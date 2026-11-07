@@ -560,6 +560,7 @@ class ContrastResults(list[ContrastResult]):
     def __repr__(self) -> str:
         from importlib import import_module
 
+        # Upward: __repr__ is the readout interpreter's rendering of these rows and their scope.
         interpretation_api = import_module("increment._interpretation")
         if self.metadata is None:
             return super().__repr__()
@@ -701,6 +702,7 @@ class ContrastResults(list[ContrastResult]):
                 schema.pop(name)
         from importlib import import_module
 
+        # Upward: to_frame appends the readout interpreter's evidence columns for these rows.
         interpretation_api = import_module("increment._interpretation")
         interpret_readout = interpretation_api.interpret_readout
         readout_evidence_columns = interpretation_api.readout_evidence_columns

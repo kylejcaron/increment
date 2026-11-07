@@ -188,6 +188,21 @@ def test_sequential_proof_module_change_requires_certification(repository):
     assert _required(repo, base)
 
 
+def test_package_initializer_of_a_certified_module_requires_certification(repository):
+    repo, _ = repository
+    tach = repo / "tach.toml"
+    tach.write_text(
+        tach.read_text()
+        + '[[modules]]\npath = "increment.estimation.binomial_rr"\ndepends_on = []\n'
+        + '[[modules]]\npath = "increment.estimation.cuped"\ndepends_on = []\n'
+    )
+    _git(repo, "add", "--all")
+    _git(repo, "commit", "-qm", "declare estimation submodules")
+    base = _git(repo, "rev-parse", "HEAD")
+    _commit_change(repo, "increment/estimation/__init__.py")
+    assert _required(repo, base)
+
+
 def test_dashboard_only_change_does_not_require_certification(repository):
     repo, base = repository
     _commit_change(repo, "increment/dashboard/_html.py")
