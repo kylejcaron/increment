@@ -2519,6 +2519,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             return self._session.fetch_arrow(query)
         return checked_rows(self._session.fetch_arrow(with_null_counts(query, counts)), counts)
 
+    def _check_null_counts(self, counts: Mapping[str, NullValueCount]) -> None:
+        """Refuse a NULL value *counts* find, in one read of the counts alone."""
+        if counts:
+            sentinel = ibis.literal(0).name("_").as_table()
+            checked_rows(self._session.fetch_arrow(with_null_counts(sentinel, counts)), counts)
+
     def _outcome_record_batches(
         self, relation: Table, counts: Mapping[str, NullValueCount]
     ) -> Iterator[pa.RecordBatch]:
@@ -3294,6 +3300,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # Uptake fact (Encouragement only): unused here, but resolving it also
         # runs the cluster+CUPED/ratio-quantile refusal gate every stage shares.
         self._resolve_uptake(self._experiment.cluster, operation="panel_sql")
+        self._check_null_counts(
+            self._null_value_counts(tuple(OutcomeRows(metric, exposures) for metric in effective))
+        )
         sql_results: dict[str, str] = {}
         for metric in effective:
             panel, *_rest = self._build_panel_for_metric(exposures, metric, population)
@@ -3329,6 +3338,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         cluster = self._experiment.cluster
         breakout_props = self._resolve_breakout_props(breakouts or [], exposures)
         uptake_events, uptake_window_days = self._resolve_uptake(cluster, operation="summary_sql")
+        self._check_null_counts(
+            self._null_value_counts(
+                tuple(OutcomeRows(metric, exposures) for metric in effective),
+                pre_period=tuple(
+                    PrePeriodRows(covariate_ref(metric), exposures) for metric in effective
+                ),
+            )
+        )
         sql_results: dict[str, str] = {}
         for metric in effective:
             panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (

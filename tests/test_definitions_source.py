@@ -39,6 +39,7 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
+from increment.query import panel_sql, summary_sql
 from increment.query.native_source import DefinitionsMomentSource
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.models import (
@@ -1081,6 +1082,58 @@ def test_null_values_a_read_does_not_use_do_not_refuse(tmp_path, read):
         assert _arm_value(control) == pytest.approx(expected, abs=1e-12)
     finally:
         reader.close()
+
+
+# Per export: the data's NULL purchases, then the definitions that read them.
+_NULL_FACT_EXPORTS: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    "trend_table": ({}, {}),
+    "trend_sql": ({}, {}),
+    "panel_sql": ({}, {}),
+    "summary_sql": ({}, {}),
+    "summary_sql_pre_period": _NULL_FACT_READS["pre_period"],
+}
+
+
+def _null_fact_export(route: str, directory: Path, missing: str) -> object:
+    """*route*'s export of ``avg_order`` over `_null_revenue_events()` under the NULL rule
+    *missing*: a calendar trend's table or SQL, or a panel or summary SQL preview."""
+    event_options, experiment_options = _NULL_FACT_EXPORTS[route]
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", _null_revenue_events(**event_options))
+    definitions = _null_revenue_definitions(directory, missing, **experiment_options)
+    if route.startswith("trend"):
+        trend = MetricTrends.from_definitions(definitions, connection).metric(
+            "avg_order", start=dt.date(2025, 1, 1), end=dt.date(2025, 1, 5)
+        )
+        return trend.to_table() if route == "trend_table" else trend.sql()
+    experiment, reader = from_definitions(definitions, connection, experiment_name="x")
+    preview = panel_sql if route == "panel_sql" else summary_sql
+    return preview(experiment, reader)["avg_order"]
+
+
+@pytest.mark.parametrize("route", list(_NULL_FACT_EXPORTS))
+def test_null_fact_exports_refuse_with_missing_error(tmp_path, route):
+    """A trend's table and SQL and the panel and summary SQL previews read the forty
+    NULL-revenue purchases inside the order mean's window, and a summary preview also reads
+    its CUPED pre-period, so under ``missing: error`` each refuses before returning, as a read
+    of the same rows does."""
+    with pytest.raises(InvalidRequestError) as refused:
+        _null_fact_export(route, tmp_path, "error")
+    assert refused.value.code == "source.native.fact_null_values"
+    assert dict(refused.value.context) == {
+        "fact": "purchase",
+        "column": "revenue",
+        "null_rows": 40,
+    }
+
+
+@pytest.mark.parametrize("missing", ["skip", "zero"])
+@pytest.mark.parametrize("route", list(_NULL_FACT_EXPORTS))
+def test_null_fact_exports_follow_non_error_policies(tmp_path, route, missing):
+    """Under ``skip`` or ``zero`` the same NULL purchases have a declared reading, so each
+    export returns its table or SQL."""
+    export = _null_fact_export(route, tmp_path, missing)
+    assert isinstance(export, ibis.Table if route == "trend_table" else str)
 
 
 pytestmark = pytest.mark.integration

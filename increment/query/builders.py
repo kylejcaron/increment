@@ -774,8 +774,8 @@ def metric_events(
     ignored otherwise. `null_policy` is the fact's rule for a NULL value,
     applied to occurrence and value refs alike: ``"zero"`` reads it as 0 and
     keeps the row, ``"skip"`` drops the row. A read under ``"error"`` refuses
-    NULL values before it runs, so the rows here are those of ``"skip"``: SQL a
-    preview returns, which cannot refuse, then never counts a row its sums drop.
+    NULL values before it runs, so the rows here are those of ``"skip"`` and no
+    count includes a row its sums drop.
 
     Returns
     -------

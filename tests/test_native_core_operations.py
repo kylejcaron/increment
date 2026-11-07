@@ -321,21 +321,29 @@ def test_export_moments_is_source_owned_and_portable(con, tmp_path, example_defi
 
 @pytest.mark.integration
 def test_panel_and_summary_sql_are_lazy(con, monkeypatch, example_definitions):
+    """A preview executes none of the SQL it returns: its one read checks the NULL rule
+    of the valued facts its metrics read."""
     experiment, resolver = from_definitions(
         example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
+    reads: list[object] = []
+    to_pyarrow = con.to_pyarrow
 
-    def no_query(*args: Any, **kwargs: Any):
-        raise AssertionError("SQL introspection must not execute a warehouse query")
+    def counted(*args: Any, **kwargs: Any):
+        reads.append(args)
+        return to_pyarrow(*args, **kwargs)
 
-    monkeypatch.setattr(con, "to_pyarrow", no_query)
+    monkeypatch.setattr(con, "to_pyarrow", counted)
     try:
         panel = panel_sql(experiment, resolver)
+        panel_reads = len(reads)
         summary = summary_sql(experiment, resolver)
+        summary_reads = len(reads) - panel_reads
         expected = [metric.name for metric in workflows.metrics(experiment, resolver)]
     finally:
         cast(Any, resolver).close()
 
+    assert (panel_reads, summary_reads) == (1, 1)
     assert set(panel) == set(expected)
     assert set(summary) == set(expected)
     assert all(sql.strip() for sql in [*panel.values(), *summary.values()])
