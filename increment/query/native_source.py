@@ -2528,24 +2528,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     def _outcome_record_batches(
         self, relation: Table, counts: Mapping[str, NullValueCount]
     ) -> Iterator[pa.RecordBatch]:
-        """Stream *relation*, refusing NULL values *counts* find before a batch is used.
+        """Stream *relation*, refusing NULL values *counts* find before the first batch.
 
-        *relation* has one row per cohort unit and *counts* read only cohort units'
-        rows, so a stream without rows has nothing to refuse.
+        The counts are read on their own, so a stream without rows refuses as any
+        other read of the same rows does.
         """
-        record_batches = artifact_query_ports().sequential_capture.record_batches
-        if not counts:
-            yield from record_batches(self._con, relation)
-            return
-        checked = False
-        stream = record_batches(
-            self._con, relation.mutate(**{name: count.null_rows for name, count in counts.items()})
-        )
-        for batch in stream:
-            if not checked and batch.num_rows:
-                refuse_null_fact_values(counts, batch.slice(0, 1).to_pylist()[0])
-                checked = True
-            yield batch.drop_columns(list(counts))
+        self._check_null_counts(counts)
+        yield from artifact_query_ports().sequential_capture.record_batches(self._con, relation)
 
     _NO_DATA_SIGNAL = NO_DATA_SIGNAL
 
@@ -3578,12 +3567,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self, query: Table, counts: Mapping[str, NullValueCount]
     ) -> list[dict[str, Any]]:
         """Fetch *query* with *counts* projected onto each of its rows, refusing a NULL
-        value they find. A result without rows refuses nothing."""
+        value they find. A result without rows reads the counts on their own and
+        refuses all the same."""
         if counts:
             query = query.mutate(**{name: count.null_rows for name, count in counts.items()})
         rows = self._session.fetch_arrow(query).to_pylist()
         if rows:
             refuse_null_fact_values(counts, rows[0])
+        else:
+            self._check_null_counts(counts)
         for row in rows:
             for name in counts:
                 del row[name]
