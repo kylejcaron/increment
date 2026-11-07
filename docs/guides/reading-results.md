@@ -563,7 +563,10 @@ LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='d
   A ratio metric's additive difference depends on its denominator means as
   well, so when either arm's denominator mean is too noisy (the condition of
   the `ratio_denominator_precision` note), a cell that would take any of these
-  three reasons fails with `estimation.engine.lift_guard` instead.
+  three reasons fails with `estimation.engine.lift_guard` instead. For a scalar
+  CUPED row, the denominator mean checked is the CUPED-adjusted one the row
+  divides by, whose uncertainty includes that of the covariate mean pooled over
+  both arms; the row's `ratio_denominator_precision` note reads the same mean.
 - A mixed-CUPED (`cuped_linear`) row whose relative projection cannot be
   represented: `r.relative_unavailable_reason == "relative_unrepresentable"`,
   with the exact refusal in `r.relative_error_code`. The relative point lies

@@ -835,6 +835,59 @@ class TestRelativeScaleGuardsKeepTheAdditiveRow:
         assert failure.code == "estimation.engine.lift_guard"
         assert failure.context["reason"] == guard_reason
 
+    @pytest.mark.parametrize(
+        ("var_d", "cov_dx", "survives"),
+        [(2.0, 2.0, True), (2.0, 0.0, False), (4.0, 4.0, False)],
+    )
+    def test_ratio_cuped_guard_reads_the_adjusted_denominator_precision(
+        self, var_d: float, cov_dx: float, survives: bool
+    ):
+        """A control numerator mean of 0.1 against its SE of 0.14 blocks the log scale. A CUPED
+        row divides by each arm's adjusted denominator mean, whose relative SE, pooled covariate
+        anchor included, is sqrt(var_d / 100) with the denominator as covariate (cov_dx = var_d,
+        theta = 1) and the raw sqrt(var_d / 50) with an unrelated one: 0.141 keeps the additive
+        row past a raw 0.2, while 0.2, from either, keeps the guard's failure."""
+        from tests.ratio_arms import covariate_ratio_arm, summary
+
+        arms = [
+            covariate_ratio_arm(
+                group_id,
+                n=50,
+                y_bar=y_bar,
+                d_bar=1.0,
+                var_d=var_d,
+                x_bar=1.0,
+                var_x=var_d,
+                cov_dx=cov_dx,
+            )
+            for group_id, y_bar in (("control", 0.1), ("treatment", 0.6))
+        ]
+        computation = estimate_lift(
+            [_ratio_metric("rpo")],
+            summary(*arms),
+            control_group="control",
+            methods=[Method(name="cuped", variance_reduction="cuped")],
+        )
+        if survives:
+            assert computation.failures == {}
+            (row,) = computation.results
+            assert row.method == "cuped"
+            assert row.relative_unavailable_reason == "delta_method_unreliable"
+            # theta_num = 0 and equal covariate means leave both components at their raw means.
+            assert row.abs_diff == pytest.approx(0.5)
+            assert row.abs_se is not None and math.isfinite(row.abs_se) and row.abs_se > 0.0
+            assert "ratio_denominator_precision:" not in (row.note or "")
+            assert all(
+                advisory.code != "estimation.engine.ratio_denominator_precision"
+                for advisories in computation.advisories.values()
+                for advisory in advisories
+            )
+        else:
+            assert computation.results == ()
+            (failure,) = computation.failures.values()
+            assert failure.code == "estimation.engine.lift_guard"
+            assert failure.context["reason"] == "delta_method_unreliable"
+
 
 # Method axis
 

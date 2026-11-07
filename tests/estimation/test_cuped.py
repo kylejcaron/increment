@@ -1735,6 +1735,103 @@ def test_ratio_adjustment_preserves_covariance_with_heterogeneous_component_slop
         assert adjusted.cov_num_den == pytest.approx(1e-308, rel=1e-12, abs=0.0)
 
 
+def test_adjusted_mean_se_includes_the_pooled_anchor_noise():
+    """``adjusted_mean(a) = mean(D_a) - theta * (mean(X_a) - sum_b w_b mean(X_b))`` with
+    ``w_b = n_b / N`` moves with every arm's covariate mean through the anchor, so its variance
+    is ``residual_var(a, theta * (1 - w_a)) / n_a + theta**2 * sum_{b != a} w_b**2 Var(X_b) / n_b``.
+    With the denominator as its own covariate, theta = 1 and each arm's adjusted mean is the
+    pooled denominator mean, whose standard error is ``sqrt(var_d / N)``."""
+    from tests.ratio_arms import covariate_ratio_arm
+
+    rng = np.random.default_rng(17)
+    control = _ratio_arm("control", *_ratio_units(rng, 100, load_num=0.4, load_den=0.5))
+    treatment = _ratio_arm("treatment", *_ratio_units(rng, 300, load_num=0.4, load_den=0.5))
+    denominator = fit_ratio_cuped([control, treatment]).denominator
+    assert denominator.theta != 0.0
+    for arm in (control, treatment):
+        assert abs(arm.cov_xden()) < math.sqrt(arm.var_x() * arm.var_den())
+    total = control.n + treatment.n
+    for arm, other in ((control, treatment), (treatment, control)):
+        own = denominator.residual_var(arm, denominator.theta * (1.0 - arm.n / total)) / arm.n
+        anchor = denominator.theta**2 * (other.n / total) ** 2 * other.var_x() / other.n
+        assert denominator.adjusted_mean_se(arm) == pytest.approx(
+            math.sqrt(own + anchor), rel=1e-12
+        )
+
+    var_d = 2.0
+    arms = [
+        covariate_ratio_arm(
+            group_id,
+            n=n,
+            y_bar=1.0,
+            d_bar=d_bar,
+            var_d=var_d,
+            x_bar=d_bar,
+            var_x=var_d,
+            cov_dx=var_d,
+            metric="ratio_rev",
+        )
+        for group_id, n, d_bar in (("control", 100, 1.0), ("treatment", 300, 1.2))
+    ]
+    fit = fit_ratio_cuped(arms)
+    pooled = (100 * 1.0 + 300 * 1.2) / 400
+    for arm in arms:
+        assert fit.denominator.adjusted_mean_se(arm) == pytest.approx(
+            math.sqrt(var_d / 400), rel=1e-12
+        )
+        assert fit.denominator_precision(arm) == pytest.approx(
+            math.sqrt(var_d / 400) / pooled, rel=1e-12
+        )
+
+
+@pytest.mark.parametrize("unit", [1e-155, 1e150])
+def test_adjusted_denominator_precision_is_invariant_to_covariate_units(unit):
+    """Rescaling the covariate by *unit* scales the denominator's slope by ``1 / unit``: at
+    1e-155 its square would overflow, and at 1e150 the covariate's variance, about 1e300, is
+    still finite. Neither moves the adjusted denominator's relative standard error (0.141,
+    the denominator as its own covariate) or the row it guards."""
+    from tests.ratio_arms import covariate_ratio_arm, summary
+
+    def arms(scale):
+        return [
+            covariate_ratio_arm(
+                group_id,
+                n=50,
+                y_bar=y_bar,
+                d_bar=1.0,
+                var_d=2.0,
+                x_bar=scale,
+                var_x=2.0 * scale * scale,
+                cov_dx=2.0 * scale,
+                metric="ratio_rev",
+            )
+            for group_id, y_bar in (("control", 0.1), ("treatment", 0.6))
+        ]
+
+    reference, rescaled = arms(1.0), arms(unit)
+    for arm in rescaled:
+        assert all(math.isfinite(value) for value in (arm.ref_x, arm.cx2, arm.cxden))
+        assert 0.0 < arm.var_x() < math.inf
+    reference_fit, rescaled_fit = fit_ratio_cuped(reference), fit_ratio_cuped(rescaled)
+    for before, after in zip(reference, rescaled, strict=True):
+        assert rescaled_fit.denominator_precision(after) == pytest.approx(
+            reference_fit.denominator_precision(before), rel=1e-12
+        )
+    rows = []
+    for pair in (reference, rescaled):
+        computation = estimate_lift(
+            metrics=[_ratio_metric()],
+            summary=summary(*pair),
+            control_group="control",
+            methods=[Method(name="cuped", variance_reduction="cuped")],
+        )
+        assert computation.failures == {}
+        (row,) = computation.results
+        rows.append(row)
+    assert rows[1].relative_unavailable_reason == rows[0].relative_unavailable_reason
+    assert rows[1].abs_diff == pytest.approx(rows[0].abs_diff, rel=1e-12)
+
+
 def test_cuped_reciprocal_scaling_preserves_constant_covariate_arms():
     for variance_x, covariance in ((1.0, 1e50), (1e-300, 1e-100)):
         arms = [

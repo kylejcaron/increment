@@ -281,8 +281,10 @@ def test_cuped_ratio_rows_carry_the_same_advisory_once_per_arm():
         methods=[Method(name="unadjusted"), Method(name="cuped", variance_reduction="cuped")],
     )
     assert {row.method for row in rows} == {"unadjusted", "cuped"}
-    notes = {row.note for row in rows}
-    assert len(notes) == 1 and "ratio_denominator_skew:" in next(iter(notes))
+    assert all("ratio_denominator_skew:" in (row.note or "") for row in rows)
+    # Each row's precision note reads the denominator mean its method divides by; the skew
+    # note is the contrast's own, identical on both rows.
+    assert len({(row.note or "").partition("ratio_denominator_skew:")[2] for row in rows}) == 1
     assert len(_flagged(record)) == sum(code == _CODE for code in warning_codes(record)) >= 1
 
 

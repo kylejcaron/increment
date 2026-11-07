@@ -208,10 +208,12 @@ the binomial rows' additive `abs_lb`/`abs_ub` interval remains approximate.
     runtime warning (context: metric, arm, n, skewness, statistic, threshold) and the row
     carries a `ratio_denominator_skew` note naming each flagged arm. Either arm additionally
     resolving its denominator mean to a relative standard error `sqrt(var_d / n) / d_bar`
-    above 0.15 carries the older `ratio_denominator_precision` note. Both are advisory
-    qualifications, not refusals or corrected intervals: the estimate and interval are
-    emitted unchanged. The measured flagged regimes show undercoverage, but this is not
-    universal: correlated numerator and denominator can retain near-nominal coverage.
+    above 0.15 carries the older `ratio_denominator_precision` note; a scalar CUPED row reads
+    its CUPED-adjusted denominator mean instead, whose standard error includes that of the
+    covariate mean pooled over both arms. Both are advisory qualifications, not refusals or
+    corrected intervals: the estimate and interval are emitted unchanged. The measured
+    flagged regimes show undercoverage, but this is not universal: correlated numerator and
+    denominator can retain near-nominal coverage.
 
     The cutoff comes from `campaign-module:calibration.ratio_skew` (seed 20261010, 6,000 replications
     per cell, lognormal denominators with an independent `Normal(2, 1)` numerator, coverage
@@ -1041,10 +1043,12 @@ non-rejection with `p_value()` 1.0.
 A ratio metric's additive difference divides by the same denominator means as its log
 ratio, so it can replace a blocked log scale only when both arms resolve their denominator
 mean: a relative standard error `sqrt(var_d / n) / d_bar` of at most 0.15, the level above
-which the row carries the `ratio_denominator_precision` note. Past it, the cell fails with
-`estimation.engine.lift_guard` whichever of the three reasons blocked the log scale: the
-additive interval's first-order approximation of the denominator fails along with the log
-scale's.
+which the row carries the `ratio_denominator_precision` note. A scalar CUPED row divides by
+its CUPED-adjusted denominator means, so it is checked on those, with a standard error that
+includes that of the covariate mean pooled over both arms. Past the level, the cell fails
+with `estimation.engine.lift_guard` whichever of the three reasons blocked the log scale:
+the additive interval's first-order approximation of the denominator fails along with the
+log scale's.
 
 For an adjusted effect or a signed relative set, use a route built for it: observational
 adjusted methods, encouragement LATE, switchback contrasts, sitewide impact, or the

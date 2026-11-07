@@ -211,6 +211,29 @@ class CupedFit:
         """``mean(Y) - theta * (mean(X) - mean_x_pooled)`` for *arm*."""
         return self.family.mean(arm) - self.theta * (arm.mean_x() - self.mean_x_pooled)
 
+    def adjusted_mean_se(self, arm: ArmStats) -> float:
+        """Standard error of :meth:`adjusted_mean` for *arm* as a statistic, theta held fixed.
+
+        The pooled anchor ``sum_b w_b*mean(X_b)``, ``w_b = n_b/N`` over ``arms``, moves
+        with every arm's covariate mean, so the variance is
+        ``residual_var(arm, theta*(1 - w_arm))/n_arm`` plus ``theta^2*w_b^2*Var(X_b)/n_b``
+        for each other arm ``b``. It is taken as the hypot of the per-arm standard-error
+        terms, so theta is never squared and the value does not depend on the covariate's
+        units.
+        """
+        assert any(item is arm for item in self.arms), (
+            "unreachable: the anchor's weights are read from the arms the fit was built on"
+        )
+        total = sum(item.n for item in self.arms)
+        own_slope = self.theta * ((total - arm.n) / total)
+        own = math.sqrt(self.residual_var(arm, own_slope)) / math.sqrt(arm.n)
+        anchor = (
+            abs(self.theta) * (other.n / total) * math.sqrt(other.var_x()) / math.sqrt(other.n)
+            for other in self.arms
+            if other is not arm
+        )
+        return math.hypot(own, *anchor)
+
     def residual_var(self, arm: ArmStats, slope: float) -> float:
         """ddof=1 variance of ``Y - slope * X`` on *arm*: the full centered
         quadratic form ``Var(Y) - 2*slope*Cov(Y,X) + slope^2*Var(X)``, never
@@ -417,6 +440,12 @@ class RatioCupedFit:
         estimand the unadjusted ratio does.
         """
         return self.numerator.adjusted_mean(arm), self.denominator.adjusted_mean(arm)
+
+    def denominator_precision(self, arm: ArmStats) -> float:
+        """Relative standard error of *arm*'s adjusted denominator mean, the pooled
+        anchor's noise included: the precision of the denominator a CUPED ratio row
+        divides by. Defined where that mean is positive."""
+        return self.denominator.adjusted_mean_se(arm) / self.denominator.adjusted_mean(arm)
 
     def relative_moments(
         self, treatment: ArmStats, control: ArmStats
