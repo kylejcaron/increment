@@ -441,6 +441,9 @@ def test_empty_targeting_selection_reason_survives_cell_and_table_round_trip():
     cell = ResultCell.from_payload(json.loads(json.dumps(selection.as_cell().to_payload())))
     assert cell.summary is not None
     assert cell.summary.reason == "estimation.targeting.empty_group"
+    status = cell.components["sampling"][0]
+    assert (status.state, status.code) == ("unavailable", "results.component.unavailable")
+    assert status.reason == status.context["reason"] == "estimation.targeting.empty_group"
     html = readout_table(AnalysisEnvelope((cell,), None))._repr_html_()
     assert "estimation.targeting.empty_group" in html
 

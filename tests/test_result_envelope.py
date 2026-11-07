@@ -2534,6 +2534,56 @@ def test_cell_rejects_conflicting_source_snapshot_identity():
     assert raised.value.code == "results.cell.schema_unsupported"
 
 
+def test_report_payload_with_unknown_sampling_marker_is_unavailable():
+    from increment.estimation.results import Estimate, LiftEstimate
+    from increment.estimation.targeting import CateValidation, RankTest
+    from increment.result_envelope import ResultCell
+
+    # A legacy row that never recorded whether its sampling evidence can be rebuilt.
+    row = LiftEstimate(
+        metric="m",
+        group_id="T",
+        method="unadjusted",
+        method_role="sensitivity",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        sampling_available=None,
+    )
+    identity = ResultCell.from_row(row).identity
+    cell = ResultCell.from_report_payload(
+        row_kind="sensitivity", identity=identity, label="legacy", row=row
+    )
+    status = cell.components["sampling"][0]
+    assert cell.summary is not None and cell.summary.point == 0.2
+    assert (status.state, status.code) == (
+        "unavailable",
+        "readout.legacy.sampling_unreconstructible",
+    )
+    assert status.context["cell_key"] == identity.key.model_dump(mode="json")
+    assert status.context["missing_fields"] == (
+        "prior_free_reference_kind",
+        "prior_free_reference_df",
+    )
+    assert status.context["remedy"] == "recompute_from_source"
+
+    # A report type that carries no sampling marker keeps its estimate available.
+    rank = RankTest(estimate=None, se=None, p_value=None)
+    validation = CateValidation(
+        n_train=8,
+        n_holdout=8,
+        holdout_ate=Estimate(value=0.5, lb=0.1, ub=0.9, level=0.95),
+        groups=(),
+        autoc=rank,
+        qini=rank,
+        clan=(),
+        alpha=0.05,
+        passed=False,
+    )
+    report = ResultCell.from_report_payload(
+        row_kind="cate_validation", identity=identity, label="validation", row=validation
+    )
+    assert report.components["sampling"][0].state == "available"
+
+
 def test_payload_summary_is_rederived_from_retained_lift_row():
     import copy
 

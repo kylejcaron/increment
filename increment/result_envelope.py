@@ -638,7 +638,28 @@ class ResultCell:
             getattr(row, "sampling_available", None) is False
             or getattr(row, "failure_code", None) is not None
         )
-        if not failed and (_has_sampling_result(row) or summary.point is not None):
+        retained = not failed and (_has_sampling_result(row) or summary.point is not None)
+        metric = getattr(row, "metric", None)
+        # A fixed-horizon row that carries the sampling marker but never recorded it cannot
+        # show its estimate as available; a report type without the marker is not affected.
+        if (
+            retained
+            and getattr(row, "sampling_available", False) is None
+            and getattr(row, "sequential_result", None) is None
+        ):
+            code = "readout.legacy.sampling_unreconstructible"
+            context = {
+                "cell_key": identity.key.model_dump(mode="json"),
+                "missing_fields": ("prior_free_reference_kind", "prior_free_reference_df"),
+                "remedy": "recompute_from_source",
+            }
+            sampling = ComponentStatus(
+                "unavailable",
+                code=code,
+                reason=_failure_text(code, context, metric),
+                context=context,
+            )
+        elif retained:
             sampling = ComponentStatus("available")
         else:
             code = (
@@ -647,15 +668,17 @@ class ResultCell:
                 or "results.component.unavailable"
             )
             exclusion = getattr(row, "unavailable", None) or getattr(row, "excluded", None)
-            context = (
-                getattr(row, "failure_context", None)
-                or getattr(row, "sampling_reason_context", None)
-                or ({"reason": str(exclusion)} if exclusion is not None else {})
+            explicit = getattr(row, "failure_context", None) or getattr(
+                row, "sampling_reason_context", None
             )
+            # Without a more specific context, the summary's reason, a nested rule's
+            # included, says why the estimate is unavailable.
+            fallback = str(exclusion) if exclusion is not None else summary.reason
+            context = explicit or ({"reason": fallback} if fallback is not None else {})
             sampling = ComponentStatus(
                 "unavailable",
                 code=code,
-                reason=_failure_text(code, context, getattr(row, "metric", None)),
+                reason=_failure_text(code, context, metric) or (None if explicit else fallback),
                 context=context,
             )
         return cls(
