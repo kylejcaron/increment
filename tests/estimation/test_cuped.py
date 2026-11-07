@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 
 from increment.errors import IncrementRuntimeWarning, InvalidRequestError
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.armstats import CENTERED_FIELDS, ArmStats
 from increment.estimation.cuped import (
     CupedFit,
@@ -32,7 +33,11 @@ from increment.estimation.cuped import (
 from increment.estimation.cuped.scalar import _within_arm_theta
 from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
 from increment.estimation.engine import Method, estimate_lift
-from increment.estimation.variance import ratio_abs_diff_se, ratio_log_mean_se
+from increment.estimation.variance import (
+    ratio_abs_diff_se,
+    ratio_denominator_precision,
+    ratio_log_mean_se,
+)
 from increment.semantics.models import MeanMetric, Measure, RatioMetric
 from tests.mc import nominal_band, replicate
 from tests.warning_codes import allow_warning_codes, warning_codes
@@ -1529,10 +1534,11 @@ def test_balanced_covariate_has_no_balance_advisory():
     )
 
 
-def test_imbalance_statistic_past_the_float_range_abstains_without_failing_the_cell():
+def test_imbalance_statistic_past_the_float_range_is_flagged_with_a_null_statistic():
     """Covariate means 0 and 1e150 over a within-arm spread of 1e-160 put the Welch
-    statistic past the float range; with Cov(Y, X) = 0, theta = 0 and the CUPED
-    estimate is the raw difference of 1.0."""
+    statistic past the float range: the cell is flagged with the statistic as a null
+    and its reason. With Cov(Y, X) = 0, theta = 0 and the CUPED estimate is the raw
+    difference of 1.0."""
     arms = [
         ArmStats(
             study_id="e",
@@ -1553,11 +1559,20 @@ def test_imbalance_statistic_past_the_float_range_abstains_without_failing_the_c
             ("treatment", 11.0, 1e150, 0.0),
         )
     ]
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
+    with pytest.warns(IncrementRuntimeWarning) as recorded:
         computation = _cuped_computation(_mean_metric(), arms)
-    assert _IMBALANCE not in warning_codes(recorded)
-    assert not computation.advisories
+    assert _IMBALANCE in warning_codes(recorded)
+    (advisory,) = computation.advisories[
+        MethodHypothesisKey(ArmHypothesisKey("rev", "treatment", "itt"), "cuped")
+    ]
+    assert advisory.code == _IMBALANCE
+    context = advisory.context
+    assert context["statistic"] is None
+    assert context["statistic_unavailable_reason"] == "past_float_range"
+    assert context["p_value"] == 0.0
+    assert context["adjustment_shift"] == 0.0
+    assert context["constant_arms"] == ("treatment",)
+    assert ReadoutAdvisory.model_validate_json(advisory.model_dump_json()) == advisory
     (result,) = computation.results
     assert result.abs_diff == pytest.approx(1.0, rel=1e-12)
 
@@ -1722,6 +1737,140 @@ def test_ratio_adjustment_preserves_covariance_with_heterogeneous_component_slop
         adjusted, _ = project(arms[1], arms[0])
         # The fitted slopes are 1e200 and 1e-200; their product times Var(X) is 1e-308.
         assert adjusted.cov_num_den == pytest.approx(1e-308, rel=1e-12, abs=0.0)
+
+
+def test_adjusted_mean_se_includes_the_pooled_anchor_noise():
+    """``adjusted_mean(a) = mean(D_a) - theta * (mean(X_a) - sum_b w_b mean(X_b))`` with
+    ``w_b = n_b / N`` moves with every arm's covariate mean through the anchor, so its variance
+    is ``residual_var(a, theta * (1 - w_a)) / n_a + theta**2 * sum_{b != a} w_b**2 Var(X_b) / n_b``.
+    With the denominator as its own covariate, theta = 1 and each arm's adjusted mean is the
+    pooled denominator mean, whose standard error is ``sqrt(var_d / N)``."""
+    from tests.ratio_arms import covariate_ratio_arm
+
+    rng = np.random.default_rng(17)
+    control = _ratio_arm("control", *_ratio_units(rng, 100, load_num=0.4, load_den=0.5))
+    treatment = _ratio_arm("treatment", *_ratio_units(rng, 300, load_num=0.4, load_den=0.5))
+    denominator = fit_ratio_cuped([control, treatment]).denominator
+    assert denominator.theta != 0.0
+    for arm in (control, treatment):
+        assert abs(arm.cov_xden()) < math.sqrt(arm.var_x() * arm.var_den())
+    total = control.n + treatment.n
+    for arm, other in ((control, treatment), (treatment, control)):
+        own = denominator.residual_var(arm, denominator.theta * (1.0 - arm.n / total)) / arm.n
+        anchor = denominator.theta**2 * (other.n / total) ** 2 * other.var_x() / other.n
+        assert denominator.adjusted_mean_se(arm) == pytest.approx(
+            math.sqrt(own + anchor), rel=1e-12
+        )
+
+    var_d = 2.0
+    arms = [
+        covariate_ratio_arm(
+            group_id,
+            n=n,
+            y_bar=1.0,
+            d_bar=d_bar,
+            var_d=var_d,
+            x_bar=d_bar,
+            var_x=var_d,
+            cov_dx=var_d,
+            metric="ratio_rev",
+        )
+        for group_id, n, d_bar in (("control", 100, 1.0), ("treatment", 300, 1.2))
+    ]
+    fit = fit_ratio_cuped(arms)
+    pooled = (100 * 1.0 + 300 * 1.2) / 400
+    for arm in arms:
+        assert fit.denominator.adjusted_mean_se(arm) == pytest.approx(
+            math.sqrt(var_d / 400), rel=1e-12
+        )
+        assert fit.denominator_precision(arm) == pytest.approx(
+            math.sqrt(var_d / 400) / pooled, rel=1e-12
+        )
+
+
+def test_adjusted_denominator_precision_refuses_a_nonpositive_adjusted_denominator():
+    """With the denominator as its own covariate (theta = 1), covariate means 0 and 4 put
+    the pooled anchor at 2, so the adjusted denominator means are 1 + 2 = 3 and 1 - 2 = -1.
+    A relative standard error of a non-positive mean is no precision: the adjusted mean
+    refuses with the code and context an unadjusted denominator mean of -1 refuses with."""
+    from tests.ratio_arms import covariate_ratio_arm
+
+    def arm(group_id, *, d_bar, x_bar):
+        return covariate_ratio_arm(
+            group_id,
+            n=50,
+            y_bar=1.0,
+            d_bar=d_bar,
+            var_d=2.0,
+            x_bar=x_bar,
+            var_x=2.0,
+            cov_dx=2.0,
+            metric="ratio_rev",
+        )
+
+    control, treatment = (
+        arm("control", d_bar=1.0, x_bar=0.0),
+        arm("treatment", d_bar=1.0, x_bar=4.0),
+    )
+    fit = fit_ratio_cuped([control, treatment])
+    assert fit.denominator_precision(control) == pytest.approx(math.sqrt(2.0 / 100) / 3.0)
+    with pytest.raises(InvalidRequestError) as adjusted:
+        fit.denominator_precision(treatment)
+    with pytest.raises(InvalidRequestError) as unadjusted:
+        ratio_denominator_precision(arm("treatment", d_bar=-1.0, x_bar=0.0))
+    assert adjusted.value.code == "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+    assert unadjusted.value.code == adjusted.value.code
+    assert dict(adjusted.value.context) == pytest.approx(dict(unadjusted.value.context))
+    assert adjusted.value.context["group_id"] == "treatment"
+    assert adjusted.value.context["d_bar"] == pytest.approx(-1.0)
+
+
+@pytest.mark.parametrize("unit", [1e-155, 1e150])
+def test_adjusted_denominator_precision_is_invariant_to_covariate_units(unit):
+    """Rescaling the covariate by *unit* scales the denominator's slope by ``1 / unit``: at
+    1e-155 its square would overflow, and at 1e150 the covariate's variance, about 1e300, is
+    still finite. Neither moves the adjusted denominator's relative standard error (0.141,
+    the denominator as its own covariate) or the row it guards."""
+    from tests.ratio_arms import covariate_ratio_arm, summary
+
+    def arms(scale):
+        return [
+            covariate_ratio_arm(
+                group_id,
+                n=50,
+                y_bar=y_bar,
+                d_bar=1.0,
+                var_d=2.0,
+                x_bar=scale,
+                var_x=2.0 * scale * scale,
+                cov_dx=2.0 * scale,
+                metric="ratio_rev",
+            )
+            for group_id, y_bar in (("control", 0.1), ("treatment", 0.6))
+        ]
+
+    reference, rescaled = arms(1.0), arms(unit)
+    for arm in rescaled:
+        assert all(math.isfinite(value) for value in (arm.ref_x, arm.cx2, arm.cxden))
+        assert 0.0 < arm.var_x() < math.inf
+    reference_fit, rescaled_fit = fit_ratio_cuped(reference), fit_ratio_cuped(rescaled)
+    for before, after in zip(reference, rescaled, strict=True):
+        assert rescaled_fit.denominator_precision(after) == pytest.approx(
+            reference_fit.denominator_precision(before), rel=1e-12
+        )
+    rows = []
+    for pair in (reference, rescaled):
+        computation = estimate_lift(
+            metrics=[_ratio_metric()],
+            summary=summary(*pair),
+            control_group="control",
+            methods=[Method(name="cuped", variance_reduction="cuped")],
+        )
+        assert computation.failures == {}
+        (row,) = computation.results
+        rows.append(row)
+    assert rows[1].relative_unavailable_reason == rows[0].relative_unavailable_reason
+    assert rows[1].abs_diff == pytest.approx(rows[0].abs_diff, rel=1e-12)
 
 
 def test_cuped_reciprocal_scaling_preserves_constant_covariate_arms():

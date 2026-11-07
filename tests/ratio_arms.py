@@ -43,6 +43,43 @@ def moment_arm(
     )
 
 
+def covariate_ratio_arm(
+    group_id: str,
+    *,
+    n: int,
+    y_bar: float,
+    d_bar: float,
+    var_d: float,
+    x_bar: float,
+    var_x: float,
+    cov_dx: float,
+    var_y: float = 1.0,
+    metric: str = "rpo",
+) -> ArmStats:
+    """A ratio arm with exactly these ddof=1 moments and a CUPED covariate whose covariance
+    with the denominator is ``cov_dx``; the numerator is uncorrelated with both."""
+    return ArmStats(
+        study_id="e",
+        metric=metric,
+        group_id=group_id,
+        n=n,
+        ref_y=y_bar,
+        cy1=0.0,
+        cy2=(n - 1) * var_y,
+        ref_x=x_bar,
+        cx1=0.0,
+        cx2=(n - 1) * var_x,
+        cxy=0.0,
+        x_role="covariate",
+        ref_den=d_bar,
+        cden1=0.0,
+        cden2=(n - 1) * var_d,
+        cden3=0.0,
+        cyden=0.0,
+        cxden=(n - 1) * cov_dx,
+    )
+
+
 def array_arm(
     group_id: str,
     y: np.ndarray,

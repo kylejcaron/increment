@@ -845,6 +845,26 @@ def test_covariate_balance_one_constant_arm_uses_other_arm_variance():
     assert single_unit is None
 
 
+def test_covariate_balance_past_the_float_range_flags_with_a_null_statistic():
+    """A difference of 1e150 over a standard error near 1e-161 is more standard errors
+    than a float holds: the statistic is unavailable, and its two-sided tail is 0."""
+    balance = covariate_balance(
+        n_control=100,
+        mean_control=0.0,
+        var_control=1e-320,
+        n_treatment=100,
+        mean_treatment=1e150,
+        var_treatment=0.0,
+    )
+    assert balance is not None
+    assert balance.statistic is None
+    assert balance.statistic_unavailable_reason == "past_float_range"
+    assert balance.difference == 1e150
+    assert balance.standard_error > 0.0
+    assert balance.p_value == 0.0
+    assert balance.flagged is True
+
+
 def test_hotelling_balance_closed_form():
     # S = [[4, 0], [0, 1]] pooled over nu = 198: each arm's scatter is 99 * S.
     scatter = ((396.0, 0.0), (0.0, 99.0))

@@ -1255,6 +1255,7 @@ def _covariate_imbalance_advisory(
             "difference": balance.difference,
             "standard_error": balance.standard_error,
             "statistic": balance.statistic,
+            "statistic_unavailable_reason": balance.statistic_unavailable_reason,
             "dof": balance.dof,
             "p_value": balance.p_value,
             "alpha": COVARIATE_BALANCE_ALPHA,
@@ -1290,9 +1291,7 @@ def _multicovariate_imbalance_advisory(
             "metric_name": metric_name,
             "control_group": control_group,
             "treatment_group": treatment_group,
-            "covariates": tuple(
-                name for name in fit.layout.names if name not in fit.layout.structural_omissions
-            ),
+            "covariates": fit.layout.column_owners(),
             "statistic_kind": "hotelling",
             "statistic": balance.statistic,
             "numerator_dof": balance.numerator_dof,
@@ -1340,8 +1339,6 @@ def _lift_covariate_imbalance_advisory(
 
 def _lift_advisories(
     metric: Metric,
-    treatment: ArmStats,
-    control: ArmStats,
     strategy: _LiftVarianceStrategy,
     *,
     cluster: str | None,
@@ -1351,35 +1348,6 @@ def _lift_advisories(
     cluster_advisory = _small_total_clusters_advisory(metric.name, cluster, strategy.n_clusters)
     if cluster_advisory is not None:
         advisories.append(cluster_advisory)
-    for note in strategy.ratio_notes:
-        if note.startswith("ratio_denominator_precision:"):
-            stats = {
-                arm.group_id: ratio_denominator_precision(arm)
-                for arm in (treatment, control)
-                if ratio_denominator_precision(arm) > RATIO_DENOMINATOR_PRECISION_THRESHOLD
-            }
-            advisories.append(
-                ReadoutAdvisory(
-                    code="estimation.engine.ratio_denominator_precision",
-                    context={
-                        "metric_name": metric.name,
-                        "threshold": RATIO_DENOMINATOR_PRECISION_THRESHOLD,
-                        "relative_standard_errors": stats,
-                    },
-                    message=note,
-                )
-            )
-        elif note.startswith("ratio_denominator_skew:"):
-            advisories.append(
-                ReadoutAdvisory(
-                    code="estimation.engine.ratio_denominator_skew",
-                    context={
-                        "metric_name": metric.name,
-                        "threshold": RATIO_DENOMINATOR_SKEW_THRESHOLD,
-                    },
-                    message=note,
-                )
-            )
     if sequential:
         advisory = _open_ended_advisory(metric)
         if advisory is not None:
@@ -1387,36 +1355,89 @@ def _lift_advisories(
     return tuple(advisories)
 
 
-def _treatment_lift_advisories(metrics, treatment, control, strategy, cluster, sequential):
+def _treatment_lift_advisories(metrics, treatment, strategy, cluster, sequential):
     metric = next(item for item in metrics if item.name == treatment.metric)
     return _lift_advisories(
         metric,
-        treatment,
-        control,
         strategy,
         cluster=cluster,
         sequential=sequential,
     )
 
 
+def _ratio_advisories(
+    contrast: tuple[ArmStats, ArmStats], strategy: _LiftVarianceStrategy, method: Method
+) -> tuple[ReadoutAdvisory, ...]:
+    """A fixed-horizon unit-grain ratio row's denominator advisories: the precision of the
+    denominator mean *method*'s row divides by, then the skew coverage note or its
+    unavailability; empty for every other row."""
+    if strategy.raw_denominator_precisions is None:
+        return ()
+    metric_name = contrast[0].metric
+    advisories: list[ReadoutAdvisory] = []
+    flagged = {
+        group_id: precision
+        for group_id, precision in _ratio_denominator_precisions(contrast, strategy, method).items()
+        if precision > RATIO_DENOMINATOR_PRECISION_THRESHOLD
+    }
+    precision_note = _ratio_denominator_precision_note(
+        flagged, adjusted=method.variance_reduction == "cuped"
+    )
+    if precision_note is not None:
+        advisories.append(
+            ReadoutAdvisory(
+                code="estimation.engine.ratio_denominator_precision",
+                context={
+                    "metric_name": metric_name,
+                    "threshold": RATIO_DENOMINATOR_PRECISION_THRESHOLD,
+                    "relative_standard_errors": flagged,
+                },
+                message=precision_note,
+            )
+        )
+    if strategy.ratio_skew_note is not None:
+        advisories.append(
+            ReadoutAdvisory(
+                code="estimation.engine.ratio_denominator_skew",
+                context={
+                    "metric_name": metric_name,
+                    "threshold": RATIO_DENOMINATOR_SKEW_THRESHOLD,
+                },
+                message=strategy.ratio_skew_note,
+            )
+        )
+    return tuple(advisories)
+
+
+def _ratio_notes(
+    contrast: tuple[ArmStats, ArmStats], strategy: _LiftVarianceStrategy, method: Method
+) -> tuple[str, ...]:
+    """The text of *method*'s row's ratio denominator advisories, in order."""
+    return tuple(advisory.message for advisory in _ratio_advisories(contrast, strategy, method))
+
+
 def _attach_lift_advisories(
-    advisory_map, treatment, method_strategy, advisories, imbalance, result, failure
+    advisory_map, contrast, strategy, method_strategy, advisories, imbalance, result, failure
 ):
     """Key a contrast's advisories for one method that produced a row or a failure.
 
     The contrast's advisories qualify every method's row, so they take the
-    invocation's hypothesis; the covariate-balance advisory qualifies only a CUPED
-    method's row, so it takes the hypothesis bound to that method.
+    invocation's hypothesis; the method's own, its ratio denominator advisories and a
+    CUPED method's covariate-balance advisory, take the hypothesis bound to that method.
     """
     if result is None and failure is None:
         return
     from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
 
+    treatment, _ = contrast
     hypothesis = ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")
     if advisories:
         advisory_map[hypothesis] = advisories
+    own = _ratio_advisories(contrast, strategy, method_strategy.method)
     if imbalance is not None and method_strategy.use_cuped:
-        advisory_map[MethodHypothesisKey(hypothesis, method_strategy.method.name)] = (imbalance,)
+        own = (*own, imbalance)
+    if own:
+        advisory_map[MethodHypothesisKey(hypothesis, method_strategy.method.name)] = own
 
 
 # Orchestrator
@@ -2066,7 +2087,7 @@ def _infer_lift_result(
         if (
             exc.reason in ("zero_variance", "delta_method_unreliable")
             and abs_se is not None
-            and not _ratio_denominator_unresolved(contrast, strategy)
+            and not _ratio_denominator_unresolved(contrast, strategy, method)
         ):
             # The guard blocks only the log scale; the additive difference keeps
             # its uncertainty whenever either arm varies and, for a ratio, both
@@ -2105,8 +2126,10 @@ def _infer_lift_result(
                 mean_control=control.mean_y(),
                 mean_treat=treatment.mean_y(),
             )
-    if inference is None and strategy.ratio_notes and result.relative_unavailable_reason is None:
-        update["note"] = "; ".join(strategy.ratio_notes)
+    if inference is None and result.relative_unavailable_reason is None:
+        notes = _ratio_notes(contrast, strategy, method)
+        if notes:
+            update["note"] = "; ".join(notes)
     return result.model_copy(update=update), None
 
 
@@ -2151,10 +2174,12 @@ class _LiftVarianceStrategy:
     n_clusters: int | None
     absolute_moments: tuple[float, float, float, float] | None
     methods: tuple[_LiftMethodStrategy, ...]
-    # Advisories for a fixed-horizon unit-grain ratio contrast: the
-    # denominator-precision note, then the denominator-skew coverage note or
-    # its unavailability; empty for every other contrast.
-    ratio_notes: tuple[str, ...]
+    # For a fixed-horizon unit-grain ratio contrast, each arm's relative standard error of
+    # its raw denominator mean by group, treatment first, and the denominator-skew coverage
+    # note or its unavailability; None for every other contrast. Every method's row carries
+    # the skew note, and its own precision note (`_ratio_notes`).
+    raw_denominator_precisions: Mapping[str, float] | None
+    ratio_skew_note: str | None
     # The covariate balance of a fixed-horizon unit-grain contrast a CUPED
     # method adjusts; None for every other contrast or without a covariate.
     cuped_balance: CovariateBalance | None
@@ -2335,16 +2360,13 @@ def _select_lift_variance_strategy(
         abs_t, abs_se_t = _ratio_abs_diff_se(treatment)
         abs_c, abs_se_c = _ratio_abs_diff_se(control)
         absolute_moments = (abs_t, abs_se_t, abs_c, abs_se_c)
-    ratio_notes: tuple[str, ...] = ()
+    raw_denominator_precisions: dict[str, float] | None = None
+    ratio_skew_note: str | None = None
     if fixed_horizon and cluster is None and metric_type == "ratio":
-        ratio_notes = tuple(
-            note
-            for note in (
-                _ratio_denominator_precision_note(treatment, control),
-                _ratio_denominator_skew_note(treatment, control),
-            )
-            if note is not None
-        )
+        raw_denominator_precisions = {
+            arm.group_id: ratio_denominator_precision(arm) for arm in (treatment, control)
+        }
+        ratio_skew_note = _ratio_denominator_skew_note(treatment, control)
     cuped_balance = (
         _cuped_covariate_balance(treatment, control)
         if fixed_horizon and cluster is None and any(item.use_cuped for item in method_strategies)
@@ -2357,26 +2379,26 @@ def _select_lift_variance_strategy(
         n_clusters=n_clusters,
         absolute_moments=absolute_moments,
         methods=method_strategies,
-        ratio_notes=ratio_notes,
+        raw_denominator_precisions=raw_denominator_precisions,
+        ratio_skew_note=ratio_skew_note,
         cuped_balance=cuped_balance,
     )
 
 
-def _ratio_denominator_precision_note(treatment: ArmStats, control: ArmStats) -> str | None:
-    """Advisory text for a ratio contrast whose denominator mean is poorly
-    resolved in either arm, naming each flagged arm's statistic and the
-    threshold; ``None`` when both arms resolve it well enough."""
-    flagged = [
-        f"{arm.group_id}={statistic:.3g}"
-        for arm in (treatment, control)
-        if (statistic := ratio_denominator_precision(arm)) > RATIO_DENOMINATOR_PRECISION_THRESHOLD
-    ]
+def _ratio_denominator_precision_note(
+    flagged: Mapping[str, float], *, adjusted: bool
+) -> str | None:
+    """Advisory text for a ratio row whose denominator mean is poorly resolved in the
+    *flagged* arms, naming each one's statistic and the threshold; ``None`` when no arm is
+    flagged. *adjusted* names a CUPED row's adjusted denominator mean."""
     if not flagged:
         return None
+    mean = "CUPED-adjusted denominator mean" if adjusted else "denominator mean"
     return (
         "ratio_denominator_precision: the denominator is too noisy at this sample size for "
-        "the interval to hold its stated level (relative standard error of the denominator mean "
-        f"{', '.join(flagged)} exceeds {RATIO_DENOMINATOR_PRECISION_THRESHOLD:.3g}). Expect "
+        f"the interval to hold its stated level (relative standard error of the {mean} "
+        f"{', '.join(f'{group_id}={value:.3g}' for group_id, value in flagged.items())} "
+        f"exceeds {RATIO_DENOMINATOR_PRECISION_THRESHOLD:.3g}). Expect "
         "under-coverage; add units or check the denominator for heavy tails before deciding"
     )
 
@@ -2758,11 +2780,29 @@ class _RelativeScaleUnavailable(LiftGuardError):
         self.abs_se_c = abs_se_c
 
 
+def _ratio_denominator_precisions(
+    contrast: tuple[ArmStats, ArmStats], strategy: _LiftVarianceStrategy, method: Method
+) -> Mapping[str, float]:
+    """Each arm's relative standard error, by group, of the denominator mean *method*'s
+    ratio row divides by: the raw mean for an unadjusted method; for a CUPED method, the
+    adjusted mean, whose uncertainty includes the pooled covariate anchor's. A CUPED row
+    reads it once its adjusted components are known to be positive."""
+    if method.variance_reduction == "cuped":
+        treatment, control = contrast
+        fit = fit_ratio_cuped([control, treatment])
+        return {arm.group_id: fit.denominator_precision(arm) for arm in contrast}
+    if strategy.raw_denominator_precisions is not None:
+        return strategy.raw_denominator_precisions
+    return {arm.group_id: ratio_denominator_precision(arm) for arm in contrast}
+
+
 def _ratio_denominator_unresolved(
-    contrast: tuple[ArmStats, ArmStats], strategy: _LiftVarianceStrategy
+    contrast: tuple[ArmStats, ArmStats], strategy: _LiftVarianceStrategy, method: Method
 ) -> bool:
-    """Whether either arm of a ratio contrast resolves its denominator mean
-    too poorly for the additive difference to stand in for a blocked log scale.
+    """Whether either arm of a ratio contrast resolves the denominator mean *method*'s
+    row divides by too poorly for the additive difference to stand in for a blocked log
+    scale: the raw mean for an unadjusted method, the adjusted mean, its pooled anchor's
+    noise included, for a CUPED method.
 
     A ratio arm's log-scale SE includes the relative SE of its denominator
     mean, and the additive delta method linearises ``1 / d_bar`` through the
@@ -2770,7 +2810,8 @@ def _ratio_denominator_unresolved(
     no longer holds its level, so the cell keeps the guard's failure.
     """
     return strategy.metric_type == "ratio" and any(
-        ratio_denominator_precision(arm) > RATIO_DENOMINATOR_PRECISION_THRESHOLD for arm in contrast
+        precision > RATIO_DENOMINATOR_PRECISION_THRESHOLD
+        for precision in _ratio_denominator_precisions(contrast, strategy, method).values()
     )
 
 
@@ -3128,7 +3169,7 @@ def _relative_unavailable_outcome(
         exc,
         welch=_welch_arm_ns(contrast, strategy, prior) is not None,
         # A ratio's denominator advisories qualify its additive difference too.
-        advisories=strategy.ratio_notes,
+        advisories=_ratio_notes(contrast, strategy, method),
     )
     if prior is None:
         return row
@@ -3343,7 +3384,7 @@ def _asymptotic_lift_outcome(
             else None
         )
     except _RelativeScaleUnavailable as exc:
-        if _ratio_denominator_unresolved(contrast, strategy):
+        if _ratio_denominator_unresolved(contrast, strategy, method_strategy.method):
             return _lift_guard_failure(treatment, method_strategy.method.name, method_role, exc)
         row = _relative_unavailable_outcome(
             exc,
@@ -4268,7 +4309,8 @@ def estimate_lift(  # noqa: PLR0913
     moments lack the denominator's third moment carries the note's
     unavailability instead of passing silently. An arm exceeding
     ``RATIO_DENOMINATOR_PRECISION_THRESHOLD`` on ``ratio_denominator_precision``
-    additionally carries the ``ratio_denominator_precision`` note. Both are
+    (for a CUPED row, on its adjusted denominator mean, pooled covariate anchor
+    included) additionally carries the ``ratio_denominator_precision`` note. Both are
     advisory: the estimate and interval are reported unchanged. Sequential
     and clustered ratio rows carry neither (the region was measured for
     the single-look unit-grain interval).
@@ -4537,7 +4579,7 @@ def _estimate_lift(  # noqa: PLR0913
             fixed_horizon=inference is None,
         )
         advisories = _treatment_lift_advisories(
-            metrics, treatment, control, strategy, cluster, inference is not None
+            metrics, treatment, strategy, cluster, inference is not None
         )
         imbalance = _lift_covariate_imbalance_advisory(treatment, control, strategy)
         metric_type = prepared.metric_types[treatment.metric]
@@ -4563,7 +4605,14 @@ def _estimate_lift(  # noqa: PLR0913
                 route_tail=route_tail,
             )
             _attach_lift_advisories(
-                advisory_map, treatment, method_strategy, advisories, imbalance, result, failure
+                advisory_map,
+                (treatment, control),
+                strategy,
+                method_strategy,
+                advisories,
+                imbalance,
+                result,
+                failure,
             )
             if failure is not None:
                 guard_failures[failure.hypothesis] = failure

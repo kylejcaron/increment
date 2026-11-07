@@ -461,14 +461,17 @@ class CovariateBalance:
     ``difference`` is the treatment mean minus the control mean, ``statistic``
     its Welch t on ``dof`` Welch-Satterthwaite degrees of freedom, ``p_value`` the
     two-sided tail, and ``flagged`` whether that tail is below the nominal alpha.
+    ``statistic`` is ``None`` when the difference is more standard errors than a
+    float holds, with ``statistic_unavailable_reason="past_float_range"``.
     """
 
     difference: float
     standard_error: float
-    statistic: float
+    statistic: float | None
     dof: float
     p_value: float
     flagged: bool
+    statistic_unavailable_reason: Literal["past_float_range"] | None = None
 
 
 def covariate_balance(
@@ -488,7 +491,9 @@ def covariate_balance(
     adjustment makes is noise of this standard error; theta cancels from the ratio.
     The t reference is asymptotic, so ``alpha`` is a nominal threshold. ``None``
     when either arm has fewer than 2 units or both variances are zero, leaving no
-    sampling error to compare against.
+    sampling error to compare against. A statistic past the float range is reported
+    as a null with its reason; its two-sided tail, taken at infinity, is 0, so the
+    covariate is flagged.
     """
     from scipy.stats import t as t_dist
 
@@ -500,14 +505,15 @@ def covariate_balance(
     if standard_error <= 0.0:
         return None
     difference = mean_treatment - mean_control
-    statistic = difference / standard_error
+    ratio = difference / standard_error
+    statistic = ratio if math.isfinite(ratio) else None
     dof = welch_satterthwaite_df(
         (se_treatment / standard_error) ** 2,
         float(n_treatment - 1),
         (se_control / standard_error) ** 2,
         float(n_control - 1),
     )
-    p_value = float(2.0 * t_dist.sf(abs(statistic), dof))
+    p_value = float(2.0 * t_dist.sf(math.inf if statistic is None else abs(statistic), dof))
     return CovariateBalance(
         difference=difference,
         standard_error=standard_error,
@@ -515,6 +521,7 @@ def covariate_balance(
         dof=dof,
         p_value=p_value,
         flagged=p_value < alpha,
+        statistic_unavailable_reason="past_float_range" if statistic is None else None,
     )
 
 
@@ -645,7 +652,7 @@ def _single_covariate_imbalance_message(
     covariate: str | None,
     mean_control: float,
     mean_treatment: float,
-    statistic: float,
+    statistic: float | None,
     alpha: float,
     adjustment_shift: float | None = None,
     late_adjustment_shift: float | None = None,
@@ -665,10 +672,12 @@ def _single_covariate_imbalance_message(
         else f" The adjustment moved the {moved_scale} by {abs(shift):.4g}; if the covariate "
         f"is at fault, the adjusted {moved_scale} is off by about that much."
     )
+    # Past the float range the magnitude exceeds float_max, about 1.8e308.
+    magnitude = "more than 1e308" if statistic is None else f"{abs(statistic):.3g}"
     return (
         f"metric '{metric_name}', {treatment_group} vs {control_group}: {subject} used for "
         f"CUPED averages {mean_treatment:.4g} in {treatment_group} and {mean_control:.4g} in "
-        f"{control_group}, a difference of {abs(statistic):.3g} standard errors (nominal "
+        f"{control_group}, a difference of {magnitude} standard errors (nominal "
         f"p < {alpha:g}). A difference this large in a value measured before the experiment "
         "is unusual. It can arise by chance, and more often the more cells are checked. It is "
         "also what a covariate built differently for one arm produces (values lost or "
