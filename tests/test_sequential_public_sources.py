@@ -1313,6 +1313,17 @@ def test_registered_asof_secondary_family_is_joint_per_look():
     assert {row.family_id for row in results if row.metric in {"other", "third"}} == {
         secondary_family.family_id
     }
+    assert {(row.metric, row.family_size) for row in results} == {
+        ("outcome", None),
+        ("other", 2),
+        ("third", 2),
+    }
+    projected = results.to_frame(backend="polars")
+    assert set(zip(projected["metric"], projected["family_size"], strict=True)) == {
+        ("outcome", None),
+        ("other", 2),
+        ("third", 2),
+    }
 
 
 @pytest.mark.slow

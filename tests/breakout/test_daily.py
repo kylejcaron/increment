@@ -1594,6 +1594,57 @@ class TestDailyLiftEstimate:
         assert "relative" in rendered
         assert "sequential_result" not in rendered
 
+    def test_repr_reports_a_point_without_sampling_evidence_unavailable(self):
+        est = DailyLiftEstimate(
+            metric="rev",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            ds=date(2025, 1, 1),
+            lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+            sampling_available=False,
+            sampling_reason_code="readout.legacy.sampling_unreconstructible",
+        )
+
+        rendered = repr(est)
+
+        assert est.stat_sig() is None
+        assert "status='unavailable'" in rendered
+        assert "readout.legacy.sampling_unreconstructible" in rendered
+
+    def test_row_pickled_before_family_size_loads_outside_a_family(self):
+        import io
+        import pickle
+
+        row = DailyLiftEstimate(
+            metric="rev",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            ds=date(2025, 1, 1),
+            lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+            sampling_available=True,
+        )
+
+        class EarlierRelease(pickle.Pickler):
+            """Writes what a release before ``family_size`` wrote for the same row."""
+
+            def reducer_override(self, obj):
+                if isinstance(obj, DailyLiftEstimate):
+                    restore, arguments, state, *rest = obj.__reduce_ex__(pickle.DEFAULT_PROTOCOL)
+                    fields = {k: v for k, v in state["__dict__"].items() if k != "family_size"}
+                    fields_set = state["__pydantic_fields_set__"] - {"family_size"}
+                    earlier = {**state, "__dict__": fields, "__pydantic_fields_set__": fields_set}
+                    return restore, arguments, earlier, *rest
+                return NotImplemented
+
+        saved = io.BytesIO()
+        EarlierRelease(saved).dump(DailyLiftEstimates([row]))
+        restored = pickle.loads(saved.getvalue())
+
+        assert list(restored) == [row]
+        assert cast(pd.DataFrame, restored.to_frame(backend="pandas"))["family_size"].isna().all()
+
     def test_relative_unavailability_reason_survives_all_representations(self, capsys):
         from rich.pretty import pretty_repr
 

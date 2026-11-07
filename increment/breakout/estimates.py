@@ -1443,6 +1443,9 @@ class DailyLiftEstimate(_RowIdentity):
     family_threshold: float | None = None
     family_guarantee: Literal["finite_sample", "asymptotic_sequential"] | None = None
     family_nominal_alpha: float | None = None
+    # Hypotheses in the row's registered family where the family records it; None otherwise,
+    # and then left out of saved rows, as rows saved before the field were.
+    family_size: int | None = Field(default=None, ge=1, exclude_if=lambda v: v is None)
     # Mirrors LiftEstimate.population: the observed-only population of a ``missing="skip"``
     # metric; None = the slice's whole analysis population.
     population: str | None = Field(default=None, exclude_if=lambda v: v is None)
@@ -1561,6 +1564,11 @@ class DailyLiftEstimate(_RowIdentity):
         )
         _validate_delta_evidence(self)
         return self
+
+    def __setstate__(self, state: dict[str, object]) -> None:
+        # A day row pickled before ``family_size`` was a field has no entry for it.
+        cast("dict[str, object]", state["__dict__"]).setdefault("family_size", None)
+        super().__setstate__(state)
 
     def require_lift(self) -> Estimate:
         """Return the finite point estimate or refuse for an unavailable row."""
@@ -1686,6 +1694,8 @@ class DailyLiftEstimate(_RowIdentity):
                 status = "unavailable"
             elif self.failure_code is not None:
                 status = "failed"
+            elif self.sampling_available is False:
+                status = "unavailable"
             elif self.lift is None:
                 status = "point unavailable"
             else:
@@ -1693,6 +1703,12 @@ class DailyLiftEstimate(_RowIdentity):
             parts.append(f"status={status!r}")
         if self.sampling_available is False:
             parts.append("sampling=unavailable")
+            if (
+                self.failure_code is None
+                and self.unavailable is None
+                and self.sampling_reason_code is not None
+            ):
+                parts.append(f"sampling_reason={self.sampling_reason_code!r}")
         if self.low_reliability:
             parts.append("low_reliability=True")
         return f"DailyLiftEstimate({', '.join(parts)})"
@@ -2061,6 +2077,7 @@ def daily_sequential_projection(
                 family_procedure=row.family_procedure,
                 family_guarantee=row.family_guarantee,
                 family_nominal_alpha=row.family_nominal_alpha,
+                family_size=row.family_size,
                 failure_code=row.failure_code,
                 failure_context=row.failure_context,
                 sampling_available=row.sampling_available,
@@ -2923,8 +2940,8 @@ def _breakout_estimate_row(
                 else None
             ),
             prior_shrunk=lift_estimate.prior_shrunk or lift_estimate.prior_spec is not None,
-            # BreakoutEstimate-only sidecars: _copy_common_fields doesn't
-            # carry them (DailyLiftEstimate has no winsor_* or family_size fields).
+            # Sidecars _copy_common_fields doesn't carry: DailyLiftEstimate has no
+            # winsor_* fields, and its per-day passes record no family size.
             winsor_lower_percentile=lift_estimate.winsor_lower_percentile,
             winsor_upper_percentile=lift_estimate.winsor_upper_percentile,
             winsor_lower_bound=lift_estimate.winsor_lower_bound,
@@ -5677,10 +5694,10 @@ def run_daily_lift(  # noqa: PLR0913
         some estimable arms while
         excluding guarded arms emits a per-metric ``UserWarning``;
         pre-estimation drops (too few units, non-positive means) stay
-        silent and surface only as unavailable rows. Encouragement
-        ``late`` rows are not dense: a weak first stage suppresses the
-        requested ``late`` row, leaving only the explanatory
-        ``compliance`` row.
+        silent and surface only as unavailable rows. A weak encouragement
+        first stage returns each requested ``late`` row unavailable with
+        its failure reason, beside the explanatory ``compliance`` row when
+        ``compliance`` is requested.
     """
     effective_correction = correction if plan is None else "none"
     if plan is not None and view == "asof":

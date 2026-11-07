@@ -535,9 +535,9 @@ def _breakout_impl(
     estimate_encouragement once per (segment, metric) pair, at the
     plan's alpha directly (no split, no BH/FCR family machinery - only
     role stamping). A control-free segment warns and is skipped;
-    siblings remain estimable, and a weak first stage only suppresses
-    that segment's late row. correction (other than "none") and a
-    declared inference are refused there.
+    siblings remain estimable, and a weak first stage returns that
+    segment's late row unavailable with its failure reason. correction
+    (other than "none") and a declared inference are refused there.
 
     Refused under Observational: a per-segment contrast splits the
     adjustment set's confounding structure too, which is not identified -
