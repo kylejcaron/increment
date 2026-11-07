@@ -138,8 +138,11 @@ values.
   order, engine threading or the dataframe library (pandas, polars or
   pyarrow): its moment and per-unit sums are exact, rounded once, and a
   multicovariate fit is identified by its unit rows. Previously saved IDs for
-  these runs change once. Estimates are unchanged except that dataframe
-  moments can move in their last bits, within the parity tolerance.
+  these runs change once. Dataframe moments can move in their last bits, within
+  the parity tolerance on the pinned baseline cases. Where values cancel, as in
+  a unit's daily values 1e16, 1, -1e16 and 1, the exact total (2) replaces a
+  floating-point sum that could lose the small values (0 or 1), so estimates
+  from such data can change by more.
 - Release note (feature): analyses run on any Ibis SQL backend. DuckDB,
   PostgreSQL, Snowflake and BigQuery remain the verified warehouses. The first
   time Increment uses a connection to any other backend, it shows one
