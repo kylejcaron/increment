@@ -758,6 +758,17 @@ def outcome_rows(
     return joined.filter(kept).select(rows.columns)
 
 
+def panel_rows(
+    rows: ir.Table, exposures: ir.Table, experiment: Experiment, *, end_date: ir.Scalar
+) -> ir.Table:
+    """*rows* a `unit_day_panel` exports: an enrolled unit's rows strictly after its first
+    exposure, dated through the observation horizon, or *end_date* when none is declared."""
+    kept = outcome_rows(rows, exposures, experiment, band=(0, None))
+    if experiment.observation_horizon is None:
+        kept = kept.filter(_local_date(kept.ts, experiment) <= end_date)
+    return kept
+
+
 def metric_events(
     fact_table: ir.Table,
     metric: Metric,
@@ -774,8 +785,8 @@ def metric_events(
     ignored otherwise. `null_policy` is the fact's rule for a NULL value,
     applied to occurrence and value refs alike: ``"zero"`` reads it as 0 and
     keeps the row, ``"skip"`` drops the row. A read under ``"error"`` refuses
-    NULL values before it runs, so the rows here are those of ``"skip"``: SQL a
-    preview returns, which cannot refuse, then never counts a row its sums drop.
+    NULL values before it runs, so the rows here are those of ``"skip"`` and no
+    count includes a row its sums drop.
 
     Returns
     -------

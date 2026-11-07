@@ -6595,13 +6595,13 @@ def _arm_value(row) -> float:
     return _total(row) / _total(row, "ref_den", "cden1")
 
 
-@pytest.mark.parametrize(("missing", "expected"), [("skip", 29.0), ("zero", 14.5), (None, 29.0)])
+@pytest.mark.parametrize(("missing", "expected"), [("skip", 29.0), ("zero", 14.5), (None, None)])
 def test_fact_missing_policy_applies_to_every_aggregation(tmp_path, missing, expected):
     """Control units i = 0, 2, ..., 38 each buy at 10 + i and once with a NULL revenue. One
     rule covers every aggregation of the fact, the order count included: dropping the NULL
     order makes the order mean and revenue per order both mean(10 + i) = 29.0, and reading
-    it as 0 makes both 14.5. The SQL a preview returns cannot refuse, so under the default
-    rule it reads only the valued orders, also 29.0 for both."""
+    it as 0 makes both 14.5. The default rule refuses the forty NULL revenues before the
+    preview returns SQL."""
     from increment import from_definitions
 
     connection = ibis.duckdb.connect()
@@ -6609,6 +6609,16 @@ def test_fact_missing_policy_applies_to_every_aggregation(tmp_path, missing, exp
     experiment, reader = from_definitions(
         _null_revenue_definitions(tmp_path, missing), connection, experiment_name="x"
     )
+    if expected is None:
+        with pytest.raises(InvalidRequestError) as refused:
+            summary_sql(experiment, reader)
+        assert refused.value.code == "source.native.fact_null_values"
+        assert dict(refused.value.context) == {
+            "fact": "purchase",
+            "column": "revenue",
+            "null_rows": 40,
+        }
+        return
     queries = summary_sql(experiment, reader)
     for metric in ("avg_order", "aov"):
         rows = connection.sql(queries[metric]).to_pyarrow().to_pylist()

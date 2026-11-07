@@ -111,6 +111,7 @@ from increment.query.builders import (
     measure_rows,
     metric_events,
     outcome_rows,
+    panel_rows,
     panel_spine,
     post_exposure_stats,
     pre_period_rows,
@@ -129,6 +130,7 @@ from increment.query.builders import (
 from increment.query.fact_resolution import (
     NullValueCount,
     OutcomeRows,
+    PanelRows,
     PrePeriodRows,
     _find_fact_source,
     _rename_to_builder_cols,
@@ -2443,15 +2445,18 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         pre_period: Sequence[PrePeriodRows] = (),
         site: Sequence[Metric] = (),
+        panels: Sequence[PanelRows] = (),
     ) -> dict[str, NullValueCount]:
         """Lazy counts of NULL values of a fact without a NULL rule among the rows a read uses.
 
         One count per fact, filters and scope: the *outcomes*' rows (each unit's rows
         strictly after its anchor, dated in the metric's window or retention band, through
         the observation horizon or a pinned snapshot's effective edge for the metric), the
-        *pre_period* CUPED covariate rows, and *site* metrics' whole-site rows. Every scope
-        stops at any pinned snapshot cutoff. A read projects the counts beside its own
-        aggregates, so the check issues no statement of its own.
+        *pre_period* CUPED covariate rows, *site* metrics' whole-site rows, and the rows
+        *panels* export (each unit's rows strictly after its anchor on every day of its
+        unit-day panel, a ratio's numerator only). Every scope stops at any pinned snapshot
+        cutoff. A read projects the counts beside its own aggregates, so the check issues
+        no statement of its own.
         """
         evidence = self._session.source_snapshot_evidence
         counts: dict[str, NullValueCount] = {}
@@ -2470,23 +2475,42 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 )
             counts[f"_fact_null_rows_{len(counts)}"] = null_value_count(fact, read(rows))
 
-        for metric, cohort in outcomes:
-            # A triggered outcome reads each unit's rows from its trigger on.
-            anchors = (
+        def anchored(cohort: Table) -> Table:
+            # A triggered read takes each unit's rows from its trigger on.
+            return (
                 cohort.mutate(first_exposure_ts=cohort.first_trigger_ts)
                 if "first_trigger_ts" in cohort.columns
                 else cohort
             )
-            experiment = (
+
+        def spine_experiment(metric: Metric) -> Experiment:
+            return (
                 self._experiment
                 if evidence is None
                 else self._pinned_spine_experiment(metric, evidence)
             )
+
+        for metric, cohort in outcomes:
+            experiment = spine_experiment(metric)
             band = outcome_band(metric)
-            outcome = partial(outcome_rows, exposures=anchors, experiment=experiment, band=band)
+            outcome = partial(
+                outcome_rows, exposures=anchored(cohort), experiment=experiment, band=band
+            )
             scope = ("outcome", id(cohort), band, experiment.observation_horizon_day)
             for ref in fact_refs(metric):
                 count(ref, scope, outcome)
+        for metric, cohort in panels:
+            experiment = spine_experiment(metric)
+            # Without a declared horizon the panel ends on the event horizon its spine uses.
+            edge = self._union_event_horizon((metric,))
+            panel = partial(
+                panel_rows, exposures=anchored(cohort), experiment=experiment, end_date=edge
+            )
+            count(
+                metric.numerator if isinstance(metric, RatioMetric) else metric,
+                ("panel", id(cohort), experiment.observation_horizon_day, edge.op()),
+                panel,
+            )
         if self._experiment.n_pre_periods > 0:
             for covariate in pre_period:
                 count(
@@ -2519,27 +2543,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             return self._session.fetch_arrow(query)
         return checked_rows(self._session.fetch_arrow(with_null_counts(query, counts)), counts)
 
+    def _check_null_counts(self, counts: Mapping[str, NullValueCount]) -> None:
+        """Refuse a NULL value *counts* find, in one read of the counts alone."""
+        if counts:
+            sentinel = ibis.literal(0).name("_").as_table()
+            checked_rows(self._session.fetch_arrow(with_null_counts(sentinel, counts)), counts)
+
     def _outcome_record_batches(
         self, relation: Table, counts: Mapping[str, NullValueCount]
     ) -> Iterator[pa.RecordBatch]:
-        """Stream *relation*, refusing NULL values *counts* find before a batch is used.
+        """Stream *relation*, refusing NULL values *counts* find before the first batch.
 
-        *relation* has one row per cohort unit and *counts* read only cohort units'
-        rows, so a stream without rows has nothing to refuse.
+        The counts are read on their own, so a stream without rows refuses as any
+        other read of the same rows does.
         """
-        record_batches = artifact_query_ports().sequential_capture.record_batches
-        if not counts:
-            yield from record_batches(self._con, relation)
-            return
-        checked = False
-        stream = record_batches(
-            self._con, relation.mutate(**{name: count.null_rows for name, count in counts.items()})
-        )
-        for batch in stream:
-            if not checked and batch.num_rows:
-                refuse_null_fact_values(counts, batch.slice(0, 1).to_pylist()[0])
-                checked = True
-            yield batch.drop_columns(list(counts))
+        self._check_null_counts(counts)
+        yield from artifact_query_ports().sequential_capture.record_batches(self._con, relation)
 
     _NO_DATA_SIGNAL = NO_DATA_SIGNAL
 
@@ -3294,6 +3313,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # Uptake fact (Encouragement only): unused here, but resolving it also
         # runs the cluster+CUPED/ratio-quantile refusal gate every stage shares.
         self._resolve_uptake(self._experiment.cluster, operation="panel_sql")
+        self._check_null_counts(
+            self._null_value_counts(
+                panels=tuple(PanelRows(metric, exposures) for metric in effective)
+            )
+        )
         sql_results: dict[str, str] = {}
         for metric in effective:
             panel, *_rest = self._build_panel_for_metric(exposures, metric, population)
@@ -3329,6 +3353,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         cluster = self._experiment.cluster
         breakout_props = self._resolve_breakout_props(breakouts or [], exposures)
         uptake_events, uptake_window_days = self._resolve_uptake(cluster, operation="summary_sql")
+        self._check_null_counts(
+            self._null_value_counts(
+                tuple(OutcomeRows(metric, exposures) for metric in effective),
+                pre_period=tuple(
+                    PrePeriodRows(covariate_ref(metric), exposures) for metric in effective
+                ),
+            )
+        )
         sql_results: dict[str, str] = {}
         for metric in effective:
             panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
@@ -3561,12 +3593,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self, query: Table, counts: Mapping[str, NullValueCount]
     ) -> list[dict[str, Any]]:
         """Fetch *query* with *counts* projected onto each of its rows, refusing a NULL
-        value they find. A result without rows refuses nothing."""
+        value they find. A result without rows reads the counts on their own and
+        refuses all the same."""
         if counts:
             query = query.mutate(**{name: count.null_rows for name, count in counts.items()})
         rows = self._session.fetch_arrow(query).to_pylist()
         if rows:
             refuse_null_fact_values(counts, rows[0])
+        else:
+            self._check_null_counts(counts)
         for row in rows:
             for name in counts:
                 del row[name]

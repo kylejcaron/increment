@@ -149,12 +149,25 @@ class MetricTrend:
         self._null_counts: Mapping[str, NullValueCount] = {}
 
     def to_table(self) -> ir.Table:
+        """Return the trend's lazy table, first refusing a NULL value as `to_frame` does."""
+        self._check_null_values()
         return self._table
 
     def sql(self) -> str:
+        """Return the trend's SQL, first refusing a NULL value as `to_frame` does."""
         from ibis import to_sql as ibis_to_sql
 
+        self._check_null_values()
         return str(ibis_to_sql(self._table))
+
+    def _check_null_values(self) -> None:
+        """Refuse a NULL value `to_frame` refuses, in one read of the counts alone."""
+        counts = self._null_counts
+        if counts:
+            import ibis
+
+            sentinel = ibis.literal(0).name("_").as_table()
+            checked_rows(with_null_counts(sentinel, counts).to_pyarrow(), counts)
 
     def to_frame(self, backend: Backend | None = None):
         """Return the trend as a frame, preferring the available native backend.

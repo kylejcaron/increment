@@ -37,6 +37,7 @@ from tests.analysis_factory import (
     make_binding_like,
     view_readout,
 )
+from tests.query.test_session import _DuckDBBigQueryResult
 
 
 def _srm_result(result: object) -> SRMResult:
@@ -807,7 +808,9 @@ def test_panel_and_summary_sql_dialect_follows_connection_name(con, monkeypatch,
     identifier quoting, not the DuckDB fixture connection's double quotes.
 
     The connection itself stays DuckDB throughout; only its reported name
-    changes, which is what the renderer boundary reads.
+    changes, which is what the renderer boundary reads. The NULL check a
+    preview reads first then fetches as from BigQuery, through a query
+    result's ``to_arrow``.
     """
     experiment, resolver = _sql_pair(con, tmp_path)
     assert con.name == "duckdb"
@@ -823,6 +826,10 @@ def test_panel_and_summary_sql_dialect_follows_connection_name(con, monkeypatch,
     assert not any("`" in sql for sql in duckdb_sql)
 
     monkeypatch.setattr(con, "name", "bigquery")
+    raw_sql = con.raw_sql
+    monkeypatch.setattr(
+        con, "raw_sql", lambda query, **kwargs: _DuckDBBigQueryResult(raw_sql(query, **kwargs))
+    )
 
     panel_bigquery = panel_sql(experiment, resolver)
     summary_bigquery = summary_sql(experiment, resolver)
@@ -928,8 +935,9 @@ def test_zero_metrics_summary_sql_returns_empty_dict(con, example_definitions):
 
 
 def test_panel_sql_and_summary_sql_never_execute_even_when_censoring_would_warn(con, monkeypatch):
-    """``panel_sql``/``summary_sql`` promise SQL text without executing
-    anything (see their own docstrings) - proven with warnings-as-errors:
+    """``panel_sql``/``summary_sql`` return SQL text without executing it (see their
+    own docstrings), and over occurrence-only facts they have no NULL value to count
+    first, so they read nothing - proven with warnings-as-errors:
     ``_analysis_with_stale_retention_data``'s fixture censors its whole
     cohort (a 100% drop, well past the material-censoring threshold) once
     actually executed, via a real ``data_as_of`` computed from the fact

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from statistics import fmean
 from typing import Any, cast
 
@@ -37,7 +37,9 @@ from increment import (
 from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimators import estimate_cate
+from increment.query.fact_resolution import NullValueCount, null_value_count
 from increment.results import LiftEstimate
+from increment.semantics.models import Fact
 from increment.workflows import allocation_history, metrics
 from tests.analysis_factory import bound_source, held_source, view_readout
 from tests.warning_codes import warning_codes, warning_context
@@ -827,6 +829,49 @@ def test_warehouse_feed_defects_report_distinct_causes(tmp_path, experiment_name
         assert means["America/Los_Angeles"].keys() == means["UTC"].keys()
         assert list(means["UTC"].values()) == pytest.approx([5.0] * len(means["UTC"]), abs=1e-12)
         assert means["America/Los_Angeles"] == pytest.approx(means["UTC"], abs=1e-12)
+
+
+# Per read: the rows or batches a native read returns for a relation and the NULL counts of
+# the rows it consumed.
+_EMPTY_NATIVE_READS: dict[
+    str, Callable[[Any, ibis.Table, Mapping[str, NullValueCount]], Iterable[object]]
+] = {
+    "rows": lambda source, relation, counts: source._checked_rows(relation, counts),
+    "batches": lambda source, relation, counts: source._outcome_record_batches(relation, counts),
+}
+
+
+@pytest.mark.parametrize("read", list(_EMPTY_NATIVE_READS))
+def test_empty_native_null_audits_refuse_before_returning_rows_or_batches(tmp_path, read):
+    """An outcome relation without rows still refuses the NULL values of the rows the read
+    consumed: one NULL ``amount`` among the purchases refuses the aggregate fetch and the
+    stream before any row or batch, and with no NULL both return nothing. The feed-defect
+    definitions only supply the warehouse source."""
+    defs_path, tables = _feed_defect_definitions(tmp_path)
+    con = ibis.duckdb.connect()
+    for name, table in tables.items():
+        con.create_table(name, table)
+    outcomes = con.create_table("outcomes", schema=ibis.schema({"value": "float64"}))
+
+    def counts(amounts: list[float | None]) -> dict[str, NullValueCount]:
+        purchases = ibis.memtable(pa.table({"amount": pa.array(amounts, pa.float64())}))
+        fact = Fact(name="purchase", column="amount")
+        return {"_null_purchase": null_value_count(fact, purchases)}
+
+    fetch = _EMPTY_NATIVE_READS[read]
+    delivered: list[object] = []
+    _, reader = from_definitions(defs_path, con, experiment_name="mixed")
+    try:
+        source = bound_source(reader)
+        with pytest.raises(InvalidRequestError) as refused:
+            delivered.extend(fetch(source, outcomes, counts([None, 5.0])))
+        clean = list(fetch(source, outcomes, counts([5.0])))
+    finally:
+        reader.close()
+    assert delivered == []
+    assert refused.value.code == "source.native.fact_null_values"
+    assert dict(refused.value.context) == {"fact": "purchase", "column": "amount", "null_rows": 1}
+    assert clean == []
 
 
 def test_definitions_assignment_ledger_uses_explicit_role_mapping(tmp_path):

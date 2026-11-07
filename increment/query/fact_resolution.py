@@ -150,6 +150,14 @@ class OutcomeRows(NamedTuple):
     exposures: Table
 
 
+class PanelRows(NamedTuple):
+    """The rows a unit-day panel exports: *metric*'s rows, a ratio's numerator only, after
+    each unit's anchor in *exposures* on every panel day through its last."""
+
+    metric: Metric
+    exposures: Table
+
+
 class PrePeriodRows(NamedTuple):
     """The CUPED covariate rows a read uses: *ref*'s rows in the pre-period before each
     unit's first exposure in *exposures*."""

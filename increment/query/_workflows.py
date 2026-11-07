@@ -106,7 +106,8 @@ def panel_sql(
     reader: ExperimentReader,
     breakouts: list[Breakout] | None = None,
 ) -> dict[str, str]:
-    """Return per-metric panel SQL without executing."""
+    """Return per-metric panel SQL without executing it, after one read that refuses
+    NULL fact values the panels would read under ``missing: error``."""
     from increment._binding import binding_for
 
     require_warehouse("panel_sql")
@@ -118,7 +119,8 @@ def summary_sql(
     reader: ExperimentReader,
     breakouts: list[Breakout] | None = None,
 ) -> dict[str, str]:
-    """Return per-metric group-summary SQL without executing."""
+    """Return per-metric group-summary SQL without executing it, after one read that
+    refuses NULL fact values the summaries would read under ``missing: error``."""
     from increment._binding import binding_for
 
     require_warehouse("summary_sql")
