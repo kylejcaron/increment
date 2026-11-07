@@ -63,44 +63,62 @@ def _power_two_l2_scales(  # noqa: PLR0915
             square_sums.extend(accumulated_squares)
         return tuple(scales)
 
-    maximum_names = tuple(f"_qr_scale_max_{index}" for index in range(len(expressions)))
-    square_names = tuple(f"_qr_scale_squares_{index}" for index in range(len(expressions)))
-    maxima = relation.aggregate(
+    from increment.query._cuped_cells import _maximum_exponent, _scaled_norm
+
+    count = len(expressions)
+    value_names = tuple(f"_qr_scale_value_{index}" for index in range(count))
+    maximum_names = tuple(f"_qr_scale_max_{index}" for index in range(count))
+    # Every later stage reads these values, so the statement carries the relation once.
+    values = relation.select(
         **{
-            name: expression.cast("float64").abs().max()
-            for name, expression in zip(maximum_names, expressions, strict=True)
+            name: expression.cast("float64")
+            for name, expression in zip(value_names, expressions, strict=True)
         }
     )
-    scaled = relation.cross_join(maxima)
+    maxima = values.aggregate(
+        **{
+            maximum_name: values[name].abs().max()
+            for maximum_name, name in zip(maximum_names, value_names, strict=True)
+        }
+    )
+    scaled = values.cross_join(maxima)
     moment_fields: dict[str, Any] = {}
-    for index, (maximum_name, square_name, expression) in enumerate(
-        zip(maximum_names, square_names, expressions, strict=True)
-    ):
-        numeric = expression.cast("float64")
-        moment_fields[f"_qr_norm_max_{index}"] = scaled[maximum_name].max()
-        moment_fields[square_name] = (
-            (numeric / ibis.ifelse(scaled[maximum_name] > 0, scaled[maximum_name], 1.0))
-            .pow(2)
-            .sum()
+    for index, (maximum_name, name) in enumerate(zip(maximum_names, value_names, strict=True)):
+        maximum = scaled[maximum_name]
+        moment_fields[f"_qr_norm_max_{index}"] = maximum.max()
+        moment_fields[f"_qr_scale_squares_{index}"] = (
+            (scaled[name] / ibis.ifelse(maximum > 0, maximum, 1.0)).pow(2).sum()
         )
-    # Named stages compile to CTEs of one statement; Ibis never fuses selects across them.
+    # Named stages compile to CTEs of one statement; Ibis never fuses selects across them,
+    # and each stage reads its inputs as columns instead of repeating their expressions.
     moment_table = scaled.aggregate(**moment_fields).alias("_qr_moments")
-
-    from increment.query._cuped_cells import _component_exponent_parts
-
+    exponent_fields = {}
+    for index in range(count):
+        raw_maximum = moment_table[f"_qr_norm_max_{index}"]
+        maximum, maximum_exponent, valid = _maximum_exponent(raw_maximum)
+        exponent_fields[f"_qr_max_{index}"] = maximum
+        exponent_fields[f"_qr_max_exponent_{index}"] = maximum_exponent
+        exponent_fields[f"_qr_valid_{index}"] = valid
+        exponent_fields[f"_qr_squares_{index}"] = moment_table[f"_qr_scale_squares_{index}"]
+        exponent_fields[f"_qr_zero_{index}"] = raw_maximum == 0
+    exponent_table = moment_table.select(**exponent_fields).alias("_qr_exponents")
     normalized_fields = {}
-    for index, square_name in enumerate(square_names):
-        maximum = moment_table[f"_qr_norm_max_{index}"]
-        square_sum = moment_table[square_name]
-        maximum_exponent, scaled_norm, valid = _component_exponent_parts(maximum, square_sum)
+    for index in range(count):
+        maximum_exponent = exponent_table[f"_qr_max_exponent_{index}"]
+        valid = exponent_table[f"_qr_valid_{index}"]
         normalized_fields[f"_qr_max_exponent_{index}"] = maximum_exponent
-        normalized_fields[f"_qr_scaled_norm_{index}"] = scaled_norm
+        normalized_fields[f"_qr_scaled_norm_{index}"] = _scaled_norm(
+            exponent_table[f"_qr_max_{index}"],
+            maximum_exponent,
+            valid,
+            exponent_table[f"_qr_squares_{index}"],
+        )
         normalized_fields[f"_qr_valid_{index}"] = valid
-        normalized_fields[f"_qr_zero_{index}"] = maximum == 0
-    normalized_table = moment_table.select(**normalized_fields).alias("_qr_normalized")
+        normalized_fields[f"_qr_zero_{index}"] = exponent_table[f"_qr_zero_{index}"]
+    normalized_table = exponent_table.select(**normalized_fields).alias("_qr_normalized")
 
     scale_fields = {}
-    for index in range(len(expressions)):
+    for index in range(count):
         zero = normalized_table[f"_qr_zero_{index}"]
         exponent = ibis.ifelse(
             zero,
@@ -120,22 +138,15 @@ def _power_two_l2_scales(  # noqa: PLR0915
     scale_table = normalized_table.select(**scale_fields).alias("_qr_scales")
 
     if square_sums is not None:
-        value_names = tuple(f"_qr_scale_value_{index}" for index in range(len(expressions)))
-        values = relation.mutate(
-            **{
-                name: expression.cast("float64")
-                for name, expression in zip(value_names, expressions, strict=True)
-            }
-        )
         joined = values.cross_join(scale_table)
         result_fields: dict[str, Any] = {
-            f"scale_{index}": joined[f"scale_{index}"].min() for index in range(len(expressions))
+            f"scale_{index}": joined[f"scale_{index}"].min() for index in range(count)
         }
         if zero_as_zero:
             result_fields.update(
                 {
                     f"zero_{index}": joined[f"zero_{index}"].ifelse(1, 0).cast("int64").min()
-                    for index in range(len(expressions))
+                    for index in range(count)
                 }
             )
         result_fields.update(
@@ -147,14 +158,13 @@ def _power_two_l2_scales(  # noqa: PLR0915
         result = joined.aggregate(**result_fields)
     else:
         result_fields: dict[str, Any] = {
-            f"scale_{index}": scale_table[f"scale_{index}"].min()
-            for index in range(len(expressions))
+            f"scale_{index}": scale_table[f"scale_{index}"].min() for index in range(count)
         }
         if zero_as_zero:
             result_fields.update(
                 {
                     f"zero_{index}": scale_table[f"zero_{index}"].ifelse(1, 0).cast("int64").min()
-                    for index in range(len(expressions))
+                    for index in range(count)
                 }
             )
         result = scale_table.aggregate(**result_fields)

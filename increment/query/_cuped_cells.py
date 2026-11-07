@@ -307,6 +307,22 @@ def _median_overflows(centered, exponent):
     return ((exponent == 1024) & (magnitude >= 1.0)) | ((exponent == 1023) & (magnitude >= 2.0))
 
 
+def _maximum_exponent(maximum):
+    """Return the cleaned maximum ``m``, its exponent ``e=floor(log2(m))+1`` and validity."""
+    maximum = cast(ir.FloatingValue, maximum.cast("float64").fill_null(0.0))
+    is_nan, is_inf = nonfinite_parts(maximum)
+    valid = (cast(Any, maximum) > 0) & ~is_nan & ~is_inf
+    max_exponent = ibis.ifelse(valid, (maximum.log2().floor() + 1).clip(upper=1024), 0).cast(
+        "int64"
+    )
+    return maximum, max_exponent, valid
+
+
+def _scaled_norm(maximum, max_exponent, valid, sum_squares):
+    """Return ``s*sqrt(q)`` for ``m=s*2**e``, or one when the maximum is not valid."""
+    return ibis.ifelse(valid, _binary_normalize(maximum, max_exponent) * sum_squares.sqrt(), 1.0)
+
+
 def _component_exponent_parts(maximum, sum_squares):
     """Scale by the arm's L2 norm while keeping its maximum SQL-local.
 
@@ -317,15 +333,8 @@ def _component_exponent_parts(maximum, sum_squares):
     outcome is at most one and offsets at most two; the compensated-sum and
     ``2**-36`` range checks therefore keep their existing bounds.
     """
-    maximum = cast(ir.FloatingValue, maximum.cast("float64").fill_null(0.0))
-    is_nan, is_inf = nonfinite_parts(maximum)
-    valid = (cast(Any, maximum) > 0) & ~is_nan & ~is_inf
-    max_exponent = ibis.ifelse(valid, (maximum.log2().floor() + 1).clip(upper=1024), 0).cast(
-        "int64"
-    )
-    scaled_maximum = _binary_normalize(maximum, max_exponent)
-    scaled_norm = scaled_maximum * sum_squares.sqrt()
-    return max_exponent, ibis.ifelse(valid, scaled_norm, 1.0), valid
+    maximum, max_exponent, valid = _maximum_exponent(maximum)
+    return max_exponent, _scaled_norm(maximum, max_exponent, valid, sum_squares), valid
 
 
 def _join_on(left, right, keys):
