@@ -83,27 +83,12 @@ def _power_two_l2_scales(  # noqa: PLR0915
             .pow(2)
             .sum()
         )
-    moments = scaled.aggregate(**moment_fields)
-
-    from sqlglot import exp
+    # Named stages compile to CTEs of one statement; Ibis never fuses selects across them.
+    moment_table = scaled.aggregate(**moment_fields).alias("_qr_moments")
 
     from increment.query._cuped_cells import _component_exponent_parts
 
-    backend = relation.get_backend()
-    dialect = backend.name
-    sqlglot_dialect = sqlglot_dialect_name(dialect) or dialect
-
-    def cte_name(name: str) -> str:
-        return exp.to_identifier(name).sql(dialect=sqlglot_dialect, identify=True)
-
-    moments_sql = ibis.to_sql(moments, dialect=dialect)
-    moment_schema = {
-        **{f"_qr_norm_max_{index}": "float64" for index in range(len(expressions))},
-        **dict.fromkeys(square_names, "float64"),
-    }
-    moment_table = ibis.table(moment_schema, name="_qr_moments")
     normalized_fields = {}
-    normalized_schema = {}
     for index, square_name in enumerate(square_names):
         maximum = moment_table[f"_qr_norm_max_{index}"]
         square_sum = moment_table[square_name]
@@ -112,19 +97,9 @@ def _power_two_l2_scales(  # noqa: PLR0915
         normalized_fields[f"_qr_scaled_norm_{index}"] = scaled_norm
         normalized_fields[f"_qr_valid_{index}"] = valid
         normalized_fields[f"_qr_zero_{index}"] = maximum == 0
-        normalized_schema.update(
-            {
-                f"_qr_max_exponent_{index}": "int64",
-                f"_qr_scaled_norm_{index}": "float64",
-                f"_qr_valid_{index}": "boolean",
-                f"_qr_zero_{index}": "boolean",
-            }
-        )
-    normalized_query = ibis.to_sql(moment_table.select(**normalized_fields), dialect=dialect)
+    normalized_table = moment_table.select(**normalized_fields).alias("_qr_normalized")
 
-    normalized_table = ibis.table(normalized_schema, name="_qr_normalized")
     scale_fields = {}
-    scale_schema = {}
     for index in range(len(expressions)):
         zero = normalized_table[f"_qr_zero_{index}"]
         exponent = ibis.ifelse(
@@ -140,13 +115,10 @@ def _power_two_l2_scales(  # noqa: PLR0915
             normalized_table[f"_qr_valid_{index}"] | zero, exponent, 0
         ).cast("int64")
         scale_fields[f"scale_{index}"] = bounded_exponent
-        scale_schema[f"scale_{index}"] = "int64"
         if zero_as_zero:
             scale_fields[f"zero_{index}"] = zero
-            scale_schema[f"zero_{index}"] = "boolean"
-    scale_query = ibis.to_sql(normalized_table.select(**scale_fields), dialect=dialect)
+    scale_table = normalized_table.select(**scale_fields).alias("_qr_scales")
 
-    scale_table = ibis.table(scale_schema, name="_qr_scales")
     if square_sums is not None:
         value_names = tuple(f"_qr_scale_value_{index}" for index in range(len(expressions)))
         values = relation.mutate(
@@ -159,7 +131,6 @@ def _power_two_l2_scales(  # noqa: PLR0915
         result_fields: dict[str, Any] = {
             f"scale_{index}": joined[f"scale_{index}"].min() for index in range(len(expressions))
         }
-        result_schema = {f"scale_{index}": "int64" for index in range(len(expressions))}
         if zero_as_zero:
             result_fields.update(
                 {
@@ -167,21 +138,18 @@ def _power_two_l2_scales(  # noqa: PLR0915
                     for index in range(len(expressions))
                 }
             )
-            result_schema.update({f"zero_{index}": "int64" for index in range(len(expressions))})
         result_fields.update(
             {
                 f"squares_{index}": (joined[name] / (2.0 ** joined[f"scale_{index}"])).pow(2).sum()
                 for index, name in enumerate(value_names)
             }
         )
-        result_schema.update({f"squares_{index}": "float64" for index in range(len(expressions))})
         result = joined.aggregate(**result_fields)
     else:
         result_fields: dict[str, Any] = {
             f"scale_{index}": scale_table[f"scale_{index}"].min()
             for index in range(len(expressions))
         }
-        result_schema = {f"scale_{index}": "int64" for index in range(len(expressions))}
         if zero_as_zero:
             result_fields.update(
                 {
@@ -189,17 +157,9 @@ def _power_two_l2_scales(  # noqa: PLR0915
                     for index in range(len(expressions))
                 }
             )
-            result_schema.update({f"zero_{index}": "int64" for index in range(len(expressions))})
         result = scale_table.aggregate(**result_fields)
 
-    result_sql = ibis.to_sql(result, dialect=dialect)
-    sql = (
-        f"WITH {cte_name('_qr_moments')} AS ({moments_sql}), "
-        f"{cte_name('_qr_normalized')} AS ({normalized_query}), "
-        f"{cte_name('_qr_scales')} AS ({scale_query}) {result_sql}"
-    )
-    query = backend.sql(sql, schema=ibis.schema(result_schema))
-    row = _rows(execute(query))[0]
+    row = _rows(execute(result))[0]
     scales = []
     for index in range(len(expressions)):
         if zero_as_zero and bool(row[f"zero_{index}"]):
@@ -446,34 +406,22 @@ def warehouse_qr_unit_summary(  # noqa: PLR0913
         *row_identity_columns,
         "_qr_q_index",
         _qr_q_value=q_value,
-    )
-    product_table = ibis.table(products.schema(), name="_qr_q_products")
+    ).alias("_qr_q_products")
     # Each unit/index pair is unique, so conditional sums pivot q-values into columns.
-    wide = product_table.group_by(*row_identity_columns).aggregate(
+    wide = products.group_by(*row_identity_columns).aggregate(
         **{
             name: cast(
                 Any,
                 ibis.ifelse(
-                    product_table._qr_q_index == index,
-                    product_table._qr_q_value,
+                    products._qr_q_index == index,
+                    products._qr_q_value,
                     0.0,
                 ),
             ).sum()
             for index, name in enumerate(q_columns)
         }
     )
-    from sqlglot import exp
-
-    backend = relation.get_backend()
-    dialect = backend.name
-    cte_name = exp.to_identifier("_qr_q_products").sql(
-        dialect=sqlglot_dialect_name(dialect) or dialect, identify=True
-    )
-    wide_sql = (
-        f"WITH {cte_name} AS ({ibis.to_sql(products, dialect=dialect)}) "
-        f"{ibis.to_sql(wide, dialect=dialect)}"
-    )
-    wide = scratch.materialize_next(backend.sql(wide_sql, schema=wide.schema()))
+    wide = scratch.materialize_next(wide)
     working = relation.join(wide, row_identity_columns)
     leverage = _sum_sql(working[name] * working[name] for name in q_columns)
     working = working.mutate(_qr_h=leverage)
