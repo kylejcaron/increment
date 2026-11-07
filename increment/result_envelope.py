@@ -41,6 +41,9 @@ if TYPE_CHECKING:
 _SCHEMA_VERSION = 3
 _METADATA_KEY = b"increment.readout_metadata"
 _CONSTRUCTION_TAGS = frozenset((None, *get_args(Construction)))
+# A report row whose sampling availability was never recorded: no sampling operation or
+# family evidence may be drawn from its retained statistics.
+_UNRECORDED_SAMPLING = "readout.legacy.sampling_unreconstructible"
 _PROJECTION_FIELDS = (
     "null_lift",
     "null_abs",
@@ -387,6 +390,7 @@ class ResultCell:
                 name == "sampling"
                 and self.row_payload is not None
                 and self.row_kind in {"breakout", "daily_lift", "asof_lift"}
+                and status.code != _UNRECORDED_SAMPLING
             ):
                 row = self._projection_row()
                 if getattr(row, "sampling_available", True) is not False:
@@ -647,7 +651,7 @@ class ResultCell:
             and getattr(row, "sampling_available", False) is None
             and getattr(row, "sequential_result", None) is None
         ):
-            code = "readout.legacy.sampling_unreconstructible"
+            code = _UNRECORDED_SAMPLING
             context = {
                 "cell_key": identity.key.model_dump(mode="json"),
                 "missing_fields": ("prior_free_reference_kind", "prior_free_reference_df"),
@@ -1574,7 +1578,11 @@ def family_evidence(cell: ResultCell) -> StoredFamilyEvidence:
     row = cell.retained_row() if state is not None else cell._projection_row()
     construction = construction or getattr(row, "reference_kind", None) or cell.row_kind
     set_only = getattr(row, "confidence_set", None) is not None
-    if status.state == "unavailable" and not (report_row or set_only):
+    # A report row's other unavailable reasons are read from the row below; one whose
+    # sampling was never recorded offers no evidence.
+    if status.state == "unavailable" and (
+        not (report_row or set_only) or status.code == _UNRECORDED_SAMPLING
+    ):
         return StoredFamilyEvidence(
             cell.identity.hash(),
             construction,

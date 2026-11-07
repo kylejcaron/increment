@@ -59,9 +59,12 @@ def test_native_absolute_margin_matches_public_decision_after_codecs():
     from tests.breakout.test_heterogeneity import _absolute_breakout_estimate
     from tests.estimation.test_decision_stats import _absolute_linear_est
 
+    # The breakout row records its sampling availability, as an estimated row does.
     rows = (
         _absolute_linear_est(mu=1.0, sigma=0.2),
-        _absolute_breakout_estimate("A", value=1.0, se=0.2),
+        _absolute_breakout_estimate("A", value=1.0, se=0.2).model_copy(
+            update={"sampling_available": True}
+        ),
     )
     for row in rows:
         cell = (
@@ -2582,6 +2585,40 @@ def test_report_payload_with_unknown_sampling_marker_is_unavailable():
         row_kind="cate_validation", identity=identity, label="validation", row=validation
     )
     assert report.components["sampling"][0].state == "available"
+
+
+def test_unrecorded_sampling_breakout_offers_no_margin_or_family_evidence():
+    from increment.breakout.estimates import BreakoutEstimates
+    from increment.errors import CodedError
+    from increment.result_envelope import (
+        Operation,
+        ResultCell,
+        combine_family_evidence,
+        compare_margin,
+        family_evidence,
+    )
+    from tests.breakout.test_heterogeneity import _breakout_estimate
+
+    # A fixed-horizon breakout row whose sampling availability was never recorded.
+    row = _breakout_estimate("US", 0.20, 0.05)
+    assert row.sampling_available is None and row.sequential_result is None
+    cell = BreakoutEstimates([row]).as_cells()[0]
+    restored = (
+        cell,
+        ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+    )
+    for candidate in restored:
+        assert Operation.COMPARE_MARGIN not in candidate.supports["sampling"]
+        with pytest.raises(CodedError) as raised:
+            compare_margin(candidate, margin=0.0, scale="relative")
+        assert raised.value.code == "results.operation.unsupported"
+        evidence = family_evidence(candidate)
+        assert evidence.evidence is None
+        assert evidence.reason_code == "readout.legacy.sampling_unreconstructible"
+        with pytest.raises(CodedError) as raised:
+            combine_family_evidence([evidence], procedure="bh", level=0.05)
+        assert raised.value.code == "results.operation.unsupported"
 
 
 def test_payload_summary_is_rederived_from_retained_lift_row():
