@@ -2784,14 +2784,22 @@ def _lift_guard_failure(
     scale; a sensitivity cell is omitted."""
     if method_role != "decision":
         return None, None
+    return None, _lift_guard_cell_failure(treatment.metric, treatment.group_id, method_name, exc)
+
+
+def _lift_guard_cell_failure(
+    metric: str, group_id: str, method_name: str, exc: LiftGuardError
+) -> DecisionFailure:
+    """The failure of a cell a lift guard refused on every scale, keyed by
+    its arm hypothesis."""
     from increment.estimation.decision_types import ArmHypothesisKey, DecisionFailure
 
-    return None, DecisionFailure(
-        ArmHypothesisKey(treatment.metric, treatment.group_id, "itt"),
+    return DecisionFailure(
+        ArmHypothesisKey(metric, group_id, "itt"),
         "estimation.engine.lift_guard",
         {
-            "metric": treatment.metric,
-            "group_id": treatment.group_id,
+            "metric": metric,
+            "group_id": group_id,
             "method": method_name,
             "reason": exc.reason,
             "display": str(exc),

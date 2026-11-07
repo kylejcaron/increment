@@ -192,7 +192,12 @@ baseline's saved form.
     `maximum_power`, `limiting_condition="recording_grid"`). Power can dip
     past the pilot's size, and a planned size within about a quarter of the
     pilot's size measured 0.71-0.76 power against a planned 0.80 on rounded
-    data.
+    data. The readout also reports no relative lift when the combined
+    log-scale standard error is 0.5 or more, so a quantile size keeps the
+    projected one below that, and a recording grid as coarse as the quantile
+    itself (a median of 1 whose next recorded value is 3) is refused with
+    `power.quantile_size_search_delta_method_unreliable`; see
+    [checking a quantile plan against the readout](#checking-a-quantile-plan-against-the-readout).
 
 ??? info "Statistical details: quantile planning"
     Quantile planning follows the quantile readout: at each candidate size it
@@ -217,17 +222,25 @@ baseline's saved form.
     repeated values switches to the readout's wider tied interval so power
     dips past that size, and on a coarse grid it wavers slightly with the
     readout's own bracket ranks. The search evaluates a fine grid of sizes
-    in order and settles the crossing between the first grid size reaching
-    the target and the one before, so the planned size reaches the target
-    while the size below it does not; a smaller size can reach the target
-    only within that rank-level waver. A size at which the projected bracket
+    in order and settles the crossing between the first grid size that both
+    reaches the target and keeps the planned combined log-scale standard
+    error below 0.5 and the one before, so the planned size meets both while
+    the size below it misses one; a smaller size can meet both only within
+    that rank-level waver. A size at which the projected bracket
     reaches a non-positive recorded value has no log-scale interval, as at
     the readout, and `achieved_power` refuses it with the readout's own
-    code; the size search passes over such sizes. The quantile readout tests
-    two-sided against a zero null and has no breakouts, so planning refuses
-    a one-sided alternative, a shifted null or a guardrail role with
-    `readout.metric.quantile_alternative`, and the `segment_pairwise_*`
-    solvers refuse a quantile metric with `readout.metric.quantile_breakout`.
+    code; the size search passes over such sizes. The search counts assigned
+    units and evaluates each candidate as `achieved_power` does: the
+    allocation's control size, both arms analyzed at `assigned *
+    trigger_rate`. It starts at the first size whose two arms each have the
+    readout's order-statistic bracket, so at an extreme quantile and unequal
+    allocation the treatment arm grows until the smaller arm has one, and
+    every planned size is one `achieved_power` can evaluate. The quantile
+    readout tests two-sided against a zero null and has no breakouts, so
+    planning refuses a one-sided alternative, a shifted null or a guardrail
+    role with `readout.metric.quantile_alternative`, and the
+    `segment_pairwise_*` solvers refuse a quantile metric with
+    `readout.metric.quantile_breakout`.
 
 ??? info "Statistical details: the alternative-arm variance model"
     The three arm solvers evaluate each arm's log-scale variance at its own
@@ -670,12 +683,13 @@ for interpreting the analysis the plan feeds.
 
 A fixed-horizon plan the runtime analyzes with its log-ratio lift estimate
 (unclustered, randomized, with no absorbed factor, and not a conversion or
-retention plan decided from its counts) cannot be read when the estimate's
-combined log-scale standard error is 0.5 or more: the runtime refuses it with
-the `delta_method_unreliable` reason. Planning keeps to the same limit. The
-size `required_sample_size` returns is the smallest that both reaches the
-target power and keeps the planned standard error below 0.5, so a noisy metric
-planned for a large lift can need more units than power alone asks for:
+retention plan decided from its counts, which includes every quantile metric)
+cannot be read when the estimate's combined log-scale standard error is 0.5 or
+more: the runtime refuses it with the `delta_method_unreliable` reason.
+Planning keeps to the same limit. The size `required_sample_size` returns is
+the smallest that both reaches the target power and keeps the planned standard
+error below 0.5, so a noisy metric planned for a large lift can need more units
+than power alone asks for:
 
 ```python
 from increment.estimators import Baseline
@@ -695,6 +709,99 @@ log-scale standard error of 1.41. A supplied-effect answer keeps its planned
 power and reports `mde_relative=None` with that reason. The runtime judges the
 standard error of the sample it sees, so near the limit it refuses only some
 samples, and heavy-tailed outcomes often pass; planning uses the planned value.
+
+### Checking a quantile plan against the readout
+
+A quantile readout passes its two arms' order-statistic standard errors to the
+same log-ratio estimate, and a quantile plan keeps to the same limit with the
+standard errors it projects from the pilot. That makes two statements easy to
+confuse. *The planned size passes the projected guard*: the projection keeps
+the combined log-scale standard error below 0.5. *A readout at that size
+reports a lift*: that depends on the standard error of the sample the
+experiment collects, and at small sizes the readout's own standard error is
+often larger than the projection (see the
+[projection's limitation](../limitations.md#a-quantile-metrics-planned-variance-is-a-projection-from-the-pilot-not-a-certified-bound)).
+So where the limit, not the target power, sets the size, many readouts at that
+size still report no lift, and `required_sample_size` warns with
+`power.quantile_size_at_delta_method_limit` (context `n_per_arm`, `log_se`,
+`log_se_limit`).
+
+Check such a size against the pilot: draw two arms of that size from the
+pilot's values, scale the treatment arm by the planned lift, run the readout
+on them and count how often it reports no lift. Drawing without replacement
+gives each simulated arm distinct units, as a real experiment has; repeated
+values would make the readout widen its interval for ties the experiment
+would not have, so the pilot needs at least twice the size checked. A quantile
+cell the readout cannot report a relative lift for is an unavailable row with
+`failure_code` `estimation.engine.lift_guard` and reason
+`delta_method_unreliable`, as a mean cell refused by the same limit is, and
+the run warns with `readouts.run.cell_refused`:
+
+```python
+import warnings
+
+import numpy as np
+import pandas as pd
+
+import increment
+from increment.errors import IncrementWarning
+from increment.power import required_sample_size
+from increment.workflows import planning_baseline
+
+heavy_metric = [{"name": "latency", "type": "quantile", "quantile": 0.5}]
+heavy_pilot = np.random.default_rng(0).lognormal(0.0, 2.0, 1_000)  # heavy-tailed
+
+
+def latency_experiment(groups, values):
+    frame = pd.DataFrame({"unit": range(len(values)), "group": groups, "latency": values})
+    return increment.from_frame(
+        frame, shape="summary", unit="unit", group="group", control="control", metrics=heavy_metric
+    )
+
+
+heavy_baseline = planning_baseline(*latency_experiment("control", heavy_pilot), "latency")
+with warnings.catch_warnings(record=True) as planning_warnings:
+    warnings.simplefilter("always")
+    heavy_plan = required_sample_size(5.0, heavy_baseline)  # a sixfold median
+print(heavy_plan.n_per_arm, [w.message.code for w in planning_warnings])
+
+
+def unavailable_share(n_per_arm, relative_lift, draws=40, seed=1):
+    """Share of readouts at n_per_arm that report no relative lift, each on two
+    arms drawn from the pilot without replacement, treatment scaled by the lift."""
+    rng = np.random.default_rng(seed)
+    unavailable = 0
+    for _ in range(draws):
+        drawn = rng.choice(heavy_pilot, 2 * n_per_arm, replace=False)
+        drawn[n_per_arm:] *= 1.0 + relative_lift
+        groups = ["control"] * n_per_arm + ["treatment"] * n_per_arm
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)  # the per-cell refusal notice
+            (cell,) = increment.run(*latency_experiment(groups, drawn)).readout()
+        if cell.failure_code == "estimation.engine.lift_guard":
+            unavailable += cell.reason == "delta_method_unreliable"
+    return unavailable / draws
+
+
+for n_per_arm in (heavy_plan.n_per_arm, 100):
+    print(f"{n_per_arm} per arm: {unavailable_share(n_per_arm, 5.0):.0%} report no lift")
+```
+
+<!-- output -->
+```text
+45 ['power.quantile_size_at_delta_method_limit']
+45 per arm: 78% report no lift
+100 per arm: 2% report no lift
+```
+
+Power alone needs 28 per arm here; the projected limit raises the plan to 45,
+yet about four in five readouts at 45 per arm still report no lift. Raise the
+size until the share that reports no lift is one you accept, here 100 per arm.
+A quantile metric reports relative lift only, so there is no absolute-difference
+readout to plan instead. When no size passes the projected limit, as on a
+recording grid as coarse as the quantile itself, `required_sample_size` refuses
+with `power.quantile_size_search_delta_method_unreliable` (context `power`,
+`log_se`, `log_se_limit`); record the metric at a finer resolution.
 
 ### An MDE against a shifted null
 

@@ -21,6 +21,7 @@ from increment.query import panel_sql, summary_sql
 from increment.workflows import factor_summaries, metrics
 from tests.analysis_factory import lift_rows, make_binding_like, view_readout
 from tests.sequential_cases import registration
+from tests.warning_codes import allow_warning_codes
 
 
 def _defs_yaml() -> str:
@@ -688,3 +689,85 @@ def test_equal_quantiles_are_not_selected_at_the_largest_family_threshold():
     assert row.lift.lb < 0.0 < row.lift.ub
     assert row.p_value() == 1.0
     assert row.discovery is False
+
+
+@allow_warning_codes("readouts.run.cell_refused")
+def test_a_quantile_cell_past_the_log_scale_guard_is_an_unavailable_row():
+    """The readout refuses a relative lift whose combined log-scale SE is 0.5
+    or more. A 40-unit arm spaced ``exp(0.2 k)`` has median SE ``13 * 0.2 /
+    (2 * 1.96) = 0.663`` (bracket ranks 14 and 27), past the guard on its own;
+    a 200-unit arm spaced ``exp(0.01 k)`` like control combines with it to
+    about 0.1. Each cell is kept: the wide arm's decision and sensitivity cells
+    as unavailable rows with the moments path's own lift-guard code and reason,
+    the narrow arm's estimated."""
+    import pyarrow as pa
+
+    narrow = np.exp(0.01 * np.arange(1, 201))
+    wide = np.exp(0.2 * np.arange(1, 41))
+    experiment, reader = inc.from_frame(
+        pa.table(
+            {
+                "unit": list(range(440)),
+                "arm": ["C"] * 200 + ["narrow"] * 200 + ["wide"] * 40,
+                "outcome": np.concatenate([narrow, narrow, wide]),
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="C",
+        metrics=[
+            inc.MetricSpec(
+                name="median",
+                type="quantile",
+                value_column="outcome",
+                quantile=0.5,
+                sensitivity_methods=[inc.Method(name="check")],
+            )
+        ],
+    )
+    rows = {(row.group_id, row.method): row for row in lift_rows(view_readout(experiment, reader))}
+    methods = ("unadjusted", "check")
+    assert set(rows) == {(arm, method) for arm in ("narrow", "wide") for method in methods}
+    for method in methods:
+        assert rows["narrow", method].lift is not None
+        assert rows["narrow", method].failure_code is None
+        assert rows["wide", method].lift is None
+        assert rows["wide", method].failure_code == "estimation.engine.lift_guard"
+        assert rows["wide", method].reason == "delta_method_unreliable"
+
+
+def test_an_unselected_secondary_arm_keeps_its_nominal_quantile_cell():
+    """Only the selected cells of a secondary family are reissued at its FCR
+    level. A 25-unit arm spaced ``exp(0.19 k)`` has median bracket ranks (8, 18)
+    at alpha 0.05 and (7, 19) at 0.025, so its log SE is ``10 * 0.19 / (2 *
+    1.960) = 0.485`` at the nominal level, inside the readout's guard, and ``12 *
+    0.19 / (2 * 2.241) = 0.509`` at the level ``0.05 * 1 / 2`` one selection of
+    two cells gives, past it. Unselected, that arm keeps its nominal estimate."""
+    import pyarrow as pa
+
+    k = np.arange(1, 26)
+    experiment, reader = inc.from_frame(
+        pa.table(
+            {
+                "unit": list(range(75)),
+                "arm": ["C"] * 25 + ["shifted"] * 25 + ["wide"] * 25,
+                "y": np.concatenate(
+                    [np.exp(0.001 * k), np.exp(5.0 + 0.001 * k), np.exp(0.19 * (k - 13))]
+                ),
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="C",
+        metrics=[inc.MetricSpec(name="median", type="quantile", value_column="y", quantile=0.5)],
+        plan=inc.AnalysisPlan(secondaries=["median"], alpha=0.05, q=0.05),
+    )
+    rows = {row.group_id: row for row in lift_rows(view_readout(experiment, reader))}
+    assert rows["shifted"].discovery is True
+    assert rows["shifted"].lift is not None
+    assert rows["wide"].discovery is False
+    assert rows["wide"].lift is not None
+    assert rows["wide"].failure_code is None
+    assert rows["wide"].sampling_available is True
