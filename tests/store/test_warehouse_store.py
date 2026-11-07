@@ -367,6 +367,75 @@ def test_results_store_reads_a_missing_schema_without_creating_it():
         backend.disconnect()
 
 
+class _SchemaLookupError(RuntimeError):
+    pass
+
+
+def _listing_backend(error: Exception, *, lists_schemas: bool) -> Any:
+    """A Snowflake-shaped backend whose table listing in ``absent_schema`` raises ``error``."""
+
+    def list_tables(database=None):
+        assert database == "absent_schema"
+        raise error
+
+    backend: Any = SimpleNamespace(
+        name="snowflake",
+        list_tables=list_tables,
+        create_database=_no_table_operations,
+        **dict.fromkeys(("table", "create_table"), _no_table_operations),
+    )
+    if lists_schemas:
+        backend.list_databases = lambda catalog=None: ["analytics"]
+    return backend
+
+
+def _history_selector() -> HistorySelector:
+    return HistorySelector(
+        metric_hash="metric",
+        estimator_id="t",
+        method_config_hash="config",
+        method_instance_id="instance",
+        scope_hash=View(view="run", grain="total").hash(),
+    )
+
+
+@pytest.mark.parametrize("lists_schemas", [True, False], ids=["schema-listing", "no-listing"])
+def test_missing_schema_run_lookup_is_not_found_and_history_is_empty(lists_schemas):
+    backend = _listing_backend(
+        _SchemaLookupError("Schema ABSENT_SCHEMA does not exist"), lists_schemas=lists_schemas
+    )
+    store = WarehouseResultsStore(backend, schema="absent_schema")
+
+    for run_id in ("run-id", None):
+        with pytest.raises(CodedError) as missing:
+            store.open_run("exp", "spec-hash", run_id)
+        assert missing.value.code == "store.run.not_found"
+    assert store.history("exp", _history_selector()).num_rows == 0
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Insufficient privileges to operate on schema 'ABSENT_SCHEMA'",
+        "Schema 'ABSENT_SCHEMA' does not exist or not authorized.",
+        "Table INFORMATION_SCHEMA.TABLES does not exist",
+    ],
+    ids=["privileges", "not-authorized", "other-object"],
+)
+def test_unrelated_table_listing_errors_propagate(message):
+    error = _SchemaLookupError(message)
+    store = WarehouseResultsStore(
+        _listing_backend(error, lists_schemas=False), schema="absent_schema"
+    )
+
+    with pytest.raises(_SchemaLookupError) as raised:
+        store.open_run("exp", "spec-hash", "run-id")
+    assert raised.value is error
+    with pytest.raises(_SchemaLookupError) as raised:
+        store.history("exp", _history_selector())
+    assert raised.value is error
+
+
 @pytest.mark.integration
 def test_results_store_saves_into_an_existing_sqlite_schema():
     backend = ibis.sqlite.connect()
