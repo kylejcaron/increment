@@ -1020,7 +1020,7 @@ def test_empty_pandas_object_calendar_cutoff_does_not_reclassify_typed_labels():
     specs = [MetricSpec(name="outcome", type="conversion", window_days=1)]
     plan = _plan(specs, "bernoulli", date="day", exposure_date="exposed")
     end = date(2026, 1, 2)
-    for calendar_hint in ("cutoff", "exposure"):
+    for calendar_hint in ("cutoff", "exposure", "unused-label"):
         frame = pd.DataFrame(
             {
                 "unit": pd.Series(dtype="str"),
@@ -1032,6 +1032,9 @@ def test_empty_pandas_object_calendar_cutoff_does_not_reclassify_typed_labels():
                 "outcome": pd.Series(dtype=float),
             }
         )
+        if calendar_hint == "unused-label":
+            frame["unused_calendar"] = pd.Series(dtype="datetime64[us]")
+        cutoff = "d1" if calendar_hint == "unused-label" else end
         analysis = from_frame(
             frame,
             shape="panel",
@@ -1043,12 +1046,14 @@ def test_empty_pandas_object_calendar_cutoff_does_not_reclassify_typed_labels():
             metrics=specs,
             experiment_id="experiment",
             plan=plan,
-            observation_end=end if calendar_hint == "cutoff" else None,
+            observation_end=None if calendar_hint == "exposure" else cutoff,
         )
-        snapshot = workflows.capture_sequential(*analysis, finalized=True, as_of=end)
+        snapshot = workflows.capture_sequential(*analysis, finalized=True, as_of=cutoff)
         assert snapshot.records == ()
         assert snapshot.assignment_counts == {}
-        assert snapshot.reveal_cursor == datetime(2026, 1, 2)
+        assert snapshot.reveal_cursor == (
+            "d1" if calendar_hint == "unused-label" else datetime(2026, 1, 2)
+        )
 
     for frame in (
         pd.DataFrame(

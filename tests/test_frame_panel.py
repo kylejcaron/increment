@@ -890,6 +890,54 @@ def test_fractional_day_labels_keep_their_offsets(backend: str) -> None:
     assert _sum_y(moments["treatment"]) == pytest.approx(22.0)
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+@pytest.mark.parametrize(
+    "day_type,exposure_type",
+    [
+        (pa.date32(), pa.timestamp("us")),
+        (pa.timestamp("us"), pa.date32()),
+    ],
+)
+def test_calendar_day_and_exposure_types_share_exact_eligible_coordinates(
+    backend, day_type, exposure_type
+):
+    import polars as pl
+
+    days = [date(2026, 1, day) for day in (1, 2, 3)]
+    table = pa.table(
+        {
+            "u": ["c", "c", "t"],
+            "g": ["control", "control", "treatment"],
+            "d": pa.array(days, type=pa.date32()).cast(day_type),
+            "e": pa.array([days[0], days[0], days[1]], type=pa.date32()).cast(exposure_type),
+            "y": [1.0, 2.0, 3.0],
+        }
+    )
+    frame: Any = {"pandas": table.to_pandas(), "polars": pl.from_arrow(table), "pyarrow": table}[
+        backend
+    ]
+    source = from_unit_panel(
+        frame,
+        unit="u",
+        group="g",
+        date="d",
+        exposure_date="e",
+        control="control",
+        metrics=[MetricSpec(name="y", type="mean", window_days=2)],
+        observation_end=days[-1],
+    )
+    # The control exposure admits all three days; treatment admits two; three rows exist.
+    assert source.densified_cells == 2
+    assert _counts(source) == {"control": 1, "treatment": 1}
+    assert {
+        row["group_id"]: (row["n"], _sum_y(row))
+        for row in _moments(source, source.context.metrics[0])
+    } == {
+        "control": (1, 3.0),
+        "treatment": (1, 3.0),
+    }
+
+
 def test_numeric_day_axis_with_calendar_exposure_date_refuses() -> None:
     """A numeric date column combined with a calendar exposure_date is a
     contradictory day axis - previously silently filtered every row as
@@ -1105,6 +1153,7 @@ def test_integer_elapsed_windows_do_not_wrap_or_round_neighbors(day, exposure, w
         metrics=[MetricSpec(name="y", type="mean", window_days=window)],
         observation_end=2**63 - 1,
     )
+    assert source.densified_cells == 0
     rows = _moments(source, source.context.metrics[0])
     assert {row["group_id"]: (row["n"], _sum_y(row)) for row in rows} == {
         "control": (1, expected),

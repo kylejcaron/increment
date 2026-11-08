@@ -113,9 +113,14 @@ def _eligible_cells(days: nw.DataFrame[Any], exposure: nw.DataFrame[Any]) -> int
     if days.is_empty():
         return 0
     starts = exposure.group_by("__exposure__").agg(nw.len().alias("__units__"))
-    day_values = days.get_column("__exposure__").to_list()
-    start_values = starts.get_column("__exposure__").to_list()
-    if isinstance(days.schema["__exposure__"], nw.String):
+    day_column = days.get_column("__exposure__")
+    start_column = starts.get_column("__exposure__")
+    labels = isinstance(day_column.dtype, nw.String)
+    if not labels and not _day_axis_is_numeric(day_column.dtype):
+        day_column = day_column.cast(nw.Datetime("us")).cast(nw.Int64)
+        start_column = start_column.cast(nw.Datetime("us")).cast(nw.Int64)
+    day_values, start_values = day_column.to_list(), start_column.to_list()
+    if labels:
         order = _day_axis_label_order([*day_values, *start_values])
         day_values = [order[value][0] for value in day_values]
         start_values = [order[value][0] for value in start_values]
@@ -180,7 +185,10 @@ def _resolve_empty_panel_axis(
     ]
     if not ambiguous:
         return frame
-    calendar = any(isinstance(dtype, nw.Date | nw.Datetime) for dtype in frame.schema.values())
+    calendar = any(
+        name is not None and isinstance(frame.schema[name], nw.Date | nw.Datetime)
+        for name in (date, exposure_date)
+    )
     cutoff, issue = _calendar_day(observation_end, datetime_axis=False)
     if not calendar and (issue is not None or cutoff is None):
         return frame
