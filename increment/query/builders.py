@@ -1819,7 +1819,7 @@ def _censor_to_observable_window(
     flagged = population.mutate(_kept=observed & complete)
     counts_query = flagged.aggregate(
         enrolled=flagged.count(),
-        kept=flagged.count(where=flagged._kept),
+        kept=ibis.coalesce(flagged.count(where=flagged._kept), 0),
     )
     if execute is None:
 

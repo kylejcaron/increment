@@ -1307,6 +1307,23 @@ def test_group_summary_x_moments_null_when_unmaterialized(totals):
 # Step 4b — type-aggregation dispatch + windowed censoring
 
 
+@pytest.fixture
+def snowflake_censor_execute(con):
+    """Execute translated counts with Snowflake's null-on-no-match semantics."""
+    import sqlglot
+    from sqlglot import exp
+
+    def execute(query):
+        statement = sqlglot.parse_one(ibis.to_sql(query, dialect="snowflake"), read="snowflake")
+        for count_if in tuple(statement.find_all(exp.CountIf)):
+            count_if.replace(exp.Nullif(this=count_if.copy(), expression=exp.Literal.number(0)))
+        cursor = con.raw_sql(statement.sql("duckdb"))
+        columns = [column[0] for column in cursor.description]
+        return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+
+    return execute
+
+
 def test_retention_metric_dispatch(exposures, page_view_events, experiment, retention_metric):
     """Retention metric: y ∈ {0,1}, active on/after threshold_days."""
     events = metric_events(page_view_events, retention_metric)
@@ -1394,7 +1411,9 @@ def test_censoring_drops_late_enrollee_retention(
     assert sorted(totals["unit_id"].tolist()) == ["u1", "u2"]
 
 
-def test_unit_totals_never_admits_a_unit_whose_window_outruns_the_data(con):
+def test_unit_totals_never_admits_a_unit_whose_window_outruns_the_data(
+    con, snowflake_censor_execute
+):
     """A declared end past the available data must not score units on absent events.
 
     u1's window closes 2025-08-15, but the event log stops on 2025-08-05
@@ -1439,13 +1458,21 @@ def test_unit_totals_never_admits_a_unit_whose_window_outruns_the_data(con):
     exposures = first_exposures(exposure_rows, experiment)
     events = metric_events(purchase_rows, metric)
     spine, stats = unit_day_spine_stats(exposures, events, experiment, metric.name)
+    spine = con.create_table("avail_census_spine", obj=spine)
 
     with pytest.warns(IncrementWarning) as rec:
         totals = unit_totals(
-            spine, stats, metric, experiment, data_as_of=dt.datetime(2025, 8, 5)
+            spine,
+            stats,
+            metric,
+            experiment,
+            data_as_of=dt.datetime(2025, 8, 5),
+            warn_on_censoring=snowflake_censor_execute,
         ).execute()
 
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == 1
+    assert context["dropped"] == 1
     assert len(totals) == 0, (
         "u1's 14-day window closes 2025-08-15 but data is only loaded through "
         "2025-08-05; it must be censored, not scored on unobserved days"
@@ -3943,7 +3970,8 @@ def test_empty_events_panel_censors_every_unit_when_end_is_unset(con, retention_
     assert len(totals) == 0, "no unit has an observed calendar day yet"
 
 
-def test_empty_events_windowed_metric_censors_every_unit(con):
+@pytest.mark.parametrize("enrolled", [True, False], ids=["unobserved", "empty-population"])
+def test_empty_events_windowed_metric_censors_every_unit(con, snowflake_censor_execute, enrolled):
     """Zero events + no declared end must never admit windowed units as y = 0.
 
     Zero matching events NULLs `unit_day_spine_stats`' event-horizon
@@ -3954,9 +3982,11 @@ def test_empty_events_windowed_metric_censors_every_unit(con):
     drops both units before their 7-day windows are ever evaluated --
     the honest reading when no time beyond enrollment was observed.
     """
+    import warnings
+
     metric = ConversionMetric(name="converted", entity="unit_id", fact="purchase", window_days=7)
     exposure_rows = con.create_table(
-        "noevents_exposures",
+        f"noevents_exposures_{enrolled}",
         obj=[
             {
                 "unit_id": "u1",
@@ -3977,7 +4007,7 @@ def test_empty_events_windowed_metric_censors_every_unit(con):
     # No purchase rows at all - only a non-matching event so the table
     # has the right schema but metric_events yields zero rows.
     no_purchases = con.create_table(
-        "noevents_purchases",
+        f"noevents_purchases_{enrolled}",
         obj=[
             {
                 "unit_id": "nobody",
@@ -3997,13 +4027,21 @@ def test_empty_events_windowed_metric_censors_every_unit(con):
         plan=AnalysisPlan(),
     )
     exposures = first_exposures(exposure_rows, running)
+    if not enrolled:
+        exposures = exposures.filter(False)
     events = metric_events(no_purchases, metric)
     spine, stats = unit_day_spine_stats(exposures, events, running, metric.name)
-    with pytest.warns(IncrementWarning) as rec:
-        totals = unit_totals(spine, stats, metric, running).execute()
-    context = warning_context(rec, "frame.censoring.dropped_units")
-    assert context["enrolled"] == 2
-    assert context["dropped"] == 2
+    spine = con.create_table(f"noevents_census_spine_{enrolled}", obj=spine)
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always", IncrementWarning)
+        totals = unit_totals(
+            spine, stats, metric, running, warn_on_censoring=snowflake_censor_execute
+        ).execute()
+    assert len(rec) == int(enrolled)
+    if enrolled:
+        context = warning_context(rec, "frame.censoring.dropped_units")
+        assert context["enrolled"] == 2
+        assert context["dropped"] == 2
 
     assert len(totals) == 0, "no unit's window closed within observed enrollment time"
 
