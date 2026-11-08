@@ -138,6 +138,9 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                 scope_operation(exp, scope) == "run_asof_lift"
                 and inference.get("registration") is not None
             )
+            # An empty breakout segment reads every declared breakout, so validation sees the
+            # identities execution expands it to.
+            breakouts = declared_breakouts(exp.source_refs, scope, exp.analysis_context)
             if exp.analysis_context:
                 from increment._runnability import readout_refusals
 
@@ -146,7 +149,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                     design=exp.design,
                     declaration=exp.analysis_context,
                     capabilities=capabilities,
-                    scope=scope,
+                    scope=scope.model_copy(update={"segment": breakouts}),
                     operation=scope_operation(exp, scope),
                     metric_name=str(metric_name),
                     options=operation_options(exp, scope),
@@ -156,7 +159,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                 metrics=(metric_spec,),
                 population=scope.population,
                 grain=None if checkpoint_projection else scope.grain,
-                breakouts=declared_breakouts(exp.source_refs, scope, exp.analysis_context),
+                breakouts=breakouts,
             )
             try:
                 require_evidence_declaration(capabilities, constructor=constructor, request=request)

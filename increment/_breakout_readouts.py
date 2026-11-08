@@ -184,16 +184,13 @@ class BreakoutReadouts:
         identities = () if registration is None else self._identities(self._src)
         if not identities:
             return
-        from increment.sequential_source import registered_breakout_dimension
+        from increment.sequential_source import require_registered_breakout_selection
 
-        dimension = registered_breakout_dimension(registration, population=population)
-        if {identity.property for identity in identities} != {dimension}:
-            from increment.sequential_state import sequential_refuse
-
-            sequential_refuse(
-                "route.unsupported",
-                "registered sequential inference reads only its registered breakout dimension",
-            )
+        require_registered_breakout_selection(
+            registration,
+            tuple(identity.property for identity in identities),
+            population=population,
+        )
 
     def validate_request(self, req: BreakoutRequest) -> BreakoutRequest:
         self._require_registered_selection(req.population)

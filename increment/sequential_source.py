@@ -981,6 +981,17 @@ def registered_breakout_dimension(registration, *, population):
     return dimensions[0]
 
 
+def require_registered_breakout_selection(registration, properties, *, population):
+    """Refuse a registered segment readout that selects any breakout but the registered one."""
+    dimension = registered_breakout_dimension(registration, population=population)
+    if properties and set(properties) != {dimension}:
+        sequential_refuse(
+            "route.unsupported",
+            "registered sequential inference reads only its registered breakout dimension",
+        )
+    return dimension
+
+
 def validate_capture_request(request, *, dynamic):
     """Check finalized-checkpoint versus horizon-capture request coordinates."""
     if not dynamic:

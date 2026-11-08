@@ -1690,6 +1690,88 @@ def test_undeclared_breakout_source_refuses_before_the_read(tmp_path, monkeypatc
 
 
 @pytest.mark.integration
+def test_runnable_and_run_refuse_undeclared_qualified_breakout_source(tmp_path):
+    import datetime as dt
+
+    import ibis
+
+    from increment import runnable
+    from increment.errors import CodedError
+
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "events",
+        obj=[
+            {
+                "user_id": user,
+                "event": event,
+                "ts": dt.datetime(2025, 1, day),
+                "group_id": group if event == "exposure" else None,
+                "region": "west",
+            }
+            for user, group in (("u1", "control"), ("u2", "treatment"))
+            for event, day in (("exposure", 1), ("purchase", 2))
+        ],
+    )
+    con.create_table("profiles", obj=[{"user_id": "u1", "region": "west"}])
+    path = tmp_path / "definitions.yaml"
+    path.write_text(
+        """dialect: duckdb
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {name: exposure, column: null}
+      - {name: purchase, column: null}
+    properties:
+      - {name: region, column: region, as_of: static}
+  - name: profiles
+    sql: SELECT user_id, CAST('2025-01-01' AS TIMESTAMP) AS ts, region FROM profiles
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {name: profile, column: null}
+    properties:
+      - {name: region, column: region, as_of: static}
+exposures: [{name: exposed, fact: exposure}]
+metrics:
+  - {name: orders, type: mean, entity: user_id, fact: purchase, aggregation: count, window_days: 7}
+experiments:
+  - name: checkout
+    unit: user_id
+    exposure: exposed
+    control_group: control
+    start: "2025-01-01"
+    plan: {secondaries: [orders]}
+    breakouts:
+      - {property: region, source: events}
+      - {property: region, source: profiles}
+"""
+    )
+    experiment, resolver = from_definitions(path, con, experiment_name="checkout")
+    ghost = View.breakout((BreakoutIdentity("region", "ghost"),))
+    requested = experiment.with_views(ghost)
+    expected = (
+        "facade.analysis.undeclared_breakout",
+        {
+            "requested": (("ghost", "region"),),
+            "declared": (("events", "region"), ("profiles", "region")),
+        },
+    )
+    try:
+        refusals = runnable(requested, "orders")["randomized.unadjusted"].static_refusals
+        assert [(refusal.code, dict(refusal.context)) for refusal in refusals] == [expected]
+        with pytest.raises(CodedError) as executed:
+            run_views(requested, resolver, metrics=["orders"], views=[ghost])
+        assert (executed.value.code, dict(executed.value.context)) == expected
+    finally:
+        cast(Any, resolver).close()
+        con.disconnect()
+
+
+@pytest.mark.integration
 def test_captured_analysis_keeps_unused_experiment_id_fact_column():
     from increment import AnalysisPlan
     from increment.semantics.models import Definitions

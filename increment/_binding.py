@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self
 
 from increment._canonical import declaration_value
 from increment._execute import execute_views, operation_parameters, selected_binding
-from increment._runnability import operation_options, scope_refusals
+from increment._runnability import _UNDECLARED_BREAKOUT, operation_options, scope_refusals
 from increment.decision import AnalysisState, ContrastContext, DefinitionsArmAnalysisState
-from increment.errors import CodedError, InvalidRequestError, RefusalSpec, refuse
+from increment.errors import CodedError, refuse
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -21,13 +21,6 @@ if TYPE_CHECKING:
     from increment.kernel.context import EvidenceExecutionContext
     from increment.kernel.experiment import DeclarationValue, Experiment, SourceReference
     from increment.semantics.models import Breakout
-
-
-_UNDECLARED_BREAKOUT = RefusalSpec(
-    "facade.analysis.undeclared_breakout",
-    InvalidRequestError,
-    template="breakout {requested!r} is not declared by this experiment; declared: {declared!r}",
-)
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,13 +5,14 @@ from dataclasses import replace
 import pandas as pd
 import pytest
 
-from increment import run
+from increment import AnalysisPlan, InferenceSpec, Randomized, run
 from increment.builders import from_frame, from_moments
 from increment.errors import CodedError
 from increment.evidence import EvidenceCapabilities
 from increment.kernel.contracts import Registration, View
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import resolve, runnable
+from increment.results import BreakoutEstimates
 from increment.workflows import export_moments
 
 
@@ -321,3 +322,39 @@ def test_breakout_view_without_declared_breakouts_refuses_identically(shape):
     assert preflight == [(executed.code, dict(executed.context))]
     assert executed.context["requested"] == ()
     assert executed.context["constructor"] == "from_frame"
+
+
+def test_runnable_accepts_all_breakout_for_registered_sequential_dimension():
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(96)],
+            "arm": ["control", "treatment"] * 48,
+            "outcome": [0, 1, 1, 1] * 24,
+            "segment": ["x", "x", "y", "y"] * 24,
+            "exposure": "2025-01-01",
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+        metrics={"outcome": "conversion"},
+        plan=AnalysisPlan(
+            primary="outcome",
+            inference=InferenceSpec(kind="always_valid", segments={"segment": ("x", "y")}),
+        ),
+        exposure_date="exposure",
+    )
+    every_breakout = replace(experiment, views=(View(view="breakout", grain="total"),))
+
+    refusals = runnable(every_breakout, "outcome")["randomized.unadjusted"].static_refusals
+
+    assert [(refusal.code, dict(refusal.context)) for refusal in refusals] == []
+    rows = run(every_breakout, reader, metrics=["outcome"]).readout()
+    assert isinstance(rows, BreakoutEstimates)
+    assert {(row.dimension, row.dimension_value) for row in rows} == {
+        ("segment", "x"),
+        ("segment", "y"),
+    }
