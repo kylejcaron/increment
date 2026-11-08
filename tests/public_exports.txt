@@ -31,7 +31,7 @@ run: Register an analysis before execution, persist its result cells, then decid
 Experiment: Describe an immutable analysis, its evidence references, and its declared views.
 ExperimentDefinition: Declare an experiment as written in definitions, for a custom provider or inspection.
 ExperimentReader: Read the data behind a builder's experiment until it is closed.
-View: Select a result view and its coordinates, population, and metrics.
+View: Select result views, including registered metrics for a breakout or switchback.
 SourceReference: Record a named evidence source, its expected digest, schema, and capabilities.
 Runnable: Report static refusals, data checks, and unknown feasibility requirements.
 runnable: Inspect estimator feasibility without reading source data.

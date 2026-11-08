@@ -16,6 +16,7 @@ from increment.frame import MetricSpec, synthesise_metric
 from increment.kernel.contracts import Registration
 from increment.plan import compile_decision_plan
 from tests.analysis_factory import view_readout
+from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
 
 def test_top_level_run_surface_is_public():
@@ -2139,6 +2140,13 @@ def test_selective_breakout_refuses_invalid_persistence_before_reads(tmp_path, s
     assert reads == []
     assert not tuple((tmp_path / "runs").rglob("*.parquet"))
     assert not log_path.exists()
+    outcome = {
+        "unknown": "unregistered",
+        "definition": "modified_definition",
+        "exploratory": "dynamic_exploration",
+        "margin": "encouragement_margin",
+    }.get(selection, selection)
+    assert_refusal("selective_breakout_persistence", outcome, error.value, stage="read")
 
 
 def _selective_breakout_analysis():
@@ -2299,6 +2307,11 @@ def test_event_log_replays_bonferroni_breakout_families(tmp_path, warehouse):
         for reference in event.references
     } == {"breakout"}
     assert replayed == (reopened.decisions,)
+    assert_support(
+        "selective_breakout_persistence",
+        "combined_warehouse" if warehouse else "combined_parquet",
+        reopened,
+    )
 
 
 def test_public_run_binds_design_level_encouragement_compliance_identity():

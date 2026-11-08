@@ -125,6 +125,47 @@ A bug fix may change a previously incorrect numerical answer. Disclose
 numerical corrections in release notes; compatibility does not preserve wrong
 values.
 
+### Current changes
+
+- Warehouse summaries preserve exact zero variance for constant input groups.
+  Nonconstant neighboring values retain their positive variance; no minimum
+  variance threshold is introduced. This corrects availability that could
+  depend on aggregate order. The numerical reference remains
+  `tests/fixtures/parity_baseline.json`; ordinary estimates retain their
+  existing tolerances.
+- `View.breakout(segment, *, population="assigned", metrics=())` accepts an
+  optional tuple of registered metric definitions. An empty tuple selects the
+  experiment's metrics. Save or log a selective breakout alongside the complete
+  overall primary and guardrail decision in the same `run`. Global incomplete
+  metric selections and selective breakouts without that overall decision
+  still refuse before acquisition or writes. Both stores preserve the scoped
+  family evidence and unavailable cells; no saved-format migration is needed.
+- Fixed-horizon randomized breakouts use each declared metric's margin and
+  alternative where the existing estimator supports that hypothesis. They
+  remain exploratory: nominal alpha and count-based correction are unchanged,
+  not replaced by headline primary allocation. Previously ignored one-sided
+  zero-null alternatives are now honored; this can change p-values, selection
+  and other members' corrected intervals in the same family. Unsupported
+  encouragement and multi-covariate CUPED margins retain their refusal.
+- Frame capture and compliance cutoffs share the panel's time-axis validation.
+  Ambiguous empty pandas calendar columns can use their declared exposure
+  column or calendar construction cutoff; explicitly typed label columns stay
+  labels. Integer elapsed-day predicates do not wrap, and eligibility counts
+  retain exact coordinate ordering.
+  Construction keeps `source.panel.observation_end`; sequential capture keeps
+  `sequential.source.invalid` and its existing context. Invalid panel compliance
+  cutoffs now use `source.panel.as_of` with `value`, `axis_kind` and `issue`;
+  summary-frame compliance retains `source.frame.compliance_asof`.
+- Exact dataframe reductions use bounded scratch space and a value-checked
+  integer path without changing dataframe snapshot identities or rounded-once
+  sums. Warehouse censor diagnostics count the enrolled population before dense
+  event joins, preserving the warning and maturity counts.
+- Individual result rows display relative effects in percent and absolute
+  effects in native units. Unbounded endpoints remain open; undefined endpoints
+  remain unavailable rather than becoming infinite. Large finite effects stay
+  finite in the display, and extreme standard-error diagnostics use compact
+  formatting. Numeric fields and serialization are unchanged.
+
 ### Earlier release notes
 
 - Release note (performance): dashboard preparation shares eager Explore lift
