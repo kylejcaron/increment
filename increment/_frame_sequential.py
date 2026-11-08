@@ -30,7 +30,9 @@ def _reveal_order(frame, *, unit: str, exposure: str):
     if isinstance(frame.schema[exposure], nw.String):
         order = _day_axis_label_order(frame.get_column(exposure).to_list())
         labels = sorted(order, key=order.__getitem__)
-        rank = rank.replace_strict(labels, list(range(len(labels))))
+        # A frame with no exposure has no row to rank, and an empty mapping has no type.
+        if labels:
+            rank = rank.replace_strict(labels, list(range(len(labels))))
     rank_name, unit_name = "__reveal_rank__", "__reveal_unit__"
     while rank_name in frame.columns or unit_name in frame.columns:
         rank_name, unit_name = f"_{rank_name}", f"_{unit_name}"
@@ -281,6 +283,7 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
     from increment._frame_panel import (
         _observable_end_index,
         _resolve_window_days,
+        _rows_on_days,
         _scratch_name,
         _with_day_index,
     )
@@ -317,7 +320,7 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
         .filter(nw.col("__observable_days__") >= maturity)
         .select(*keys)
     )
-    retained_panel = source._sparse_panel.filter(nw.col("ds").is_in(retained))
+    retained_panel = _rows_on_days(source._sparse_panel, retained)
     indexed, day_index = _with_day_index(retained_panel, exposure)
     joint = kept
     columns = {}

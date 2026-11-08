@@ -61,7 +61,7 @@ def _prepare_panel(
     )
     labels = observed.get_column("ds").unique().to_list()
     days = labels if observation_end is None else _labels_through(labels, observation_end)
-    window = observed if observation_end is None else observed.filter(nw.col("ds").is_in(days))
+    window = observed if observation_end is None else _rows_on_days(observed, days)
     cells = identity.shape[0] * len(days)
     if exposure is not None and _exposures_placeable(observed, exposure):
         cells = _eligible_cells(window.select(nw.col("ds").alias("__exposure__")), exposure)
@@ -85,6 +85,12 @@ def _prepare_panel(
         _group_counts(identity, "group_id"),
         n_filled,
     )
+
+
+def _rows_on_days(panel: nw.DataFrame[Any], days: Sequence[Any]) -> nw.DataFrame[Any]:
+    """The rows of *panel* dated on one of *days*. An empty list of days carries no type to
+    compare with the day column, so it selects no row without a comparison."""
+    return panel.filter(nw.col("ds").is_in(days)) if days else panel.head(0)
 
 
 def _exposures_placeable(panel: nw.DataFrame[Any], exposure: nw.DataFrame[Any]) -> bool:
@@ -168,8 +174,7 @@ def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: An
     A calendar axis takes a date, a naive datetime (its calendar day) or an ISO-8601
     string, returned as the column's own Python type; a numeric axis takes a finite
     number within the signed 64-bit range; a string axis takes a label that orders with
-    its own. A calendar or numeric panel with no rows yet has no first day for the end to
-    precede.
+    its own. A panel with no rows yet has no first day for the end to precede.
     """
     if value is None:
         return None
@@ -194,7 +199,7 @@ def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: An
                     raise
                 issue = "unknown_label"
             else:
-                if order[value] < min(order[label] for label in labels):
+                if labels and order[value] < min(order[label] for label in labels):
                     issue = "before_first_day"
     else:
         if _day_axis_is_numeric(dtype):
@@ -317,6 +322,9 @@ def _uptake_day_elapsed(panel: nw.DataFrame[Any], anchor: str) -> nw.Expr:
     if isinstance(panel.schema["ds"], nw.String):
         labels = panel.get_column("ds").unique().to_list()
         order = _day_axis_label_order([*labels, *panel.get_column(anchor).unique().to_list()])
+        if not order:
+            # Only a frame with no rows has no label to map; its elapsed days need only a type.
+            return nw.lit(0, dtype=nw.Int64)
         values = [
             key[0] if isinstance(key[0], int) else dt.date.fromisoformat(key[0]).toordinal()
             for key in order.values()
