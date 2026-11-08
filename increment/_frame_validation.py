@@ -1947,15 +1947,37 @@ def _panel_validation_summary(
             native = native.set_column(native.schema.get_field_index(name), name, encoded.indices)
         normalized = nw.from_native(native, eager_only=True)
         del native, encoded
-    units = normalized.group_by("unit_id").agg(
-        nw.len().alias("__rows__"),
-        nw.col("__day__").n_unique().alias("__days__"),
-        nw.col("group_id").min(),
-        nw.col("group_id").max().alias("__group_max__"),
-        *exposure_aggs,
-        *[nw.col(name).min() for name in breakouts],
-        *[nw.col(name).max().alias(f"__breakout_max_{i}__") for i, name in enumerate(breakouts)],
-    )
+    if label_dictionaries and (exposure_date is None or ordered_exposure):
+        # Separate Arrow min/max calls each retain both extrema internally.
+        # Unit/day keys are already non-null, so native counts include every row.
+        aggregations = [
+            ("unit_id", "count"),
+            ("__day__", "count_distinct"),
+            ("group_id", "min_max"),
+        ]
+        columns = ["unit_id", "__rows__", "__days__", "group_id", "__group_max__"]
+        for i, name in enumerate(breakouts):
+            aggregations.append((name, "min_max"))
+            columns.extend((name, f"__breakout_max_{i}__"))
+        if exposure_date is not None:
+            aggregations.extend([("__exposure__", "min_max"), ("__exposure_null__", "any")])
+            columns.extend(("__exposure_min__", "__exposure_max__", "__exposure_null__"))
+        native = normalized.to_native().group_by("unit_id").aggregate(aggregations)
+        units = nw.from_native(native.flatten().rename_columns(columns), eager_only=True)
+        del native
+    else:
+        units = normalized.group_by("unit_id").agg(
+            nw.len().alias("__rows__"),
+            nw.col("__day__").n_unique().alias("__days__"),
+            nw.col("group_id").min(),
+            nw.col("group_id").max().alias("__group_max__"),
+            *exposure_aggs,
+            *[nw.col(name).min() for name in breakouts],
+            *[
+                nw.col(name).max().alias(f"__breakout_max_{i}__")
+                for i, name in enumerate(breakouts)
+            ],
+        )
     del normalized
     flags = units.select(
         (nw.col("__rows__") > nw.col("__days__")).any().alias("duplicate_days"),
@@ -1973,6 +1995,7 @@ def _panel_validation_summary(
             for i, name in enumerate(breakouts)
         ],
     )
+    del units
     if label_dictionaries:
         native = identities.to_native()
         for name, dictionary in label_dictionaries.items():
