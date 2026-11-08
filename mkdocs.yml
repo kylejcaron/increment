@@ -106,6 +106,4 @@ nav:
       - Power Analysis: examples/power.md
       - Encouragement Design: examples/encouragement.md
       - Heterogeneous Effects: examples/hte.md
-      - A/B Testing Dashboard: examples/ab_testing_dashboard.md
-      - Triggered Population Dashboard: examples/triggered_population_dashboard.md
-      - LATE Over Time: examples/late_over_time.md
+      - A/B Testing Dashboard: examples/dashboard.md

@@ -15,12 +15,13 @@ behind for anyone running the example manually afterward.
 
 from __future__ import annotations
 
+import json
 import math
 import subprocess
 import sys
 import warnings
 from collections import Counter
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -39,7 +40,7 @@ from increment import (
     from_unit_day_artifact,
     workflows,
 )
-from increment.artifacts import artifact_context, publish_unit_day_artifact
+from increment.artifacts import SourceSnapshotEvidence, artifact_context, publish_unit_day_artifact
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.results import LiftEstimate
@@ -213,11 +214,33 @@ def test_run_returns_finite_estimates_for_all_declared_metrics(analysis: tuple[A
 def test_srm_reports_no_mismatch_on_triggered_population(analysis: tuple[Any, Any]):
     """Guards the generator's counterfactual (arm-independent) triggering:
     an arm-dependent trigger rate would surface here as a sample-ratio
-    mismatch."""
-    result = srm(*analysis, expected={"control": 0.5, "treatment": 0.5}, inference="always_valid")
+    mismatch against the experiment's declared allocation."""
+    result = srm(*analysis, inference="always_valid")
     assert isinstance(result, SRMResult)
     assert not isinstance(result, NotApplicable)
+    assert result.expected == {"control": 0.5, "treatment": 0.5}
     assert result.is_srm is False
+
+
+def test_triggered_experiment_reports_each_population(con):
+    """The shipped triggered experiment, read up to the generated snapshot's
+    cutoff, reports its assigned and its triggered population separately."""
+    manifest = json.loads((DEFINITIONS.parent / "warehouse" / "manifest.json").read_text())
+    experiment, reader = from_definitions(
+        DEFINITIONS,
+        con,
+        experiment_name="express_checkout",
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=datetime.fromisoformat(manifest["observation_cutoff"])
+        ),
+    )
+    for population in ("assigned", "triggered"):
+        estimates = view_readout(experiment, reader, population=population)
+        assert {(e.metric, e.analysis_population) for e in estimates} == {
+            ("conversion_rate", population),
+            ("revenue_per_user", population),
+        }
+        assert all(math.isfinite(e.require_lift().value) for e in estimates)
 
 
 def test_breakout_country_segments_have_no_null_bin(analysis: tuple[Any, Any]):

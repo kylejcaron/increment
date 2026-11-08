@@ -11,10 +11,20 @@ def _():
     import pandas as pd
 
     import increment
+    from increment.errors import InvalidRequestError
     from increment.tables import estimates_to_readout, readout_table
     from increment.workflows import capture_sequential
 
-    return capture_sequential, estimates_to_readout, increment, mo, np, pd, readout_table
+    return (
+        InvalidRequestError,
+        capture_sequential,
+        estimates_to_readout,
+        increment,
+        mo,
+        np,
+        pd,
+        readout_table,
+    )
 
 
 @app.cell
@@ -302,22 +312,175 @@ def _(mo):
     mo.md(r"""
     ## Monitor LATE over time
 
-    Fixed-horizon LATE trends carry a repeated-look warning. Binary uptake
-    makes the joint LATE score non-Gaussian, so it cannot use the registered
-    Gaussian likelihood. The certified series below instead monitors relative
-    uptake with an Always valid Bernoulli/Beta model, declared as
-    `InferenceSpec(kind="always_valid", registration=...)` on the source's
-    `AnalysisPlan` before the simulation runs -- `always_valid` inference is
-    read from that declaration, never passed at call time. Both series read
-    the completed-window as-of view (`View.asof(completion_policy=True)`),
-    so every displayed date admits a unit
-    only once its finalized outcome and uptake windows have closed.
+    The prompt is randomized once, but users reach it on different days: here
+    enrollment staggers over three weeks, and each user's click and revenue
+    land on their own days inside a 7-day window that starts at that user's
+    exposure. The LATE therefore matures as windows close, and a monitoring
+    view has to say which users it counts on each date.
     """)
     return
 
 
+@app.cell
+def _(increment, np, pd, simulate_encouragement):
+    window_days = 7
+    _rng = np.random.default_rng(3)
+    _users = simulate_encouragement(
+        _rng,
+        n_per_arm=250,
+        control_uptake=0.12,
+        encouraged_uptake=0.55,
+        tau=18.0,
+    ).reset_index(drop=True)
+    _users["user_id"] = "u" + _users.index.astype(str)
+    _enrollment = pd.date_range("2026-03-01", periods=21, freq="D")
+    _users["exposed_on"] = _enrollment[_users.index % len(_enrollment)]
+    _click_day = _users["exposed_on"] + pd.to_timedelta(
+        _rng.integers(0, window_days, size=len(_users)), unit="D"
+    )
+    _revenue_day = _users["exposed_on"] + pd.to_timedelta(
+        _rng.integers(0, window_days, size=len(_users)), unit="D"
+    )
+    _columns = ["user_id", "variant", "ds", "exposed_on", "revenue", "clicked"]
+    _rows = pd.concat(
+        [
+            # The exposure day, then the click and the revenue on their own days.
+            _users.assign(ds=_users["exposed_on"], revenue=0.0, clicked=0.0),
+            _users.assign(ds=_click_day, revenue=0.0),
+            _users.assign(ds=_revenue_day, clicked=0.0),
+            # The first day after the window: the source has observed it whole.
+            _users.assign(
+                ds=_users["exposed_on"] + pd.Timedelta(days=window_days), revenue=0.0, clicked=0.0
+            ),
+        ],
+        ignore_index=True,
+    )[_columns]
+    _rows["ds"] = _rows["ds"].dt.date
+    _rows["exposed_on"] = _rows["exposed_on"].dt.date
+    # A panel frame holds at most one row per user and day.
+    monitor_panel = _rows.groupby(["user_id", "variant", "ds", "exposed_on"], as_index=False)[
+        ["revenue", "clicked"]
+    ].sum()
+    completion_days = sorted(
+        {exposed + pd.Timedelta(days=window_days) for exposed in _users["exposed_on"].dt.date}
+    )
+
+    monitor_design = increment.Encouragement(
+        control_group="control",
+        uptake=increment.UptakeSpec(fact="clicked", window_days=window_days),
+        exclusion_restriction=increment.ExclusionRestriction(
+            justification="the randomized prompt affects revenue only through help-button clicks",
+        ),
+        one_sided=False,
+    )
+    monitor_metrics = [increment.MetricSpec(name="revenue", type="mean", window_days=window_days)]
+    monitor_experiment, monitor_reader = increment.from_frame(
+        monitor_panel,
+        shape="panel",
+        unit="user_id",
+        group="variant",
+        date="ds",
+        metrics=monitor_metrics,
+        design=monitor_design,
+        exposure_date="exposed_on",
+        experiment_id="help_button_prompt",
+    )
+    return (
+        completion_days,
+        monitor_design,
+        monitor_experiment,
+        monitor_metrics,
+        monitor_panel,
+        monitor_reader,
+        window_days,
+    )
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### The per-day view is refused
+
+    Elsewhere Increment can report one lift per calendar day. Under an
+    encouragement design a single day's clicks are too small a first stage to
+    divide by, so the per-day LATE would be noise. The daily view is refused by
+    code instead of returning that number; the as-of trend below is the
+    supported way to watch LATE over time.
+    """)
+    return
+
+
+@app.cell
+def _(InvalidRequestError, increment, mo, monitor_experiment, monitor_reader):
+    _daily = increment.View.daily()
+    _refusal = None
+    try:
+        increment.run(monitor_experiment.with_views(_daily), monitor_reader, views=(_daily,))
+    except InvalidRequestError as _error:
+        _refusal = _error
+    mo.md(f"Daily view refused: `{_refusal.code}`" if _refusal else "Daily view ran.")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### LATE as windows close
+
+    The completed-window as-of view (`View.asof(completion_policy=True)`)
+    admits a user on a date only once that user's outcome and uptake windows
+    have both closed. Each date's LATE covers the users mature by then, so the
+    interval narrows as staggered cohorts finish.
+
+    Fixed-horizon LATE trends carry a repeated-look warning. Binary uptake
+    makes the joint LATE score non-Gaussian, so it cannot use the registered
+    Gaussian likelihood. The certified series further down instead monitors
+    relative uptake with an Always valid Bernoulli/Beta model, declared as
+    `InferenceSpec(kind="always_valid", registration=...)` on the source's
+    `AnalysisPlan` before the simulation runs -- `always_valid` inference is
+    read from that declaration, never passed at call time. Both series read
+    the completed-window view, so every displayed date admits a unit only once
+    its finalized outcome and uptake windows have closed.
+    """)
+    return
+
+
+@app.cell
+def _(increment, monitor_experiment, monitor_reader, pd):
+    completed_windows = increment.View.asof(completion_policy=True)
+    fixed_late_trend = [
+        row
+        for row in increment.run(
+            monitor_experiment.with_views(completed_windows),
+            monitor_reader,
+            views=(completed_windows,),
+        ).readout(completed_windows)
+        if row.estimand == "late" and row.value_scale == "relative"
+    ]
+    pd.DataFrame(
+        {
+            "ds": row.ds,
+            "late_lift": f"{row.lift.value:+.2%}",
+            "lb": f"{row.lift.lb:+.2%}",
+            "ub": f"{row.lift.ub:+.2%}",
+            "inference": row.inference,
+        }
+        for row in fixed_late_trend
+    )
+    return completed_windows, fixed_late_trend
+
+
 @app.cell(hide_code=True)
-def _(capture_sequential, increment, np, pd, simulate_encouragement):
+def _(
+    capture_sequential,
+    completed_windows,
+    completion_days,
+    increment,
+    monitor_design,
+    monitor_metrics,
+    monitor_panel,
+    window_days,
+):
     from increment.estimators import (
         JointReveal,
         PredictivePrior,
@@ -330,25 +493,15 @@ def _(capture_sequential, increment, np, pd, simulate_encouragement):
         synthesise_metric,
     )
 
-    _window_days = 7
-    _design = increment.Encouragement(
-        control_group="control",
-        uptake=increment.UptakeSpec(fact="clicked", window_days=_window_days),
-        exclusion_restriction=increment.ExclusionRestriction(
-            justification="the randomized prompt affects revenue only through help-button clicks",
-        ),
-        one_sided=False,
-    )
-    _specs = [increment.MetricSpec(name="revenue", type="mean", window_days=_window_days)]
     _prior = PredictivePrior(kind="beta", a=1, b=1)
     _registration = SequentialRegistration(
         source_id="help_button_prompt",
         control_group="control",
         committed_before_data=True,
         definitions_id=sequential_definition_id(
-            [synthesise_metric(spec) for spec in _specs],
-            _design,
-            transformations=_specs,
+            [synthesise_metric(spec) for spec in monitor_metrics],
+            monitor_design,
+            transformations=monitor_metrics,
             source_mapping=frame_observation_mapping(
                 unit="user_id",
                 group="variant",
@@ -363,7 +516,7 @@ def _(capture_sequential, increment, np, pd, simulate_encouragement):
             simultaneous_metrics=True,
             outcome_independent_order=True,
             immutable_finalized_outcomes=True,
-            longest_window_days=_window_days,
+            longest_window_days=window_days,
         ),
         models=(
             SequentialModel(
@@ -381,73 +534,30 @@ def _(capture_sequential, increment, np, pd, simulate_encouragement):
         inference=increment.InferenceSpec(kind="always_valid", registration=_registration),
         compliance=SequentialCompliancePolicy(alpha=_registration.roster[0].alpha),
     )
-    _rng = np.random.default_rng(3)
-    # Staggered enrollment over 21 days, so day_index varies across units
-    # even though `simulate_encouragement` realizes each outcome once.
-    _sim = simulate_encouragement(
-        _rng,
-        n_per_arm=250,
-        control_uptake=0.12,
-        encouraged_uptake=0.55,
-        tau=18.0,
-    ).reset_index(drop=True)
-    _enroll = list(pd.date_range("2026-03-01", periods=21, freq="D").date)
-    _sim["user_id"] = "u" + _sim.index.astype(str)
-    _sim["exposed_on"] = np.array(_enroll)[_sim.index % len(_enroll)]
-    # Keep outcome and completion rows; a panel frame densifies the
-    # intervening days and admits each cohort once both windows are complete.
-    _exposure_rows = _sim.assign(ds=_sim["exposed_on"])
-    _completion_rows = _sim.assign(
-        ds=_sim["exposed_on"] + pd.Timedelta(days=_window_days), revenue=0.0, clicked=0.0
-    )
-    _panel = pd.concat([_exposure_rows, _completion_rows], ignore_index=True)[
-        ["user_id", "variant", "ds", "exposed_on", "revenue", "clicked"]
-    ]
-    _experiment, _reader = increment.from_frame(
-        _panel,
-        shape="panel",
-        unit="user_id",
-        group="variant",
-        date="ds",
-        metrics=[increment.MetricSpec(name="revenue", type="mean", window_days=_window_days)],
-        design=_design,
-        exposure_date="exposed_on",
-        experiment_id="help_button_prompt",
-    )
     _av_experiment, _av_reader = increment.from_frame(
-        _panel,
+        monitor_panel,
         shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
-        metrics=[increment.MetricSpec(name="revenue", type="mean", window_days=_window_days)],
-        design=_design,
+        metrics=monitor_metrics,
+        design=monitor_design,
         plan=_registered_plan,
         exposure_date="exposed_on",
         experiment_id="help_button_prompt",
     )
-    _completed = increment.View.asof(completion_policy=True)
-
-    def _late_trend(results):
-        return [row for row in results if row.estimand == "late" and row.value_scale == "relative"]
-
-    fixed_late_trend = _late_trend(
-        increment.run(_experiment.with_views(_completed), _reader, views=(_completed,)).readout(
-            _completed
-        )
-    )
     uptake_trend = []
-    for _day in sorted(set(_completion_rows["ds"])):
+    for _day in completion_days:
         capture_sequential(_av_experiment, _av_reader, finalized=True, as_of=_day)
         uptake_trend.extend(
             increment.run(
-                _av_experiment.with_views(_completed),
+                _av_experiment.with_views(completed_windows),
                 _av_reader,
-                views=(_completed,),
+                views=(completed_windows,),
                 estimands=("compliance",),
-            ).readout(_completed)
+            ).readout(completed_windows)
         )
-    return uptake_trend, fixed_late_trend
+    return (uptake_trend,)
 
 
 @app.cell(hide_code=True)
@@ -468,11 +578,12 @@ def _(uptake_trend, pd):
 
 @app.cell(hide_code=True)
 def _(uptake_trend, fixed_late_trend, mo):
+    _fixed_first = fixed_late_trend[0]
     _fixed_last = fixed_late_trend[-1]
     _av_last = uptake_trend[-1]
 
     mo.md(f"""
-    - **Fixed alpha:** [{_fixed_last.lift.lb:+.1%}, {_fixed_last.lift.ub:+.1%}] — repeated-look warning
+    - **Fixed alpha, {len(fixed_late_trend)} dates:** [{_fixed_first.lift.lb:+.1%}, {_fixed_first.lift.ub:+.1%}] on {_fixed_first.ds}, [{_fixed_last.lift.lb:+.1%}, {_fixed_last.lift.ub:+.1%}] on {_fixed_last.ds} — repeated-look warning
     - **Registered uptake:** {_av_last.sequential_result.bounds} — ratio-coordinate confidence sequence
 
     The rows answer different questions: the causal effect among compliers and the randomized uptake contrast.

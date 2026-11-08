@@ -7,3 +7,9 @@ exposures:
       Exposure is the first `exposure` event in fact_exposure -- the
       triggered subset of `fact_assignment`'s bucketed users who actually
       reached the checkout surface.
+
+  - name: assignment
+    fact: assignment
+    description: >
+      Exposure is the first `assignment` event in fact_assignment -- every
+      bucketed user, whether or not they later reach checkout.

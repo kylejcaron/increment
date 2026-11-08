@@ -42,7 +42,7 @@ Use an `Observational` design for self-selected, phased, or opt-in treatment. De
 
 ## Assignment changed treatment uptake but did not force treatment
 
-Use an encouragement design when random assignment changes treatment uptake but does not force it. Report ITT, compliance, and LATE only when random assignment, a relevant first stage, exclusion, and monotonicity are defensible. See [Encouragement designs](encouragement.md) and [LATE over time](../examples/late_over_time.md).
+Use an encouragement design when random assignment changes treatment uptake but does not force it. Report ITT, compliance, and LATE only when random assignment, a relevant first stage, exclusion, and monotonicity are defensible. See [Encouragement designs](encouragement.md) and the [encouragement example](../examples/encouragement.md), which also monitors LATE over time.
 
 ## Treatment alternates within units or a shared roster over time
 

@@ -3,7 +3,7 @@
 `increment.dashboard` renders one bound experiment's captured evidence as an
 interactive Readout, Explore, Health, and Report. Use it to present a
 supported two-arm randomized experiment bound with `from_definitions` without
-changing its analysis plan; the [example notebook](../examples/ab_testing_dashboard.md)
+changing its analysis plan; the [example notebook](../examples/dashboard.md)
 shows the full flow.
 
 All four tabs share the same evidence. They do not replace the plan or turn
@@ -639,19 +639,19 @@ experiment's own metrics. All downloads use the captured snapshot.
 
 ## Run the example
 
-See the [A/B testing dashboard notebook](../examples/ab_testing_dashboard.md)
-for the bundled `checkout_redesign` fixture end to end, and the
-[API reference](../api.md) for the complete `increment.dashboard` surface.
+See the [dashboard notebook](../examples/dashboard.md) for the bundled
+`checkout_redesign` and triggered `express_checkout` fixtures end to end, and
+the [API reference](../api.md) for the complete `increment.dashboard` surface.
 
 ```bash
-uv run --extra dashboard --extra demo marimo edit examples/ab_testing_dashboard.py
+uv run --extra dashboard --extra demo marimo edit examples/dashboard.py
 ```
 
 `marimo run` serves the same notebook read-only, and
-`uv run --extra dashboard --extra demo python examples/ab_testing_dashboard.py`
+`uv run --extra dashboard --extra demo python examples/dashboard.py`
 runs it as a script for a quick smoke check.
 
-??? info "Why the bare `uv run examples/ab_testing_dashboard.py` form is not supported"
+??? info "Why the bare `uv run examples/dashboard.py` form is not supported"
     Notebook-local `# /// script` metadata keeps marimo's own chrome light;
     the embedded dashboard has its independent light/dark toggle. Without an
     explicit `python`/`marimo` command, `uv run` treats a directly executed

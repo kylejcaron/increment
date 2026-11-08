@@ -2,7 +2,10 @@
 
 Writes a small Hive-partitioned Parquet warehouse (dimension tables, an SCD2
 plan-history snapshot, fact tables, and a behavioral event stream) simulating
-a single checkout-redesign A/B test (``experiment_id = "checkout_redesign"``).
+two A/B tests on disjoint user cohorts: a checkout redesign
+(``experiment_id = "checkout_redesign"``) and one-tap express pay at checkout
+(``experiment_id = "express_checkout"``), whose users are assigned on their
+first visit and triggered only if they later reach checkout.
 The warehouse is meant to be analyzed by ``increment``'s semantic layer via
 YAML fact-source definitions bound to the exact table/column names below --
 do not rename them without a very good reason.
@@ -19,9 +22,11 @@ Layout::
       events/part=00000/events.parquet
       manifest.json
 
-Partition ``p`` owns the disjoint ``user_id`` range ``[p*U+1, (p+1)*U]``;
-every table's partition-``p`` file holds only that range, so referential
-integrity is partition-local.
+Partition ``p`` owns the disjoint ``user_id`` ranges ``[p*U+1, (p+1)*U]``
+(checkout_redesign's cohort) and the same range shifted by
+``_EXPRESS_USER_ID_OFFSET`` (express_checkout's cohort); every table's
+partition-``p`` file holds only those users, so referential integrity is
+partition-local.
 
 Run ``python generate.py --help`` for CLI options. The script always
 verifies its own output (see ``_check_warehouse``) after writing and exits
@@ -55,7 +60,7 @@ UNIT_TYPE = "user"
 CONTROL_VARIANT = "control"
 TREATMENT_VARIANT = "treatment"
 EXPERIMENT_STATUS = "completed"
-GENERATOR_VERSION = 3
+GENERATOR_VERSION = 4
 
 #: Experiment window. Plan upgrades occur strictly after ``_END``.
 _START = np.datetime64("2025-01-15T00:00:00", "us")
@@ -100,10 +105,34 @@ _PLAN_UPGRADE_LAG_DAYS_HIGH = 45.0
 _SIGNUP_LOOKBACK_DAYS_LOW = 30
 _SIGNUP_LOOKBACK_DAYS_HIGH = 400
 
+#: express_checkout: assigned on the first visit, triggered on reaching
+#: checkout. Its cohort is checkout_redesign's ids shifted by the offset below,
+#: drawn from its own random stream, so checkout_redesign's rows never change.
+EXPRESS_EXPERIMENT_ID = "express_checkout"
+EXPRESS_EXPERIMENT_NAME = "Express Checkout"
+EXPRESS_EXPERIMENT_HYPOTHESIS = (
+    "One-tap express pay on the checkout page increases purchase conversion "
+    "among users who reach checkout."
+)
+_EXPRESS_USER_ID_OFFSET = 1_000_000_000
+_EXPRESS_STREAM = 1
+_EXPRESS_START = _START + np.timedelta64(5, "D")
+_EXPRESS_TRIGGER_RATE = 0.40  # arm-independent (counterfactual triggering)
+_EXPRESS_CONTROL_PURCHASE_RATE = 0.25
+_EXPRESS_TREATMENT_PURCHASE_RATE = 0.34
+#: One-click "buy now" orders skip the checkout page, so the treatment never
+#: reaches them: untriggered users buy at this rate in both arms, diluting
+#: the effect among all assigned users.
+_EXPRESS_DIRECT_PURCHASE_RATE = 0.10
+
 #: Tail traffic extends beyond every metric window, keeping freshness checks
 #: meaningful for each event type and for ``fact_orders``.
 _TAIL_USERS_PER_PARTITION = 200
 _TAIL_OFFSET_DAYS = 40.0
+
+#: The snapshot's event-time cutoff: every generated event lands before it,
+#: after the tail traffic above.
+OBSERVATION_CUTOFF = _START + np.timedelta64(42, "D")
 
 _SENTINEL_VALID_TO = np.datetime64("9999-12-31T00:00:00", "us")
 
@@ -215,14 +244,20 @@ def _gen_snap_user_plan(
 # ---------------------------------------------------------------------------
 
 
-def _gen_fact_assignment(rng: np.random.Generator, user_ids: np.ndarray) -> dict:
+def _gen_fact_assignment(
+    rng: np.random.Generator,
+    user_ids: np.ndarray,
+    *,
+    experiment_id: str,
+    start: np.datetime64,
+) -> dict:
     n = len(user_ids)
     variant = _assign_variant(rng, user_ids)
     lag = rng.uniform(0.0, _ASSIGNMENT_WINDOW_DAYS, size=n)
-    assigned_at = _START + _days_to_td64us(lag)
+    assigned_at = start + _days_to_td64us(lag)
     return {
         "user_id": user_ids,
-        "experiment_id": np.full(n, EXPERIMENT_ID),
+        "experiment_id": np.full(n, experiment_id),
         "variant": variant,
         "assigned_at": assigned_at,
     }
@@ -233,12 +268,15 @@ def _gen_fact_exposure(
     user_ids: np.ndarray,
     variant: np.ndarray,
     assigned_at: np.ndarray,
+    *,
+    experiment_id: str,
+    trigger_rate: float,
 ) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray]:
     """Returns (exposure_columns, triggered_user_ids, triggered_variant,
     triggered_base_exposed_at) -- the latter three feed orders/retention/RUM.
     """
     n = len(user_ids)
-    triggered_mask = rng.random(n) < _TRIGGER_RATE  # arm-independent
+    triggered_mask = rng.random(n) < trigger_rate  # arm-independent
     t_user_ids = user_ids[triggered_mask]
     t_variant = variant[triggered_mask]
     t_assigned_at = assigned_at[triggered_mask]
@@ -257,7 +295,7 @@ def _gen_fact_exposure(
 
     columns = {
         "user_id": row_user_ids,
-        "experiment_id": np.full(len(row_user_ids), EXPERIMENT_ID),
+        "experiment_id": np.full(len(row_user_ids), experiment_id),
         "variant": row_variant,
         "exposed_at": exposed_at,
         "surface": np.full(len(row_user_ids), "checkout"),
@@ -273,19 +311,20 @@ def _order_amounts(rng: np.random.Generator, spend_level: np.ndarray) -> np.ndar
 
 def _gen_fact_orders(
     rng: np.random.Generator,
-    triggered_user_ids: np.ndarray,
-    triggered_variant: np.ndarray,
-    base_exposed_at: np.ndarray,
+    user_ids: np.ndarray,
+    variant: np.ndarray,
+    anchor_at: np.ndarray,
+    *,
+    control_rate: float,
+    treatment_rate: float,
 ) -> dict:
-    n_t = len(triggered_user_ids)
-    purchase_rate = np.where(
-        triggered_variant == TREATMENT_VARIANT,
-        _TREATMENT_PURCHASE_RATE,
-        _CONTROL_PURCHASE_RATE,
-    )
+    """Orders from each user buying at its arm's rate, first within the
+    conversion window after ``anchor_at``, sometimes followed by a second."""
+    n_t = len(user_ids)
+    purchase_rate = np.where(variant == TREATMENT_VARIANT, treatment_rate, control_rate)
     buy_mask = rng.random(n_t) < purchase_rate
-    buyer_ids = triggered_user_ids[buy_mask]
-    buyer_base = base_exposed_at[buy_mask]
+    buyer_ids = user_ids[buy_mask]
+    buyer_base = anchor_at[buy_mask]
     n_buy = len(buyer_ids)
 
     first_lag = rng.uniform(0.0, _CONVERSION_WINDOW_DAYS, size=n_buy)
@@ -419,15 +458,15 @@ def _gen_events_rum(
 
 
 def _gen_events_retention(
-    rng: np.random.Generator, triggered_user_ids: np.ndarray, base_exposed_at: np.ndarray
+    rng: np.random.Generator, user_ids: np.ndarray, anchor_at: np.ndarray
 ) -> tuple[dict, np.ndarray]:
-    """~65% of triggered users return with a page_view in [7, 14) days
-    after exposure -- arm-independent (the retention rate itself is not
-    conditioned on variant here; only exposure was)."""
-    n = len(triggered_user_ids)
+    """~65% of users return with a page_view in [7, 14) days after their
+    anchor -- arm-independent (the retention rate itself is not conditioned
+    on variant here; only exposure was)."""
+    n = len(user_ids)
     retained_mask = rng.random(n) < _RETENTION_RATE
-    r_user_ids = triggered_user_ids[retained_mask]
-    r_base = base_exposed_at[retained_mask]
+    r_user_ids = user_ids[retained_mask]
+    r_base = anchor_at[retained_mask]
     n_r = len(r_user_ids)
     lag = rng.uniform(_RETENTION_WINDOW_LOW_DAYS, _RETENTION_WINDOW_HIGH_DAYS, size=n_r)
     ts = r_base + _days_to_td64us(lag)
@@ -593,6 +632,63 @@ def _table(name: str, columns: dict) -> pa.Table:
 _PARTITION_ID_STRIDE = 10_000_000  # generous headroom vs. users-per-partition
 
 
+def _generate_express_cohort(p: int, users_per_partition: int, seed: int) -> dict[str, dict]:
+    """express_checkout's cohort for partition ``p``, drawn from its own stream.
+
+    Everyone is assigned; reaching checkout triggers a user. Triggered users
+    buy at their arm's rate after the trigger, untriggered users buy "buy now"
+    at one rate in both arms after assignment.
+    """
+    rng = np.random.default_rng([seed, p, _EXPRESS_STREAM])
+    user_ids = _EXPRESS_USER_ID_OFFSET + np.arange(
+        p * users_per_partition + 1, (p + 1) * users_per_partition + 1
+    )
+
+    dim_user_cols = _gen_dim_user(rng, user_ids)
+    snap_user_plan_cols = _gen_snap_user_plan(rng, user_ids, dim_user_cols["signup_date"])
+    assignment_cols = _gen_fact_assignment(
+        rng, user_ids, experiment_id=EXPRESS_EXPERIMENT_ID, start=_EXPRESS_START
+    )
+    variant = assignment_cols["variant"]
+    assigned_at = assignment_cols["assigned_at"]
+    exposure_cols, t_user_ids, t_variant, base_exposed_at = _gen_fact_exposure(
+        rng,
+        user_ids,
+        variant,
+        assigned_at,
+        experiment_id=EXPRESS_EXPERIMENT_ID,
+        trigger_rate=_EXPRESS_TRIGGER_RATE,
+    )
+    triggered_orders = _gen_fact_orders(
+        rng,
+        t_user_ids,
+        t_variant,
+        base_exposed_at,
+        control_rate=_EXPRESS_CONTROL_PURCHASE_RATE,
+        treatment_rate=_EXPRESS_TREATMENT_PURCHASE_RATE,
+    )
+    untriggered = ~np.isin(user_ids, t_user_ids)
+    direct_orders = _gen_fact_orders(
+        rng,
+        user_ids[untriggered],
+        variant[untriggered],
+        assigned_at[untriggered],
+        control_rate=_EXPRESS_DIRECT_PURCHASE_RATE,
+        treatment_rate=_EXPRESS_DIRECT_PURCHASE_RATE,
+    )
+    rum_events = _gen_events_rum(rng, t_user_ids, base_exposed_at)
+    retention_events, _retained_mask = _gen_events_retention(rng, user_ids, assigned_at)
+    pre_events = _gen_events_pre(rng, user_ids, dim_user_cols["signup_date"])
+    return {
+        "dim_user": dim_user_cols,
+        "snap_user_plan": snap_user_plan_cols,
+        "fact_assignment": assignment_cols,
+        "fact_exposure": exposure_cols,
+        "fact_orders": _concat_dicts([triggered_orders, direct_orders]),
+        "events": _concat_dicts([pre_events, rum_events, retention_events]),
+    }
+
+
 def _generate_partition(p: int, users_per_partition: int, seed: int) -> dict[str, pa.Table]:
     rng = np.random.default_rng([seed, p])
 
@@ -600,17 +696,31 @@ def _generate_partition(p: int, users_per_partition: int, seed: int) -> dict[str
 
     dim_user_cols = _gen_dim_user(rng, user_ids)
     snap_user_plan_cols = _gen_snap_user_plan(rng, user_ids, dim_user_cols["signup_date"])
-    assignment_cols = _gen_fact_assignment(rng, user_ids)
+    assignment_cols = _gen_fact_assignment(rng, user_ids, experiment_id=EXPERIMENT_ID, start=_START)
     exposure_cols, t_user_ids, t_variant, base_exposed_at = _gen_fact_exposure(
-        rng, user_ids, assignment_cols["variant"], assignment_cols["assigned_at"]
+        rng,
+        user_ids,
+        assignment_cols["variant"],
+        assignment_cols["assigned_at"],
+        experiment_id=EXPERIMENT_ID,
+        trigger_rate=_TRIGGER_RATE,
     )
-    orders_cols = _gen_fact_orders(rng, t_user_ids, t_variant, base_exposed_at)
+    orders_cols = _gen_fact_orders(
+        rng,
+        t_user_ids,
+        t_variant,
+        base_exposed_at,
+        control_rate=_CONTROL_PURCHASE_RATE,
+        treatment_rate=_TREATMENT_PURCHASE_RATE,
+    )
     rum_events = _gen_events_rum(rng, t_user_ids, base_exposed_at)
     retention_events, _retained_mask = _gen_events_retention(rng, t_user_ids, base_exposed_at)
     pre_events = _gen_events_pre(rng, user_ids, dim_user_cols["signup_date"])
     tail_events, tail_orders = _gen_tail(rng, user_ids)
+    # Appended after checkout_redesign's rows, which keep their ids.
+    express = _generate_express_cohort(p, users_per_partition, seed)
 
-    all_orders = _concat_dicts([orders_cols, tail_orders])
+    all_orders = _concat_dicts([orders_cols, tail_orders, express["fact_orders"]])
     n_orders = len(all_orders["user_id"])
     assert n_orders < _PARTITION_ID_STRIDE, (
         f"partition {p}: {n_orders} orders exceeds _PARTITION_ID_STRIDE="
@@ -620,7 +730,9 @@ def _generate_partition(p: int, users_per_partition: int, seed: int) -> dict[str
     order_offset = p * _PARTITION_ID_STRIDE
     all_orders["order_id"] = order_offset + np.arange(n_orders, dtype=np.int64)
 
-    all_events = _concat_dicts([pre_events, rum_events, retention_events, tail_events])
+    all_events = _concat_dicts(
+        [pre_events, rum_events, retention_events, tail_events, express["events"]]
+    )
     n_events = len(all_events["user_id"])
     assert n_events < _PARTITION_ID_STRIDE, (
         f"partition {p}: {n_events} events exceeds _PARTITION_ID_STRIDE="
@@ -630,11 +742,14 @@ def _generate_partition(p: int, users_per_partition: int, seed: int) -> dict[str
     event_offset = p * _PARTITION_ID_STRIDE
     all_events["event_id"] = event_offset + np.arange(n_events, dtype=np.int64)
 
+    def both(name: str, checkout_cols: dict) -> pa.Table:
+        return _table(name, _concat_dicts([checkout_cols, express[name]]))
+
     return {
-        "dim_user": _table("dim_user", dim_user_cols),
-        "snap_user_plan": _table("snap_user_plan", snap_user_plan_cols),
-        "fact_assignment": _table("fact_assignment", assignment_cols),
-        "fact_exposure": _table("fact_exposure", exposure_cols),
+        "dim_user": both("dim_user", dim_user_cols),
+        "snap_user_plan": both("snap_user_plan", snap_user_plan_cols),
+        "fact_assignment": both("fact_assignment", assignment_cols),
+        "fact_exposure": both("fact_exposure", exposure_cols),
         "fact_orders": _table("fact_orders", all_orders),
         "events": _table("events", all_events),
     }
@@ -642,14 +757,14 @@ def _generate_partition(p: int, users_per_partition: int, seed: int) -> dict[str
 
 def _dim_experiment_table() -> pa.Table:
     columns = {
-        "experiment_id": [EXPERIMENT_ID],
-        "name": [EXPERIMENT_NAME],
-        "hypothesis": [EXPERIMENT_HYPOTHESIS],
-        "unit_type": [UNIT_TYPE],
-        "start_date": np.array([_START], dtype="datetime64[D]"),
-        "end_date": np.array([_END], dtype="datetime64[D]"),
-        "status": [EXPERIMENT_STATUS],
-        "control_variant": [CONTROL_VARIANT],
+        "experiment_id": [EXPERIMENT_ID, EXPRESS_EXPERIMENT_ID],
+        "name": [EXPERIMENT_NAME, EXPRESS_EXPERIMENT_NAME],
+        "hypothesis": [EXPERIMENT_HYPOTHESIS, EXPRESS_EXPERIMENT_HYPOTHESIS],
+        "unit_type": [UNIT_TYPE, UNIT_TYPE],
+        "start_date": np.array([_START, _EXPRESS_START], dtype="datetime64[D]"),
+        "end_date": np.array([_END, _END], dtype="datetime64[D]"),
+        "status": [EXPERIMENT_STATUS, EXPERIMENT_STATUS],
+        "control_variant": [CONTROL_VARIANT, CONTROL_VARIANT],
     }
     return _table("dim_experiment", columns)
 
@@ -677,6 +792,10 @@ def _write_partitioned(out: Path, table_name: str, p: int, table: pa.Table) -> N
 
 def generate(out: Path, partitions: int, users_per_partition: int, seed: int) -> dict:
     """Generate and write the full warehouse. Returns per-table row counts."""
+    assert partitions * users_per_partition < _EXPRESS_USER_ID_OFFSET, (
+        "checkout_redesign's user_id range would reach express_checkout's cohort "
+        "-- raise _EXPRESS_USER_ID_OFFSET or shrink partitions x users_per_partition"
+    )
     row_counts: dict[str, int] = dict.fromkeys(_TABLE_FILENAMES, 0)
 
     # Clear each partitioned table's directory first. Without this, re-running
@@ -716,7 +835,8 @@ def warehouse_manifest(
         "partitions": partitions,
         "users_per_partition": users_per_partition,
         "seed": seed,
-        "experiment_id": EXPERIMENT_ID,
+        "experiment_ids": [EXPERIMENT_ID, EXPRESS_EXPERIMENT_ID],
+        "observation_cutoff": f"{np.datetime_as_string(OBSERVATION_CUTOFF, unit='s')}+00:00",
         "row_counts": row_counts,
     }
 
@@ -748,10 +868,12 @@ def _check_warehouse(out: Path, partitions: int, users_per_partition: int) -> No
         dim_user = _read_partition(out, "dim_user", p)
         partition_ids = set(_col(dim_user, "user_id").tolist())
 
-        expected_range = set(range(p * users_per_partition + 1, (p + 1) * users_per_partition + 1))
+        owned = range(p * users_per_partition + 1, (p + 1) * users_per_partition + 1)
+        expected_range = set(owned) | {_EXPRESS_USER_ID_OFFSET + uid for uid in owned}
         assert partition_ids == expected_range, (
-            f"partition {p}: dim_user.user_id does not equal the owned range "
-            f"[{p * users_per_partition + 1}, {(p + 1) * users_per_partition}]"
+            f"partition {p}: dim_user.user_id does not equal the owned ranges "
+            f"[{owned.start}, {owned.stop - 1}] and the same shifted by "
+            f"{_EXPRESS_USER_ID_OFFSET}"
         )
 
         # Partitions never share user_id values.
@@ -784,43 +906,58 @@ def _check_warehouse(out: Path, partitions: int, users_per_partition: int) -> No
     events = _read_all(out, "events", partitions)
     snap_user_plan = _read_all(out, "snap_user_plan", partitions)
 
-    assigned_ids = set(_col(fact_assignment, "user_id").tolist())
-    exposed_ids = set(_col(fact_exposure, "user_id").tolist())
-    assert exposed_ids <= assigned_ids, (
-        "fact_exposure has user_id(s) with no fact_assignment row: "
-        f"{sorted(exposed_ids - assigned_ids)[:10]!r}"
+    assignment_experiment = _col(fact_assignment, "experiment_id")
+    exposure_experiment = _col(fact_exposure, "experiment_id")
+    assigned_pairs = set(
+        zip(assignment_experiment.tolist(), _col(fact_assignment, "user_id").tolist(), strict=True)
+    )
+    exposed_pairs = set(
+        zip(exposure_experiment.tolist(), _col(fact_exposure, "user_id").tolist(), strict=True)
+    )
+    assert exposed_pairs <= assigned_pairs, (
+        "fact_exposure has (experiment_id, user_id) pair(s) with no fact_assignment row: "
+        f"{sorted(exposed_pairs - assigned_pairs)[:10]!r}"
     )
 
-    # Triggering must be arm-independent (the redesign shouldn't change WHO
-    # triggers). The tolerance scales with the arm-gap SE ~ 1/sqrt(n_per_arm)
-    # so valid small datasets pass, with a floor at high N so the check still
-    # catches a real arm-dependence bug.
-    assignment_user_id = _col(fact_assignment, "user_id")
-    assignment_variant = _col(fact_assignment, "variant")
-    trigger_rates = {}
-    arm_sizes = {}
-    for arm in (CONTROL_VARIANT, TREATMENT_VARIANT):
-        arm_ids = set(assignment_user_id[assignment_variant == arm].tolist())
-        assert arm_ids, (
-            f"no assigned users in arm {arm!r} -- increase users_per_partition "
-            f"(50/50 assignment needs enough users for both arms to be non-empty)"
+    # Triggering must be arm-independent in each experiment (the treatment
+    # shouldn't change WHO triggers). The tolerance scales with the arm-gap SE
+    # ~ 1/sqrt(n_per_arm) so valid small datasets pass, with a floor at high N
+    # so the check still catches a real arm-dependence bug.
+    trigger_rates: dict[str, dict[str, float]] = {}
+    for experiment_id, trigger_rate in (
+        (EXPERIMENT_ID, _TRIGGER_RATE),
+        (EXPRESS_EXPERIMENT_ID, _EXPRESS_TRIGGER_RATE),
+    ):
+        in_experiment = assignment_experiment == experiment_id
+        assignment_user_id = _col(fact_assignment, "user_id")[in_experiment]
+        assignment_variant = _col(fact_assignment, "variant")[in_experiment]
+        exposed_ids = {uid for eid, uid in exposed_pairs if eid == experiment_id}
+        rates = {}
+        arm_sizes = {}
+        for arm in (CONTROL_VARIANT, TREATMENT_VARIANT):
+            arm_ids = set(assignment_user_id[assignment_variant == arm].tolist())
+            assert arm_ids, (
+                f"{experiment_id}: no assigned users in arm {arm!r} -- increase "
+                f"users_per_partition (50/50 assignment needs enough users for both "
+                f"arms to be non-empty)"
+            )
+            arm_sizes[arm] = len(arm_ids)
+            rates[arm] = len(arm_ids & exposed_ids) / len(arm_ids)
+        rate_gap = abs(rates[CONTROL_VARIANT] - rates[TREATMENT_VARIANT])
+        # Pooled SE of a two-proportion difference at the true (arm-independent)
+        # trigger probability; 6 sigma keeps the false-positive rate on genuinely
+        # valid data negligible while still catching a real arm-dependence bug.
+        pooled_se = math.sqrt(
+            trigger_rate
+            * (1 - trigger_rate)
+            * (1 / arm_sizes[CONTROL_VARIANT] + 1 / arm_sizes[TREATMENT_VARIANT])
         )
-        arm_sizes[arm] = len(arm_ids)
-        trigger_rates[arm] = len(arm_ids & exposed_ids) / len(arm_ids)
-    rate_gap = abs(trigger_rates[CONTROL_VARIANT] - trigger_rates[TREATMENT_VARIANT])
-    # Pooled SE of a two-proportion difference at the true (arm-independent)
-    # trigger probability; 6 sigma keeps the false-positive rate on genuinely
-    # valid data negligible while still catching a real arm-dependence bug.
-    pooled_se = math.sqrt(
-        _TRIGGER_RATE
-        * (1 - _TRIGGER_RATE)
-        * (1 / arm_sizes[CONTROL_VARIANT] + 1 / arm_sizes[TREATMENT_VARIANT])
-    )
-    tolerance = max(0.02, 6 * pooled_se)
-    assert rate_gap <= tolerance, (
-        f"triggering rate differs by arm beyond tolerance: {trigger_rates!r} "
-        f"(gap={rate_gap:.4f}, tolerance={tolerance:.4f}, arm_sizes={arm_sizes!r})"
-    )
+        tolerance = max(0.02, 6 * pooled_se)
+        assert rate_gap <= tolerance, (
+            f"{experiment_id}: triggering rate differs by arm beyond tolerance: {rates!r} "
+            f"(gap={rate_gap:.4f}, tolerance={tolerance:.4f}, arm_sizes={arm_sizes!r})"
+        )
+        trigger_rates[experiment_id] = rates
 
     # Freshness: every distinct events.event_name, and fact_orders, must
     # have a max timestamp well past every metric's analysis window close.
@@ -839,9 +976,22 @@ def _check_warehouse(out: Path, partitions: int, users_per_partition: int) -> No
         f"floor {freshness_floor}"
     )
 
-    # In-band retention: strictly between 0 and 1 (not saturated).
-    exposure_user_id = _col(fact_exposure, "user_id")
-    exposure_ts = _col(fact_exposure, "exposed_at")
+    # The snapshot's cutoff covers every generated event.
+    for label, ts in (
+        ("events.event_ts", event_ts),
+        ("fact_orders.ordered_at", order_ts),
+        ("fact_exposure.exposed_at", _col(fact_exposure, "exposed_at")),
+        ("fact_assignment.assigned_at", _col(fact_assignment, "assigned_at")),
+    ):
+        assert ts.max() < OBSERVATION_CUTOFF, (
+            f"{label} max={ts.max()} is not before the observation cutoff {OBSERVATION_CUTOFF}"
+        )
+
+    # In-band retention: strictly between 0 and 1 (not saturated), measured
+    # from checkout_redesign's exposures, where its returns are anchored.
+    checkout_exposure = exposure_experiment == EXPERIMENT_ID
+    exposure_user_id = _col(fact_exposure, "user_id")[checkout_exposure]
+    exposure_ts = _col(fact_exposure, "exposed_at")[checkout_exposure]
     order_idx = np.argsort(exposure_user_id, kind="stable")
     sorted_ids = exposure_user_id[order_idx]
     sorted_ts = exposure_ts[order_idx]

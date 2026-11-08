@@ -9,9 +9,13 @@ experiments:
     end: 2025-02-14
     n_pre_periods: 0
     control_group: control
+    allocation:
+      control: 0.5
+      treatment: 0.5
     allocation_scheme: independent
     plan:
-      # This joint report includes a quantile guardrail: use fixed-horizon inference.
+      # No `inference:` is declared, so the plan is fixed-horizon: the completed
+      # experiment is read once after its window closes, not monitored by look.
       view_multiplicity:
         correction: bonferroni
       primary: conversion_rate
@@ -31,3 +35,24 @@ experiments:
         source: web_events
       - property: plan
         source: web_events
+
+  # Assigned on the first visit; only users who later reach checkout can see
+  # the button. Declaring the trigger reports the assigned population and the
+  # triggered one separately.
+  - name: express_checkout
+    description: "One-tap express pay on the checkout page increases purchase conversion among users who reach checkout."
+    exposure: assignment
+    trigger: checkout_trigger
+    unit: user_id
+    start: 2025-01-20
+    end: 2025-02-14
+    n_pre_periods: 0
+    control_group: control
+    allocation:
+      control: 0.5
+      treatment: 0.5
+    allocation_scheme: independent
+    plan:
+      primary: conversion_rate
+      secondaries:
+        - revenue_per_user

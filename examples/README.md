@@ -66,19 +66,19 @@ explains the scenario in detail; this is just a map of what's here.
   uv run --extra demo --extra tables marimo edit examples/breakout.py
   ```
 
-- **`ab_testing_dashboard.py`** — reusable presentation helpers over one
-  bound experiment: allocation health, the full CoefTable readout, optional
-  metric time trends and segments, and a downloadable CSV. The renderers
-  are the product; this notebook is one readable composition over them
-  against the bundled `checkout_redesign` fixture. Needs the `demo` and
-  `dashboard` extras:
+- **`dashboard.py`** — the complete interactive dashboard over one bound
+  experiment, picked from a dropdown: `checkout_redesign`, or
+  `express_checkout`, whose declared trigger gives it separate assigned and
+  triggered populations. The same calls adapt to each; the notebook is one
+  readable composition over the packaged renderers against the bundled
+  realistic-demo fixture. Needs the `demo` and `dashboard` extras:
 
   ```bash
-  uv run --extra dashboard --extra demo marimo edit examples/ab_testing_dashboard.py
+  uv run --extra dashboard --extra demo marimo edit examples/dashboard.py
   ```
 
-  `python examples/ab_testing_dashboard.py` also runs a script smoke check
-  with the same extras installed; bare `uv run examples/ab_testing_dashboard.py`
+  `python examples/dashboard.py` also runs a script smoke check
+  with the same extras installed; bare `uv run examples/dashboard.py`
   does not, because the notebook's `# /// script` metadata makes uv treat it
   as an isolated script environment.
 
@@ -110,8 +110,9 @@ explains the scenario in detail; this is just a map of what's here.
 `encouragement.py` demonstrates randomized encouragement with imperfect
 uptake. It reports the intention-to-treat effect, the compliance first
 stage, and the complier average causal effect under the declared exclusion
-restriction. Run it when assignment is randomized but treatment receipt is
-not.
+restriction, then monitors that effect over time for a staggered cohort as
+each user's windows close. Run it when assignment is randomized but treatment
+receipt is not.
 
 ```bash
 uv run --extra tables marimo edit examples/encouragement.py

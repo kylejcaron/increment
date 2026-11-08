@@ -5,7 +5,7 @@
 import marimo
 
 __generated_with = "0.23.15"
-app = marimo.App(width="full", css_file="ab_testing_dashboard.css")
+app = marimo.App(width="full", css_file="dashboard.css")
 
 
 @app.cell
@@ -24,8 +24,18 @@ def _():
 
     import increment
     from increment.dashboard import DashboardConfig, prepare_dashboard, render_dashboard
+    from increment.workflows import experiment_definition
 
-    return DashboardConfig, Path, demo, ibis, increment, prepare_dashboard, render_dashboard
+    return (
+        DashboardConfig,
+        Path,
+        demo,
+        experiment_definition,
+        ibis,
+        increment,
+        prepare_dashboard,
+        render_dashboard,
+    )
 
 
 @app.cell
@@ -42,18 +52,36 @@ def _(ibis):
 
 
 @app.cell
-def _(con, demo_manifest, increment):
-    experiment, reader = increment.from_definitions(
-        "examples/realistic_demo/definitions", con, experiment_name="checkout_redesign"
+def _(demo, mo):
+    experiment_name = mo.ui.dropdown(
+        options=demo.EXPERIMENTS, value=demo.EXPERIMENTS[0], label="Experiment"
     )
+    experiment_name
+    return (experiment_name,)
+
+
+@app.cell
+def _(con, demo, demo_manifest, experiment_definition, experiment_name, increment):
+    experiment, reader = increment.from_definitions(
+        demo.DEFINITIONS, con, experiment_name=experiment_name.value
+    )
+    if experiment_definition(experiment, reader).trigger is not None:
+        # A triggered population is read up to the snapshot's event-time cutoff.
+        experiment, reader = increment.from_definitions(
+            demo.DEFINITIONS,
+            con,
+            experiment_name=experiment_name.value,
+            source_snapshot_evidence=demo.snapshot_evidence(demo_manifest),
+        )
     return experiment, reader
 
 
 @app.cell
-def _(DashboardConfig, demo, demo_manifest):
+def _(DashboardConfig, demo, demo_manifest, experiment, experiment_definition, reader):
+    definition = experiment_definition(experiment, reader)
     config = DashboardConfig(
-        expected_allocation={"control": 0.5, "treatment": 0.5},
-        title="Checkout redesign",
+        expected_allocation=definition.allocation,
+        title=definition.name.replace("_", " ").capitalize(),
         source_label="Synthetic snapshot",
         metric_units={
             "revenue_per_user": "USD",
