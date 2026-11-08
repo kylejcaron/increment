@@ -942,6 +942,50 @@ def test_panel_capture_clamps_cursor_to_observation_end_and_continues_after_exte
     assert continued.parent_id == snapshot.prefix_id
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+@pytest.mark.parametrize("day_type", ["int64", "uint64"], ids=["signed", "unsigned"])
+def test_panel_capture_as_of_beyond_the_signed_range_refuses(backend, day_type):
+    """Days are counted as signed 64-bit offsets, so a capture as of a day past 2**63 - 1 on
+    an integer day column refuses on every backend, whether the day is a Python integer or a
+    NumPy scalar, and the source retains no checkpoint."""
+    import numpy as np
+    import polars as pl
+    import pyarrow as pa
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=1)]
+    table = pa.table(
+        {
+            "unit": ["c1", "c1", "t1", "t1"],
+            "arm": ["control", "control", "treatment", "treatment"],
+            "day": pa.array([0, 1, 0, 1], type=day_type),
+            "exposed": pa.array([0] * 4, type=day_type),
+            "outcome": [1.0, 0.0, 1.0, 1.0],
+        }
+    )
+    frame: Any = {"pandas": table.to_pandas(), "polars": pl.from_arrow(table), "pyarrow": table}[
+        backend
+    ]
+    analysis = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=specs,
+        experiment_id="experiment",
+        plan=_plan(specs, "bernoulli", date="day", exposure_date="exposed"),
+    )
+    for as_of in (2**63, np.float64(2**63), np.uint64(2**64 - 1)):
+        with pytest.raises(CapabilityError) as raised:
+            workflows.capture_sequential(*analysis, finalized=True, as_of=as_of)
+        assert raised.value.code == "sequential.source.invalid"
+    with pytest.raises(CapabilityError) as unread:
+        sequential_snapshot(*analysis)
+    assert unread.value.code == "sequential.capture.required"
+
+
 @pytest.mark.parametrize("scratch_budget", [0, 64 * 1024 * 1024])
 def test_sparse_panel_sequential_state_matches_dense_and_streamed_kernels(
     scratch_budget: int, monkeypatch: pytest.MonkeyPatch
@@ -1202,7 +1246,7 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     assert type(replayed_daily[0].ds) is type(label(14))
 
 
-@pytest.mark.parametrize("axis", ["calendar", "nullable_unsigned"])
+@pytest.mark.parametrize("axis", ["calendar", "nullable_unsigned", "string"])
 def test_empty_registered_panel_with_observation_end_can_capture_before_enrollment(axis):
     """A registered panel with no rows yet keeps its declared observation end, and a capture
     before enrollment reveals no unit through the requested day."""
@@ -1210,19 +1254,8 @@ def test_empty_registered_panel_with_observation_end_can_capture_before_enrollme
     import pyarrow as pa
 
     specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
-    if axis == "calendar":
-        frame: Any = pa.table(
-            {
-                "unit": pa.array([], pa.string()),
-                "arm": pa.array([], pa.string()),
-                "day": pa.array([], pa.date32()),
-                "exposed": pa.array([], pa.date32()),
-                "outcome": pa.array([], pa.float64()),
-            }
-        )
-        as_of, end = date(2026, 1, 1), date(2026, 1, 4)
-    else:
-        frame = pd.DataFrame(
+    if axis == "nullable_unsigned":
+        frame: Any = pd.DataFrame(
             {
                 "unit": pd.Series([], dtype="string"),
                 "arm": pd.Series([], dtype="string"),
@@ -1232,6 +1265,18 @@ def test_empty_registered_panel_with_observation_end_can_capture_before_enrollme
             }
         )
         as_of, end = 1, 4
+    else:
+        day_type = pa.date32() if axis == "calendar" else pa.string()
+        frame = pa.table(
+            {
+                "unit": pa.array([], pa.string()),
+                "arm": pa.array([], pa.string()),
+                "day": pa.array([], day_type),
+                "exposed": pa.array([], day_type),
+                "outcome": pa.array([], pa.float64()),
+            }
+        )
+        as_of, end = (date(2026, 1, 1), date(2026, 1, 4)) if axis == "calendar" else ("d1", "d4")
     experiment, resolver = from_frame(
         frame,
         shape="panel",
@@ -1248,6 +1293,43 @@ def test_empty_registered_panel_with_observation_end_can_capture_before_enrollme
     snapshot = workflows.capture_sequential(experiment, resolver, finalized=True, as_of=as_of)
     assert not snapshot.records
     assert snapshot.reveal_cursor == as_of
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+def test_string_day_panel_capture_before_the_first_day_reveals_no_unit(backend):
+    """A capture as of a label before a string-day panel's first day reveals no unit
+    through that day, as it does on a calendar or numeric day column."""
+    import polars as pl
+    import pyarrow as pa
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=1)]
+    table = pa.table(
+        {
+            "unit": ["c1", "c1", "t1", "t1"],
+            "arm": ["control", "control", "treatment", "treatment"],
+            "day": ["d1", "d2"] * 2,
+            "exposed": ["d1"] * 4,
+            "outcome": [1.0, 0.0, 1.0, 1.0],
+        }
+    )
+    frame: Any = {"pandas": table.to_pandas(), "polars": pl.from_arrow(table), "pyarrow": table}[
+        backend
+    ]
+    analysis = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=specs,
+        experiment_id="experiment",
+        plan=_plan(specs, "bernoulli", date="day", exposure_date="exposed"),
+    )
+    snapshot = workflows.capture_sequential(*analysis, finalized=True, as_of="d0")
+    assert not snapshot.records
+    assert snapshot.reveal_cursor == "d0"
 
 
 @pytest.mark.slow
