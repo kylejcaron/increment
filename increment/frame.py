@@ -78,6 +78,7 @@ from increment._frame_validation import (  # noqa: F401
     _group_counts,
     _normalize_breakout_names,
     _normalized_breakout_expr,
+    _panel_validation_summary,
     _refuse_noncanonical_boolean_levels,
     _reject_cluster_request,
     _reject_covariates,
@@ -2565,12 +2566,23 @@ class FramePanelSource(SequentialSourceMixin):
         )
         if registration is None:
             _validate_control(nwf, group, control)
-        _reject_duplicate_unit_days(nwf, unit, date)
-        _validate_single_group_per_unit(nwf, unit, group)
+        validation = _panel_validation_summary(
+            nwf, unit=unit, group=group, date=date, exposure_date=exposure_date, breakouts=breakouts
+        )
+        if validation.duplicate_days:
+            _reject_duplicate_unit_days(nwf, unit, date)
+        if validation.multiple_groups:
+            _validate_single_group_per_unit(nwf, unit, group)
         _validate_exposure_date(
-            nwf, unit=unit, exposure_date=exposure_date, specs=specs, design=design
+            nwf,
+            unit=unit,
+            exposure_date=exposure_date,
+            specs=specs,
+            design=design,
+            constant=not validation.multiple_exposures,
         )
         null_exposure = 0
+        late = 0
         if exposure_date is not None:
             nwf, null_exposure = _resolve_null_exposure(
                 nwf,
@@ -2601,7 +2613,15 @@ class FramePanelSource(SequentialSourceMixin):
                 defer_scalar_failures=registration is None,
             )
         _validate_conversion_binary(nwf, specs)
-        identity = _unit_identity(nwf, unit=unit, group=group, breakouts=breakouts)
+        identity = _unit_identity(
+            nwf,
+            unit=unit,
+            group=group,
+            breakouts=breakouts,
+            summary=validation,
+            excluded=bool(null_exposure or late),
+        )
+        del validation
 
         value_columns = sorted({c for s in specs for c in (s.y_column, s.denominator) if c})
         if uptake is not None:
@@ -2739,6 +2759,8 @@ def from_unit_panel(  # noqa: PLR0913
         it are not analysed; windowed metrics censor units not mature by it.
     on_unassigned : {"error", "exclude"}
         Null-*group*/exposure-date policy: refuse (default) or exclude.
+        Duplicate days and changing assignment/exposure values refuse before
+        exposure exclusions; breakout labels need be constant only for retained units.
 
     Returns
     -------

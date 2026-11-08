@@ -1882,22 +1882,91 @@ def _refuse_noncanonical_boolean_levels(frame: nw.DataFrame[Any], registration: 
             )
 
 
-def _unit_identity(
-    frame: nw.DataFrame[Any], *, unit: str, group: str, breakouts: Sequence[str]
-) -> nw.DataFrame[Any]:
-    """One validated group/breakout identity row per unit."""
+@dataclass(frozen=True, slots=True)
+class _PanelValidationSummary:
+    """Per-unit identities and constancy flags before exposure exclusions."""
+
+    units: nw.DataFrame[Any]
+    duplicate_days: bool
+    multiple_groups: bool
+    multiple_exposures: bool
+
+
+def _panel_validation_summary(
+    frame: nw.DataFrame[Any],
+    *,
+    unit: str,
+    group: str,
+    date: str,
+    exposure_date: str | None,
+    breakouts: Sequence[str],
+) -> _PanelValidationSummary:
+    """Reduce the assigned rows once; postpone breakout checks until exclusions finish."""
     normalized = frame.select(
         nw.col(unit).alias("unit_id"),
         nw.col(group).alias("group_id"),
+        nw.col(date).alias("__day__"),
+        *([nw.col(exposure_date).alias("__exposure__")] if exposure_date is not None else []),
         *[_normalized_breakout_expr(frame, name) for name in breakouts],
     )
-    for name in breakouts:
-        values = normalized.select("unit_id", name).unique()
+    units = normalized.group_by("unit_id").agg(
+        nw.len().alias("__rows__"),
+        nw.col("__day__").n_unique().alias("__days__"),
+        nw.col("group_id").min(),
+        nw.col("group_id").n_unique().alias("__groups__"),
+        *(
+            [nw.col("__exposure__").n_unique().alias("__exposures__")]
+            if exposure_date is not None
+            else []
+        ),
+        *[nw.col(name).min() for name in breakouts],
+        *[nw.col(name).n_unique().alias(f"__breakout_{i}__") for i, name in enumerate(breakouts)],
+    )
+    flags = units.select(
+        (nw.col("__rows__") > nw.col("__days__")).any().alias("duplicate_days"),
+        (nw.col("__groups__") > 1).any().alias("multiple_groups"),
+        ((nw.col("__exposures__") > 1).any() if exposure_date is not None else nw.lit(False)).alias(
+            "multiple_exposures"
+        ),
+    ).row(0)
+    return _PanelValidationSummary(
+        units=units.select(
+            "unit_id",
+            "group_id",
+            *breakouts,
+            *[f"__breakout_{i}__" for i in range(len(breakouts))],
+        ),
+        duplicate_days=bool(flags[0]),
+        multiple_groups=bool(flags[1]),
+        multiple_exposures=bool(flags[2]),
+    )
+
+
+def _unit_identity(
+    frame: nw.DataFrame[Any],
+    *,
+    unit: str,
+    group: str,
+    breakouts: Sequence[str],
+    summary: _PanelValidationSummary,
+    excluded: bool,
+) -> nw.DataFrame[Any]:
+    """Project retained identities, checking breakouts only after value validation."""
+    units = summary.units
+    if excluded:
+        units = units.join(
+            frame.select(nw.col(unit).alias("unit_id")).unique(), on="unit_id", how="semi"
+        )
+    for i, name in enumerate(breakouts):
+        if not units.select((nw.col(f"__breakout_{i}__") > 1).any()).item():
+            continue
+        # Preserve offender ordering and context on the invalid-input path.
+        values = frame.select(
+            nw.col(unit).alias("unit_id"), _normalized_breakout_expr(frame, name)
+        ).unique()
         conflicts = (
             values.group_by("unit_id").agg(nw.len().alias("__n__")).filter(nw.col("__n__") > 1)
         )
-        if conflicts.is_empty():
-            continue
         offenders = conflicts["unit_id"].to_list()
         shown = ", ".join(repr(value) for value in offenders[:5])
         more = f" (and {len(offenders) - 5} more)" if len(offenders) > 5 else ""
@@ -1908,7 +1977,7 @@ def _unit_identity(
             shown=shown,
             more=more,
         )
-    return normalized.unique(subset=["unit_id"])
+    return units.select("unit_id", "group_id", *breakouts)
 
 
 def _validate_exposure_date(
@@ -1918,6 +1987,7 @@ def _validate_exposure_date(
     exposure_date: str | None,
     specs: Sequence[MetricSpec],
     design: Randomized | Encouragement | Observational | None,
+    constant: bool = False,
 ) -> None:
     """A unit's day 0 must be an explicit, per-unit-constant exposure date
     whenever a quantity counts days from it: a metric with ``window_days`` or
@@ -1951,6 +2021,8 @@ def _validate_exposure_date(
                 examples=(design.uptake.fact,),
                 route="pass exposure_date=<column name>",
             )
+        return
+    if constant:
         return
 
     conflicts = (

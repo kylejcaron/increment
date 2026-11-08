@@ -2300,19 +2300,32 @@ def test_panel_quantile_ignores_pre_exposure_decoys(backend: str, value_column: 
         )
 
 
-def test_panel_breakout_identity_survives_sparse_zero_fill() -> None:
-    frame = pa.table(
-        {
-            "user_id": ["u1", "u1", "u2"],
-            "variant": ["control", "control", "treatment"],
-            "day": ["d1", "d2", "d1"],
-            "country": ["US", "US", "CA"],
-            "plan": ["free", "free", "paid"],
-            "revenue": [1.0, 2.0, 3.0],
-        }
-    )
+@pytest.mark.parametrize("backend", ["arrow", "polars", "pandas"])
+@pytest.mark.parametrize("excluded", ["none", "null_exposure", "late"])
+def test_panel_breakout_identity_survives_sparse_zero_fill(backend: str, excluded: str) -> None:
+    columns: dict[str, list[Any]] = {
+        "user_id": ["u1", "u1", "u2"],
+        "variant": ["control", "control", "treatment"],
+        "day": [0, 1, 0],
+        "exposed_on": [0, 0, 0],
+        "country": ["US", "US", None],
+        "plan": ["free", "free", "paid"],
+        "revenue": [1.0, 2.0, 3.0],
+    }
+    if excluded != "none":
+        exposure = None if excluded == "null_exposure" else 2
+        for name, values in {
+            "user_id": ["excluded", "excluded"],
+            "variant": ["treatment", "treatment"],
+            "day": [0, 1],
+            "exposed_on": [exposure, exposure],
+            "country": ["US", "CA"],
+            "plan": ["free", "paid"],
+            "revenue": [99.0, 99.0],
+        }.items():
+            columns[name].extend(values)
     src = from_unit_panel(
-        _exposed_on(frame, "d1"),
+        _panel_backend(backend, columns),
         unit="user_id",
         group="variant",
         date="day",
@@ -2320,23 +2333,27 @@ def test_panel_breakout_identity_survives_sparse_zero_fill() -> None:
         metrics={"revenue": "mean"},
         breakouts=["country", "plan"],
         exposure_date="exposed_on",
+        observation_end=1,
+        on_unassigned="exclude",
     )
+    expected_counts = {"control": 1, "treatment": 1}
+    if excluded == "null_exposure":
+        expected_counts["(unassigned)"] = 1
+    assert _counts(src) == expected_counts
     assert src.densified_cells == 1
     metric = _metric(src, "revenue")
     day2_by_country = {
         (row["country"], row["group_id"]): row
         for row in _moments(src, metric, grain="daily", by=["country"])
-        if row["ds"] == "d2"
+        if row["ds"] == 1
     }
-    assert set(day2_by_country) == {("US", "control"), ("CA", "treatment")}
-    # u2's day-2 cell exists only because densification zero-filled it, and it
-    # carries u2's own breakout identity rather than a null segment.
-    assert day2_by_country[("CA", "treatment")]["n"] == 1
-    assert _sum_y(day2_by_country[("CA", "treatment")]) == 0.0
+    assert set(day2_by_country) == {("US", "control"), ("__null__", "treatment")}
+    assert day2_by_country[("__null__", "treatment")]["n"] == 1
+    assert _sum_y(day2_by_country[("__null__", "treatment")]) == 0.0
     day2_by_plan = {
         (row["plan"], row["group_id"]): row
         for row in _moments(src, metric, grain="daily", by=["plan"])
-        if row["ds"] == "d2"
+        if row["ds"] == 1
     }
     assert set(day2_by_plan) == {("free", "control"), ("paid", "treatment")}
     assert day2_by_plan[("paid", "treatment")]["n"] == 1
@@ -2624,32 +2641,129 @@ def test_panel_srm_without_independent_scheme_is_not_applicable(panel_frame: pa.
     assert "integrity.allocation_scheme_missing" in result.reason
 
 
-def test_panel_duplicate_unit_day_raises() -> None:
-    dup_rows = [*_PANEL_ROWS, _PANEL_ROWS[0]]
+@pytest.mark.parametrize("conflict", ["assignment", "exposure", "null_exposure", "late"])
+def test_panel_duplicate_unit_day_refuses_before_conflicts_and_exclusions(conflict: str) -> None:
+    frame = pa.table(
+        {
+            "u": ["c", "t", "bad", "bad"],
+            "g": [
+                "control",
+                "treatment",
+                "control",
+                "treatment" if conflict == "assignment" else "control",
+            ],
+            "d": [0, 0, 1, 1],
+            "e": [
+                0,
+                0,
+                None if conflict == "null_exposure" else 2,
+                None if conflict == "null_exposure" else (3 if conflict == "exposure" else 2),
+            ],
+            "y": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
     with pytest.raises(InvalidRequestError) as exc:
         from_unit_panel(
-            _panel_table(dup_rows),
-            unit="user_id",
-            group="variant",
-            date="day",
+            frame,
+            unit="u",
+            group="g",
+            date="d",
+            exposure_date="e",
             control="control",
-            metrics={"revenue": "mean"},
+            metrics={"y": "mean"},
+            observation_end=1,
+            on_unassigned="exclude",
         )
     assert exc.value.code == "source.panel.duplicate_unit_days"
+    assert exc.value.context == {
+        "unit": "u",
+        "date": "d",
+        "count": 1,
+        "examples": (("bad", 1),),
+        "route": "aggregate same-day events onto one row before from_unit_panel",
+    }
 
 
-def test_panel_conflicting_group_per_unit_raises(panel_frame: pa.Table) -> None:
-    conflicting_rows = [*_PANEL_ROWS[:-1], ("u8", "control", "d3", 8.0, 3.0)]
+def test_panel_assignment_conflict_refuses_before_exposure_conflict_and_exclusion() -> None:
+    frame = pa.table(
+        {
+            "u": ["c", "bad", "bad"],
+            "g": ["control", "control", "treatment"],
+            "d": [0, 0, 1],
+            "e": [0, 2, None],
+            "y": [1.0, 2.0, 3.0],
+        }
+    )
     with pytest.raises(InvalidRequestError) as exc:
         from_unit_panel(
-            _panel_table(conflicting_rows),
-            unit="user_id",
-            group="variant",
-            date="day",
+            frame,
+            unit="u",
+            group="g",
+            date="d",
+            exposure_date="e",
             control="control",
-            metrics={"revenue": "mean"},
+            metrics={"y": "mean"},
+            observation_end=1,
+            on_unassigned="exclude",
         )
     assert exc.value.code == "source.panel.multi_group_unit"
+    assert exc.value.context == {
+        "unit": "u",
+        "group": "g",
+        "count": 1,
+        "examples": ("bad",),
+        "route": "ensure each unit has one group across the whole panel",
+    }
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "context"),
+    [
+        (
+            "control",
+            "source.frame.control_missing",
+            {"control": "absent", "group": "g", "observed": ("control", "treatment")},
+        ),
+        ("uptake", "source.frame.uptake_not_binary", {"uptake": "dosed", "values": (0.5,)}),
+        (
+            "missing",
+            "frame.validation.metric_value_missing",
+            {"metric": "y", "column": "y", "n_missing": 1},
+        ),
+        (
+            "conversion",
+            "source.frame.conversion_not_binary",
+            {"metric": "y", "column": "y", "values": (0.5,)},
+        ),
+    ],
+)
+def test_panel_value_validation_precedes_breakout_conflict(
+    failure: str, code: str, context: dict[str, Any]
+) -> None:
+    frame = pa.table(
+        {
+            "u": ["c", "c", "t"],
+            "g": ["control", "control", "treatment"],
+            "day": [0, 1, 0],
+            "segment": ["US", None, "CA"],
+            "dosed": [0.5 if failure in ("control", "uptake") else 0.0, 1.0, 0.0],
+            "y": [None if failure == "missing" else 0.5, 1.0, 0.0],
+        }
+    )
+    with pytest.raises(InvalidRequestError) as exc:
+        from_unit_panel(
+            frame,
+            unit="u",
+            group="g",
+            date="day",
+            uptake="dosed",
+            control="absent" if failure == "control" else "control",
+            metrics=[MetricSpec(name="y", type="conversion")],
+            breakouts=["segment"],
+        )
+    assert exc.value.code == code
+    for key, value in context.items():
+        assert exc.value.context[key] == value
 
 
 def _panel_backend(backend: str, columns: Mapping[str, Sequence[object]]) -> Any:
@@ -4104,26 +4218,43 @@ def test_windowed_metric_requires_exposure_date(panel_frame: pa.Table) -> None:
     assert exc.value.code == "source.panel.exposure_date"
 
 
-def test_exposure_date_must_be_constant_per_unit() -> None:
-    rows = [
-        ("u1", "control", date(2025, 1, 1), date(2025, 1, 1), 4.0),
-        ("u1", "control", date(2025, 1, 2), date(2025, 1, 2), 5.0),  # differs from row above
-    ]
-    cols = list(zip(*rows, strict=True))
-    table = pa.table(
-        dict(zip(["user_id", "variant", "day", "exposed_on", "revenue"], cols, strict=True))
+@pytest.mark.parametrize("backend", ["arrow", "polars", "pandas"])
+@pytest.mark.parametrize("second_exposure", [3, None], ids=["different", "null"])
+def test_exposure_conflict_refuses_before_exclusion_and_breakout_conflict(
+    backend: str, second_exposure: int | None
+) -> None:
+    frame = _panel_backend(
+        backend,
+        {
+            "u": ["c", "bad", "bad"],
+            "g": ["control"] * 3,
+            "d": [0, 0, 1],
+            "e": [0, 2, second_exposure],
+            "y": [1.0, 2.0, 3.0],
+            "segment": ["US", "US", None],
+        },
     )
     with pytest.raises(InvalidRequestError) as exc:
         from_unit_panel(
-            table,
-            unit="user_id",
-            group="variant",
-            date="day",
+            frame,
+            unit="u",
+            group="g",
+            date="d",
+            exposure_date="e",
             control="control",
-            metrics={"revenue": "mean"},
-            exposure_date="exposed_on",
+            metrics={"y": "mean"},
+            observation_end=1,
+            on_unassigned="exclude",
+            breakouts=["segment"],
         )
     assert exc.value.code == "source.panel.exposure_date"
+    assert exc.value.context == {
+        "issue": "per-unit values are not constant",
+        "column": "e",
+        "count": 1,
+        "examples": ("bad",),
+        "route": "provide one exposure_date value per unit across the panel",
+    }
 
 
 def test_censoring_warns_past_threshold() -> None:
