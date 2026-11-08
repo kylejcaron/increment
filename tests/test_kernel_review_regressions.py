@@ -2112,7 +2112,7 @@ def test_declare_views_adds_a_view_that_compares_equal_but_hashes_differently():
     assert declare_views(experiment, switchback(1)) is experiment
 
 
-def _two_day_values():
+def _two_day_values(**options: Any):
     frame = pd.concat(
         [_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")]
     ).assign(exposed_on="2025-01-01")
@@ -2125,6 +2125,7 @@ def _two_day_values():
         control="control",
         metrics={"value": "mean"},
         exposure_date="exposed_on",
+        **options,
     )
     return view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
 
@@ -2186,6 +2187,53 @@ def test_complementary_legacy_daily_value_filters_restore_and_concat():
         assert restored.metadata.cells == values.metadata.cells
     current = ReadoutResults.model_validate_json(views[0].model_dump_json())
     assert current.metadata == views[0].metadata
+
+
+def test_cross_snapshot_legacy_daily_value_filters_restore_and_concat():
+    """A saved collection over two snapshots can key a cell with its scale in one source and
+    without it in the other; the unscaled source still restores to the absolute key."""
+    import json
+
+    from increment.declarations import CellKey
+    from increment.estimation.readout_types import cell_order
+    from increment.results import ReadoutResults
+
+    combined = _two_day_values().concat(_two_day_values(experiment_id="rerun"))
+    unscaled = combined[-1].source_snapshot_id
+    first_day = min(row.ds for row in combined)
+    views = [
+        combined.filter(lambda row: row.ds == first_day),
+        combined.filter(lambda row: row.ds != first_day),
+    ]
+
+    def saved(view) -> str:
+        payload = json.loads(view.model_dump_json())
+        metadata = payload["metadata"]
+        scope = metadata["scope"]
+        for name in ("cells", "decision_cells"):
+            source = scope["by_source"][unscaled]
+            source[name] = [{**key, "value_scale": None} for key in source[name]]
+        for record in metadata["cells"]:
+            if record["source_snapshot_id"] == unscaled:
+                record["cell"] = {**record["cell"], "value_scale": None}
+        for name in ("cells", "decision_cells"):
+            keys = {
+                CellKey.model_validate(key)
+                for source in scope["by_source"].values()
+                for key in source[name]
+            }
+            scope[name] = [key.model_dump(mode="json") for key in sorted(keys, key=cell_order)]
+        return json.dumps(payload)
+
+    left, right = (ReadoutResults.model_validate_json(saved(view)) for view in views)
+
+    assert len({row.source_snapshot_id for row in combined}) == 2
+    assert [list(left), list(right)] == [list(view) for view in views]
+    merged = left.concat(right)
+    assert sorted(map(repr, merged)) == sorted(map(repr, combined))
+    for restored in (left, right, merged):
+        assert {key.value_scale for key in _metadata_keys(restored.metadata)} == {"absolute"}
+        assert restored.metadata.scope == combined.metadata.scope
 
 
 def test_legacy_daily_value_restore_leaves_daily_lift_keys_alone():

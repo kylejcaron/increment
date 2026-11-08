@@ -1936,7 +1936,9 @@ def _with_value_row_keys(metadata: ReadoutMetadata | None) -> ReadoutMetadata | 
     shown or filtered out, with no scale; that key names the cell's absolute value.
 
     Only keys with a value row's full shape are renamed: a day, an arm or segment, and no
-    method, estimand or test. Every other key keeps its saved scale.
+    method, estimand or test. Every other key keeps its saved scale, and so does a key whose
+    source or family already holds its absolute key; another snapshot's absolute key does
+    not block it.
     """
     from increment.estimation.readout_types import rekeyed_metadata
 
@@ -1957,7 +1959,15 @@ def _with_value_row_keys(metadata: ReadoutMetadata | None) -> ReadoutMetadata | 
         and key.inference is None
         and key.alternative is None
     }
-    keys = {legacy: current for legacy, current in keys.items() if current not in recorded}
+    owners = [
+        *(set(source.cells) for source in scope.by_source.values()),
+        *(set(family.members) for family in scope.families),
+    ]
+    keys = {
+        legacy: current
+        for legacy, current in keys.items()
+        if not any(legacy in owner and current in owner for owner in owners)
+    }
     return rekeyed_metadata(metadata, keys) if keys else metadata
 
 
