@@ -23,7 +23,7 @@ from increment.readouts._common import (
     _sequential_inference,
 )
 from increment.readouts._evidence import load_missing_value_account
-from increment.readouts._metric_rows import load_metric_evidence
+from increment.readouts._metric_rows import load_metric_evidence_batch
 from increment.readouts._passes import _estimate_pass
 from increment.sources import EvidenceSource
 
@@ -108,37 +108,6 @@ def _partition_secondary_family(
     family = [entry for entry in entries if getattr(entry[2].family, "member", False)]
     non_family = [entry for entry in entries if not getattr(entry[2].family, "member", False)]
     return family, non_family
-
-
-def _load_family_rows(
-    src: EvidenceSource,
-    secondary_entries: Sequence[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
-    design: Randomized,
-    plan: CompiledDecisionPlan,
-    *,
-    by: Sequence[str],
-    population: Literal["assigned", "triggered"],
-    scope_active: bool = False,
-) -> dict[str, Any]:
-    """Each secondary's rows, read once for the nominal pass and reused by the FCR pass. A
-    quantile metric is refused before any data is read."""
-    loaded: dict[str, Any] = {}
-    for metric, config, test, is_quantile, metric_methods in secondary_entries:
-        if is_quantile:
-            _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
-        loaded[metric.name] = load_metric_evidence(
-            src,
-            MetricEvidenceRequest(
-                metric=metric,
-                control_group=design.control_group,
-                by=tuple(by),
-                methods=tuple(metric_methods),
-                covariates=tuple(config.covariates),
-                population=population,
-            ),
-            scope_active=scope_active,
-        )
-    return loaded
 
 
 def _secondary_family_cells(family, nominal_by_metric, family_groups_by_metric):
@@ -428,16 +397,10 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
     skipped_by_metric: dict[str, dict[Any, Any]] = {}
     # Evidence read for the nominal pass (moment rows or a quantile unit
     # frame), reused by the FCR pass instead of re-querying the source.
-    loaded = _load_family_rows(
-        src,
-        secondary_entries,
-        design,
-        plan,
-        by=by,
-        population=population,
-        scope_active=scope_active,
-    )
+    loaded = evidence_by_metric
     for metric, config, test, is_quantile, _metric_methods in secondary_entries:
+        if is_quantile:
+            _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
         metric_rows = loaded[metric.name]
         rows, metric_observed, observed_groups = _secondary_source_rows(
             metric_rows, is_quantile, design.control_group
@@ -633,6 +596,28 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
     """
     out: list[LiftEstimate] = []
     secondary_entries: list[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]] = []
+    for metric in selected:
+        test = plan.procedures[metric.name]
+        if metric.type == "quantile" and test.role == "secondary":
+            _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
+    requests = tuple(
+        MetricEvidenceRequest(
+            metric=metric,
+            control_group=design.control_group,
+            by=tuple(by),
+            methods=tuple(_runtime_methods(config, design)),
+            covariates=tuple(config.covariates),
+            population=population,
+        )
+        for metric, config in zip(selected, configs, strict=True)
+    )
+    evidence_by_metric.update(
+        zip(
+            (metric.name for metric in selected),
+            load_metric_evidence_batch(src, requests),
+            strict=True,
+        )
+    )
     for metric, config in zip(selected, configs, strict=True):
         test = plan.procedures[metric.name]
         computation = None
@@ -641,18 +626,7 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
         if test.role == "secondary":
             secondary_entries.append((metric, config, test, is_quantile, metric_methods))
             continue
-        metric_rows = load_metric_evidence(
-            src,
-            MetricEvidenceRequest(
-                metric=metric,
-                control_group=design.control_group,
-                by=tuple(by),
-                methods=tuple(metric_methods),
-                covariates=tuple(config.covariates),
-                population=population,
-            ),
-            scope_active=scope_active,
-        )
+        metric_rows = evidence_by_metric[metric.name]
         evidence_by_metric[metric.name] = metric_rows
         if is_quantile:
             _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
