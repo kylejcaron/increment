@@ -2161,9 +2161,10 @@ def emit_centered_moments(
     in *table*; a variable or mask the plan declares but *columns* omits is
     emitted as typed NULLs, so the row shape never depends on the input.
     Two-phase aggregation: window means per group become the references,
-    then one aggregate sums the residual products against them, in the
-    plan's moment order (family by family, winsor passthrough, then the
-    masked family). No variance reduction here; that lives on ``ArmStats``.
+    except an exactly constant group uses its observed value so residuals
+    vanish before summation. Then one aggregate sums the residual products
+    in the plan's moment order (family by family, winsor passthrough, then
+    the masked family). Variance reduction lives on ``ArmStats``.
 
     A passthrough column is carried through unchanged: a ``max`` column by
     maximum, a ``sum`` column by sum, and an ``int64`` sum as an exact integer
@@ -2176,9 +2177,12 @@ def emit_centered_moments(
     live = [variable for variable in plan.variables if variable in columns]
     masks = [mask for mask in plan.masked if mask in columns]
     ref_name = {variable: plan.name(("ref", (variable,), None)) for variable in live}
-    centered = table.mutate(
-        **{ref_name[variable]: table[columns[variable]].mean().over(window) for variable in live}
-    )
+    references = {}
+    for variable in live:
+        value = table[columns[variable]]
+        lower, upper = value.min().over(window), value.max().over(window)
+        references[ref_name[variable]] = (lower == upper).ifelse(lower, value.mean().over(window))
+    centered = table.mutate(**references)
     residual = {
         variable: centered[columns[variable]] - centered[ref_name[variable]] for variable in live
     }

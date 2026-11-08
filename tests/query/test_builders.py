@@ -1216,6 +1216,84 @@ def test_group_summary_centered_moments(totals):
     assert abs(var_from_moments - np_var) < 1e-9
 
 
+def _availability_arms(con, values, sizes):
+    from increment.estimation.armstats import ArmStats
+    from increment.estimation.engine import _df_to_arms
+
+    parts = {"control": [], "treatment": []}
+    offset = 0
+    for size in sizes:
+        rows = [
+            {"experiment_id": "stable", "metric": "m", "group_id": group, "y": value}
+            for group in parts
+            for value in values[offset : offset + size]
+        ]
+        offset += size
+        totals = con.create_table(f"availability_{uuid.uuid4().hex}", pa.Table.from_pylist(rows))
+        totals = totals.mutate(x=ibis.null().cast("float64"), y_den=ibis.null().cast("float64"))
+        for arm in _df_to_arms(con.to_pyarrow(group_summary(totals)).to_pylist()):
+            parts[arm.group_id].append(arm)
+    return [
+        records[0] if len(records) == 1 else ArmStats.combine(records) for records in parts.values()
+    ]
+
+
+@pytest.mark.parametrize("spread", ["constant", "neighbor", "positive"])
+def test_group_summary_availability_survives_reordered_and_partitioned_reductions(con, spread):
+    from fractions import Fraction
+
+    from increment.declarations import ArmHypothesisKey
+    from increment.estimation.engine import estimate_lift
+
+    values = {
+        "constant": [0.1] * 7,
+        "neighbor": [0.1] * 6 + [math.nextafter(0.1, math.inf)],
+        "positive": [0.1, 0.2] * 3 + [0.1],
+    }[spread]
+    exact = [Fraction(value) for value in values]
+    exact_mean = sum(exact) / len(exact)
+    variance = float(sum((value - exact_mean) ** 2 for value in exact) / (len(exact) - 1))
+    numerical = []
+    for order in (values, list(reversed(values))):
+        for sizes in ((7,), (2, 5), (3, 4)):
+            arms = _availability_arms(con, order, sizes)
+            summary = [
+                {key: value for key, value in arm.model_dump().items() if key != "study_id"}
+                | {"experiment_id": arm.study_id}
+                for arm in arms
+            ]
+            outcome = estimate_lift(
+                [MeanMetric(name="m", entity="user", fact="m")], summary, control_group="control"
+            )
+            available = spread != "constant"
+            failure = next(iter(outcome.failures.values()), None)
+            if outcome.results:
+                identity = (outcome.results[0].metric, outcome.results[0].group_id)
+            else:
+                assert failure is not None and isinstance(failure.hypothesis, ArmHypothesisKey)
+                identity = (failure.hypothesis.metric, failure.hypothesis.group_id)
+            assert (
+                identity,
+                bool(outcome.results),
+                failure.code if failure else None,
+                failure.context["reason"] if failure else None,
+            ) == (
+                ("m", "treatment"),
+                available,
+                None if available else "estimation.engine.lift_guard",
+                None if available else "zero_variance",
+            )
+            for arm in arms:
+                assert arm.var_y() == pytest.approx(variance, rel=1e-12, abs=0.0)
+            if available:
+                (result,) = outcome.results
+                lift = result.require_lift()
+                assert lift.log_se is not None and math.isfinite(lift.log_se)
+                numerical.append((lift.value, lift.log_se, result.abs_diff, result.abs_se))
+    for actual in numerical[1:]:
+        assert actual == pytest.approx(numerical[0], rel=1e-12, abs=0.0)
+
+
 def test_group_summary_x_moments_null_when_unmaterialized(totals):
     """x-den moments are None (not 0) when CUPED is not enabled."""
     summary = group_summary(totals).execute()

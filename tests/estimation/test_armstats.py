@@ -909,6 +909,33 @@ class TestPartitionCombination:
         for name in self.REDUCTIONS:
             assert getattr(forward, name)() == pytest.approx(getattr(backward, name)(), rel=1e-11)
 
+    def test_exact_constant_and_resolved_neighbor_keep_distinct_variances(self):
+        for values in ([0.1] * 7, [0.1] * 6 + [math.nextafter(0.1, math.inf)]):
+            exact = [Fraction(value) for value in values]
+            mean = sum(exact) / len(exact)
+            variance = float(sum((value - mean) ** 2 for value in exact) / (len(exact) - 1))
+            parts = []
+            for chunk in (values[:2], values[2:]):
+                reference = float(sum(Fraction(value) for value in chunk) / len(chunk))
+                residual = [Fraction(value) - Fraction(reference) for value in chunk]
+                parts.append(
+                    ArmStats(
+                        study_id="s",
+                        metric="m",
+                        group_id="A",
+                        n=len(chunk),
+                        ref_y=reference,
+                        cy1=float(sum(residual)),
+                        cy2=float(sum(value * value for value in residual)),
+                    )
+                )
+            for order in (parts, list(reversed(parts))):
+                combined = ArmStats.combine(order)
+                assert combined.var_y() == pytest.approx(variance, rel=1e-12, abs=0.0)
+                se = se_log_mean(combined.var_y(), combined.mean_y(), combined.n)
+                assert (se == 0.0) == (len(set(values)) == 1)
+                assert math.isfinite(se)
+
     def test_combine_refuses_mixed_families(self):
         rng = np.random.default_rng(3)
         y = rng.normal(1.0, 1.0, 50)
