@@ -214,7 +214,10 @@ class ContrastResult(CodedModel, BaseModel):
     residual_cutoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     residual_p_value: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     #: Sign of the exact residual the envelope p-value tests; "split" when it is zero.
-    residual_side: RejectionSide | None = None
+    #: Left out of t-reference dumps, whose wire form predates it.
+    residual_side: RejectionSide | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     reference_spec: UnitCycleReference | None = None
     provenance: ProspectiveAssumptionProvenance | None = None
     response_meaning: Literal["retained_total", "pre_normalized_retained_mean"] | None = None

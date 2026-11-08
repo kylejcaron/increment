@@ -222,9 +222,13 @@ def test_envelope_readout_interprets_the_rejection_its_p_value_decides(
     )
 
 
-def test_envelope_payload_without_residual_side_refuses():
+@pytest.mark.parametrize("saved", ["missing", "null"])
+def test_envelope_payload_without_residual_side_refuses(saved):
     payload = _wire_fixture()
-    del payload["residual_side"]
+    if saved == "missing":
+        del payload["residual_side"]
+    else:
+        payload["residual_side"] = None
     with pytest.raises(InvalidRequestError) as caught:
         ContrastResult.model_validate_json(json.dumps(payload))
     assert caught.value.code == "estimation.contrast.legacy_envelope"
@@ -256,10 +260,11 @@ def test_envelope_residual_off_its_alternative_loads_with_p_value_one():
     assert ContrastResult.model_validate_json(result.model_dump_json()) == result
 
 
-def test_t_payload_saved_without_residual_side_still_loads():
+def test_t_result_wire_form_omits_residual_side():
     result = estimate_contrast(stats(m2_delta=4), procedure(UnitCycleTApproximation())).results[0]
     payload = result.model_dump(mode="json")
-    del payload["residual_side"]
+    # The t wire form is the one earlier releases wrote and read.
+    assert "residual_side" not in payload
     assert ContrastResult.model_validate_json(json.dumps(payload)) == result
 
 
