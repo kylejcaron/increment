@@ -3501,22 +3501,17 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Acquire compatible requests from one component and one shared unit reduction."""
         groups: dict[tuple[Any, ...], list[int]] = {}
         answers: list[tuple[Mapping[str, Any], ...] | None] = [None] * len(requests)
-        common_horizon = (
-            frozenset(
-                stream
-                for metric in dict.fromkeys((*self._horizon_metrics, *(horizon_metrics or ())))
-                for stream in self._metric_horizon_streams(metric)
-            )
-            if any(request.grain != "total" for request in requests)
-            else frozenset()
+        common_horizon = frozenset(
+            stream
+            for metric in dict.fromkeys((*self._horizon_metrics, *(horizon_metrics or ())))
+            for stream in self._metric_horizon_streams(metric)
         )
         for index, request in enumerate(requests):
             if request.population == "triggered" and request.grain != "total" and not day_source:
                 continue
             key = self._component_batch_key(request)
             if key is not None:
-                if request.grain != "total":
-                    key = (*key, common_horizon | self._metric_horizon_streams(request.metric))
+                key = (*key, common_horizon | self._metric_horizon_streams(request.metric))
                 groups.setdefault(key, []).append(index)
         for indices in groups.values():
             if len(indices) < 2:

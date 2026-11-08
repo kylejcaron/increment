@@ -15,7 +15,7 @@ from increment.workflows import capture_sequential
 pytestmark = pytest.mark.slow
 
 
-def _group_event_values(events, *, occurrence_labels, late_fact, null_values):
+def _group_event_values(events, *, occurrence_labels, late_fact, null_values, filtered_domain):
     if late_fact:
         for fact, day in (("late", 15), ("later", 17)):
             events.append(
@@ -33,6 +33,15 @@ def _group_event_values(events, *, occurrence_labels, late_fact, null_values):
                 "event": "purchase",
                 "value": None,
                 "ts": datetime(2025, 1, 2, tzinfo=UTC),
+            }
+        )
+    if filtered_domain:
+        events.append(
+            {
+                "unit_id": "not-enrolled",
+                "event": "purchase",
+                "value": -1.0,
+                "ts": datetime(2025, 1, 15, tzinfo=UTC),
             }
         )
     for row in events:
@@ -56,7 +65,7 @@ def _native_groups(
     null_values=False,
     occurrence_labels=False,
     unequal_freshness=False,
-    late_fact=False,
+    domain=None,
 ):
     import ibis
     import pyarrow as pa
@@ -64,7 +73,17 @@ def _native_groups(
     from increment import from_definitions
     from increment.semantics.models import Definitions
 
-    common = {"entity": "unit_id", "preferred_direction": "increase"}
+    late_fact, filtered_domain = domain is not None, domain == "total"
+
+    common = {
+        "entity": "unit_id",
+        "preferred_direction": "increase",
+        **(
+            {"filters": [{"property": "price", "op": "gt", "values": [0]}]}
+            if filtered_domain
+            else {}
+        ),
+    }
     metrics = [
         {
             **common,
@@ -212,6 +231,14 @@ def _native_groups(
             enrolled.append(
                 {"unit_id": name, "group_id": "baseline", "ts": datetime(2025, 1, day, tzinfo=UTC)}
             )
+    if filtered_domain:
+        enrolled.append(
+            {
+                "unit_id": "beyond-original",
+                "group_id": "baseline",
+                "ts": datetime(2025, 1, 12, tzinfo=UTC),
+            }
+        )
     for fact in ("purchase", "return", "denominator"):
         events.append(
             {
@@ -224,7 +251,11 @@ def _native_groups(
             }
         )
     _group_event_values(
-        events, occurrence_labels=occurrence_labels, late_fact=late_fact, null_values=null_values
+        events,
+        occurrence_labels=occurrence_labels,
+        late_fact=late_fact,
+        null_values=null_values,
+        filtered_domain=filtered_domain,
     )
     connection = ibis.duckdb.connect()
     connection.create_table("enrolled", pa.Table.from_pylist(enrolled))
@@ -317,20 +348,48 @@ def _assert_temporal_parity(day_source, metrics, grain, completed):
                 )
 
 
+def _assert_total_domain_parity(source, metrics):
+    from dataclasses import replace
+
+    from increment._evidence_loaders import load_moments, load_moments_batch
+    from increment._evidence_types import MetricEvidenceRequest, MomentsRequest
+    from increment.readouts._metric_rows import load_metric_evidence, load_metric_evidence_batch
+
+    requests = tuple(MomentsRequest(metric) for metric in metrics)
+    independent = tuple(load_moments(source, request) for request in requests)
+    assert [
+        next(row["n"] for row in rows if row["group_id"] == "baseline") for rows in independent
+    ] == [17, 18]
+    for got, expected in zip(load_moments_batch(source, requests), independent, strict=True):
+        assert sorted(got, key=lambda row: str(row["group_id"])) == sorted(
+            expected, key=lambda row: str(row["group_id"])
+        )
+    evidence = tuple(MetricEvidenceRequest(metric, "baseline") for metric in metrics)
+    independent_evidence = tuple(load_metric_evidence(source, request) for request in evidence)
+    for got, expected in zip(
+        load_metric_evidence_batch(source, evidence), independent_evidence, strict=True
+    ):
+        assert replace(
+            got, rows=tuple(sorted(got.rows, key=lambda row: row["group_id"]))
+        ) == replace(expected, rows=tuple(sorted(expected.rows, key=lambda row: row["group_id"])))
+    _assert_display_parity(source, metrics)
+
+
 @pytest.mark.integration
 @pytest.mark.filterwarnings("ignore:.*censoring dropped:increment.errors.IncrementWarning")
 @pytest.mark.parametrize(
-    "missing,snowflake,adhoc",
+    "missing,snowflake,adhoc,total_domain",
     [
-        ("zero", False, False),
-        ("skip", False, False),
-        ("error", False, False),
-        ("zero", True, False),
-        ("zero", False, True),
+        ("zero", False, False, False),
+        ("skip", False, False, False),
+        ("error", False, False, False),
+        ("zero", True, False, False),
+        ("zero", False, True, False),
+        ("zero", False, False, True),
     ],
 )
 def test_shared_order_components_keep_request_identity_maturity_and_ratio_covariance(
-    missing, monkeypatch, snowflake, adhoc
+    missing, monkeypatch, snowflake, adhoc, total_domain
 ):
     from increment._evidence_types import MetricEvidenceRequest
     from increment.errors import CodedError
@@ -340,7 +399,7 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
     with _native_groups(
         extra_exclusions=True,
         metric_names=("conversion", "mean", "retention"),
-        late_fact=adhoc,
+        domain="total" if total_domain else "temporal" if adhoc else None,
         fact_missing=missing,
         null_values=True,
         unequal_freshness=True,
@@ -348,7 +407,12 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
         source = resolver._binding.source
         conversion, revenue, disjoint = resolver._binding.metrics
         conversion = conversion.model_copy(update={"window_days": 7})
-        revenue = revenue.model_copy(update={"window_days": 7})
+        revenue = revenue.model_copy(update={"window_days": 1 if total_domain else 7})
+        if total_domain:
+            _assert_total_domain_parity(
+                source, (revenue, revenue.model_copy(update={"fact": "late"}))
+            )
+            return
         if adhoc:
             day_source = source.day_source(metrics=(disjoint,))
             late_metrics = tuple(
