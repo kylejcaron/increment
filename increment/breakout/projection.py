@@ -686,6 +686,39 @@ def scope_key(scope: View) -> str:
     ).hash()
 
 
+def _null_columns_typed_like_values(frames: Sequence[nw.DataFrame[Any]]) -> list[nw.DataFrame[Any]]:
+    """``frames`` with each all-null column retyped to the dtype another frame holds values in.
+
+    Each row model types its own frame, so a column one model leaves null, such as a
+    whole-window row's ``ds``, can be declared a different type than the values another
+    model holds, such as an as-of row's numeric ``ds``. A column null in every frame keeps
+    its declared type, and frames whose values disagree keep theirs.
+    """
+    nulls = [
+        {name for name in frame.columns if frame[name].null_count() == len(frame)}
+        for frame in frames
+    ]
+    valued: dict[str, nw.dtypes.DType] = {}
+    for frame, null in zip(frames, nulls, strict=True):
+        for name, dtype in frame.schema.items():
+            if name not in null:
+                valued.setdefault(name, dtype)
+    aligned = []
+    for frame, null in zip(frames, nulls, strict=True):
+        retyped = [
+            nw.new_series(
+                name,
+                [None] * len(frame),
+                dtype=valued[name],
+                backend=nw.get_native_namespace(frame),
+            )
+            for name in frame.columns
+            if name in null and name in valued and frame.schema[name] != valued[name]
+        ]
+        aligned.append(frame.with_columns(*retyped) if retyped else frame)
+    return aligned
+
+
 def result_frame(
     groups: Sequence[tuple[type[BaseModel], Sequence[Any]]],
     metadata: ReadoutMetadata | None,
@@ -734,6 +767,10 @@ def result_frame(
             summary.update(dict.fromkeys(select_columns(presets[position], typed)))
         available.update(dict.fromkeys(typed))
         frames.append(nw.from_native(native, eager_only=True))
+    if len(frames) > 1 and backend != "pandas":
+        # Polars and PyArrow refuse to concatenate one column under two dtypes; pandas widens
+        # it instead, and its numpy integer columns cannot hold the retyped null.
+        frames = _null_columns_typed_like_values(frames)
     frame = frames[0] if len(frames) == 1 else nw.concat(frames, how="diagonal")
     identity: dict[str, tuple[list[Any], Any, str]] = {
         "scope_view": (
