@@ -19,7 +19,7 @@ from typing import Any, cast
 import narwhals as nw
 import pyarrow as pa
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from increment import from_frame, readouts
@@ -43,6 +43,7 @@ from tests.warning_codes import warning_codes
 
 @settings(max_examples=8, deadline=None)
 @given(offset=st.floats(min_value=0.1, max_value=10, allow_nan=False, allow_infinity=False))
+@example(offset=1.0)
 def test_metric_names_match_explicit_specs_for_float_and_bool_summary_and_panel(offset):
     count = 40
     rows = []

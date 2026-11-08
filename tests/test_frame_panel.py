@@ -4220,16 +4220,23 @@ def test_windowed_metric_requires_exposure_date(panel_frame: pa.Table) -> None:
 
 @pytest.mark.parametrize("backend", ["arrow", "polars", "pandas"])
 @pytest.mark.parametrize("second_exposure", [3, None], ids=["different", "null"])
+@pytest.mark.parametrize("axis", ["integer", "calendar"])
 def test_exposure_conflict_refuses_before_exclusion_and_breakout_conflict(
-    backend: str, second_exposure: int | None
+    backend: str, second_exposure: int | None, axis: str
 ) -> None:
+    days: list[Any] = [0, 0, 1]
+    exposures: list[Any] = [0, 2, second_exposure]
+    if axis == "calendar":
+        base = date(2026, 1, 1)
+        days = [base + timedelta(days=value) for value in days]
+        exposures = [None if value is None else base + timedelta(days=value) for value in exposures]
     frame = _panel_backend(
         backend,
         {
             "u": ["c", "bad", "bad"],
             "g": ["control"] * 3,
-            "d": [0, 0, 1],
-            "e": [0, 2, second_exposure],
+            "d": days,
+            "e": exposures,
             "y": [1.0, 2.0, 3.0],
             "segment": ["US", "US", None],
         },
@@ -4243,7 +4250,7 @@ def test_exposure_conflict_refuses_before_exclusion_and_breakout_conflict(
             exposure_date="e",
             control="control",
             metrics={"y": "mean"},
-            observation_end=1,
+            observation_end=days[-1],
             on_unassigned="exclude",
             breakouts=["segment"],
         )

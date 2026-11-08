@@ -1902,30 +1902,54 @@ def _panel_validation_summary(
     breakouts: Sequence[str],
 ) -> _PanelValidationSummary:
     """Reduce the assigned rows once; postpone breakout checks until exclusions finish."""
+    exposure_dtype = None if exposure_date is None else frame.schema[exposure_date]
+    ordered_exposure = exposure_dtype is not None and (
+        exposure_dtype.is_integer() or isinstance(exposure_dtype, nw.Date | nw.Datetime)
+    )
+    exposure_aggs = []
+    exposure_conflict = nw.lit(False)
+    if exposure_date is not None:
+        if ordered_exposure:
+            exposure_aggs = [
+                nw.col("__exposure__").min().alias("__exposure_min__"),
+                nw.col("__exposure__").max().alias("__exposure_max__"),
+                nw.col("__exposure_null__").any(),
+            ]
+            # Extrema ignore nulls: all-null is constant, mixed null/observed is not.
+            exposure_conflict = (
+                nw.col("__exposure_min__") != nw.col("__exposure_max__")
+            ).fill_null(False) | (
+                nw.col("__exposure_null__") & ~nw.col("__exposure_min__").is_null()
+            )
+        else:
+            # Float/opaque equality retains the backend's null and NaN distinctions.
+            exposure_aggs = [nw.col("__exposure__").n_unique().alias("__exposures__")]
+            exposure_conflict = nw.col("__exposures__") > 1
     normalized = frame.select(
         nw.col(unit).alias("unit_id"),
         nw.col(group).alias("group_id"),
         nw.col(date).alias("__day__"),
         *([nw.col(exposure_date).alias("__exposure__")] if exposure_date is not None else []),
+        *(
+            [nw.col(exposure_date).is_null().alias("__exposure_null__")]
+            if exposure_date is not None and ordered_exposure
+            else []
+        ),
         *[_normalized_breakout_expr(frame, name) for name in breakouts],
     )
     units = normalized.group_by("unit_id").agg(
         nw.len().alias("__rows__"),
         nw.col("__day__").n_unique().alias("__days__"),
         nw.col("group_id").min(),
-        nw.col("group_id").n_unique().alias("__groups__"),
-        *(
-            [nw.col("__exposure__").n_unique().alias("__exposures__")]
-            if exposure_date is not None
-            else []
-        ),
+        nw.col("group_id").max().alias("__group_max__"),
+        *exposure_aggs,
         *[nw.col(name).min() for name in breakouts],
-        *[nw.col(name).n_unique().alias(f"__breakout_{i}__") for i, name in enumerate(breakouts)],
+        *[nw.col(name).max().alias(f"__breakout_max_{i}__") for i, name in enumerate(breakouts)],
     )
     flags = units.select(
         (nw.col("__rows__") > nw.col("__days__")).any().alias("duplicate_days"),
-        (nw.col("__groups__") > 1).any().alias("multiple_groups"),
-        ((nw.col("__exposures__") > 1).any() if exposure_date is not None else nw.lit(False)).alias(
+        (nw.col("group_id") != nw.col("__group_max__")).any().alias("multiple_groups"),
+        (exposure_conflict.any() if exposure_date is not None else nw.lit(False)).alias(
             "multiple_exposures"
         ),
     ).row(0)
@@ -1934,7 +1958,10 @@ def _panel_validation_summary(
             "unit_id",
             "group_id",
             *breakouts,
-            *[f"__breakout_{i}__" for i in range(len(breakouts))],
+            *[
+                (nw.col(name) != nw.col(f"__breakout_max_{i}__")).alias(f"__breakout_{i}__")
+                for i, name in enumerate(breakouts)
+            ],
         ),
         duplicate_days=bool(flags[0]),
         multiple_groups=bool(flags[1]),
@@ -1958,7 +1985,7 @@ def _unit_identity(
             frame.select(nw.col(unit).alias("unit_id")).unique(), on="unit_id", how="semi"
         )
     for i, name in enumerate(breakouts):
-        if not units.select((nw.col(f"__breakout_{i}__") > 1).any()).item():
+        if not units.select(nw.col(f"__breakout_{i}__").any()).item():
             continue
         # Preserve offender ordering and context on the invalid-input path.
         values = frame.select(
