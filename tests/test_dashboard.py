@@ -1343,8 +1343,9 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
     assert "triggered" in rendered
 
 
+@pytest.mark.parametrize("point_state", ["available", "early_undefined", "all_undefined"])
 def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
-    storefront: DashboardSnapshot,
+    storefront: DashboardSnapshot, point_state: str
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
 
@@ -1358,15 +1359,42 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
         ).model_copy(update={"lift": None})
         for day in range(1, 6)
     )
+    if point_state != "available":
+        region = binomial_region()
+        region = type(region).model_validate(
+            {
+                **region.model_dump(),
+                "lower": -1.0,
+                "upper": None,
+                "geometry": "lower_bound",
+                "x_c": 0,
+                "x_t": 0,
+            }
+        )
+        rows = DailyLiftEstimates(
+            type(row).model_validate(
+                {
+                    **row.model_dump(),
+                    "lift": None,
+                    "binomial_set": region,
+                    "reference_kind": "binomial",
+                }
+            )
+            if day != 3 and (point_state == "all_undefined" or day < 3)
+            else row
+            for day, row in enumerate(rows, 1)
+        )
     rendered = render_explore(
         storefront, rows, metric=storefront.primary_metric, view="cumulative_lift"
     ).text
     polylines = re.findall(r'<polyline[^>]*points="([^"]+)"', rendered)
-    assert polylines
-    # Each estimate and bound is two separate two-date segments, never a bridge.
+    assert len(polylines) == {"available": 4, "early_undefined": 3, "all_undefined": 2}[point_state]
+    # A missing point does not erase a retained bound; a genuinely missing date breaks both.
     assert all(len(points.split()) == 2 for points in polylines)
     assert "Lower CI" in rendered and "Upper CI" not in rendered
-    assert "[+5.0%, ∞)" in rendered
+    assert ("[+5.0%, ∞)" if point_state != "all_undefined" else "-100.0%, ∞)") in rendered
+    legends = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", rendered))
+    assert ("Estimate" in legends) == (point_state != "all_undefined")
 
 
 @pytest.mark.parametrize("scale", ["relative", "absolute"])

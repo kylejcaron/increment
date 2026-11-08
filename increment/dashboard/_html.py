@@ -1875,20 +1875,34 @@ def _trajectory_svg(
         show_endpoint=False,
         y_axis_domain=domain,
         y_axis_fmt=formatter,
-        legend=[(trace.label, trace.color) for trace in traces],
+        legend=[
+            (trace.label, trace.color)
+            for trace in traces
+            if any(value is not None for value in trace.y)
+        ],
     )
     return _TABLE_WRAP.format(
         f'<div class="inc-dashboard-trajectory-svg" style="width:{width}px">{chart}{axis}</div>'
     )
 
 
+def _point_bounds(row: Any, *, lift: bool) -> tuple[float | None, float | None]:
+    point = row.lift if lift else row.value
+    if point is not None:
+        return point.lb, point.ub
+    if lift and row.binomial_set is not None:
+        return row.binomial_set.lower, row.binomial_set.upper
+    return None, None
+
+
 def _point_trace(rows: Sequence[Any], *, lift: bool, color: str, label: str) -> plots.Trace:
     points = [row.lift if lift else row.value for row in rows]
+    bounds = [_point_bounds(row, lift=lift) for row in rows]
     return plots.Trace(
         x=[_date_coordinate(row.ds) for row in rows],
         y=[point.value if point is not None else None for point in points],
-        lower=[point.lb if point is not None else None for point in points],
-        upper=[point.ub if point is not None else None for point in points],
+        lower=[lower for lower, _ in bounds],
+        upper=[upper for _, upper in bounds],
         color=color,
         show_ribbon=True,
         label=label,
@@ -1917,7 +1931,8 @@ def _lift_traces(snapshot: DashboardSnapshot, rows: Sequence[Any]) -> list[plots
         )
     )
     trace = _point_trace(rows, lift=True, color=color, label="Estimate")
-    if not has_open_side(rows):
+    open_set = any(row.binomial_set is not None and row.binomial_set.upper is None for row in rows)
+    if not has_open_side(rows) and not open_set:
         return [trace]
     # An open side has no endpoint: only finite sides get their own labelled line.
     traces = [trace._replace(show_ribbon=False)]
@@ -2136,8 +2151,10 @@ def _percent_axis(estimates: Sequence[Any]) -> ct.Percent:
     values = [
         value
         for estimate in estimates
-        if estimate.lift is not None
-        for value in (estimate.lift.value, estimate.lift.lb, estimate.lift.ub)
+        for value in (
+            estimate.lift.value if estimate.lift is not None else None,
+            *_point_bounds(estimate, lift=True),
+        )
         if value is not None and isfinite(value)
     ]
     fence = robust_fence(values)
