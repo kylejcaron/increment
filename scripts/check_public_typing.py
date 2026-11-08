@@ -840,8 +840,9 @@ class _Source:
             self._bind_suite(name, module, package, node.finalbody, scope)
             return
         normal = self._snapshot(module)
-        # Class bodies and function signatures in `finally` are bound once, so this binding
-        # sees every route through it; the early exits leave with its result.
+        # What `finally` records for later reads (annotation and value captures, class bodies,
+        # branch selections, overloads) comes from this binding over every route through it;
+        # the early exits leave with its result.
         self._merge_states(module, node, [normal, *leaving.breaks, *leaving.continues])
         self._bind_suite(name, module, package, node.finalbody, scope)
         exits = self.loop_exits[-1]
@@ -849,9 +850,16 @@ class _Source:
             exits.breaks.append(self._snapshot(module))
         if leaving.continues:
             exits.continues.append(self._snapshot(module))
-        # Only the normal route reaches the statements after the `try`.
+        scopes, guards = dict(self.scopes), dict(self.guards)
+        candidates, ambiguous = dict(self.overload_candidates), dict(self.ambiguous_overloads)
+        # Only the normal route reaches the statements after the `try`. Binding `finally` again
+        # for it gives that route's bindings and leaves every record above in place.
         self._restore(module, normal)
         self._bind_suite(name, module, package, node.finalbody, scope)
+        self.scopes.update(scopes)
+        self.guards.update(guards)
+        self.overload_candidates.update(candidates)
+        self.ambiguous_overloads.update(ambiguous)
 
     def _bind_control(
         self, name: str, module: _Module, package: str, node: ast.stmt, scope: _Scope | None

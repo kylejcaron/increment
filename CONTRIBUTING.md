@@ -669,8 +669,9 @@ starts from the bindings before the loop joined with those an iteration leaves
 at the end of its body or at a `continue`. The bindings after the loop join those
 `else` leaves with those at each `break`, after any `finally` it runs on the way
 out; statements after that `try` see only the routes that finish it normally,
-with the bindings its `finally` makes on those routes. A class body or function
-signature in a `finally` is bound once, against every route through it.
+with the bindings its `finally` makes on those routes. The annotations and values a
+`finally` captures, and the classes and functions it defines, are resolved against
+every route through it.
 Unannotated factory declarations and explicit type aliases count when exported
 directly as well as when used by public annotations; so do public class
 attributes assigned type expressions, including generic, union and bare `Any`

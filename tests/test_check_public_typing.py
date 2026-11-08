@@ -3570,3 +3570,38 @@ def test_container_change_in_finally_reaches_fields_after_a_break_exit(tmp_path:
     with pytest.raises(ValueError):
         public_any(root, ["sample"])
     assert (main(args), baseline.read_text()) == (1, before)
+
+
+@pytest.mark.integration
+def test_receiver_field_annotated_in_finally_sees_every_route_through_it(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any
+                __all__ = ["Holder"]
+                class Holder:
+                    def __init__(self) -> None:
+                        for _ in (0,):
+                            try:
+                                _Payload = str
+                                if sys.argv[1:]:
+                                    break
+                                pass
+                            finally:
+                                self.value: _Payload
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text()
+        .replace("_Payload = str", "_Payload = Any")
+        .replace("pass", "_Payload = str")
+    )
+
+    # The field is also annotated on the `break` route, where `_Payload` is `Any`.
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
