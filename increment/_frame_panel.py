@@ -159,12 +159,17 @@ _OBSERVATION_END = RefusalSpec(
 
 def _beyond_day_range(dtype: nw.dtypes.DType, value: Any) -> bool:
     """Whether *value* is a number outside the signed 64-bit range a numeric day axis
-    counts days in, which the backends' day arithmetic cannot hold."""
+    counts days in, which the backends' day arithmetic cannot hold.
+
+    The range is checked against -2**63 and 2**63, which every binary float type holds
+    exactly; comparing a NumPy float with 2**63 - 1 rounds that limit up to 2**63.
+    """
+    limit = _SIGNED_DAY_MAX + 1
     return (
         _day_axis_is_numeric(dtype)
         and isinstance(value, numbers.Real)
         and not isinstance(value, bool)
-        and (value < -_SIGNED_DAY_MAX - 1 or value > _SIGNED_DAY_MAX)
+        and (value < -limit or value >= limit)
     )
 
 

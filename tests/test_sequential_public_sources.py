@@ -946,7 +946,9 @@ def test_panel_capture_clamps_cursor_to_observation_end_and_continues_after_exte
 @pytest.mark.parametrize("day_type", ["int64", "uint64"], ids=["signed", "unsigned"])
 def test_panel_capture_as_of_beyond_the_signed_range_refuses(backend, day_type):
     """Days are counted as signed 64-bit offsets, so a capture as of a day past 2**63 - 1 on
-    an integer day column refuses on every backend, and the source retains no checkpoint."""
+    an integer day column refuses on every backend, whether the day is a Python integer or a
+    NumPy scalar, and the source retains no checkpoint."""
+    import numpy as np
     import polars as pl
     import pyarrow as pa
 
@@ -975,9 +977,10 @@ def test_panel_capture_as_of_beyond_the_signed_range_refuses(backend, day_type):
         experiment_id="experiment",
         plan=_plan(specs, "bernoulli", date="day", exposure_date="exposed"),
     )
-    with pytest.raises(CapabilityError) as raised:
-        workflows.capture_sequential(*analysis, finalized=True, as_of=2**63)
-    assert raised.value.code == "sequential.source.invalid"
+    for as_of in (2**63, np.float64(2**63), np.uint64(2**64 - 1)):
+        with pytest.raises(CapabilityError) as raised:
+            workflows.capture_sequential(*analysis, finalized=True, as_of=as_of)
+        assert raised.value.code == "sequential.source.invalid"
     with pytest.raises(CapabilityError) as unread:
         sequential_snapshot(*analysis)
     assert unread.value.code == "sequential.capture.required"

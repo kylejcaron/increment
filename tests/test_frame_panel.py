@@ -955,7 +955,9 @@ def test_integer_observation_end_beyond_the_signed_range_refuses(
     backend: str, day_type: pa.DataType
 ) -> None:
     """Days are counted as signed 64-bit offsets, so an observation end past 2**63 - 1 on
-    an integer day column refuses at construction on every backend instead of overflowing."""
+    an integer day column refuses at construction on every backend instead of overflowing,
+    whether it is a Python integer or a NumPy scalar."""
+    import numpy as np
     import polars as pl
 
     table = pa.table(
@@ -970,8 +972,41 @@ def test_integer_observation_end_beyond_the_signed_range_refuses(
     frame: Any = {"pandas": table.to_pandas(), "polars": pl.from_arrow(table), "pyarrow": table}[
         backend
     ]
-    with pytest.raises(InvalidRequestError) as exc_info:
-        from_unit_panel(
+    ends: tuple[Any, ...] = (2**63, np.float64(2**63), np.uint64(2**64 - 1))
+    for end in ends:
+        with pytest.raises(InvalidRequestError) as exc_info:
+            from_unit_panel(
+                frame,
+                unit="user_id",
+                group="variant",
+                date="day",
+                control="control",
+                metrics={"revenue": "mean"},
+                exposure_date="exposed_on",
+                observation_end=end,
+            )
+        assert exc_info.value.code == "source.panel.observation_end"
+        assert exc_info.value.context["axis_kind"] == "numeric"
+        assert exc_info.value.context["issue"] == "out_of_range"
+
+
+def test_observation_end_at_the_signed_day_maximum_builds() -> None:
+    """2**63 - 1, as a Python integer or a NumPy int64, is the last day a numeric day column
+    counts, so it bounds the panel without refusing."""
+    import numpy as np
+
+    frame = pa.table(
+        {
+            "user_id": ["c1", "c1", "t1", "t1"],
+            "variant": ["control", "control", "treatment", "treatment"],
+            "day": [0, 1, 0, 1],
+            "exposed_on": [0] * 4,
+            "revenue": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    ends: tuple[Any, ...] = (2**63 - 1, np.int64(2**63 - 1))
+    for end in ends:
+        source = from_unit_panel(
             frame,
             unit="user_id",
             group="variant",
@@ -979,11 +1014,9 @@ def test_integer_observation_end_beyond_the_signed_range_refuses(
             control="control",
             metrics={"revenue": "mean"},
             exposure_date="exposed_on",
-            observation_end=2**63,
+            observation_end=end,
         )
-    assert exc_info.value.code == "source.panel.observation_end"
-    assert exc_info.value.context["axis_kind"] == "numeric"
-    assert exc_info.value.context["issue"] == "out_of_range"
+        assert _counts(source) == {"control": 1, "treatment": 1}
 
 
 def test_asof_cumulative_moments_refuses_ambiguous_date_like_labels() -> None:
