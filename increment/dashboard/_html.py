@@ -1951,6 +1951,7 @@ def _lift_traces(snapshot: DashboardSnapshot, rows: Sequence[Any]) -> list[plots
 
 def _latest_lift_reading(snapshot: DashboardSnapshot, row: Any) -> str:
     reading = estimates_to_readout([row])[0]
+    reading["alternative"] = row.alternative
     latest = _table(
         [
             "Latest",
@@ -2053,7 +2054,7 @@ def _temporal_plots(
     prepared = []
     theme = coeftable_theme(snapshot.config.theme)
     for group in grouped.values():
-        group.sort(key=lambda row: row.ds)
+        group.sort(key=lambda row: _date_coordinate(row.ds))
         if lift:
             traces = _lift_traces(snapshot, group)
         else:

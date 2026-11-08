@@ -1407,12 +1407,16 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
     assert ("[+5.0%, ∞)" if point_state != "all_undefined" else "-100.0%, ∞)") in rendered
     legends = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", rendered))
     assert ("Estimate" in legends) == (point_state != "all_undefined")
+    assert "one-sided test for an increase" in rendered
+    assert "two-sided test" not in rendered
 
 
-@pytest.mark.parametrize("scale", ["relative", "absolute", "absolute_aware"])
+@pytest.mark.parametrize("scale", ["relative", "absolute", "absolute_aware", "absolute_fold"])
 def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
     storefront: DashboardSnapshot, scale: str
 ) -> None:
+    from zoneinfo import ZoneInfo
+
     from increment.breakout.estimates import DailyLiftEstimates
     from increment.estimation.results import Estimate
 
@@ -1430,12 +1434,21 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
         if scale == "absolute_aware"
         else [dt.date(2025, 1, day) for day in range(1, 4)]
     )
+    folded = scale == "absolute_fold"
+    if folded:
+        zone = ZoneInfo("America/New_York")
+        dates = [
+            dt.datetime(2025, 11, 2, 0, 45, tzinfo=zone),
+            dt.datetime(2025, 11, 2, 1, 45, tzinfo=zone, fold=0),
+            dt.datetime(2025, 11, 2, 1, 15, tzinfo=zone, fold=1),
+        ]
     scale = scale.split("_", 1)[0]
     rows = DailyLiftEstimates(
         seed.model_copy(
             update={
                 "ds": dates[day - 1],
                 "value_scale": scale,
+                "alternative": "less",
                 "null_lift": 0.15 if scale == "relative" else 0.0,
                 "null_abs": 15.0 if scale == "absolute" else None,
                 "lift": Estimate(
@@ -1463,7 +1476,12 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
     points = [tuple(map(float, point.split(","))) for point in line.attrib["points"].split()]
     assert len(points) == 3
     assert points[0][0] < points[1][0] < points[2][0]
-    assert points[1][0] == pytest.approx((points[0][0] + points[2][0]) / 2, abs=0.02)
+    if folded:
+        assert points[1][0] - points[0][0] == pytest.approx(
+            2 * (points[2][0] - points[1][0]), abs=0.03
+        )
+    else:
+        assert points[1][0] == pytest.approx((points[0][0] + points[2][0]) / 2, abs=0.02)
     assert points[1][1] == pytest.approx((points[0][1] + points[2][1]) / 2, abs=0.02)
     reference = next(
         line for line in chart.findall(".//{*}line") if "stroke-dasharray" in line.attrib
@@ -1472,6 +1490,8 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
         (points[0][1] + points[1][1]) / 2, abs=0.02
     )
     assert chart.find(".//{*}polygon") is not None
+    assert "one-sided test for a decrease" in rendered
+    assert "two-sided test" not in rendered
 
 
 def test_temporal_early_outlier_keeps_its_true_ghost_and_clipped_geometry(
