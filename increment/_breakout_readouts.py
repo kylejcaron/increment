@@ -344,27 +344,17 @@ class BreakoutReadouts:
                 route="use a source with the requested breakout dimensions",
             )
         custom = serves_custom_breakouts(self._src)
-        if route in (ARTIFACT_ROUTE, NATIVE_ROUTE, PANEL_ROUTE) and not custom:
-            if not req.metrics:
-                return BreakoutEstimates([])
-            req = self.validate_request(req)
-        elif custom:
-            # Validate before the provider scope opens so refusals precede any read.
-            if not req.metrics:
-                return BreakoutEstimates([])
-            req = self.validate_request(req)
+        # Validate before any evidence scope opens so refusals precede any read.
+        if not req.metrics:
+            return BreakoutEstimates([])
+        req = self.validate_request(req)
         if self._execution_context is not None:
             self._execution_context.validate_request(
                 self._scope_source,
                 req.metrics,
                 self._configs(req),
             )
-        if (
-            self._execution_context is None
-            and route in (ARTIFACT_ROUTE, NATIVE_ROUTE, PANEL_ROUTE)
-            and not custom
-            and req.population != "triggered"
-        ):
+        if self._execution_context is None and not custom and req.population != "triggered":
             return self._run_owned_context(req)
         if route == NATIVE_ROUTE or custom:
             if self._execution_context is not None:

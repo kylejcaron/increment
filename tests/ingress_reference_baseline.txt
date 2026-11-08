@@ -1,0 +1,30 @@
+# Ingress references outside acquisition: module, kind, count. Counts may only decrease.
+# route: source-route constants, route predicates, and route values spelled as string literals
+# in a comparison with a route; custom: custom-versus-built-in predicates; unwrap: loader
+# unwrapping through _builtin_source.
+increment/_breakout_readouts.py custom 3
+increment/_breakout_readouts.py route 10
+increment/_breakout_readouts.py unwrap 1
+increment/_dashboard_capture.py unwrap 1
+increment/_day_axis.py custom 1
+increment/_day_axis.py route 8
+increment/_day_axis.py unwrap 2
+increment/_execute.py custom 1
+increment/_exploratory.py route 1
+increment/_health.py unwrap 1
+increment/_planning_baseline.py custom 1
+increment/_runnability.py route 2
+increment/_sitewide.py route 1
+increment/_source_diagnostics.py custom 2
+increment/_source_diagnostics.py route 1
+increment/kernel/context.py custom 1
+increment/readouts/_breakout.py custom 1
+increment/readouts/_line2.py custom 2
+increment/readouts/_line2.py route 2
+increment/readouts/_line3.py custom 1
+increment/readouts/_metric_rows.py custom 2
+increment/readouts/_run.py unwrap 2
+increment/readouts/_run_acquisition.py custom 1
+increment/readouts/_whole_window.py custom 1
+increment/readouts/_whole_window.py route 8
+increment/readouts/_whole_window.py unwrap 2

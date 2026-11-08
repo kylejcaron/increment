@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -324,3 +326,140 @@ def test_execution_context_reads_stream_inventory_from_evidence_scope() -> None:
         if isinstance(node, ast.Name) and node.id == "_adjustment_fact_names"
     )
     assert not violations, "\n".join(violations)
+
+
+_INGRESS_BASELINE = Path(__file__).with_name("ingress_reference_baseline.txt")
+# Ingress differences belong to acquisition: the evidence layer, the adapters that scope a loader
+# or wrap it as a provider, and the loaders themselves.
+_ACQUISITION_MODULES = frozenset(
+    {
+        Path("_evidence_types.py"),
+        Path("_source_types.py"),
+        Path("_evidence_refusals.py"),
+        Path("readouts/_evidence.py"),
+        Path("_evidence_loaders.py"),
+        Path("_evidence_scopes.py"),
+        Path("evidence.py"),
+        Path("readouts/_provider.py"),
+        Path("frame.py"),
+        Path("sources.py"),
+        Path("switchback.py"),
+    }
+)
+_INGRESS_PREDICATES = {
+    "route": frozenset({"is_artifact_route", "_is_artifact_source"}),
+    "custom": frozenset(
+        {"is_custom_source", "is_builtin_source", "is_custom_provider", "serves_custom_breakouts"}
+    ),
+    "unwrap": frozenset({"_builtin_source"}),
+}
+
+
+def _is_acquisition(rel: Path) -> bool:
+    return (
+        rel in _ACQUISITION_MODULES
+        or rel.parts[0] == "query"
+        or (len(rel.parts) == 1 and rel.name.startswith("_frame_"))
+    )
+
+
+def _names_a_route(node: ast.AST) -> bool:
+    return any(
+        (isinstance(child, ast.Name) and "route" in child.id.lower())
+        or (isinstance(child, ast.Attribute) and "route" in child.attr.lower())
+        for child in ast.walk(node)
+    )
+
+
+def _route_literal_lines(node: ast.Compare, values: frozenset[str]) -> list[int]:
+    """Lines of route values spelled as literals and compared with a route-named expression."""
+    operands = (node.left, *node.comparators)
+    lines = [
+        item.lineno
+        for operand in operands
+        for item in (
+            operand.elts if isinstance(operand, (ast.Tuple, ast.List, ast.Set)) else (operand,)
+        )
+        if isinstance(item, ast.Constant) and item.value in values
+    ]
+    return lines if lines and any(_names_a_route(operand) for operand in operands) else []
+
+
+def _ingress_references(root: Path) -> dict[tuple[str, str], list[int]]:
+    """Lines per (module, kind) where code outside acquisition names an ingress."""
+    # Source routes are the acquisition module's module-level ``*_ROUTE`` string constants.
+    evidence = (root / "readouts" / "_evidence.py").read_text()
+    routes = dict(
+        re.findall(r"^(\w+_ROUTE)(?:\s*:[^=\n]*)?\s*=\s*[\"'](\w+)[\"']", evidence, re.MULTILINE)
+    )
+    values = frozenset(routes.values())
+    kinds = dict.fromkeys(routes, "route")
+    kinds.update({name: kind for kind, names in _INGRESS_PREDICATES.items() for name in names})
+    literals = tuple(f"{quote}{value}{quote}" for value in values for quote in "\"'")
+    references: dict[tuple[str, str], list[int]] = {}
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root)
+        if _is_acquisition(rel):
+            continue
+        text = path.read_text()
+        # Parse only modules that spell a counted name, or a route value beside a route name.
+        if not any(name in text for name in kinds) and not (
+            any(literal in text for literal in literals) and "route" in text.lower()
+        ):
+            continue
+        module = f"increment/{rel.as_posix()}"
+        for node in ast.walk(ast.parse(text, filename=str(path))):
+            if isinstance(node, ast.Compare):
+                lines, kind = _route_literal_lines(node, values), "route"
+            elif isinstance(node, ast.Name) and node.id in kinds:
+                lines, kind = [node.lineno], kinds[node.id]
+            elif isinstance(node, ast.Attribute) and node.attr in kinds:
+                lines, kind = [node.lineno], kinds[node.attr]
+            else:
+                continue
+            if lines:
+                references.setdefault((module, kind), []).extend(lines)
+    return references
+
+
+def _load_ingress_baseline(path: Path) -> Counter[tuple[str, str]]:
+    baseline: Counter[tuple[str, str]] = Counter()
+    for number, raw in enumerate(path.read_text().splitlines(), 1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        fields = raw.split()
+        if (
+            len(fields) != 3
+            or not fields[2].isdecimal()
+            or int(fields[2]) == 0
+            or (fields[0], fields[1]) in baseline
+        ):
+            raise AssertionError(f"{path}:{number}: expected module, kind, positive count")
+        baseline[(fields[0], fields[1])] = int(fields[2])
+    return baseline
+
+
+def test_interpretation_does_not_grow_ingress_branches() -> None:
+    """Ingress branches outside acquisition may be removed, never added."""
+    observed = _ingress_references(Path(__file__).parents[1] / "increment")
+    baseline = _load_ingress_baseline(_INGRESS_BASELINE)
+    grown = [
+        f"{module}:{','.join(map(str, sorted(lines)))}: {kind} "
+        f"({len(lines)}, baseline {baseline[(module, kind)]})"
+        for (module, kind), lines in sorted(observed.items())
+        if len(lines) > baseline[(module, kind)]
+    ]
+    assert not grown, (
+        "New ingress branches outside acquisition; declare the difference as an "
+        "EvidenceCapabilities field and branch on that, or move the logic into acquisition "
+        "(increment/readouts/_evidence.py, increment/_evidence_loaders.py):\n" + "\n".join(grown)
+    )
+    stale = [
+        f"{module} {kind}: baseline {count}, observed {len(observed.get((module, kind), ()))}"
+        for (module, kind), count in sorted(baseline.items())
+        if len(observed.get((module, kind), ())) < count
+    ]
+    assert not stale, (
+        f"Stale ingress baseline; lower or remove these entries in {_INGRESS_BASELINE.name}:\n"
+        + "\n".join(stale)
+    )
