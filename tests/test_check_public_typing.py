@@ -3523,7 +3523,12 @@ def test_break_through_finally_skips_the_statements_after_the_try(tmp_path: Path
     )
     assert public_any(root, ["sample"]) == {"sample.read": 0}
     path = root / "sample/__init__.py"
-    path.write_text(path.read_text().replace("pass", "_Payload = Any"))
+    source = path.read_text()
+    # A `finally` binding an unrelated name keeps the `break` route's bindings off the
+    # statements after the `try`.
+    path.write_text(source.replace("pass", "_cleanup_done = True"))
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+    path.write_text(source.replace("pass", "_Payload = Any"))
 
     # The normal route now copies Any while `break` leaves the earlier copy.
     with pytest.raises(ValueError):
