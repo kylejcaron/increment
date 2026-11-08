@@ -8,6 +8,7 @@ import datetime as dt
 import io
 import json
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -684,15 +685,28 @@ def test_the_second_experiment_uses_the_same_result_sections(
 
 
 @pytest.mark.parametrize("view", ["cumulative_lift", "daily_values", "cumulative_values"])
-def test_all_temporal_views_render_every_declared_metric_in_one_table(
+def test_all_temporal_views_render_every_declared_metric(
     storefront: DashboardSnapshot, view: ExploreView
 ) -> None:
     data = temporal_rows(storefront, view)
     expected = {metric.name for metric in storefront.metrics}
     assert {row.metric for row in data} == expected
+    if view == "cumulative_lift":
+        data = type(data)(
+            row.model_copy(update={"ds": row.ds + dt.timedelta(days=3)})
+            if row.metric == storefront.primary_metric
+            else row
+            for row in data
+        )
     html = render_explore(storefront, data, metric=None, view=view).text
     for metric in expected:
         assert metric in html
+    if view == "cumulative_lift":
+        endpoints = [
+            float(points.split()[-1].split(",")[0])
+            for points in re.findall(r'<polyline[^>]*points="([^"]+)"', html)
+        ]
+        assert max(endpoints) - min(endpoints) > 100
 
 
 def test_all_metric_daily_table_keeps_cohort_and_calendar_rows_distinct(
@@ -711,6 +725,13 @@ def test_all_metric_daily_table_keeps_cohort_and_calendar_rows_distinct(
     html = render_explore(storefront, mixed, metric=None, view="daily_values").text
     assert "Exposure cohort" in html
     assert "Observation date" in html
+    incompatible = DailyMetricValues(
+        row.model_copy(update={"ds_basis": "cohort"}) if index == 0 else row
+        for index, row in enumerate(data)
+    )
+    refused = render_explore(storefront, incompatible, metric=None, view="daily_values").text
+    assert "cannot share one axis" in refused
+    assert "<svg" not in refused
 
 
 def test_render_explore_segments_show_a_truthful_empty_state_without_breakouts(
@@ -750,7 +771,35 @@ def test_dashboard_tables_escape_warehouse_segment_values_and_arm_names(
         metric=storefront.primary_metric,
         view="segments",
     ).text
-    for html in (results, segments):
+    from increment.breakout.estimates import DailyLiftEstimates
+
+    renamed = dataclasses.replace(
+        storefront,
+        metrics=tuple(
+            model.model_copy(update={"name": hostile})
+            if model.name == storefront.primary_metric
+            else model
+            for model in storefront.metrics
+        ),
+        primary_metric=hostile,
+        group_data=tuple(
+            dataclasses.replace(item, metric=hostile)
+            if item.metric == storefront.primary_metric
+            else item
+            for item in storefront.group_data
+        ),
+    )
+    temporal = render_explore(
+        renamed,
+        DailyLiftEstimates(
+            row.model_copy(update={"metric": hostile})
+            for row in temporal_rows(storefront, "cumulative_lift")
+            if row.metric == storefront.primary_metric
+        ),
+        metric=hostile,
+        view="cumulative_lift",
+    ).text
+    for html in (results, segments, temporal):
         assert hostile not in html
         assert "&lt;img src=x onerror=alert(1)&gt;" in html
 
@@ -839,6 +888,8 @@ def test_daily_values_report_their_actual_calendar_basis_and_gap_reasons(
 
     html = render_explore(storefront, data, metric="checkout_conversion", view="daily_values").text
     assert "nonpositive_mean" in html
+    assert "30.0%" in html
+    assert "[20.0%, 40.0%]" in html
 
 
 @pytest.mark.slow
@@ -1229,6 +1280,8 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
                 "family_q": 0.05,
                 "family_procedure": "bh",
                 "multiplicity_status": "exploratory_family",
+                "null_lift": 0.01,
+                "posterior_prob_favorable": 0.73,
             }
         )
         for row in series
@@ -1238,6 +1291,11 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
     assert estimates_to_readout(rising)[0]["selection_qualification"] is not None
     html = render_explore(storefront, rising, metric=model.name, view="cumulative_lift").text
     assert "Selection evidence for" in html
+    assert "Discovery" in html and "Yes" in html
+    assert "Posterior P(favorable)" in html and "73.0%" in html
+    from increment.dashboard._theme import coeftable_theme
+
+    assert f'stroke="{coeftable_theme(storefront.config.theme).unfavorable}"' in html
 
 
 def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
@@ -1248,12 +1306,18 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
     data = temporal_rows(storefront, "cumulative_lift", segmented=True)
     assert isinstance(data, DailyLiftEstimates)
     mixed = DailyLiftEstimates(
-        row.model_copy(update={"method": "cuped"}) if row.metric == "revenue_per_user" else row
+        row.model_copy(
+            update={
+                "method": "cuped" if row.metric == "revenue_per_user" else row.method,
+                "analysis_population": "triggered",
+            }
+        )
         for row in data
     )
     rendered = render_explore(storefront, mixed, metric=None, view="cumulative_lift").text
     assert "revenue_per_user" in rendered and storefront.primary_metric in rendered
     assert "US" in rendered and "CA" in rendered
+    assert "triggered" in rendered
 
 
 def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
@@ -1278,6 +1342,92 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
     assert polylines
     # Each estimate and bound is two separate two-date segments, never a bridge.
     assert all(len(points.split()) == 2 for points in polylines)
+    assert "Lower CI" in rendered and "Upper CI" not in rendered
+    assert "[+5.0%, ∞)" in rendered
+
+
+@pytest.mark.parametrize("scale", ["relative", "absolute"])
+def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
+    storefront: DashboardSnapshot, scale: str
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimates
+    from increment.estimation.results import Estimate
+
+    model = next(model for model in storefront.metrics if model.name == "revenue_per_user")
+    seed = next(
+        row for row in temporal_rows(storefront, "cumulative_lift") if row.metric == model.name
+    )
+    magnitude = 1 if scale == "relative" else 100
+    rows = DailyLiftEstimates(
+        seed.model_copy(
+            update={
+                "ds": dt.date(2025, 1, day),
+                "value_scale": scale,
+                "null_lift": 0.15 if scale == "relative" else 0.0,
+                "null_abs": 15.0 if scale == "absolute" else None,
+                "lift": Estimate(
+                    value=0.1 * day * magnitude,
+                    lb=0.05 * day * magnitude,
+                    ub=0.15 * day * magnitude,
+                    level=0.95,
+                ),
+            }
+        )
+        for day in range(1, 4)
+    )
+    rendered = render_explore(storefront, rows, metric=model.name, view="cumulative_lift").text
+    svgs = re.findall(r"<svg\b.*?</svg>", rendered, re.S)
+    assert svgs
+    tick_text = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", "".join(svgs)))
+    assert ("%" in tick_text) == (scale == "relative")
+    assert "Latest" in rendered
+    assert ("+30.0%" if scale == "relative" else "+30") in rendered
+    chart = ET.fromstring(svgs[0])
+    line = chart.find(".//{*}polyline")
+    assert line is not None
+    points = [tuple(map(float, point.split(","))) for point in line.attrib["points"].split()]
+    assert len(points) == 3
+    assert points[1][0] == pytest.approx((points[0][0] + points[2][0]) / 2, abs=0.02)
+    assert points[1][1] == pytest.approx((points[0][1] + points[2][1]) / 2, abs=0.02)
+    reference = next(
+        line for line in chart.findall(".//{*}line") if "stroke-dasharray" in line.attrib
+    )
+    assert float(reference.attrib["y1"]) == pytest.approx(
+        (points[0][1] + points[1][1]) / 2, abs=0.02
+    )
+    assert chart.find(".//{*}polygon") is not None
+
+
+def test_temporal_early_outlier_keeps_its_true_ghost_and_clipped_geometry(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimates
+    from increment.estimation.results import Estimate
+
+    seed = next(iter(temporal_rows(storefront, "cumulative_lift")))
+    rows = DailyLiftEstimates(
+        seed.model_copy(
+            update={
+                "ds": dt.date(2025, 1, day),
+                "lift": Estimate(value=value, lb=value - 0.01, ub=value + 0.01, level=0.95),
+            }
+        )
+        for day, value in enumerate((10, 0.02, 0.04, 0.06, 0.08, 0.1), 1)
+    )
+    rendered = render_explore(storefront, rows, metric=seed.metric, view="cumulative_lift").text
+    match = re.search(r"<svg\b.*?</svg>", rendered, re.S)
+    assert match is not None
+    chart = ET.fromstring(match.group())
+    height = float(chart.attrib["height"])
+    lines = chart.findall(".//{*}polyline")
+    ghost = next(line for line in lines if line.get("stroke-opacity") == "0.35")
+    assert any(float(point.split(",")[1]) < 0 for point in ghost.attrib["points"].split())
+    for line in lines:
+        if line.get("stroke-opacity") is None:
+            assert all(
+                0 <= float(point.split(",")[1]) <= height for point in line.attrib["points"].split()
+            )
+    assert chart.find(".//{*}clipPath") is not None
 
 
 @pytest.mark.slow

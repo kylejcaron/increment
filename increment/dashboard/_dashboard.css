@@ -329,6 +329,20 @@
   margin: 12px 0 4px;
 }
 
+.inc-dashboard-trajectory {
+  margin: 0 0 24px;
+  min-width: 0;
+}
+
+.inc-dashboard-trajectory figcaption {
+  color: var(--inc-dashboard-muted);
+  overflow-wrap: anywhere;
+}
+
+.inc-dashboard-trajectory-svg svg {
+  display: block;
+}
+
 .inc-dashboard-unavailable-reasons {
   display: block;
   max-width: 24rem;
