@@ -263,7 +263,11 @@ reports that the procedure was not recorded rather than inferring it from
 the interval or guarantee.
 
 Ordinary `str(row)` and `repr(row)` use the same compact semantic display for
-arm, breakout, daily, and additive contrast rows. A missing point is not
+arm, breakout, daily, and additive contrast rows. `LiftEstimate` displays
+relative point estimates and finite interval endpoints as percentages (with a
+closed finite end and an open infinite end); absolute-scale points and
+intervals stay in the metric's original units. The representation reads only
+stored fields and never recalculates inference. A missing point is not
 necessarily a failed cell: a point-unavailable result can retain an unbounded
 or disconnected confidence set, whose geometry remains visible in the display.
 For a coded cell failure only, `row.reason` returns the persisted
@@ -539,7 +543,7 @@ revenue result identity: method unadjusted; method role decision; estimand itt.
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
 Multiplicity (outcome): undeclared_plan; family retained scope.
 revenue / treatment: lift=+9.47% [+3.27%, +16.04%] significant=True
-LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+1.616, +inf), route='finite_sample', discovery=None)
+LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=[161.6%, ∞), route='finite_sample', discovery=None)
 ```
 
 ## Read the row's scale

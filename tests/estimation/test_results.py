@@ -1108,7 +1108,12 @@ class TestPValueQuantile:
         assert est.p_value() == 0.0321
 
 
-def test_lift_estimate_repr_surfaces_selection_without_recomputing_decisions():
+def test_lift_estimate_repr_formats_relative_scale_and_open_endpoint_semantically(monkeypatch):
+    monkeypatch.setattr(
+        LiftEstimate,
+        "stat_sig",
+        lambda self: pytest.fail("representation must not recompute decisions"),
+    )
     estimate = LiftEstimate(
         metric="revenue",
         group_id="treatment",
@@ -1121,12 +1126,35 @@ def test_lift_estimate_repr_surfaces_selection_without_recomputing_decisions():
 
     text = repr(estimate)
 
-    assert "metric='revenue'" in text
-    assert "group='treatment'" in text
-    assert "value=+0.12 (relative)" in text
-    assert "interval=(+0.03, +0.21)" in text
+    assert estimate.lift is not None
+    assert estimate.lift.value == 0.12
+    assert "12%" in text
+    assert "[3%, 21%]" in text
     assert "discovery=True" in text
     assert "stat_sig=" not in text
+
+    open_estimate = estimate.model_copy(
+        update={"lift": estimate.lift.model_copy(update={"ub": None, "open_side": "upper"})}
+    )
+    assert "[3%, ∞)" in repr(open_estimate)
+
+
+def test_lift_estimate_repr_keeps_absolute_values_in_metric_units():
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        value_scale="absolute",
+        lift=Estimate(value=0.12, lb=0.03, ub=0.21, level=0.95),
+    )
+
+    text = repr(estimate)
+
+    assert "scale='absolute'" in text
+    assert "value=0.12" in text
+    assert "[0.03, 0.21]" in text
+    assert "%" not in text
 
 
 def test_lift_estimate_repr_does_not_cross_scales_for_absolute_null():
@@ -1140,30 +1168,6 @@ def test_lift_estimate_repr_does_not_cross_scales_for_absolute_null():
     )
 
     assert "scale='relative'" in repr(estimate)
-    assert "stat_sig=" not in repr(estimate)
-
-
-def test_lift_estimate_repr_distinguishes_open_from_unavailable_interval():
-    estimate = LiftEstimate(
-        metric="revenue",
-        group_id="treatment",
-        method="unadjusted",
-        method_role="decision",
-        alternative="greater",
-        lift=Estimate(
-            value=0.12,
-            lb=0.03,
-            ub=None,
-            open_side="upper",
-            level=0.95,
-            alpha=0.05,
-        ),
-    )
-
-    text = repr(estimate)
-
-    assert "interval=(+0.03, +inf)" in text
-    assert "stat_sig=" not in text
 
 
 def test_sampling_only_row_does_not_reconstruct_posterior_from_interval():
@@ -1195,7 +1199,7 @@ def test_lift_estimate_str_preserves_compact_selection_meaning():
 
     assert rendered == repr(estimate)
     assert "metric='revenue'" in rendered and "group='treatment'" in rendered
-    assert "value=+0.12 (relative)" in rendered and "interval=(+0.03, +0.21)" in rendered
+    assert "12%" in rendered and "[3%, 21%]" in rendered
     assert "method='unadjusted'" in rendered and "population='assigned'" in rendered
     assert "inference='fixed'" in rendered and "alternative='two-sided'" in rendered
     assert "Benjamini-Hochberg" in rendered and "retained family size 3" in rendered
@@ -1208,7 +1212,7 @@ def test_print_preserves_set_without_point_as_distinct_from_failure():
     rendered = str(estimate)
 
     assert "metric='m'" in rendered and "group='g'" in rendered
-    assert "unavailable" in rendered and "+inf" in rendered
+    assert "unavailable" in rendered and "∞" in rendered
     assert "failure=" not in rendered
     assert estimate.reason is None
 
@@ -1275,8 +1279,8 @@ def test_rich_lift_estimate_display_is_compact_and_semantic():
     rendered = output.getvalue()
 
     assert "metric='revenue'" in rendered and "group='treatment'" in rendered
-    assert "population='triggered'" in rendered and "value=+0.12 (relative)" in rendered
-    assert "interval=(+0.03, +0.21)" in rendered
+    assert "population='triggered'" in rendered and "12%" in rendered
+    assert "[3%, 21%]" in rendered
     assert "posterior_components" not in rendered
 
 

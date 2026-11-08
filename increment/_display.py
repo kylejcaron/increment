@@ -33,6 +33,28 @@ def _format_number(value: Fraction | int | float, digits: int) -> str:
         return format(number, f".{digits}g")
 
 
+def format_effect(value: float, *, relative: bool, digits: int = 4) -> str:
+    """Format a lift as a percent, or an absolute effect in its original units."""
+    number = value * 100 if relative else value
+    return f"{_format_number(number, digits)}%" if relative else _format_number(number, digits)
+
+
+def format_effect_interval(
+    lower: float | None,
+    upper: float | None,
+    *,
+    relative: bool,
+    digits: int = 4,
+) -> str:
+    """Format lift interval endpoints using the row's declared effect scale."""
+    suffix = "%" if relative else ""
+    scale = 100 if relative else 1
+    return interval_text(
+        None if lower is None else f"{_format_number(lower * scale, digits)}{suffix}",
+        None if upper is None else f"{_format_number(upper * scale, digits)}{suffix}",
+    )
+
+
 def interval_text(lower: str | None, upper: str | None) -> str:
     """Bracket formatted endpoints; an infinite end (``None``) is open: ``[a, ∞)``, ``(−∞, b]``."""
     opening = "(−∞" if lower is None else f"[{lower}"
