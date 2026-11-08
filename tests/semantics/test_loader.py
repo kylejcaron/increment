@@ -1509,7 +1509,12 @@ def test_realistic_demo_example_loads():
     assert example_dir.is_dir(), f"missing checked-in example directory: {example_dir}"
     defs = load(example_dir)
     assert isinstance(defs, Definitions)
-    assert {s.name for s in defs.fact_sources} == {"orders", "web_events", "experiment_exposure"}
+    assert {s.name for s in defs.fact_sources} == {
+        "orders",
+        "web_events",
+        "experiment_exposure",
+        "experiment_assignment",
+    }
     assert len(defs.exposures) >= 1
     assert {m.name for m in defs.metrics} == {
         "conversion_rate",
@@ -1530,7 +1535,16 @@ def test_realistic_demo_example_loads():
     assert latency.denominator.aggregation == "count"
     assert latency.denominator.window_days == 14
     assert latency.numerator.filters == latency.denominator.filters
-    assert len(defs.experiments) == 1
+    experiments = {experiment.name: experiment for experiment in defs.experiments}
+    assert set(experiments) == {"checkout_redesign", "express_checkout"}
+    # Each declares its assignment law, so its assignment check and SRM can run.
+    for experiment in experiments.values():
+        assert experiment.allocation == {"control": 0.5, "treatment": 0.5}
+        assert experiment.allocation_scheme == "independent"
+    assert experiments["checkout_redesign"].trigger is None
+    # Assigned on the first visit, triggered on reaching checkout.
+    express = experiments["express_checkout"]
+    assert (express.exposure, express.trigger) == ("assignment", "checkout_trigger")
 
 
 # ── Regression: window_days=None warning ────────────────────────────

@@ -4816,7 +4816,7 @@ def _bounded_encouragement_panels():
             common = {
                 "unit_id": unit,
                 "ds": ds,
-                "experiment_id": "late_over_time",
+                "experiment_id": "staggered_encouragement",
                 "group_id": group,
                 "first_exposure_date": start,
             }
@@ -4933,7 +4933,7 @@ def test_asof_group_summary_completed_encouragement_gates_later_window_edge_reve
             common = {
                 "unit_id": unit,
                 "ds": ds,
-                "experiment_id": "late_over_time",
+                "experiment_id": "staggered_encouragement",
                 "group_id": group,
                 "first_exposure_date": start,
             }

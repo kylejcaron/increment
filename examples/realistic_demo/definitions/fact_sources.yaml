@@ -86,3 +86,22 @@ fact_sources:
       - name: exposure
         column: null
         description: A user was exposed (triggered the checkout surface) after being bucketed.
+
+  # fact_assignment - every bucketed user with its randomization group, at
+  # the moment of assignment, whether or not they later reach checkout.
+  - name: experiment_assignment
+    sql: |
+      SELECT
+        'assignment' AS event,
+        user_id,
+        experiment_id,
+        variant AS group_id,
+        assigned_at
+      FROM read_parquet('examples/realistic_demo/warehouse/fact_assignment/**/*.parquet')
+    timestamp_column: assigned_at
+    entities:
+      - user_id
+    facts:
+      - name: assignment
+        column: null
+        description: A user was bucketed into an experiment arm.

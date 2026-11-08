@@ -585,15 +585,13 @@ def lint(session: nox.Session) -> None:
 EXAMPLE_NOTEBOOKS = (
     "analysis_from_a_dataframe",
     "analysis_from_a_warehouse",
-    "ab_testing_dashboard",
-    "triggered_population_dashboard",
+    "dashboard",
     "observational",
     "cuped",
     "breakout",
     "power",
     "hte",
     "encouragement",
-    "late_over_time",
 )
 
 

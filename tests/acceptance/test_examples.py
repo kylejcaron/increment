@@ -476,6 +476,13 @@ def test_encouragement_export_renders_expected_figures(tmp_path):
     assert "Always valid" in html
     assert "always_valid" in html
     assert "finalized outcome and uptake windows" in html
+    # The per-day LATE is refused by code; the as-of LATE is reported on many dates.
+    assert "facade.analysis.encouragement_daily_late" in html
+    trend = re.search(
+        r"Fixed alpha, (\d+) dates:\\u003C/strong\\u003E \[[+-]\d+\.\d%, [+-]\d+\.\d%\]",
+        html,
+    )
+    assert trend is not None and int(trend.group(1)) > 1
 
 
 # --- hte.py: no warehouse, needs tables (pandas + coeftable) ---------------
@@ -486,20 +493,3 @@ def test_hte_export_succeeds(tmp_path):
     pytest.importorskip("pandas")
     pytest.importorskip("coeftable")
     _export_html("hte.py", tmp_path)
-
-
-# --- late_over_time.py: no warehouse, needs pandas + tables for readout ---
-
-
-@pytest.mark.integration
-def test_late_over_time_export_renders_expected_figures(tmp_path):
-    pytest.importorskip("pandas")
-    pytest.importorskip("coeftable")
-    html = _export_html("late_over_time.py", tmp_path)
-
-    assert "LATE over time" in html
-    assert "statistically meaningless" in html
-    assert "The as-of LATE trend" in html
-    assert "Fixed-horizon LATE" in html
-    assert "Always-valid compliance" in html
-    assert re.search(r"[+-]\d+\.\d%, [+-]\d+\.\d%", html)

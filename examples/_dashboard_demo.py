@@ -7,12 +7,15 @@ look at the working directory, a manifest, or a warehouse path.
 
 from __future__ import annotations
 
+import datetime as dt
 import importlib.util
 import json
 from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+
+from increment.artifacts import SourceSnapshotEvidence
 
 PARTITIONS = 2
 USERS_PER_PARTITION = 2000
@@ -21,6 +24,9 @@ SEED = 42
 DEFINITIONS = Path("examples/realistic_demo/definitions")
 WAREHOUSE = Path("examples/realistic_demo/warehouse")
 GENERATOR = Path("examples/realistic_demo/generate.py")
+
+#: The experiments the definitions declare; express_checkout declares a trigger.
+EXPERIMENTS = ("checkout_redesign", "express_checkout")
 
 
 def ensure_demo_warehouse(repo_root: Path) -> dict[str, Any]:
@@ -36,7 +42,7 @@ def ensure_demo_warehouse(repo_root: Path) -> dict[str, Any]:
         raise FileNotFoundError(
             f"{generator_path} not found. Launch this notebook from the repository root, "
             "for example: uv run --extra dashboard --extra demo marimo edit "
-            "examples/ab_testing_dashboard.py"
+            "examples/dashboard.py"
         )
     generate = _load_generator(generator_path)
     warehouse = root / WAREHOUSE
@@ -72,6 +78,13 @@ def demo_provenance(manifest: Mapping[str, Any]) -> dict[str, str]:
             manifest.get("partitions", 0) * manifest.get("users_per_partition", 0)
         ),
     }
+
+
+def snapshot_evidence(manifest: Mapping[str, Any]) -> SourceSnapshotEvidence:
+    """The generated snapshot's event-time cutoff, which a triggered population is read up to."""
+    return SourceSnapshotEvidence(
+        observation_cutoff_ts=dt.datetime.fromisoformat(manifest["observation_cutoff"])
+    )
 
 
 def _load_generator(path: Path) -> ModuleType:
