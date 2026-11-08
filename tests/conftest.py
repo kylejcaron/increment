@@ -126,6 +126,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     state = session.config.stash.get(tach_state_key, None)
     if state is not None and isinstance(state.handler, AffectedHandlerWithReport):
         state.handler.pytest_sessionfinish(session, exitstatus)
+    # A worker can finish while another still holds the catalog rewritten; the xdist
+    # controller finishes after every worker, so it alone compares the catalog.
+    if hasattr(session.config, "workerinput"):
+        return
     before = session.config.stash[_catalog_state_key]
     after = _catalog_sidecar_state(session.config.rootpath)
     changed = [str(path) for path, initial in before.items() if after[path] != initial]

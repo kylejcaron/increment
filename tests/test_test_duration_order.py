@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -100,3 +101,38 @@ def test_split_runs_do_not_rewrite_shared_duration_weights(tmp_path, monkeypatch
     conftest.pytest_sessionfinish(session, 0)
 
     assert path.read_text() == original
+
+
+def test_catalog_check_runs_on_the_controller_after_workers_finish(tmp_path):
+    import tests.conftest as suite_conftest
+
+    catalog = tmp_path / "examples" / "definitions" / ".increment-kernel-catalog.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text('{"catalog": "original"}')
+    original = catalog.stat()
+
+    def session(**worker):
+        config = SimpleNamespace(
+            rootpath=tmp_path, stash=pytest.Stash(), getoption=lambda name, default=None: default
+        )
+        if worker:
+            config.workerinput = worker
+        return cast(pytest.Session, SimpleNamespace(config=config))
+
+    controller, worker = session(), session(workerid="gw0")
+    for started in (controller, worker):
+        suite_conftest.pytest_sessionstart(started)
+
+    # Another worker has rewritten the shared catalog and not yet restored it.
+    catalog.write_text('{"catalog": "rewritten"}')
+    suite_conftest.pytest_sessionfinish(worker, 0)
+
+    catalog.write_text('{"catalog": "original"}')
+    os.utime(catalog, ns=(original.st_atime_ns, original.st_mtime_ns))
+    suite_conftest.pytest_sessionfinish(controller, 0)
+
+    left_changed = session()
+    suite_conftest.pytest_sessionstart(left_changed)
+    catalog.write_text('{"catalog": "rewritten"}')
+    with pytest.raises(AssertionError):
+        suite_conftest.pytest_sessionfinish(left_changed, 0)
