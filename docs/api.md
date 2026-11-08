@@ -127,6 +127,45 @@ values.
 
 ### Earlier release notes
 
+- Release note (performance): dashboard preparation shares eager Explore lift
+  reads across metric selections and applies each selection's own correction
+  to its captured evidence. Each distinct runtime warning is shown once per
+  preparation. The snapshot remains immutable and usable after its source is
+  disconnected; estimates and corrections are unchanged. Preparation still
+  captures all Explore views, so large metric lists remain expensive.
+- Release note (usability): the dashboard's Readout table no longer has a
+  **Discovery** column. Family selection remains in the metric inspector,
+  Report notes and qualifications; Explore keeps its Discovery column.
+- Release note (usability): the dashboard header no longer repeats the full
+  readout qualifications. Readout, Health and Report retain them for the
+  selected population.
+- Release note (usability): printed readouts, `render(result)` and dashboard
+  tables write infinite interval endpoints open, such as `[-4.2%, ∞)` or
+  `(−∞, 3.1%]`. Relative effects, confidence sets, relative nulls and
+  relative-scale posterior estimates read in percent. Confidence levels read
+  as percentages too; absolute-scale quantities and estimates are unchanged.
+- Release note (usability): the dashboard's Explore **Focus metric** list has
+  a bounded height with its own scrolling. With nine or more metrics, a text
+  filter narrows it by metric name or role without changing the selection.
+- Release note (usability): comparison and scope notes above the dashboard's
+  Readout, Explore and Report tables are muted captions instead of large bold
+  titles. Printing retains the configured minimum font size.
+- Release note (documentation): `examples/dashboard.py` replaces the separate
+  A/B and triggered-population dashboard notebooks. An **Experiment**
+  dropdown chooses `checkout_redesign` or the triggered `express_checkout`;
+  the same dashboard adapts to the experiment and opens the latter on its
+  triggered population.
+- Release note (documentation): the realistic demo declares its 50/50
+  allocation, so the analysis assignment and sample-ratio checks run.
+  Generator version 4 keeps `checkout_redesign` data unchanged, adds separate
+  users for `express_checkout`, and records the event-time cutoff in its
+  manifest. Notebooks regenerate the warehouse on their next run.
+- Release note (documentation): the encouragement notebook now includes
+  staggered enrollment, the as-of LATE maturing as observation windows close,
+  and the per-day view's refusal
+  (`facade.analysis.encouragement_daily_late`). It replaces the separate
+  `late_over_time.py` notebook.
+
 - Release note (bug fix): a registered panel (`from_frame(shape="panel", ...)`
   with a sequential plan) that has no rows yet and declares an
   `observation_end` on a string day-label column (labels such as `"d1"`,
