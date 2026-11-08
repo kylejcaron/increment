@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -136,23 +136,26 @@ def _aggregate_sum_within_extrema(
     )
 
 
+# A shared intermediate rendering to at most this many nodes is repeated at its uses.
+_INLINE_INTERMEDIATE_NODES = 16
+
+
 def _with_sum_within_extrema_sql(table: ir.Table, name: str) -> ir.Table:
     """Add boolean *name* checking ``sum_value``/``n_events``/``min_value``/``max_value``.
 
     Reused intermediates are projected columns: inlining them at each use expands the
-    predicate exponentially, past warehouse statement-length limits.
+    predicate exponentially, past warehouse statement-length limits. Small ones stay
+    inline. Each projection adds every intermediate whose inputs earlier projections
+    hold and carries only the intermediates a later one reads, so the chain is as short
+    as the dependencies allow.
     """
     import ibis
 
-    staged = table
-    intermediates: list[str] = []
+    shared: list[Any] = []
 
     def share(value: Any) -> Any:
-        nonlocal staged
-        column = f"{name}_{len(intermediates)}"
-        intermediates.append(column)
-        staged = staged.mutate(**{column: value})
-        return staged[column]
+        shared.append(value)
+        return value
 
     count = share(ibis.coalesce(table.n_events, 0))
     valid_count = share((count >= 1) & (count <= 2**53))
@@ -166,7 +169,97 @@ def _with_sum_within_extrema_sql(table: ir.Table, name: str) -> ir.Table:
         choose=ibis.ifelse,
         share=share,
     )
-    return staged.mutate(**{name: accepted}).drop(*intermediates)
+    return _with_projected_intermediates(table, shared, accepted, name)
+
+
+def _rendered_nodes(op: Any, sizes: Mapping[Any, int]) -> int:
+    """Nodes of *op* as SQL text spells it: a repeated child is spelled at each use."""
+    import ibis.expr.operations as ops
+
+    memo: dict[Any, int] = {}
+
+    def visit(node: Any) -> int:
+        if node not in memo:
+            if node in sizes:
+                memo[node] = sizes[node]
+            elif isinstance(node, ops.Value):
+                memo[node] = 1 + sum(map(visit, node.__children__))
+            else:
+                memo[node] = 0
+        return memo[node]
+
+    return visit(op)
+
+
+def _with_projected_intermediates(
+    table: ir.Table, shared: Sequence[Any], result: Any, name: str
+) -> ir.Table:
+    """Add *result* as column *name*, projecting the large *shared* values by dependency level."""
+    import ibis
+    import ibis.expr.operations as ops
+    from ibis.common.graph import Graph
+
+    columns: dict[Any, str] = {}
+    inlined: dict[Any, int] = {}
+    for value in shared:
+        op = value.op()
+        if op in columns or op in inlined:
+            continue
+        nodes = _rendered_nodes(op, {**dict.fromkeys(columns, 1), **inlined})
+        if nodes <= _INLINE_INTERMEDIATE_NODES:
+            inlined[op] = nodes
+        else:
+            columns[op] = f"{name}_{len(columns)}"
+    placeholder = ibis.table({column: op.dtype for op, column in columns.items()}, name=name)
+    references = {op: placeholder[column].op() for op, column in columns.items()}
+    definitions = {
+        column: op.replace({k: v for k, v in references.items() if k != op}, filter=ops.Value)
+        for op, column in columns.items()
+    }
+    final = result.op().replace(references, filter=ops.Value)
+
+    def reads(op: Any) -> set[str]:
+        return {
+            node.name
+            for node in Graph.from_bfs(op, filter=ops.Value)
+            if isinstance(node, ops.Field) and node.rel == placeholder.op()
+        }
+
+    level: dict[str, int] = {}
+    last_read: dict[str, int] = {}
+    for column, definition in definitions.items():
+        inputs = reads(definition)
+        level[column] = 1 + max((level[read] for read in inputs), default=0)
+        for read in inputs:
+            last_read[read] = max(last_read.get(read, 0), level[column])
+    final_level = 1 + max(level.values(), default=0)
+    for read in reads(final):
+        last_read[read] = final_level
+    base = table.columns
+
+    def bound(staged: ir.Table) -> dict[Any, Any]:
+        projected = set(staged.columns)
+        mapping = {table[column].op(): staged[column].op() for column in base}
+        mapping.update(
+            {
+                references[op]: staged[column].op()
+                for op, column in columns.items()
+                if column in projected
+            }
+        )
+        return mapping
+
+    staged = table
+    for current in range(1, final_level):
+        mapping = bound(staged)
+        added = {
+            column: definition.replace(mapping, filter=ops.Value).to_expr()
+            for column, definition in definitions.items()
+            if level[column] == current
+        }
+        kept = [c for c in staged.columns[len(base) :] if last_read.get(c, 0) > current]
+        staged = staged.select(*base, *kept, **added)
+    return staged.select(*base, **{name: final.replace(bound(staged), filter=ops.Value).to_expr()})
 
 
 ARTIFACT_DOMAIN_ROOT = ARTIFACT_V1_DOMAIN_ROOT

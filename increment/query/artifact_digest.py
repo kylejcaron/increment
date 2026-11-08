@@ -1216,6 +1216,47 @@ def _float_payload_expr(
     )  # ty: ignore[invalid-return-type]
 
 
+def _field_payload(col: ir.Value, kind: str, *, dialect: str, digest_format: int) -> ir.StringValue:
+    if kind == "float":
+        return _float_payload_expr(
+            cast("ir.FloatingValue", col), dialect=dialect, digest_format=digest_format
+        )
+    if kind == "timestamp":
+        return _SQL_DIGEST_TIMESTAMP_TOKEN[dialect](cast("ir.TimestampValue", col))
+    if kind == "date":
+        date = cast("ir.DateValue", col)
+        # Zero-padded parts avoid session date settings and dialect year formats
+        # (BigQuery's %Y does not pad years below 1000).
+        return (
+            date.year().cast("string").lpad(4, "0")
+            + "-"
+            + date.month().cast("string").lpad(2, "0")
+            + "-"
+            + date.day().cast("string").lpad(2, "0")
+        )
+    return col.cast("string")
+
+
+def _field_token(
+    tag: int, payload: ir.StringValue, is_null: ir.BooleanValue | None
+) -> ir.StringValue:
+    length = payload.length().cast("string").lpad(16, "0")
+    token = ibis.literal(f"{tag:02x}", type="string") + length + payload  # ty: ignore[unsupported-operator]
+    if is_null is not None:
+        token = cast(
+            "ir.StringValue",
+            is_null.ifelse(ibis.literal("00" + "0" * 16, type="string"), token),
+        )
+    return token
+
+
+def _concatenated(parts: Sequence[ir.StringValue]) -> ir.StringValue:
+    expr = parts[0]
+    for part in parts[1:]:
+        expr = expr + part
+    return expr
+
+
 def _row_token_expr(
     table: ir.Table,
     tagged_fields: Sequence[tuple[str, int, str]],
@@ -1228,31 +1269,44 @@ def _row_token_expr(
     parts = []
     for name, tag, kind in tagged_fields:
         col = table[name]
-        if kind == "float":
-            payload = _float_payload_expr(col, dialect=dialect, digest_format=digest_format)
-        elif kind == "timestamp":
-            payload = _SQL_DIGEST_TIMESTAMP_TOKEN[dialect](col)
-        elif kind == "date":
-            # Zero-padded parts avoid session date settings and dialect year formats
-            # (BigQuery's %Y does not pad years below 1000).
-            payload = (
-                col.year().cast("string").lpad(4, "0")
-                + "-"
-                + col.month().cast("string").lpad(2, "0")
-                + "-"
-                + col.day().cast("string").lpad(2, "0")
-            )
-        else:
-            payload = col.cast("string")
-        length = payload.length().cast("string").lpad(16, "0")
-        token = ibis.literal(f"{tag:02x}", type="string") + length + payload  # ty: ignore[unsupported-operator]
+        payload = _field_payload(col, kind, dialect=dialect, digest_format=digest_format)
+        parts.append(_field_token(tag, payload, col.isnull() if col.type().nullable else None))
+    return _concatenated(parts)
+
+
+def _row_hash_relation(
+    table: ir.Table,
+    tagged_fields: Sequence[tuple[str, int, str]],
+    *,
+    dialect: str,
+    digest_format: int = SQL_DIGEST_FORMAT,
+) -> ir.Table:
+    """Each row's binary SHA-256 of its `_row_token_expr` token, as column ``h``.
+
+    Payloads are projected once: a token reads its payload twice and DuckDB's LPAD
+    reads its argument four times more, so an inlined FLOAT64 payload would repeat
+    its exact-binary64 expression five times in the statement the warehouse plans.
+    """
+    columns: dict[str, ir.Value] = {}
+    for index, (name, _tag, kind) in enumerate(tagged_fields):
+        col = table[name]
+        columns[f"_p{index}"] = _field_payload(
+            col, kind, dialect=dialect, digest_format=digest_format
+        )
         if col.type().nullable:
-            token = (col.isnull()).ifelse(ibis.literal("00" + "0" * 16, type="string"), token)
-        parts.append(token)
-    expr = parts[0]
-    for part in parts[1:]:
-        expr = expr + part
-    return expr
+            columns[f"_n{index}"] = col.isnull()
+    payloads = table.select(**columns)
+    token = _concatenated(
+        [
+            _field_token(
+                tag,
+                payloads[f"_p{index}"],
+                payloads[f"_n{index}"] if f"_n{index}" in columns else None,
+            )
+            for index, (_name, tag, _kind) in enumerate(tagged_fields)
+        ]
+    )
+    return payloads.select(h=_sql_digest_sha256_binary_expr(token, dialect=dialect))
 
 
 def fetch_bounded_arrow(con: Any, expr: ir.Expr) -> Any:
@@ -1463,7 +1517,9 @@ def digest_relation_sql_v2(
         DigestType.DATE: "date",
     }
     tagged_fields = [(f.name, int(f.type_tag), kinds.get(f.type_tag, "other")) for f in fields]
-    row_token = _row_token_expr(table, tagged_fields, dialect=con.name, digest_format=digest_format)
+    row_hashes = _row_hash_relation(
+        table, tagged_fields, dialect=con.name, digest_format=digest_format
+    )
 
     def sha256_hex(col: ir.StringValue) -> ir.StringValue:
         return _sql_digest_sha256_expr(col, dialect=con.name)
@@ -1472,7 +1528,6 @@ def digest_relation_sql_v2(
     hashed = None
 
     try:
-        row_hashes = table.select(h=_sql_digest_sha256_binary_expr(row_token, dialect=con.name))
         hashed = _create_sql_digest_hash_table(con, hashed_name, row_hashes, cleanup_failure)
         hex_hashes = hashed.select(h=_sql_binary_hex_expr(hashed.h, dialect=con.name))
         buckets = hex_hashes.select(bucket=hex_hashes.h.substr(0, _BUCKET_HEX_LEN), h=hex_hashes.h)
