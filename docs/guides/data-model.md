@@ -2077,14 +2077,15 @@ warnings.filterwarnings("ignore", category=UnverifiedWarehouseWarning)
 ### TEMP tables
 
 By default a run captures its source rows in a warehouse TEMP table, so every
-read in the run sees the same data, and warehouse CUPED keeps its working
-tables as TEMP tables too. On a connection that cannot create TEMP tables, both
-refuse with `query.session.snapshot.materialization_failed`. When only the source
-capture needs them, `run(experiment, reader, coherence="live")` reads the
-sources directly, and its results are marked live
-([Reading results](reading-results.md) explains what that gives up). Warehouse
-CUPED has no such alternative; analyze those metrics from a dataframe with
-`from_frame`.
+read in the run sees the same data. On a connection that cannot create TEMP
+tables, the default captured run refuses with
+`query.session.snapshot.materialization_failed`. When only source capture needs
+TEMP tables, `run(experiment, reader, coherence="live")` reads the sources
+directly, and its results are marked live
+([Reading results](reading-results.md) explains what that gives up). Scalar
+CUPED can use this live route. Multicovariate CUPED fitting and
+categorical-cell acquisition still require TEMP tables; if the warehouse cannot
+create them, use `from_frame` for those analyses.
 
 ### When Ibis cannot translate an operation
 
