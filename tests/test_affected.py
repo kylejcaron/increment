@@ -45,6 +45,12 @@ def _change(root: Path, base: str, name: str, contents: str) -> Selection:
     return select(base, root)
 
 
+def _project_import_path() -> str:
+    # Caller entries stay importable, so plugins named in PYTEST_PLUGINS still load.
+    caller = os.environ.get("PYTHONPATH", "").split(os.pathsep)
+    return os.pathsep.join((str(Path(__file__).resolve().parents[1]), *filter(None, caller)))
+
+
 def test_docs_only_change_selects_only_that_page(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"docs/guides/cuped.md": "# CUPED\n"})
 
@@ -58,9 +64,7 @@ def test_docs_only_change_selects_only_that_page(tmp_path: Path) -> None:
 def test_explicit_readme_is_collected_with_affected_filter(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = os.pathsep.join(
-        (str(root), *filter(None, environment.get("PYTHONPATH", "").split(os.pathsep)))
-    )
+    environment["PYTHONPATH"] = _project_import_path()
     environment["PYTHONPYCACHEPREFIX"] = str(tmp_path / "pycache")
     environment["AFFECTED_TEST_FILES"] = "[]"
     environment.pop("PYTEST_ADDOPTS", None)
@@ -114,7 +118,7 @@ def test_cli_honors_ignore_for_explicitly_selected_test_files(tmp_path: Path) ->
     _git(root, "add", ".")
     _git(root, "commit", "--no-verify", "-qm", "change selected tests")
     script = Path(__file__).resolve().parents[1] / "scripts/affected.py"
-    environment = os.environ | {"PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    environment = os.environ | {"PYTHONPATH": _project_import_path()}
 
     result = subprocess.run(
         [
@@ -219,7 +223,7 @@ def test_cli_tach_head_override_preserves_override_selection(tmp_path: Path) -> 
         )
     )
     script = Path(__file__).resolve().parents[1] / "scripts/affected.py"
-    environment = os.environ | {"PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    environment = os.environ | {"PYTHONPATH": _project_import_path()}
     environment.pop("AFFECTED_TEST_FILES", None)
 
     result = subprocess.run(
@@ -296,7 +300,7 @@ def test_cli_ignore_excludes_changed_test_during_source_collection(tmp_path: Pat
         )
     )
     script = Path(__file__).resolve().parents[1] / "scripts/affected.py"
-    environment = os.environ | {"PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    environment = os.environ | {"PYTHONPATH": _project_import_path()}
     environment.pop("AFFECTED_TEST_FILES", None)
 
     result = subprocess.run(
@@ -381,7 +385,7 @@ def test_prefiltered_selection_runs_kept_and_changed_tests_without_importing_oth
         )
     )
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
 
     assert main(["--base", base]) == 0
     capsys.readouterr()
@@ -425,7 +429,7 @@ def test_kept(): pass
         },
     )
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = _project_import_path()
     env.pop("PYTEST_PLUGINS", None)
     env["AFFECTED_TEST_FILES"] = json.dumps(["tests/test_kept.py", "tests/test_ignored.py"])
     result = subprocess.run(
@@ -463,7 +467,7 @@ def test_filtered_collection_skips_imports_for_unkept_test_files(tmp_path: Path)
         },
     )
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = _project_import_path()
     env.pop("PYTEST_PLUGINS", None)
     env["AFFECTED_TEST_FILES"] = json.dumps(["tests/test_kept.py"])
     result = subprocess.run(
@@ -499,7 +503,7 @@ def test_unfiltered_collection_without_tach_selection_collects_whole_tree(
         },
     )
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = _project_import_path()
     env.pop("PYTEST_PLUGINS", None)
     env.pop("AFFECTED_TEST_FILES", None)
     result = subprocess.run(
@@ -568,7 +572,7 @@ def test_explicit_targets_honor_ignore_from_all_pytest_option_sources(
         )
     selection = select(base, root)
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
     monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
@@ -614,7 +618,7 @@ def test_deselect_cannot_silently_skip_every_selected_test(
         "from pathlib import Path\ndef test_changed(): Path('changed-ran').touch()\n# changed\n",
     )
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
     monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
@@ -642,7 +646,7 @@ def test_partial_deselect_with_xdist_keeps_successful_run(
     for path, contents in files.items():
         (root / path).write_text(contents + "# changed\n")
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
     deselections = [f"--deselect=tests/test_{index}.py::test_deselected" for index in range(7)]
 
@@ -668,7 +672,7 @@ def test_affected_run_with_xdist_disabled_collects_serially(
         "from pathlib import Path\ndef test_ran(): Path('ran').touch()\n# changed\n",
     )
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
     status = main(["--base", base, "--", "-p", "no:xdist"])
@@ -685,7 +689,7 @@ def test_all_user_deselection_with_xdist_is_reported_as_failure(
     for path, contents in files.items():
         (root / path).write_text(contents + "# changed\n")
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
     deselections = [f"--deselect=tests/test_{index}.py::test_selected" for index in range(7)]
 
@@ -700,7 +704,7 @@ def test_keyword_filter_excluding_all_affected_tests_fails(
     root, base = _repo(tmp_path, {"tests/test_changed.py": "def test_changed(): pass\n"})
     _change(root, base, "tests/test_changed.py", "def test_changed(): pass\n# changed\n")
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
     status = main(["--base", base, "--", "-k", "no_such_test_keyword"])
@@ -726,7 +730,7 @@ def test_keyword_matching_only_tier_excluded_tests_remains_successful(
         "import pytest\n@pytest.mark.integration\ndef test_affected(): pass\n# changed\n",
     )
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
     status = main(["--base", base, "--tier", "unit", "--", "-k", "affected"])
@@ -748,7 +752,7 @@ def test_keyword_filter_uses_overridden_marker_expression(
         "import pytest\n@pytest.mark.slow\ndef test_changed(): pass\n# changed\n",
     )
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
     status = main(["--base", base, "--tier", "fast", "--", "-m", "slow", "-k", "no_such_test"])
@@ -825,7 +829,7 @@ def test_environment_ignore_excludes_module_from_source_change_collection(
     environment = os.environ.copy()
     environment.pop("AFFECTED_TEST_FILES", None)
     environment.pop("PYTEST_PLUGINS", None)
-    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    environment["PYTHONPATH"] = _project_import_path()
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", *pytest_args],
         cwd=root,
@@ -1023,7 +1027,7 @@ def test_full_tier_user_deselection_fails(tmp_path: Path, monkeypatch: pytest.Mo
     )
     _change(root, base, "pyproject.toml", '[project]\ndependencies = ["b"]\n')
     monkeypatch.chdir(root)
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", _project_import_path())
     monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
@@ -1228,11 +1232,8 @@ def test_unknown_base_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]
 
 def test_python_module_entrypoint_runs_main_for_bad_base(tmp_path: Path) -> None:
     root, _ = _repo(tmp_path, {"tests/test_example.py": "def test_example(): pass\n"})
-    project_root = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = os.pathsep.join(
-        filter(None, (str(project_root), environment.get("PYTHONPATH")))
-    )
+    environment["PYTHONPATH"] = _project_import_path()
 
     result = subprocess.run(
         [sys.executable, "-m", "scripts.affected", "--base", "nope"],
