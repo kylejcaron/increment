@@ -1563,6 +1563,7 @@ Retired codes and their replacements are listed below.
 | `source.native.experiment_key_unmatched` | `InvalidRequestError` | `experiment`, `observed_keys` | `increment.query._native_refusals`, `increment.query.native_source` |
 | `source.native.fact_null_values` | `InvalidRequestError` | `column`, `fact`, `null_rows` | `increment.query._native_refusals`, `increment.query.fact_resolution` |
 | `source.native.trigger_evidence_required` | `CapabilityError` | `operation`, `route` | `increment.query._native_refusals`, `increment.query.native_source` |
+| `source.panel.as_of` | `InvalidRequestError` | `axis_kind`, `issue`, `value` | `increment._frame_panel` |
 | `source.panel.day_grain_columns` | `InvalidRequestError` | `columns`, `route` | `increment._frame_validation` |
 | `source.panel.duplicate_unit_days` | `InvalidRequestError` | `count`, `date`, `examples`, `route`, `unit` | `increment._frame_validation` |
 | `source.panel.exposure_date` | `InvalidRequestError` | `column`, `count`, `examples`, `issue`, `route` | `increment._frame_validation` |

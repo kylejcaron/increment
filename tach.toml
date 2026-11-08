@@ -1100,7 +1100,7 @@ depends_on = ["increment._frame_panel", "increment._frame_validation", "incremen
 [[modules]]
 path = "increment._frame_panel"
 layer = "core"
-depends_on = ["increment._day_axis_labels", "increment._frame_validation", "increment._window", "increment.errors", "increment.sources"]
+depends_on = ["increment._day_axis_labels", "increment._frame_validation", "increment._window", "increment.errors", "increment.sequential_state", "increment.sources"]
 
 [[modules]]
 path = "increment._frame_validation"

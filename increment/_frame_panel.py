@@ -7,6 +7,7 @@ import math
 import numbers
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import narwhals as nw
@@ -32,6 +33,7 @@ from increment.errors import (
     refuse,
     warn,
 )
+from increment.sequential_state import sequential_refuse
 from increment.sources import CENSOR_WARN_FRACTION
 
 
@@ -106,27 +108,20 @@ def _exposures_placeable(panel: nw.DataFrame[Any], exposure: nw.DataFrame[Any]) 
 
 
 def _eligible_cells(days: nw.DataFrame[Any], exposure: nw.DataFrame[Any]) -> int:
-    """Unit-days on or after each unit's exposure, over the distinct days in *days*.
-
-    Days and exposures are each placed by their whole days back from one panel day, so
-    the days at or after an exposure are those placed no further back, counted by a
-    sorted search instead of pairing every exposure with every day.
-    """
+    """Count eligible cells by exact axis coordinates, never by elapsed differences."""
     days = days.unique()
     if days.is_empty():
         return 0
-    reference = days.item(0, "__exposure__")
-    back = np.sort(
-        _observable_end_index(days, reference).get_column("__observable_days__").to_numpy()
-    )
-    count = _scratch_name(exposure, "__units__")
-    starts = _observable_end_index(
-        exposure.group_by("__exposure__").agg(nw.len().alias(count)), reference
-    )
-    eligible = np.searchsorted(
-        back, starts.get_column("__observable_days__").to_numpy(), side="right"
-    )
-    return int((eligible * starts.get_column(count).to_numpy()).sum())
+    starts = exposure.group_by("__exposure__").agg(nw.len().alias("__units__"))
+    day_values = days.get_column("__exposure__").to_list()
+    start_values = starts.get_column("__exposure__").to_list()
+    if isinstance(days.schema["__exposure__"], nw.String):
+        order = _day_axis_label_order([*day_values, *start_values])
+        day_values = [order[value][0] for value in day_values]
+        start_values = [order[value][0] for value in start_values]
+    coordinates = np.sort(np.asarray(day_values))
+    eligible = len(coordinates) - np.searchsorted(coordinates, start_values, side="left")
+    return int((eligible * starts.get_column("__units__").to_numpy()).sum())
 
 
 def _labels_through(labels: Sequence[Any], end: Any) -> list[Any]:
@@ -156,6 +151,41 @@ _OBSERVATION_END = RefusalSpec(
     ),
 )
 
+_PANEL_AS_OF = RefusalSpec(
+    "source.panel.as_of",
+    InvalidRequestError,
+    lambda *, value, axis_kind, issue: (
+        f"as_of={value!r} {_OBSERVATION_END_ISSUES[issue]} (a {axis_kind} day axis). "
+        "Pass a day in the date column's form."
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _PanelDay:
+    value: Any
+    axis_kind: Literal["numeric", "calendar", "label"]
+    issue: str | None = None
+
+
+def _resolve_empty_panel_axis(
+    frame: nw.DataFrame[Any], *, date: str, exposure_date: str | None, observation_end: Any
+) -> nw.DataFrame[Any]:
+    """Resolve only untyped empty pandas object days from explicit calendar information."""
+    if not frame.is_empty() or frame.implementation.value != "pandas":
+        return frame
+    native = frame.to_native()
+    ambiguous = [
+        name for name in (date, exposure_date) if name is not None and native[name].dtype == object
+    ]
+    if not ambiguous:
+        return frame
+    calendar = any(isinstance(dtype, nw.Date | nw.Datetime) for dtype in frame.schema.values())
+    cutoff, issue = _calendar_day(observation_end, datetime_axis=False)
+    if not calendar and (issue is not None or cutoff is None):
+        return frame
+    return frame.with_columns(nw.col(name).cast(nw.Datetime("us")) for name in ambiguous)
+
 
 def _beyond_day_range(dtype: nw.dtypes.DType, value: Any) -> bool:
     """Whether *value* is a number outside the signed 64-bit range a numeric day axis
@@ -173,22 +203,13 @@ def _beyond_day_range(dtype: nw.dtypes.DType, value: Any) -> bool:
     )
 
 
-def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: Any) -> Any:
-    """*value* as a day of *date*'s axis, refused when it names no day the panel can bound.
-
-    A calendar axis takes a date, a naive datetime (its calendar day) or an ISO-8601
-    string, returned as the column's own Python type; a numeric axis takes a finite
-    number within the signed 64-bit range; a string axis takes a label that orders with
-    its own. A panel with no rows yet has no first day for the end to precede.
-    """
-    if value is None:
-        return None
+def _classify_panel_day(
+    frame: nw.DataFrame[Any], *, date: str, value: Any, construction: bool
+) -> _PanelDay:
+    """Classify a cutoff once using the source's validated day axis."""
     dtype = frame.schema[date]
     labels = frame.get_column(date).unique().to_list()
-    issue: (
-        Literal["unparseable", "wrong_kind", "out_of_range", "before_first_day", "unknown_label"]
-        | None
-    ) = None
+    issue = None
     normalized = value
     if isinstance(dtype, nw.String):
         axis_kind = "label"
@@ -204,7 +225,7 @@ def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: An
                     raise
                 issue = "unknown_label"
             else:
-                if labels and order[value] < min(order[label] for label in labels):
+                if construction and labels and order[value] < min(order[label] for label in labels):
                     issue = "before_first_day"
     else:
         if _day_axis_is_numeric(dtype):
@@ -219,16 +240,54 @@ def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: An
         else:
             axis_kind = "calendar"
             normalized, issue = _calendar_day(value, datetime_axis=_datetime_axis(dtype, labels))
-        if issue is None and labels and normalized < min(labels):
+        if construction and issue is None and labels and normalized < min(labels):
             issue = "before_first_day"
-    if issue is not None:
-        refuse(
-            _OBSERVATION_END,
-            value=_safe_error_value(value),
-            axis_kind=axis_kind,
-            issue=issue,
+
+    return _PanelDay(normalized, axis_kind, issue)
+
+
+def _normalize_panel_day(
+    frame: nw.DataFrame[Any],
+    *,
+    date: str,
+    value: Any,
+    purpose: Literal["observation_end", "capture", "compliance"],
+) -> Any:
+    """Normalize a cutoff at the source boundary, retaining each operation's refusal."""
+    if value is None:
+        return None
+    day = _classify_panel_day(
+        frame, date=date, value=value, construction=purpose == "observation_end"
+    )
+    if day.issue is None:
+        return day.value
+    if purpose == "capture":
+        if _beyond_day_range(frame.schema[date], value):
+            sequential_refuse(
+                "source.invalid", f"as_of is outside {_SIGNED_DAY_RANGE} of the numeric day column"
+            )
+        if day.axis_kind == "label" and day.issue == "unknown_label":
+            _day_axis_label_order([*frame.get_column(date).unique().to_list(), value])
+        sequential_refuse(
+            "source.invalid",
+            f"as_of={_safe_error_value(value)!r} {_OBSERVATION_END_ISSUES[day.issue]} "
+            f"(a {day.axis_kind} day axis)",
         )
-    return normalized
+    safe_value = _safe_error_value(value)
+    if (
+        purpose == "compliance"
+        and isinstance(value, numbers.Real)
+        and not -math.inf < value < math.inf
+    ):
+        safe_value = str(value)
+    if purpose == "observation_end":
+        refuse(_OBSERVATION_END, value=safe_value, axis_kind=day.axis_kind, issue=day.issue)
+    refuse(_PANEL_AS_OF, value=safe_value, axis_kind=day.axis_kind, issue=day.issue)
+
+
+def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: Any) -> Any:
+    """Normalize the construction cutoff without changing its refusal contract."""
+    return _normalize_panel_day(frame, date=date, value=value, purpose="observation_end")
 
 
 def _datetime_axis(dtype: nw.dtypes.DType, labels: Sequence[Any]) -> bool:
@@ -334,24 +393,25 @@ def _uptake_day_elapsed(panel: nw.DataFrame[Any], anchor: str) -> nw.Expr:
             key[0] if isinstance(key[0], int) else dt.date.fromisoformat(key[0]).toordinal()
             for key in order.values()
         ]
-        return nw.col("ds").replace_strict(list(order), values) - nw.col(anchor).replace_strict(
-            list(order), values
-        )
+        ds = nw.col("ds").replace_strict(list(order), values)
+        anchor_day = nw.col(anchor).replace_strict(list(order), values)
+        return _day_axis_elapsed(ds, anchor_day, numeric=True, integer=True)
     return _day_axis_elapsed(
         _signed_day(nw.col("ds"), panel.schema["ds"]),
         _signed_day(nw.col(anchor), panel.schema[anchor]),
         numeric=_day_axis_is_numeric(panel.schema["ds"]),
+        integer=panel.schema["ds"].is_integer() and panel.schema[anchor].is_integer(),
     )
 
 
 def _signed_day(day: nw.Expr, dtype: nw.dtypes.DType) -> nw.Expr:
-    """*day* as a signed integer when *dtype* is unsigned, so a day before its anchor is a
-    negative offset rather than a wrapped one; construction refuses unsigned labels past
-    the signed range."""
-    return day.cast(nw.Int64) if dtype.is_unsigned_integer() else day
+    """Widen integer days before arithmetic, preserving negative offsets on unsigned axes."""
+    return day.cast(nw.Int64) if dtype.is_integer() else day
 
 
-def _day_axis_elapsed(ds: nw.Expr, anchor: nw.Expr, *, numeric: bool) -> nw.Expr:
+def _day_axis_elapsed(
+    ds: nw.Expr, anchor: nw.Expr, *, numeric: bool, integer: bool = False
+) -> nw.Expr:
     """Whole days from *anchor* to *ds* on a day axis of the given kind.
 
     An explicit numeric day axis subtracts directly - casting it through
@@ -360,7 +420,26 @@ def _day_axis_elapsed(ds: nw.Expr, anchor: nw.Expr, *, numeric: bool) -> nw.Expr
     ``Datetime('us')`` (pandas stores a raw ``datetime.date`` column as
     opaque ``object`` dtype, invisible to narwhals as Date/Datetime on
     its own) and divides the resulting duration by 86400 seconds.
+
+    Integer offsets saturate only outside int64, for private bounded predicates.
+    Masked operands prevent wrapping even when a backend evaluates both branches.
     """
+    if integer:
+        minimum = -_SIGNED_DAY_MAX - 1
+        negative_anchor = nw.when(anchor < 0).then(anchor).otherwise(0)
+        positive_anchor = nw.when(anchor > 0).then(anchor).otherwise(0)
+        above = (anchor < 0) & (ds > _SIGNED_DAY_MAX + negative_anchor)
+        below = (anchor > 0) & (ds < minimum + positive_anchor)
+        overflow = above | below
+        safe_ds = nw.when(overflow).then(0).otherwise(ds)
+        safe_anchor = nw.when(overflow).then(0).otherwise(anchor)
+        return (
+            nw.when(above)
+            .then(nw.lit(_SIGNED_DAY_MAX, dtype=nw.Int64))
+            .when(below)
+            .then(nw.lit(minimum, dtype=nw.Int64))
+            .otherwise(safe_ds - safe_anchor)
+        )
     if numeric:
         return ds - anchor
     return (
@@ -505,6 +584,7 @@ def _observable_end_index(exposure: nw.DataFrame[Any], observable_end: Any) -> n
         nw.lit(observable_end),
         _signed_day(nw.col("__exposure__"), dtype),
         numeric=_day_axis_is_numeric(dtype),
+        integer=dtype.is_integer() and isinstance(observable_end, numbers.Integral),
     )
     return exposure.with_columns(elapsed.alias("__observable_days__"))
 

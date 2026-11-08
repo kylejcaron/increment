@@ -990,20 +990,24 @@ def test_integer_observation_end_beyond_the_signed_range_refuses(
         assert exc_info.value.context["issue"] == "out_of_range"
 
 
-def test_observation_end_at_the_signed_day_maximum_builds() -> None:
-    """2**63 - 1, as a Python integer or a NumPy int64, is the last day a numeric day column
-    counts, so it bounds the panel without refusing."""
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+def test_observation_end_at_the_signed_day_maximum_keeps_completed_units(backend: str) -> None:
+    """An exposure at -1 is mature by MAX, without overflowing its elapsed days."""
     import numpy as np
+    import polars as pl
 
     frame = pa.table(
         {
             "user_id": ["c1", "c1", "t1", "t1"],
             "variant": ["control", "control", "treatment", "treatment"],
-            "day": [0, 1, 0, 1],
-            "exposed_on": [0] * 4,
+            "day": [-1, 0, -1, 0],
+            "exposed_on": [-1] * 4,
             "revenue": [1.0, 2.0, 3.0, 4.0],
         }
     )
+    frame: Any = {"pandas": frame.to_pandas(), "polars": pl.from_arrow(frame), "pyarrow": frame}[
+        backend
+    ]
     ends: tuple[Any, ...] = (2**63 - 1, np.int64(2**63 - 1))
     for end in ends:
         source = from_unit_panel(
@@ -1012,11 +1016,100 @@ def test_observation_end_at_the_signed_day_maximum_builds() -> None:
             group="variant",
             date="day",
             control="control",
-            metrics={"revenue": "mean"},
+            metrics=[MetricSpec(name="revenue", type="mean", window_days=2)],
             exposure_date="exposed_on",
             observation_end=end,
         )
         assert _counts(source) == {"control": 1, "treatment": 1}
+        rows = {row["group_id"]: row for row in _moments(source, source.context.metrics[0])}
+        assert {group: row["n"] for group, row in rows.items()} == {
+            "control": 1,
+            "treatment": 1,
+        }
+        assert {group: _sum_y(row) for group, row in rows.items()} == {
+            "control": 3.0,
+            "treatment": 7.0,
+        }
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+def test_densified_cells_orders_extreme_days_exactly_under_reordering(backend: str) -> None:
+    import polars as pl
+
+    minimum, maximum = -(2**63), 2**63 - 1
+    days = [minimum, minimum + 1, -1, 0, 1, maximum - 1, maximum]
+    exposures = [minimum, -1, maximum - 1]
+    rows = [
+        {"u": f"{arm}{i}", "g": arm, "d": day, "e": exposed, "y": 1.0}
+        for arm in ("control", "treatment")
+        for i, (day, exposed) in enumerate(zip((minimum, 0, maximum), exposures, strict=True))
+    ]
+    rows.extend(
+        {"u": "control0", "g": "control", "d": day, "e": minimum, "y": 1.0} for day in days[1:-1]
+    )
+    for ordered in (rows, list(reversed(rows)), rows[4:] + rows[:4]):
+        table = pa.Table.from_pylist(ordered)
+        frame: Any = {
+            "pandas": table.to_pandas(),
+            "polars": pl.from_arrow(table),
+            "pyarrow": table,
+        }[backend]
+        source = from_unit_panel(
+            frame,
+            unit="u",
+            group="g",
+            date="d",
+            exposure_date="e",
+            control="control",
+            metrics={"y": "mean"},
+        )
+        # Per arm the three exposures admit 7, 5 and 2 days; eleven rows are observed.
+        assert source.densified_cells == 2 * (7 + 5 + 2) - len(rows)
+        assert _counts(source) == {"control": 3, "treatment": 3}
+
+
+@pytest.mark.parametrize(
+    ("day", "exposure", "window", "expected"),
+    [
+        (1, -1, 3, 1.0),
+        (1, -1, 2, 0.0),
+        (-(2**63), 2**63 - 1, 1, 0.0),
+        (2**63 - 1, -1, 2, 0.0),
+        (2**63 - 1, 2**63 - 2, 2, 1.0),
+    ],
+    ids=[
+        "cross-sign-in-window",
+        "cross-sign-at-boundary",
+        "negative-overflow",
+        "positive-overflow",
+        "huge-neighbors",
+    ],
+)
+def test_integer_elapsed_windows_do_not_wrap_or_round_neighbors(day, exposure, window, expected):
+    table = pa.table(
+        {
+            "u": ["c", "t"],
+            "g": ["control", "treatment"],
+            "d": [day] * 2,
+            "e": [exposure] * 2,
+            "y": [1.0] * 2,
+        }
+    )
+    source = from_unit_panel(
+        table,
+        unit="u",
+        group="g",
+        date="d",
+        exposure_date="e",
+        control="control",
+        metrics=[MetricSpec(name="y", type="mean", window_days=window)],
+        observation_end=2**63 - 1,
+    )
+    rows = _moments(source, source.context.metrics[0])
+    assert {row["group_id"]: (row["n"], _sum_y(row)) for row in rows} == {
+        "control": (1, expected),
+        "treatment": (1, expected),
+    }
 
 
 def test_asof_cumulative_moments_refuses_ambiguous_date_like_labels() -> None:

@@ -260,15 +260,10 @@ def _validate_panel_models(source, registration) -> None:
 
 
 def _labels_observed_by(source, as_of):
-    """The panel's day labels on or before *as_of* and the declared observation end, and
-    the earlier of those two days; an *as_of* the numeric day axis cannot hold refuses
-    before any label is read."""
-    from increment._frame_panel import _SIGNED_DAY_RANGE, _beyond_day_range, _day_axis_label_order
+    """Select labels through the normalized capture day and declared observation end."""
+    from increment._frame_panel import _day_axis_label_order, _normalize_panel_day
 
-    if _beyond_day_range(source._sparse_panel.schema["ds"], as_of):
-        sequential_refuse(
-            "source.invalid", f"as_of is outside {_SIGNED_DAY_RANGE} of the numeric day column"
-        )
+    as_of = _normalize_panel_day(source._sparse_panel, date="ds", value=as_of, purpose="capture")
     labels = source._sparse_panel.get_column("ds").unique().to_list()
     horizon = source._observable_through(as_of)
     order = _day_axis_label_order([*labels, as_of, horizon])
