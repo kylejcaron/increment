@@ -377,7 +377,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .rpt-band table { table-layout: fixed !important; }
 /* The font floor: the script marks report text measured below the configured print minimum, and
    only the measurement and print raise marked elements to it (the screen layout is untouched). */
-.rpt-measuring .rpt-paper [data-inc-floor] { font-size: var(--inc-dashboard-print-min-font-size) !important; }
+.rpt-measuring .rpt-paper [data-inc-floor], .rpt-measuring .rpt-paper td.gt_title[data-inc-floor] { font-size: var(--inc-dashboard-print-min-font-size) !important; }
 
 /* ===== Responsive ========================================================== */
 @media (max-width: 1100px) {
@@ -458,7 +458,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   .rpt-card { max-width: none; margin: 0; padding: 0; border: 0; box-shadow: none !important; background: var(--surface) !important; }
   .rpt-paper { width: var(--rpt-fit-w, 100%); zoom: var(--rpt-fit-scale, 1); margin: 0 auto; }
   .rpt-paper[data-print-mode="single"] { break-inside: avoid; }
-  .rpt .rpt-results .gt_row[data-inc-floor], .rpt .rpt-results .gt_col_heading[data-inc-floor], .rpt-paper [data-inc-floor] { font-size: var(--inc-dashboard-print-min-font-size) !important; }
+  .rpt .rpt-results .gt_row[data-inc-floor], .rpt .rpt-results .gt_col_heading[data-inc-floor], .rpt .rpt-results td.gt_title[data-inc-floor], .rpt-paper [data-inc-floor] { font-size: var(--inc-dashboard-print-min-font-size) !important; }
   /* Static floors for the known small classes, so the minimum holds even before any measurement. */
   .rpt-brand, .rpt-kind { font-size: max(11px, var(--inc-dashboard-print-min-font-size)); }
   .rpt-primary-label { font-size: max(10px, var(--inc-dashboard-print-min-font-size)); }
