@@ -127,6 +127,198 @@ values.
 
 ### Earlier release notes
 
+- Release note (bug fix): `runnable()` now refuses a breakout selection
+  qualified by a fact source the experiment does not declare for that property,
+  as `run()` already did. For example, when `region` is declared on `events`
+  and `profiles`, a view selecting `BreakoutIdentity("region", source="ghost")`
+  reports `facade.analysis.undeclared_breakout` (context `requested`,
+  `declared`) in its offline refusals, with the same context `run()` raises,
+  instead of reporting no refusal. A selection by property alone still matches
+  every declared source of that property, and a source that names no fact
+  sources still refuses a qualifier with `evidence.breakout_unavailable`.
+- Release note (bug fix): a ratio metric with scalar CUPED whose log-scale lift
+  is blocked (`delta_method_unreliable` or `zero_variance`) now keeps its
+  additive CUPED row when the CUPED-adjusted denominator means are well
+  resolved. The denominator-precision check reads the adjusted denominator mean
+  each arm divides by, with an uncertainty that includes the covariate mean
+  pooled over both arms, instead of the unadjusted denominator; a CUPED row's
+  `ratio_denominator_precision` note and advisory follow the same rule, so each
+  method's row carries its own and the note names the CUPED-adjusted
+  denominator mean. Unadjusted rows are unchanged.
+- Release note (bug fix): the joint covariate-balance advisory of a
+  mixed-covariate CUPED cell now names a covariate whose only tested column is
+  its missing-value indicator (an observed column that was constant after
+  filling); previously the advisory and its warning could name no covariate.
+- Release note (bug fix): a fixed-horizon scalar CUPED cell whose covariate
+  differs between arms by more standard errors than a float can hold is now
+  flagged with `estimation.cuped.covariate_imbalance`; its context reports
+  `statistic` as null with `statistic_unavailable_reason="past_float_range"`
+  (the key is present and null on every other fixed-horizon scalar CUPED
+  advisory), and its warning says the difference is more than 1e308 standard
+  errors. Previously such a cell carried no advisory. Estimates and intervals
+  are unchanged.
+- Release note (breaking bug fix): a prospectively bounded switchback contrast
+  (`method="switchback_unit_variance_envelope"`) now records which side of its
+  null the evidence rejects on, in a new `ContrastResult.residual_side` field
+  (`"greater"`, `"less"`, or `"split"` for a residual of exactly zero). JSON
+  serialization, `ContrastResults.to_frame()` (a new `residual_side` column
+  after `residual_p_value`) and readout rows (`estimates_to_readout`,
+  `contrast_results_to_readout`) carry it. The side is the sign of the exact
+  residual the p-value tests, so a result whose displayed point and slope round
+  across the null now reports the direction its p-value tested; before, the
+  side was rebuilt from those rounded values, and a rejection on the adverse
+  side could be labeled favorable by the program verdict. A contrast's readout
+  interpretation now states the contrast's own verdict and side. An envelope
+  contrast that rejects while its outward-rounded interval still includes the
+  null reads as a rejection, never as an exclusion: for example "rejects zero
+  at 95.0% confidence; the displayed interval is rounded outward and still
+  includes zero; effect direction supported (increase)", labeled "Rejects zero
+  — increase established (displayed interval rounded outward)" in
+  `readout_table`. Before, it read "does not reject; inconclusive" beside
+  `stat_sig=True`. Bounds that exclude the null keep their "excludes zero" and
+  "rejects the null" wording. Estimates, intervals, p-values and `stat_sig()`
+  are unchanged. t-reference contrasts (`switchback_unit_t_approximation`,
+  `switchback_block_t`) never carry the field, and their saved form is
+  byte-for-byte unchanged; a t result that carries it refuses with
+  `estimation.contrast.reference_metadata`, as does an envelope result whose
+  side contradicts its p-value (a `"split"` side, or a side off a one-sided
+  alternative, with a p-value below one). Envelope results saved by an earlier
+  release do not carry the field and no longer load: reopening a saved run that
+  holds one, from `ParquetResultsStore` or `WarehouseResultsStore`, or a saved
+  `ContrastResults` collection, refuses with the new
+  `estimation.contrast.legacy_envelope` (context
+  `missing_fields=("residual_side",)`, `remedy="recompute_from_source"`)
+  instead of `store.run.corrupt`. Re-run the analysis from the source data to
+  replace them. `WarehouseResultsStore` now also keeps the codes
+  `ParquetResultsStore` keeps for a saved run in a format this release cannot
+  read: a result kind it does not know reports
+  `results.cell.schema_unsupported`, and a run opened by `run_id` whose
+  manifest version is unknown reports `store.run.manifest_unsupported`, instead
+  of `store.run.corrupt`.
+- Release note (bug fix): looking up saved results in a `WarehouseResultsStore`
+  whose schema does not exist now behaves like a store with no runs: `open_run`
+  refuses with `store.run.not_found` and `history` returns an empty history
+  table, instead of exposing the warehouse's missing-schema error. A schema
+  counts as missing only when the warehouse's own error says it does not exist.
+  A schema that the role's schema listing merely leaves out is not treated as
+  missing, and any other error from listing the schema's tables, including a
+  permissions error or Snowflake's "does not exist or not authorized", is
+  raised unchanged. A lookup still never creates the schema.
+- Release note (bug fix): a moments export now records which metrics were
+  declared `missing="skip"`, in an optional `metric_missingness` field on every
+  row of a format-12 or format-13 export. Reopening it with `from_moments` by
+  metric name and type therefore keeps the observed-only population label,
+  instead of presenting the estimate as covering every assigned unit. A replay
+  that declares `missing="skip"` for a metric the export did not skip now
+  refuses with `moments.plan.conflict`, because the export reduced that metric
+  over every unit. The moments format numbers are unchanged, and the field is
+  absent when no metric skips. An export written before this change reopens
+  exactly as before; declare `missing="skip"` on replay to qualify its
+  population. A replay of a new export records the skip policy in its source
+  declaration, so its `to_json()`, `hash()` and `analysis_spec_hash` equal
+  those of a replay that declares `missing="skip"`. Exports also now write each
+  column with one fixed type and in one fixed order, whichever metrics they
+  hold, so exports of different metrics concatenate into one table. Increment
+  0.1.0a2 already refuses every format-12 and format-13 export as newer than it
+  reads (`moments.format.unsupported_future`), so the new field changes nothing
+  there. A development build from before this change reads a new format-12
+  export and ignores the field, but refuses a new format-13 export of a skipped
+  metric with `moments.cuped_evidence.invalid`.
+- Release note (bug fix): `readout_table(..., nest_by="segment")` now keeps a
+  segment written as two quote characters (`'""'`) distinct from an
+  empty-string segment, which reads `""`: the two-quote segment reads `\""` (a
+  spelling already made of backslashes and two quotes gains one more leading
+  backslash), so distinct segments always get distinct labels. Before, the two
+  collided and the table refused with `tables.readout_table_ambiguous`. A
+  whole-window row, which has no segment, still shows no segment label, and a
+  trend aligned to the same segments puts each sparkline on its own row.
+- Release note (bug fix): portable result cells now keep the reason a report
+  estimate is unavailable: an empty targeting selection's sampling status
+  carries `estimation.targeting.empty_group` as its `reason` and
+  `context["reason"]` (code `results.component.unavailable`) after
+  serialization, instead of an empty context. A legacy breakout or day row
+  whose sampling availability was never recorded (`sampling_available=None`)
+  now stays unavailable in portable readouts, with
+  `readout.legacy.sampling_unreconstructible` and its recompute-from-source
+  context (`cell_key`, `missing_fields`, `remedy="recompute_from_source"`),
+  instead of being labelled available from its point estimate alone. Its point
+  and interval are still shown, but `readout_table`, `render`, run summaries
+  and saved-run decisions no longer draw a significance verdict or
+  interpretation from it (`stat_sig` is unavailable and the decision is not
+  evaluated). A reopened run's summary prints it as `status=unavailable` with
+  that code, and readout text lists it as unavailable with its reason. Its cell
+  no longer supports `compare_margin` or supplies evidence to a family
+  combination, live or after serialization. Reports that carry no such marker,
+  such as a CATE validation's `holdout_ate`, and sequential rows keep their
+  availability.
+- Release note (bug fix): a low-reliability breakout or daily row's
+  interpretation now ends with "Caveat: low reliability, an arm has fewer units
+  than the configured reliability threshold." Before, it named 50 units, the
+  default threshold; a row records that it was flagged, not the threshold that
+  flagged it. Compact run summaries (`repr(result)`) now label an additive
+  fallback with `scale=absolute` and print its qualification, which says why
+  the requested relative result was unavailable (for example
+  `nonpositive_arm_mean`); before, the additive difference was printed as if it
+  were the requested relative lift.
+- Release note (bug fix): a run's `to_frame(backend="polars")` and
+  `to_frame(backend="pyarrow")` now export whole-window results together with
+  as-of results whose day labels are numeric. The whole-window rows, which have
+  no day, read a null `ds` in the as-of rows' numeric type. Before, the export
+  failed with a Polars `SchemaError` or a PyArrow `ArrowTypeError`, because the
+  whole-window rows' empty `ds` column was typed as a datetime. When no row in
+  the export has a day, `ds` keeps its datetime type. pandas exports are
+  unchanged.
+- Release note (bug fix): as-of sequential results (`DailyLiftEstimate` rows of
+  an as-of readout) now carry `family_size`, the number of hypotheses in the
+  row's registered correction family, on each family row, as whole-window
+  results already did, and `to_frame()` exports it in the `family_size` column.
+  Before, an as-of family row had no `family_size` attribute and its exported
+  tables had no such column, so the member count the sequential-inference guide
+  promises was missing from as-of results. Rows outside a registered family
+  keep `family_size=None`.
+- Release note (bug fix): panel inputs (`from_frame(shape="panel", ...)`) with
+  unsigned integer day and exposure columns now count exposure-eligible days
+  correctly. Before, a day earlier than a unit's exposure wrapped to a huge
+  offset instead of a negative one, so the panel reported a negative number of
+  zero-filled cells and could misjudge which days fall on or after each
+  exposure; results now match the same panel with signed day columns. An
+  unsigned day or exposure value above 9223372036854775807 (the signed 64-bit
+  maximum) refuses at construction with `source.panel.day_grain_columns`
+  (context `columns`, `route`) instead of wrapping or failing inside the day
+  arithmetic. Separately, a registered panel that has no rows yet and declares
+  an `observation_end` on a date or numeric day column now builds and can be
+  captured as an empty pre-enrollment prefix, instead of failing with a raw
+  Python `ValueError`.
+- Release note (bug fix): sequential panel captures
+  (`workflows.capture_sequential` on a `from_frame(shape="panel", ...)` source
+  with a declared `observation_end`) now date their checkpoint and as-of
+  results at the declared observation end when the capture is requested for a
+  later day. Before, the checkpoint's `reveal_cursor` and the as-of result row
+  carried the requested later day although the evidence stopped at the
+  observation end. Results no longer claim evidence beyond the observation
+  window, and a source whose observation end is later extended continues from
+  the correct checkpoint. Captures requested on or before the observation end
+  are unchanged.
+- Release note (bug fix): warehouse reads over `from_definitions` no longer
+  lose the NULL refusal when their result has no rows. When the rows a
+  sequential capture (`capture_sequential`), a dashboard's group data or a
+  whole-site read consumed hold a NULL value under `missing: error`, the read
+  now refuses with `source.native.fact_null_values` (context `fact`, `column`,
+  `null_rows`) even when filtering or aggregation leaves it no rows to return,
+  as a read with rows does; a sequential capture refuses before it records any
+  unit. Reads whose rows hold no NULL value return as before.
+- Release note (bug fix): a calendar trend's `to_table()` and `sql()` and the
+  SQL previews `increment.query.panel_sql` and `summary_sql` now apply a fact's
+  NULL rule as the frame and readout paths do. Under `missing: error`, the
+  default, each refuses with `source.native.fact_null_values` (context `fact`,
+  `column`, `null_rows`) when the rows its table or SQL reads hold a NULL
+  value: for a panel, every day it exports through the observation end, a
+  ratio's numerator only; for a summary, the metric windows, a ratio's
+  denominator and the CUPED pre-period. Before, each returned a table or SQL
+  that silently left those rows out, so its aggregates could be biased. To
+  check, `to_table()`, `sql()` and each preview now run one read that counts
+  those NULL values before returning; the SQL they return is not checked again
+  when you run it. Under `missing: skip` or `zero` they return as before.
 - Release note (breaking bug fix): a readout's `source_snapshot_id`, and every
   family ID built from it, no longer changes when a message is reworded. A
   snapshot keeps reason codes and their structured context but not rendered
@@ -412,7 +604,8 @@ values.
   `estimation.engine.lift_guard`; at a zero or negative mean it keeps its
   unbounded additive row as before. A ratio metric whose denominator mean is
   too noisy in either arm (relative standard error above 0.15, where the
-  `ratio_denominator_precision` note applies) still fails with these guards.
+  `ratio_denominator_precision` note applies; on a scalar CUPED row, the
+  CUPED-adjusted denominator mean) still fails with these guards.
   With such a denominator, a ratio row with a zero or negative numerator mean,
   which kept an additive row, now fails the same way (`reason`
   `"non_positive_mean"`): its additive difference shares that denominator. A
@@ -566,7 +759,7 @@ values.
   run's cells decide it from its own interval, as for any other row; before,
   a flagged segment selected by its BH family still reported
   `stat_sig() == False` and was called inconclusive. Its interpretation line
-  now ends with a caveat naming the 50-unit criterion, and
+  now ends with a low-reliability caveat, and
   [Reading results](guides/reading-results.md#small-segments-are-flagged-not-withheld)
   states it. A fixed-horizon Bonferroni breakout divides each metric's alpha
   by its (treatment arm, segment) cells estimable by their arm counts under
@@ -637,7 +830,9 @@ values.
   sensitivity report, its retained estimate, such as the average effect, the
   policy value or the observed risk ratio), and otherwise `unavailable`
   with the row's failure code, or `results.component.unavailable` with its
-  exclusion as `context["reason"]` (for example `few_units`). Every such cell
+  exclusion as `context["reason"]` (for example `few_units`); a breakout or day
+  row that never recorded its sampling availability is `unavailable` with
+  `readout.legacy.sampling_unreconstructible`. Every report cell
   was `unavailable` with `results.operation.unsupported` before; that no
   portable operation is registered remains a property of the row kind and its
   `supports`. A saved run's `reason_code` column is the sampling status code,
@@ -807,6 +1002,7 @@ values.
   `source.frame.column_dtype`. On `from_switchback_frame` the same mistake
   refuses with `source.frame.switchback.columns`, reason
   `metric_overlaps_column`. Estimates and experiment identity hashes are
+  unchanged.
 - Release note (breaking API cutover): printing a `RunResult` shows a compact
   readout instead of every stored field: the run id, the program verdict and
   its reason codes, then one line per cell with its metric, arm, segment, day
@@ -826,7 +1022,6 @@ values.
   instead of `results.frame.unknown_columns` listing its letters; pass a list
   such as `columns=["lift"]`. Results, saved cells and experiment identity
   hashes are unchanged.
-  unchanged.
 - Release note (bug fix): a fact source whose SQL lacks a declared fact value
   column or property column refuses with
   `definition.fact_source.missing_columns` before any data is read, naming the
@@ -883,12 +1078,12 @@ values.
   such as one after the date a pinned snapshot's feed is complete through,
   never refuses. Publishing a unit-day artifact refuses the same way for the
   rows it stores, its triggered rows included. SQL previews (`panel_sql`,
-  `summary_sql`) and a trend's `to_table()` and `sql()` cannot refuse; under
-  `error` their SQL reads only the rows with a value. To migrate, fill the NULL
-  values or declare the fact's `missing`: `skip` leaves those rows out of every
-  aggregation, `zero` reads the value as 0 and keeps the row. Definitions
-  without `missing` keep their identity, and runs over facts without NULL
-  values keep their estimates.
+  `summary_sql`) and a trend's `to_table()` and `sql()` refuse the same way:
+  before returning, each runs one read that counts the NULL values in the rows
+  its SQL reads. To migrate, fill the NULL values or declare the fact's
+  `missing`: `skip` leaves those rows out of every aggregation, `zero` reads
+  the value as 0 and keeps the row. Definitions without `missing` keep their
+  identity, and runs over facts without NULL values keep their estimates.
 - Release note (usability): importing `increment.dashboard` without the
   `dashboard` extra refuses with `install.dashboard_extra_missing`, and
   `increment.tables.readout_table` or `trend_table` without the `tables` extra
@@ -1103,7 +1298,8 @@ values.
   adjusted, nominal p < 0.001, the automatic sample-ratio check's threshold)
   carries the advisory `estimation.cuped.covariate_imbalance`, and the run emits
   a runtime warning with the same code. Its context reports each group's
-  covariate mean, the `difference` with its `standard_error`, `statistic`, `dof`
+  covariate mean, the `difference` with its `standard_error`, `statistic`
+  (null past the float range, with `statistic_unavailable_reason`), `dof`
   and `p_value`, the fitted `theta` (`theta_numerator` and `theta_denominator`
   for a ratio metric), the `constant_arms`, and for a mean metric
   `adjustment_shift`, how far the adjustment moved the absolute difference (not
@@ -1442,8 +1638,9 @@ values.
   `store.history`, but no decision plan: `RunResult.from_handle` refuses it
   with `store.decision.reference_invalid`, and `decision_log=` refuses with
   `wire.procedure.contrast_context`. Runs saved by `Analysis.run(store=)`
-  remain readable; history does not join them with new runs, because the
-  registration, scope and method identities differ.
+  remain readable, except one holding a prospectively bounded contrast
+  (`estimation.contrast.legacy_envelope`); history does not join them with
+  new runs, because the registration, scope and method identities differ.
 - Release note (bug fix): an experiment saved with `to_json` keeps the view
   parameters it declared, so its hash does not change with a private executor
   parameter and it runs against a new reader. A `coherence` saved in an
