@@ -59,9 +59,12 @@ def test_native_absolute_margin_matches_public_decision_after_codecs():
     from tests.breakout.test_heterogeneity import _absolute_breakout_estimate
     from tests.estimation.test_decision_stats import _absolute_linear_est
 
+    # The breakout row records its sampling availability, as an estimated row does.
     rows = (
         _absolute_linear_est(mu=1.0, sigma=0.2),
-        _absolute_breakout_estimate("A", value=1.0, se=0.2),
+        _absolute_breakout_estimate("A", value=1.0, se=0.2).model_copy(
+            update={"sampling_available": True}
+        ),
     )
     for row in rows:
         cell = (
@@ -2532,6 +2535,147 @@ def test_cell_rejects_conflicting_source_snapshot_identity():
     with pytest.raises(CodedError) as raised:
         ResultCell.from_payload(payload)
     assert raised.value.code == "results.cell.schema_unsupported"
+
+
+def test_report_payload_with_unknown_sampling_marker_is_unavailable():
+    from increment.estimation.results import Estimate, LiftEstimate
+    from increment.estimation.targeting import CateValidation, RankTest
+    from increment.result_envelope import ResultCell
+
+    # A legacy row that never recorded whether its sampling evidence can be rebuilt.
+    row = LiftEstimate(
+        metric="m",
+        group_id="T",
+        method="unadjusted",
+        method_role="sensitivity",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        sampling_available=None,
+    )
+    identity = ResultCell.from_row(row).identity
+    cell = ResultCell.from_report_payload(
+        row_kind="sensitivity", identity=identity, label="legacy", row=row
+    )
+    status = cell.components["sampling"][0]
+    assert cell.summary is not None and cell.summary.point == 0.2
+    assert (status.state, status.code) == (
+        "unavailable",
+        "readout.legacy.sampling_unreconstructible",
+    )
+    assert status.context["cell_key"] == identity.key.model_dump(mode="json")
+    assert status.context["missing_fields"] == (
+        "prior_free_reference_kind",
+        "prior_free_reference_df",
+    )
+    assert status.context["remedy"] == "recompute_from_source"
+
+    # A report type that carries no sampling marker keeps its estimate available.
+    rank = RankTest(estimate=None, se=None, p_value=None)
+    validation = CateValidation(
+        n_train=8,
+        n_holdout=8,
+        holdout_ate=Estimate(value=0.5, lb=0.1, ub=0.9, level=0.95),
+        groups=(),
+        autoc=rank,
+        qini=rank,
+        clan=(),
+        alpha=0.05,
+        passed=False,
+    )
+    report = ResultCell.from_report_payload(
+        row_kind="cate_validation", identity=identity, label="validation", row=validation
+    )
+    assert report.components["sampling"][0].state == "available"
+
+
+def test_unrecorded_sampling_breakout_is_unavailable_to_every_consumer():
+    import narwhals as nw
+    import pandas as pd
+
+    from increment import AnalysisPlan, MetricSpec, RunResult, run
+    from increment.breakout.estimates import BreakoutEstimates
+    from increment.errors import CodedError
+    from increment.result_envelope import (
+        AnalysisEnvelope,
+        Operation,
+        ResultCell,
+        combine_family_evidence,
+        compare_margin,
+        family_evidence,
+        render,
+    )
+    from increment.semantics.design import Randomized
+    from increment.tables import readout_table
+    from tests.breakout.test_heterogeneity import _breakout_estimate
+
+    code = "readout.legacy.sampling_unreconstructible"
+    # A fixed-horizon breakout row whose sampling availability was never recorded.
+    row = _breakout_estimate("US", 0.20, 0.05)
+    assert row.sampling_available is None and row.sequential_result is None
+    cell = BreakoutEstimates([row]).as_cells()[0]
+    restored = (
+        cell,
+        ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+    )
+    # A saved run reopens with its portable cells and no live rows; this one holds the cell.
+    experiment, reader = from_frame(
+        pd.DataFrame(
+            [
+                {"unit": f"{arm}-{index}", "arm": arm, "value": float(index)}
+                for arm in ("control", "treatment")
+                for index in range(8)
+            ]
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+        plan=AnalysisPlan(primary="value"),
+    )
+    with reader:
+        live = run(experiment, reader)
+    for candidate in restored:
+        assert Operation.COMPARE_MARGIN not in candidate.supports["sampling"]
+        with pytest.raises(CodedError) as raised:
+            compare_margin(candidate, margin=0.0, scale="relative")
+        assert raised.value.code == "results.operation.unsupported"
+        evidence = family_evidence(candidate)
+        assert evidence.evidence is None
+        assert evidence.reason_code == code
+        with pytest.raises(CodedError) as raised:
+            combine_family_evidence([evidence], procedure="bh", level=0.05)
+        assert raised.value.code == "results.operation.unsupported"
+
+        # Presentation rebuilds the row and draws no verdict from it.
+        envelope = AnalysisEnvelope((candidate,), None)
+        (shown,) = readout_table(envelope).data.to_dict("records")
+        assert shown["stat_sig"] is None and shown["effect_interpretation"] is None
+        assert shown["sampling_reason_code"] == code
+        text = render(envelope, "full")
+        assert "stat_sig=unavailable" in text and "stat_sig=True" not in text
+        # Every unavailable-cell disclosure names the missing fields of the legacy context.
+        unavailable = [line for line in text.splitlines() if "Unavailable rev" in line]
+        assert unavailable and all("prior_free_reference_kind" in line for line in unavailable)
+
+        reopened = RunResult(
+            cells=(candidate,),
+            effects=(candidate.summary,),
+            decisions=live.decisions,
+            run=live.run,
+            live_rows=(None,),
+        )
+        (line,) = (line for line in repr(reopened).splitlines() if line.startswith("rev"))
+        assert f"status=unavailable; code={code}" in line
+        assert str(reopened) == repr(reopened)
+        (projected,) = nw.from_native(reopened.to_frame(backend="polars"), eager_only=True).rows(
+            named=True
+        )
+        assert projected["stat_sig"] is None and projected["sampling_available"] is False
 
 
 def test_payload_summary_is_rederived_from_retained_lift_row():

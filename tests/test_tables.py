@@ -1524,8 +1524,7 @@ def test_readout_table_breakout_nested_by_arm_refusal_routes_to_segment(country_
 
 
 def test_readout_table_shows_the_missing_segment_label_as_written(country_breakout):
-    """``__null__`` reads as written, and an empty-string segment stays
-    distinct from a whole-window row, which has no segment."""
+    """``__null__`` reads as written."""
     pytest.importorskip("coeftable")
 
     html = readout_table(country_breakout, nest_by="segment").gt().as_raw_html()
@@ -1533,19 +1532,62 @@ def test_readout_table_shows_the_missing_segment_label_as_written(country_breako
     assert "__null__" in html
     assert "<strong>null</strong>" not in html
 
+
+def test_readout_table_keeps_empty_and_literal_quote_segments_distinct():
+    """A whole-window row, which has no segment, an empty-string segment and a
+    segment written as two quote characters each keep their own row and trend."""
+    pytest.importorskip("coeftable")
+
+    cells = ((None, None, 0.11, 2), ("country", "", 0.22, 3), ("country", '""', 0.33, 4))
     rows = estimates_to_readout(
         [
-            _estimate("revenue", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
-            _breakout_estimate(
-                "revenue", "T", "unadjusted", "country", "", 0.05, lb=-0.02, ub=0.12
-            ),
+            _estimate("revenue", "T", "unadjusted", lift, lb=lift - 0.05, ub=lift + 0.05)
+            if dimension is None
+            else _breakout_estimate(
+                "revenue",
+                "T",
+                "unadjusted",
+                dimension,
+                segment,
+                lift,
+                lb=lift - 0.05,
+                ub=lift + 0.05,
+            )
+            for dimension, segment, lift, _days in cells
         ]
     )
-    dom = _Dom(readout_table(rows, nest_by="segment").gt().as_raw_html())
+    # Each segment's trend covers its own number of days, so a sparkline's points say whose it is.
+    trend = [
+        _daily_estimate(
+            "revenue",
+            "T",
+            "unadjusted",
+            date(2024, 1, day),
+            0.05,
+            lb=0.0,
+            ub=0.1,
+            dimension=dimension,
+            dimension_value=segment,
+        )
+        for dimension, segment, _lift, days in cells
+        for day in range(1, days + 1)
+    ]
 
-    assert '""' in dom.text
-    tokens = dom.percent_tokens()
-    assert tokens["+22.0%"] == tokens["-2.0%"] == 1
+    html = readout_table(rows, nest_by="segment", trend=trend).gt().as_raw_html()
+
+    shown = []
+    for row in re.findall(r"<tr.*?</tr>", html, flags=re.S):
+        text = " ".join(_Dom(row).text.split())
+        for _dimension, _segment, lift, _days in cells:
+            effect = f"+{lift * 100:.1f}%"
+            if effect in text:
+                (points,) = re.findall(r'<polyline points="([^"]*)"', row)
+                label = text.partition(effect)[0].removeprefix("revenue").strip()
+                shown.append((lift, label, len(points.split())))
+    assert sorted((lift, days) for lift, _label, days in shown) == [(0.11, 2), (0.22, 3), (0.33, 4)]
+    labels = {lift: label for lift, label, _days in shown}
+    assert len(set(labels.values())) == 3
+    assert labels[0.11] == "" and labels[0.22] == '""'
 
 
 def test_readout_table_trend_renders_sparkline_column():

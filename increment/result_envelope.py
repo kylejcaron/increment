@@ -41,6 +41,9 @@ if TYPE_CHECKING:
 _SCHEMA_VERSION = 3
 _METADATA_KEY = b"increment.readout_metadata"
 _CONSTRUCTION_TAGS = frozenset((None, *get_args(Construction)))
+# A report row whose sampling availability was never recorded: no sampling operation or
+# family evidence may be drawn from its retained statistics.
+_UNRECORDED_SAMPLING = "readout.legacy.sampling_unreconstructible"
 _PROJECTION_FIELDS = (
     "null_lift",
     "null_abs",
@@ -638,7 +641,28 @@ class ResultCell:
             getattr(row, "sampling_available", None) is False
             or getattr(row, "failure_code", None) is not None
         )
-        if not failed and (_has_sampling_result(row) or summary.point is not None):
+        retained = not failed and (_has_sampling_result(row) or summary.point is not None)
+        metric = getattr(row, "metric", None)
+        # A fixed-horizon row that carries the sampling marker but never recorded it cannot
+        # show its estimate as available; a report type without the marker is not affected.
+        if (
+            retained
+            and getattr(row, "sampling_available", False) is None
+            and getattr(row, "sequential_result", None) is None
+        ):
+            code = _UNRECORDED_SAMPLING
+            context = {
+                "cell_key": identity.key.model_dump(mode="json"),
+                "missing_fields": ("prior_free_reference_kind", "prior_free_reference_df"),
+                "remedy": "recompute_from_source",
+            }
+            sampling = ComponentStatus(
+                "unavailable",
+                code=code,
+                reason=_failure_text(code, context, metric),
+                context=context,
+            )
+        elif retained:
             sampling = ComponentStatus("available")
         else:
             code = (
@@ -647,15 +671,17 @@ class ResultCell:
                 or "results.component.unavailable"
             )
             exclusion = getattr(row, "unavailable", None) or getattr(row, "excluded", None)
-            context = (
-                getattr(row, "failure_context", None)
-                or getattr(row, "sampling_reason_context", None)
-                or ({"reason": str(exclusion)} if exclusion is not None else {})
+            explicit = getattr(row, "failure_context", None) or getattr(
+                row, "sampling_reason_context", None
             )
+            # Without a more specific context, the summary's reason, a nested rule's
+            # included, says why the estimate is unavailable.
+            fallback = str(exclusion) if exclusion is not None else summary.reason
+            context = explicit or ({"reason": fallback} if fallback is not None else {})
             sampling = ComponentStatus(
                 "unavailable",
                 code=code,
-                reason=_failure_text(code, context, getattr(row, "metric", None)),
+                reason=_failure_text(code, context, metric) or (None if explicit else fallback),
                 context=context,
             )
         return cls(
@@ -835,7 +861,19 @@ class ResultCell:
             "switchback_block_t",
             "switchback_unit_variance_envelope",
         }:
-            return _restore_typed_report_row(self.row_kind, self.row_payload)
+            row = _restore_typed_report_row(self.row_kind, self.row_payload)
+            status = self.components["sampling"][0]
+            if status.code != _UNRECORDED_SAMPLING:
+                return row
+            # The row never recorded its sampling availability; it reads as the cell's
+            # status says, so no consumer draws a verdict from its retained statistics.
+            return row.model_copy(
+                update={
+                    "sampling_available": False,
+                    "sampling_reason_code": status.code,
+                    "sampling_reason_context": _plain(status.context),
+                }
+            )
         if self.row_payload is not None and self.row_kind in {
             "cate",
             "cate_validation",
@@ -1551,7 +1589,11 @@ def family_evidence(cell: ResultCell) -> StoredFamilyEvidence:
     row = cell.retained_row() if state is not None else cell._projection_row()
     construction = construction or getattr(row, "reference_kind", None) or cell.row_kind
     set_only = getattr(row, "confidence_set", None) is not None
-    if status.state == "unavailable" and not (report_row or set_only):
+    # A report row's other unavailable reasons are read from the row below; one whose
+    # sampling was never recorded offers no evidence.
+    if status.state == "unavailable" and (
+        not (report_row or set_only) or status.code == _UNRECORDED_SAMPLING
+    ):
         return StoredFamilyEvidence(
             cell.identity.hash(),
             construction,

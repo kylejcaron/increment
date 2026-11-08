@@ -211,15 +211,7 @@ class RunResult:
         )
 
     def __repr__(self) -> str:
-        from increment._interpretation import (
-            _cell_coordinates,
-            _confidence_set_text,
-            _effect_text,
-            _has_sampling_result,
-            _retained_set_text,
-            _retained_unavailable_reason,
-            _varying_fields,
-        )
+        from increment._interpretation import _varying_fields
         from increment.breakout.projection import scope_key
 
         program = self.decisions.program
@@ -257,45 +249,10 @@ class RunResult:
                     heading += ", cohort time basis"
                 lines.append(f"{heading}:")
             for index in indexes[:_REPR_CELLS_PER_VIEW]:
-                cell = self.cells[index]
-                effect = self.effects[index]
-                row = rows[index]
-                # A set its bounds cannot show (every value, none, typed endpoints) is printed
-                # from the row's own set, and the point is printed without bounds.
-                owned = None if effect is None else _retained_set_text(row, effect.value_scale)
-                if effect is not None and owned is not None:
-                    effect = replace(effect, lower=None, upper=None, intervals=(), geometry=None)
-                name = "mean" if cell.row_kind in ("daily_metric", "asof_metric") else "effect"
-                text = None if effect is None else _effect_text(effect, label=name)
-                if text is None:
-                    text = f"{name} unavailable"
-                    if owned is None and effect is not None and effect.reason is not None:
-                        text += f" ({effect.reason})"
-                confidence_set = (
-                    owned
-                    if owned is not None
-                    else None
-                    if effect is None
-                    else _confidence_set_text(effect)
+                line = _compact_cell_line(
+                    self.cells[index], self.effects[index], rows[index], varying
                 )
-                if confidence_set is not None:
-                    text += f"; {confidence_set}"
-                # Available means a point or a usable retained set, whatever the cell's portable
-                # operations; otherwise the set's own reason, the row's failure, then the cell's
-                # status says why not.
-                unusable = _retained_unavailable_reason(row)
-                if unusable is not None:
-                    text += f"; status=unavailable; reason={unusable}"
-                elif _has_sampling_result(row):
-                    text += "; status=available"
-                elif getattr(row, "failure_code", None) is not None:
-                    text += f"; status=unavailable; code={row.failure_code}"
-                else:
-                    status = cell.components["sampling"][0]
-                    text += f"; status={status.state}"
-                    if status.code is not None:
-                        text += f"; code={status.code}"
-                lines.append(f"{indent}{_cell_coordinates(cell.identity.key, varying)}: {text}")
+                lines.append(f"{indent}{line}")
             if len(indexes) > _REPR_CELLS_PER_VIEW:
                 lines.append(f"{indent}… {len(indexes) - _REPR_CELLS_PER_VIEW} more cells")
         readout = (
@@ -328,6 +285,60 @@ class RunResult:
             self._row_models,
             self._input_backend,
         )
+
+
+def _compact_cell_line(
+    cell: ResultCell, effect: EffectEstimate | None, row: Any, varying: frozenset[str]
+) -> str:
+    """Print one cell as its coordinates, retained effect and availability."""
+    from increment._interpretation import (
+        _cell_coordinates,
+        _confidence_set_text,
+        _effect_text,
+        _has_sampling_result,
+        _retained_set_text,
+        _retained_unavailable_reason,
+    )
+
+    # A set its bounds cannot show (every value, none, typed endpoints) is printed
+    # from the row's own set, and the point is printed without bounds.
+    owned = None if effect is None else _retained_set_text(row, effect.value_scale)
+    if effect is not None and owned is not None:
+        effect = replace(effect, lower=None, upper=None, intervals=(), geometry=None)
+    name = "mean" if cell.row_kind in ("daily_metric", "asof_metric") else "effect"
+    text = None if effect is None else _effect_text(effect, label=name)
+    if text is None:
+        text = f"{name} unavailable"
+        if owned is None and effect is not None and effect.reason is not None:
+            text += f" ({effect.reason})"
+    confidence_set = (
+        owned if owned is not None else None if effect is None else _confidence_set_text(effect)
+    )
+    if confidence_set is not None:
+        text += f"; {confidence_set}"
+    if effect is not None and effect.qualification is not None:
+        text += f"; qualification={effect.qualification}"
+    # Available means a point or a usable retained set, whatever the cell's portable
+    # operations; otherwise the set's own reason, the row's failure, then the cell's
+    # status says why not.
+    unusable = _retained_unavailable_reason(row)
+    if unusable is not None:
+        text += f"; status=unavailable; reason={unusable}"
+    elif _has_sampling_result(row):
+        text += "; status=available"
+    elif getattr(row, "failure_code", None) is not None:
+        text += f"; status=unavailable; code={row.failure_code}"
+    else:
+        status = cell.components["sampling"][0]
+        text += f"; status={status.state}"
+        if status.code is not None:
+            text += f"; code={status.code}"
+    # A fallback to another scale is labelled with the scale it shows.
+    key, shown = cell.identity.key, varying
+    if effect is not None and key.value_scale not in (None, effect.value_scale):
+        key = key.model_copy(update={"value_scale": effect.value_scale})
+        shown = varying | {"value_scale"}
+    return f"{_cell_coordinates(key, shown)}: {text}"
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,7 +16,6 @@ from increment.estimation.readout_types import (
 )
 from increment.estimation.results import (
     _FAMILY_PROCEDURE_LABELS,
-    DEFAULT_RELIABILITY_FLOOR,
     _selection_qualification,
     contrast_stat_sig,
     row_chance_to_beat,
@@ -25,9 +24,10 @@ from increment.estimation.results import (
     row_verdict,
 )
 
-#: Follows a fixed-horizon ``low_reliability`` row's interpretation; the verdict stands.
+#: Follows a fixed-horizon ``low_reliability`` row's interpretation; the verdict stands. The
+#: row keeps the flag but not the threshold it was configured with, so no number is named.
 LOW_RELIABILITY_CAVEAT = (
-    f"Caveat: low reliability, fewer than {DEFAULT_RELIABILITY_FLOOR} units in an arm."
+    "Caveat: low reliability, an arm has fewer units than the configured reliability threshold."
 )
 
 
@@ -129,6 +129,10 @@ def _failure_message(code: str | None, context: Any, metric: str | None, row) ->
 def _unscoped_cell(row) -> InterpretedCell:
     failure_code = getattr(row, "failure_code", None)
     failure_context = getattr(row, "failure_context", None)
+    # As in a scoped readout, a row marked sampling-unavailable without a failure says why.
+    if failure_code is None and getattr(row, "sampling_available", None) is False:
+        failure_code = getattr(row, "sampling_reason_code", None)
+        failure_context = getattr(row, "sampling_reason_context", None)
     failure_message = _failure_message(
         failure_code, failure_context, getattr(row, "metric", None), row
     )
@@ -1797,7 +1801,11 @@ def _has_point(row) -> bool:
 
 
 def _has_sampling_result(row) -> bool:
-    if row is None or getattr(row, "failure_code", None) is not None:
+    if (
+        row is None
+        or getattr(row, "failure_code", None) is not None
+        or getattr(row, "sampling_available", None) is False
+    ):
         return False
     if _has_point(row):
         return True

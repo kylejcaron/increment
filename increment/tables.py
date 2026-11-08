@@ -1251,19 +1251,30 @@ def _default_nest_by(frame: Any) -> Literal["arm", "segment"]:
     return "segment" if spans_segments and frame["method"].n_unique() <= 1 else "arm"
 
 
+def _segment_label(value: Any) -> str:
+    if _is_missing(value):
+        return ""
+    text = str(value)
+    if not text:
+        return '""'
+    # Spellings that read like the empty-segment marker (backslashes, then two quote
+    # characters) gain one leading backslash, so distinct segments keep distinct labels.
+    if text.lstrip("\\") == '""':
+        text = f"\\{text}"
+    return _markdown_literal(text)
+
+
 def _literal_segments(frame: Any) -> Any:
     """Key each segment by the label its nest cell shows, so the row checks see
     what the table shows. A segment reads as written, an empty-string segment
-    reads ``""``, and a row without a segment, such as a whole-window row, shows none."""
+    reads ``""``, a segment written as ``""`` reads ``\\""``, and a row without a
+    segment, such as a whole-window row, shows none."""
     import narwhals as nw
 
     return frame.with_columns(
         nw.new_series(
             "segment",
-            [
-                "" if _is_missing(value) else _markdown_literal(value) or '""'
-                for value in frame["segment"].to_list()
-            ],
+            [_segment_label(value) for value in frame["segment"].to_list()],
             backend=nw.get_native_namespace(frame),
         )
     )
@@ -1800,7 +1811,8 @@ def readout_table[V](
     be filtered to one method, or this raises). ``None`` (default) picks
     ``"segment"`` when rows of one method carry more than one segment and
     ``"arm"`` otherwise. Segment labels show as written, so the missing-value
-    segment reads ``__null__`` and an empty-string segment reads ``""``.
+    segment reads ``__null__`` and an empty-string segment reads ``""``; a
+    segment written as two quote characters reads ``\\""``.
     ``advisory`` explicitly
     renders stored-posterior values with posterior-qualified labels;
     ``show_interval_level`` governs interval-level disclosure - an ``Interval`` column when
