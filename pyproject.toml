@@ -104,7 +104,7 @@ dev = [
     "prek>=0.5.7",
     "marimo>=0.25.2",
     "altair>=6.3.0",
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     # ty 0.0.91 emits hundreds of new diagnostics across existing code/tests;
     # hold at 0.0.64 until the stricter checks are adopted incrementally (2026-10-28).
     "ty>=0.0.64,<0.0.65",
@@ -128,7 +128,7 @@ dev = [
     "pytest-benchmark>=5.3.0",
 ]
 core-test = [
-    "pytest>=9.1.1",
+    "pytest>=9.2.0",
     "pytest-xdist>=3.6",
     "pytest-timeout>=2.4",
     "hypothesis>=6.170.9",

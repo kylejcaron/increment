@@ -272,6 +272,12 @@ also carry `slow`; the marker expressions keep their purpose-specific gates
 separate. `pytest-timeout` supplies the 300-second per-test hang guard. There
 are no tier-level wall-clock budgets.
 
+Use the locked test dependencies. Pytest 9.2 fixes
+[nested fixture resolution for mixed file selections](https://github.com/pytest-dev/pytest/issues/14964);
+AnyIO 4.15.1 or newer also avoids
+[its pytest-plugin import warning](https://github.com/agronholm/anyio/issues/1271).
+Do not reorder selections or suppress warnings to accommodate older versions.
+
 #### Isolated core-test install
 
 The required `core-install (3.12)` job installs only the `core-test`
