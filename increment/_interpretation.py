@@ -1466,7 +1466,16 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
     if contains_null and rejection_side is None:
         return "Interpretation: does not reject; inconclusive, not evidence of no effect."
     level_note = "" if level is None else f" at {level:.1%} confidence"
-    if null == 0:
+    if contains_null:
+        # Only a contrast that rejects on its p-value gets here; its bounds do not exclude
+        # the null, so the outcome is stated as the rejection, never as an exclusion.
+        tested = "zero" if null == 0 else "the null"
+        margin = "" if null == 0 else " (margin met)"
+        outcome = (
+            f"rejects {tested}{level_note}{margin}; the displayed interval is rounded outward "
+            f"and still includes {tested}"
+        )
+    elif null == 0:
         outcome = f"excludes zero{level_note}"
     else:
         outcome = f"rejects the null{level_note} (margin met)"

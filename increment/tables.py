@@ -1033,6 +1033,14 @@ def _compact_interval_interpretation(value: Any) -> str:
 
 
 def _compact_interval_verdict(text: str) -> str:
+    compact = _compact_interval_outcome(text)
+    # A rejection whose outward-rounded interval still includes the null it rejects.
+    if "the displayed interval is rounded outward" in text:
+        return f"{compact} (displayed interval rounded outward)"
+    return compact
+
+
+def _compact_interval_outcome(text: str) -> str:
     if "does not reject; inconclusive" in text:
         return "Contains tested null — inconclusive"
     if "excludes zero" in text:
@@ -1041,6 +1049,12 @@ def _compact_interval_verdict(text: str) -> str:
         if "effect direction supported (decrease)" in text:
             return "Excludes zero — decrease established"
         return "Excludes zero — direction not established"
+    if "rejects zero" in text:
+        if "effect direction supported (increase)" in text:
+            return "Rejects zero — increase established"
+        if "effect direction supported (decrease)" in text:
+            return "Rejects zero — decrease established"
+        return "Rejects zero — direction not established"
     if "rejects the null" in text:
         if "effect direction supported (increase)" in text:
             return "Rejects null — margin met; increase established"
@@ -1107,7 +1121,7 @@ def _rendered_metadata_columns(
     only when ``advisory`` is set. ``Discovery`` renders a row's family verdict
     ("Yes"/"No"/blank) as its own column - a family-level BH/e-BH selection
     outcome, never conflated with ``stat_sig`` (a single row's own
-    interval-excludes-null check). ``Interval`` renders per-row confidence
+    verdict). ``Interval`` renders per-row confidence
     levels only when they differ across rows; one shared level is a header
     note instead. No column renders a ship/no-ship verdict.
     """

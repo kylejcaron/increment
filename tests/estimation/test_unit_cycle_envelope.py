@@ -21,7 +21,7 @@ from increment.semantics.unit_cycle import (
     UnitCycleTApproximation,
     UnitCycleVarianceEnvelope,
 )
-from increment.tables import contrast_results_to_readout
+from increment.tables import contrast_results_to_readout, readout_table
 
 
 def envelope(*, p=0.8, variance=0.01, cycles=1, metric="value"):
@@ -181,6 +181,16 @@ def test_envelope_rejection_side_survives_point_and_slope_rounding():
     restored = ContrastResult.model_validate_json(result.model_dump_json())
     assert contrast_rejection_side(restored) == "less"
     assert result.residual_side == "less"
+    # The interval [2.9999999999999996, 3.0] reaches the null of 3 and lies above zero.
+    assert contrast_results_to_readout([restored])[0]["effect_interpretation"] == (
+        "Interpretation: rejects the null at 95.0% confidence (margin met); the displayed "
+        "interval is rounded outward and still includes the null; effect direction supported "
+        "(increase)."
+    )
+    assert (
+        "Rejects null — margin met; increase established (displayed interval rounded outward)"
+        in readout_table(ContrastResults([restored])).gt().as_raw_html()
+    )
 
 
 @pytest.mark.parametrize(
@@ -217,8 +227,14 @@ def test_envelope_readout_interprets_the_rejection_its_p_value_decides(
     row = contrast_results_to_readout([result])[0]
     assert row["stat_sig"] is True
     assert row["residual_side"] == side
+    # The verdict is a rejection; only bounds that exclude the null are described as excluding it.
     assert row["effect_interpretation"] == (
-        f"Interpretation: excludes zero at 95.0% confidence; effect direction supported ({direction})."
+        "Interpretation: rejects zero at 95.0% confidence; the displayed interval is rounded "
+        f"outward and still includes zero; effect direction supported ({direction})."
+    )
+    assert (
+        f"Rejects zero — {direction} established (displayed interval rounded outward)"
+        in readout_table(ContrastResults([result])).gt().as_raw_html()
     )
 
 

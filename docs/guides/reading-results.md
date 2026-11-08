@@ -173,9 +173,19 @@ Interpretation separates the tested-null outcome from effect direction.
 An interval containing the tested null is inconclusive, not evidence of no
 effect. Excluding a nonzero margin can meet that test without establishing an
 increase or decrease: direction is stated only when the interval also excludes
-zero on the result's own axis. Absolute-native estimates and contrasts use
-additive intervals; relative rows with an absolute margin use their retained
-additive interval; sequential ratio bounds are interpreted after conversion to
+zero on the result's own axis. One case reads otherwise: a prospectively
+bounded switchback contrast (`switchback_unit_variance_envelope`) rejects on
+its p-value, and its displayed interval is rounded outward, so it can reject
+while that interval still includes the tested null. Its interpretation then
+says it rejects the null (or zero) and that the displayed interval is rounded
+outward and still includes it, never that the interval excludes it, and its
+table label ends with "(displayed interval rounded outward)". Its direction
+comes from the side its evidence rejects on (`residual_side`): an increase
+when it rejects above a null at or above zero, a decrease when it rejects
+below a null at or below zero, and otherwise as the interval shows.
+Absolute-native estimates and contrasts use additive intervals; relative rows
+with an absolute margin use their retained additive interval; sequential ratio
+bounds are interpreted after conversion to
 lift coordinates. `r.abs_reference_kind` names how that additive interval was
 cut: Welch `"t"` or `"normal"`, or, on an exact conversion row
 (`reference_kind="binomial"`), `"score"`, the score interval for the difference

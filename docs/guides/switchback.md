@@ -407,8 +407,9 @@ power-planning exports.
     the other sign. Frames, readout rows and wire serialization preserve
     these fields and numeric nulls. Readout `stat_sig` and the interval
     interpretation use that same p-value decision and side, not interval
-    exclusion, so a rejection whose displayed interval still touches the
-    null reads as a rejection. An envelope result saved before
+    exclusion: a rejection whose displayed interval still includes the null
+    reads as a rejection and says the interval is rounded outward, never that
+    it excludes the null. An envelope result saved before
     `residual_side` existed refuses to load with
     `estimation.contrast.legacy_envelope`; recompute it from the source data.
 
