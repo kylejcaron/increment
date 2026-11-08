@@ -767,6 +767,46 @@ def test_warehouse_latest_and_history_reject_unreadable_committed_records():
 
 
 @pytest.mark.integration
+def test_warehouse_reopen_of_an_unknown_manifest_version_refuses_with_code():
+    import pyarrow.parquet as pq
+
+    backend = ibis.duckdb.connect()
+    backend.create_database("analytics")
+    experiment, resolver = _analysis()
+    try:
+        store = WarehouseResultsStore(backend, schema="analytics")
+        store.put(_warehouse_run(view_readout(experiment, resolver)))
+        table_name, payload = _payloads_by_run_id(backend)["one"]
+        table = pq.read_table(pa.BufferReader(payload))
+        metadata = dict(table.schema.metadata or {})
+        metadata[b"increment.run_manifest.v3"] = metadata.pop(b"increment.run_manifest.v2")
+        sink = pa.BufferOutputStream()
+        pq.write_table(table.replace_schema_metadata(metadata), sink)
+        backend.drop_table(table_name, database="analytics")
+        backend.create_table(
+            table_name,
+            obj=pa.table({"payload": pa.array([sink.getvalue().to_pybytes()], type=pa.binary())}),
+            database="analytics",
+        )
+
+        for operation in (
+            lambda: store.open_run("exp", "spec", "one"),
+            lambda: store.open_run("exp", "spec"),
+            lambda: store.history("exp", _history_selector()),
+        ):
+            with pytest.raises(CodedError) as error:
+                operation()
+            assert error.value.code == "store.run.manifest_unsupported"
+            assert dict(error.value.context) == {
+                "found": ("increment.run_manifest.v3",),
+                "supported": ("increment.run_manifest.v2",),
+            }
+    finally:
+        resolver.close()
+        backend.disconnect()
+
+
+@pytest.mark.integration
 def test_warehouse_reopen_of_a_legacy_envelope_refuses_with_the_contrast_code():
     import json
 
