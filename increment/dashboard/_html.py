@@ -187,7 +187,10 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
 def render_header(
     snapshot: DashboardSnapshot, *, population: Literal["assigned", "triggered"] | None = None
 ) -> mo.Html:
-    """Experiment identity, analysis policy, and the selected population's headline summary."""
+    """Experiment identity, analysis policy, and the selected population's headline summary.
+
+    Readout qualifications are shown by ``render_results`` and ``render_health``, not here.
+    """
     snapshot = _population_snapshot(snapshot, population or _default_population(snapshot))
     lede = (
         f'<p class="inc-dashboard-lede">{esc(snapshot.description)}</p>'
@@ -199,7 +202,7 @@ def render_header(
     body = (
         '<div class="inc-dashboard-headline">'
         f'<h1 class="inc-dashboard-title">{esc(snapshot.title)}</h1>{source_html}</div>'
-        f"{lede}{_header_chips(snapshot)}{_qualification_block(snapshot)}{_header_cards(snapshot)}"
+        f"{lede}{_header_chips(snapshot)}{_header_cards(snapshot)}"
     )
     return mo.Html(
         f'<section class="inc-dashboard-root inc-dashboard-section" id="overview">{body}</section>'
@@ -979,14 +982,17 @@ _CORE_COLUMNS = frozenset(
     }
 )
 
+# The Readout leaves family selection to its notes, the Report and the metric inspector.
+_READOUT_COLUMNS = _CORE_COLUMNS - {"Discovery"}
+
 
 # This column is the Explore trajectory chart, not a readout evidence column.
 _EXPLORE_SERIES_COLUMNS = _CORE_COLUMNS | {"Cumulative lift"}
 
 
-def _keep_core_columns(table: ct.CoefTable) -> None:
+def _keep_core_columns(table: ct.CoefTable, columns: frozenset[str] = _CORE_COLUMNS) -> None:
     table.columns = tuple(
-        column for column in table.columns if getattr(column, "label", None) in _CORE_COLUMNS
+        column for column in table.columns if getattr(column, "label", None) in columns
     )
 
 
@@ -1045,7 +1051,7 @@ def results_table(snapshot: DashboardSnapshot) -> str:
         advisory=True,
         show_interval_level=True,
     )
-    _keep_core_columns(table)
+    _keep_core_columns(table, _READOUT_COLUMNS)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.forest_width, height=charts.forest_height)
     return _TABLE_WRAP.format(native_html(table, metrics)) + _selection_qualification_notes(

@@ -33,6 +33,13 @@ def _format_number(value: Fraction | int | float, digits: int) -> str:
         return format(number, f".{digits}g")
 
 
+def interval_text(lower: str | None, upper: str | None) -> str:
+    """Bracket formatted endpoints; an infinite end (``None``) is open: ``[a, ∞)``, ``(−∞, b]``."""
+    opening = "(−∞" if lower is None else f"[{lower}"
+    closing = "∞)" if upper is None else f"{upper}]"
+    return f"{opening}, {closing}"
+
+
 def format_interval(
     lower: Fraction | int | float | None,
     upper: Fraction | int | float | None,
@@ -43,6 +50,7 @@ def format_interval(
     """Format interval endpoints compactly; ``None`` denotes an infinite end."""
     if empty:
         return "∅"
-    lo = "−∞" if lower is None else _format_number(lower, digits)
-    hi = "+∞" if upper is None else _format_number(upper, digits)
-    return f"[{lo}, {hi}]"
+    return interval_text(
+        None if lower is None else _format_number(lower, digits),
+        None if upper is None else _format_number(upper, digits),
+    )

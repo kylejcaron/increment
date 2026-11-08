@@ -140,7 +140,7 @@ def test_point_backed_one_sided_fieller_set_keeps_its_direction_and_own_coverage
     assert complete is not None
     ((lower, upper),) = region.intervals
     assert upper is None
-    assert f"{lower:+.1%}" in complete and "+∞" in complete
+    assert f"[{lower:+.1%}, ∞)" in complete
     stated = [float(value) / 100 for value in re.findall(r"(\d+(?:\.\d+)?)%", complete)]
     assert any(abs(value - (1 - region.alpha)) < 5e-5 for value in stated)
     assert f"{central_upper:+.1%}" not in complete

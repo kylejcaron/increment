@@ -107,7 +107,7 @@ and triggered populations changes the selected evidence, not the family that
 was retained when each population was analyzed. Filtering a failed guardrail
 out of the visible rows does not make the primary's required scope complete.
 
-Summary, Readout, and Report distinguish the analysis-design assignment check
+Readout and Report distinguish the analysis-design assignment check
 from the dashboard's configured allocation check. The first uses retained
 analysis integrity evidence; if the design did not declare an allocation, it
 is shown as not run, never as a pass. The second compares the selected
@@ -124,13 +124,13 @@ For the Triggered view, the assigned-population integrity result remains
 visible as the assignment check; it is not replaced by triggered-population
 integrity metadata. Relative configured allocation weights are displayed as
 normalized shares (for example, `{control: 1, treatment: 1}` means 50% / 50%).
-The complete dashboard also retains the date window, inference description,
-and configured source label in the hero metadata beside the qualifications.
-
-The complete dashboard places the selected qualifications in the hero before
-the primary effect and at the start of Report before its effect and results
-table. An added metric's inspector uses that metric's captured collection
-evidence and retained qualifications, not the confirmatory Readout's rows.
+The complete dashboard's hero shows the date window, inference description,
+and configured source label as metadata, with the primary effect; it does not
+repeat the qualifications. Readout shows the selected population's
+qualifications above its table, and Report places them at its start, before
+its effect and results table. An added metric's inspector uses that metric's
+captured collection evidence and retained qualifications, not the
+confirmatory Readout's rows.
 The Health tab keeps the allocation summary and available, warning, and
 unavailable checks visible. Checks that do not apply because no trigger is
 declared collapse into one summary line; diagnostic codes and context are in
@@ -167,9 +167,11 @@ selected-population default and accept `population="assigned"` or
 that population; assignment counts remain separately labeled.
 
 Readout tables keep the core metric and arm identity, lift, and lift plot, with
-failure, family-discovery, or prior-advisory columns when those values exist.
-Numerical qualification appears in the metric inspector's interval-reading
-disclosure rather than the headline interval.
+failure or prior-advisory columns when those values exist. A row's family
+selection appears in the metric inspector, the Report notes and the
+qualifications rather than as a table column; the Explore overview keeps its
+**Discovery** column. Numerical qualification appears in the metric
+inspector's interval-reading disclosure rather than the headline interval.
 
 Explore requests must match the snapshot's experiment and metric
 configuration, including arms, windows, breakouts, and policy. Matching only
@@ -238,9 +240,9 @@ populations. Without a trigger, the dashboard is assigned-only.
     population by default and accept `population="assigned"` or
     `population="triggered"`. Group evidence is population-scoped;
     assignment counts remain separate. Readout keeps metric and arm
-    identity, lift, and plot, plus available failure, family-discovery, and
-    prior-advisory columns. Numerical qualifications appear in the
-    inspector's interval disclosure.
+    identity, lift, and plot, plus available failure and prior-advisory
+    columns. Numerical qualifications appear in the inspector's interval
+    disclosure.
 
 ## Theme presets
 
@@ -292,7 +294,7 @@ restyle the notebook canvas.
 |---|---|
 | `render_dashboard(experiment, snapshot=...)` | The complete four-tab dashboard as a marimo anywidget: native plots, scoped controls, metric inspectors, health, provenance, and a Report with the full captured metric family. Its Explore **Added metrics** control re-renders the same snapshot in a running notebook; it never reads the warehouse. |
 | `dashboard_styles(theme=MIDNIGHT)` | The configured theme and scoped stylesheet as one style block, read from packaged resources. |
-| `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and the primary lift with its bracketed interval and direction-aware significance status. |
+| `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and the primary lift with its bracketed interval and direction-aware significance status. Readout qualifications are in `render_results` and `render_health`. |
 | `render_health(snapshot)` | Allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
 | `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set columns are omitted; levels and interpretation remain in notes and CSV. |
 | `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; for the experiment's own metrics, observed data by group with eligibility, exclusions, counts, units, and provenance. An added metric shows its Overview result instead. |
@@ -303,7 +305,7 @@ restyle the notebook canvas.
 | `group_data_csv(snapshot, metric=None)` | The observed group-data rows as UTF-8 CSV bytes. Select one declared metric or export all; no warehouse query occurs. |
 
 Headline and metric-detail intervals retain declared one-sided bounds:
-`(−∞, upper]` or `[lower, +∞)`. Relative effects use percentages; absolute
+`(−∞, upper]` or `[lower, ∞)`. Relative effects use percentages; absolute
 effects use outcome units. A declared open endpoint is not missing data.
 An ordinary, non-FCR point-backed Fieller result retains its central display
 interval: for a 5% one-sided test, that interval has 90% coverage. The interval
@@ -367,10 +369,11 @@ the rejected metric, view, or breakout.
 ## Read the intervals
 
 Headline and metric-detail intervals keep their declared shape. A one-sided
-bound shows as `(−∞, upper]` or `[lower, +∞)`; a declared open endpoint is
+bound shows as `(−∞, upper]` or `[lower, ∞)`; a declared open endpoint is
 not missing data. Relative effects use percentages and absolute effects use
-outcome units. An undefined endpoint is shown with its reason and any finite
-opposite bound, never as infinity, and its numeric interval and forest bar
+outcome units, in the qualifications text as in the tables. An undefined
+endpoint is shown with its reason and any finite opposite bound, never as
+infinity, and its numeric interval and forest bar
 are omitted rather than drawing a false open interval; an available point is
 still shown. Unavailable inference is never labeled nonsignificant. **How to
 read these intervals** explains the captured test direction, exact binary
@@ -498,6 +501,11 @@ uncertainty, not just labels; each declared `(source, property)` breakout is
 captured separately, so two sources of the same property never mix and a
 refusal from one never hides the other. Unsupported engine requests display
 their refusal instead of substituting whole-experiment results.
+
+The **Focus metric** list groups metrics by role and scrolls within a fixed
+height, so a long list does not push the plot down. From nine metrics on, a
+filter above it narrows the list by metric name or role; the selected metric
+stays selected while it is filtered out of view.
 
 ??? info "Plot conventions"
     Temporal plots use a separate value scale per metric; both arms share a

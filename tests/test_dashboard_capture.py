@@ -47,7 +47,6 @@ from increment.dashboard import (
     prepare_dashboard,
     readout_csv,
     render_dashboard,
-    render_header,
     render_health,
     render_metric_details,
     render_results,
@@ -1667,7 +1666,7 @@ def test_allocation_check_uses_configured_shares() -> None:
     assert allocation.expected == {"baseline": 0.7, "candidate": 0.3}
     assert allocation.observed == {"baseline": 700, "candidate": 300}
     assert allocation.is_srm is False
-    text = render_header(snapshot).text
+    text = render_results(snapshot).text
     assert "baseline 70%" in text
     assert "candidate 30%" in text
     assert "baseline 700%" not in text
@@ -2048,18 +2047,15 @@ def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata():
         exported_hidden, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
     assert json.loads(row["retained_family"])
-    summary_html = render_header(dashboard_snapshot).text
-    assert "partial" in summary_html
-    assert "session_seconds" in summary_html
-    assert "SRM not checked" in summary_html and "allocation" in summary_html
     readout_html = render_results(dashboard_snapshot).text
     assert "partial" in readout_html
-    for surface in (summary_html, readout_html):
-        assert "Dashboard allocation check" in surface
-        assert "configured expected control 99.99% / treatment 0.01%" in surface
-        assert "mismatch detected" in surface
-        assert "integrity.allocation_missing_or_nonconstant" in surface
-        assert surface.index("mismatch detected") < surface.index("Analysis assignment check")
+    assert "session_seconds" in readout_html
+    assert "SRM not checked" in readout_html and "allocation" in readout_html
+    assert "Dashboard allocation check" in readout_html
+    assert "configured expected control 99.99% / treatment 0.01%" in readout_html
+    assert "mismatch detected" in readout_html
+    assert "integrity.allocation_missing_or_nonconstant" in readout_html
+    assert readout_html.index("mismatch detected") < readout_html.index("Analysis assignment check")
 
 
 def _assert_added_exploratory_readout(snapshot):
@@ -2107,22 +2103,20 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories():
     )
     assert "below 40" in advisory["message"]
 
-    summary_html = render_header(snapshot).text
     readout_html = render_results(snapshot).text
     payload = build_payload(saved.experiment, snapshot=snapshot)
     report_text = payload["report"]["qualifications"]
-    for surface in (summary_html, readout_html, report_text):
+    for surface in (readout_html, report_text):
         assert reason["code"] in surface
         assert advisory["code"] in surface
         assert "below 40" in surface
     assert advisory["message"] in report_text
+    assert "integrity.allocation_missing_or_nonconstant" in report_text
     shell = document(payload)
-    assert payload["qualifications"] == payload["report"]["qualifications"]
-    assert "integrity.allocation_missing_or_nonconstant" in payload["qualifications"]
-    assert shell.index('id="hero-meta"') < shell.index('id="hero-qualifications"')
     assert "hero-meta').textContent = str(data.meta)" in shell
+    # The hero leaves the qualifications to Readout and Report.
+    assert "hero-qualifications" not in shell
     assert payload["meta"]
-    assert shell.index('id="hero-qualifications"') < shell.index('id="hero-primary-effect"')
     assert shell.index('id="report-qualifications"') < shell.index('id="report-primary-effect"')
     _assert_added_exploratory_readout(snapshot)
 

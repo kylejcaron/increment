@@ -73,9 +73,9 @@ The output starts with one line per metric (shortened here):
 <!-- output -->
 ```text
 assigned — treatment vs control
-converted: control → treatment; n control=970; n treatment=1030; ...; effect=-4.84426%; interval=[-39.898, 29.3026]%; estimand=itt; stat_sig=False
+converted: control → treatment; n control=970; n treatment=1030; ...; effect=-4.84426%; interval=[-39.898%, 29.3026%]; estimand=itt; stat_sig=False
 ...
-revenue: control → treatment; n control=970; n treatment=1030; ...; effect=10.6507%; interval=[1.45261, 20.6827]%; estimand=itt; stat_sig=True
+revenue: control → treatment; n control=970; n treatment=1030; ...; effect=10.6507%; interval=[1.45261%, 20.6827%]; estimand=itt; stat_sig=True
 ...
 SRM not checked; declare allocation_scheme="independent" on Randomized or Encouragement; it must describe how units were actually assigned.
 ...

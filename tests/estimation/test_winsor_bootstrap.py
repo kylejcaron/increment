@@ -1190,8 +1190,8 @@ def test_full_reference_stream_centering_wire_and_reinversion():
     assert unresolved.confidence_set is not None
     assert unresolved.confidence_set.relative.upper.reason == "bootstrap_tail_unresolved"
     text = render_readout_text(interpret_readout([unresolved], None))
-    assert "relative confidence interval: [-1, +∞]" in text
-    assert "additive confidence interval: [−∞, +∞]" in text
+    assert "relative confidence interval: [-100%, ∞)" in text
+    assert "additive confidence interval: (−∞, ∞)" in text
     assert restored.p_value() == row.p_value()
 
 

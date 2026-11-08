@@ -1,6 +1,7 @@
 """Public readout journeys retain evidence for interpretation and replay."""
 
 import json
+import re
 import warnings
 from typing import Any, cast
 
@@ -261,7 +262,7 @@ def test_directional_binomial_guardrail_projection_uses_its_set_alpha():
         for line in rendered.splitlines()
         if line.startswith("complaints (guardrail, relative lift):")
     )
-    assert "at 0.9 confidence" in guardrail_line
+    assert "at 90% confidence" in guardrail_line
 
 
 def test_prior_backed_repr_shows_posterior_without_preferred_direction():
@@ -273,6 +274,23 @@ def test_prior_backed_repr_shows_posterior_without_preferred_direction():
 
     assert "value posterior: estimate=" in rendered
     assert "chance_to_beat=" in rendered
+
+
+def test_posterior_estimate_reads_in_percent_on_the_relative_scale_only():
+    from increment.estimation.inference import Normal
+
+    results = _run_mean(_mean_frame(), prior=Normal(mu=0.0, sigma=0.1))
+    row = next(row for row in results if row.posterior_available)
+    assert row.posterior_estimate is not None
+    absolute = row.model_copy(update={"value_scale": "absolute"})
+    for candidate, percent in ((row, True), (absolute, False)):
+        text = render_readout_text(interpret_readout([candidate], None))
+        line = next(line for line in text.splitlines() if " posterior: " in line)
+        match = re.search(r"estimate=(-?\d[\d.e+-]*)(%?);", line)
+        assert match is not None
+        assert (match.group(2) == "%") is percent
+        scale = 100 if percent else 1
+        assert float(match.group(1)) == pytest.approx(row.posterior_estimate * scale, rel=1e-5)
 
 
 @pytest.mark.parametrize("row_kind", ["breakout", "daily_lift"])
@@ -1002,7 +1020,7 @@ def test_effect_carriers_and_winsor_geometry_render_without_reinversion():
     winsor_text = render_readout_text(_interpret(winsorized))
     winsor_row = winsorized[0]
     assert winsor_row.confidence_set.qualification in winsor_text
-    assert f"{winsor_row.confidence_set.relative.lower.value:.6g}" in winsor_text
+    assert f"{winsor_row.confidence_set.relative.lower.value * 100:.6g}%" in winsor_text
 
 
 def test_nonpositive_mean_keeps_sampling_available_additive_interval():
@@ -1247,10 +1265,37 @@ def test_sequential_text_labels_ratio_geometry_for_finite_unbounded_and_disconne
     text = render_readout_text(interpret_readout([finite, unbounded, disconnected], None))
     assert text.count("sequential ratio confidence set") == 3
     assert "disconnected" in text
-    assert "+∞" in text
+    assert ", ∞)" in text
     assert "effect direction supported (decrease)" in render_readout_text(
         interpret_readout([decreasing], None)
     )
+
+
+@pytest.mark.parametrize(
+    ("alternative", "open_end"),
+    [("less", "(−∞, "), ("greater", ", ∞)")],
+    ids=["open-below", "open-above"],
+)
+def test_one_sided_sets_write_their_infinite_endpoint_open(alternative, open_end):
+    from tests.estimation.test_asymptotic_mean import _evaluate
+
+    row = _evaluate([1, 2, 3] * 40, [8, 10, 12] * 40, alternative=alternative)[0]
+    text = render_readout_text(interpret_readout([row], None))
+    # The decision interval, the relative set and the ratio set each reach infinity.
+    assert text.count(open_end) >= 3
+    assert text.count("∞") == text.count("(−∞, ") + text.count(", ∞)")
+
+
+def test_relative_effects_and_their_sets_read_in_percent():
+    results = _run_mean(_mean_frame(), guardrail=True)
+    text = render_readout_text(_interpret(results))
+    for row in results:
+        line = next(line for line in text.splitlines() if line.startswith(f"{row.metric} ("))
+        shown = [float(value) for value in re.findall(r"(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)%", line)]
+        expected = [row.lift.value, row.lift.lb, row.lift.ub, 1 - row.lift.alpha]
+        assert shown == pytest.approx([value * 100 for value in expected], rel=1e-5, abs=1e-9)
+        null = next(line for line in text.splitlines() if line.startswith(f"{row.metric} test"))
+        assert null.endswith(f"{row.null_lift * 100:.6g}%.")
 
 
 def test_missing_additive_interval_is_not_reported_as_an_unbounded_set():
@@ -1292,7 +1337,7 @@ def test_missing_additive_interval_is_not_reported_as_an_unbounded_set():
     text = render_readout_text(interpret_readout([result], None))
     assert "additive interval unavailable" in text
     assert "additive effect: 1" in text
-    assert "set [−∞, +∞]" not in text
+    assert "(−∞, ∞)" not in text
 
 
 def test_signed_support_rank_set_uses_correct_unbounded_endpoint_direction():
@@ -1316,13 +1361,13 @@ def test_signed_support_rank_set_uses_correct_unbounded_endpoint_direction():
     assert result.confidence_set is not None
     assert result.confidence_set.additive.lower.status == "unbounded"
     text = render_readout_text(interpret_readout([result], None))
-    assert "additive confidence interval: [−∞, +∞]" in text
+    assert "additive confidence interval: (−∞, ∞)" in text
     assert "additive interval unavailable" not in text
     from increment.breakout.estimates import LiftEstimates
     from increment.tables import readout_table
 
     html = readout_table(LiftEstimates([result])).gt().as_raw_html()
-    assert "[−∞, +∞]" in html
+    assert "(−∞, ∞)" in html
     assert "interval unavailable" not in html
 
 

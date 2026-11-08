@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
+from increment._display import interval_text
 from increment.estimation.readout_types import (
     CellKey,
     ReadoutMetadata,
@@ -977,11 +978,20 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             )
         if getattr(row, "posterior_available", False) is True:
             posterior_estimate = getattr(row, "posterior_estimate", None)
+            relative = (
+                not hasattr(row, "control_group")
+                and getattr(row, "value_scale", "relative") == "relative"
+            )
+            estimate = (
+                _number_text(posterior_estimate, percent=True)
+                if relative and posterior_estimate is not None
+                else repr(posterior_estimate)
+            )
             if row_favorable_side(row) is None:
                 chance = f"chance_to_beat={row_chance_to_beat(row)!r}"
             else:
                 chance = f"chance_to_beat_favorable={row_chance_to_beat_favorable(row)!r}"
-            lines.append(f"{row.metric} posterior: estimate={posterior_estimate!r}; {chance}")
+            lines.append(f"{row.metric} posterior: estimate={estimate}; {chance}")
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(
@@ -1053,13 +1063,10 @@ def _effect_text(projection: EffectEstimate, *, label: str = "effect") -> str | 
     """Format a retained point and interval at six significant digits, relative ones in percent."""
     if projection.point is None:
         return None
-    factor = 100 if projection.value_scale == "relative" else 1
-    suffix = "%" if factor == 100 else ""
-    text = f"{label}={projection.point * factor:.6g}{suffix}"
+    percent = projection.value_scale == "relative"
+    text = f"{label}={_number_text(projection.point, percent=percent)}"
     if projection.lower is not None or projection.upper is not None:
-        low = "−∞" if projection.lower is None else f"{projection.lower * factor:.6g}"
-        high = "+∞" if projection.upper is None else f"{projection.upper * factor:.6g}"
-        text += f"; interval=[{low}, {high}]{suffix}"
+        text += f"; interval={_bounds_text(projection.lower, projection.upper, percent=percent)}"
     return text
 
 
@@ -1076,14 +1083,9 @@ def _confidence_set_text(projection: EffectEstimate) -> str | None:
     )
     if not intervals and projection.geometry in (None, "unavailable"):
         return None
-    factor = 100 if projection.value_scale == "relative" else 1
-    suffix = "%" if factor == 100 else ""
-    pieces = " ∪ ".join(
-        f"[{'−∞' if low is None else f'{low * factor:.6g}'}, "
-        f"{'+∞' if high is None else f'{high * factor:.6g}'}]"
-        for low, high in intervals
-    )
-    text = f"set={pieces}{suffix}" if intervals else "set=∅"
+    percent = projection.value_scale == "relative"
+    pieces = " ∪ ".join(_bounds_text(low, high, percent=percent) for low, high in intervals)
+    text = f"set={pieces}" if intervals else "set=∅"
     return text if projection.geometry is None else f"{text} ({projection.geometry})"
 
 
@@ -1108,11 +1110,9 @@ def _retained_set_text(row, value_scale: str) -> str | None:
         lower, upper = interval.lower, interval.upper
         if lower.status == upper.status == "unbounded":
             return "set=all values"
-        factor = 100 if value_scale == "relative" else 1
-        suffix = "%" if factor == 100 and "finite" in (lower.status, upper.status) else ""
-        return (
-            f"set=[{_endpoint_text(lower, lower=True, factor=factor)}, "
-            f"{_endpoint_text(upper, lower=False, factor=factor)}]{suffix}"
+        percent = value_scale == "relative"
+        return "set=" + interval_text(
+            _endpoint_text(lower, percent=percent), _endpoint_text(upper, percent=percent)
         )
     relative = getattr(row, "relative_confidence_set", None)
     if relative is not None and getattr(row, "value_scale", "relative") == "relative":
@@ -1842,21 +1842,32 @@ def _has_sampling_result(row) -> bool:
     return any(getattr(row, name, None) is not None for name in ("abs_diff", "abs_lb", "abs_ub"))
 
 
-def _format_bound(value, *, lower=False):
-    return ("−∞" if lower else "+∞") if value is None else f"{value:.6g}"
+def _number_text(value, *, percent: bool = False) -> str:
+    """Six significant digits; a relative effect reads in percent, as the readout table shows it."""
+    return f"{value * 100:.6g}%" if percent else f"{value:.6g}"
 
 
-def _endpoint_text(endpoint, *, lower: bool, factor: float = 1):
+def _bounds_text(lower, upper, *, percent: bool = False) -> str:
+    """An interval of numeric endpoints, where ``None`` is an infinite end."""
+    return interval_text(
+        None if lower is None else _number_text(lower, percent=percent),
+        None if upper is None else _number_text(upper, percent=percent),
+    )
+
+
+def _level_text(level) -> str:
+    return f"{level * 100:.3g}%"
+
+
+def _endpoint_text(endpoint, *, percent: bool = False) -> str | None:
+    """A typed or plain endpoint as text; ``None`` for an infinite end."""
     status = getattr(endpoint, "status", None)
-    value = getattr(endpoint, "value", None)
-    reason = getattr(endpoint, "reason", None)
-    if status == "finite" and value is not None:
-        return f"{value * factor:.6g}"
-    if status == "unbounded":
-        return "−∞" if lower else "+∞"
     if status == "undefined":
-        return f"undefined ({reason or 'reason unavailable'})"
-    return _format_bound(endpoint)
+        return f"undefined ({getattr(endpoint, 'reason', None) or 'reason unavailable'})"
+    value = endpoint if status is None else getattr(endpoint, "value", None)
+    if status == "unbounded" or value is None:
+        return None
+    return _number_text(value, percent=percent)
 
 
 def _render_effect(row, *, qualify_method: bool = False):
@@ -1870,11 +1881,9 @@ def _render_effect(row, *, qualify_method: bool = False):
                 f"{value.value:.6g}"
             )
             if value.lb is not None or value.ub is not None:
-                low = "−∞" if value.lb is None else f"{value.lb:.6g}"
-                high = "+∞" if value.ub is None else f"{value.ub:.6g}"
-                effect += f", set [{low}, {high}]"
+                effect += f", set {_bounds_text(value.lb, value.ub)}"
                 if value.level is not None:
-                    effect += f" at {value.level:.3g} confidence"
+                    effect += f" at {_level_text(value.level)} confidence"
             lines.append(effect + ".")
         return lines
     contrast = hasattr(row, "control_group")
@@ -1891,13 +1900,13 @@ def _render_effect(row, *, qualify_method: bool = False):
             if qualify_method
             else ""
         )
-        effect = f"{row.metric} ({role}, {label}{method_label}): {projection.point:.6g}"
+        percent = scale == "relative"
+        point = _number_text(projection.point, percent=percent)
+        effect = f"{row.metric} ({role}, {label}{method_label}): {point}"
         if projection.lower is not None or projection.upper is not None:
-            low = "−∞" if projection.lower is None else f"{projection.lower:.6g}"
-            high = "+∞" if projection.upper is None else f"{projection.upper:.6g}"
-            effect += f", set [{low}, {high}]"
+            effect += f", set {_bounds_text(projection.lower, projection.upper, percent=percent)}"
             if projection.alpha is not None:
-                effect += f" at {1 - projection.alpha:.3g} confidence"
+                effect += f" at {_level_text(1 - projection.alpha)} confidence"
         lines.append(effect + ".")
     if projection.qualification is not None:
         lines.append(f"{row.metric} scale qualification: {projection.qualification}.")
@@ -1913,7 +1922,7 @@ def _render_effect(row, *, qualify_method: bool = False):
         typed_additive = getattr(getattr(row, "confidence_set", None), "additive", None)
         if low is not None and high is not None:
             lines.append(
-                f"{row.metric} additive effect: {row.abs_diff:.6g}, set [{low:.6g}, {high:.6g}]."
+                f"{row.metric} additive effect: {row.abs_diff:.6g}, set {_bounds_text(low, high)}."
             )
         elif typed_additive is not None:
             # The typed confidence set below carries the endpoint states.
@@ -1932,17 +1941,16 @@ def _render_confidence_geometry(row) -> list[str]:
     lines = []
     binomial = getattr(row, "binomial_set", None)
     if binomial is not None:
-        high = "+∞" if binomial.upper is None else f"{binomial.upper:.6g}"
         lines.append(
             f"{row.metric} binomial set {binomial.geometry}: "
-            f"[{binomial.lower:.6g}, {high}] at {binomial.level:.3g} confidence."
+            f"{_bounds_text(binomial.lower, binomial.upper, percent=True)} "
+            f"at {_level_text(binomial.level)} confidence."
         )
     relative = getattr(row, "relative_confidence_set", None)
     if relative is not None:
         intervals = (
             " ∪ ".join(
-                f"[{_format_bound(lower, lower=True)}, {_format_bound(upper)}]"
-                for lower, upper in relative.intervals
+                _bounds_text(lower, upper, percent=True) for lower, upper in relative.intervals
             )
             or "∅"
         )
@@ -1955,12 +1963,9 @@ def _render_confidence_geometry(row) -> list[str]:
         bounds = sequential.bounds
         components = getattr(bounds, "components", None)
         intervals = (
-            " ∪ ".join(
-                f"[{_format_bound(component.lower, lower=True)}, {_format_bound(component.upper)}]"
-                for component in components
-            )
+            " ∪ ".join(_bounds_text(component.lower, component.upper) for component in components)
             if components is not None
-            else f"[{_format_bound(bounds.lower, lower=True)}, {_format_bound(bounds.upper)}]"
+            else _bounds_text(bounds.lower, bounds.upper)
         ) or "∅"
         lines.append(f"{row.metric} sequential ratio confidence set {bounds.status}: {intervals}.")
     confidence_set = getattr(row, "confidence_set", None)
@@ -1975,10 +1980,13 @@ def _render_confidence_geometry(row) -> list[str]:
             for scale_name in ("relative", "additive"):
                 interval = getattr(confidence_set, scale_name, None)
                 if interval is not None:
+                    percent = scale_name == "relative"
+                    endpoints = interval_text(
+                        _endpoint_text(interval.lower, percent=percent),
+                        _endpoint_text(interval.upper, percent=percent),
+                    )
                     lines.append(
-                        f"{row.metric} {scale_name} confidence interval: "
-                        f"[{_endpoint_text(interval.lower, lower=True)}, "
-                        f"{_endpoint_text(interval.upper, lower=False)}]; "
+                        f"{row.metric} {scale_name} confidence interval: {endpoints}; "
                         f"qualification {confidence_set.qualification}."
                     )
     return lines
@@ -1999,4 +2007,5 @@ def _render_test_null(row, *, contrast: bool, scale: str) -> list[str]:
         if scale == "absolute" or getattr(row, "value_scale", None) == "absolute"
         else "relative lift"
     )
-    return [f"{row.metric} test alternative: {row.alternative}; null ({unit}): {null:.6g}."]
+    shown = _number_text(null, percent=unit == "relative lift")
+    return [f"{row.metric} test alternative: {row.alternative}; null ({unit}): {shown}."]

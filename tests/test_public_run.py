@@ -1227,7 +1227,7 @@ def test_run_result_preserves_set_only_projection_through_store_codecs_and_rende
     for candidate in restored:
         output = render(candidate, "full")
         assert candidate.cells[0].summary == effect
-        assert f"set=[{effect.lower * 100:.6g}, +∞]%" in output
+        assert f"set=[{effect.lower * 100:.6g}%, ∞)" in output
 
 
 def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
