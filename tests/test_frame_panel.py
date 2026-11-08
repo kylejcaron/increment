@@ -2300,7 +2300,7 @@ def test_panel_quantile_ignores_pre_exposure_decoys(backend: str, value_column: 
         )
 
 
-@pytest.mark.parametrize("backend", ["arrow", "polars", "pandas"])
+@pytest.mark.parametrize("backend", ["arrow", "arrow_chunked", "polars", "pandas"])
 @pytest.mark.parametrize("excluded", ["none", "null_exposure", "late"])
 def test_panel_breakout_identity_survives_sparse_zero_fill(backend: str, excluded: str) -> None:
     columns: dict[str, list[Any]] = {
@@ -2684,7 +2684,10 @@ def test_panel_duplicate_unit_day_refuses_before_conflicts_and_exclusions(confli
     }
 
 
-def test_panel_assignment_conflict_refuses_before_exposure_conflict_and_exclusion() -> None:
+@pytest.mark.parametrize("chunked", [False, True])
+def test_panel_assignment_conflict_refuses_before_exposure_conflict_and_exclusion(
+    chunked: bool,
+) -> None:
     frame = pa.table(
         {
             "u": ["c", "bad", "bad"],
@@ -2694,6 +2697,8 @@ def test_panel_assignment_conflict_refuses_before_exposure_conflict_and_exclusio
             "y": [1.0, 2.0, 3.0],
         }
     )
+    if chunked:
+        frame = pa.concat_tables([frame.slice(0, 2), frame.slice(2)])
     with pytest.raises(InvalidRequestError) as exc:
         from_unit_panel(
             frame,
@@ -2770,6 +2775,11 @@ def _panel_backend(backend: str, columns: Mapping[str, Sequence[object]]) -> Any
     table = pa.table(columns)
     if backend == "arrow":
         return table
+    if backend == "arrow_chunked":
+        later = pa.concat_tables(
+            [table.slice(2, 1), table.slice(1, 1), table.slice(3)]
+        ).combine_chunks()
+        return pa.concat_tables([table.slice(0, 1), later])
     if backend == "polars":
         import polars as pl
 

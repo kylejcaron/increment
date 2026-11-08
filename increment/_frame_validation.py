@@ -1937,6 +1937,16 @@ def _panel_validation_summary(
         ),
         *[_normalized_breakout_expr(frame, name) for name in breakouts],
     )
+    label_dictionaries: dict[str, Any] = {}
+    if frame.implementation.value == "pyarrow":
+        # Arrow's string extrema keep native per-group string vectors outside its pool.
+        native = normalized.to_native()
+        for name in ("group_id", *breakouts):
+            encoded = native[name].dictionary_encode().combine_chunks()
+            label_dictionaries[name] = encoded.dictionary
+            native = native.set_column(native.schema.get_field_index(name), name, encoded.indices)
+        normalized = nw.from_native(native, eager_only=True)
+        del native, encoded
     units = normalized.group_by("unit_id").agg(
         nw.len().alias("__rows__"),
         nw.col("__day__").n_unique().alias("__days__"),
@@ -1946,6 +1956,7 @@ def _panel_validation_summary(
         *[nw.col(name).min() for name in breakouts],
         *[nw.col(name).max().alias(f"__breakout_max_{i}__") for i, name in enumerate(breakouts)],
     )
+    del normalized
     flags = units.select(
         (nw.col("__rows__") > nw.col("__days__")).any().alias("duplicate_days"),
         (nw.col("group_id") != nw.col("__group_max__")).any().alias("multiple_groups"),
@@ -1953,16 +1964,24 @@ def _panel_validation_summary(
             "multiple_exposures"
         ),
     ).row(0)
+    identities = units.select(
+        "unit_id",
+        "group_id",
+        *breakouts,
+        *[
+            (nw.col(name) != nw.col(f"__breakout_max_{i}__")).alias(f"__breakout_{i}__")
+            for i, name in enumerate(breakouts)
+        ],
+    )
+    if label_dictionaries:
+        native = identities.to_native()
+        for name, dictionary in label_dictionaries.items():
+            native = native.set_column(
+                native.schema.get_field_index(name), name, dictionary.take(native[name])
+            )
+        identities = nw.from_native(native, eager_only=True)
     return _PanelValidationSummary(
-        units=units.select(
-            "unit_id",
-            "group_id",
-            *breakouts,
-            *[
-                (nw.col(name) != nw.col(f"__breakout_max_{i}__")).alias(f"__breakout_{i}__")
-                for i, name in enumerate(breakouts)
-            ],
-        ),
+        units=identities,
         duplicate_days=bool(flags[0]),
         multiple_groups=bool(flags[1]),
         multiple_exposures=bool(flags[2]),
