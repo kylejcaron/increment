@@ -15,7 +15,26 @@ from increment.workflows import capture_sequential
 pytestmark = pytest.mark.slow
 
 
-def _group_event_values(events, *, occurrence_labels):
+def _group_event_values(events, *, occurrence_labels, late_fact, null_values):
+    if late_fact:
+        for fact, day in (("late", 15), ("later", 17)):
+            events.append(
+                {
+                    "unit_id": "not-enrolled",
+                    "event": fact,
+                    "value": 1.0,
+                    "ts": datetime(2025, 1, day, tzinfo=UTC),
+                }
+            )
+    if null_values:
+        events.append(
+            {
+                "unit_id": "baseline-0",
+                "event": "purchase",
+                "value": None,
+                "ts": datetime(2025, 1, 2, tzinfo=UTC),
+            }
+        )
     for row in events:
         row["price_value"] = row["value"]
     if occurrence_labels:
@@ -120,7 +139,7 @@ def _native_groups(
                             "purchase",
                             "return",
                             "denominator",
-                            *(("late",) if late_fact else ()),
+                            *(("late", "later") if late_fact else ()),
                         )
                     ],
                     "properties": [
@@ -204,25 +223,9 @@ def _native_groups(
                 ),
             }
         )
-    if late_fact:
-        events.append(
-            {
-                "unit_id": "not-enrolled",
-                "event": "late",
-                "value": 1.0,
-                "ts": datetime(2025, 1, 15, tzinfo=UTC),
-            }
-        )
-    if null_values:
-        events.append(
-            {
-                "unit_id": "baseline-0",
-                "event": "purchase",
-                "value": None,
-                "ts": datetime(2025, 1, 2, tzinfo=UTC),
-            }
-        )
-    _group_event_values(events, occurrence_labels=occurrence_labels)
+    _group_event_values(
+        events, occurrence_labels=occurrence_labels, late_fact=late_fact, null_values=null_values
+    )
     connection = ibis.duckdb.connect()
     connection.create_table("enrolled", pa.Table.from_pylist(enrolled))
     connection.create_table("events", pa.Table.from_pylist(events))
@@ -352,8 +355,11 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
                 metric.model_copy(update={"name": f"late_{metric.name}", "fact": "late"})
                 for metric in (conversion, revenue)
             )
+            later = revenue.model_copy(update={"name": "later_mean", "fact": "later"})
             for grain, completed in (("daily", False), ("asof", False), ("asof", True)):
-                _assert_temporal_parity(day_source, late_metrics, grain, completed)
+                _assert_temporal_parity(
+                    day_source, (*late_metrics, later, revenue), grain, completed
+                )
             return
         long_revenue = revenue.model_copy(update={"window_days": 30})
         ratio = RatioMetric(

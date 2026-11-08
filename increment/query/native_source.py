@@ -3476,6 +3476,20 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._site_observation_cutoff(),
         )
 
+    @staticmethod
+    def _metric_horizon_streams(metric: Metric) -> frozenset[tuple[Any, ...]]:
+        return frozenset(
+            (
+                ref.fact,
+                tuple(
+                    sorted(
+                        (flt.property, flt.op, tuple(map(repr, flt.values))) for flt in ref.filters
+                    )
+                ),
+            )
+            for ref in fact_refs(metric)
+        )
+
     def _moments_batch(
         self,
         requests: Sequence[MomentsRequest],
@@ -3487,11 +3501,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Acquire compatible requests from one component and one shared unit reduction."""
         groups: dict[tuple[Any, ...], list[int]] = {}
         answers: list[tuple[Mapping[str, Any], ...] | None] = [None] * len(requests)
+        common_horizon = (
+            frozenset(
+                stream
+                for metric in dict.fromkeys((*self._horizon_metrics, *(horizon_metrics or ())))
+                for stream in self._metric_horizon_streams(metric)
+            )
+            if any(request.grain != "total" for request in requests)
+            else frozenset()
+        )
         for index, request in enumerate(requests):
             if request.population == "triggered" and request.grain != "total" and not day_source:
                 continue
             key = self._component_batch_key(request)
             if key is not None:
+                if request.grain != "total":
+                    key = (*key, common_horizon | self._metric_horizon_streams(request.metric))
                 groups.setdefault(key, []).append(index)
         for indices in groups.values():
             if len(indices) < 2:
