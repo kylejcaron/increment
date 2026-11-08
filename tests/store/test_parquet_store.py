@@ -822,6 +822,52 @@ def test_open_run_with_a_future_result_kind_refuses_with_the_results_code(tmp_pa
         assert error.value.context["row_kind"] == "harm_bounds"
 
 
+def test_open_run_with_a_legacy_envelope_refuses_with_the_contrast_code(tmp_path):
+    from tests.estimation.test_unit_cycle_envelope import envelope
+    from tests.test_readouts_switchback import _assignment, _switchback_analysis
+
+    reference = envelope(p=0.5, cycles=2).model_copy(update={"assignment": _assignment()})
+    experiment, resolver = _switchback_analysis(reference)
+    try:
+        rows = view_readout(experiment, resolver)
+        cells, scope = _cells(rows)
+        ParquetResultsStore(tmp_path).put(_run(rows, cells, scope))
+    finally:
+        resolver.close()
+    path = next(tmp_path.glob("*.parquet"))
+    table = pq.read_table(path)
+    stored = table.to_pylist()
+    for row in stored:
+        payload = json.loads(row["row_payload"])
+        # An envelope saved before the result recorded its rejection side.
+        del payload["data"]["residual_side"]
+        row["row_payload"] = json.dumps(payload)
+    pq.write_table(pa.Table.from_pylist(stored, schema=table.schema), path)
+    store = ParquetResultsStore(tmp_path)
+
+    for operation in (
+        lambda: store.open_run("exp", "spec", "run-1"),
+        lambda: store.open_run("exp", "spec"),
+        lambda: store.history(
+            "exp",
+            HistorySelector(
+                metric_hash="metric",
+                estimator_id="t",
+                method_config_hash="config",
+                method_instance_id="instance",
+                scope_hash=scope.hash(),
+            ),
+        ),
+    ):
+        with pytest.raises(CodedError) as error:
+            operation()
+        assert error.value.code == "estimation.contrast.legacy_envelope"
+        assert dict(error.value.context) == {
+            "missing_fields": ("residual_side",),
+            "remedy": "recompute_from_source",
+        }
+
+
 def test_run_commit_time_cannot_precede_capture_time():
     experiment, resolver = _analysis()
     try:

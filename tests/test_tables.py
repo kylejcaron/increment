@@ -26,6 +26,11 @@ from increment.tables import (
     estimates_to_readout,
     readout_table,
 )
+from tests.estimation.test_unit_cycle_envelope import (
+    ZERO_NULL_REJECTIONS,
+    rejection_at_zero,
+    rounded_rejection_at_margin,
+)
 from tests.sequential_cases import capture, records, registration
 
 
@@ -2704,6 +2709,32 @@ def test_estimates_to_readout_adapts_switchback_contrast_results(
     assert rows[0]["tc_cycles"] == result.tc_cycles
     assert rows[0]["n_blocks"] == n_blocks
     assert type(rows[0]["n_blocks"]) is type(n_blocks)
+
+
+@pytest.mark.parametrize(("alternative", "numerator", "side", "direction"), ZERO_NULL_REJECTIONS)
+def test_readout_table_labels_an_envelope_rejection_at_zero_as_a_rejection(
+    alternative, numerator, side, direction
+):
+    """A rejection whose rounded interval still includes zero is never labelled an exclusion."""
+    pytest.importorskip("coeftable")
+    from increment.estimation.contrast_results import ContrastResults
+
+    result = rejection_at_zero(alternative, numerator)
+    html = readout_table(ContrastResults([result])).gt().as_raw_html()
+    assert f"Rejects zero — {direction} established (displayed interval rounded outward)" in html
+    assert "Excludes zero" not in html
+
+
+def test_readout_table_labels_an_envelope_rejection_at_a_margin_as_a_rejection():
+    pytest.importorskip("coeftable")
+    from increment.estimation.contrast_results import ContrastResults
+
+    html = readout_table(ContrastResults([rounded_rejection_at_margin()])).gt().as_raw_html()
+    assert (
+        "Rejects null — margin met; increase established (displayed interval rounded outward)"
+        in html
+    )
+    assert "Contains tested null" not in html
 
 
 @pytest.mark.parametrize("model", [BreakoutEstimate, DailyLiftEstimate])

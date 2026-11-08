@@ -394,14 +394,24 @@ power-planning exports.
     Results name the method `switchback_unit_variance_envelope` and reference
     `residual_chebyshev` or `residual_cantelli`. They retain the observed
     mean slope, CT/TC counts, requested/effective alpha, refusal bound,
-    cutoff and provenance. Degrees of freedom are numeric null with reason
+    cutoff, provenance, and the side of the null the tested residual lies on
+    (`residual_side`: `greater`, `less`, or `split` for a residual of exactly
+    zero). Degrees of freedom are numeric null with reason
     `not_applicable`; sample SE remains descriptive. Evidence tests
     `mean(A)-null_abs*mean(G)` with the matching Markov/Cantelli probability
     and admission allocation, rounded upward to binary64. Rejection means
     this public p-value is strictly below `alpha`; the separately
-    outward-displayed interval and cutoff do not define that event. Frames
-    and wire serialization preserve these fields and numeric nulls. Readout
-    `stat_sig` uses that same p-value decision, not interval exclusion.
+    outward-displayed interval and cutoff do not define that event. The
+    direction of a rejection is `residual_side`, taken from the exact
+    residual; a residual rebuilt from the rounded point and slope can have
+    the other sign. Frames, readout rows and wire serialization preserve
+    these fields and numeric nulls. Readout `stat_sig` and the interval
+    interpretation use that same p-value decision and side, not interval
+    exclusion: a rejection whose displayed interval still includes the null
+    reads as a rejection and says the interval is rounded outward, never that
+    it excludes the null. An envelope result saved before
+    `residual_side` existed refuses to load with
+    `estimation.contrast.legacy_envelope`; recompute it from the source data.
 
     Extreme `alpha`, including the smallest positive binary64 value, is
     supported only when the admission reservation leaves positive effective

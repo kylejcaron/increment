@@ -53,6 +53,7 @@ from increment.estimation.results import (
     Estimate,
     RejectionSide,
     contrast_evidence_available,
+    contrast_rejection_side,
     contrast_stat_sig,
 )
 from increment.semantics.unit_cycle import UnitCycleVarianceEnvelope
@@ -638,6 +639,9 @@ def _envelope_result(
         else None,
     )
     residual = x - Fraction(procedure.null_abs) * slope
+    residual_side: RejectionSide = (
+        "greater" if residual > 0 else "less" if residual < 0 else "split"
+    )
     favorable = -residual if alternative == "less" else residual
     v = Fraction(envelope.residual_variance_upper) / stats.n_units
     if residual == 0 or (alternative != "two-sided" and favorable <= 0):
@@ -694,6 +698,7 @@ def _envelope_result(
         refusal_probability_upper=cutoff.refusal_probability_upper,
         residual_cutoff=cutoff.value,
         residual_p_value=p_value,
+        residual_side=residual_side,
         reference_spec=envelope,
         provenance=envelope.provenance,
         response_meaning=envelope.response_meaning,
@@ -891,30 +896,6 @@ def _t_reference_result(
         minimum_cycles_per_unit=stats.minimum_cycles_per_unit,
         maximum_cycles_per_unit=stats.maximum_cycles_per_unit,
     )
-
-
-def contrast_rejection_side(result: ContrastResult) -> RejectionSide | None:
-    """The side of its null the contrast's rejection lies on; ``None`` exactly when
-    :func:`contrast_stat_sig` is False.
-
-    The envelope's point is the retained-window total, whose effect is the point
-    over the positive slope, so its side is the sign of the residual
-    ``point - null_abs * slope`` its p-value tests.
-    """
-    if not contrast_stat_sig(result):
-        return None
-    estimate = result.estimate
-    if result.alternative != "two-sided":
-        return result.alternative
-    if result.method == "switchback_unit_variance_envelope":
-        assert result.mean_slope is not None
-        residual = Fraction(estimate.value) - Fraction(result.null_abs) * Fraction(
-            result.mean_slope
-        )
-        return "greater" if residual > 0 else "less" if residual < 0 else "split"
-    if estimate.lb is not None and estimate.lb > result.null_abs:
-        return "greater"
-    return "less"
 
 
 def estimate_contrast(

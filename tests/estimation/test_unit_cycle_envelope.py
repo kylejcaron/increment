@@ -3,6 +3,7 @@
 import json
 import math
 from fractions import Fraction
+from pathlib import Path
 
 import pytest
 
@@ -95,6 +96,63 @@ def procedure(reference, **changes):
     return ContrastDecisionProcedure.model_validate(values)
 
 
+def _wire_fixture():
+    path = Path(__file__).resolve().parents[1] / "fixtures" / "unit_cycle_envelope_result.json"
+    return json.loads(path.read_text())
+
+
+def rounded_rejection_at_margin():
+    """A zero-variance envelope that rejects null 3 below it, though rounding hides the side.
+
+    Exact point 2 - 2**-54 and slope 2/3: residual = (2 - 2**-54) - 3 * (2/3) = -2**-54, and
+    zero variance rejects every nonzero residual. The stored point and slope round to 2.0 and
+    the float nearest 2/3, from which the residual would be rebuilt as +2**-53.
+    """
+    return estimate_contrast(
+        stats(
+            probability_ct=0.75,
+            ct_cycles=4,
+            tc_cycles=0,
+            mean_slope=2 / 3,
+            reference_delta=2.0,
+            exact_delta_total=(8 * 2**52 - 1, 2**52),
+        ),
+        procedure(envelope(p=0.75, variance=0.0), null_abs=3.0),
+    ).results[0]
+
+
+#: (alternative, numerator, residual side, direction) of envelope rejections at null 0.
+ZERO_NULL_REJECTIONS = [
+    ("two-sided", 4124817371235595169, "greater", "increase"),
+    ("two-sided", -4124817371235595169, "less", "decrease"),
+    ("greater", 4020374662732887517, "greater", "increase"),
+    ("less", -4020374662732887517, "less", "decrease"),
+]
+
+
+def rejection_at_zero(alternative, numerator):
+    """An envelope that rejects null 0 while its displayed interval still includes zero.
+
+    With slope 1, the effect x = numerator / 2**64 lies just inside the outward-rounded cutoff
+    (0.223606797749979 two-sided, 0.2179449471770337 one-sided), so the displayed interval
+    reaches past zero, while the p-value of the exact residual x, rounded upward, stays below
+    alpha: the contrast rejects, on the side of x.
+    """
+    effect = Fraction(numerator, 2**64)
+    total = effect * 4
+    return estimate_contrast(
+        stats(
+            probability_ct=0.5,
+            ct_cycles=2,
+            tc_cycles=2,
+            mean_slope=1.0,
+            reference_delta=float(effect),
+            exact_delta_total=(total.numerator, total.denominator),
+        ),
+        procedure(envelope(p=0.5), alternative=alternative),
+    ).results[0]
+
+
 def test_observed_slope_interval_does_not_hull_the_ht_point():
     computation = estimate_contrast(stats(), procedure(envelope()))
     result = computation.results[0]
@@ -150,6 +208,87 @@ def test_envelope_rejection_side_is_the_sign_of_the_slope_scaled_residual():
 
     assert contrast_stat_sig(result) is True
     assert contrast_rejection_side(result) == "greater"
+
+
+def test_envelope_rejection_side_survives_point_and_slope_rounding():
+    from increment.estimation.contrast import contrast_rejection_side, contrast_stat_sig
+
+    result = rounded_rejection_at_margin()
+    assert (result.estimate.value, result.mean_slope) == (2.0, 2 / 3)
+    assert contrast_stat_sig(result) is True
+    assert contrast_rejection_side(result) == "less"
+    restored = ContrastResult.model_validate_json(result.model_dump_json())
+    assert contrast_rejection_side(restored) == "less"
+    assert result.residual_side == "less"
+    # The interval [2.9999999999999996, 3.0] reaches the null of 3 and lies above zero.
+    assert contrast_results_to_readout([restored])[0]["effect_interpretation"] == (
+        "Interpretation: rejects the null at 95.0% confidence (margin met); the displayed "
+        "interval is rounded outward and still includes the null; effect direction supported "
+        "(increase)."
+    )
+
+
+@pytest.mark.parametrize(("alternative", "numerator", "side", "direction"), ZERO_NULL_REJECTIONS)
+def test_envelope_readout_interprets_the_rejection_its_p_value_decides(
+    alternative, numerator, side, direction
+):
+    result = rejection_at_zero(alternative, numerator)
+    lower, upper = result.estimate.lb, result.estimate.ub
+    assert (lower is None or lower < 0) and (upper is None or upper > 0)
+    row = contrast_results_to_readout([result])[0]
+    assert row["stat_sig"] is True
+    assert row["residual_side"] == side
+    # The verdict is a rejection; only bounds that exclude the null are described as excluding it.
+    assert row["effect_interpretation"] == (
+        "Interpretation: rejects zero at 95.0% confidence; the displayed interval is rounded "
+        f"outward and still includes zero; effect direction supported ({direction})."
+    )
+
+
+@pytest.mark.parametrize("saved", ["missing", "null"])
+def test_envelope_payload_without_residual_side_refuses(saved):
+    payload = _wire_fixture()
+    if saved == "missing":
+        del payload["residual_side"]
+    else:
+        payload["residual_side"] = None
+    with pytest.raises(InvalidRequestError) as caught:
+        ContrastResult.model_validate_json(json.dumps(payload))
+    assert caught.value.code == "estimation.contrast.legacy_envelope"
+    assert caught.value.context["missing_fields"] == ("residual_side",)
+    assert caught.value.context["remedy"] == "recompute_from_source"
+
+
+@pytest.mark.parametrize(
+    ("alternative", "side"),
+    [("two-sided", "split"), ("greater", "split"), ("greater", "less"), ("less", "greater")],
+)
+def test_envelope_payload_side_must_agree_with_its_p_value(alternative, side):
+    # A zero residual, or one off a one-sided alternative, has p = 1; this one has p < 1.
+    sign = -1 if alternative == "less" else 1
+    result = estimate_contrast(
+        stats(reference_delta=sign * 1.25), procedure(envelope(), alternative=alternative)
+    ).results[0]
+    assert result.residual_p_value is not None and result.residual_p_value < 1
+    payload = result.model_dump(mode="json")
+    payload["residual_side"] = side
+    with pytest.raises(InvalidRequestError) as caught:
+        ContrastResult.model_validate_json(json.dumps(payload))
+    assert caught.value.code == "estimation.contrast.reference_metadata"
+
+
+def test_envelope_residual_off_its_alternative_loads_with_p_value_one():
+    result = estimate_contrast(stats(), procedure(envelope(), alternative="less")).results[0]
+    assert (result.residual_side, result.residual_p_value) == ("greater", 1.0)
+    assert ContrastResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_t_result_wire_form_omits_residual_side():
+    result = estimate_contrast(stats(m2_delta=4), procedure(UnitCycleTApproximation())).results[0]
+    payload = result.model_dump(mode="json")
+    # The t wire form is the one earlier releases wrote and read.
+    assert "residual_side" not in payload
+    assert ContrastResult.model_validate_json(json.dumps(payload)) == result
 
 
 def test_zero_envelope_identifies_singleton_with_nonzero_sample_variance():
@@ -342,6 +481,7 @@ def test_provenance_and_numeric_nulls_survive_result_json_and_frames(backend):
     assert result.reference_spec is not None
     assert json.loads(output["reference_spec"][0]) == result.reference_spec.model_dump(mode="json")
     assert output["open_side"][0] == "upper"
+    assert output["residual_side"].to_list() == ["greater"]
     row = contrast_results_to_readout([result])[0]
     reference_spec = result.reference_spec.model_dump(mode="json")
     assert row["reference_spec"] == reference_spec
@@ -357,10 +497,7 @@ def test_probability_arithmetic_never_overflows_a_huge_null_product():
 
 
 def test_hand_calculated_envelope_wire_fixture():
-    from pathlib import Path
-
-    path = Path(__file__).resolve().parents[1] / "fixtures" / "unit_cycle_envelope_result.json"
-    payload = json.loads(path.read_text())
+    payload = _wire_fixture()
     expected = ContrastResult.model_validate(payload)
     actual = estimate_contrast(
         stats(probability_ct=0.5, mean_slope=1, reference_delta=2, ct_cycles=2, tc_cycles=2),
@@ -379,6 +516,9 @@ def test_one_sided_inference_does_not_compute_the_unbounded_endpoint():
     assert result.estimate.ub is None
 
 
+@pytest.mark.grid(
+    "One case per envelope-only field a t-reference contrast must not carry, on each replicate grain."
+)
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -386,6 +526,7 @@ def test_one_sided_inference_does_not_compute_the_unbounded_endpoint():
         ("refusal_probability_upper", 0.001),
         ("residual_cutoff", 1.0),
         ("residual_p_value", 0.0),
+        ("residual_side", "greater"),
         ("standard_error_unavailable_reason", "insufficient_replicates"),
         ("provenance", envelope().provenance.model_dump(mode="json")),
         ("response_meaning", "retained_total"),

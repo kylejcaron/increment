@@ -32,7 +32,7 @@ from increment.estimation.readout_types import (
     refuse_readout,
     validate_collection,
 )
-from increment.estimation.results import Estimate
+from increment.estimation.results import Estimate, RejectionSide
 from increment.semantics.unit_cycle import (
     ProspectiveAssumptionProvenance,
     UnitCycleReference,
@@ -68,6 +68,15 @@ _REFUSALS = {
         "estimation.contrast.reference_metadata",
         InvalidRequestError,
         template="contrast method, reference and degrees of freedom must match its replicates",
+    ),
+    "estimation.contrast.legacy_envelope": RefusalSpec(
+        "estimation.contrast.legacy_envelope",
+        InvalidRequestError,
+        template=(
+            "this switchback envelope result was saved before it recorded which side of the "
+            "null its evidence rejects on; recompute it from the source data"
+        ),
+        keys=frozenset({"missing_fields", "remedy"}),
     ),
     "estimation.contrast.retained_window": RefusalSpec(
         "estimation.contrast.retained_window",
@@ -204,6 +213,11 @@ class ContrastResult(CodedModel, BaseModel):
     refusal_probability_upper: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     residual_cutoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     residual_p_value: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    #: Sign of the exact residual the envelope p-value tests; "split" when it is zero.
+    #: Left out of t-reference dumps, whose wire form predates it.
+    residual_side: RejectionSide | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     reference_spec: UnitCycleReference | None = None
     provenance: ProspectiveAssumptionProvenance | None = None
     response_meaning: Literal["retained_total", "pre_normalized_retained_mean"] | None = None
@@ -245,6 +259,13 @@ class ContrastResult(CodedModel, BaseModel):
             self.randomization_law, self.n_cycles, self.n_blocks, self.ct_cycles, self.tc_cycles
         )
         if self.method == "switchback_unit_variance_envelope":
+            if self.residual_side is None:
+                # The side cannot be rebuilt from the stored point and slope, which are rounded.
+                refuse(
+                    _REFUSALS["estimation.contrast.legacy_envelope"],
+                    missing_fields=("residual_side",),
+                    remedy="recompute_from_source",
+                )
             expected_reference = (
                 "residual_chebyshev" if self.alternative == "two-sided" else "residual_cantelli"
             )
@@ -260,6 +281,13 @@ class ContrastResult(CodedModel, BaseModel):
                 and self.refusal_probability_upper is not None
                 and self.residual_cutoff is not None
                 and self.residual_p_value is not None
+                # A zero residual, or one off a one-sided alternative, has p = 1.
+                and (self.residual_side != "split" or self.residual_p_value == 1.0)
+                and (
+                    self.alternative == "two-sided"
+                    or self.residual_side == self.alternative
+                    or self.residual_p_value == 1.0
+                )
                 and self.ct_cycles is not None
                 and self.tc_cycles is not None
                 and self.ct_cycles + self.tc_cycles == self.n_cycles
@@ -340,6 +368,7 @@ class ContrastResult(CodedModel, BaseModel):
                     self.refusal_probability_upper,
                     self.residual_cutoff,
                     self.residual_p_value,
+                    self.residual_side,
                     self.provenance,
                     self.response_meaning,
                 )
@@ -440,6 +469,7 @@ CONTRAST_FRAME_COLUMNS = (
     "refusal_probability_upper",
     "residual_cutoff",
     "residual_p_value",
+    "residual_side",
     "reference_spec",
     "provenance",
     "response_meaning",

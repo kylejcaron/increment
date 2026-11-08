@@ -39,13 +39,22 @@ _MANIFEST_READERS: dict[bytes, Callable[[bytes], Any]] = {
 }
 # A format this release cannot read keeps its own code rather than reporting corruption.
 _UNSUPPORTED_FORMAT_CODES = frozenset(
-    {"store.run.manifest_unsupported", "results.cell.schema_unsupported"}
+    {
+        "store.run.manifest_unsupported",
+        "results.cell.schema_unsupported",
+        "estimation.contrast.legacy_envelope",
+    }
 )
 
 
-def _refuse_unreadable(run_id: str, exc: Exception) -> NoReturn:
+def _raise_unsupported_format(exc: Exception) -> None:
+    """Re-raise ``exc`` when it refuses a stored format this release cannot read."""
     if isinstance(exc, CodedError) and exc.code in _UNSUPPORTED_FORMAT_CODES:
         raise exc
+
+
+def _refuse_unreadable(run_id: str, exc: Exception) -> NoReturn:
+    _raise_unsupported_format(exc)
     refuse_store(
         "store.run.corrupt",
         "Committed run record is unreadable or inconsistent",
