@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import uuid
-from typing import Literal
+from typing import Literal, cast
 
 import ibis
 import numpy as np
@@ -1336,7 +1336,17 @@ def test_censoring_fence_keeps_unit_whose_last_window_day_is_observable(
     spine, stats = unit_day_spine_stats(
         exposures, events, censored_experiment, conversion_metric.name
     )
-    totals = unit_totals(spine, stats, conversion_metric, censored_experiment).execute()
+    counts = []
+
+    def execute(query):
+        rows = query.execute().to_dict("records")
+        counts.extend(rows)
+        return rows
+
+    totals = unit_totals(
+        spine, stats, conversion_metric, censored_experiment, warn_on_censoring=execute
+    ).execute()
+    assert counts == [{"enrolled": 3, "kept": 3}]
     # u5's window [Aug 3, Aug 4) has its last day == experiment.end, so the fence
     # treats it as final (KEPT), and its 13:00 purchase scores y=1.
     assert sorted(totals["unit_id"].tolist()) == ["u1", "u2", "u5"]
@@ -1357,7 +1367,9 @@ def test_censoring_drops_late_enrollee_conversion(
     spine, stats = unit_day_spine_stats(exposures, events, censored_experiment, metric.name)
     with pytest.warns(IncrementWarning) as rec:
         totals = unit_totals(spine, stats, metric, censored_experiment).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == 3
+    assert context["dropped"] == 1
     # u5 enrolled Aug 3; last window day Aug 4 > experiment.end Aug 3 → DROPPED
     assert "u5" not in totals["unit_id"].values
     assert sorted(totals["unit_id"].tolist()) == ["u1", "u2"]
@@ -1374,7 +1386,9 @@ def test_censoring_drops_late_enrollee_retention(
     )
     with pytest.warns(IncrementWarning) as rec:
         totals = unit_totals(spine, stats, retention_metric, censored_experiment).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == 3
+    assert context["dropped"] == 1
     # u5 enrolled on Aug 3, threshold_days=2 → window Aug 5 > experiment.end Aug 3 → DROPPED
     assert "u5" not in totals["unit_id"].values
     assert sorted(totals["unit_id"].tolist()) == ["u1", "u2"]
@@ -1565,7 +1579,7 @@ def test_unit_totals_warns_when_censoring_drops_a_material_share(con):
         end=dt.datetime(2025, 8, 20),
         plan=AnalysisPlan(),
     )
-    # 1 unit matures by 2025-08-20; 9 do not.
+    # A 14-day window ends on exposure day + 13, including the maturity edge.
     rows = [
         {
             "unit_id": "u_early",
@@ -1578,7 +1592,7 @@ def test_unit_totals_warns_when_censoring_drops_a_material_share(con):
     rows += [
         {
             "unit_id": f"u_late{i}",
-            "ts": dt.datetime(2025, 8, 15, 9, 0, 0),
+            "ts": dt.datetime(2025, 8, 7 if i == 0 else 15, 9, 0, 0),
             "event": "test_exposure",
             "experiment_id": "exp_test",
             "group_id": "treatment",
@@ -1586,25 +1600,30 @@ def test_unit_totals_warns_when_censoring_drops_a_material_share(con):
         for i in range(9)
     ]
     exposure_rows = con.create_table("warn_exposures", obj=rows)
-    purchase_rows = con.create_table(
-        "warn_purchases",
-        obj=[
-            {
-                "unit_id": "u_early",
-                "ts": dt.datetime(2025, 8, 3, 10, 0, 0),
-                "event": "purchase",
-                "value": 1.0,
-            }
-        ],
-    )
+    purchase = {
+        "unit_id": "u_early",
+        "ts": dt.datetime(2025, 8, 3, 10, 0, 0),
+        "event": "purchase",
+        "value": 1.0,
+    }
+    purchase_rows = con.create_table("warn_purchases", obj=[purchase, purchase])
+    expected_kept = {
+        row["unit_id"]
+        for row in rows
+        if cast(dt.datetime, row["ts"]).date() + dt.timedelta(days=13) <= dt.date(2025, 8, 20)
+    }
     exposures = first_exposures(exposure_rows, experiment)
     events = metric_events(purchase_rows, metric)
     spine, stats = unit_day_spine_stats(exposures, events, experiment, metric.name)
 
     with pytest.warns(IncrementWarning) as rec:
-        unit_totals(spine, stats, metric, experiment).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
-    cause = str(warning_context(rec, "frame.censoring.dropped_units")["cause"])
+        totals = unit_totals(spine, stats, metric, experiment).execute()
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == len(rows)
+    assert context["dropped"] == len(rows) - len(expected_kept)
+    assert set(totals["unit_id"]) == expected_kept
+    assert totals.set_index("unit_id").loc["u_early", "y"] == 1.0
+    cause = str(context["cause"])
     assert "observation_end" in cause
 
 
@@ -1714,7 +1733,7 @@ def test_unit_totals_warns_running_experiment_does_not_suggest_observation_end(c
     units whose data hasn't arrived, reproducing the exact bug this
     mechanism exists to prevent.
     """
-    metric = ConversionMetric(name="converted", entity="unit_id", fact="purchase", window_days=14)
+    metric = ConversionMetric(name="converted", entity="unit_id", fact="purchase", window_days=3)
     experiment = Experiment(
         name="exp_running_warn",
         unit="unit_id",
@@ -1724,17 +1743,17 @@ def test_unit_totals_warns_running_experiment_does_not_suggest_observation_end(c
         end=None,
         plan=AnalysisPlan(),
     )
-    # end=None derives the panel extent from the single observed purchase
-    # (2025-08-03); every unit's 14-day window closes well after that, so all are censored.
+    # The purchase observes Aug 3: u0 matures exactly there, u1 is immature,
+    # and u2 has no observed day because enrollment is after that edge.
     rows = [
         {
             "unit_id": f"u{i}",
-            "ts": dt.datetime(2025, 8, 1, 9, 0, 0),
+            "ts": dt.datetime(2025, 8, day, 9, 0, 0),
             "event": "test_exposure",
             "experiment_id": "exp_running_warn",
             "group_id": "treatment",
         }
-        for i in range(10)
+        for i, day in enumerate((1, 2, 4))
     ]
     exposure_rows = con.create_table("running_warn_exposures", obj=rows)
     purchase_rows = con.create_table(
@@ -1752,12 +1771,15 @@ def test_unit_totals_warns_running_experiment_does_not_suggest_observation_end(c
     events = metric_events(purchase_rows, metric)
     spine, stats = unit_day_spine_stats(exposures, events, experiment, metric.name)
 
-    # observation_horizon=None -> observable_end falls back to panel.ds.max(),
-    # trimmed to the latest observed purchase; every unit's window closes well after that.
+    # The cutoff is the last observed day, not the last enrollment date.
     import pytest
 
     with pytest.warns(IncrementWarning) as record:
-        unit_totals(spine, stats, metric, experiment).execute()
+        totals = unit_totals(spine, stats, metric, experiment).execute()
+    context = warning_context(record, "frame.censoring.dropped_units")
+    assert context["enrolled"] == len(rows)
+    assert context["dropped"] == 2
+    assert totals["unit_id"].tolist() == ["u0"]
 
     message = str(record[0].message)
     assert "observation_end" not in message, message
@@ -3914,7 +3936,9 @@ def test_empty_events_panel_censors_every_unit_when_end_is_unset(con, retention_
     spine, stats = unit_day_spine_stats(exposures, events, running, retention_metric.name)
     with pytest.warns(IncrementWarning) as rec:
         totals = unit_totals(spine, stats, retention_metric, running).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == 2
+    assert context["dropped"] == 2
 
     assert len(totals) == 0, "no unit has an observed calendar day yet"
 
@@ -3977,7 +4001,9 @@ def test_empty_events_windowed_metric_censors_every_unit(con):
     spine, stats = unit_day_spine_stats(exposures, events, running, metric.name)
     with pytest.warns(IncrementWarning) as rec:
         totals = unit_totals(spine, stats, metric, running).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == 2
+    assert context["dropped"] == 2
 
     assert len(totals) == 0, "no unit's window closed within observed enrollment time"
 

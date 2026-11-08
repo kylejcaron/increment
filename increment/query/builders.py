@@ -1739,11 +1739,25 @@ def _dense_unit_days(
     )
 
 
+def _enrolled_unit_population(spine: ir.Table) -> ir.Table:
+    """Keep one row per enrollee, including a unit with no observed day."""
+    if "day_offset" in spine.columns:
+        return spine.filter((spine.day_offset == 0) | spine.day_offset.isnull()).select(
+            "unit_id", "first_exposure_date", "ds"
+        )
+    return spine.group_by("unit_id").aggregate(
+        first_exposure_date=spine.first_exposure_date.max(),
+        ds=spine.ds.max(),
+    )
+
+
 def _observable_window_flags(
     dense: ir.Table,
     metric: Metric,
     experiment: Experiment,
     data_as_of: ir.Scalar | dt.date | dt.datetime | None,
+    *,
+    observable_end: ir.Value | None = None,
 ) -> tuple[ir.BooleanValue, ir.BooleanValue, ir.Value]:
     """Return observation and maturity predicates plus their shared cutoff."""
     fe_date = dense.first_exposure_date
@@ -1753,10 +1767,11 @@ def _observable_window_flags(
         if final_maturity_day is None
         else fe_date + _days_literal(final_maturity_day).as_interval("D")
     )
-    if experiment.observation_horizon is not None:
-        observable_end = ibis.literal(experiment.observation_horizon_day)
-    else:
-        observable_end = dense.ds.max().as_scalar()
+    if observable_end is None:
+        if experiment.observation_horizon is not None:
+            observable_end = ibis.literal(experiment.observation_horizon_day)
+        else:
+            observable_end = dense.ds.max().as_scalar()
     if data_as_of is not None:
         if isinstance(data_as_of, dt.datetime):
             as_of_expr = ibis.literal(data_as_of.date())
@@ -1779,11 +1794,12 @@ def _censor_to_observable_window(
     data_as_of: ir.Scalar | dt.date | dt.datetime | None,
     *,
     warn_on_censoring: bool,
+    censor_population: ir.Table | None = None,
     execute: Callable[[ir.Table], list[dict[str, Any]]] | None = None,
 ) -> ir.Table:
     """Drop units whose metric window is not observable yet, and units
     with no observed day at all (a null-date spine row)."""
-    has_observed_day, window_complete, _ = _observable_window_flags(
+    has_observed_day, window_complete, observable_end = _observable_window_flags(
         dense, metric, experiment, data_as_of
     )
     dense_before_censor = dense
@@ -1792,10 +1808,18 @@ def _censor_to_observable_window(
     if not warn_on_censoring:
         return dense
 
-    flagged = dense_before_censor.mutate(_kept=kept)
+    population = (
+        _enrolled_unit_population(dense_before_censor)
+        if censor_population is None
+        else censor_population
+    )
+    observed, complete, _ = _observable_window_flags(
+        population, metric, experiment, None, observable_end=observable_end
+    )
+    flagged = population.mutate(_kept=observed & complete)
     counts_query = flagged.aggregate(
-        enrolled=flagged.unit_id.nunique(),
-        kept=flagged.unit_id.nunique(where=flagged._kept),
+        enrolled=flagged.count(),
+        kept=flagged.count(where=flagged._kept),
     )
     if execute is None:
 
@@ -2077,7 +2101,8 @@ def unit_totals(  # noqa: PLR0913
     warn_on_censoring : bool | Callable[[ir.Table], list[dict[str, Any]]]
         A callable executes bookkeeping tables and returns rows through the
         owning source. Otherwise, warn on a material drop (default True).
-        Warning bookkeeping costs an extra execution round-trip.
+        Warning bookkeeping counts one row per enrollee before event joins
+        and costs an extra execution round-trip.
     uptake_exposures : ir.Table | None
         Assignment exposure anchors for encouragement uptake; defaults to the outcome spine.
     explicit_covariate : bool
@@ -2117,6 +2142,8 @@ def unit_totals(  # noqa: PLR0913
         while cluster_alias in occupied:
             cluster_alias += "_"
 
+    censor_population = _enrolled_unit_population(spine) if warn_on_censoring else None
+
     dense = _dense_unit_days(spine, stats, cluster=cluster, cluster_alias=cluster_alias).mutate(
         metric=ibis.literal(metric.name)
     )
@@ -2126,6 +2153,7 @@ def unit_totals(  # noqa: PLR0913
         experiment,
         data_as_of,
         warn_on_censoring=bool(warn_on_censoring),
+        censor_population=censor_population,
         execute=warn_on_censoring if callable(warn_on_censoring) else None,
     )
     dense = window_bound_stats(dense, metric)
