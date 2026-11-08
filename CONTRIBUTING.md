@@ -170,7 +170,9 @@ the required `duration-ratchet` CI job. After the report-first period, switching
 the baseline's mode to `enforce` is a separate reviewed one-line change.
 The aggregator expects the complete shard inventory: three Python 3.12 fast
 shards on pull requests, all nine fast matrix shards on pushes and manual runs,
-and all eight functional-slow shards. Missing JUnit/collection pairs are
+all eight functional-slow shards, and the four exhaustive shards whenever the
+exhaustive gate runs. Exhaustive items have no layer budget of their own and
+count against the `slow` budget. Missing JUnit/collection pairs are
 incomplete evidence: they warn in `report` mode and fail in `enforce` mode.
 Reduce unnecessary setup or input without crossing the tested boundary; keep
 irreducible warehouse, subprocess and exhaustive repository checks in the slow
@@ -1305,8 +1307,9 @@ A new method needs all of the following:
    stage changes). Only `INCREMENT_PARITY_MATRIX=full` generates the remaining
    primary cells, marked `exhaustive`; all asymptotic-retention variants are
    collected in both scopes, with non-PR variants marked `exhaustive`.
-   `make test-all`, the nightly and the weekly tenfold run set it. PRs select
-   one cheapest running asymptotic-retention cell per code path. Non-parametrized
+   `make test-all`, the nightly, the weekly tenfold run and the weekly
+   dependency-floor run set it. PRs select one cheapest running
+   asymptotic-retention cell per code path. Non-parametrized
    parity tests always run; see the coverage page for counts.
 6. **An independent reference.** Either a frozen comparison against a
    third-party tool or independent primitive under `tests/oracles/`, or a
