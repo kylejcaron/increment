@@ -537,6 +537,32 @@ def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypat
             )
         assert raised.value.code == "evidence.breakout_unavailable"
         assert reads == 0
+        from increment._evidence_loaders import load_moments_batch
+        from increment._evidence_types import MetricEvidenceRequest
+        from increment.readouts._metric_rows import load_metric_evidence_batch
+
+        invalid = MomentsRequest(metric, by=("not_declared",), population="triggered")
+        with pytest.raises(CapabilityError) as batched:
+            load_moments_batch(triggered, (MomentsRequest(metric, population="triggered"), invalid))
+        assert (batched.value.code, batched.value.context) == (
+            raised.value.code,
+            raised.value.context,
+        )
+        with pytest.raises(CapabilityError) as batched:
+            load_metric_evidence_batch(
+                triggered,
+                (
+                    MetricEvidenceRequest(metric, "control", population="triggered"),
+                    MetricEvidenceRequest(
+                        metric, "control", by=("not_declared",), population="triggered"
+                    ),
+                ),
+            )
+        assert (batched.value.code, batched.value.context) == (
+            raised.value.code,
+            raised.value.context,
+        )
+        assert reads == 0
 
         total_rows = cast(
             MomentRows,

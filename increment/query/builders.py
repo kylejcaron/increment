@@ -1739,6 +1739,64 @@ def _dense_unit_days(
     )
 
 
+def component_day_stats(
+    facts: ir.Table,
+    exposures: ir.Table,
+    experiment: Experiment,
+    components: Sequence[tuple[str, str | None, FactNullPolicy]],
+) -> ir.Table:
+    """Reduce several value columns from one physical fact stream without row multiplication."""
+    anchors = exposures.select("unit_id", "first_exposure_ts")
+    joined = facts.inner_join(anchors, "unit_id", rname="{name}_anchor")
+    joined = joined.filter(joined.ts > joined.first_exposure_ts)
+    days = joined.mutate(ds=_local_date(joined.ts, experiment))
+    aggregates: dict[str, ir.Value] = {}
+    for index, (fact, column, missing) in enumerate(components):
+        included = days.event == fact
+        value = ibis.literal(1.0) if column is None else days[column]
+        if value.type().is_boolean():
+            value = cast("ir.BooleanValue", value).ifelse(ibis.literal(1), ibis.literal(0))
+        value = value.cast("float64")
+        if column is not None and missing != "zero":
+            included &= days[column].notnull()
+        aggregates[f"n_events_{index}"] = days.count(where=included)
+        aggregates[f"sum_value_{index}"] = included.ifelse(ibis.coalesce(value, 0.0), 0.0).sum()
+    return days.group_by(["unit_id", "ds"]).aggregate(**aggregates)
+
+
+def component_window_values(
+    dense: ir.Table,
+    windows: Sequence[int | None],
+    *,
+    grain: str,
+    n_components: int,
+) -> ir.Table:
+    """Reduce one component's conditional windows together, retaining zero-event units."""
+    expressions: dict[str, ir.Value] = {}
+    prefix = ibis.cumulative_window(group_by=["experiment_id", "unit_id"], order_by="ds")
+    for component in range(n_components):
+        for index, days in enumerate(windows):
+            admitted = dense.ds.notnull()
+            if days is not None:
+                admitted &= dense.ds < dense.first_exposure_date + ibis.interval(days=days)
+            for name in ("n_events", "sum_value"):
+                value = admitted.ifelse(dense[f"{name}_{component}"], 0)
+                if grain == "asof":
+                    reduced = value.sum().over(prefix)
+                elif grain == "daily":
+                    reduced = value
+                else:
+                    reduced = value.sum()
+                expressions[f"{name}_{component}_{index}"] = reduced
+    if grain != "total":
+        return dense.select(
+            "experiment_id", "unit_id", "group_id", "first_exposure_date", "ds", **expressions
+        )
+    return dense.group_by(
+        ["experiment_id", "unit_id", "group_id", "first_exposure_date"]
+    ).aggregate(ds=dense.ds.max(), **expressions)
+
+
 def _enrolled_unit_population(spine: ir.Table) -> ir.Table:
     """Keep one row per enrollee, including a unit with no observed day."""
     if "day_offset" in spine.columns:
@@ -1833,7 +1891,6 @@ def _censor_to_observable_window(
     if not enrolled or dropped / enrolled <= CENSOR_WARN_FRACTION:
         return dense
 
-    horizon_date = experiment.observation_horizon_day
     if data_as_of is None:
         as_of_date = None
     elif isinstance(data_as_of, dt.datetime):
@@ -1850,6 +1907,22 @@ def _censor_to_observable_window(
             else (resolved.date() if hasattr(resolved, "date") else resolved)
         )
 
+    warn_censored_units(metric, experiment, enrolled, kept, as_of_date)
+    return dense
+
+
+def warn_censored_units(
+    metric: Metric,
+    experiment: Experiment,
+    enrolled: int,
+    kept: int,
+    as_of_date: dt.date | None,
+) -> None:
+    """Emit the same censoring advisory from scalar or shared eligibility counts."""
+    dropped = enrolled - kept
+    if not enrolled or dropped / enrolled <= CENSOR_WARN_FRACTION:
+        return
+    horizon_date = experiment.observation_horizon_day
     if horizon_date is not None:
         if as_of_date is not None and as_of_date < horizon_date:
             cause = (
@@ -1887,7 +1960,6 @@ def _censor_to_observable_window(
         cause=cause,
         stacklevel=3,
     )
-    return dense
 
 
 def _aggregate_unit_outcome(

@@ -14,11 +14,13 @@ class StatementCensus:
     total: int = 0
     by_kind: dict[str, int] = field(default_factory=lambda: dict.fromkeys(KINDS, 0))
     other_statements: list[str] = field(default_factory=list)
+    statements: list[str] = field(default_factory=list)
 
     def record(self, sql: Any) -> None:
         text = str(sql)
         kind = _kind(text)
         self.total += 1
+        self.statements.append(text)
         self.by_kind[kind] += 1
         if kind == "other":
             self.other_statements.append(text)

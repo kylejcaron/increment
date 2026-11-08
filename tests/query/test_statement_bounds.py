@@ -124,3 +124,55 @@ def test_statement_counts_stay_within_bounds(journey, seeded_con):
     bounds = BOUND[journey]
     assert census.total <= bounds["total"]
     assert all(census.by_kind[kind] <= bounds[kind] for kind in census.by_kind)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("size", [5, 10, 20, 30])
+def test_compatible_metrics_share_executed_reductions(size):
+    from tests.test_dashboard_group_source import _native_groups
+
+    with _native_groups(metric_names=("conversion", "mean")) as (backend, _, resolver):
+        source = resolver._binding.source
+        base = resolver._binding.metrics
+        metrics = [
+            base[index % 2].model_copy(update={"name": f"metric_{index}"}) for index in range(size)
+        ]
+        source = source.exploratory_source(metrics=metrics)
+        with count_statements(backend) as census:
+            rows = source._moments_for_metrics(
+                selected=metrics, include_covariate=False
+            ).to_pylist()
+        assert {row["metric"] for row in rows} == {metric.name for metric in metrics}
+        assert census.by_kind["select"] <= 6
+        assert census.by_kind["create_temp"] <= 1
+        assert census.by_kind["other"] <= 1
+        plans = [
+            backend.raw_sql("EXPLAIN " + sql).fetchall()[0][1]
+            for sql in census.statements
+            if sql.lstrip().upper().startswith("INSERT")
+        ]
+        assert len(plans) == 1
+        assert plans[0].count("SEQ_SCAN") <= 4
+        from increment._evidence_loaders import load_moments_batch
+        from increment._evidence_types import MomentsRequest
+
+        for grain in ("daily", "asof"):
+            with count_statements(backend) as census:
+                answers = load_moments_batch(
+                    source.day_source(metrics=metrics),
+                    tuple(MomentsRequest(metric, grain=grain) for metric in metrics),
+                )
+            assert all(
+                {row["metric"] for row in answer} == {metric.name}
+                for metric, answer in zip(metrics, answers, strict=True)
+            )
+            assert census.by_kind["select"] <= 5
+            assert census.by_kind["create_temp"] <= 1
+            assert census.by_kind["other"] <= 1
+            plans = [
+                backend.raw_sql("EXPLAIN " + sql).fetchall()[0][1]
+                for sql in census.statements
+                if sql.lstrip().upper().startswith("INSERT")
+            ]
+            assert len(plans) == 1
+            assert plans[0].count("SEQ_SCAN") <= 4

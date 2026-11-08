@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._evidence_refusals import refuse_grain, refuse_operation, require_evidence
@@ -19,6 +20,7 @@ from increment._evidence_types import (
     UnitRowsRequest,
 )
 from increment._source_types import (
+    MOMENTS_BATCH_OWNERS,
     _BuiltinMomentSource,
     declared_evidence,
     is_builtin_source,
@@ -27,6 +29,20 @@ from increment._source_types import (
 
 if TYPE_CHECKING:
     from increment.kernel.context import EvidenceExecutionContext
+
+
+def load_moments_batch(
+    src: EvidenceSource, requests: Sequence[MomentsRequest]
+) -> tuple[MomentRows, ...]:
+    """Acquire ordered full-identity requests, retaining per-request provider fallback."""
+    for request in requests:
+        require_request_evidence(src, request)
+    acquire = MOMENTS_BATCH_OWNERS.get(type(src))
+    answers = acquire(src, requests) if acquire is not None else (None,) * len(requests)
+    return tuple(
+        load_moments(src, request) if answer is None else answer
+        for request, answer in zip(requests, answers, strict=True)
+    )
 
 
 def view_population(src: EvidenceSource) -> Literal["assigned", "triggered"]:

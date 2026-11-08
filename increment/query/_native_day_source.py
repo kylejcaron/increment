@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 import ibis.expr.types as ir
 
 from increment._evidence_refusals import refuse_winsorized_day_axis
-from increment._evidence_types import ComplianceSummary, SourceContext
+from increment._evidence_types import ComplianceSummary, MomentRows, MomentsRequest, SourceContext
 from increment.query._native_refusals import _refuse_operation
 from increment.query.builders import (
     _censor_to_observable_window,
@@ -102,6 +102,7 @@ class _DaySource:
     `moments()` call builds and reduces only the metric/grain it is
     asked for, reusing `DefinitionsMomentSource._build_panel_for_metric`/
     `_build_asof_panels` as injected callables.
+    Compatible typed batches use the parent source's shared component reduction.
 
     `x` is a fixed pre-exposure unit covariate and `y` is daily,
     retention-cohort, or cumulative as-of. CUPED fields are populated only
@@ -204,6 +205,8 @@ class _DaySource:
         compliance_provider: Callable[..., ComplianceSummary] | None = None,
         compliance_dates_provider: Callable[[], Sequence[object]] | None = None,
         validated_assignments: Callable[[], AbstractContextManager[None]] | None = None,
+        batch_moments: Callable[[Sequence[MomentsRequest]], tuple[MomentRows | None, ...]]
+        | None = None,
     ) -> None:
         self._population = population
         self._experiment = experiment
@@ -225,6 +228,7 @@ class _DaySource:
         self._compliance_dates_provider = compliance_dates_provider
         self._validated_assignments_scope = validated_assignments
         self._triggered_observation_edges = triggered_observation_edges
+        self._acquire_batch_moments = batch_moments
         self._ready = False
         self._asof_panel_cache: dict[
             tuple[Metric, tuple[Metric, ...], bool, bool],
@@ -409,6 +413,11 @@ class _DaySource:
 
     def day_axis_source(self, *, selected: Sequence[Metric] | None = None) -> _DaySource:
         return self
+
+    def _batch_moments(self, requests: Sequence[MomentsRequest]) -> tuple[MomentRows | None, ...]:
+        if self._acquire_batch_moments is None:
+            return (None,) * len(requests)
+        return self._acquire_batch_moments(requests)
 
     def moments(
         self,

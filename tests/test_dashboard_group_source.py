@@ -24,6 +24,8 @@ def _native_groups(
     large=False,
     sequential=False,
     metric_names=None,
+    fact_missing="error",
+    null_values=False,
 ):
     import ibis
     import pyarrow as pa
@@ -101,8 +103,16 @@ def _native_groups(
                     "timestamp_column": "ts",
                     "entities": ["unit_id"],
                     "facts": [
-                        {"name": name, "column": "value"}
+                        {"name": name, "column": "value", "missing": fact_missing}
                         for name in ("purchase", "return", "denominator")
+                    ],
+                    "properties": [
+                        {
+                            "name": "price",
+                            "column": "price_value",
+                            "dtype": "float",
+                            "as_of": "static",
+                        }
                     ],
                 }
             ],
@@ -175,6 +185,17 @@ def _native_groups(
                 "ts": datetime(2025, 1, 10, tzinfo=UTC),
             }
         )
+    if null_values:
+        events.append(
+            {
+                "unit_id": "baseline-0",
+                "event": "purchase",
+                "value": None,
+                "ts": datetime(2025, 1, 2, tzinfo=UTC),
+            }
+        )
+    for row in events:
+        row["price_value"] = row["value"]
     connection = ibis.duckdb.connect()
     connection.create_table("enrolled", pa.Table.from_pylist(enrolled))
     connection.create_table("events", pa.Table.from_pylist(events))
@@ -195,6 +216,126 @@ def _capture(resolver, *names):
     return {
         (row.metric, row.group_id): row for row in dashboard_group_data(binding, metrics=metrics)
     }
+
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore:.*censoring dropped:increment.errors.IncrementWarning")
+@pytest.mark.parametrize("missing", ["zero", "skip", "error"])
+def test_shared_order_components_keep_request_identity_maturity_and_ratio_covariance(
+    missing, monkeypatch
+):
+    from increment._evidence_loaders import load_moments, load_moments_batch
+    from increment._evidence_types import MetricEvidenceRequest, MomentsRequest
+    from increment.errors import CodedError
+    from increment.readouts._metric_rows import load_metric_evidence, load_metric_evidence_batch
+    from increment.semantics.models import Filter, RatioMetric
+
+    with _native_groups(
+        extra_exclusions=True,
+        metric_names=("conversion", "mean", "retention"),
+        fact_missing=missing,
+        null_values=True,
+    ) as (_, _, resolver):
+        source = resolver._binding.source
+        conversion, revenue, disjoint = resolver._binding.metrics
+        conversion = conversion.model_copy(update={"window_days": 7})
+        revenue = revenue.model_copy(update={"window_days": 7})
+        long_revenue = revenue.model_copy(update={"window_days": 30})
+        ratio = RatioMetric(
+            name="revenue_per_order",
+            entity="unit_id",
+            preferred_direction="increase",
+            numerator={"fact": "purchase", "aggregation": "sum", "window_days": 7},
+            denominator={"fact": "purchase", "aggregation": "count", "window_days": 7},
+        )
+        filtered = revenue.model_copy(
+            update={
+                "name": "expensive",
+                "filters": (Filter(property="price", op="gt", values=(5,)),),
+            }
+        )
+        other_ratio = ratio.model_copy(
+            update={
+                "name": "revenue_per_denominator",
+                "denominator": ratio.denominator.model_copy(
+                    update={"fact": "denominator", "aggregation": "sum"}
+                ),
+            }
+        )
+        source = source.exploratory_source(metrics=(ratio, filtered, other_ratio))
+        metrics = (conversion, revenue, ratio, long_revenue, disjoint, filtered, other_ratio)
+        requests = (
+            *(MetricEvidenceRequest(metric, "baseline") for metric in metrics),
+            MetricEvidenceRequest(conversion, "candidate"),
+        )
+        if missing == "error":
+            with pytest.raises(CodedError) as single:
+                load_metric_evidence(source, requests[0])
+            with pytest.raises(CodedError) as batch:
+                load_metric_evidence_batch(source, requests)
+            assert (batch.value.code, batch.value.context) == (
+                single.value.code,
+                single.value.context,
+            )
+            return
+        compiled = []
+        materialize = source._session.materialize_table
+
+        def capture(name, expr, **kwargs):
+            compiled.append(expr)
+            return materialize(name, expr, **kwargs)
+
+        monkeypatch.setattr(source._session, "materialize_table", capture)
+        expected = tuple(load_metric_evidence(source, request) for request in requests)
+        actual = load_metric_evidence_batch(source, requests)
+        for got, independent in zip(actual, expected, strict=True):
+            from dataclasses import replace
+
+            ordered = tuple(sorted(got.rows, key=lambda row: row["group_id"]))
+            reference = tuple(sorted(independent.rows, key=lambda row: row["group_id"]))
+            assert replace(got, rows=ordered) == replace(independent, rows=reference)
+        baseline = next(row for row in actual[2].rows if row["group_id"] == "baseline")
+        assert baseline["n"] == 16
+        assert baseline["ref_y"] == 4.5
+        assert baseline["ref_den"] == (13 / 16 if missing == "zero" else 0.75)
+        assert baseline["cy2"] == 236
+        assert baseline["cden2"] == (39 / 16 if missing == "zero" else 3)
+        assert baseline["cyden"] == (13.5 if missing == "zero" else 18)
+        assert actual[3].rows == ()
+        empty_batch = source._moments_for_metrics(
+            selected=(long_revenue, long_revenue), include_covariate=False
+        )
+        empty_single = source._moments_for_metrics(
+            selected=(long_revenue,), include_covariate=False
+        )
+        assert empty_batch.num_rows == 0
+        assert empty_batch.schema == empty_single.schema
+        for grain in ("daily", "asof"):
+            day_source = source.day_source(metrics=metrics)
+            moments = tuple(MomentsRequest(metric, grain=grain) for metric in metrics)
+            individual = tuple(load_moments(day_source, request) for request in moments)
+            batched = load_moments_batch(day_source, moments)
+            for got, independent in zip(batched, individual, strict=True):
+
+                def identity(row):
+                    return row["ds"], row["group_id"], row["metric"]
+
+                got = sorted(got, key=identity)
+                independent = sorted(independent, key=identity)
+                assert len(got) == len(independent)
+                for row, reference in zip(got, independent, strict=True):
+                    assert row.keys() == reference.keys()
+                    for key, value in reference.items():
+                        assert row[key] == (
+                            pytest.approx(value, rel=1e-10, abs=1e-10)
+                            if isinstance(value, float)
+                            else value
+                        )
+        import ibis
+
+        for expr in compiled:
+            for dialect in ("duckdb", "postgres", "snowflake", "bigquery"):
+                ibis.to_sql(expr, dialect=dialect)
 
 
 def test_running_source_without_observations_explains_missing_cutoff():
@@ -463,8 +604,12 @@ def test_group_capture_materializes_only_bounded_aggregate_rows(monkeypatch):
 
         monkeypatch.setattr(connection, "to_pyarrow", capture)
         rows = _capture(resolver)
-    assert len(rows) == 10
-    assert max(row_counts) <= 2
+    assert set(rows) == {
+        (metric, arm)
+        for metric in ("conversion", "mean", "retention", "ratio", "quantile")
+        for arm in ("baseline", "candidate")
+    }
+    assert max(row_counts) <= len(rows)
 
 
 @pytest.mark.parametrize("kind", ["swapped_metric", "foreign_prefix"])
