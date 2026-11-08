@@ -31,14 +31,23 @@ pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarni
 
 
 def _triggered_dashboard(
-    tmp_path, *, sequential=False, extra_metric=False, fail_assigned_integrity=False
+    tmp_path,
+    *,
+    sequential=False,
+    extra_metric=False,
+    declare_extra=False,
+    fail_assigned_integrity=False,
 ):
+    """A triggered experiment on revenue; ``extra_metric`` saves a conversion metric beside it,
+    which ``declare_extra`` also declares as a secondary."""
     definitions = _write_defs(tmp_path, allocation_scheme="independent")
     plan = "primary: revenue\n      alternative: two-sided"
     if sequential:
         plan += "\n      inference:\n        kind: asymptotic_mean"
+    if declare_extra:
+        plan += "\n      secondaries: [trigger_conversion]"
     definitions_text = definitions.read_text().replace("secondaries: [revenue]", plan)
-    if extra_metric:
+    if extra_metric or declare_extra:
         definitions_text = definitions_text.replace(
             "experiments:",
             "  - name: trigger_conversion\n"

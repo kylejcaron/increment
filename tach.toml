@@ -1789,7 +1789,8 @@ from = ["increment._day_axis"]
 expose = [
   "DayAxisReadouts", "EvidenceSlice", "DayAxisRoute", "validate_day_axis", "validate_lift_request",
   "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED", "day_axis_readouts",
-  "require_arm_state", "run_asof", "run_asof_lift", "run_daily", "run_daily_lift",
+  "require_arm_state", "run_asof", "run_asof_lift", "run_asof_lift_together_and_alone", "run_daily",
+  "run_daily_lift",
 ]
 
 [[interfaces]]

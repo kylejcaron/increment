@@ -82,6 +82,7 @@ from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     MOMENTS_ROUTE,
     NATIVE_ROUTE,
+    DayAxisSlice,
     artifact_provenance,
     assigned_breakout_values,
     day_axis_route,
@@ -1068,6 +1069,24 @@ def _estimate_day_axis_lift_slice(
     return results
 
 
+def _metric_slices(evidence_slice: DayAxisSlice) -> tuple[DayAxisSlice, ...]:
+    """``evidence_slice`` as one slice per metric, each what a read of that metric alone acquires."""
+    edges = evidence_slice.observation_edges
+    return tuple(
+        replace(
+            evidence_slice,
+            rows=[row for row in evidence_slice.rows if str(row["metric"]) == metric.name],
+            metrics=(metric,),
+            observation_edges=(
+                None
+                if edges is None
+                else {name: edge for name, edge in edges.items() if name == metric.name}
+            ),
+        )
+        for metric in evidence_slice.metrics
+    )
+
+
 def _day_cell(row) -> tuple[Any, ...]:
     day = row.ds.date() if isinstance(row.ds, dt.datetime) else row.ds
     return (day, row.metric, row.group_id, row.dimension_value)
@@ -1666,7 +1685,7 @@ class DayAxisReadouts:
             identity_rows=identity_rows,
         )
 
-    def lift(  # noqa: PLR0915
+    def lift(
         self,
         req: DayAxisRequest,
         *,
@@ -1676,6 +1695,55 @@ class DayAxisReadouts:
         scope=None,
         options: LiftOptions | None = None,
     ) -> DailyLiftEstimates:
+        (rows,) = self._lift(
+            req,
+            None,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            scope=scope,
+            options=options,
+        )
+        return rows
+
+    def lift_selections(
+        self,
+        req: DayAxisRequest,
+        selections: Sequence[Sequence[Metric]],
+        *,
+        decision_method: Method | _Unset,
+        sensitivity_methods: Sequence[Method] | _Unset,
+        prior: Prior | None | _Unset,
+        options: LiftOptions | None = None,
+    ) -> tuple[DailyLiftEstimates, ...]:
+        """Each selection of ``req``'s metrics answered as its own request, from one read.
+
+        ``req`` is validated as a whole, its evidence acquired once and each metric estimated
+        alone, as a request for that metric alone estimates it. Each selection's rows are then
+        stamped, ordered and scoped with that selection's own request and options, so they
+        carry the source snapshot and families a read of the selection alone carries.
+        """
+        return self._lift(
+            req,
+            tuple(tuple(selection) for selection in selections),
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            options=options,
+        )
+
+    def _lift(  # noqa: PLR0915
+        self,
+        req: DayAxisRequest,
+        selections: tuple[tuple[Metric, ...], ...] | None,
+        *,
+        decision_method: Method | _Unset,
+        sensitivity_methods: Sequence[Method] | _Unset,
+        prior: Prior | None | _Unset,
+        scope=None,
+        options: LiftOptions | None = None,
+        selection_options: tuple[LiftOptions, ...] | None = None,
+    ) -> tuple[DailyLiftEstimates, ...]:
         req = replace(req, experiment=self._experiment)
         scope = _day_axis_scope(req) if scope is None else scope
         route = self._route()
@@ -1697,6 +1765,18 @@ class DayAxisReadouts:
             prior=prior,
             alpha=self._plan.alpha,
         )
+        if selections is not None and selection_options is None:
+            selection_options = tuple(
+                LiftOptions.resolve(
+                    self._src,
+                    selection,
+                    decision_method=decision_method,
+                    sensitivity_methods=sensitivity_methods,
+                    prior=prior,
+                    alpha=self._plan.alpha,
+                )
+                for selection in selections
+            )
         if self._execution_context is not None:
             context = self._execution_context
             if requested_estimands == ("compliance",) and req.dimension is None:
@@ -1731,15 +1811,19 @@ class DayAxisReadouts:
                     daily_lift=self._daily_lift,
                     metadata_context=context,
                     scope_is_pinned=True,
-                ).lift(
+                )._lift(
                     req,
+                    selections,
                     decision_method=decision_method,
                     sensitivity_methods=sensitivity_methods,
                     prior=prior,
                     scope=scope,
                     options=opts,
+                    selection_options=selection_options,
                 )
         if req.grain == "asof" and getattr(self._plan.inference, "registration", None) is not None:
+            # A registered checkpoint read answers one request; selections are read one by one.
+            assert selections is None
             from increment.breakout.estimates import daily_sequential_projection
 
             asof_policy = self._plan.view_policies.for_view(
@@ -1772,19 +1856,21 @@ class DayAxisReadouts:
                 )
                 for selected in (rows, unrequested)
             )
-            return _scope_day_axis_rows(
-                _order_day_axis_rows(projected, req),
-                req,
-                source=self._src,
-                route=route,
-                plan=self._plan,
-                configs=self._src.context.configs,
-                design=self._design,
-                execution_context=self._metadata_context,
-                scope=scope,
-                family_cells=tuple(CellKey.from_row(row) for row in unrequested_projected),
-                advisories=carried_advisories(
-                    checkpoint_advisories, zip(rows, projected, strict=True)
+            return (
+                _scope_day_axis_rows(
+                    _order_day_axis_rows(projected, req),
+                    req,
+                    source=self._src,
+                    route=route,
+                    plan=self._plan,
+                    configs=self._src.context.configs,
+                    design=self._design,
+                    execution_context=self._metadata_context,
+                    scope=scope,
+                    family_cells=tuple(CellKey.from_row(row) for row in unrequested_projected),
+                    advisories=carried_advisories(
+                        checkpoint_advisories, zip(rows, projected, strict=True)
+                    ),
                 ),
             )
         for roles in opts.by_metric.values():
@@ -1886,87 +1972,115 @@ class DayAxisReadouts:
             evidence_slices = evidence.slices
         advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] = {}
         for evidence_slice in evidence_slices:
-            raw_rows = _fill_triggered_early_look_rows(
-                evidence_slice.rows,
-                req=req,
-                metrics=evidence_slice.metrics,
-                experiment=self._experiment or evidence_slice.experiment,
-                source=self._src,
-                observation_edges=evidence_slice.observation_edges,
-                source_name=evidence_slice.source_name,
-            )
-            names = {m.name for m in evidence_slice.metrics}
-            kwargs = opts.daily_lift_kwargs()
-            kwargs["methods_by_metric"] = {
-                n: v for n, v in kwargs["methods_by_metric"].items() if n in names
-            }
-            kwargs["prior_by_metric"] = {
-                n: v for n, v in kwargs["prior_by_metric"].items() if n in names
-            }
-            kwargs["method_roles_by_metric"] = {
-                n: v for n, v in kwargs["method_roles_by_metric"].items() if n in names
-            }
-            if not (req.grain == "daily" and requested_estimands == ("compliance",)):
-                results.extend(
-                    _estimate_day_axis_lift_slice(
-                        self._daily_lift,
-                        raw_rows,
-                        evidence_slice,
-                        req,
-                        kwargs,
-                        extra,
-                        control_group,
-                        requested_estimands,
-                        effective_plan,
-                        self._design,
-                        advisories,
-                    )
+            for part in (evidence_slice,) if selections is None else _metric_slices(evidence_slice):
+                raw_rows = _fill_triggered_early_look_rows(
+                    part.rows,
+                    req=req,
+                    metrics=part.metrics,
+                    experiment=self._experiment or part.experiment,
+                    source=self._src,
+                    observation_edges=part.observation_edges,
+                    source_name=part.source_name,
                 )
-            failure_rows.extend(raw_rows)
+                names = {m.name for m in part.metrics}
+                kwargs = opts.daily_lift_kwargs()
+                kwargs["methods_by_metric"] = {
+                    n: v for n, v in kwargs["methods_by_metric"].items() if n in names
+                }
+                kwargs["prior_by_metric"] = {
+                    n: v for n, v in kwargs["prior_by_metric"].items() if n in names
+                }
+                kwargs["method_roles_by_metric"] = {
+                    n: v for n, v in kwargs["method_roles_by_metric"].items() if n in names
+                }
+                if not (req.grain == "daily" and requested_estimands == ("compliance",)):
+                    results.extend(
+                        _estimate_day_axis_lift_slice(
+                            self._daily_lift,
+                            raw_rows,
+                            part,
+                            req,
+                            kwargs,
+                            extra,
+                            control_group,
+                            requested_estimands,
+                            effective_plan,
+                            self._design,
+                            advisories,
+                        )
+                    )
+                failure_rows.extend(raw_rows)
         arm_roster = (
             _triggered_group_roster(self._src, self._experiment)
             if self._experiment is not None and (req.metrics or design_compliance)
             else []
         )
-        _append_compliance_rows(
-            results,
-            compliance_by_date,
-            enabled=design_compliance,
-            req=req,
-            design=encouragement_design,
-            control_group=control_group,
-            requested_estimands=requested_estimands,
-            plan=self._plan,
-            arm_roster=arm_roster,
-        )
         from increment.estimation.multiplicity import stamp_multiplicity_status
 
-        results = _stamp_triggered_cell_failures(
-            results, failure_rows, req, control_group=control_group
+        requests = (
+            ((req, opts),)
+            if selections is None
+            else tuple(
+                (replace(req, metrics=selection), chosen)
+                for selection, chosen in zip(
+                    selections, cast("tuple[LiftOptions, ...]", selection_options), strict=True
+                )
+            )
         )
-
-        estimated = results
-        results = [
-            row.model_copy(update={"analysis_population": req.population}) for row in estimated
-        ]
-        identity_rows = tuple(results)
-        results = _fill_daily_domain_gaps(results, req)
-
-        return _scope_day_axis_rows(
-            _order_day_axis_rows(
-                stamp_multiplicity_status(results, correction=correction),
-                req,
-            ),
-            req,
-            source=self._src,
-            route=route,
-            plan=self._plan,
-            configs=opts.configs,
-            design=self._design,
-            execution_context=self._metadata_context,
-            identity_rows=identity_rows,
-            advisories=carried_advisories(advisories, zip(estimated, identity_rows, strict=True)),
-        )
+        collections: list[DailyLiftEstimates] = []
+        for selection_req, selection_opts in requests:
+            selected = {metric.name for metric in selection_req.metrics}
+            selection_results = [
+                row for row in results if selections is None or row.metric in selected
+            ]
+            _append_compliance_rows(
+                selection_results,
+                compliance_by_date,
+                enabled=design_compliance,
+                req=selection_req,
+                design=encouragement_design,
+                control_group=control_group,
+                requested_estimands=requested_estimands,
+                plan=self._plan,
+                arm_roster=arm_roster,
+            )
+            estimated = _stamp_triggered_cell_failures(
+                selection_results,
+                [
+                    row
+                    for row in failure_rows
+                    if selections is None or str(row.get("metric")) in selected
+                ],
+                selection_req,
+                control_group=control_group,
+            )
+            populated = [
+                row.model_copy(update={"analysis_population": req.population}) for row in estimated
+            ]
+            identity_rows = tuple(populated)
+            collections.append(
+                _scope_day_axis_rows(
+                    _order_day_axis_rows(
+                        stamp_multiplicity_status(
+                            _fill_daily_domain_gaps(populated, selection_req),
+                            correction=correction,
+                        ),
+                        selection_req,
+                    ),
+                    selection_req,
+                    source=self._src,
+                    route=route,
+                    plan=self._plan,
+                    configs=selection_opts.configs,
+                    design=self._design,
+                    execution_context=self._metadata_context,
+                    identity_rows=identity_rows,
+                    advisories=carried_advisories(
+                        advisories, zip(estimated, identity_rows, strict=True)
+                    ),
+                )
+            )
+        return tuple(collections)
 
 
 def require_arm_state(
@@ -2061,10 +2175,12 @@ def _day_axis_lift(
     sensitivity_methods: Sequence[Method] | _Unset,
     prior: Prior | None | _Unset,
     coherence: Literal["captured", "live"],
-) -> DailyLiftEstimates:
+    selections: Sequence[Sequence[Metric]] | None = None,
+) -> tuple[DailyLiftEstimates, ...]:
+    """``req``'s lift, or each of ``selections`` of its metrics from one read of ``req``."""
     _validate_day_axis_before_context(binding, req, execution_context)
     if execution_context is None:
-        return run_standalone_day_axis_lift(
+        answered = run_standalone_day_axis_lift(
             binding,
             req,
             day_axis=partial(day_axis_readouts, binding),
@@ -2072,7 +2188,9 @@ def _day_axis_lift(
             sensitivity_methods=sensitivity_methods,
             prior=prior,
             coherence=coherence,
+            selections=selections,
         )
+        return (answered,) if selections is None else answered
     reader = day_axis_readouts(binding, execution_context)
     options = reader.resolve_lift_options(
         req.metrics,
@@ -2080,12 +2198,23 @@ def _day_axis_lift(
         sensitivity_methods=sensitivity_methods,
         prior=prior,
     )
-    return reader.lift(
-        req,
-        decision_method=decision_method,
-        sensitivity_methods=sensitivity_methods,
-        prior=prior,
-        options=options,
+    if selections is not None:
+        return reader.lift_selections(
+            req,
+            selections,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            options=options,
+        )
+    return (
+        reader.lift(
+            req,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            options=options,
+        ),
     )
 
 
@@ -2140,7 +2269,7 @@ def run_daily_lift(
         estimands=tuple(estimands) if estimands is not None else None,
         population=population,
     )
-    rows = _day_axis_lift(
+    (rows,) = _day_axis_lift(
         binding,
         req,
         execution_context,
@@ -2217,7 +2346,7 @@ def run_asof_lift(
         mechanism=getattr(binding.design, "mechanism", None),
         segmented=dimension is not None,
     )
-    lift_rows = _day_axis_lift(
+    (lift_rows,) = _day_axis_lift(
         binding,
         req,
         execution_context,
@@ -2233,3 +2362,59 @@ def run_asof_lift(
     rows._envelope_completion_policy = completed_windows_only
     rows._envelope_view = "asof"
     return rows
+
+
+def run_asof_lift_together_and_alone(
+    binding: SourceBinding,
+    *,
+    metrics: Sequence[str],
+    dimension: str | None = None,
+    completed_windows_only: bool = False,
+    population: Literal["assigned", "triggered"] = "assigned",
+) -> tuple[DailyLiftEstimates, ...]:
+    """``run_asof_lift`` of ``metrics`` together, then of each metric alone, from one read.
+
+    The collections equal ``run_asof_lift(binding, metrics=metrics, ...)`` followed by
+    ``run_asof_lift(binding, metrics=[name], ...)`` for each name in order: one read acquires
+    the evidence and estimates each metric once, and each selection is scoped as its own
+    request. A refusal of the joint request is raised before anything is read. A registered
+    sequential plan answers each selection from its own checkpoint read.
+    """
+    names = list(metrics)
+    if getattr(binding.plan.inference, "registration", None) is not None:
+        return tuple(
+            run_asof_lift(
+                binding,
+                metrics=selection,
+                dimension=dimension,
+                completed_windows_only=completed_windows_only,
+                population=population,
+            )
+            for selection in (names, *([name] for name in names))
+        )
+    execution_context = current_execution_context()
+    require_arm_state(binding, "run_asof_lift", population=population)
+    selected = select_day_axis_metrics(binding, names, caller="run_asof_lift")
+    req = DayAxisRequest(
+        caller="run_asof_lift",
+        grain="asof",
+        metrics=tuple(selected),
+        dimension=dimension,
+        completed_windows_only=completed_windows_only,
+        population=population,
+    )
+    collections = _day_axis_lift(
+        binding,
+        req,
+        execution_context,
+        decision_method=UNSET,
+        sensitivity_methods=UNSET,
+        prior=UNSET,
+        coherence="captured",
+        selections=(req.metrics, *((metric,) for metric in req.metrics)),
+    )
+    for rows in collections:
+        rows._default_backend = binding.input_backend
+        rows._envelope_completion_policy = completed_windows_only
+        rows._envelope_view = "asof"
+    return collections

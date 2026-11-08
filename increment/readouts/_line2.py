@@ -383,8 +383,28 @@ def run_standalone_day_axis_lift(
     prior,
     validate_only: bool = False,
     coherence: ExecutionMode = "captured",
+    selections: Sequence[Sequence[Metric]] | None = None,
 ):
-    """Resolve lift options before opening the owned evidence context."""
+    """Resolve lift options before opening the owned evidence context.
+
+    With ``selections``, one read of ``req`` answers each selection of its metrics.
+    """
+
+    def answer(readouts: DayAxisReadouts):
+        if selections is None:
+            return readouts.lift(
+                req,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+            )
+        return readouts.lift_selections(
+            req,
+            selections,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+        )
 
     source = binding.source
     plan = binding.plan
@@ -397,12 +417,7 @@ def run_standalone_day_axis_lift(
     if validate_only and unsupported_capture:
         return None
     if unsupported_capture:
-        return day_axis().lift(
-            req,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
-        )
+        return answer(day_axis())
     compliance_only = _compliance_only(binding, req.estimands, req.dimension)
     metrics = () if compliance_only else req.metrics
     if req.caller == "run_daily_lift":
@@ -541,12 +556,7 @@ def run_standalone_day_axis_lift(
         is_encouragement and req.dimension is None and "compliance" in requested_estimands
     )
     if not req.metrics and not compliance_rows_requested:
-        return day_axis().lift(
-            req,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
-        )
+        return answer(day_axis())
     scope_metrics = () if compliance_only else req.metrics
     from increment._evidence_scopes import capture_requirements
 
@@ -574,9 +584,4 @@ def run_standalone_day_axis_lift(
         ),
     )
     with owned_execution_context(binding, scope, coherence=coherence) as context:
-        return day_axis(context).lift(
-            req,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
-        )
+        return answer(day_axis(context))

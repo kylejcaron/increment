@@ -13,7 +13,9 @@ import hashlib
 import io
 import json
 import math
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import warnings
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
 from types import MappingProxyType
@@ -30,7 +32,7 @@ from increment._dashboard_capture import (
     dashboard_breakout_reads,
     dashboard_group_data,
 )
-from increment._day_axis import run_asof, run_asof_lift, run_daily
+from increment._day_axis import run_asof, run_asof_lift, run_asof_lift_together_and_alone, run_daily
 from increment._evidence_refusals import CONTRAST_UNAVAILABLE
 from increment._execute import run_whole_window
 from increment._exploratory import available_metrics
@@ -607,6 +609,35 @@ def _binding_fingerprint(definition: Mapping[str, object], metrics: Mapping[str,
     return hashlib.sha256(canonical_json_bytes(declaration_value(payload))).hexdigest()
 
 
+@contextmanager
+def _each_warning_once() -> Iterator[None]:
+    """Show each distinct warning raised inside once, by category, message and metric.
+
+    The caller's filters still decide, where each warning is raised, whether it is ignored,
+    shown or raised; each distinct warning they would show is shown once, when the block ends.
+    """
+    caught: list[warnings.WarningMessage] = []
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            yield
+    finally:
+        shown: set[tuple[object, ...]] = set()
+        for record in caught:
+            context = getattr(record.message, "context", None)
+            metric = context.get("metric") if isinstance(context, Mapping) else None
+            key = (record.category, str(record.message), None if metric is None else str(metric))
+            if key not in shown:
+                shown.add(key)
+                warnings.showwarning(
+                    record.message,
+                    record.category,
+                    record.filename,
+                    record.lineno,
+                    record.file,
+                    record.line,
+                )
+
+
 def prepare_dashboard(
     experiment: Experiment, reader: ExperimentReader, *, config: DashboardConfig
 ) -> DashboardSnapshot:
@@ -618,8 +649,16 @@ def prepare_dashboard(
     never touches the warehouse and a later source change cannot make the views disagree
     with the headline; reexecuting the source cell is an intentional new snapshot. The caller
     keeps ownership of ``reader`` and its connection: nothing here closes or replaces them,
-    and the snapshot retains neither.
+    and the snapshot retains neither. Each distinct warning the preparation raises is shown
+    once.
     """
+    with _each_warning_once():
+        return _prepare_dashboard(experiment, reader, config=config)
+
+
+def _prepare_dashboard(
+    experiment: Experiment, reader: ExperimentReader, *, config: DashboardConfig
+) -> DashboardSnapshot:
     binding = binding_for(experiment, reader)
     definition = _supported_experiment(binding)
     populations: tuple[Literal["assigned", "triggered"], ...] = (
@@ -1491,19 +1530,22 @@ def _capture_explore_population(
 ) -> tuple[DashboardExploreCapture, ...]:
     """Every Explore request ``load_explore`` can serve, answered from the pinned binding.
 
-    The lift family and segment estimates are read per metric and for every declared metric
-    together, because each selection carries its own multiplicity. Absolute values are
-    independent per metric, so one call over every metric serves them all; only when that call
-    is refused is each metric asked alone, so one metric's refusal never hides another's series.
-    Temporal views are read for the whole experiment and through each declared breakout's own
-    reads, as are segments, so one breakout's refusal never hides another source of the same
-    property. Source refusals are kept as the original coded errors. ``added`` metrics are never
-    read inside the declared metrics' joint family. Where a view's correction never spans
-    metrics (``_BATCHED_VIEWS``) one read per scope serves them all, and a refused read, or a
-    metric it returns nothing for, is asked alone; segments, whose BH family would span every
-    metric in the read, are read one metric at a time. Each declared breakout also captures
-    uncorrected segment rows for every declared and ``added`` metric, the overview's
-    exploratory family.
+    The declared metrics' lift is read once per state and scope: that read answers every
+    declared metric together and each metric alone, each selection scoped as its own request,
+    so each carries its own source snapshot and families. Only when the joint request is
+    refused is each metric asked alone. Segment estimates are read for every declared metric
+    together and for each alone, because a BH breakout family spans every metric a read
+    selects. Absolute values are independent per metric, so one call over every metric serves
+    them all; only when that call is refused is each metric asked alone, so one metric's
+    refusal never hides another's series. Temporal views are read for the whole experiment and
+    through each declared breakout's own reads, as are segments, so one breakout's refusal never
+    hides another source of the same property. Source refusals are kept as the original coded
+    errors. ``added`` metrics are never read inside the declared metrics' joint family. Where a
+    view's correction never spans metrics (``_BATCHED_VIEWS``) one read per scope serves them
+    all, and a refused read, or a metric it returns nothing for, is asked alone; segments, whose
+    BH family would span every metric in the read, are read one metric at a time. Each declared
+    breakout also captures uncorrected segment rows for every declared and ``added`` metric, the
+    overview's exploratory family.
     """
     captures: dict[ExploreKey, DashboardExploreCapture] = {}
 
@@ -1527,26 +1569,55 @@ def _capture_explore_population(
             captures[key] = DashboardExploreCapture.answered(key, data, collection=type(data))
         return captures[key]
 
+    def ask_together_and_alone(
+        reader: SourceBinding | DashboardBreakoutReads,
+        *,
+        complete: bool,
+        breakout: BreakoutChoice | None,
+    ) -> bool:
+        """Capture the declared lift together and per metric from one read; False if refused."""
+        binding, dimension = _reader_scope(reader)
+        try:
+            answered = run_asof_lift_together_and_alone(
+                binding,
+                metrics=names,
+                dimension=dimension,
+                completed_windows_only=complete,
+                population=population,
+            )
+        except CodedError:
+            return False
+        for metric, data in zip((None, *names), answered, strict=True):
+            key = (population, "cumulative_lift", metric, complete, breakout)
+            captures[key] = DashboardExploreCapture.answered(key, data, collection=type(data))
+        return True
+
     whole: tuple[tuple[BreakoutChoice | None, SourceBinding | DashboardBreakoutReads], ...] = (
         (None, pinned),
     )
     for view, complete in _CAPTURED_STATES:
         for breakout, reader in scopes if view == "segments" else (*whole, *scopes):
-            joint = ask(reader, view, None, complete=complete, breakout=breakout)
-            independent = view in _INDEPENDENT_VIEWS and joint.refusal is None
-            for name in names:
-                key = (population, view, name, complete, breakout)
-                if len(names) == 1:
-                    captures[key] = replace(joint, metric=name)
-                elif independent:
-                    assert joint.collection is not None
-                    captures[key] = DashboardExploreCapture.answered(
-                        key,
-                        [row for row in joint.rows if row.metric == name],
-                        collection=joint.collection,
-                    )
-                else:
-                    ask(reader, view, name, complete=complete, breakout=breakout)
+            shared = (
+                view == "cumulative_lift"
+                and len(names) > 1
+                and ask_together_and_alone(reader, complete=complete, breakout=breakout)
+            )
+            if not shared:
+                joint = ask(reader, view, None, complete=complete, breakout=breakout)
+                independent = view in _INDEPENDENT_VIEWS and joint.refusal is None
+                for name in names:
+                    key = (population, view, name, complete, breakout)
+                    if len(names) == 1:
+                        captures[key] = replace(joint, metric=name)
+                    elif independent:
+                        assert joint.collection is not None
+                        captures[key] = DashboardExploreCapture.answered(
+                            key,
+                            [row for row in joint.rows if row.metric == name],
+                            collection=joint.collection,
+                        )
+                    else:
+                        ask(reader, view, name, complete=complete, breakout=breakout)
             if not added:
                 continue
             if view not in _BATCHED_VIEWS:
@@ -1605,6 +1676,19 @@ def _capture_explore_population(
     return tuple(captures.values())
 
 
+def _reader_scope(
+    reader: SourceBinding | DashboardBreakoutReads,
+) -> tuple[SourceBinding, str | None]:
+    """The binding a scope reads and its breakout property, ``None`` for the whole experiment.
+
+    A breakout reader reads its own narrowed binding by its property; the whole experiment
+    reads the pinned binding undivided.
+    """
+    if isinstance(reader, DashboardBreakoutReads):
+        return reader.binding, reader.breakout.property
+    return reader, None
+
+
 def _read_view(
     reader: SourceBinding | DashboardBreakoutReads,
     view: str,
@@ -1614,16 +1698,8 @@ def _read_view(
     added: tuple[str, ...],
     population: Literal["assigned", "triggered"],
 ) -> Any:
-    """One view for ``selected``; added metrics go through ``exploratory_metrics``.
-
-    A breakout reader reads its own narrowed binding by its property; the whole experiment
-    reads the pinned binding undivided.
-    """
-    binding, dimension = (
-        (reader.binding, reader.breakout.property)
-        if isinstance(reader, DashboardBreakoutReads)
-        else (reader, None)
-    )
+    """One view for ``selected``; added metrics go through ``exploratory_metrics``."""
+    binding, dimension = _reader_scope(reader)
     declared = [name for name in selected if name not in added]
     extra = [name for name in selected if name in added]
     kwargs: dict[str, Any] = ({"exploratory_metrics": extra} if extra else {}) | {

@@ -110,3 +110,51 @@ def test_one_dashboard_snapshot_reads_each_statement_once(tmp_path, monkeypatch)
         prepare_dashboard(experiment, resolver, config=CONFIG)
     assert statements
     assert {sql: count for sql, count in statements.items() if count > 1} == {}
+
+
+_ALONE = """
+    plan:
+      primary: checkout_conversion
+"""
+_AMONG_OTHERS = """
+    plan:
+      primary: checkout_conversion
+      secondaries:
+        - revenue_per_user
+        - session_seconds
+"""
+
+
+def _dashboard_reads_of(metric: str, tmp_path, monkeypatch, *, plan: str) -> int:
+    """Warehouse statements one dashboard snapshot issues that read ``metric``'s evidence."""
+    from increment.dashboard import prepare_dashboard
+    from tests.test_dashboard_capture import CONFIG, METRICS, _workspace
+
+    fetch = Backend.to_pyarrow
+    reads = 0
+
+    def counted(self, expression, *args, **kwargs):
+        nonlocal reads
+        reads += f"'{metric}'" in ibis.to_sql(expression, dialect="duckdb")
+        return fetch(self, expression, *args, **kwargs)
+
+    tmp_path.mkdir()
+    with (
+        _workspace(tmp_path, metrics=METRICS, plan=plan) as (_, experiment, resolver),
+        monkeypatch.context() as patch,
+    ):
+        patch.setattr(Backend, "to_pyarrow", counted)
+        prepare_dashboard(experiment, resolver, config=CONFIG)
+    return reads
+
+
+# Small fixtures trip estimator reliability warnings; the subject is which data is read.
+@pytest.mark.slow
+@pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
+def test_a_dashboard_reads_a_metric_as_often_alone_as_among_others(tmp_path, monkeypatch):
+    """Each Explore view reads a metric's evidence once, however many metrics are declared."""
+    metric = "checkout_conversion"
+    alone = _dashboard_reads_of(metric, tmp_path / "alone", monkeypatch, plan=_ALONE)
+    among = _dashboard_reads_of(metric, tmp_path / "among", monkeypatch, plan=_AMONG_OTHERS)
+    assert alone > 0
+    assert among == alone

@@ -58,6 +58,7 @@ from increment.dashboard._html import overview_notes, overview_rows, overview_ta
 from increment.errors import (
     CapabilityError,
     CodedError,
+    IncrementRuntimeWarning,
     InvalidRequestError,
     UnsupportedRequestError,
 )
@@ -985,12 +986,25 @@ def _triggered_source(tmp_path: Path):
         resolver.close()
 
 
+@contextmanager
+def _triggered_pair_source(tmp_path: Path):
+    """Two declared metrics, each lift view read for the assigned and triggered populations."""
+    from tests.test_dashboard_population import _triggered_dashboard
+
+    experiment, resolver = _triggered_dashboard(tmp_path, declare_extra=True)
+    try:
+        yield None, experiment, resolver, DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5})
+    finally:
+        resolver.close()
+
+
 _FROZEN_SOURCES = {
     "bh": _bh_source,
     "explore": _explore_source,
     "storefront": _storefront_source,
     "pricing": _pricing_source,
     "triggered": _triggered_source,
+    "triggered_pair": _triggered_pair_source,
 }
 # The saved metrics pricing_copy does not declare, in catalog order.
 _PRICING_OFFERED = ("checkout_conversion", "revenue_per_user", "session_seconds")
@@ -1228,6 +1242,43 @@ def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_pa
     assert any(
         QUANTILE in note and refusal.code in note for note in overview_notes(snapshot, COUNTRY)
     )
+
+
+# A ratio over the purchase count: its denominator is a rare 0/1 count, so the estimator warns
+# that small cells are too right-skewed, in every view that estimates them.
+_SKEWED_RATIO = """
+  - type: ratio
+    name: revenue_per_purchase
+    entity: user_id
+    preferred_direction: increase
+    numerator: {fact: purchase, aggregation: sum, window_days: 14}
+    denominator: {fact: purchase, aggregation: count, window_days: 14}
+"""
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_preparation_shows_each_distinct_warning_once(tmp_path):
+    """Cells several views estimate warn once per preparation, even when every warning shows."""
+    plan = (
+        "    plan:\n      primary: checkout_conversion\n      secondaries: [revenue_per_purchase]\n"
+    )
+    with (
+        _workspace(tmp_path, metrics=_METRICS + _SKEWED_RATIO, plan=plan) as (
+            _,
+            experiment,
+            resolver,
+        ),
+        warnings.catch_warnings(record=True) as caught,
+    ):
+        warnings.simplefilter("always")
+        prepare_dashboard(experiment, resolver, config=CONFIG)
+    shown = [
+        (record.category, str(record.message), getattr(record.message, "context", {}).get("metric"))
+        for record in caught
+    ]
+    assert any(issubclass(category, IncrementRuntimeWarning) for category, _, _ in shown)
+    assert len(shown) == len(set(shown))
 
 
 @pytest.mark.integration

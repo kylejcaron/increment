@@ -86,7 +86,8 @@ choice share its pinned inputs, including declared breakout property sources.
 The caller's reader is not rebound or closed. Captured sequential decisions retain
 each displayed metric's checkpoint, including earlier frozen secondaries.
 These results form an immutable `DashboardSnapshot`. Preparation computes the
-temporal and breakout views as well as the headline.
+temporal and breakout views as well as the headline, and shows each distinct
+warning it raises once, however many views estimate the cell it concerns.
 
 ## Population selection
 
