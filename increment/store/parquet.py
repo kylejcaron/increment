@@ -63,24 +63,27 @@ def _refuse_unreadable(run_id: str, exc: Exception) -> NoReturn:
     )
 
 
-def _read_manifest(metadata: Mapping[bytes, bytes] | None, *, run_id: str) -> dict[str, Any]:
-    """Decode a saved run's manifest with the reader for its stored version."""
-    stored = metadata or {}
-    version = next((key for key in _MANIFEST_READERS if key in stored), None)
+def _decode_manifest(metadata: Mapping[bytes, bytes]) -> Any:
+    """Decode a saved run's manifest with the reader for its stored version.
+
+    A manifest only in versions this release cannot read refuses with
+    ``store.run.manifest_unsupported``; a record without one raises ``KeyError``.
+    """
+    version = next((key for key in _MANIFEST_READERS if key in metadata), None)
     if version is None:
         found = sorted(
-            key.decode(errors="replace") for key in stored if key.startswith(_MANIFEST_KEY_PREFIX)
+            key.decode(errors="replace") for key in metadata if key.startswith(_MANIFEST_KEY_PREFIX)
         )
         if found:
             refuse_unsupported_run_manifest(found, [key.decode() for key in _MANIFEST_READERS])
-        refuse_store(
-            "store.run.corrupt",
-            "Committed run record is unreadable or inconsistent",
-            run_id=run_id,
-            error="KeyError",
-        )
+        raise KeyError(_MANIFEST_KEY_PREFIX)
+    return _MANIFEST_READERS[version](metadata[version])
+
+
+def _read_manifest(metadata: Mapping[bytes, bytes] | None, *, run_id: str) -> dict[str, Any]:
+    """A saved run's manifest with its routing coordinates; anything else refuses."""
     try:
-        manifest = _MANIFEST_READERS[version](stored[version])
+        manifest = _decode_manifest(metadata or {})
     except Exception as exc:
         _refuse_unreadable(run_id, exc)
     if not isinstance(manifest, dict) or any(

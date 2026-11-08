@@ -13,7 +13,7 @@ its release notes list each removal with its migration route.
 
 | Format | Writes | Oldest readable | Support window | Migration |
 |---|---|---|---|---|
-| Saved runs in `ParquetResultsStore` | `increment.run_manifest.v2` | `increment.run_manifest.v2` | Version 2 only. Any other version refuses with `store.run.manifest_unsupported`; its context lists the versions `found` in the file and the versions this release reads (`supported`). | None needed: version 2 is the only version written so far. |
+| Saved runs in `ParquetResultsStore` and `WarehouseResultsStore` | `increment.run_manifest.v2` | `increment.run_manifest.v2` | Version 2 only. Any other version refuses with `store.run.manifest_unsupported`; its context lists the versions `found` in the file and the versions this release reads (`supported`). | None needed: version 2 is the only version written so far. |
 | Result cells (`ResultCell`, `AnalysisEnvelope`), including the cells of a saved run | schema 3 | schema 1 | Schemas 1–3. A newer schema, or a result kind this release does not know, refuses the whole file with `results.cell.schema_unsupported`. A switchback envelope contrast (`switchback_unit_variance_envelope`) saved before it recorded `residual_side` refuses with `estimation.contrast.legacy_envelope`. | Schemas 1 and 2 are read in place. Recompute an envelope contrast that refuses from its source data. |
 | Moments cubes (`export_moments`, `from_moments`) | Fixed-horizon format 12, or 13 when CUPED evidence is needed; sequential format 10 | Fixed-horizon format 10; sequential format 9 | Fixed-horizon formats 10–13 and sequential formats 9–10. Formats below 9 refuse with `moments.format.unsupported_legacy`; formats above 13 with `moments.format.unsupported_future`. | Re-export an older cube from its original data with `workflows.export_moments()`. |
 | Sequential checkpoints | version 2 | version 2 | Version 2 only. Any other version refuses with `sequential.continuation.legacy`. | None. Keep the release that wrote the checkpoint, or start a new registered process by capturing without `previous=`. |
@@ -28,9 +28,10 @@ its release notes list each removal with its migration route.
 Dashboards are not saved.
 
 A saved run that this release cannot read also stops `open_run` without a
-`run_id`, and `history`, from reading that store directory: the run's
-experiment cannot be read, so it cannot be skipped safely. Opening a different
-run by its `run_id` still works.
+`run_id`, and `history`, from reading that store directory or warehouse schema:
+the run's experiment cannot be read, so it cannot be skipped safely. Both
+refuse with the run's own code, as opening it by its `run_id` does. Opening a
+different run by its `run_id` still works.
 
 Artifact relation digests and extension records carry their own versions; see
 [Persisted formats](../api.md#persisted-formats) and

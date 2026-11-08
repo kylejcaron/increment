@@ -17,7 +17,11 @@ from increment._warehouse_namespace import (
     split_schema,
 )
 from increment.kernel.program_refusals import refuse_store, refuse_unavailable_results_schema
-from increment.store.parquet import ParquetResultsStore, _raise_unsupported_format
+from increment.store.parquet import (
+    ParquetResultsStore,
+    _decode_manifest,
+    _raise_unsupported_format,
+)
 from increment.store.types import (
     HistorySelector,
     Run,
@@ -194,8 +198,9 @@ class WarehouseResultsStore:
             )
         try:
             metadata = pq.read_schema(pa.BufferReader(payloads[0])).metadata or {}
-            manifest = json.loads(metadata[b"increment.run_manifest.v2"])
+            manifest = _decode_manifest(metadata)
         except Exception as exc:
+            _raise_unsupported_format(exc)
             refuse_store(
                 "store.run.corrupt",
                 "Committed warehouse run record is unreadable or inconsistent",
