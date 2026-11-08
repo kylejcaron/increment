@@ -183,6 +183,45 @@ def test_envelope_rejection_side_survives_point_and_slope_rounding():
     assert result.residual_side == "less"
 
 
+@pytest.mark.parametrize(
+    ("alternative", "numerator", "side", "direction"),
+    [
+        ("two-sided", 4124817371235595169, "greater", "increase"),
+        ("two-sided", -4124817371235595169, "less", "decrease"),
+        ("greater", 4020374662732887517, "greater", "increase"),
+        ("less", -4020374662732887517, "less", "decrease"),
+    ],
+)
+def test_envelope_readout_interprets_the_rejection_its_p_value_decides(
+    alternative, numerator, side, direction
+):
+    # Against null 0 with slope 1, the effect x = numerator / 2**64 lies just inside the
+    # outward-rounded cutoff (0.223606797749979 two-sided, 0.2179449471770337 one-sided), so the
+    # displayed interval reaches past zero, while the p-value of the exact residual x, rounded
+    # upward, stays below alpha: the contrast rejects, on the side of x.
+    effect = Fraction(numerator, 2**64)
+    total = effect * 4
+    result = estimate_contrast(
+        stats(
+            probability_ct=0.5,
+            ct_cycles=2,
+            tc_cycles=2,
+            mean_slope=1.0,
+            reference_delta=float(effect),
+            exact_delta_total=(total.numerator, total.denominator),
+        ),
+        procedure(envelope(p=0.5), alternative=alternative),
+    ).results[0]
+    lower, upper = result.estimate.lb, result.estimate.ub
+    assert (lower is None or lower < 0) and (upper is None or upper > 0)
+    row = contrast_results_to_readout([result])[0]
+    assert row["stat_sig"] is True
+    assert row["residual_side"] == side
+    assert row["effect_interpretation"] == (
+        f"Interpretation: excludes zero at 95.0% confidence; effect direction supported ({direction})."
+    )
+
+
 def test_envelope_payload_without_residual_side_refuses():
     payload = _wire_fixture()
     del payload["residual_side"]

@@ -404,9 +404,11 @@ power-planning exports.
     outward-displayed interval and cutoff do not define that event. The
     direction of a rejection is `residual_side`, taken from the exact
     residual; a residual rebuilt from the rounded point and slope can have
-    the other sign. Frames and wire serialization preserve these
-    fields and numeric nulls. Readout `stat_sig` uses that same p-value
-    decision, not interval exclusion. An envelope result saved before
+    the other sign. Frames, readout rows and wire serialization preserve
+    these fields and numeric nulls. Readout `stat_sig` and the interval
+    interpretation use that same p-value decision and side, not interval
+    exclusion, so a rejection whose displayed interval still touches the
+    null reads as a rejection. An envelope result saved before
     `residual_side` existed refuses to load with
     `estimation.contrast.legacy_envelope`; recompute it from the source data.
 

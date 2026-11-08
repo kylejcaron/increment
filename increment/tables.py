@@ -386,6 +386,7 @@ def contrast_results_to_readout(
                 "refusal_probability_upper": result.refusal_probability_upper,
                 "residual_cutoff": result.residual_cutoff,
                 "residual_p_value": result.residual_p_value,
+                "residual_side": result.residual_side,
                 "response_meaning": result.response_meaning,
                 "reference_spec": (
                     result.reference_spec.model_dump(mode="json")

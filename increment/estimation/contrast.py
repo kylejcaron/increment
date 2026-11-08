@@ -53,6 +53,7 @@ from increment.estimation.results import (
     Estimate,
     RejectionSide,
     contrast_evidence_available,
+    contrast_rejection_side,
     contrast_stat_sig,
 )
 from increment.semantics.unit_cycle import UnitCycleVarianceEnvelope
@@ -895,28 +896,6 @@ def _t_reference_result(
         minimum_cycles_per_unit=stats.minimum_cycles_per_unit,
         maximum_cycles_per_unit=stats.maximum_cycles_per_unit,
     )
-
-
-def contrast_rejection_side(result: ContrastResult) -> RejectionSide | None:
-    """The side of its null the contrast's rejection lies on; ``None`` exactly when
-    :func:`contrast_stat_sig` is False.
-
-    The envelope's point is the retained-window total, whose effect is the point
-    over the positive slope, so its side is the sign of the exact residual
-    ``point - null_abs * slope`` its p-value tests, recorded when the evidence was
-    computed; the stored point and slope are roundings that can flip that sign.
-    """
-    if not contrast_stat_sig(result):
-        return None
-    estimate = result.estimate
-    if result.alternative != "two-sided":
-        return result.alternative
-    if result.method == "switchback_unit_variance_envelope":
-        assert result.residual_side is not None
-        return result.residual_side
-    if estimate.lb is not None and estimate.lb > result.null_abs:
-        return "greater"
-    return "less"
 
 
 def estimate_contrast(

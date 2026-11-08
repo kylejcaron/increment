@@ -18,6 +18,7 @@ from increment.estimation.results import (
     _FAMILY_PROCEDURE_LABELS,
     DEFAULT_RELIABILITY_FLOOR,
     _selection_qualification,
+    contrast_rejection_side,
     contrast_stat_sig,
     row_chance_to_beat,
     row_chance_to_beat_favorable,
@@ -1448,17 +1449,21 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
         (lower is None or lower <= null) and (upper is None or null <= upper)
         for lower, upper in intervals
     )
+    # A contrast decides on its own verdict and side: an envelope's outward-rounded
+    # interval can still reach the null its p-value rejects.
+    rejection_side = contrast_rejection_side(row) if contrast else None
     sequential_result = getattr(row, "sequential_result", None)
     if sequential_result is not None and not sequential_result.rejects():
         return (
             "Interpretation: does not reject; the retained sequential procedure has not rejected."
         )
-    if sequential_result is None and getattr(row, "stat_sig", None) is False and not contains_null:
+    verdict = rejection_side is not None if contrast else getattr(row, "stat_sig", None)
+    if sequential_result is None and verdict is False and not contains_null:
         return (
             "Interpretation: does not reject; the retained statistical verdict "
             "does not support an inferential claim."
         )
-    if contains_null:
+    if contains_null and rejection_side is None:
         return "Interpretation: does not reject; inconclusive, not evidence of no effect."
     level_note = "" if level is None else f" at {level:.1%} confidence"
     if null == 0:
@@ -1467,7 +1472,7 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
         outcome = f"rejects the null{level_note} (margin met)"
 
     alternative_direction = {"greater": "increase", "less": "decrease"}.get(alternative)
-    if alternative_direction is not None:
+    if alternative_direction is not None and rejection_side is None:
         sides = []
         for lower, upper in intervals:
             if lower is not None and lower > null:
@@ -1497,6 +1502,12 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
             zero_directions.add("decrease")
         else:
             zero_directions.add("undetermined")
+    # A rejection above a null at or above zero establishes an increase, and below one at
+    # or below zero a decrease, whatever the displayed interval shows.
+    if rejection_side == "greater" and null >= 0:
+        zero_directions = {"increase"}
+    elif rejection_side == "less" and null <= 0:
+        zero_directions = {"decrease"}
     if zero_directions == {"increase"}:
         direction_note = "effect direction supported (increase)"
     elif zero_directions == {"decrease"}:
