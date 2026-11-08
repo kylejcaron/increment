@@ -942,6 +942,47 @@ def test_panel_capture_clamps_cursor_to_observation_end_and_continues_after_exte
     assert continued.parent_id == snapshot.prefix_id
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+@pytest.mark.parametrize("day_type", ["int64", "uint64"], ids=["signed", "unsigned"])
+def test_panel_capture_as_of_beyond_the_signed_range_refuses(backend, day_type):
+    """Days are counted as signed 64-bit offsets, so a capture as of a day past 2**63 - 1 on
+    an integer day column refuses on every backend, and the source retains no checkpoint."""
+    import polars as pl
+    import pyarrow as pa
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=1)]
+    table = pa.table(
+        {
+            "unit": ["c1", "c1", "t1", "t1"],
+            "arm": ["control", "control", "treatment", "treatment"],
+            "day": pa.array([0, 1, 0, 1], type=day_type),
+            "exposed": pa.array([0] * 4, type=day_type),
+            "outcome": [1.0, 0.0, 1.0, 1.0],
+        }
+    )
+    frame: Any = {"pandas": table.to_pandas(), "polars": pl.from_arrow(table), "pyarrow": table}[
+        backend
+    ]
+    analysis = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=specs,
+        experiment_id="experiment",
+        plan=_plan(specs, "bernoulli", date="day", exposure_date="exposed"),
+    )
+    with pytest.raises(CapabilityError) as raised:
+        workflows.capture_sequential(*analysis, finalized=True, as_of=2**63)
+    assert raised.value.code == "sequential.source.invalid"
+    with pytest.raises(CapabilityError) as unread:
+        sequential_snapshot(*analysis)
+    assert unread.value.code == "sequential.capture.required"
+
+
 @pytest.mark.parametrize("scratch_budget", [0, 64 * 1024 * 1024])
 def test_sparse_panel_sequential_state_matches_dense_and_streamed_kernels(
     scratch_budget: int, monkeypatch: pytest.MonkeyPatch

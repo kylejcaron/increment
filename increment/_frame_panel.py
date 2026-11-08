@@ -14,6 +14,7 @@ import numpy as np
 
 from increment._day_axis_labels import _DAY_AXIS_LABEL_UNORDERABLE, _day_axis_label_order
 from increment._frame_validation import (
+    _SIGNED_DAY_MAX,
     CENSORING_DROPPED_UNITS,
     _day_axis_is_numeric,
     _group_counts,
@@ -128,9 +129,12 @@ def _labels_through(labels: Sequence[Any], end: Any) -> list[Any]:
     return [label for label in labels if order[label] <= order[end]]
 
 
+_SIGNED_DAY_RANGE = f"the signed 64-bit range ({-_SIGNED_DAY_MAX - 1} to {_SIGNED_DAY_MAX})"
+
 _OBSERVATION_END_ISSUES = {
     "unparseable": "is not an ISO-8601 date",
     "wrong_kind": "is not a value of the date column's kind",
+    "out_of_range": f"is outside {_SIGNED_DAY_RANGE}",
     "before_first_day": "is before the panel's first day",
     "unknown_label": "cannot be ordered among the date column's labels",
 }
@@ -147,19 +151,34 @@ _OBSERVATION_END = RefusalSpec(
 )
 
 
+def _beyond_day_range(dtype: nw.dtypes.DType, value: Any) -> bool:
+    """Whether *value* is a number outside the signed 64-bit range a numeric day axis
+    counts days in, which the backends' day arithmetic cannot hold."""
+    return (
+        _day_axis_is_numeric(dtype)
+        and isinstance(value, numbers.Real)
+        and not isinstance(value, bool)
+        and (value < -_SIGNED_DAY_MAX - 1 or value > _SIGNED_DAY_MAX)
+    )
+
+
 def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: Any) -> Any:
     """*value* as a day of *date*'s axis, refused when it names no day the panel can bound.
 
     A calendar axis takes a date, a naive datetime (its calendar day) or an ISO-8601
     string, returned as the column's own Python type; a numeric axis takes a finite
-    number; a string axis takes a label that orders with its own. A calendar or numeric
-    panel with no rows yet has no first day for the end to precede.
+    number within the signed 64-bit range; a string axis takes a label that orders with
+    its own. A calendar or numeric panel with no rows yet has no first day for the end to
+    precede.
     """
     if value is None:
         return None
     dtype = frame.schema[date]
     labels = frame.get_column(date).unique().to_list()
-    issue: Literal["unparseable", "wrong_kind", "before_first_day", "unknown_label"] | None = None
+    issue: (
+        Literal["unparseable", "wrong_kind", "out_of_range", "before_first_day", "unknown_label"]
+        | None
+    ) = None
     normalized = value
     if isinstance(dtype, nw.String):
         axis_kind = "label"
@@ -182,8 +201,11 @@ def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: An
             axis_kind = "numeric"
             if isinstance(value, bool) or not isinstance(value, numbers.Real):
                 issue = "wrong_kind"
-            elif not math.isfinite(value):
+            elif not -math.inf < value < math.inf:
+                # Compared rather than converted: an integer too large for a float is finite.
                 issue = "unparseable"
+            elif _beyond_day_range(dtype, value):
+                issue = "out_of_range"
         else:
             axis_kind = "calendar"
             normalized, issue = _calendar_day(value, datetime_axis=_datetime_axis(dtype, labels))
