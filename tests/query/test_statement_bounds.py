@@ -128,14 +128,23 @@ def test_statement_counts_stay_within_bounds(journey, seeded_con):
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    "size,occurrence_only", [(5, False), (10, False), (20, False), (30, False), (5, True)]
+    "size,occurrence_only,collision",
+    [
+        (5, False, False),
+        (10, False, False),
+        (20, False, False),
+        (30, False, False),
+        (5, True, False),
+        (5, False, True),
+    ],
 )
-def test_compatible_metrics_share_executed_reductions(size, occurrence_only):
+def test_compatible_metrics_share_executed_reductions(size, occurrence_only, collision):
     from tests.test_dashboard_group_source import _native_groups
 
     with _native_groups(
         metric_names=("conversion", "mean"),
         occurrence_labels=occurrence_only,
+        domain="value_collision" if collision else None,
     ) as (backend, _, resolver):
         source = resolver._binding.source
         base = [

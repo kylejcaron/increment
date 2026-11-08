@@ -15,7 +15,9 @@ from increment.workflows import capture_sequential
 pytestmark = pytest.mark.slow
 
 
-def _group_event_values(events, *, occurrence_labels, late_fact, null_values, filtered_domain):
+def _group_event_values(
+    enrolled, events, *, occurrence_labels, late_fact, null_values, filtered_domain, domain
+):
     if late_fact:
         for fact, day in (("late", 15), ("later", 17)):
             events.append(
@@ -44,11 +46,27 @@ def _group_event_values(events, *, occurrence_labels, late_fact, null_values, fi
                 "ts": datetime(2025, 1, 15, tzinfo=UTC),
             }
         )
+    if domain == "anchor_collision":
+        for row in enrolled:
+            row["ts"] += timedelta(hours=12)
+        events.append(
+            {
+                "unit_id": "baseline-1",
+                "event": "purchase",
+                "value": 900.0,
+                "ts": datetime(2025, 1, 1, 11, tzinfo=UTC),
+            }
+        )
+        for row in events:
+            row["first_exposure_ts"] = datetime(2024, 12, 1, tzinfo=UTC)
     for row in events:
         row["price_value"] = row["value"]
     if occurrence_labels:
         for index, row in enumerate(events):
             row["value"] = f"order-{index}"
+    if domain == "value_collision":
+        for row in events:
+            row["ds"] = row.pop("value")
 
 
 @contextmanager
@@ -73,7 +91,7 @@ def _native_groups(
     from increment import from_definitions
     from increment.semantics.models import Definitions
 
-    late_fact, filtered_domain = domain is not None, domain == "total"
+    late_fact, filtered_domain = domain in ("temporal", "total"), domain == "total"
 
     common = {
         "entity": "unit_id",
@@ -143,6 +161,7 @@ def _native_groups(
         metrics = [metric for metric in metrics if metric["name"] in metric_names]
         plan["primary"] = metrics[0]["name"]
         plan["secondaries"] = [metric["name"] for metric in metrics[1:]]
+    value_column = "ds" if domain == "value_collision" else "value"
     definitions = Definitions.model_validate(
         {
             "dialect": "duckdb",
@@ -153,7 +172,7 @@ def _native_groups(
                     "timestamp_column": "ts",
                     "entities": ["unit_id"],
                     "facts": [
-                        {"name": name, "column": "value", "missing": fact_missing}
+                        {"name": name, "column": value_column, "missing": fact_missing}
                         for name in (
                             "purchase",
                             "return",
@@ -251,11 +270,13 @@ def _native_groups(
             }
         )
     _group_event_values(
+        enrolled,
         events,
         occurrence_labels=occurrence_labels,
         late_fact=late_fact,
         null_values=null_values,
         filtered_domain=filtered_domain,
+        domain=domain,
     )
     connection = ibis.duckdb.connect()
     connection.create_table("enrolled", pa.Table.from_pylist(enrolled))
@@ -378,18 +399,19 @@ def _assert_total_domain_parity(source, metrics):
 @pytest.mark.integration
 @pytest.mark.filterwarnings("ignore:.*censoring dropped:increment.errors.IncrementWarning")
 @pytest.mark.parametrize(
-    "missing,snowflake,adhoc,total_domain",
+    "missing,snowflake,domain",
     [
-        ("zero", False, False, False),
-        ("skip", False, False, False),
-        ("error", False, False, False),
-        ("zero", True, False, False),
-        ("zero", False, True, False),
-        ("zero", False, False, True),
+        ("zero", False, None),
+        ("skip", False, None),
+        ("error", False, None),
+        ("zero", True, None),
+        ("zero", False, "temporal"),
+        ("zero", False, "total"),
+        ("zero", False, "anchor_collision"),
     ],
 )
 def test_shared_order_components_keep_request_identity_maturity_and_ratio_covariance(
-    missing, monkeypatch, snowflake, adhoc, total_domain
+    missing, monkeypatch, snowflake, domain
 ):
     from increment._evidence_types import MetricEvidenceRequest
     from increment.errors import CodedError
@@ -399,7 +421,7 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
     with _native_groups(
         extra_exclusions=True,
         metric_names=("conversion", "mean", "retention"),
-        domain="total" if total_domain else "temporal" if adhoc else None,
+        domain=domain,
         fact_missing=missing,
         null_values=True,
         unequal_freshness=True,
@@ -407,13 +429,13 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
         source = resolver._binding.source
         conversion, revenue, disjoint = resolver._binding.metrics
         conversion = conversion.model_copy(update={"window_days": 7})
-        revenue = revenue.model_copy(update={"window_days": 1 if total_domain else 7})
-        if total_domain:
+        revenue = revenue.model_copy(update={"window_days": 1 if domain == "total" else 7})
+        if domain == "total":
             _assert_total_domain_parity(
                 source, (revenue, revenue.model_copy(update={"fact": "late"}))
             )
             return
-        if adhoc:
+        if domain == "temporal":
             day_source = source.day_source(metrics=(disjoint,))
             late_metrics = tuple(
                 metric.model_copy(update={"name": f"late_{metric.name}", "fact": "late"})

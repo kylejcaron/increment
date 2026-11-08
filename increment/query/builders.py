@@ -1746,19 +1746,33 @@ def component_day_stats(
     components: Sequence[tuple[str, str | None, FactNullPolicy, bool]],
 ) -> ir.Table:
     """Reduce several value columns from one physical fact stream without row multiplication."""
+    values = facts.select(
+        "unit_id",
+        "ts",
+        "event",
+        **{
+            f"__component_value_{index}": facts[column]
+            for index, (_, column, missing, required) in enumerate(components)
+            if column is not None and (required or missing != "zero")
+        },
+    )
     anchors = exposures.select("unit_id", "first_exposure_ts")
-    joined = facts.inner_join(anchors, "unit_id", rname="{name}_anchor")
-    joined = joined.filter(joined.ts > joined.first_exposure_ts)
+    joined = values.inner_join(anchors, "unit_id")
+    joined = joined.filter(joined.ts > anchors.first_exposure_ts)
     days = joined.mutate(ds=_local_date(joined.ts, experiment))
     aggregates: dict[str, ir.Value] = {}
     for index, (fact, column, missing, value_required) in enumerate(components):
         included = days.event == fact
-        value = ibis.literal(1.0) if column is None or not value_required else days[column]
+        value = (
+            ibis.literal(1.0)
+            if column is None or not value_required
+            else days[f"__component_value_{index}"]
+        )
         if value.type().is_boolean():
             value = cast("ir.BooleanValue", value).ifelse(ibis.literal(1), ibis.literal(0))
         value = value.cast("float64")
         if column is not None and missing != "zero":
-            included &= days[column].notnull()
+            included &= days[f"__component_value_{index}"].notnull()
         aggregates[f"n_events_{index}"] = days.count(where=included)
         aggregates[f"sum_value_{index}"] = included.ifelse(ibis.coalesce(value, 0.0), 0.0).sum()
     return days.group_by(["unit_id", "ds"]).aggregate(**aggregates)
