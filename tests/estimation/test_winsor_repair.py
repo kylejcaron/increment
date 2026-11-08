@@ -476,6 +476,8 @@ def test_confidence_set_wire_unbounded_undefined_and_no_posterior():
     assert zero.lift is None
     assert zero.confidence_set is not None
     assert zero.confidence_set.relative.upper.status == "undefined"
+    assert LiftEstimate.model_validate_json(zero.model_dump_json()) == zero
+    assert estimates_to_readout([zero])[0]["higher_status"] == "undefined"
     rendered_zero = repr(zero)
     displayed_interval = rendered_zero.partition("interval=")[2].partition(", reference=")[0]
     assert "unavailable" in displayed_interval
