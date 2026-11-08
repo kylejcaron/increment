@@ -209,18 +209,20 @@ values.
   row of a format-12 or format-13 export. Reopening it with `from_moments` by
   metric name and type therefore keeps the observed-only population label,
   instead of presenting the estimate as covering every assigned unit. A replay
-  that declares `missing="skip"` for a metric the export did not skip now
-  refuses with `moments.plan.conflict`, because the export reduced that metric
-  over every unit. The moments format numbers are unchanged, and the field is
-  absent when no metric skips. An export written before this change reopens
-  exactly as before; declare `missing="skip"` on replay to qualify its
-  population. A replay of a new export records the skip policy in its source
-  declaration, so its `to_json()`, `hash()` and `analysis_spec_hash` equal
-  those of a replay that declares `missing="skip"`. Exports also now write each
-  column with one fixed type and in one fixed order, whichever metrics they
-  hold, so exports of different metrics concatenate into one table. Increment
-  0.1.0a2 already refuses every format-12 and format-13 export as newer than it
-  reads (`moments.format.unsupported_future`), so the new field changes nothing
+  of an export that records skipped metrics now refuses a `missing="skip"`
+  declaration for a metric the export did not skip with
+  `moments.plan.conflict`, because the export reduced that metric over every
+  unit. The moments format numbers are unchanged, and the field is absent when
+  no metric skips: such an export replays as before, without that check. An
+  export written before this change reopens exactly as before; declare
+  `missing="skip"` on replay to qualify its population. A replay of a new
+  export records the skip policy in its source declaration, so its `to_json()`,
+  `hash()` and `analysis_spec_hash` equal those of a replay that declares
+  `missing="skip"`. Exports also now write each column with one fixed type and
+  in one fixed order, whichever metrics they hold, so exports of different
+  metrics concatenate into one table. Increment 0.1.0a2 already refuses every
+  format-12 and format-13 export as newer than it reads
+  (`moments.format.unsupported_future`), so the new field changes nothing
   there. A development build from before this change reads a new format-12
   export and ignores the field, but refuses a new format-13 export of a skipped
   metric with `moments.cuped_evidence.invalid`.
