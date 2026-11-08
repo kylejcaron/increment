@@ -16,6 +16,7 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from increment import AnalysisPlan, CupedCovariate, Method, MetricSpec, from_definitions, from_frame
+from increment._frame_moments import _exact_group_sums, exact_sum
 from increment.errors import CodedError
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.readout_types import ReadoutResults
@@ -514,9 +515,13 @@ def test_frame_snapshot_id_is_the_same_across_dataframe_libraries(method):
 
 def _rounded_once(values: Iterable[float]) -> float:
     """The exact sum of *values* rounded once, to ±inf beyond the largest float."""
+    values = list(values)
+    special = [value for value in values if not math.isfinite(value)]
+    if special:
+        return sum(special, 0.0)
     total = Fraction(0)
     for value in values:
-        total += Fraction(value)
+        total += Fraction.from_float(value)
     try:
         return float(total)
     except OverflowError:
@@ -528,15 +533,27 @@ _FINITE = st.floats(allow_nan=False, allow_infinity=False)
 
 @settings(max_examples=300, deadline=None)
 @given(
-    values=st.lists(
-        st.one_of(
-            _FINITE,
-            st.sampled_from([1e16, -1e16, 1.0, 1e308, -1e308, 1.7976931348623157e308, 5e-324]),
+    values=st.one_of(
+        st.lists(
+            st.one_of(
+                _FINITE,
+                st.sampled_from(
+                    [1e16, -1e16, 1.0, 1e308, -1e308, 5e-324, math.inf, -math.inf, math.nan]
+                ),
+            ),
+            max_size=40,
         ),
-        max_size=40,
+        st.lists(st.integers(0, 2**30).map(float), max_size=40),
+        st.lists(st.sampled_from([0.0, 1.0]), max_size=40),
     ),
     data=st.data(),
 )
+@example(values=[0.0, 1.0, 1.0, 0.0, 1.0, -0.0], data=None)
+@example(values=[2.0**30, 0.0, 1.0, 2.0**30, 1.0], data=None)
+@example(values=[2.0**52 - 1, 0.0, 0.0, 2.0**52 - 1], data=None)
+@example(values=[2.0**53, 0.0, 0.0, 1.0, 0.0, 0.0, -(2.0**53)], data=None)
+@example(values=[2.0**53, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0], data=None)
+@example(values=[math.inf, -math.inf, math.nan, 1.0, math.inf, -math.inf], data=None)
 @example(values=[1e16, 1.0, -1e16], data=None)
 @example(values=[1e308, 1e308, -1e308], data=None)
 @example(values=[1.7976931348623157e308, 1.7976931348623157e308], data=None)
@@ -544,16 +561,16 @@ _FINITE = st.floats(allow_nan=False, allow_infinity=False)
 @example(values=[1e300, 3.0, 4.0, 1e-300, 5.0, 6.0, -1e300], data=None)
 @example(values=[1e300, 1e200, 7.0, 1e-300, 1e-200, 8.0, -1e300, -1e200], data=None)
 def test_exact_sum_rounds_the_exact_total_once_in_any_order(values, data):
-    from increment._frame_moments import _exact_group_sums, exact_sum
-
     groups = [index % 3 for index in range(len(values))]
     if data is not None:
         groups = data.draw(st.lists(st.integers(0, 2), min_size=len(values), max_size=len(values)))
         order = data.draw(st.permutations(range(len(values))))
     else:
         order = list(reversed(range(len(values))))
-    assert exact_sum(values) == _rounded_once(values)
-    assert exact_sum([values[index] for index in order]) == _rounded_once(values)
+    np.testing.assert_equal(
+        [exact_sum(values), exact_sum([values[index] for index in order])],
+        [_rounded_once(values)] * 2,
+    )
     codes = np.asarray([groups[index] for index in order], dtype=np.int64)
     permuted = np.asarray([values[index] for index in order], dtype=np.float64)
     # Pairs of 1.0 and -1.0 leave each group's total unchanged and outnumber the 3 x 2048
@@ -571,4 +588,19 @@ def test_exact_sum_rounds_the_exact_total_once_in_any_order(values, data):
         expected = _rounded_once(
             value for value, label in zip(values, groups, strict=True) if label == group
         )
-        assert [route[group] for route in routes] == [expected] * len(routes)
+        np.testing.assert_equal([route[group] for route in routes], [expected] * len(routes))
+        if expected == 0.0:
+            assert all(not np.signbit(route[group]) for route in routes)
+
+
+def test_exact_group_totals_do_not_round_at_the_scratch_boundary():
+    values = np.tile([0.25, -0.25], 65_536 + 2)
+    values[[0, 1, 65_536, 65_537]] = [2.0**53, 1.0, -(2.0**53), 0.5]
+    codes = np.zeros(len(values), dtype=np.int64)
+    # Extreme exponents bypass the bins; their exact cancellation leaves a subnormal.
+    extremes = [np.finfo(np.float64).max, -np.finfo(np.float64).max, 5e-324]
+    codes = np.concatenate([codes, np.ones(len(extremes), dtype=np.int64)])
+    values = np.concatenate([values, extremes])
+    expected = [_rounded_once(values[codes == group]) for group in range(2)]
+    for order in (np.arange(len(values)), np.arange(len(values) - 1, -1, -1)):
+        np.testing.assert_array_equal(_exact_group_sums(codes[order], 2, values[order]), expected)
