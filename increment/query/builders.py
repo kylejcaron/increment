@@ -1743,7 +1743,7 @@ def component_day_stats(
     facts: ir.Table,
     exposures: ir.Table,
     experiment: Experiment,
-    components: Sequence[tuple[str, str | None, FactNullPolicy]],
+    components: Sequence[tuple[str, str | None, FactNullPolicy, bool]],
 ) -> ir.Table:
     """Reduce several value columns from one physical fact stream without row multiplication."""
     anchors = exposures.select("unit_id", "first_exposure_ts")
@@ -1751,9 +1751,9 @@ def component_day_stats(
     joined = joined.filter(joined.ts > joined.first_exposure_ts)
     days = joined.mutate(ds=_local_date(joined.ts, experiment))
     aggregates: dict[str, ir.Value] = {}
-    for index, (fact, column, missing) in enumerate(components):
+    for index, (fact, column, missing, value_required) in enumerate(components):
         included = days.event == fact
-        value = ibis.literal(1.0) if column is None else days[column]
+        value = ibis.literal(1.0) if column is None or not value_required else days[column]
         if value.type().is_boolean():
             value = cast("ir.BooleanValue", value).ifelse(ibis.literal(1), ibis.literal(0))
         value = value.cast("float64")

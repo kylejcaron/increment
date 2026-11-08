@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 # Each entry is an acquisition boundary, not a reducer or estimator registry.
 PRODUCERS = (
     ("increment.readouts._metric_rows", "load_metric_evidence"),
+    ("increment.readouts._metric_rows", "load_metric_evidence_batch"),
     ("increment.readouts._metric_rows", "_load_breakout_metric_rows"),
     ("increment.readouts._asof", "_asof_metric_rows"),
     ("increment.readouts._evidence", "load_day_axis_rows"),
@@ -40,6 +41,7 @@ PRODUCERS = (
     ("increment.readouts._evidence", "load_sequential_capture"),
     ("increment.readouts._evidence", "current_source_snapshot"),
     ("increment._evidence_loaders", "load_moments"),
+    ("increment._evidence_loaders", "load_moments_batch"),
     ("increment._evidence_loaders", "load_unit_rows"),
     ("increment._evidence_loaders", "load_contrast_stats"),
 )
@@ -480,6 +482,12 @@ class _Capture:
             try:
                 result = function(*args, **kwargs)
                 # A terminal envelope already contains nested rows and fit answers.
+                if not nested and name.endswith("_batch"):
+                    for request, answer in zip(arguments["requests"], result, strict=True):
+                        self.record(
+                            name.removesuffix("_batch"), answer, {**arguments, "request": request}
+                        )
+                    return result
                 return result if nested else self.record(name, result, arguments)
             finally:
                 self.active.pop()

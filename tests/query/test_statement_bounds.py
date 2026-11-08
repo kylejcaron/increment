@@ -127,15 +127,21 @@ def test_statement_counts_stay_within_bounds(journey, seeded_con):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("size", [5, 10, 20, 30])
-def test_compatible_metrics_share_executed_reductions(size):
+@pytest.mark.parametrize(
+    "size,occurrence_only", [(5, False), (10, False), (20, False), (30, False), (5, True)]
+)
+def test_compatible_metrics_share_executed_reductions(size, occurrence_only):
     from tests.test_dashboard_group_source import _native_groups
 
-    with _native_groups(metric_names=("conversion", "mean")) as (backend, _, resolver):
+    with _native_groups(
+        metric_names=("conversion",) if occurrence_only else ("conversion", "mean"),
+        occurrence_labels=occurrence_only,
+    ) as (backend, _, resolver):
         source = resolver._binding.source
         base = resolver._binding.metrics
         metrics = [
-            base[index % 2].model_copy(update={"name": f"metric_{index}"}) for index in range(size)
+            base[index % len(base)].model_copy(update={"name": f"metric_{index}"})
+            for index in range(size)
         ]
         source = source.exploratory_source(metrics=metrics)
         with count_statements(backend) as census:

@@ -2613,16 +2613,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         outcome reads for *exposures* and the *pre_period* covariate rows, refused
         before the outcome moments are read.
         """
-        facts = tuple(
-            dict.fromkeys(
-                (metric.numerator.fact, metric.denominator.fact)
-                if isinstance(metric, RatioMetric)
-                else (metric.fact,)
-            )
-        )
+        return self._metrics_censoring_bookkeeping((metric,), exposures, pre_period)
+
+    def _metrics_censoring_bookkeeping(
+        self, metrics: Sequence[Metric], exposures: Table, pre_period: Sequence[PrePeriodRows] = ()
+    ) -> Callable[[Table], list[dict[str, Any]]]:
+        """Validate nulls and unloaded feeds in one shared censoring census."""
+        facts = tuple(dict.fromkeys(ref.fact for metric in metrics for ref in fact_refs(metric)))
         sources = [_find_fact_source(self._defs, fact)[0] for fact in facts]
         null_counts = self._null_value_counts(
-            (OutcomeRows(metric, exposures),), pre_period=pre_period
+            tuple(OutcomeRows(metric, exposures) for metric in metrics), pre_period=pre_period
         )
 
         def execute(query: Table) -> list[dict[str, Any]]:
@@ -3520,7 +3520,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if horizon_metrics is not None
             else tuple(dict.fromkeys((*self._horizon_metrics, *metrics)))
         )
-        components: list[tuple[str, str | None, FactNullPolicy]] = []
+        components: list[tuple[str, str | None, FactNullPolicy, bool]] = []
         component_indices: dict[tuple[str, str | None, FactNullPolicy], int] = {}
         parts = []
         for metric in metrics:
@@ -3534,8 +3534,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 source, fact = _find_fact_source(self._defs, ref.fact)
                 key = (ref.fact, _resolve_value_column(source, fact), fact.missing)
                 index = component_indices.setdefault(key, len(component_indices))
+                value_required = (
+                    getattr(ref, "type", None) != "conversion"
+                    and getattr(ref, "aggregation", "count") != "count"
+                )
                 if index == len(components):
-                    components.append(key)
+                    components.append((*key, value_required))
+                elif value_required:
+                    components[index] = (*key, True)
                 indices.append(index)
             parts.append(tuple(indices))
         ref = metrics[0].numerator if isinstance(metrics[0], RatioMetric) else metrics[0]
@@ -3586,7 +3592,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         values = component_window_values(
             dense, windows, grain=first.grain, n_components=len(components)
         )
-        for index, (fact, _, _) in enumerate(components):
+        for index, (fact, _, _, _) in enumerate(components):
             edge = (
                 ibis.literal(pinned_end) if pinned_end is not None else self._data_as_of(raw, fact)
             )
@@ -3606,9 +3612,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         metrics: Sequence[Metric],
         data_as_of: Sequence[ir.Scalar],
         parts: Sequence[tuple[int, ...]],
+        exposures: Table,
     ) -> None:
         """Count maturity per request on the shared one-row-per-enrollee relation."""
-        eligibility = {}
+        eligibility: dict[str, ir.Scalar] = {}
         observed_edges = [
             cast(
                 ir.Scalar,
@@ -3622,8 +3629,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             observed, complete, _ = _observable_window_flags(
                 values, metric, self._experiment, data_as_of[index]
             )
-            eligibility[f"kept_{index}"] = values.count(where=observed & complete)
-        census = self._session.fetch_arrow(
+            eligibility[f"kept_{index}"] = cast(
+                ir.Scalar, ibis.coalesce(values.count(where=observed & complete), 0)
+            )
+        census = self._metrics_censoring_bookkeeping(metrics, exposures)(
             values.aggregate(
                 [
                     values.count().name("enrolled"),
@@ -3631,7 +3640,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     *(value.name(name) for name, value in eligibility.items()),
                 ]
             )
-        ).to_pylist()[0]
+        )[0]
         for index, metric in enumerate(metrics):
             warn_censored_units(
                 metric,
@@ -3663,7 +3672,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             for indices in parts
         ]
         if first.grain == "total" and not display:
-            self._component_censoring(values, metrics, edges, parts)
+            self._component_censoring(values, metrics, edges, parts, exposures)
         long = []
         accounting_rows = []
         for index, request in enumerate(requests):
@@ -3762,8 +3771,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             all_units = ibis.union(*accounting_rows)
             accounting = all_units.group_by(keys).aggregate(
                 assigned=all_units.count(),
-                no_observed=all_units.count(where=~all_units.observed),
-                not_mature=all_units.count(where=all_units.observed & ~all_units.complete),
+                no_observed=ibis.coalesce(all_units.count(where=~all_units.observed), 0),
+                not_mature=ibis.coalesce(
+                    all_units.count(where=all_units.observed & ~all_units.complete), 0
+                ),
                 observation_end=all_units.observation_end.max(),
                 event_count=all_units.event_count.sum(
                     where=all_units.observed & all_units.complete
@@ -3856,9 +3867,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 MomentsRequest(
                     metric,
                     population=population,
-                    include_covariate=include_covariate and self._experiment.n_pre_periods > 0,
+                    include_covariate=include_covariate
+                    and (
+                        self._experiment.n_pre_periods > 0
+                        or any(
+                            method.variance_reduction == "cuped"
+                            for method in effective_methods(config, design=self.context.design)
+                        )
+                    ),
                 )
-                for metric in effective
+                for metric, config in zip(effective, configs, strict=True)
             )
         )
         batch_schema = None

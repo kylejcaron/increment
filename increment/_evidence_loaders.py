@@ -36,7 +36,7 @@ def load_moments_batch(
 ) -> tuple[MomentRows, ...]:
     """Acquire ordered full-identity requests, retaining per-request provider fallback."""
     for request in requests:
-        require_request_evidence(src, request)
+        _validate_moments_request(src, request)
     acquire = MOMENTS_BATCH_OWNERS.get(type(src))
     answers = acquire(src, requests) if acquire is not None else (None,) * len(requests)
     return tuple(
@@ -109,12 +109,11 @@ def source_for_population(src: _BuiltinMomentSource, population: str) -> _Builti
     return src
 
 
-def load_moments(src: EvidenceSource, request: MomentsRequest) -> MomentRows:
-    """Acquire aggregate moments through the source's declared method route."""
+def _validate_moments_request(src: EvidenceSource, request: MomentsRequest) -> None:
+    """Keep scalar and batch declaration/option refusals on the same boundary."""
     require_request_evidence(src, request)
-    routed, answer = route_provider_request(src, request)
-    if routed:
-        return answer
+    if is_custom_source(src):
+        return
     method = request.method
     if method is not None:
         if request.by:
@@ -140,6 +139,14 @@ def load_moments(src: EvidenceSource, request: MomentsRequest) -> MomentRows:
                 route="use a source with the requested method evidence option",
             )
 
+
+def load_moments(src: EvidenceSource, request: MomentsRequest) -> MomentRows:
+    """Acquire aggregate moments through the source's declared method route."""
+    _validate_moments_request(src, request)
+    routed, answer = route_provider_request(src, request)
+    if routed:
+        return answer
+    method = request.method
     source = source_for_population(cast(_BuiltinMomentSource, src), request.population)
     if method is None:
         return tuple(

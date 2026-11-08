@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
@@ -26,6 +27,7 @@ def _native_groups(
     metric_names=None,
     fact_missing="error",
     null_values=False,
+    occurrence_labels=False,
 ):
     import ibis
     import pyarrow as pa
@@ -196,6 +198,9 @@ def _native_groups(
         )
     for row in events:
         row["price_value"] = row["value"]
+    if occurrence_labels:
+        for index, row in enumerate(events):
+            row["value"] = f"order-{index}"
     connection = ibis.duckdb.connect()
     connection.create_table("enrolled", pa.Table.from_pylist(enrolled))
     connection.create_table("events", pa.Table.from_pylist(events))
@@ -218,11 +223,56 @@ def _capture(resolver, *names):
     }
 
 
+def _snowflake_no_match_fetch(connection, query):
+    """Execute conditional counts with Snowflake's NULL-on-no-match semantics."""
+    import ibis
+    import pyarrow as pa
+    import sqlglot
+    from sqlglot import exp
+
+    statement = sqlglot.parse_one(ibis.to_sql(query, dialect="duckdb"), read="duckdb")
+    converted = 0
+    for conditional in tuple(statement.find_all(exp.Filter)):
+        if isinstance(conditional.this, exp.Count) and isinstance(conditional.this.this, exp.Star):
+            converted += 1
+            conditional.replace(
+                exp.Nullif(this=conditional.copy(), expression=exp.Literal.number(0))
+            )
+    assert "COUNT_IF(" not in ibis.to_sql(query, dialect="snowflake") or converted
+    cursor = connection.raw_sql(statement.sql("duckdb"))
+    columns = [column[0] for column in cursor.description]
+    rows = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+    return pa.Table.from_pylist(rows, schema=query.schema().to_pyarrow())
+
+
+def _assert_display_parity(source, metrics):
+    from dataclasses import fields
+
+    independent = [
+        row for metric in metrics for row in source.dashboard_group_data(metrics=(metric,))
+    ]
+    batched = source.dashboard_group_data(metrics=metrics)
+
+    def order(row):
+        return row.metric, row.group_id, row.eligible_units
+
+    for got, reference in zip(
+        sorted(batched, key=order), sorted(independent, key=order), strict=True
+    ):
+        for field in fields(reference):
+            value = getattr(reference, field.name)
+            assert getattr(got, field.name) == (
+                pytest.approx(value) if isinstance(value, float) else value
+            )
+
+
 @pytest.mark.integration
 @pytest.mark.filterwarnings("ignore:.*censoring dropped:increment.errors.IncrementWarning")
-@pytest.mark.parametrize("missing", ["zero", "skip", "error"])
+@pytest.mark.parametrize(
+    "missing,snowflake", [("zero", False), ("skip", False), ("error", False), ("zero", True)]
+)
 def test_shared_order_components_keep_request_identity_maturity_and_ratio_covariance(
-    missing, monkeypatch
+    missing, monkeypatch, snowflake
 ):
     from increment._evidence_loaders import load_moments, load_moments_batch
     from increment._evidence_types import MetricEvidenceRequest, MomentsRequest
@@ -235,7 +285,7 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
         metric_names=("conversion", "mean", "retention"),
         fact_missing=missing,
         null_values=True,
-    ) as (_, _, resolver):
+    ) as (connection, _, resolver):
         source = resolver._binding.source
         conversion, revenue, disjoint = resolver._binding.metrics
         conversion = conversion.model_copy(update={"window_days": 7})
@@ -263,6 +313,10 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
             }
         )
         source = source.exploratory_source(metrics=(ratio, filtered, other_ratio))
+        if snowflake:
+            monkeypatch.setattr(
+                source._session, "fetch_arrow", partial(_snowflake_no_match_fetch, connection)
+            )
         metrics = (conversion, revenue, ratio, long_revenue, disjoint, filtered, other_ratio)
         requests = (
             *(MetricEvidenceRequest(metric, "baseline") for metric in metrics),
@@ -305,11 +359,12 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
         empty_batch = source._moments_for_metrics(
             selected=(long_revenue, long_revenue), include_covariate=False
         )
-        empty_single = source._moments_for_metrics(
-            selected=(long_revenue,), include_covariate=False
-        )
         assert empty_batch.num_rows == 0
-        assert empty_batch.schema == empty_single.schema
+        assert (
+            empty_batch.schema
+            == source._moments_for_metrics(selected=(long_revenue,), include_covariate=False).schema
+        )
+        _assert_display_parity(source, metrics[:4])
         for grain in ("daily", "asof"):
             day_source = source.day_source(metrics=metrics)
             moments = tuple(MomentsRequest(metric, grain=grain) for metric in metrics)

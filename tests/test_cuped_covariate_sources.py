@@ -271,10 +271,12 @@ def test_raw_unit_frame_pins_separate_property_source(tmp_path):
 
 
 def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_path):
+    import json
     from dataclasses import replace
 
     import pyarrow as pa
     import pyarrow.parquet as pq
+    import yaml
 
     from increment import run
     from increment.estimation.engine import Method
@@ -314,6 +316,12 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
         "variance_reduction: cuped, covariates: [{name: pre_tenure, kind: continuous, "
         "property: tenure, source: preperiod}]}}}",
     )
+    payload = yaml.safe_load(text)
+    payload["metrics"].append({**payload["metrics"][0], "name": "revenue_copy"})
+    payload["experiments"][0]["plan"]["secondaries"] = [
+        {**payload["experiments"][0]["plan"]["primary"], "metric": "revenue_copy"}
+    ]
+    text = json.dumps(payload, default=str)
     defs_path.write_text(text)
     analysis_experiment, analysis_resolver = from_definitions(
         defs_path, con, experiment_name="cat_test"
@@ -322,6 +330,8 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
     export_moments(analysis_experiment, analysis_resolver, exported)
     raw_moments = pq.read_table(exported).to_pylist()
     assert raw_moments[0]["ref_x"] is not None
+    assert {row["metric"] for row in raw_moments} == {"revenue", "revenue_copy"}
+    assert all(row["ref_x"] is not None for row in raw_moments)
     native = view_readout(analysis_experiment, analysis_resolver)[0]
     oracle_frame = pa.table(
         {
@@ -353,6 +363,23 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
     assert isinstance(native, LiftEstimate) and isinstance(oracle, LiftEstimate)
     assert native.require_lift().value == pytest.approx(oracle.require_lift().value)
     assert native.require_lift().log_se == pytest.approx(oracle.require_lift().log_se)
+    replay_experiment, replay_resolver = from_moments(
+        raw_moments,
+        metrics=[
+            MetricSpec(
+                name=name,
+                decision_method=Method.cuped(
+                    name="scalar", covariates=CupedCovariate(name="tenure", kind="continuous")
+                ),
+            )
+            for name in ("revenue", "revenue_copy")
+        ],
+        control="control",
+    )
+    replay = view_readout(replay_experiment, replay_resolver, metrics=["revenue_copy"])[0]
+    assert replay.require_lift().value == pytest.approx(oracle.require_lift().value)
+    assert replay.require_lift().log_se == pytest.approx(oracle.require_lift().log_se)
+    replay_resolver.close()
 
     expected = {
         (row.metric, row.ds.isoformat(), row.group_id): (

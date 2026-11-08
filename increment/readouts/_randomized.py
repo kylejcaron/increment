@@ -614,7 +614,7 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
     evidence_by_metric.update(
         zip(
             (metric.name for metric in selected),
-            load_metric_evidence_batch(src, requests),
+            load_metric_evidence_batch(src, requests, scope_active=scope_active),
             strict=True,
         )
     )

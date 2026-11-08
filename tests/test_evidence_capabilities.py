@@ -563,6 +563,27 @@ def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypat
             raised.value.context,
         )
         assert reads == 0
+        from increment._evidence_loaders import load_moments
+
+        day_source = source.day_source(metrics=(metric,))
+        for malformed_source, malformed in (
+            (day_source, MomentsRequest(metric, grain="asof", method=Method(name="unadjusted"))),
+            (
+                source,
+                MomentsRequest(
+                    metric, method=Method(name="unadjusted"), completed_windows_only=True
+                ),
+            ),
+        ):
+            with pytest.raises(CapabilityError) as single:
+                load_moments(malformed_source, malformed)
+            with pytest.raises(CapabilityError) as batch:
+                load_moments_batch(malformed_source, (malformed, malformed))
+            assert (batch.value.code, batch.value.context) == (
+                single.value.code,
+                single.value.context,
+            )
+        assert reads == 0
 
         total_rows = cast(
             MomentRows,

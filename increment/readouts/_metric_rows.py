@@ -202,7 +202,7 @@ def load_metric_evidence(
 
 
 def load_metric_evidence_batch(
-    src: EvidenceSource, requests: Sequence[MetricEvidenceRequest]
+    src: EvidenceSource, requests: Sequence[MetricEvidenceRequest], *, scope_active: bool = False
 ) -> tuple[MetricEvidence, ...]:
     """Acquire compatible ordinary rows together without merging request identities."""
     from increment._evidence_refusals import require_evidence
@@ -210,7 +210,9 @@ def load_metric_evidence_batch(
     for request in requests:
         require_evidence(src, request=request)
     if type(src) not in MOMENTS_BATCH_OWNERS:
-        return tuple(load_metric_evidence(src, request) for request in requests)
+        return tuple(
+            load_metric_evidence(src, request, scope_active=scope_active) for request in requests
+        )
     eligible = [
         index
         for index, request in enumerate(requests)
@@ -234,7 +236,9 @@ def load_metric_evidence_batch(
     )
     ordinary = dict(zip(eligible, load_moments_batch(src, moment_requests), strict=True))
     return tuple(
-        _load_metric_evidence(src, request, _ordinary_rows=ordinary.get(index))
+        _load_metric_evidence(
+            src, request, _snapshot_active=scope_active, _ordinary_rows=ordinary.get(index)
+        )
         for index, request in enumerate(requests)
     )
 
