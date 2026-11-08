@@ -1157,6 +1157,21 @@ def test_lift_estimate_repr_keeps_absolute_values_in_metric_units():
     assert "%" not in text
 
 
+def test_lift_estimate_repr_keeps_large_finite_relative_values_finite():
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=3e307, lb=2e307, ub=1.7e308, level=0.95),
+    )
+
+    text = repr(estimate)
+
+    assert "value=3e+309%" in text
+    assert "interval=[2e+309%, 1.7e+310%]" in text
+
+
 def test_lift_estimate_repr_does_not_cross_scales_for_absolute_null():
     estimate = LiftEstimate(
         metric="revenue",
