@@ -15,6 +15,8 @@ class StatementCensus:
     by_kind: dict[str, int] = field(default_factory=lambda: dict.fromkeys(KINDS, 0))
     other_statements: list[str] = field(default_factory=list)
     statements: list[str] = field(default_factory=list)
+    explain_inserts: bool = False
+    plans: list[str] = field(default_factory=list)
 
     def record(self, sql: Any) -> None:
         text = str(sql)
@@ -58,6 +60,12 @@ class _ConnectionProxy:
         def counted(*args: Any, **kwargs: Any) -> Any:
             if args:
                 self._census.record(args[0])
+                if self._census.explain_inserts and str(args[0]).lstrip().upper().startswith(
+                    "INSERT"
+                ):
+                    self._census.plans.append(
+                        self._connection.execute("EXPLAIN " + str(args[0])).fetchall()[0][1]
+                    )
             result = attribute(*args, **kwargs)
             return _ConnectionProxy(result, self._census) if result is self._connection else result
 
@@ -65,9 +73,9 @@ class _ConnectionProxy:
 
 
 @contextmanager
-def count_statements(backend: Any) -> Iterator[StatementCensus]:
+def count_statements(backend: Any, *, explain_inserts: bool = False) -> Iterator[StatementCensus]:
     original = backend.con
-    census = StatementCensus()
+    census = StatementCensus(explain_inserts=explain_inserts)
     backend.con = _ConnectionProxy(original, census)
     try:
         yield census

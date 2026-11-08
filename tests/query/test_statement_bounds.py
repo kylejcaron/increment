@@ -134,17 +134,22 @@ def test_compatible_metrics_share_executed_reductions(size, occurrence_only):
     from tests.test_dashboard_group_source import _native_groups
 
     with _native_groups(
-        metric_names=("conversion",) if occurrence_only else ("conversion", "mean"),
+        metric_names=("conversion", "mean"),
         occurrence_labels=occurrence_only,
     ) as (backend, _, resolver):
         source = resolver._binding.source
-        base = resolver._binding.metrics
+        base = [
+            metric.model_copy(update={"aggregation": "count"})
+            if occurrence_only and metric.type == "mean"
+            else metric
+            for metric in resolver._binding.metrics
+        ]
         metrics = [
             base[index % len(base)].model_copy(update={"name": f"metric_{index}"})
             for index in range(size)
         ]
         source = source.exploratory_source(metrics=metrics)
-        with count_statements(backend) as census:
+        with count_statements(backend, explain_inserts=True) as census:
             rows = source._moments_for_metrics(
                 selected=metrics, include_covariate=False
             ).to_pylist()
@@ -152,18 +157,15 @@ def test_compatible_metrics_share_executed_reductions(size, occurrence_only):
         assert census.by_kind["select"] <= 6
         assert census.by_kind["create_temp"] <= 1
         assert census.by_kind["other"] <= 1
-        plans = [
-            backend.raw_sql("EXPLAIN " + sql).fetchall()[0][1]
-            for sql in census.statements
-            if sql.lstrip().upper().startswith("INSERT")
-        ]
+        assert not any(name.startswith("component_values_") for name in backend.list_tables())
+        plans = census.plans
         assert len(plans) == 1
         assert plans[0].count("SEQ_SCAN") <= 4
         from increment._evidence_loaders import load_moments_batch
         from increment._evidence_types import MomentsRequest
 
         for grain in ("daily", "asof"):
-            with count_statements(backend) as census:
+            with count_statements(backend, explain_inserts=True) as census:
                 answers = load_moments_batch(
                     source.day_source(metrics=metrics),
                     tuple(MomentsRequest(metric, grain=grain) for metric in metrics),
@@ -175,10 +177,7 @@ def test_compatible_metrics_share_executed_reductions(size, occurrence_only):
             assert census.by_kind["select"] <= 5
             assert census.by_kind["create_temp"] <= 1
             assert census.by_kind["other"] <= 1
-            plans = [
-                backend.raw_sql("EXPLAIN " + sql).fetchall()[0][1]
-                for sql in census.statements
-                if sql.lstrip().upper().startswith("INSERT")
-            ]
+            assert not any(name.startswith("component_values_") for name in backend.list_tables())
+            plans = census.plans
             assert len(plans) == 1
             assert plans[0].count("SEQ_SCAN") <= 4

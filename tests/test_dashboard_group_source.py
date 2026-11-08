@@ -15,6 +15,14 @@ from increment.workflows import capture_sequential
 pytestmark = pytest.mark.slow
 
 
+def _group_event_values(events, *, occurrence_labels):
+    for row in events:
+        row["price_value"] = row["value"]
+    if occurrence_labels:
+        for index, row in enumerate(events):
+            row["value"] = f"order-{index}"
+
+
 @contextmanager
 def _native_groups(
     *,
@@ -28,6 +36,8 @@ def _native_groups(
     fact_missing="error",
     null_values=False,
     occurrence_labels=False,
+    unequal_freshness=False,
+    late_fact=False,
 ):
     import ibis
     import pyarrow as pa
@@ -106,7 +116,12 @@ def _native_groups(
                     "entities": ["unit_id"],
                     "facts": [
                         {"name": name, "column": "value", "missing": fact_missing}
-                        for name in ("purchase", "return", "denominator")
+                        for name in (
+                            "purchase",
+                            "return",
+                            "denominator",
+                            *(("late",) if late_fact else ()),
+                        )
                     ],
                     "properties": [
                         {
@@ -184,7 +199,18 @@ def _native_groups(
                 "unit_id": "not-enrolled",
                 "event": fact,
                 "value": 99.0,
-                "ts": datetime(2025, 1, 10, tzinfo=UTC),
+                "ts": datetime(
+                    2025, 1, 3 if unequal_freshness and fact != "purchase" else 10, tzinfo=UTC
+                ),
+            }
+        )
+    if late_fact:
+        events.append(
+            {
+                "unit_id": "not-enrolled",
+                "event": "late",
+                "value": 1.0,
+                "ts": datetime(2025, 1, 15, tzinfo=UTC),
             }
         )
     if null_values:
@@ -196,11 +222,7 @@ def _native_groups(
                 "ts": datetime(2025, 1, 2, tzinfo=UTC),
             }
         )
-    for row in events:
-        row["price_value"] = row["value"]
-    if occurrence_labels:
-        for index, row in enumerate(events):
-            row["value"] = f"order-{index}"
+    _group_event_values(events, occurrence_labels=occurrence_labels)
     connection = ibis.duckdb.connect()
     connection.create_table("enrolled", pa.Table.from_pylist(enrolled))
     connection.create_table("events", pa.Table.from_pylist(events))
@@ -266,16 +288,48 @@ def _assert_display_parity(source, metrics):
             )
 
 
+def _assert_temporal_parity(day_source, metrics, grain, completed):
+    from increment._evidence_loaders import load_moments, load_moments_batch
+    from increment._evidence_types import MomentsRequest
+
+    requests = tuple(
+        MomentsRequest(metric, grain=grain, completed_windows_only=completed) for metric in metrics
+    )
+    individual = tuple(load_moments(day_source, request) for request in requests)
+    batched = load_moments_batch(day_source, requests)
+
+    def identity(row):
+        return row["ds"], row["group_id"], row["metric"]
+
+    for got, independent in zip(batched, individual, strict=True):
+        got, independent = sorted(got, key=identity), sorted(independent, key=identity)
+        assert len(got) == len(independent)
+        for row, reference in zip(got, independent, strict=True):
+            assert row.keys() == reference.keys()
+            for key, value in reference.items():
+                assert row[key] == (
+                    pytest.approx(value, rel=1e-10, abs=1e-10)
+                    if isinstance(value, float)
+                    else value
+                )
+
+
 @pytest.mark.integration
 @pytest.mark.filterwarnings("ignore:.*censoring dropped:increment.errors.IncrementWarning")
 @pytest.mark.parametrize(
-    "missing,snowflake", [("zero", False), ("skip", False), ("error", False), ("zero", True)]
+    "missing,snowflake,adhoc",
+    [
+        ("zero", False, False),
+        ("skip", False, False),
+        ("error", False, False),
+        ("zero", True, False),
+        ("zero", False, True),
+    ],
 )
 def test_shared_order_components_keep_request_identity_maturity_and_ratio_covariance(
-    missing, monkeypatch, snowflake
+    missing, monkeypatch, snowflake, adhoc
 ):
-    from increment._evidence_loaders import load_moments, load_moments_batch
-    from increment._evidence_types import MetricEvidenceRequest, MomentsRequest
+    from increment._evidence_types import MetricEvidenceRequest
     from increment.errors import CodedError
     from increment.readouts._metric_rows import load_metric_evidence, load_metric_evidence_batch
     from increment.semantics.models import Filter, RatioMetric
@@ -283,13 +337,24 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
     with _native_groups(
         extra_exclusions=True,
         metric_names=("conversion", "mean", "retention"),
+        late_fact=adhoc,
         fact_missing=missing,
         null_values=True,
+        unequal_freshness=True,
     ) as (connection, _, resolver):
         source = resolver._binding.source
         conversion, revenue, disjoint = resolver._binding.metrics
         conversion = conversion.model_copy(update={"window_days": 7})
         revenue = revenue.model_copy(update={"window_days": 7})
+        if adhoc:
+            day_source = source.day_source(metrics=(disjoint,))
+            late_metrics = tuple(
+                metric.model_copy(update={"name": f"late_{metric.name}", "fact": "late"})
+                for metric in (conversion, revenue)
+            )
+            for grain, completed in (("daily", False), ("asof", False), ("asof", True)):
+                _assert_temporal_parity(day_source, late_metrics, grain, completed)
+            return
         long_revenue = revenue.model_copy(update={"window_days": 30})
         ratio = RatioMetric(
             name="revenue_per_order",
@@ -312,12 +377,28 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
                 ),
             }
         )
-        source = source.exploratory_source(metrics=(ratio, filtered, other_ratio))
+        unbounded = other_ratio.model_copy(
+            update={
+                "name": "unbounded",
+                "numerator": other_ratio.numerator.model_copy(update={"window_days": None}),
+                "denominator": other_ratio.denominator.model_copy(update={"window_days": None}),
+            }
+        )
+        source = source.exploratory_source(metrics=(ratio, filtered, other_ratio, unbounded))
         if snowflake:
             monkeypatch.setattr(
                 source._session, "fetch_arrow", partial(_snowflake_no_match_fetch, connection)
             )
-        metrics = (conversion, revenue, ratio, long_revenue, disjoint, filtered, other_ratio)
+        metrics = (
+            conversion,
+            revenue,
+            ratio,
+            long_revenue,
+            disjoint,
+            filtered,
+            other_ratio,
+            unbounded,
+        )
         requests = (
             *(MetricEvidenceRequest(metric, "baseline") for metric in metrics),
             MetricEvidenceRequest(conversion, "candidate"),
@@ -330,6 +411,9 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
             assert (batch.value.code, batch.value.context) == (
                 single.value.code,
                 single.value.context,
+            )
+            assert not any(
+                name.startswith("component_values_") for name in connection.list_tables()
             )
             return
         compiled = []
@@ -365,27 +449,9 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
             == source._moments_for_metrics(selected=(long_revenue,), include_covariate=False).schema
         )
         _assert_display_parity(source, metrics[:4])
-        for grain in ("daily", "asof"):
+        for grain, completed in (("daily", False), ("asof", False), ("asof", True)):
             day_source = source.day_source(metrics=metrics)
-            moments = tuple(MomentsRequest(metric, grain=grain) for metric in metrics)
-            individual = tuple(load_moments(day_source, request) for request in moments)
-            batched = load_moments_batch(day_source, moments)
-            for got, independent in zip(batched, individual, strict=True):
-
-                def identity(row):
-                    return row["ds"], row["group_id"], row["metric"]
-
-                got = sorted(got, key=identity)
-                independent = sorted(independent, key=identity)
-                assert len(got) == len(independent)
-                for row, reference in zip(got, independent, strict=True):
-                    assert row.keys() == reference.keys()
-                    for key, value in reference.items():
-                        assert row[key] == (
-                            pytest.approx(value, rel=1e-10, abs=1e-10)
-                            if isinstance(value, float)
-                            else value
-                        )
+            _assert_temporal_parity(day_source, metrics, grain, completed)
         import ibis
 
         for expr in compiled:

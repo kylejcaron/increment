@@ -3497,28 +3497,44 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if len(indices) < 2:
                 continue
             selected = [requests[index] for index in indices]
+            component_names: list[str] = []
             try:
                 group_rows = self._component_batch_rows(
-                    selected, display=display, horizon_metrics=horizon_metrics
+                    selected,
+                    display=display,
+                    horizon_metrics=horizon_metrics,
+                    component_names=component_names,
                 )
             except CodedError as error:
                 if error.code != "query.session.snapshot.materialization_failed":
                     raise
                 continue
+            finally:
+                for relation in tuple(self._session._materialized):
+                    if relation.requested_name not in component_names:
+                        continue
+                    try:
+                        self._session._drop_materialized_relation(relation)
+                    except Exception:
+                        continue
+                    self._session._materialized.remove(relation)
             for index, rows in zip(indices, group_rows, strict=True):
                 answers[index] = rows
         return tuple(answers)
 
     def _component_batch_values(
-        self, requests: Sequence[MomentsRequest], horizon_metrics: Sequence[Metric] | None
+        self,
+        requests: Sequence[MomentsRequest],
+        horizon_metrics: Sequence[Metric] | None,
+        component_names: list[str],
     ) -> tuple[Table, Table, list[int | None], list[tuple[int, ...]]]:
         """Build shared conditional component values before metric projections."""
         first = requests[0]
         metrics = [request.metric for request in requests]
-        horizon_metrics = (
-            tuple(horizon_metrics)
-            if horizon_metrics is not None
-            else tuple(dict.fromkeys((*self._horizon_metrics, *metrics)))
+        horizon_metrics = tuple(
+            dict.fromkeys(
+                (*(self._horizon_metrics if horizon_metrics is None else horizon_metrics), *metrics)
+            )
         )
         components: list[tuple[str, str | None, FactNullPolicy, bool]] = []
         component_indices: dict[tuple[str, str | None, FactNullPolicy], int] = {}
@@ -3603,6 +3619,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             name = self._session.temp_name(
                 "component_values", str(len(self._session._materialized))
             )
+            component_names.append(name)
             values = self._session.materialize_table(name, values, required=True)
         return values, exposures, windows, parts
 
@@ -3656,10 +3673,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         display: bool = False,
         horizon_metrics: Sequence[Metric] | None = None,
+        component_names: list[str],
     ) -> tuple[tuple[Mapping[str, Any], ...], ...]:
         first = requests[0]
         metrics = [request.metric for request in requests]
-        values, exposures, windows, parts = self._component_batch_values(requests, horizon_metrics)
+        values, exposures, windows, parts = self._component_batch_values(
+            requests, horizon_metrics, component_names
+        )
         edges = [
             cast(
                 ir.Scalar,
@@ -3734,7 +3754,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     rows = rows.filter(
                         rows.ds >= rows.first_exposure_date + ibis.interval(days=days)
                     )
-                if isinstance(item, RatioMetric):
+                if days is not None and isinstance(item, RatioMetric):
                     rows = _censor_to_observable_window(
                         rows, item, self._experiment, data_as_of, warn_on_censoring=False
                     )
