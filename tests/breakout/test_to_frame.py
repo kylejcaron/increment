@@ -608,3 +608,48 @@ def test_to_frame_projects_p_value_when_sampling_availability_is_unrecorded():
     assert row.p_value() is not None
     frame: Any = LiftEstimates([row]).to_frame(backend="pandas")
     assert frame.loc[0, "p_value"] == pytest.approx(row.p_value())
+
+
+@pytest.mark.parametrize("backend", ["polars", "pyarrow"])
+def test_result_frame_aligns_null_ds_to_numeric_asof_ds(backend):
+    pytest.importorskip(backend)
+    import narwhals as nw
+
+    from increment.breakout.estimates import DailyLiftEstimate
+    from increment.breakout.projection import result_frame
+    from increment.estimation.results import Estimate, LiftEstimate
+
+    lift = Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95)
+    identity: dict[str, Any] = {
+        "group_id": "treatment",
+        "method": "unadjusted",
+        "method_role": "decision",
+        "lift": lift,
+        "sampling_available": True,
+    }
+    whole = LiftEstimate(metric="revenue", **identity)
+    asof = DailyLiftEstimate(metric="revenue", ds=3, **identity)
+
+    combined = nw.from_native(
+        result_frame(
+            [(LiftEstimate, [whole]), (DailyLiftEstimate, [asof])],
+            None,
+            scopes=(None, None),
+            backend=backend,
+        ),
+        eager_only=True,
+    )
+    assert combined["ds"].to_list() == [None, 3]
+    assert combined.schema["ds"].is_numeric()
+
+    whole_windows = nw.from_native(
+        result_frame(
+            [(LiftEstimate, [whole]), (LiftEstimate, [LiftEstimate(metric="orders", **identity)])],
+            None,
+            scopes=(None, None),
+            backend=backend,
+        ),
+        eager_only=True,
+    )
+    assert whole_windows["ds"].to_list() == [None, None]
+    assert whole_windows.schema["ds"] == nw.Datetime

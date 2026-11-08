@@ -1443,6 +1443,9 @@ class DailyLiftEstimate(_RowIdentity):
     family_threshold: float | None = None
     family_guarantee: Literal["finite_sample", "asymptotic_sequential"] | None = None
     family_nominal_alpha: float | None = None
+    # Hypotheses in the row's registered family where the family records it; None otherwise,
+    # and then left out of saved rows, as rows saved before the field were.
+    family_size: int | None = Field(default=None, ge=1, exclude_if=lambda v: v is None)
     # Mirrors LiftEstimate.population: the observed-only population of a ``missing="skip"``
     # metric; None = the slice's whole analysis population.
     population: str | None = Field(default=None, exclude_if=lambda v: v is None)
@@ -1561,6 +1564,11 @@ class DailyLiftEstimate(_RowIdentity):
         )
         _validate_delta_evidence(self)
         return self
+
+    def __setstate__(self, state: dict[str, object]) -> None:
+        # A day row pickled before ``family_size`` was a field has no entry for it.
+        cast("dict[str, object]", state["__dict__"]).setdefault("family_size", None)
+        super().__setstate__(state)
 
     def require_lift(self) -> Estimate:
         """Return the finite point estimate or refuse for an unavailable row."""
@@ -1686,6 +1694,8 @@ class DailyLiftEstimate(_RowIdentity):
                 status = "unavailable"
             elif self.failure_code is not None:
                 status = "failed"
+            elif self.sampling_available is False:
+                status = "unavailable"
             elif self.lift is None:
                 status = "point unavailable"
             else:
@@ -1693,6 +1703,12 @@ class DailyLiftEstimate(_RowIdentity):
             parts.append(f"status={status!r}")
         if self.sampling_available is False:
             parts.append("sampling=unavailable")
+            if (
+                self.failure_code is None
+                and self.unavailable is None
+                and self.sampling_reason_code is not None
+            ):
+                parts.append(f"sampling_reason={self.sampling_reason_code!r}")
         if self.low_reliability:
             parts.append("low_reliability=True")
         return f"DailyLiftEstimate({', '.join(parts)})"
@@ -1889,7 +1905,7 @@ class DailyMetricValues(EstimateList[DailyMetricValue]):
     _envelope_view: Literal["daily", "asof"] | None = None
 
     def _current_metadata(self, metadata: ReadoutMetadata | None) -> ReadoutMetadata | None:
-        return _with_value_row_keys(tuple(self), metadata)
+        return _with_value_row_keys(metadata)
 
     def as_cells(self, *, created_at: datetime | None = None):
         from importlib import import_module
@@ -1915,22 +1931,43 @@ class DailyMetricValues(EstimateList[DailyMetricValue]):
         ]
 
 
-def _with_value_row_keys(
-    rows: tuple[DailyMetricValue, ...], metadata: ReadoutMetadata | None
-) -> ReadoutMetadata | None:
-    """Metadata saved before a value row recorded ``value_scale`` keys the row's cell with no
-    scale; that key names the row's absolute cell."""
-    from increment.estimation.readout_types import CellKey, rekeyed_metadata
+def _with_value_row_keys(metadata: ReadoutMetadata | None) -> ReadoutMetadata | None:
+    """Metadata saved before a value row recorded ``value_scale`` keys every daily value cell,
+    shown or filtered out, with no scale; that key names the cell's absolute value.
+
+    Only keys with a value row's full shape are renamed: a day, an arm or segment, and no
+    method, estimand or test. Every other key keeps its saved scale, and so does a key whose
+    source or family already holds its absolute key; another snapshot's absolute key does
+    not block it.
+    """
+    from increment.estimation.readout_types import rekeyed_metadata
 
     if metadata is None:
         return None
-    keys = {}
-    for row in rows:
-        key = CellKey.from_row(row)
-        recorded = key.model_copy(update={"value_scale": None})
-        source = metadata.scope.by_source.get(row.source_snapshot_id)
-        if source is not None and key not in source.cells and recorded in source.cells:
-            keys[recorded] = key
+    scope = metadata.scope
+    recorded = {*scope.cells, *(key for family in scope.families for key in family.members)}
+    keys = {
+        key: key.model_copy(update={"value_scale": "absolute"})
+        for key in recorded
+        if key.value_scale is None
+        and key.kind != "contrast"
+        and key.ds is not None
+        and key.ds_basis is not None
+        and key.method is None
+        and key.method_role is None
+        and key.estimand is None
+        and key.inference is None
+        and key.alternative is None
+    }
+    owners = [
+        *(set(source.cells) for source in scope.by_source.values()),
+        *(set(family.members) for family in scope.families),
+    ]
+    keys = {
+        legacy: current
+        for legacy, current in keys.items()
+        if not any(legacy in owner and current in owner for owner in owners)
+    }
     return rekeyed_metadata(metadata, keys) if keys else metadata
 
 
@@ -2061,6 +2098,7 @@ def daily_sequential_projection(
                 family_procedure=row.family_procedure,
                 family_guarantee=row.family_guarantee,
                 family_nominal_alpha=row.family_nominal_alpha,
+                family_size=row.family_size,
                 failure_code=row.failure_code,
                 failure_context=row.failure_context,
                 sampling_available=row.sampling_available,
@@ -2923,8 +2961,8 @@ def _breakout_estimate_row(
                 else None
             ),
             prior_shrunk=lift_estimate.prior_shrunk or lift_estimate.prior_spec is not None,
-            # BreakoutEstimate-only sidecars: _copy_common_fields doesn't
-            # carry them (DailyLiftEstimate has no winsor_* or family_size fields).
+            # Sidecars _copy_common_fields doesn't carry: DailyLiftEstimate has no
+            # winsor_* fields, and its per-day passes record no family size.
             winsor_lower_percentile=lift_estimate.winsor_lower_percentile,
             winsor_upper_percentile=lift_estimate.winsor_upper_percentile,
             winsor_lower_bound=lift_estimate.winsor_lower_bound,
@@ -5677,10 +5715,10 @@ def run_daily_lift(  # noqa: PLR0913
         some estimable arms while
         excluding guarded arms emits a per-metric ``UserWarning``;
         pre-estimation drops (too few units, non-positive means) stay
-        silent and surface only as unavailable rows. Encouragement
-        ``late`` rows are not dense: a weak first stage suppresses the
-        requested ``late`` row, leaving only the explanatory
-        ``compliance`` row.
+        silent and surface only as unavailable rows. A weak encouragement
+        first stage returns each requested ``late`` row unavailable with
+        its failure reason, beside the explanatory ``compliance`` row when
+        ``compliance`` is requested.
     """
     effective_correction = correction if plan is None else "none"
     if plan is not None and view == "asof":

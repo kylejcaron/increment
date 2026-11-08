@@ -8,7 +8,8 @@ estimation.
 breakout delegates randomized segments to
 increment.breakout.estimates.run_breakout, excluding segments with no
 usable control arm; encouragement estimation instead warns and skips
-control-free segments and suppresses late rows after a weak first stage.
+control-free segments, and after a weak first stage returns each
+requested late row unavailable with its failure reason.
 """
 
 from __future__ import annotations
