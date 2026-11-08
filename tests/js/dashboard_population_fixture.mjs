@@ -15,7 +15,10 @@ function shellSource(html) {
 }
 
 export function loadDashboardFromFile(path) {
-  const html = fs.readFileSync(path, "utf8");
+  return loadDashboard(fs.readFileSync(path, "utf8"));
+}
+
+export function loadDashboard(html) {
   const payload = embeddedPayload(html);
   const document = createDocument();
   const body = new FakeElement("body");

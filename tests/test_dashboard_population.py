@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import html
 import json
 import os
 import subprocess
@@ -366,20 +367,19 @@ def test_triggered_sequential_qualification_uses_selected_population(tmp_path):
         assigned_evidence = allocation_evidence(snapshot.allocation)
         triggered_evidence = allocation_evidence(snapshot.triggered_allocation)
 
-        assigned = render_header(snapshot, population="assigned").text
-        triggered = render_header(snapshot, population="triggered").text
-        assert "Dashboard allocation check (assigned" in assigned
-        assert assigned_evidence in assigned
-        assert "Dashboard triggered-population balance check (triggered" in triggered
-        assert triggered_evidence in triggered
-        assert "Dashboard allocation check (assigned" not in triggered
-
         payload = build_payload(experiment, snapshot=snapshot)
-        assigned_payload = payload["populationViews"]["assigned"]["qualifications"]
-        triggered_payload = payload["populationViews"]["triggered"]["qualifications"]
-        assert assigned_evidence in assigned_payload
-        assert triggered_evidence in triggered_payload
-        assert "Dashboard allocation check (assigned" not in triggered_payload
+        for population, evidence in (
+            ("assigned", assigned_evidence),
+            ("triggered", triggered_evidence),
+        ):
+            view = payload["populationViews"][population]
+            assert evidence in view["report"]["qualifications"]
+            assert evidence in html.unescape(view["results"])
+        assigned = payload["populationViews"]["assigned"]["report"]["qualifications"]
+        triggered = payload["populationViews"]["triggered"]["report"]["qualifications"]
+        assert "Dashboard allocation check (assigned" in assigned
+        assert "Dashboard triggered-population balance check (triggered" in triggered
+        assert "Dashboard allocation check (assigned" not in triggered
     finally:
         resolver.close()
 
@@ -407,12 +407,10 @@ def test_triggered_sequential_view_retains_failed_assigned_integrity(tmp_path):
         assert assigned_integrity.status == "failed"
 
         expected = "Analysis assignment check (assigned population): failed."
-        triggered_header = render_header(snapshot, population="triggered").text
-        assert expected in triggered_header
-        assert "Analysis assignment check (assigned population): unknown" not in triggered_header
         payload = build_payload(experiment, snapshot=snapshot)
-        triggered_payload = payload["populationViews"]["triggered"]["qualifications"]
-        assert expected in triggered_payload
+        triggered_report = payload["populationViews"]["triggered"]["report"]["qualifications"]
+        assert expected in triggered_report
+        assert "Analysis assignment check (assigned population): unknown" not in triggered_report
         assert expected in document(payload)
     finally:
         resolver.close()

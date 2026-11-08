@@ -14,6 +14,7 @@ from html import escape
 from math import inf
 from typing import TYPE_CHECKING, Any, Literal
 
+from increment._display import interval_text
 from increment.tables import _decision_available, _format_confidence_set
 
 if TYPE_CHECKING:
@@ -165,12 +166,9 @@ def headline_number(value: Any, row: Mapping[str, Any]) -> str:
     return text.replace("-", "−", 1)
 
 
-def headline_endpoint(value: Any, row: Mapping[str, Any]) -> str:
-    if value == -inf:
-        return "−∞"
-    if value == inf:
-        return "+∞"
-    return headline_number(value, row)
+def headline_endpoint(value: Any, row: Mapping[str, Any]) -> str | None:
+    """An endpoint as headline text; ``None`` for an infinite end."""
+    return None if value in (-inf, inf) else headline_number(value, row)
 
 
 def complete_confidence_set_text(row: Mapping[str, Any]) -> str | None:
@@ -213,9 +211,7 @@ def headline_interval(row: Mapping[str, Any]) -> str:
     if endpoints is None:
         return f"[{missing_html('no interval available')}]"
     lower, higher = endpoints
-    opening = "(" if lower == -inf else "["
-    closing = ")" if higher == inf else "]"
-    return f"{opening}{headline_endpoint(lower, row)}, {headline_endpoint(higher, row)}{closing}"
+    return interval_text(headline_endpoint(lower, row), headline_endpoint(higher, row))
 
 
 def primary_tone(row: Mapping[str, Any]) -> str:
@@ -280,7 +276,7 @@ def interval_html(row: Mapping[str, Any]) -> str:
     if endpoints is None:
         return missing_html("no interval available")
     lower, higher = endpoints
-    return f"{headline_endpoint(lower, row)} to {headline_endpoint(higher, row)}"
+    return interval_text(headline_endpoint(lower, row), headline_endpoint(higher, row))
 
 
 def decision_scale(row: Mapping[str, Any]) -> str:

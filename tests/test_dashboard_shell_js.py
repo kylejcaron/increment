@@ -9,6 +9,7 @@ as the compatibility JS suite: skipped locally without Node, failed in CI.
 import re
 import subprocess
 from importlib.resources import files
+from pathlib import Path
 
 import pytest
 
@@ -142,3 +143,14 @@ def test_syntax_gate_rejects_an_unclosed_function(tmp_path):
     node_path = _node_or_gate()
     broken = "<script>(function () {\n  function render() {\n    if (x) {}\n})();</script>"
     assert _syntax_errors(node_path, _inline_scripts(broken), tmp_path)
+
+
+@pytest.mark.integration
+def test_focus_metric_list_stays_usable_at_thirty_metrics():
+    node_path = _node_or_gate()
+    root = Path(__file__).resolve().parents[1]
+    script = root / "tests/js/dashboard_focus_list.test.mjs"
+    result = subprocess.run(
+        [node_path, "--test", str(script)], cwd=root, capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

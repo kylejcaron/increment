@@ -81,17 +81,18 @@ print(results)
 
 ```text
 assigned — treatment vs control
-purchase (primary, relative lift): 0.646342, set [-0.318461, 3.28175] at 0.95 confidence.
+purchase (primary, relative lift): 64.6342%, set [-31.8461%, 328.175%] at 95% confidence.
 purchase interpretation: does not reject; inconclusive, not evidence of no effect.
 purchase sequential ratio confidence set interval: [0.681539, 4.28175].
-purchase test alternative: two-sided; null (relative lift): 0.
+purchase test alternative: two-sided; null (relative lift): 0%.
 purchase result identity: method unadjusted; method role decision; estimand itt.
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
 Multiplicity (primary): declared_plan; family primary.
 ```
 
-The displayed point is a relative lift; the sequential confidence set is shown
-both as lift and as a ratio (ratio = lift + 1). The result says this look does
+The displayed point is a relative lift in percent; the sequential confidence set
+is shown both as that lift and as a ratio (ratio = 1 + lift, so −31.8461% is
+0.681539). The result says this look does
 not reject the null; it does not establish no effect. Assignment integrity
 was not rejected, not proven. For a finite-sample anytime-valid claim, the
 Bernoulli outcomes, independent fixed-probability assignment, finalized

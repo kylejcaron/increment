@@ -84,8 +84,6 @@ code, .number { font-family: var(--inc-dashboard-mono-font); font-variant-numeri
 .hero-description { font-size: 14px; line-height: 1.6; max-width: 640px; margin: 0 0 13px; overflow-wrap: anywhere; }
 .hero-meta { font-size: 11px; color: var(--muted); line-height: 1.65; margin: 0; overflow-wrap: anywhere; }
 .hero-description:empty, .hero-meta:empty { display: none; }
-.hero-qualifications { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); background: var(--tint); color: var(--ink); font-size: 12px; line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
-.hero-qualifications:empty { display: none; }
 
 /* The pill reports allocation only; its wording comes from the payload. */
 .health-pill {
@@ -219,7 +217,14 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .explore-layout { display: grid; grid-template-columns: 205px minmax(0, 1fr); gap: 30px; align-items: start; }
 .metric-list { border-right: 1px solid var(--line); padding-right: 22px; min-width: 0; }
 .metric-list .eyebrow { margin: 4px 0 12px; }
+.metric-filter { display: block; width: 100%; box-sizing: border-box; margin: 0 0 6px; font: inherit; font-size: 12px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: max(0px, calc(var(--inc-dashboard-radius) - 2px)); padding: 7px 9px; }
+.metric-filter:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* A long list scrolls inside itself; a height that grows with it would push the workspace
+   and the page down. Pixels, not vh: the embedding frame is sized to this content. */
+.metric-options { max-height: 560px; overflow-y: auto; overscroll-behavior: contain; }
+.metric-filter-empty { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 .metric-group-label { font-size: 10px; color: var(--muted); margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .05em; }
+.metric-group:first-child .metric-group-label { margin-top: 8px; }
 .metric-tab {
   display: block; text-align: left; width: 100%; border: 0; border-left: 2px solid transparent; border-radius: 0;
   background: transparent; padding: 12px 9px; font-size: 12px; line-height: 1.5; margin: 1px 0; overflow-wrap: anywhere;
@@ -386,8 +391,11 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
    horizontal scroll; the picker wraps above the workspace instead. */
 @media (max-width: 1260px) {
   .explore-layout { grid-template-columns: minmax(0, 1fr); gap: 18px; }
-  .metric-list { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 0; border: 0; }
-  .metric-list > .eyebrow { flex-basis: 100%; margin: 0 0 7px; }
+  .metric-list { padding: 0; border: 0; }
+  .metric-list .eyebrow { margin: 0 0 7px; }
+  .metric-filter { max-width: 320px; }
+  .metric-options { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; max-height: 148px; }
+  .metric-group { display: contents; }
   .metric-group-label { display: none; }
   .metric-tab { width: auto; padding: 8px 12px; border-left: 0; border-bottom: 2px solid transparent; }
   .metric-tab[aria-pressed="true"] { border-bottom-color: var(--accent); }
@@ -582,7 +590,6 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       </div>
       <p class="hero-description" id="hero-description"></p>
       <p class="hero-meta" id="hero-meta"></p>
-      <div class="hero-qualifications" id="hero-qualifications" hidden aria-label="Readout qualifications"></div>
     </div>
     <div class="primary-box" id="hero-primary" role="group" aria-labelledby="hero-primary-label" hidden>
       <p class="primary-label" id="hero-primary-label"></p>
@@ -681,7 +688,12 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
         <p class="muted metric-detail-note">Select a metric to open its time series.</p>
       </section>
       <div class="explore-layout" id="explore-layout" hidden>
-        <aside class="metric-list" id="metric-list" aria-label="Focus metric"></aside>
+        <aside class="metric-list" id="metric-list" aria-labelledby="metric-list-label">
+          <p class="eyebrow" id="metric-list-label">Focus metric</p>
+          <input type="search" class="metric-filter" id="metric-filter" placeholder="Filter metrics" aria-label="Filter focus metrics" aria-controls="metric-options" autocomplete="off" hidden>
+          <div class="metric-options" id="metric-options"></div>
+          <p class="metric-filter-empty" id="metric-filter-empty" role="status" hidden>No metric matches this filter.</p>
+        </aside>
         <section class="explore-workspace" aria-labelledby="explore-metric-name">
           <h3 id="explore-metric-name"></h3>
           <p class="context" id="explore-context"></p>
@@ -913,8 +925,6 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     $('hero-title').textContent = str(data.title);
     $('hero-description').textContent = [str(data.description), str(data.populationDisclaimer)].filter(Boolean).join(' ');
     $('hero-meta').textContent = str(data.meta);
-    $('hero-qualifications').textContent = str(data.qualifications);
-    $('hero-qualifications').hidden = !str(data.qualifications);
     const box = $('hero-primary');
     for (const tone of TONES) box.classList.remove(toneClass(tone));
     $('hero').classList.toggle('no-primary', !primary);
@@ -1004,6 +1014,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   const ROLE_LABELS = { primary: 'Primary', secondary: 'Secondary outcomes', guardrail: 'Guardrails', exploratory: 'Added (exploratory)' };
   const roleLabel = (role) => own(ROLE_LABELS, str(role).toLowerCase()) || (str(role) ? str(role).charAt(0).toUpperCase() + str(role).slice(1) : 'Other metrics');
   const MODE_TEXT = { relative: 'cumulative relative lift versus the control arm', cumulative: 'cumulative per-arm absolute values', daily: 'daily per-arm absolute values' };
+  // Shorter focus lists are read at a glance; from this length on they get a text filter.
+  const FILTER_FROM = 9;
   let exploreBuilt = false;
   let notesOpen = false;
 
@@ -1033,19 +1045,47 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       const ib = ROLE_ORDER.indexOf(b.toLowerCase());
       return (ia < 0 ? ROLE_ORDER.length : ia) - (ib < 0 ? ROLE_ORDER.length : ib);
     });
-    const items = [el('p', { className: 'eyebrow', text: 'Focus metric' })];
-    for (const role of roles) {
-      items.push(el('p', { className: 'metric-group-label', text: roleLabel(role) }));
-      for (const metric of groups.get(role)) {
+    $('metric-options').replaceChildren(...roles.map((role) => el('div', { className: 'metric-group', role: 'group', 'aria-label': roleLabel(role) },
+      el('p', { className: 'metric-group-label', 'aria-hidden': 'true', text: roleLabel(role) }),
+      ...groups.get(role).map((metric) => {
         const button = el('button', { type: 'button', className: 'metric-tab', 'aria-pressed': 'false' }, el('strong', { text: metric.label }));
         button.dataset.metric = metric.key;
-        items.push(button);
-      }
-    }
-    $('metric-list').replaceChildren(...items);
+        button.dataset.filterText = [metric.key, metric.label, roleLabel(role)].map((text) => str(text).toLowerCase()).join('\n');
+        return button;
+      }))));
+    const filter = $('metric-filter');
+    filter.hidden = exploreMetrics.length < FILTER_FROM;
+    if (filter.hidden) filter.value = '';
+    filterMetrics();
     const empty = exploreMetrics.length === 0;
     $('explore-empty').hidden = !empty;
     $('explore-mode').hidden = empty;
+  }
+
+  /** Hide focus metrics whose name, label or role lacks the filter text; selection is unchanged. */
+  function filterMetrics() {
+    const query = $('metric-filter').value.trim().toLowerCase();
+    let shown = 0;
+    for (const group of $('metric-options').children) {
+      let matches = 0;
+      for (const button of group.querySelectorAll('.metric-tab')) {
+        button.hidden = !str(button.dataset.filterText).includes(query);
+        if (!button.hidden) matches += 1;
+      }
+      group.hidden = matches === 0;
+      shown += matches;
+    }
+    $('metric-filter-empty').hidden = shown > 0 || exploreMetrics.length === 0;
+  }
+
+  /** Scroll the bounded focus list, not the page, until the selected metric is in view. */
+  function revealSelectedMetric() {
+    const box = $('metric-options');
+    const button = [...box.querySelectorAll('.metric-tab')].find((item) => item.dataset.metric === exploreState.metric);
+    if (!button || button.hidden || !box.clientHeight) return;
+    const top = button.offsetTop - box.offsetTop;
+    if (top < box.scrollTop) box.scrollTop = top;
+    else if (top + button.offsetHeight > box.scrollTop + box.clientHeight) box.scrollTop = top + button.offsetHeight - box.clientHeight;
   }
 
   function renderOverview() {
@@ -1083,7 +1123,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     const absolute = exploreState.mode === 'absolute';
     const daily = absolute && exploreState.cadence === 'daily';
 
-    for (const button of $('metric-list').querySelectorAll('.metric-tab')) button.setAttribute('aria-pressed', String(button.dataset.metric === exploreState.metric));
+    for (const button of $('metric-options').querySelectorAll('.metric-tab')) button.setAttribute('aria-pressed', String(button.dataset.metric === exploreState.metric));
     for (const button of $('mode-group').children) button.setAttribute('aria-pressed', String(button.dataset.mode === exploreState.mode));
     for (const button of $('cadence-group').children) button.setAttribute('aria-pressed', String(button.dataset.cadence === exploreState.cadence));
     $('cadence-group').hidden = !absolute;
@@ -1128,6 +1168,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       exploreState.metric = row.dataset.metric;
       exploreState.view = 'series';
       renderExplore();
+      revealSelectedMetric();
       return;
     }
     const button = event.target.closest('button');
@@ -1144,6 +1185,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     exploreState.complete = event.target.checked;
     renderExplore();
   });
+  $('metric-filter').addEventListener('input', filterMetrics);
 
   /* ---------- Added exploratory metrics -------------------------------------- */
   // The page is a captured snapshot; only the hosting notebook can prepare a new one. A host that

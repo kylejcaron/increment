@@ -252,21 +252,19 @@ def _build_payload_for_population(
         scopes[key] = {"label": label, "dimension": dimension, "source": source}
         breakouts[key] = (source, dimension)
     table = results_table(snapshot) + results_warnings(snapshot)
-    qualifications = readout_interpretation_text(snapshot)
     return {
         "title": snapshot.title,
         "theme": asdict(snapshot.config.theme),
         "description": snapshot.description or "",
         "meta": _meta(snapshot),
         "primary": _primary(snapshot),
-        "qualifications": qualifications,
         "healthStatus": health_status(snapshot),
         "healthReport": (
             None if snapshot.health is None else snapshot.health.model_dump(mode="json")
         ),
         "report": {
             "results": _styled(table),
-            "qualifications": qualifications,
+            "qualifications": readout_interpretation_text(snapshot),
             "notes": _report_notes(snapshot),
             "context": _report_context(snapshot),
         },

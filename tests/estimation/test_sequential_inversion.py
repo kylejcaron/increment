@@ -890,8 +890,8 @@ def test_confidence_bounds_repr_summarizes_ratio_geometry_without_certificates()
     ("lower", "upper", "empty", "expected"),
     [
         (F(1, 3), F(2, 3), False, "[0.3333, 0.6667]"),
-        (None, F(2, 3), False, "[−∞, 0.6667]"),
-        (F(1, 3), None, False, "[0.3333, +∞]"),
+        (None, F(2, 3), False, "(−∞, 0.6667]"),
+        (F(1, 3), None, False, "[0.3333, ∞)"),
         (F(2), F(1), True, "∅"),
     ],
 )

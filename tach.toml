@@ -233,7 +233,7 @@ depends_on = ["increment._canonical", "increment._immutable"]
 [[modules]]
 path = "increment._interpretation"
 layer = "core"
-depends_on = ["increment.estimation.readout_types", "increment.estimation.results"]
+depends_on = ["increment._display", "increment.estimation.readout_types", "increment.estimation.results"]
 
 [[modules]]
 path = "increment.estimation.decision_types"
@@ -1619,7 +1619,7 @@ depends_on = ["increment.errors", "increment.estimation.absorption"]
 path = "increment.tables"
 layer = "core"
 depends_on = [
-  "increment._canonical",
+  "increment._canonical", "increment._display",
   "increment.breakout.estimates", "increment.errors",
   "increment.estimation.sequential_result", "increment.breakout.projection", "increment._interpretation",
   "increment._optional", "increment.estimation.contrast_results", "increment.estimation.results", "increment.estimation.contrast",
@@ -1634,6 +1634,7 @@ depends_on = [
   "increment._canonical",
   "increment._dashboard_capture",
   "increment._day_axis",
+  "increment._display",
   "increment._evidence_refusals",
   "increment._execute",
   "increment._exploratory",

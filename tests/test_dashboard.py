@@ -49,7 +49,7 @@ def pricing() -> DashboardSnapshot:
     return pricing_snapshot()
 
 
-# Header and allocation qualifications.
+# Readout qualifications and allocation.
 
 
 @pytest.mark.slow
@@ -87,7 +87,7 @@ def test_dashboard_explains_missing_allocation_scheme_separately(
         population_collections={**pricing.population_collections, "assigned": changed_collection},
     )
 
-    text = render_header(snapshot).text
+    text = render_results(snapshot).text
     assert "the allocation scheme is not declared" in text
     assert "integrity.allocation_scheme_missing" in text
     assert "no allocation declared" not in text
@@ -124,10 +124,12 @@ def test_dashboard_names_declared_weights_not_observed_counts(pricing: Dashboard
         readout_collection=changed_collection,
         population_collections={**pricing.population_collections, "assigned": changed_collection},
     )
-    text = render_header(snapshot).text
+    text = render_results(snapshot).text
     assert "integrity.allocation_missing_or_nonconstant" in text
     assert "declared target allocation weights" in text
     assert "allocation counts are missing or nonconstant" not in text
+    # The header leaves the qualifications to the Readout.
+    assert "integrity.allocation_missing_or_nonconstant" not in render_header(snapshot).text
 
 
 def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) -> None:
@@ -540,8 +542,13 @@ def test_health_separates_the_allocation_alpha_from_interval_levels(
 # Results and metric details.
 
 
-def test_results_table_shows_only_core_readout_columns(pricing: DashboardSnapshot) -> None:
-    html = render_results(pricing).text
+def test_results_table_shows_only_core_readout_columns(storefront: DashboardSnapshot) -> None:
+    # A recorded family selection does not add a Discovery column to the Readout table.
+    rows = tuple(
+        {**dict(row), "discovery": True} if row["role"] == "secondary" else row
+        for row in storefront.readout_rows
+    )
+    html = render_results(dataclasses.replace(storefront, readout_rows=rows)).text
     headers = {
         re.sub(r"<[^>]+>", "", header).strip()
         for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
@@ -551,13 +558,12 @@ def test_results_table_shows_only_core_readout_columns(pricing: DashboardSnapsho
         "Lift %",
         "Lift Plot",
         "Failure",
-        "Discovery",
         "Posterior chance to beat",
         "Posterior risk if shipped",
         "Posterior P(favorable)",
     }
     assert {"Lift %", "Lift Plot"} <= headers
-    structural = {"group_id", "▾Primary"}
+    structural = {"group_id", "▾Primary", "▾Secondaries", "▾Guardrails"}
     assert headers - structural <= allowed_columns | {
         header for header in headers if "Declared plan" in header
     }

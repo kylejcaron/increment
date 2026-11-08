@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from html import escape as escape_html
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from increment._display import interval_text
 from increment._interpretation import (
     LOW_RELIABILITY_CAVEAT,
     interpret_readout,
@@ -1093,8 +1094,11 @@ def _row_qualification_columns(frame: Any, n: int) -> dict[str, list[str]]:
             if _is_missing(point)
             else f"{point:.6g}"
             + (
-                f"; interval [{'−∞' if _is_missing(low) else f'{low:.6g}'}, "
-                f"{'+∞' if _is_missing(high) else f'{high:.6g}'}]"
+                "; interval "
+                + interval_text(
+                    None if _is_missing(low) else f"{low:.6g}",
+                    None if _is_missing(high) else f"{high:.6g}",
+                )
                 if not _is_missing(low)
                 or not _is_missing(high)
                 or (not _is_missing(available) and bool(available))
@@ -1365,9 +1369,9 @@ def _format_confidence_set(
 ) -> str:
     """Render typed sets only where the point-dependent interval cannot represent them."""
 
-    def number(endpoint: float | None, *, lower: bool) -> str:
+    def number(endpoint: float | None) -> str | None:
         if endpoint is None:
-            return "−∞" if lower else "+∞"
+            return None
         return f"{endpoint:+.1%}" if scale == "relative" else f"{endpoint:+,.4g}"
 
     if not _is_missing(relative):
@@ -1388,7 +1392,7 @@ def _format_confidence_set(
             return "; ".join(
                 f"{label}: undefined ({endpoint.reason})"
                 if endpoint.status == "undefined"
-                else f"{label}: {number(endpoint.value, lower=label == 'lower')}"
+                else f"{label}: {number(endpoint.value) or ('−∞' if label == 'lower' else '∞')}"
                 for label, endpoint in zip(("lower", "upper"), endpoints, strict=True)
             )
         unbounded = any(endpoint.status == "unbounded" for endpoint in endpoints)
@@ -1400,11 +1404,7 @@ def _format_confidence_set(
         return f"unavailable: {unavailable}"
     else:
         return ""
-    text = " ∪ ".join(
-        f"{'(' if lower is None else '['}{number(lower, lower=True)}, "
-        f"{number(upper, lower=False)}{')' if upper is None else ']'}"
-        for lower, upper in intervals
-    )
+    text = " ∪ ".join(interval_text(number(lower), number(upper)) for lower, upper in intervals)
     rendered = text if geometry == "bounded" else f"{geometry.replace('_', '-')}: {text}"
     if not _is_missing(relative):
         level = f"{math.fsum((1.0, -relative.alpha)) * 100:.2f}".rstrip("0").rstrip(".")
