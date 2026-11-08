@@ -879,6 +879,15 @@ with per-run totals; a job without a CPU artifact is unavailable, not zero:
 uv run --no-sync python scripts/ci_cost_report.py --run <run ID> [--run <run ID> ...]
 ```
 
+CI jobs that run the test tree carry pytest's rewritten test bytecode between
+jobs (`scripts/rewritten_bytecode_cache.py`, cached at
+`.pytest_cache/rewritten-bytecode`). pytest reuses a rewritten module only while
+the source's modification time and size match, and every checkout sets new
+modification times. `restore` therefore reinstalls a saved module only when its
+source still has the SHA-256 recorded with it, at the same checkout path, under
+the same interpreter and pytest; every other module is rewritten as usual. The
+cache key's prefix fallback is safe because each module is checked on its own.
+
 Dashboard, simulation and artifact tests reuse expensive prepared fixtures under the
 ignored `.cache/increment-fixtures/` directory. Cache entries are keyed by
 source and the installed Python environment. Set
