@@ -86,6 +86,7 @@ from increment.tables import (
     _failure_disclosure,
     _format_confidence_set,
     _format_metadata_stat,
+    _readout_evidence_notes,
     _readout_metadata_notes,
     estimates_to_readout,
 )
@@ -1808,7 +1809,9 @@ def _metric_value_format(
 
 def _date_coordinate(value: Any) -> float:
     if isinstance(value, dt.datetime):
-        return (value.replace(tzinfo=None) - dt.datetime(1970, 1, 1)).total_seconds()
+        if value.tzinfo is not None:
+            value = value.astimezone(dt.UTC).replace(tzinfo=None)
+        return (value - dt.datetime(1970, 1, 1)).total_seconds()
     if isinstance(value, dt.date):
         return (value - dt.date(1970, 1, 1)).days * 86400.0
     return float(value)
@@ -1999,7 +2002,8 @@ def _latest_lift_qualifications(row: Mapping[str, Any]) -> str:
             continue
         percentage = key != "posterior_risk_if_shipped" or row.get("value_scale") != "absolute"
         entries.append((label, esc(_format_metadata_stat(value, percentage=percentage))))
-    notes = _readout_metadata_notes(pd.DataFrame([row]))
+    frame = pd.DataFrame([row])
+    notes = _readout_metadata_notes(frame) + _readout_evidence_notes(frame)
     return (_chips(entries) if entries else "") + _list(
         [esc(note) for note in notes], css_class="inc-dashboard-family-qualifications"
     )

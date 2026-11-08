@@ -1296,7 +1296,14 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
                 "multiplicity_status": status,
                 "decision_scope_complete": discovery is True,
                 "null_lift": 0.01,
-                "posterior_prob_favorable": 0.73,
+                "posterior_prob_favorable": 0.73 if discovery is not None else None,
+                "posterior_available": False if discovery is None else None,
+                "posterior_reason_code": "estimation.engine.lift_guard"
+                if discovery is None
+                else None,
+                "posterior_reason_context": {"reason": "delta_method_unreliable"}
+                if discovery is None
+                else None,
             }
         )
         for row in series
@@ -1315,7 +1322,12 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
     else:
         assert "Exploratory family" in html
     assert ("Decision scope is incomplete" in html) == (discovery is not True)
-    assert "Posterior P(favorable)" in html and "73.0%" in html
+    if discovery is None:
+        assert "Posterior unavailable" in html
+        assert "estimation.engine.lift_guard" in html
+        assert "delta_method_unreliable" in html
+    else:
+        assert "Posterior P(favorable)" in html and "73.0%" in html
     from increment.dashboard._theme import coeftable_theme
 
     assert f'stroke="{coeftable_theme(storefront.config.theme).unfavorable}"' in html
@@ -1397,7 +1409,7 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
     assert ("Estimate" in legends) == (point_state != "all_undefined")
 
 
-@pytest.mark.parametrize("scale", ["relative", "absolute"])
+@pytest.mark.parametrize("scale", ["relative", "absolute", "absolute_aware"])
 def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
     storefront: DashboardSnapshot, scale: str
 ) -> None:
@@ -1409,10 +1421,20 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
         row for row in temporal_rows(storefront, "cumulative_lift") if row.metric == model.name
     )
     magnitude = 1 if scale == "relative" else 100
+    dates = (
+        [
+            dt.datetime(2025, 11, 2, 1, 30, tzinfo=dt.timezone(dt.timedelta(hours=-4))),
+            dt.datetime(2025, 11, 2, 1, 30, tzinfo=dt.timezone(dt.timedelta(hours=-5))),
+            dt.datetime(2025, 11, 2, 2, 30, tzinfo=dt.timezone(dt.timedelta(hours=-5))),
+        ]
+        if scale == "absolute_aware"
+        else [dt.date(2025, 1, day) for day in range(1, 4)]
+    )
+    scale = scale.split("_", 1)[0]
     rows = DailyLiftEstimates(
         seed.model_copy(
             update={
-                "ds": dt.date(2025, 1, day),
+                "ds": dates[day - 1],
                 "value_scale": scale,
                 "null_lift": 0.15 if scale == "relative" else 0.0,
                 "null_abs": 15.0 if scale == "absolute" else None,
@@ -1426,7 +1448,9 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
         )
         for day in range(1, 4)
     )
-    rendered = render_explore(storefront, rows, metric=model.name, view="cumulative_lift").text
+    from increment.dashboard._html import temporal_figure
+
+    rendered = temporal_figure(storefront, rows, metric=model.name, view="cumulative_lift")
     svgs = re.findall(r"<svg\b.*?</svg>", rendered, re.S)
     assert svgs
     tick_text = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", "".join(svgs)))
@@ -1438,6 +1462,7 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
     assert line is not None
     points = [tuple(map(float, point.split(","))) for point in line.attrib["points"].split()]
     assert len(points) == 3
+    assert points[0][0] < points[1][0] < points[2][0]
     assert points[1][0] == pytest.approx((points[0][0] + points[2][0]) / 2, abs=0.02)
     assert points[1][1] == pytest.approx((points[0][1] + points[2][1]) / 2, abs=0.02)
     reference = next(
