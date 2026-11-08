@@ -1905,7 +1905,7 @@ class DailyMetricValues(EstimateList[DailyMetricValue]):
     _envelope_view: Literal["daily", "asof"] | None = None
 
     def _current_metadata(self, metadata: ReadoutMetadata | None) -> ReadoutMetadata | None:
-        return _with_value_row_keys(tuple(self), metadata)
+        return _with_value_row_keys(metadata)
 
     def as_cells(self, *, created_at: datetime | None = None):
         from importlib import import_module
@@ -1931,22 +1931,33 @@ class DailyMetricValues(EstimateList[DailyMetricValue]):
         ]
 
 
-def _with_value_row_keys(
-    rows: tuple[DailyMetricValue, ...], metadata: ReadoutMetadata | None
-) -> ReadoutMetadata | None:
-    """Metadata saved before a value row recorded ``value_scale`` keys the row's cell with no
-    scale; that key names the row's absolute cell."""
-    from increment.estimation.readout_types import CellKey, rekeyed_metadata
+def _with_value_row_keys(metadata: ReadoutMetadata | None) -> ReadoutMetadata | None:
+    """Metadata saved before a value row recorded ``value_scale`` keys every daily value cell,
+    shown or filtered out, with no scale; that key names the cell's absolute value.
+
+    Only keys with a value row's full shape are renamed: a day, an arm or segment, and no
+    method, estimand or test. Every other key keeps its saved scale.
+    """
+    from increment.estimation.readout_types import rekeyed_metadata
 
     if metadata is None:
         return None
-    keys = {}
-    for row in rows:
-        key = CellKey.from_row(row)
-        recorded = key.model_copy(update={"value_scale": None})
-        source = metadata.scope.by_source.get(row.source_snapshot_id)
-        if source is not None and key not in source.cells and recorded in source.cells:
-            keys[recorded] = key
+    scope = metadata.scope
+    recorded = {*scope.cells, *(key for family in scope.families for key in family.members)}
+    keys = {
+        key: key.model_copy(update={"value_scale": "absolute"})
+        for key in recorded
+        if key.value_scale is None
+        and key.kind != "contrast"
+        and key.ds is not None
+        and key.ds_basis is not None
+        and key.method is None
+        and key.method_role is None
+        and key.estimand is None
+        and key.inference is None
+        and key.alternative is None
+    }
+    keys = {legacy: current for legacy, current in keys.items() if current not in recorded}
     return rekeyed_metadata(metadata, keys) if keys else metadata
 
 

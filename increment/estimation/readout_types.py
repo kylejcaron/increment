@@ -1189,6 +1189,10 @@ def rekeyed_metadata(metadata: ReadoutMetadata, keys: Mapping[CellKey, CellKey])
                         "cells": cells(scope.cells),
                         "decision_cells": cells(scope.decision_cells),
                         "by_source": by_source,
+                        "families": tuple(
+                            family.model_copy(update={"members": cells(family.members)})
+                            for family in scope.families
+                        ),
                     }
                 ),
                 "cells": tuple(records),
