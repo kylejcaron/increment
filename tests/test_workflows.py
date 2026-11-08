@@ -494,6 +494,15 @@ def test_weekly_floor_parts_cover_each_interpreter_with_distinct_reports() -> No
     assert upload["if"] == "always()"
 
 
+def test_weekly_full_floor_runs_full_parity_matrix() -> None:
+    markers, _ = _noxfile()
+    job = yaml.safe_load(Path(".github/workflows/weekly.yml").read_text())["jobs"]["test-all-floor"]
+    # The floor run selects the exhaustive grids, which generate every parity cell only in the
+    # full matrix scope.
+    assert any(_selects(markers[tier], "slow", "exhaustive") for tier in _job_test_tiers(job))
+    assert job["env"]["INCREMENT_PARITY_MATRIX"] == "full"
+
+
 def test_pull_requests_run_the_full_fast_tier_on_one_python() -> None:
     workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
     jobs = workflow["jobs"]
@@ -546,7 +555,7 @@ def test_pull_requests_run_the_full_fast_tier_on_one_python() -> None:
     gate = jobs["ci-ok"]
     assert "unit-newest" in gate["needs"]
     duration_job = jobs["duration-ratchet"]
-    assert duration_job["needs"] == ["test", "slow"]
+    assert duration_job["needs"] == ["test", "slow", "exhaustive"]
     duration_report = next(
         step
         for step in duration_job["steps"]
@@ -698,6 +707,52 @@ def test_pr_slow_job_excludes_exhaustive_unless_required() -> None:
         'check_conditional_job "$EXHAUSTIVE_REQUIRED" "$EXHAUSTIVE_RESULT" exhaustive'
         in gate_step["run"]
     )
+
+
+def _expected_duration_shards(event: str, exhaustive_result: str) -> set[str]:
+    """Shards the duration ratchet expects for one event and exhaustive gate result."""
+    job = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())["jobs"]["duration-ratchet"]
+    step = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Report aggregate per-layer duration ratchet"
+    )
+    scope = {
+        "github": SimpleNamespace(event_name=event),
+        "needs": SimpleNamespace(exhaustive=SimpleNamespace(result=exhaustive_result)),
+    }
+    environment = {}
+    for name, value in step["env"].items():
+        expression = value.strip().removeprefix("${{").removesuffix("}}")
+        expression = expression.replace("&&", " and ").replace("||", " or ")
+        environment[name] = eval(expression, {"__builtins__": {}}, scope)
+    arguments = shlex.split(step["run"].split("|", 1)[0])
+    shards = arguments[arguments.index("--expected-shards") + 1]
+    return set(re.sub(r"\$(\w+)", lambda match: environment[match.group(1)], shards).split(","))
+
+
+def test_exhaustive_shards_are_slow_duration_evidence_when_the_gate_runs() -> None:
+    from scripts.duration_report import DURATION_ARTIFACT_PREFIXES
+
+    markers, _ = _noxfile()
+    job = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())["jobs"]["exhaustive"]
+    assert "-p scripts.collect_items_plugin" in job["env"]["PYTEST_ADDOPTS"]
+    assert job["env"]["INCREMENT_COLLECT_OUTPUT"] == "junit-collection.json"
+    # The exhaustive tier has no budget of its own; its items count against the slow budget.
+    assert json.loads(job["env"]["INCREMENT_COLLECT_TIERS"]) == {"slow": markers["exhaustive"]}
+    assert job["env"]["INCREMENT_COLLECT_SHARD_ID"] == "exhaustive-${{ matrix.group }}"
+    upload = next(
+        step for step in job["steps"] if step.get("name") == "Retain exhaustive JUnit report"
+    )
+    assert upload["with"]["name"].startswith(DURATION_ARTIFACT_PREFIXES)
+    assert {"junit.xml", "junit-collection.json"} == set(upload["with"]["path"].splitlines())
+
+    shards = {f"exhaustive-{group}" for group in job["strategy"]["matrix"]["group"]}
+    for event in ("pull_request", "push"):
+        without_gate = _expected_duration_shards(event, "skipped")
+        assert not shards & without_gate
+        for result in ("success", "failure", "cancelled"):
+            assert _expected_duration_shards(event, result) == without_gate | shards
 
 
 def _slow_tier_runs(condition: str, event: str, required: str, labels: tuple[str, ...]) -> bool:

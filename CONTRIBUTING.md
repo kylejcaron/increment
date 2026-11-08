@@ -170,7 +170,9 @@ the required `duration-ratchet` CI job. After the report-first period, switching
 the baseline's mode to `enforce` is a separate reviewed one-line change.
 The aggregator expects the complete shard inventory: three Python 3.12 fast
 shards on pull requests, all nine fast matrix shards on pushes and manual runs,
-and all eight functional-slow shards. Missing JUnit/collection pairs are
+all eight functional-slow shards, and the four exhaustive shards whenever the
+exhaustive gate runs. Exhaustive items have no layer budget of their own and
+count against the `slow` budget. Missing JUnit/collection pairs are
 incomplete evidence: they warn in `report` mode and fail in `enforce` mode.
 Reduce unnecessary setup or input without crossing the tested boundary; keep
 irreducible warehouse, subprocess and exhaustive repository checks in the slow
@@ -666,9 +668,10 @@ star-import candidate; an annotation alone does not. A loop's `else` suite
 starts from the bindings before the loop joined with those an iteration leaves
 at the end of its body or at a `continue`. The bindings after the loop join those
 `else` leaves with those at each `break`, after any `finally` it runs on the way
-out; statements after that `try` see only the routes that finish it normally. A
-`finally` that stores, imports or changes a container in place is treated
-conservatively: statements after its `try` also see the early exits' bindings.
+out; statements after that `try` see only the routes that finish it normally,
+with the bindings its `finally` makes on those routes. The annotations and values a
+`finally` captures, and the classes and functions it defines, are resolved against
+every route through it.
 Unannotated factory declarations and explicit type aliases count when exported
 directly as well as when used by public annotations; so do public class
 attributes assigned type expressions, including generic, union and bare `Any`
@@ -1305,8 +1308,9 @@ A new method needs all of the following:
    stage changes). Only `INCREMENT_PARITY_MATRIX=full` generates the remaining
    primary cells, marked `exhaustive`; all asymptotic-retention variants are
    collected in both scopes, with non-PR variants marked `exhaustive`.
-   `make test-all`, the nightly and the weekly tenfold run set it. PRs select
-   one cheapest running asymptotic-retention cell per code path. Non-parametrized
+   `make test-all`, the nightly, the weekly tenfold run and the weekly
+   dependency-floor run set it. PRs select one cheapest running
+   asymptotic-retention cell per code path. Non-parametrized
    parity tests always run; see the coverage page for counts.
 6. **An independent reference.** Either a frozen comparison against a
    third-party tool or independent primitive under `tests/oracles/`, or a

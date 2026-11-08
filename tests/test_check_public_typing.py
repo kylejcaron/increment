@@ -3523,7 +3523,12 @@ def test_break_through_finally_skips_the_statements_after_the_try(tmp_path: Path
     )
     assert public_any(root, ["sample"]) == {"sample.read": 0}
     path = root / "sample/__init__.py"
-    path.write_text(path.read_text().replace("pass", "_Payload = Any"))
+    source = path.read_text()
+    # A `finally` binding an unrelated name keeps the `break` route's bindings off the
+    # statements after the `try`.
+    path.write_text(source.replace("pass", "_cleanup_done = True"))
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+    path.write_text(source.replace("pass", "_Payload = Any"))
 
     # The normal route now copies Any while `break` leaves the earlier copy.
     with pytest.raises(ValueError):
@@ -3565,3 +3570,38 @@ def test_container_change_in_finally_reaches_fields_after_a_break_exit(tmp_path:
     with pytest.raises(ValueError):
         public_any(root, ["sample"])
     assert (main(args), baseline.read_text()) == (1, before)
+
+
+@pytest.mark.integration
+def test_receiver_field_annotated_in_finally_sees_every_route_through_it(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any
+                __all__ = ["Holder"]
+                class Holder:
+                    def __init__(self) -> None:
+                        for _ in (0,):
+                            try:
+                                _Payload = str
+                                if sys.argv[1:]:
+                                    break
+                                pass
+                            finally:
+                                self.value: _Payload
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text()
+        .replace("_Payload = str", "_Payload = Any")
+        .replace("pass", "_Payload = str")
+    )
+
+    # The field is also annotated on the `break` route, where `_Payload` is `Any`.
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])

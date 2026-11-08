@@ -178,11 +178,51 @@ def test_incomplete_artifacts_warn_or_fail_by_mode(
     assert result == (0 if mode == "report" else 1)
 
 
-def test_complete_required_shards_pass_beside_an_unrelated_exhaustive_report(
+def test_aggregate_includes_exhaustive_duration_shards(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    """Only fast and functional-slow artifacts are duration evidence; an exhaustive report,
-    which carries no collection metadata, is outside the inventory."""
+    """The exhaustive gate's shards are duration evidence, budgeted as slow items."""
+    artifacts = tmp_path / "artifacts"
+    report = artifacts / "exhaustive-junit-shard-1-7-1"
+    report.mkdir(parents=True)
+    (report / "junit.xml").write_text(
+        '<testsuite><testcase classname="tests.test_grid" file="tests/test_grid.py" '
+        'name="test_cell[full]" time="30.1"/></testsuite>'
+    )
+    (report / "junit-collection.json").write_text(
+        json.dumps(
+            {
+                "shard_id": "exhaustive-1",
+                "tier_nodeids": {"slow": ["tests/test_grid.py::test_cell[full]"]},
+            }
+        )
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text('{"mode":"enforce","max_over_budget":{"unit":0,"integration":0,"slow":1}}')
+
+    result = main(
+        [
+            "--artifacts-dir",
+            str(artifacts),
+            "--baseline",
+            str(baseline),
+            "--expected-shards",
+            "exhaustive-1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "- slow: 1 item(s) over 30 s" in output
+    assert "| slow | `tests/test_grid.py::test_cell[full]` | 30.100 |" in output
+    assert "Incomplete duration evidence" not in output
+    assert result == 0
+
+
+def test_complete_required_shards_pass_beside_an_unrelated_certification_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Only fast, functional-slow and exhaustive artifacts are duration evidence; a numerical
+    certification report, which carries no collection metadata, is outside the inventory."""
     artifacts = tmp_path / "artifacts"
     for directory, shard in (
         ("fast-junit-3.12-shard-1-1", "3.12-1"),
@@ -194,7 +234,7 @@ def test_complete_required_shards_pass_beside_an_unrelated_exhaustive_report(
         (report / "junit-collection.json").write_text(
             json.dumps({"shard_id": shard, "tier_nodeids": {"unit": []}})
         )
-    unrelated = artifacts / "exhaustive-junit-shard-1-7-1"
+    unrelated = artifacts / "numerical-certification-junit-shard-1-7-1"
     unrelated.mkdir()
     (unrelated / "junit.xml").write_text("<testsuite/>")
     baseline = tmp_path / "baseline.json"

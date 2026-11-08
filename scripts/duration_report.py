@@ -24,9 +24,9 @@ class LayerItem:
 
 
 LAYER_BUDGETS_S = {"unit": 0.1, "integration": 1.0, "slow": 30.0}
-# The fast and functional-slow shards' artifacts are the duration evidence; other JUnit
-# reports (the exhaustive gate's) carry no collection metadata and are not inventoried.
-DURATION_ARTIFACT_PREFIXES = ("fast-junit-", "slow-junit-")
+# The fast, functional-slow and exhaustive shards' artifacts are the duration evidence; other
+# JUnit reports (numerical certification's) carry no collection metadata and are not inventoried.
+DURATION_ARTIFACT_PREFIXES = ("fast-junit-", "slow-junit-", "exhaustive-junit-")
 
 
 def layer_over_budget(junit: Path, collection: Path) -> list[LayerItem]:

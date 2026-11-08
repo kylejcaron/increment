@@ -211,23 +211,6 @@ class _LoopExits:
     continues: list[_ModuleState] = field(default_factory=list)
 
 
-def _changes_nothing(body: list[ast.stmt]) -> bool:
-    """Whether a suite has no store, import or possible in-place change of a container."""
-    for node in (part for statement in body for part in ast.walk(statement)):
-        if isinstance(node, (*_FUNCTION, ast.ClassDef, ast.Import, ast.ImportFrom)):
-            return False
-        if isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del)):
-            return False
-        # Any method call may change its receiver in place.
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            return False
-        if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
-            return False
-        if isinstance(node, ast.MatchMapping) and node.rest:
-            return False
-    return True
-
-
 def _parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
     args = node.args
     return [
@@ -857,7 +840,9 @@ class _Source:
             self._bind_suite(name, module, package, node.finalbody, scope)
             return
         normal = self._snapshot(module)
-        # One binding of `finally` covers the normal route and every early exit.
+        # What `finally` records for later reads (annotation and value captures, class bodies,
+        # branch selections, overloads) comes from this binding over every route through it;
+        # the early exits leave with its result.
         self._merge_states(module, node, [normal, *leaving.breaks, *leaving.continues])
         self._bind_suite(name, module, package, node.finalbody, scope)
         exits = self.loop_exits[-1]
@@ -865,9 +850,16 @@ class _Source:
             exits.breaks.append(self._snapshot(module))
         if leaving.continues:
             exits.continues.append(self._snapshot(module))
-        if _changes_nothing(node.finalbody):
-            # Only the normal route reaches the statements after the `try`.
-            self._restore(module, normal)
+        scopes, guards = dict(self.scopes), dict(self.guards)
+        candidates, ambiguous = dict(self.overload_candidates), dict(self.ambiguous_overloads)
+        # Only the normal route reaches the statements after the `try`. Binding `finally` again
+        # for it gives that route's bindings and leaves every record above in place.
+        self._restore(module, normal)
+        self._bind_suite(name, module, package, node.finalbody, scope)
+        self.scopes.update(scopes)
+        self.guards.update(guards)
+        self.overload_candidates.update(candidates)
+        self.ambiguous_overloads.update(ambiguous)
 
     def _bind_control(
         self, name: str, module: _Module, package: str, node: ast.stmt, scope: _Scope | None

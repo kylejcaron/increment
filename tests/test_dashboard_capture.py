@@ -1004,21 +1004,28 @@ def _prepared(experiment, resolver, config: DashboardConfig) -> DashboardSnapsho
 
 
 def _freeze(names: list[str]) -> None:
-    """Capture the named frozen preparations through ``prepare_dashboard`` and save them."""
+    """Capture the named frozen preparations through ``prepare_dashboard`` and save them.
+
+    Every Explore request of ``explore`` and every segment request of ``bh`` is also saved as
+    the public readout's answer to that request alone.
+    """
     with tempfile.TemporaryDirectory() as scratch:
         for name in names:
             directory = Path(scratch) / name
             directory.mkdir()
             with _FROZEN_SOURCES[name](directory) as (_, experiment, resolver, config):
                 snapshot = _prepared(experiment, resolver, config)
-                engine = None
-                if name == "explore":
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        engine = {
-                            request: _engine_read(experiment, resolver, snapshot, request)
-                            for request in _explore_requests(snapshot)
-                        }
+                requests = [
+                    request
+                    for request in _explore_requests(snapshot)
+                    if name == "explore" or (name == "bh" and request[0] == "segments")
+                ]
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    engine = {
+                        request: _engine_read(experiment, resolver, snapshot, request)
+                        for request in requests
+                    }
             path = write_frozen(name, experiment=experiment, snapshot=snapshot, engine=engine)
             print(path)
 
@@ -2255,9 +2262,10 @@ def _bh_cutoff(p_values: list[float | None], q: float) -> float | None:
 def test_each_metrics_segments_are_its_own_bh_step_up():
     """Under a BH breakout policy each metric's segments are one family of its own cells.
 
-    The cells' p-values alone set the cutoff and the selection, and a selected interval is
-    reissued at the cutoff when it is below the test level; an added metric is never counted
-    in another metric's family.
+    Each metric's segments are the public readout of that metric alone on the same data, so
+    no metric shown beside it enters its family. The cells' p-values alone set the cutoff and
+    the selection, and a selected interval is reissued at the cutoff when it is below the test
+    level.
     """
     saved = frozen("bh")
     snapshot = _offered_shown(saved.snapshot)
@@ -2276,6 +2284,14 @@ def test_each_metrics_segments_are_its_own_bh_step_up():
             breakout=COUNTRY,
         )
         assert isinstance(rows, BreakoutEstimates) and rows, model.name
+        request = ("segments", model.name, False, COUNTRY)
+        alone = saved.engine[request]
+        assert (
+            capture_differences(
+                (type(rows), _ordered(rows)), alone, without=_may_differ_from_engine(request)
+            )
+            == []
+        ), model.name
         p_values = [row.p_value() for row in rows]
         cutoff = _bh_cutoff(p_values, _BH_Q)
         for row, p in zip(rows, p_values, strict=True):
