@@ -127,6 +127,50 @@ values.
 
 ### Earlier release notes
 
+- Release note (bug fix): a registered panel (`from_frame(shape="panel", ...)`
+  with a sequential plan) that has no rows yet and declares an
+  `observation_end` on a string day-label column (labels such as `"d1"`,
+  `"d2"`) now builds, and `workflows.capture_sequential` before enrollment
+  returns a checkpoint with no records dated at the requested `as_of`, as date
+  and numeric day columns already did. Before, construction failed with a raw
+  Python `ValueError`. A capture as of a label before a non-empty string-day
+  panel's first day likewise returns no records on Polars and PyArrow inputs;
+  before, it failed with a raw Polars `InvalidOperationError` or PyArrow
+  `ArrowTypeError`.
+- Release note (bug fix): panel inputs (`from_frame(shape="panel", ...)`) with a
+  numeric day column now refuse an `observation_end` outside the signed 64-bit
+  range (-9223372036854775808 to 9223372036854775807) at construction with
+  `source.panel.observation_end` (context `value`, `axis_kind="numeric"`,
+  `issue="out_of_range"`), and `workflows.capture_sequential` refuses an `as_of`
+  outside that range with `sequential.source.invalid` before reading the panel,
+  retaining no checkpoint. Before, such a value failed with a raw Python
+  `OverflowError` on pandas and PyArrow inputs, and on Polars inputs was either
+  accepted or misreported as a missing control group. An integer
+  `observation_end` too large to convert to a float no longer fails with a raw
+  `OverflowError` either.
+- Release note (bug fix): a fixed-horizon ratio cell whose denominator mean's
+  relative standard error is beyond the floating-point range (a standard error
+  more than about 1.8e308 times its mean, such as a standard error of 1e109 on
+  a mean of 1e-200) no longer fails the readout with a validation error while
+  building its `estimation.engine.ratio_denominator_precision` advisory. The
+  advisory is emitted: its context reports that arm's value as null in
+  `relative_standard_errors`, and a new key,
+  `relative_standard_error_unavailable_reasons`, gives `past_float_range` for it.
+  The new key is present on every precision advisory, with the same arms as
+  `relative_standard_errors` and null for each arm whose value is reported. The
+  note says the relative standard error is more than 1e308. Estimates,
+  intervals and the denominator-precision check are unchanged: such an arm is
+  still too poorly resolved for the additive difference to stand in for a
+  blocked log scale.
+- Release note (bug fix): `WarehouseResultsStore` now reports a saved run whose
+  manifest version this release cannot read with `store.run.manifest_unsupported`
+  (context `found`, `supported`) on every lookup, as `ParquetResultsStore` does.
+  Before, only `open_run` with a `run_id` did; `open_run` without a `run_id` and
+  `history` reported the same run as `store.run.corrupt`. Because such a run's
+  experiment cannot be read, it stops `open_run` without a `run_id` and `history`
+  from reading the store's schema, whichever experiment is requested; opening a
+  different run by its `run_id` still works. Upgrade Increment to read it.
+  Records that are genuinely unreadable still report `store.run.corrupt`.
 - Release note (bug fix): `runnable()` now refuses a breakout selection
   qualified by a fact source the experiment does not declare for that property,
   as `run()` already did. For example, when `region` is declared on `events`
@@ -192,9 +236,9 @@ values.
   replace them. `WarehouseResultsStore` now also keeps the codes
   `ParquetResultsStore` keeps for a saved run in a format this release cannot
   read: a result kind it does not know reports
-  `results.cell.schema_unsupported`, and a run opened by `run_id` whose
-  manifest version is unknown reports `store.run.manifest_unsupported`, instead
-  of `store.run.corrupt`.
+  `results.cell.schema_unsupported`, and a run whose manifest version is
+  unknown reports `store.run.manifest_unsupported` on every lookup, instead of
+  `store.run.corrupt`.
 - Release note (bug fix): looking up saved results in a `WarehouseResultsStore`
   whose schema does not exist now behaves like a store with no runs: `open_run`
   refuses with `store.run.not_found` and `history` returns an empty history
@@ -288,9 +332,9 @@ values.
   maximum) refuses at construction with `source.panel.day_grain_columns`
   (context `columns`, `route`) instead of wrapping or failing inside the day
   arithmetic. Separately, a registered panel that has no rows yet and declares
-  an `observation_end` on a date or numeric day column now builds and can be
-  captured as an empty pre-enrollment prefix, instead of failing with a raw
-  Python `ValueError`.
+  an `observation_end` on a date, numeric or string day column now builds and
+  can be captured as an empty pre-enrollment prefix, instead of failing with a
+  raw Python `ValueError`.
 - Release note (bug fix): sequential panel captures
   (`workflows.capture_sequential` on a `from_frame(shape="panel", ...)` source
   with a declared `observation_end`) now date their checkpoint and as-of
@@ -806,10 +850,10 @@ values.
   fail at `run` with a backend `InvalidOperationError`. A string day column takes
   a label spelled like its own, which may name a day with no rows (`"d9"` after
   `"d1"` to `"d8"`), and a numeric day index a number. An end that cannot be
-  read, is of the wrong kind, falls before the panel's first day or cannot be
-  ordered among a string column's labels refuses with
-  `source.panel.observation_end` (context `value`, `axis_kind`, `issue`), which
-  replaces the run-time
+  read, is of the wrong kind, lies outside a numeric day index's signed 64-bit
+  range, falls before the panel's first day or cannot be ordered among a string
+  column's labels refuses with `source.panel.observation_end` (context `value`,
+  `axis_kind`, `issue`), which replaces the run-time
   `frame.panel.observable_end_dtype`. Values dated after the end no longer enter
   unwindowed whole-window, open-ended retention, daily or as-of results; daily
   and as-of rows stop at the end; units exposed after it are not analysed and
@@ -1325,9 +1369,11 @@ values.
   now carry every advisory their own estimate produced, for example a segment's
   own mixed-covariate CUPED fit advisory; before, they carried only the two
   ratio-denominator advisories, rebuilt from row notes. Those keep their codes
-  and messages, and their context now carries `threshold` (plus
-  `relative_standard_errors` for `estimation.engine.ratio_denominator_precision`)
-  in place of the row's `note` text. Each advisory stays with the method that
+  and messages, and their context now carries `threshold` (plus, for
+  `estimation.engine.ratio_denominator_precision`, `relative_standard_errors`,
+  null past the float range with its reason in
+  `relative_standard_error_unavailable_reasons`) in place of the row's `note`
+  text. Each advisory stays with the method that
   produced it on run, breakout, daily, as-of and encouragement cells: a
   covariate-balance advisory reaches only the CUPED method's cells, also where
   an unadjusted method is estimated beside it for the same day, a method whose
