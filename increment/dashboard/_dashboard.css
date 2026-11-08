@@ -369,6 +369,15 @@
   border-color: var(--inc-dashboard-rule) !important;
 }
 
+/* The heading carries the comparison and scope notes; it reads as a caption, not a title.
+   CoefTable writes its size and weight inline, so the overrides need !important. */
+.inc-dashboard-root table td.gt_title {
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 1.55 !important;
+  color: var(--inc-dashboard-muted) !important;
+}
+
 .inc-dashboard-table {
   width: 100%;
   border-collapse: collapse;
