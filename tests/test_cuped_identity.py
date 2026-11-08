@@ -593,14 +593,25 @@ def test_exact_sum_rounds_the_exact_total_once_in_any_order(values, data):
             assert all(not np.signbit(route[group]) for route in routes)
 
 
-def test_exact_group_totals_do_not_round_at_the_scratch_boundary():
+def test_exact_group_totals_do_not_round_at_the_scratch_boundary(monkeypatch):
+    bincount = np.bincount
+
+    def bounded_bincount(*args, **kwargs):
+        partial = bincount(*args, **kwargs)
+        assert partial.nbytes <= 65_536 * np.dtype(np.float64).itemsize
+        return partial
+
+    monkeypatch.setattr(np, "bincount", bounded_bincount)
     values = np.tile([0.25, -0.25], 65_536 + 2)
     values[[0, 1, 65_536, 65_537]] = [2.0**53, 1.0, -(2.0**53), 0.5]
-    codes = np.zeros(len(values), dtype=np.int64)
+    # Forty groups need more global exponent bins than fit in the scratch bound.
+    labels = np.repeat(np.arange(40, dtype=np.int64), 2)
+    codes = np.resize(labels, len(values))
+    codes[[0, 1, 65_536, 65_537]] = 0
     # Extreme exponents bypass the bins; their exact cancellation leaves a subnormal.
     extremes = [np.finfo(np.float64).max, -np.finfo(np.float64).max, 5e-324]
     codes = np.concatenate([codes, np.ones(len(extremes), dtype=np.int64)])
     values = np.concatenate([values, extremes])
-    expected = [_rounded_once(values[codes == group]) for group in range(2)]
+    expected = [_rounded_once(values[codes == group]) for group in range(40)]
     for order in (np.arange(len(values)), np.arange(len(values) - 1, -1, -1)):
-        np.testing.assert_array_equal(_exact_group_sums(codes[order], 2, values[order]), expected)
+        np.testing.assert_array_equal(_exact_group_sums(codes[order], 40, values[order]), expected)

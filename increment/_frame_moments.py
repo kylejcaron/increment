@@ -187,7 +187,8 @@ def _exponent_partials(
 
     Per group and exponent, the high and low mantissa halves each sum to a multiple of
     the bin's scale below 2**53 of it, so every float64 partial sum is exact. Exponents
-    whose bin sums could overflow pass through unchanged. Row scratch is bounded; each
+    whose bin sums could overflow pass through unchanged. Row and bin scratch are bounded;
+    occupied bins are compacted when the global bin space exceeds the row slice. Every
     nonzero bin partial is retained separately for the final rounded-once exact reduction.
     """
     size = n_groups * _EXPONENTS
@@ -210,12 +211,16 @@ def _exponent_partials(
             )
             exponent = exponent[binned]
         bins = chunk_codes * _EXPONENTS + exponent
+        occupied = None
+        if size > _SUM_ROWS:
+            occupied, bins = np.unique(bins, return_inverse=True)
         high = (bits & ~_LOW_HALF).view(np.float64)
         low = chunk_values - high
         for half in (high, low):
-            partial = np.bincount(bins, weights=half, minlength=size)
+            partial = np.bincount(bins, weights=half)
             nonzero = np.flatnonzero(partial)
-            partial_codes.append(nonzero // _EXPONENTS)
+            original = nonzero if occupied is None else occupied[nonzero]
+            partial_codes.append(original // _EXPONENTS)
             partial_values.append(partial[nonzero])
     return np.concatenate(partial_codes), np.concatenate(partial_values)
 
