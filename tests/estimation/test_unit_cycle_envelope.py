@@ -232,6 +232,30 @@ def test_envelope_payload_without_residual_side_refuses():
     assert caught.value.context["remedy"] == "recompute_from_source"
 
 
+@pytest.mark.parametrize(
+    ("alternative", "side"),
+    [("two-sided", "split"), ("greater", "split"), ("greater", "less"), ("less", "greater")],
+)
+def test_envelope_payload_side_must_agree_with_its_p_value(alternative, side):
+    # A zero residual, or one off a one-sided alternative, has p = 1; this one has p < 1.
+    sign = -1 if alternative == "less" else 1
+    result = estimate_contrast(
+        stats(reference_delta=sign * 1.25), procedure(envelope(), alternative=alternative)
+    ).results[0]
+    assert result.residual_p_value is not None and result.residual_p_value < 1
+    payload = result.model_dump(mode="json")
+    payload["residual_side"] = side
+    with pytest.raises(InvalidRequestError) as caught:
+        ContrastResult.model_validate_json(json.dumps(payload))
+    assert caught.value.code == "estimation.contrast.reference_metadata"
+
+
+def test_envelope_residual_off_its_alternative_loads_with_p_value_one():
+    result = estimate_contrast(stats(), procedure(envelope(), alternative="less")).results[0]
+    assert (result.residual_side, result.residual_p_value) == ("greater", 1.0)
+    assert ContrastResult.model_validate_json(result.model_dump_json()) == result
+
+
 def test_t_payload_saved_without_residual_side_still_loads():
     result = estimate_contrast(stats(m2_delta=4), procedure(UnitCycleTApproximation())).results[0]
     payload = result.model_dump(mode="json")

@@ -278,6 +278,13 @@ class ContrastResult(CodedModel, BaseModel):
                 and self.refusal_probability_upper is not None
                 and self.residual_cutoff is not None
                 and self.residual_p_value is not None
+                # A zero residual, or one off a one-sided alternative, has p = 1.
+                and (self.residual_side != "split" or self.residual_p_value == 1.0)
+                and (
+                    self.alternative == "two-sided"
+                    or self.residual_side == self.alternative
+                    or self.residual_p_value == 1.0
+                )
                 and self.ct_cycles is not None
                 and self.tc_cycles is not None
                 and self.ct_cycles + self.tc_cycles == self.n_cycles
