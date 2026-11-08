@@ -603,9 +603,9 @@ _SPECS: dict[str, Spec] = {
         "increment/plan.py (an observational design refuses this view by name)",
     ),
     "REF:readout.margin.breakout": Spec(
-        "construction_limited",
-        "breakout rows are tested two-sided against zero; a per-segment shifted null is "
-        "not built, so the guardrail read is run()",
+        "unfinished",
+        "shifted encouragement and multi-covariate linear-CUPED segment hypotheses are not "
+        "implemented; randomized unadjusted and scalar-CUPED hypotheses retain their constructions",
         "increment/estimation/engine.py::validate_readout_engine",
     ),
     "REF:readout.metric.percentile_winsorization": Spec(
@@ -988,7 +988,6 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:definition.retention.metric_window_days", "windowed_retention", "run breakout", "none cuped cluster sequential observational ni_margin", "error zero", "rows"),
         box("REF:definition.total.metric_window_days", "windowed_total", "run breakout", "none cuped cluster sequential observational ni_margin", "error zero", "rows"),
         box("REF:estimation.adjust_common.supported_ratio_metric", "ratio windowed_ratio", "run", "observational", "error zero", "rows"),
-        box("REF:readout.margin.breakout", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "breakout", "ni_margin", "error zero", "rows"),
         box("REF:readout.metric.percentile_winsorization", "mean windowed_mean", "breakout", "winsor_percentile", "error zero", "rows"),
         box("REF:readout.metric.quantile_alternative", "quantile windowed_quantile", "run", "ni_margin", "error zero", "rows"),
         box("REF:readout.metric.quantile_breakout", "quantile windowed_quantile", "breakout", "none cuped ni_margin", "error zero", "rows"),
@@ -1036,7 +1035,6 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:definition.retention.metric_window_days", "windowed_retention", "run breakout", "none cuped cluster sequential observational ni_margin", "error zero", "rows"),
         box("REF:definition.total.metric_window_days", "windowed_total", "run breakout", "none cuped cluster sequential observational ni_margin", "error zero", "rows"),
         box("REF:estimation.adjust_common.supported_ratio_metric", "ratio windowed_ratio", "run", "observational", "error zero", "rows"),
-        box("REF:readout.margin.breakout", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "breakout", "ni_margin", "error zero", "rows"),
         box("REF:readout.metric.percentile_winsorization", "mean windowed_mean", "breakout", "winsor_percentile", "error zero", "rows"),
         box("REF:readout.metric.quantile_alternative", "quantile windowed_quantile", "run", "ni_margin", "error zero", "rows"),
         box("REF:readout.metric.quantile_breakout", "quantile", "breakout", "none ni_margin", "error zero", "rows"),
@@ -1138,7 +1136,6 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "run breakout", "winsor_fixed winsor_percentile", "*", "rows"),
         box("REF:frame.metric_unknown_type", "total active windowed_total windowed_active", "run breakout", "none cuped winsor_fixed winsor_percentile sequential observational ni_margin", "*", "rows"),
         box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "cuped", "error zero skip", "rows"),
-        box("REF:readout.margin.breakout", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "breakout", "ni_margin", "error zero", "rows"),
         box("REF:readout.metric.percentile_winsorization", "mean windowed_mean", "breakout", "winsor_percentile", "error zero", "rows"),
         box("REF:readout.metric.quantile_alternative", "quantile", "run", "ni_margin", "error zero", "rows"),
         box("REF:readout.metric.quantile_breakout", "quantile", "breakout", "none ni_margin", "error zero", "rows"),

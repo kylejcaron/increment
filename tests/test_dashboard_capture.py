@@ -59,7 +59,6 @@ from increment.errors import (
     CodedError,
     IncrementRuntimeWarning,
     InvalidRequestError,
-    UnsupportedRequestError,
 )
 from increment.evidence import BreakoutIdentity
 from increment.workflows import capture_sequential
@@ -1985,21 +1984,29 @@ def test_load_explore_segments_filter_by_dimension_source_and_method_without_lea
     assert {e.method_role for e in filtered} == {"decision"}
 
 
-def test_load_explore_segments_with_no_metric_reads_every_declared_metric() -> None:
-    """``metric=None`` is one real breakout call over every declared metric, so the declared
-    guardrail's margin, which a breakout cannot test, refuses that read by name."""
-    saved = frozen("explore")
-    assert tuple(metric.name for metric in saved.snapshot.metrics) == _NAMES
-    with pytest.raises(UnsupportedRequestError) as caught:
-        load_explore(
-            saved.experiment,
-            snapshot=saved.snapshot,
-            metric=None,
-            view="segments",
-            breakout=COUNTRY,
-        )
-    assert caught.value.code == "readout.margin.breakout"
-    assert caught.value.context["names"] == ("session_seconds",)
+@pytest.mark.integration
+def test_load_explore_segments_with_no_metric_reads_every_declared_metric(tmp_path) -> None:
+    """The disconnected all-metric view retains the guardrail's segment hypothesis."""
+    with _explore_source(tmp_path) as (_, experiment, resolver, config):
+        snapshot = _prepared(experiment, resolver, config)
+    assert tuple(metric.name for metric in snapshot.metrics) == _NAMES
+    rows = load_explore(
+        experiment,
+        snapshot=snapshot,
+        metric=None,
+        view="segments",
+        breakout=COUNTRY,
+    )
+    assert isinstance(rows, BreakoutEstimates)
+    assert {row.metric for row in rows} == set(_NAMES)
+    guardrails = [row for row in rows if row.metric == "session_seconds"]
+    assert guardrails
+    assert all(
+        (row.null_lift, row.null_abs, row.alternative, row.role)
+        == (0.02, None, "less", "exploratory")
+        for row in guardrails
+    )
+    assert all(row.p_value() is not None for row in guardrails)
 
 
 @pytest.mark.integration

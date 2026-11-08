@@ -2438,14 +2438,11 @@ def test_asof_lift_refuses_segmentation_with_a_stable_code():
     ("site", "mechanism"),
     [("metric", "randomized"), ("plan", "randomized"), ("plan", "encouragement")],
 )
-def test_breakout_refuses_a_declared_margin_metric(declaration, site, mechanism):
-    """Per-segment rows are tested two-sided vs 0 - running a guardrail
-    metric through breakout() would silently change stat_sig's estimand
-    per segment. Refused loudly until per-segment shifted nulls exist. A
-    plan-bound ExperimentMetric margin resolves to the same shifted null as
-    the metric's own declaration, so it is refused identically."""
+def test_breakout_declared_margin_follows_the_design_construction(declaration, site, mechanism):
     from increment import readouts
+    from increment.estimation.engine import estimate_lift
     from increment.semantics.models import ExperimentMetric
+    from increment.sources import BreakoutMomentsSource
     from tests.test_readouts_encouragement import FakeMomentSource, _design
 
     metric = _directed_mean_metric("decrease", **(declaration if site == "metric" else {}))
@@ -2454,18 +2451,50 @@ def test_breakout_refuses_a_declared_margin_metric(declaration, site, mechanism)
         if site == "plan"
         else None
     )
-    src = FakeMomentSource(
-        [],
+    if mechanism == "encouragement":
+        src = FakeMomentSource(
+            [],
+            metrics=[metric],
+            capabilities={"total"},
+            design=_design(),
+            plan=plan,
+            breakouts=("country",),
+        )
+        with pytest.raises(UnsupportedRequestError) as raised:
+            readouts.breakout(src, "country", correction="none")
+        assert raised.value.code == "readout.margin.breakout"
+        assert raised.value.context["names"] == ("revenue",)
+        return
+    rows = [{**row, "country": "US"} for row in _guardrail_rows("revenue", direction="decrease")]
+    src = BreakoutMomentsSource(
+        rows,
+        dimension="country",
         metrics=[metric],
-        capabilities={"total"},
-        design=Randomized(control_group="control") if mechanism == "randomized" else _design(),
+        study_id="e",
+        design=Randomized(control_group="control"),
         plan=plan,
-        breakouts=("country",),
     )
-    with pytest.raises(UnsupportedRequestError) as raised:
-        readouts.breakout(src, "country", correction="none")
-    assert raised.value.code == "readout.margin.breakout"
-    assert raised.value.context["names"] == ("revenue",)
+    (result,) = readouts.breakout(src, "country", correction="none")
+    (reference,) = estimate_lift(
+        [metric],
+        rows,
+        control_group="control",
+        alpha=0.05,
+        alternative="less",
+        null_lift=declaration.get("margin", 0.0),
+        null_abs=declaration.get("margin_abs"),
+    ).results
+    assert (result.alternative, result.null_lift, result.null_abs) == (
+        "less",
+        declaration.get("margin", 0.0),
+        declaration.get("margin_abs"),
+    )
+    assert result.p_value() == pytest.approx(reference.p_value())
+    assert result.require_lift().alpha == pytest.approx(0.1)
+    assert (result.require_lift().lb, result.require_lift().ub) == pytest.approx(
+        (reference.require_lift().lb, reference.require_lift().ub)
+    )
+    assert result.role == "exploratory"
 
 
 def test_run_quantile_secondary_refuses_breakout_dimensions(monkeypatch):
