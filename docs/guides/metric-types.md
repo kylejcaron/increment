@@ -738,10 +738,12 @@ metric's own catalog-declared value; there is no call-time override on
 `run()`.
 
 !!! warning "When the absolute interval is unavailable"
-    The additive test needs the absolute standard error (`abs_se`). In the
-    rare case it cannot be computed (numerical underflow), the absolute-margin
-    decision is unavailable *loudly*: `stat_sig` is `False`, and there is no
-    silent fallback to the relative interval.
+    A Wald-based additive interval needs the absolute standard error
+    (`abs_se`). If it cannot be computed (for example, because of numerical
+    underflow), the absolute-margin decision is unavailable *loudly*:
+    `stat_sig` is `False`, and there is no silent fallback to the relative
+    interval. Binomial score-reference intervals are different: they use the
+    retained arm counts and can remain available when `abs_se` is `None`.
 
 ## The dataframe path: `MetricSpec`
 

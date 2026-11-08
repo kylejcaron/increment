@@ -903,8 +903,9 @@ experiments:
         - {property: tenure_days, source: users}
 ```
 
-`run(*from_definitions("definitions/", con, experiment_name="rollout"))` returns the
-same rows as `from_frame(..., shape="summary", design=Observational(...))` over the same
+`run(*from_definitions("definitions/", con, experiment_name="rollout")).readout()`
+returns the same rows as
+`run(*from_frame(..., shape="summary", design=Observational(...))).readout()` over the same
 per-unit data. Each unit's covariate is its latest value strictly before its
 first exposure (`pre_exposure`) or its latest value overall (`static`); a unit
 with no such value gets a missing covariate. Numeric (`dtype: int`, `float`,
@@ -926,7 +927,8 @@ use `unit_covariate_level`, preserving nulls separately from literal labels.
 Their typed requests are `UnitCovariateRequest` and
 `UnitCovariateLevelRequest`; neither needs to be supplied to include a
 declared covariate. `from_unit_day_artifact` reopens with the same
-`Observational` design and returns the same rows. Undeclared or absent
+`Observational` design, and `run(*from_unit_day_artifact(...)).readout()`
+returns the same rows. Undeclared or absent
 extensions refuse with `artifact.extension.missing`.
 
 `estimate_cate`, `validate_cate`, `targeting_rule`, and `select_targeting_rule`
