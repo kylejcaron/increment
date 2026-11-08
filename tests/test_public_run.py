@@ -2066,48 +2066,239 @@ def test_optional_store_and_event_log_replay_same_decisions(tmp_path):
     assert roster_error.value.code == "store.decision.reference_invalid"
 
 
-def test_event_log_replays_bonferroni_breakout_families(tmp_path):
-    """A finite-sample Bonferroni family has no FDR level; its logged event still replays."""
-    from increment import MultiplicitySpec
+@pytest.mark.parametrize("selection", ["orphan", "unknown", "definition", "exploratory", "margin"])
+def test_selective_breakout_refuses_invalid_persistence_before_reads(tmp_path, selection):
+    from increment import Encouragement, ExclusionRestriction, UptakeSpec
+    from increment.errors import CodedError
+    from increment.evidence import BreakoutIdentity
     from increment.store import DecisionLog, ParquetResultsStore
+    from tests.test_kernel_review_regressions import _frame_read_calls
+
+    plan, specs, _, _ = _guardrail_case_inputs()
+    design = (
+        Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(justification="uptake carries the effect"),
+        )
+        if selection == "margin"
+        else None
+    )
+    experiment, reader = from_frame(
+        _guardrail_case_frame().assign(segment=["north", "south"] * 4, clicked=[0, 1] * 4),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control" if design is None else None,
+        design=design,
+        uptake="clicked" if design is not None else None,
+        metrics=specs,
+        plan=plan,
+        breakouts=("segment",),
+    )
+    metric = synthesise_metric(specs[1] if selection == "margin" else specs[0])
+    if selection == "unknown":
+        metric = metric.model_copy(update={"name": "unregistered"})
+    elif selection == "definition":
+        metric = metric.model_copy(update={"preferred_direction": "decrease"})
+    breakout = View.breakout((BreakoutIdentity("segment", None),), metrics=(metric,))
+    experiment = experiment.with_views(breakout)
+    options = {"views": (breakout,)} if selection == "orphan" else {}
+    if selection == "exploratory":
+        options["exploratory_metrics"] = ("unregistered",)
+    expected = {
+        "orphan": ("store.decision.reference_invalid", {}),
+        "unknown": (
+            "facade.analysis_config.unknown_metric_declared",
+            {
+                "caller": "breakout",
+                "unknown_names": ("unregistered",),
+                "declared_names": ("guard", "value"),
+            },
+        ),
+        "definition": (
+            "facade.analysis_config.metric_definition_mismatch",
+            {"caller": "breakout", "mismatched_names": ("value",)},
+        ),
+        "exploratory": (
+            "store.decision.reference_invalid",
+            {"options": ("exploratory_metrics",)},
+        ),
+        "margin": ("readout.margin.breakout", {"names": ("guard",)}),
+    }[selection]
+    log_path = tmp_path / "decisions.jsonl"
+    with reader, _frame_read_calls() as reads, pytest.raises(CodedError) as error:
+        run(
+            experiment,
+            reader,
+            results_store=ParquetResultsStore(tmp_path / "runs"),
+            decision_log=DecisionLog(path=log_path),
+            **options,
+        )
+    assert (error.value.code, dict(error.value.context)) == expected
+    assert reads == []
+    assert not tuple((tmp_path / "runs").rglob("*.parquet"))
+    assert not log_path.exists()
+
+
+def _selective_breakout_analysis():
+    from increment import ExperimentMetric, MultiplicitySpec, Randomized
+    from increment.evidence import BreakoutIdentity
 
     frame = pd.DataFrame(
-        {
-            "unit": [f"u{index}" for index in range(16)],
-            "arm": ["control"] * 8 + ["treatment"] * 8,
-            "segment": ["north", "south"] * 8,
-            "value": [3.0, 4.0, 5.0, 6.0, 3.5, 4.5, 5.5, 6.5]
-            + [4.0, 5.0, 6.0, 7.0, 4.5, 5.5, 6.5, 7.5],
-        }
+        [
+            {
+                "unit": f"{segment}-{arm}-{index}",
+                "arm": arm,
+                "segment": segment,
+                "value": 20.0 + index % 2 * 0.01 + (shift if arm == "treatment" else 0.0),
+                "guard": 10.0 + index % 2 * 0.01,
+            }
+            for segment, shift, count in (("north", 10.0, 20), ("south", -10.0, 20), ("tiny", 0, 1))
+            for arm in ("control", "treatment")
+            for index in range(count)
+        ]
     )
     experiment, resolver = from_frame(
         frame,
         shape="summary",
         unit="unit",
         group="arm",
-        control="control",
-        metrics={"value": "mean"},
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[
+            MetricSpec(name="value", type="mean", preferred_direction="increase"),
+            MetricSpec(name="guard", type="mean", preferred_direction="decrease"),
+        ],
         breakouts=("segment",),
         plan=AnalysisPlan(
-            primary="value", view_multiplicity=MultiplicitySpec(correction="bonferroni")
+            primary="value",
+            guardrails=[ExperimentMetric(metric="guard", margin_abs=0.5)],
+            view_multiplicity=MultiplicitySpec(correction="bonferroni"),
         ),
         experiment_id="exp",
     )
-    experiment = experiment.with_views(View(view="breakout", grain="total"))
-    store = ParquetResultsStore(tmp_path / "runs")
-    log_path = tmp_path / "decisions.jsonl"
-    result = run(experiment, resolver, results_store=store, decision_log=DecisionLog(path=log_path))
+    selected_metric = synthesise_metric(
+        MetricSpec(name="value", type="mean", preferred_direction="increase")
+    )
+    breakout = View.breakout((BreakoutIdentity("segment", None),), metrics=(selected_metric,))
+    experiment = experiment.with_views(breakout)
+    return experiment, resolver, breakout
 
-    restored_log = DecisionLog(path=log_path)
-    replayed = restored_log.replay(
-        lambda experiment_id, run_id: store.open_run(
-            experiment_id, result.run.analysis_spec_hash, run_id
-        ),
-        experiment.registration,
+
+@pytest.mark.parametrize(
+    "warehouse",
+    [False, pytest.param(True, marks=pytest.mark.integration)],
+    ids=["parquet", "warehouse"],
+)
+def test_event_log_replays_bonferroni_breakout_families(tmp_path, warehouse):
+    """A rejecting segment must not replace the complete saved headline decision."""
+    import warnings
+    from contextlib import ExitStack
+
+    import narwhals as nw
+
+    from increment import render
+    from increment.breakout.estimates import BreakoutEstimates
+    from increment.decide import decide
+    from increment.errors import IncrementWarning
+    from increment.store import DecisionLog, ParquetResultsStore, WarehouseResultsStore
+
+    experiment, resolver, breakout = _selective_breakout_analysis()
+    log_path = tmp_path / "decisions.jsonl"
+    with ExitStack() as stack:
+        stack.enter_context(resolver)
+        if warehouse:
+            import ibis
+
+            backend = ibis.duckdb.connect()
+            stack.callback(backend.disconnect)
+            store = WarehouseResultsStore(backend, schema="results")
+        else:
+            store = ParquetResultsStore(tmp_path / "runs")
+        headline = run(experiment, resolver, views=(View.overall(),))
+        with warnings.catch_warnings(record=True) as notices:
+            warnings.simplefilter("always", IncrementWarning)
+            result = run(
+                experiment, resolver, results_store=store, decision_log=DecisionLog(path=log_path)
+            )
+        handle = store.open_run("exp", result.run.analysis_spec_hash, result.run.run_id)
+        reopened = RunResult.from_handle(handle, registration=experiment.registration)
+        restored_decisions = decide(handle, experiment.registration)
+        restored_log = DecisionLog(path=log_path)
+        replayed = restored_log.replay(
+            lambda experiment_id, run_id: store.open_run(
+                experiment_id, result.run.analysis_spec_hash, run_id
+            ),
+            experiment.registration,
+        )
+    assert any(
+        getattr(notice.message, "code", None) == "breakout.estimates.row_few_units"
+        for notice in notices
     )
 
+    assert reopened.cells == result.cells
+    assert reopened.run.expected_roster == tuple(cell.identity for cell in result.cells)
+    assert reopened.run.metadata == result.run.metadata
+    assert reopened.metadata is not None and len(reopened.metadata.captures) == 1
+    assert {cell.identity.source_snapshot_id for cell in reopened.cells} == set(
+        reopened.metadata.scope.by_source
+    )
+    assert all(
+        cell.identity.source_content_digest
+        for cell in reopened.cells
+        if cell.identity.scope == View.overall()
+    )
+    assert all(
+        cell.identity.source_content_digest == cell.provenance.source_content_digest
+        for cell in reopened.cells
+    )
+    assert {cell.identity.experiment_id for cell in reopened.cells} == {"exp"}
+    assert {cell.provenance.run_id for cell in reopened.cells} == {result.run.run_id}
+    assert {cell.provenance.execution_identity_hash for cell in reopened.cells} == {
+        result.run.execution_identity_hash
+    }
+    assert reopened.decisions == restored_decisions == result.decisions
+    assert reopened.decisions.program == headline.decisions.program
+    assert reopened.decisions.program.status == "block"
+    assert "decision.primary.not_rejected" in reopened.decisions.program.reason_codes
+    segmented = [cell for cell in reopened.cells if cell.identity.scope == breakout]
+    assert len(segmented) == 3
+    assert {cell.identity.key.metric for cell in segmented} == {"value"}
+    assert {
+        cell.identity.key.metric for cell in reopened.cells if cell.identity.scope == View.overall()
+    } == {"value", "guard"}
+    assert {
+        (cell.identity.key.dimension_value, cell.components["sampling"][0].code)
+        for cell in segmented
+    } == {("north", None), ("south", None), ("tiny", "breakout.few_units")}
+    segment_rows = result.readout(breakout)
+    assert isinstance(segment_rows, BreakoutEstimates)
+    assert any(row.stat_sig() for row in segment_rows if row.dimension_value == "north")
+    monitoring_hashes = {cell.identity.hash() for cell in segmented}
+    assert all(
+        "decision.not_evaluated.monitoring_view" in verdict.reason_codes
+        for verdict in reopened.decisions.cells
+        if verdict.identity_hash in monitoring_hashes
+    )
+    assert (
+        nw.from_native(reopened.to_frame(backend="pandas"))
+        .group_by("scope_view")
+        .agg(nw.len())
+        .sort("scope_view")
+        .to_dict(as_series=False)
+    ) == {"scope_view": ["breakout", "run"], "len": [3, 2]}
+    assert render(reopened, "brief") == render(result, "brief")
     assert [event.rule for event in restored_log.events] == ["bonferroni"]
-    assert replayed == (result.decisions,)
+    assert {
+        None if reference.identity.scope is None else reference.identity.scope.view
+        for event in restored_log.events
+        for reference in event.references
+    } == {"breakout"}
+    assert replayed == (reopened.decisions,)
 
 
 def test_public_run_binds_design_level_encouragement_compliance_identity():

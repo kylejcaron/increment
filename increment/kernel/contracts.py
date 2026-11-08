@@ -169,8 +169,9 @@ class View(_ContractModel):
         segment: tuple[BreakoutIdentity, ...],
         *,
         population: Literal["assigned", "triggered"] = "assigned",
+        metrics: tuple[Metric, ...] = (),
     ) -> View:
-        return cls(view="breakout", segment=segment, population=population)
+        return cls(view="breakout", segment=segment, population=population, metrics=metrics)
 
     @classmethod
     def switchback(cls, *, metrics: tuple[Metric, ...] = ()) -> View:
@@ -200,7 +201,7 @@ class View(_ContractModel):
                 and len({identity.property for identity in self.segment}) > 1
             )
             or (bool(self.day_domain) and tuple(sorted(set(self.day_domain))) != self.day_domain)
-            or (self.view != "switchback" and bool(self.metrics))
+            or (self.view not in {"breakout", "switchback"} and bool(self.metrics))
             or (self.values and self.view not in {"daily", "asof"})
         )
         if invalid:

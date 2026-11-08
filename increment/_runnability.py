@@ -293,6 +293,15 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
 
 def default_metrics(experiment: Any, scope: Any) -> list[Any]:
     """The metrics a view reads when the request selects none: its own, else the experiment's."""
+    if scope.view == "breakout" and scope.metrics:
+        from increment.semantics.models import Metric
+
+        declared = TypeAdapter(tuple[Metric, ...]).validate_python(
+            thaw(tuple(experiment.metrics.values()))
+        )
+        return select_metrics(
+            declared, scope.metrics, caller="breakout", require_declared_definitions=True
+        )
     return list(scope.metrics) or list(experiment.metrics)
 
 
