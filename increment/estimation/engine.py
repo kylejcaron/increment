@@ -1375,8 +1375,10 @@ def _ratio_advisories(
         return ()
     metric_name = contrast[0].metric
     advisories: list[ReadoutAdvisory] = []
+    # A flagged precision is finite or past the float range (a standard error too large
+    # for its positive mean); the latter is reported as a null with its reason.
     flagged = {
-        group_id: precision
+        group_id: precision if math.isfinite(precision) else None
         for group_id, precision in _ratio_denominator_precisions(contrast, strategy, method).items()
         if precision > RATIO_DENOMINATOR_PRECISION_THRESHOLD
     }
@@ -1391,6 +1393,10 @@ def _ratio_advisories(
                     "metric_name": metric_name,
                     "threshold": RATIO_DENOMINATOR_PRECISION_THRESHOLD,
                     "relative_standard_errors": flagged,
+                    "relative_standard_error_unavailable_reasons": {
+                        group_id: "past_float_range" if precision is None else None
+                        for group_id, precision in flagged.items()
+                    },
                 },
                 message=precision_note,
             )
@@ -2386,19 +2392,24 @@ def _select_lift_variance_strategy(
 
 
 def _ratio_denominator_precision_note(
-    flagged: Mapping[str, float], *, adjusted: bool
+    flagged: Mapping[str, float | None], *, adjusted: bool
 ) -> str | None:
     """Advisory text for a ratio row whose denominator mean is poorly resolved in the
-    *flagged* arms, naming each one's statistic and the threshold; ``None`` when no arm is
-    flagged. *adjusted* names a CUPED row's adjusted denominator mean."""
+    *flagged* arms, naming each one's statistic (``None`` past the float range) and the
+    threshold; ``None`` when no arm is flagged. *adjusted* names a CUPED row's adjusted
+    denominator mean."""
     if not flagged:
         return None
     mean = "CUPED-adjusted denominator mean" if adjusted else "denominator mean"
+    # Past the float range the statistic exceeds float_max, about 1.8e308.
+    statistics = ", ".join(
+        f"{group_id}={'more than 1e308' if value is None else f'{value:.3g}'}"
+        for group_id, value in flagged.items()
+    )
     return (
         "ratio_denominator_precision: the denominator is too noisy at this sample size for "
         f"the interval to hold its stated level (relative standard error of the {mean} "
-        f"{', '.join(f'{group_id}={value:.3g}' for group_id, value in flagged.items())} "
-        f"exceeds {RATIO_DENOMINATOR_PRECISION_THRESHOLD:.3g}). Expect "
+        f"{statistics} exceeds {RATIO_DENOMINATOR_PRECISION_THRESHOLD:.3g}). Expect "
         "under-coverage; add units or check the denominator for heavy tails before deciding"
     )
 

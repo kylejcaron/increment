@@ -24,7 +24,9 @@ import pytest
 from increment import from_definitions, from_frame, from_moments, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import IncrementRuntimeWarning
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.armstats import ArmStats
+from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
 from increment.estimation.engine import estimate_lift
 from increment.estimation.variance import (
     RATIO_DENOMINATOR_PRECISION_THRESHOLD,
@@ -104,6 +106,51 @@ def test_advisory_leaves_the_interval_unchanged():
     assert flagged.require_lift() == plain.require_lift()
     assert (flagged.abs_lb, flagged.abs_ub) == (plain.abs_lb, plain.abs_ub)
     assert flagged.stat_sig() == plain.stat_sig()
+
+
+def test_a_precision_past_the_float_range_is_reported_as_a_null_with_its_reason():
+    """A control denominator mean of 1e-200 with a standard deviation of 1e110 over 50 units
+    has a relative standard error of about 1.4e309, past the float range. Its numerator has
+    the same mean and variance at correlation 0.9999, which keeps both scales' standard errors
+    representable. The combined log-scale standard error, about 2e307, trips the guard, and the
+    unresolved denominator keeps its failure; the advisory still reaches the cell, reporting
+    control's statistic as a null with its reason beside treatment's 0.3."""
+    n, var = 50, 1e220
+    control = ArmStats(
+        study_id="e",
+        metric="rpo",
+        group_id="control",
+        n=n,
+        ref_y=1e-200,
+        cy1=0.0,
+        cy2=(n - 1) * var,
+        ref_den=1e-200,
+        cden1=0.0,
+        cden2=(n - 1) * var,
+        cden3=0.0,
+        cyden=(n - 1) * 0.9999 * var,
+    )
+    treatment = _arm("treatment", n=n, y_bar=2.2, var_y=1.0, d_bar=1.0, var_d=4.5)
+    computation = estimate_lift(
+        metrics=[_METRIC], summary=summary(control, treatment), control_group="control"
+    )
+    assert computation.results == ()
+    (failure,) = computation.failures.values()
+    assert failure.code == "estimation.engine.lift_guard"
+    assert failure.context["reason"] == "delta_method_unreliable"
+    (advisory,) = computation.advisories[
+        MethodHypothesisKey(ArmHypothesisKey("rpo", "treatment", "itt"), "unadjusted")
+    ]
+    assert advisory.code == "estimation.engine.ratio_denominator_precision"
+    assert dict(advisory.context["relative_standard_errors"]) == {
+        "control": None,
+        "treatment": pytest.approx(math.sqrt(4.5 / 50), rel=1e-12),
+    }
+    assert dict(advisory.context["relative_standard_error_unavailable_reasons"]) == {
+        "control": "past_float_range",
+        "treatment": None,
+    }
+    assert ReadoutAdvisory.model_validate_json(advisory.model_dump_json()) == advisory
 
 
 # --- One heavy-denominator dataset through every ingress path ---------------
