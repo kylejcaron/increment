@@ -878,8 +878,16 @@ def test_dashboard_tables_neutralize_dangerous_label_links(
 def test_daily_values_report_their_actual_calendar_basis_and_gap_reasons(
     storefront: DashboardSnapshot,
 ) -> None:
+    from increment.estimation.results import Estimate
+
     data = temporal_rows(storefront, "daily_values").filter(
         lambda row: row.metric == storefront.primary_metric
+    )
+    data = type(data)(
+        row.model_copy(update={"value": Estimate(value=0.3)})
+        if row.group_id == storefront.control_group and row.value is not None
+        else row
+        for row in data
     )
     frame: Any = data.to_frame(backend="pandas")
     assert set(frame["ds_basis"].dropna()) == {"calendar"}
@@ -890,6 +898,8 @@ def test_daily_values_report_their_actual_calendar_basis_and_gap_reasons(
     assert "nonpositive_mean" in html
     assert "30.0%" in html
     assert "[20.0%, 40.0%]" in html
+    assert "no interval available" in html
+    assert "(−∞, ∞)" not in html
 
 
 @pytest.mark.slow
@@ -1263,8 +1273,12 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
         assert attribution in disclosure
 
 
+@pytest.mark.parametrize(
+    "status,discovery",
+    [("exploratory_family", True), ("exploratory_family", False), ("exploratory_unadjusted", None)],
+)
 def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
-    storefront: DashboardSnapshot,
+    storefront: DashboardSnapshot, status: str, discovery: bool | None
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
     from increment.estimation.results import Estimate
@@ -1276,10 +1290,11 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
         row.model_copy(
             update={
                 "lift": Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
-                "discovery": True,
+                "discovery": discovery,
                 "family_q": 0.05,
                 "family_procedure": "bh",
-                "multiplicity_status": "exploratory_family",
+                "multiplicity_status": status,
+                "decision_scope_complete": discovery is True,
                 "null_lift": 0.01,
                 "posterior_prob_favorable": 0.73,
             }
@@ -1288,10 +1303,18 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
     )
     from increment.tables import estimates_to_readout
 
-    assert estimates_to_readout(rising)[0]["selection_qualification"] is not None
+    assert (estimates_to_readout(rising)[0]["selection_qualification"] is not None) == (
+        discovery is True
+    )
     html = render_explore(storefront, rising, metric=model.name, view="cumulative_lift").text
-    assert "Selection evidence for" in html
-    assert "Discovery" in html and "Yes" in html
+    assert ("Selection evidence for" in html) == (discovery is True)
+    if discovery is not None:
+        assert "Discovery" in html and ("Yes" if discovery else "No") in html
+    if status == "exploratory_unadjusted":
+        assert "unadjusted for multiplicity" in html.casefold()
+    else:
+        assert "Exploratory family" in html
+    assert ("Decision scope is incomplete" in html) == (discovery is not True)
     assert "Posterior P(favorable)" in html and "73.0%" in html
     from increment.dashboard._theme import coeftable_theme
 

@@ -86,6 +86,7 @@ from increment.tables import (
     _failure_disclosure,
     _format_confidence_set,
     _format_metadata_stat,
+    _readout_metadata_notes,
     estimates_to_readout,
 )
 
@@ -1983,7 +1984,10 @@ def _latest_lift_qualifications(row: Mapping[str, Any]) -> str:
             continue
         percentage = key != "posterior_risk_if_shipped" or row.get("value_scale") != "absolute"
         entries.append((label, esc(_format_metadata_stat(value, percentage=percentage))))
-    return _chips(entries) if entries else ""
+    notes = _readout_metadata_notes(pd.DataFrame([row]))
+    return (_chips(entries) if entries else "") + _list(
+        [esc(note) for note in notes], css_class="inc-dashboard-family-qualifications"
+    )
 
 
 def _trajectory_label(row: Any, *, lift: bool) -> str:
@@ -2098,7 +2102,7 @@ def _temporal_plots(
 
 
 def _value_interval(point: Any, formatter: ct.Number) -> str:
-    if point is None:
+    if point is None or point.level is None:
         return missing_html("no interval available")
     lower = esc(formatter(point.lb)) if point.lb is not None else "−∞"
     upper = esc(formatter(point.ub)) if point.ub is not None else "∞"
