@@ -276,6 +276,23 @@ def test_prior_backed_repr_shows_posterior_without_preferred_direction():
     assert "chance_to_beat=" in rendered
 
 
+def test_posterior_estimate_reads_in_percent_on_the_relative_scale_only():
+    from increment.estimation.inference import Normal
+
+    results = _run_mean(_mean_frame(), prior=Normal(mu=0.0, sigma=0.1))
+    row = next(row for row in results if row.posterior_available)
+    assert row.posterior_estimate is not None
+    absolute = row.model_copy(update={"value_scale": "absolute"})
+    for candidate, percent in ((row, True), (absolute, False)):
+        text = render_readout_text(interpret_readout([candidate], None))
+        line = next(line for line in text.splitlines() if " posterior: " in line)
+        match = re.search(r"estimate=(-?\d[\d.e+-]*)(%?);", line)
+        assert match is not None
+        assert (match.group(2) == "%") is percent
+        scale = 100 if percent else 1
+        assert float(match.group(1)) == pytest.approx(row.posterior_estimate * scale, rel=1e-5)
+
+
 @pytest.mark.parametrize("row_kind", ["breakout", "daily_lift"])
 def test_prior_backed_breakout_and_daily_rows_render_posterior_chance_to_beat(row_kind):
     from datetime import date
