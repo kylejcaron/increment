@@ -14,7 +14,8 @@ experiments:
       treatment: 0.5
     allocation_scheme: independent
     plan:
-      # This joint report includes a quantile guardrail: use fixed-horizon inference.
+      # No `inference:` is declared, so the plan is fixed-horizon: the completed
+      # experiment is read once after its window closes, not monitored by look.
       view_multiplicity:
         correction: bonferroni
       primary: conversion_rate
