@@ -7792,15 +7792,17 @@ experiments:
 
 def _ceiling_scale_connection() -> Any:
     """DuckDB holding one enrollment per unit and one conversion event per converter, generated
-    inside the database so no row exists in Python. A memory limit and a private spill directory
-    bound a table this size; a conversion event past the window pads the data's freshness."""
+    inside the database so no row exists in Python; a conversion event past the window pads the
+    data's freshness. With two threads the analysis queries run out of memory at 768MB; a 1GB
+    limit, spilling to a private directory, keeps the database below the memory the frame
+    ingresses need without slowing the queries."""
     import atexit
 
     import ibis
 
     spill = tempfile.TemporaryDirectory(prefix="increment-parity-spill-")
     atexit.register(spill.cleanup)
-    con = ibis.duckdb.connect(memory_limit="6GB", threads=2, temp_directory=spill.name)
+    con = ibis.duckdb.connect(memory_limit="1GB", threads=2, temp_directory=spill.name)
     n_c, n_t = _CEILING_CONTROL_UNITS, _CEILING_TREATMENT_UNITS
     c_conv, t_conv = _CEILING_CONTROL_CONVERSIONS, _CEILING_TREATMENT_CONVERSIONS
     con.raw_sql(
@@ -7843,6 +7845,7 @@ def _ceiling_scale_frame() -> Any:
 def _exact_binomial_beyond_the_former_arm_ceiling_case() -> ParityCase:
     """The exact binomial route on a control arm of 4,000,001 units reaches the same counts, and
     so the same interval, through every ingress that builds its moments differently: a
+    warehouse aggregation (definitions, unit-day artifact), a per-unit frame (summary, panel)
     and an exported moments cube."""
     import numpy as np
     import pyarrow as pa
