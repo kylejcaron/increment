@@ -1093,17 +1093,24 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
             )
 
     if view == "breakout" and not isinstance(request.plan.inference, SEQUENTIAL_POLICIES):
-        # Fixed-horizon segment rows build no shifted null. Plan-bound ExperimentMetric margins
-        # resolve onto the compiled procedure, not the Metric, so check both. Sequential breakout
-        # tests each cell against its registered null, which must equal the compiled one.
+        # These segment constructors do not yet carry a shifted hypothesis.
+        # Randomized scalar methods use the existing relative/additive nulls.
         procedures = request.plan.procedures
         declared = [
             metric.name
-            for metric in metrics
-            if getattr(metric, "margin", None) is not None
-            or getattr(metric, "margin_abs", None) is not None
-            or getattr(procedures[metric.name], "null_lift", 0.0) != 0.0
-            or getattr(procedures[metric.name], "null_abs", None) is not None
+            for metric, metric_methods in zip(metrics, method_catalog, strict=True)
+            if (
+                mechanism == "encouragement"
+                or any(
+                    method.variance_reduction == "cuped_multicovariate" for method in metric_methods
+                )
+            )
+            and (
+                getattr(metric, "margin", None) is not None
+                or getattr(metric, "margin_abs", None) is not None
+                or getattr(procedures[metric.name], "null_lift", 0.0) != 0.0
+                or getattr(procedures[metric.name], "null_abs", None) is not None
+            )
         ]
         if declared:
             _refuse("readout.margin.breakout", names=declared)

@@ -83,7 +83,7 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
         "readout.margin.breakout": RefusalSpec(
             "readout.margin.breakout",
             UnsupportedRequestError,
-            template="metric(s) {names} declare a non-inferiority margin, but breakout rows are tested two-sided vs 0 -- a per-segment shifted null is not built; the whole-window guardrail read is run()",
+            template="metric(s) {names} declare a margin on an encouragement or multi-covariate linear-CUPED breakout; a shifted segment construction is not implemented for these variants. Use the whole-window run() guardrail read, or a supported randomized scalar segment method.",
         ),
         "readout.value_scale.unknown_metric": RefusalSpec(
             "readout.value_scale.unknown_metric",
