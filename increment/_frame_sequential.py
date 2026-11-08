@@ -396,7 +396,7 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
         definitions_id=definitions,
         finalized=finalized,
         previous=previous,
-        reveal_cursor=as_of,
+        reveal_cursor=horizon,
         assignment_counts=source.unit_counts(),
     )
     source._sequential_snapshot = snapshot

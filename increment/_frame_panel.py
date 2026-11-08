@@ -152,7 +152,8 @@ def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: An
 
     A calendar axis takes a date, a naive datetime (its calendar day) or an ISO-8601
     string, returned as the column's own Python type; a numeric axis takes a finite
-    number; a string axis takes a label that orders with its own.
+    number; a string axis takes a label that orders with its own. A calendar or numeric
+    panel with no rows yet has no first day for the end to precede.
     """
     if value is None:
         return None
@@ -186,7 +187,7 @@ def _normalize_observation_end(frame: nw.DataFrame[Any], *, date: str, value: An
         else:
             axis_kind = "calendar"
             normalized, issue = _calendar_day(value, datetime_axis=_datetime_axis(dtype, labels))
-        if issue is None and normalized < min(labels):
+        if issue is None and labels and normalized < min(labels):
             issue = "before_first_day"
     if issue is not None:
         refuse(
@@ -302,8 +303,17 @@ def _uptake_day_elapsed(panel: nw.DataFrame[Any], anchor: str) -> nw.Expr:
             list(order), values
         )
     return _day_axis_elapsed(
-        nw.col("ds"), nw.col(anchor), numeric=_day_axis_is_numeric(panel.schema["ds"])
+        _signed_day(nw.col("ds"), panel.schema["ds"]),
+        _signed_day(nw.col(anchor), panel.schema[anchor]),
+        numeric=_day_axis_is_numeric(panel.schema["ds"]),
     )
+
+
+def _signed_day(day: nw.Expr, dtype: nw.dtypes.DType) -> nw.Expr:
+    """*day* as a signed integer when *dtype* is unsigned, so a day before its anchor is a
+    negative offset rather than a wrapped one; construction refuses unsigned labels past
+    the signed range."""
+    return day.cast(nw.Int64) if dtype.is_unsigned_integer() else day
 
 
 def _day_axis_elapsed(ds: nw.Expr, anchor: nw.Expr, *, numeric: bool) -> nw.Expr:
@@ -455,8 +465,12 @@ def _observable_end_index(exposure: nw.DataFrame[Any], observable_end: Any) -> n
         return labeled.with_columns(
             _uptake_day_elapsed(labeled, "__exposure__").alias("__observable_days__")
         ).drop("ds")
-    numeric = _day_axis_is_numeric(exposure.schema["__exposure__"])
-    elapsed = _day_axis_elapsed(nw.lit(observable_end), nw.col("__exposure__"), numeric=numeric)
+    dtype = exposure.schema["__exposure__"]
+    elapsed = _day_axis_elapsed(
+        nw.lit(observable_end),
+        _signed_day(nw.col("__exposure__"), dtype),
+        numeric=_day_axis_is_numeric(dtype),
+    )
     return exposure.with_columns(elapsed.alias("__observable_days__"))
 
 

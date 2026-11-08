@@ -881,6 +881,67 @@ def test_sparse_panel_sequential_cohort_and_continuation_match_dense() -> None:
     assert continued[0].states == continued[1].states
 
 
+def test_panel_capture_clamps_cursor_to_observation_end_and_continues_after_extension():
+    """A capture requested after the declared observation end is dated at that end, and a
+    source whose end is later extended continues from it."""
+    import pandas as pd
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
+    plan = _plan(specs, "bernoulli", date="day", exposure_date="exposed")
+    registration = plan.inference.registration
+    assert registration is not None
+    reveal = registration.reveal.model_copy(update={"longest_window_days": 2})
+    plan = plan.model_copy(
+        update={
+            "inference": InferenceSpec(
+                kind="always_valid",
+                registration=registration.model_copy(update={"reveal": reveal}),
+            )
+        }
+    )
+    days = [date(2026, 1, day) for day in range(1, 5)]
+    rows = []
+    for unit_index in range(8):
+        exposure = days[0] if unit_index % 2 == 0 else days[2]
+        rows.extend(
+            {
+                "unit": f"u{unit_index}",
+                "arm": "control" if unit_index < 4 else "treatment",
+                "day": day,
+                "exposed": exposure,
+                "outcome": float(unit_index % 3 == 0) if day == exposure else 0.0,
+            }
+            for day in days
+        )
+
+    def source(observation_end):
+        return from_frame(
+            pd.DataFrame(rows),
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="day",
+            exposure_date="exposed",
+            control="control",
+            metrics=specs,
+            experiment_id="experiment",
+            observation_end=observation_end,
+            plan=plan,
+        )
+
+    experiment, resolver = source(days[1])
+    snapshot = workflows.capture_sequential(experiment, resolver, finalized=True, as_of=days[3])
+    assert snapshot.reveal_cursor == days[1]
+    asof = View(view="asof", grain="asof", completion_policy=True)
+    (row,) = view_readout(experiment, resolver, asof)
+    assert row.ds == days[1]
+    continued = workflows.capture_sequential(
+        *source(days[3]), finalized=True, as_of=days[3], previous=snapshot
+    )
+    assert continued.reveal_cursor == days[3]
+    assert continued.parent_id == snapshot.prefix_id
+
+
 @pytest.mark.parametrize("scratch_budget", [0, 64 * 1024 * 1024])
 def test_sparse_panel_sequential_state_matches_dense_and_streamed_kernels(
     scratch_budget: int, monkeypatch: pytest.MonkeyPatch
@@ -1139,6 +1200,54 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     replayed_daily = view_readout(*replay, View(view="asof", grain="asof", completion_policy=True))
     assert list(replayed_daily) == list(daily)
     assert type(replayed_daily[0].ds) is type(label(14))
+
+
+@pytest.mark.parametrize("axis", ["calendar", "nullable_unsigned"])
+def test_empty_registered_panel_with_observation_end_can_capture_before_enrollment(axis):
+    """A registered panel with no rows yet keeps its declared observation end, and a capture
+    before enrollment reveals no unit through the requested day."""
+    import pandas as pd
+    import pyarrow as pa
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
+    if axis == "calendar":
+        frame: Any = pa.table(
+            {
+                "unit": pa.array([], pa.string()),
+                "arm": pa.array([], pa.string()),
+                "day": pa.array([], pa.date32()),
+                "exposed": pa.array([], pa.date32()),
+                "outcome": pa.array([], pa.float64()),
+            }
+        )
+        as_of, end = date(2026, 1, 1), date(2026, 1, 4)
+    else:
+        frame = pd.DataFrame(
+            {
+                "unit": pd.Series([], dtype="string"),
+                "arm": pd.Series([], dtype="string"),
+                "day": pd.Series([], dtype="UInt64"),
+                "exposed": pd.Series([], dtype="UInt64"),
+                "outcome": pd.Series([], dtype="float64"),
+            }
+        )
+        as_of, end = 1, 4
+    experiment, resolver = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=specs,
+        experiment_id="experiment",
+        observation_end=end,
+        plan=_plan(specs, "bernoulli", date="day", exposure_date="exposed"),
+    )
+    snapshot = workflows.capture_sequential(experiment, resolver, finalized=True, as_of=as_of)
+    assert not snapshot.records
+    assert snapshot.reveal_cursor == as_of
 
 
 @pytest.mark.slow

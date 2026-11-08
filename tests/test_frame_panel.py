@@ -834,6 +834,62 @@ def test_windowed_metric_numeric_day_axis_respects_window_edge() -> None:
     assert _sum_y(moments["treatment"]) == pytest.approx(3.0)
 
 
+def test_unsigned_day_axis_counts_like_a_signed_axis() -> None:
+    """A day before the exposure is a negative offset on an unsigned axis too: two units
+    exposed on day 1 with rows on days 0, 1 and 2 have every eligible day, so no cell
+    is zero-filled."""
+
+    def densified_cells(dtype: pa.DataType) -> int:
+        frame = pa.table(
+            {
+                "user_id": ["u1"] * 3 + ["u2"] * 3,
+                "variant": ["control"] * 3 + ["treatment"] * 3,
+                "day": pa.array([0, 1, 2] * 2, type=dtype),
+                "exposed_on": pa.array([1] * 6, type=dtype),
+                "revenue": [1.0, 1.0, 1.0, 2.0, 2.0, 2.0],
+            }
+        )
+        return from_unit_panel(
+            frame,
+            unit="user_id",
+            group="variant",
+            date="day",
+            control="control",
+            metrics={"revenue": "mean"},
+            exposure_date="exposed_on",
+        ).densified_cells
+
+    assert densified_cells(pa.uint32()) == densified_cells(pa.int64()) == 0
+
+
+@pytest.mark.parametrize("backend", ["arrow", "polars"])
+def test_fractional_day_labels_keep_their_offsets(backend: str) -> None:
+    """Days -0.5, 0.5 and 1.5 sit -1, 0 and 1 days from an exposure at 0.5, so a two-day
+    window reads the last two days only."""
+    frame = _panel_backend(
+        backend,
+        {
+            "user_id": ["c"] * 3 + ["t"] * 3,
+            "variant": ["control"] * 3 + ["treatment"] * 3,
+            "day": [-0.5, 0.5, 1.5] * 2,
+            "exposed_on": [0.5] * 6,
+            "revenue": [100.0, 1.0, 10.0, 200.0, 2.0, 20.0],
+        },
+    )
+    src = from_unit_panel(
+        frame,
+        unit="user_id",
+        group="variant",
+        date="day",
+        control="control",
+        metrics=[MetricSpec(name="revenue", window_days=2)],
+        exposure_date="exposed_on",
+    )
+    moments = {r["group_id"]: r for r in _moments(src, _metric(src, "revenue"), grain="total")}
+    assert _sum_y(moments["control"]) == pytest.approx(11.0)
+    assert _sum_y(moments["treatment"]) == pytest.approx(22.0)
+
+
 def test_numeric_day_axis_with_calendar_exposure_date_refuses() -> None:
     """A numeric date column combined with a calendar exposure_date is a
     contradictory day axis - previously silently filtered every row as
@@ -865,6 +921,32 @@ def test_numeric_day_axis_with_calendar_exposure_date_refuses() -> None:
             exposure_date="exposed_on",
         )
     assert exc_info.value.code == "frame.validation.dtype_disagree_day"
+
+
+def test_unsigned_day_label_beyond_the_signed_range_refuses() -> None:
+    """Days are counted as signed offsets, so an unsigned day label past 2**63 - 1
+    refuses at construction instead of wrapping."""
+    frame = pa.table(
+        {
+            "user_id": ["c1", "c1", "t1", "t1"],
+            "variant": ["control", "control", "treatment", "treatment"],
+            "day": pa.array([0, 2**63, 0, 2**63], type=pa.uint64()),
+            "exposed_on": pa.array([0] * 4, type=pa.uint64()),
+            "revenue": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    with pytest.raises(InvalidRequestError) as exc_info:
+        from_unit_panel(
+            frame,
+            unit="user_id",
+            group="variant",
+            date="day",
+            control="control",
+            metrics={"revenue": "mean"},
+            exposure_date="exposed_on",
+        )
+    assert exc_info.value.code == "source.panel.day_grain_columns"
+    assert exc_info.value.context["columns"] == (("date", "day", 2**63),)
 
 
 def test_asof_cumulative_moments_refuses_ambiguous_date_like_labels() -> None:

@@ -157,6 +157,7 @@ _DAY_GRAIN_COLUMNS = RefusalSpec(
         f"day-grain columns have unsupported timezone/axis semantics: {columns!r}. {route}"
     ),
 )
+_SIGNED_DAY_MAX = int(np.iinfo(np.int64).max)
 _NULL_IDENTITY = RefusalSpec(
     "source.frame.null_identity",
     InvalidRequestError,
@@ -1339,6 +1340,9 @@ def _validate_day_grain_columns(
     mismatched source can no longer construct successfully and answer
     ``unit_counts()`` before a later ``daily()``/``asof()`` call on the
     SAME source refuses it.
+
+    A panel counts days as signed offsets from each exposure, so an unsigned
+    day column holding a value past the signed 64-bit range refuses here.
     """
     from datetime import datetime
 
@@ -1377,6 +1381,22 @@ def _validate_day_grain_columns(
         _validate_day_axis_match(
             dtypes["date"], dtypes["exposure_date"], ds_name="date", anchor_name="exposure_date"
         )
+    if "date" in dtypes:
+        beyond = []
+        for role, col in columns:
+            if not dtypes[role].is_unsigned_integer():
+                continue
+            # A column with no values (an empty panel) has no maximum to check.
+            observed = frame.get_column(col).drop_nulls()
+            if not observed.is_empty() and (largest := int(observed.max())) > _SIGNED_DAY_MAX:
+                beyond.append((role, col, largest))
+        if beyond:
+            refuse(
+                _DAY_GRAIN_COLUMNS,
+                columns=tuple(beyond),
+                route=f"number the days from a nearer origin so every value is at most "
+                f"{_SIGNED_DAY_MAX}",
+            )
 
 
 def _is_missing(frame: nw.DataFrame[Any], col: str) -> nw.Expr:
