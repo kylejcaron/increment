@@ -639,6 +639,66 @@ def test_warehouse_latest_and_history_reject_unreadable_committed_records():
 
 
 @pytest.mark.integration
+def test_warehouse_reopen_of_a_legacy_envelope_refuses_with_the_contrast_code():
+    import json
+
+    import pyarrow.parquet as pq
+
+    from tests.estimation.test_unit_cycle_envelope import envelope
+    from tests.test_readouts_switchback import _assignment, _switchback_analysis
+
+    backend = ibis.duckdb.connect()
+    backend.create_database("analytics")
+    reference = envelope(p=0.5, cycles=2).model_copy(update={"assignment": _assignment()})
+    experiment, resolver = _switchback_analysis(reference)
+    try:
+        saved = _warehouse_run(view_readout(experiment, resolver))
+        store = WarehouseResultsStore(backend, schema="analytics")
+        store.put(saved)
+        table_name, payload = _payloads_by_run_id(backend)["one"]
+        table = pq.read_table(pa.BufferReader(payload))
+        stored = table.to_pylist()
+        for row in stored:
+            row_payload = json.loads(row["row_payload"])
+            # An envelope saved before the result recorded its rejection side.
+            del row_payload["data"]["residual_side"]
+            row["row_payload"] = json.dumps(row_payload)
+        sink = pa.BufferOutputStream()
+        pq.write_table(pa.Table.from_pylist(stored, schema=table.schema), sink)
+        backend.drop_table(table_name, database="analytics")
+        backend.create_table(
+            table_name,
+            obj=pa.table({"payload": pa.array([sink.getvalue().to_pybytes()], type=pa.binary())}),
+            database="analytics",
+        )
+
+        for operation in (
+            lambda: store.open_run("exp", "spec", "one"),
+            lambda: store.open_run("exp", "spec"),
+            lambda: store.history(
+                "exp",
+                HistorySelector(
+                    metric_hash="metric",
+                    estimator_id="t",
+                    method_config_hash="config",
+                    method_instance_id="instance",
+                    scope_hash=View(view="run", grain="total").hash(),
+                ),
+            ),
+        ):
+            with pytest.raises(CodedError) as error:
+                operation()
+            assert error.value.code == "estimation.contrast.legacy_envelope"
+            assert dict(error.value.context) == {
+                "missing_fields": ("residual_side",),
+                "remedy": "recompute_from_source",
+            }
+    finally:
+        resolver.close()
+        backend.disconnect()
+
+
+@pytest.mark.integration
 def test_warehouse_contrast_matches_control_labels_containing_colons():
     backend = ibis.duckdb.connect()
     backend.create_database("analytics")

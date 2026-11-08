@@ -17,7 +17,7 @@ from increment._warehouse_namespace import (
     split_schema,
 )
 from increment.kernel.program_refusals import refuse_store, refuse_unavailable_results_schema
-from increment.store.parquet import ParquetResultsStore
+from increment.store.parquet import ParquetResultsStore, _raise_unsupported_format
 from increment.store.types import (
     HistorySelector,
     Run,
@@ -214,6 +214,7 @@ class WarehouseResultsStore:
         try:
             return self._load_name(name)
         except Exception as exc:
+            _raise_unsupported_format(exc)
             refuse_store(
                 "store.run.corrupt",
                 "Committed warehouse run record is unreadable or inconsistent",
