@@ -516,6 +516,9 @@ def test_one_sided_inference_does_not_compute_the_unbounded_endpoint():
     assert result.estimate.ub is None
 
 
+@pytest.mark.grid(
+    "One case per envelope-only field a t-reference contrast must not carry, on each replicate grain."
+)
 @pytest.mark.parametrize(
     "field,value",
     [
