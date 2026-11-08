@@ -291,6 +291,11 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     return ()
 
 
+def default_metrics(experiment: Any, scope: Any) -> list[Any]:
+    """The metrics a view reads when the request selects none: its own, else the experiment's."""
+    return list(scope.metrics) or list(experiment.metrics)
+
+
 def operation_options(
     experiment: Any, scope: Any, overrides: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -301,7 +306,7 @@ def operation_options(
     """
     values = {**typed_request_options(experiment.request_options), **(overrides or {})}
     if values.get("metrics") is None:
-        values["metrics"] = list(scope.metrics) or list(experiment.metrics)
+        values["metrics"] = default_metrics(experiment, scope)
     if "population" not in values:
         values["population"] = scope.population
     if scope.view in {"daily", "asof"}:

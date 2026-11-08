@@ -31,6 +31,24 @@ from increment.store.types import (
 _RUN_TABLE_PREFIX = "increment_run_"
 _RUN_KEY_DIGITS = MAX_IDENTIFIER_BYTES - len(_RUN_TABLE_PREFIX)
 _RUN_TABLE_NAME = re.compile(rf"{_RUN_TABLE_PREFIX}[0-9a-f]{{{_RUN_KEY_DIGITS}}}")
+# BigQuery reports a missing dataset as 404 "Not found: Dataset <project>:<dataset>" and a
+# dataset it may not read as 403 "Access Denied: ...", so the 404 form names absence alone.
+_MISSING_NAMESPACE = re.compile(
+    r"\b(?:schema|database|dataset)\b.*\b(?:does not exist|not found)\b|\bnot found:\s*dataset\b",
+    re.IGNORECASE | re.DOTALL,
+)
+# Snowflake reports a schema the role may not read as "does not exist or not authorized".
+_UNAUTHORIZED = re.compile(r"authori[sz]|permission|privilege|access denied", re.IGNORECASE)
+
+
+def _reports_missing_schema(error: Exception, schema: str) -> bool:
+    """Whether *error* is the backend saying *schema* does not exist, and nothing else."""
+    message = str(error)
+    return (
+        schema.lower() in message.lower()
+        and _MISSING_NAMESPACE.search(message) is not None
+        and _UNAUTHORIZED.search(message) is None
+    )
 
 
 def run_table_name(run_key: str) -> str:
@@ -221,10 +239,24 @@ class WarehouseResultsStore:
                 error=type(exc).__name__,
             )
 
+    def _table_names(self) -> list[str]:
+        """The store's tables; none in a declared schema the warehouse reports does not exist.
+
+        A schema listing is not consulted: a role's listing omits a schema it may
+        not read, so absence there does not prove the schema is missing.
+        """
+        try:
+            return list(self.backend.list_tables(database=self.schema))
+        except Exception as error:
+            location = None if self.schema is None else split_schema(self.schema)
+            if location is not None and _reports_missing_schema(error, location[1]):
+                return []
+            raise
+
     def open_run(
         self, experiment_id: str, analysis_spec_hash: str, run_id: str | None = None
     ) -> RunHandle:
-        names = self.backend.list_tables(database=self.schema)
+        names = self._table_names()
         if run_id is not None:
             name = self._name(experiment_id, analysis_spec_hash, run_id)
             if name in names:
@@ -279,7 +311,7 @@ class WarehouseResultsStore:
 
     def history(self, experiment_id: str, selector: HistorySelector):
         records = []
-        for name in self.backend.list_tables(database=self.schema):
+        for name in self._table_names():
             if not self._is_committed_name(name):
                 continue
             manifest = self._read_manifest_name(name)

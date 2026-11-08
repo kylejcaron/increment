@@ -578,7 +578,7 @@ def _execution_identity_fields(
     identity_metrics: Mapping[str, Any] | None = None,
 ) -> dict[str, str | None]:
     key = cell.identity.key
-    if key.metric == "uptake" and key.estimand == "compliance":
+    if key.estimand == "compliance":
         metric = _execution_config_for_cell(binding, cell)[0]
     else:
         metric = None if identity_metrics is None else identity_metrics.get(key.metric)
@@ -1155,7 +1155,7 @@ def _preflight_persistence(
     logging: bool,
 ) -> None:
     """Refuse a run that cannot be saved or logged under its registration, before any read."""
-    from increment._runnability import operation_options, typed_request_options
+    from increment._runnability import default_metrics, operation_options, typed_request_options
 
     binding = reader._binding
     contrast = _contrast_context(binding)
@@ -1169,10 +1169,17 @@ def _preflight_persistence(
     elif logging:
         refuse(_CONTRAST_CONTEXT_NOT_PORTABLE, action="logging")
     registered = {**typed_request_options(experiment.request_options), **overrides}
+    selected = registered.get("metrics")
     if not registered.get("metrics", True):
         # An empty selection is an empty run, which the store refuses itself.
         del registered["metrics"]
-    _validate_registered_options(binding.plan if contrast is None else contrast, registered)
+    compiled = binding.plan if contrast is None else contrast
+    _validate_registered_options(compiled, registered)
+    if selected is None:
+        # Each view then reads its default roster, which the run saves under the registration.
+        for scope in experiment.views:
+            if metrics := default_metrics(experiment, scope):
+                _validate_registered_options(compiled, {"metrics": metrics})
     if saving and any(
         _selected_percentile_winsorization(binding, operation_options(experiment, scope, overrides))
         for scope in experiment.views

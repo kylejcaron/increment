@@ -2898,60 +2898,35 @@ class ArtifactMomentSource(SequentialSourceMixin):
         if requests is not None:
             self._export_portable_moments(path, requests)
             return
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-
         from increment._source_identity import source_identity
         from increment.decision_wire import compiled_plan_to_json
-        from increment.sources import (
-            DECISION_PLAN_FIELD,
-            MOMENTS_FORMAT,
-            SOURCE_IDENTITY_FIELD,
-            _validate_moment_counts,
-        )
+        from increment.sources import MOMENTS_FORMAT, stamp_fixed_rows, write_moments_table
 
         compliance = (
             self.compliance_summary(self.context.design)
             if isinstance(self.context.design, Encouragement)
             else None
         )
-        table = self._moments_for_metrics()
-        for row in table.to_pylist():
-            _validate_moment_counts(row)
-        if "successes" in table.column_names:
-            index = table.schema.get_field_index("successes")
-            table = table.set_column(index, "successes", table["successes"].cast(pa.int64()))
-        table = table.append_column(
-            "moments_format", pa.array([MOMENTS_FORMAT] * table.num_rows, type=pa.int64())
-        )
-        plan_payload = compiled_plan_to_json(self.context.plan)
-        table = table.append_column(
-            DECISION_PLAN_FIELD,
-            pa.array([plan_payload] * table.num_rows, type=pa.string()),
-        )
-        identity_payload = json.dumps(source_identity(self), sort_keys=True, separators=(",", ":"))
-        table = table.append_column(
-            SOURCE_IDENTITY_FIELD,
-            pa.array([identity_payload] * table.num_rows, type=pa.string()),
-        )
-        from increment.sources import ASSIGNMENT_COUNTS_FIELD, COMPLIANCE_SUMMARY_FIELD
-
+        moments = self._moments_for_metrics().to_pylist()
+        plan = compiled_plan_to_json(self.context.plan)
+        identity = json.dumps(source_identity(self), sort_keys=True, separators=(",", ":"))
         counts = self._export_counts(compliance)
-        if counts is not None:
-            counts_payload = json.dumps(counts, sort_keys=True, separators=(",", ":"))
-            table = table.append_column(
-                ASSIGNMENT_COUNTS_FIELD,
-                pa.array([counts_payload] * table.num_rows, type=pa.string()),
-            )
-        if compliance is not None:
-            payload = json.dumps(compliance.to_wire(), sort_keys=True, separators=(",", ":"))
-            table = table.append_column(
-                COMPLIANCE_SUMMARY_FIELD, pa.array([payload] * table.num_rows, type=pa.string())
-            )
-        table = table.replace_schema_metadata(
-            {b"increment.moments_format": str(MOMENTS_FORMAT).encode()}
+        rows = stamp_fixed_rows(
+            moments,
+            version=MOMENTS_FORMAT,
+            plan=plan,
+            identity=identity,
+            counts=None
+            if counts is None
+            else json.dumps(counts, sort_keys=True, separators=(",", ":")),
+            compliance=(
+                None
+                if compliance is None
+                else json.dumps(compliance.to_wire(), sort_keys=True, separators=(",", ":"))
+            ),
+            metric_missingness=self.context.metric_missingness,
         )
-        pq.write_table(table, str(path))
+        write_moments_table(path, rows, MOMENTS_FORMAT)
 
     def _export_counts(self, compliance: Any) -> dict[str, int] | None:
         """Assignment counts carried by an export, when the artifact certifies them."""
@@ -3011,6 +2986,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 if compliance is None
                 else json.dumps(compliance.to_wire(), sort_keys=True, separators=(",", ":"))
             ),
+            metric_missingness=self.context.metric_missingness,
         )
         write_moments_table(path, rows, CUPED_EVIDENCE_FORMAT)
 

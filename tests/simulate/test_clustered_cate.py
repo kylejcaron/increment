@@ -1147,7 +1147,12 @@ def test_unequal_size_design_uptake_metric_order_and_complete_wire_parity(tmp_pa
             ("full", "late", False),
             ("drop", "late", True),
         }
-        assert {r.population for r in replay} == {None}
+        # The export records drop's declared skip policy, so its replay stays observed-only.
+        assert {(r.metric, r.estimand, r.population is not None) for r in replay} == {
+            ("uptake", "compliance", False),
+            ("full", "late", False),
+            ("drop", "late", True),
+        }
         assert keyed(live) == keyed(replay)
         compliance = next(row for row in live if row.estimand == "compliance").require_lift()
         # Welch-Satterthwaite collapses to df=39 here (single treatment arm,
