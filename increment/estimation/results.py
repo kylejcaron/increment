@@ -40,7 +40,12 @@ from pydantic import (
 )
 
 from increment._canonical import canonical_json_bytes, canonical_json_loads
-from increment._display import format_effect, format_effect_interval, format_interval
+from increment._display import (
+    format_effect,
+    format_effect_interval,
+    format_interval,
+    interval_text,
+)
 from increment._immutable import _FrozenMapping
 from increment._literals import (
     ALTERNATIVE_VALUES,
@@ -2071,9 +2076,16 @@ class LiftEstimate(_RowIdentity):
                 else format_effect(region.point, relative=relative_scale)
             )
             bounds = region.relative
-            interval = format_effect_interval(
-                bounds.lower.value, bounds.upper.value, relative=relative_scale
-            )
+
+            def endpoint_text(endpoint: Any) -> str | None:
+                if endpoint.status == "finite":
+                    assert endpoint.value is not None
+                    return format_effect(endpoint.value, relative=relative_scale)
+                if endpoint.status == "unbounded":
+                    return None
+                return f"unavailable({endpoint.reason})"
+
+            interval = interval_text(endpoint_text(bounds.lower), endpoint_text(bounds.upper))
             endpoint_status = (bounds.lower.status, bounds.upper.status)
             endpoint_reasons = (bounds.lower.reason, bounds.upper.reason)
             endpoint_details = (
