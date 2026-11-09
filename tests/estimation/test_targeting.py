@@ -2216,9 +2216,12 @@ def test_replicate_copies_match_materialized_whole_cluster_draws(arm_summary, we
             rel=1e-12,
             abs=1e-12,
         )
-        assert replicate.scales == pytest.approx(
-            (*expected.rank_scales, *(row.se for row in rows_out)), rel=1e-12, abs=1e-12
-        )
+        expected_scales = (*expected.rank_scales, *(row.se for row in rows_out))
+        for actual_scale, expected_scale in zip(replicate.scales, expected_scales, strict=True):
+            if expected_scale is None:
+                assert actual_scale is None
+            else:
+                assert actual_scale == pytest.approx(expected_scale, rel=1e-12, abs=1e-12)
         assert replicate.reasons[2:] == tuple(
             targeting._replicate_reason(row.unavailable_reason) for row in rows_out
         )
