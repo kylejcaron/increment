@@ -170,21 +170,26 @@ values.
   that cannot share work retain their existing paths; custom readers do not
   need a new interface. This does not promise one query for every analysis.
 - Preparing large dashboards checks result identity without repeatedly scanning
-  every result. Stored metadata, ordering and numerical results are unchanged.
+  every result. Existing result identities, ordering and numerical values are unchanged.
 - Explore lift charts group compatible breakout and arm series in one table.
   Shading covers finite confidence intervals; open sides are not drawn as
   separate lines or invented bands. Exact latest values, available bounds and
   attributed qualifications expand together, including when a point estimate
   is unavailable. Labels remain literal, and multi-metric plots retain visible
-  identities. Confidence levels near 0% or 100% retain enough precision not to
-  round to either endpoint. Timestamps with UTC offsets retain their actual
-  spacing and ordering, including repeated local clock times. Exported pages
-  still allow previously unopened chart selections without a data source.
+  identities. Confidence levels near 0% or 100% retain their precision; when a
+  stored level rounds to 100%, its positive noncoverage budget remains explicit.
+  Timestamps with UTC offsets retain their actual spacing and ordering,
+  including repeated local clock times. Exported pages still allow previously
+  unopened chart selections without a data source.
+- Flat readout rows and dashboard CSVs add nullable `coverage_alpha`, the stored
+  noncoverage budget of the displayed interval. This preserves the interval's
+  own budget through flattening, including when `level` rounds to `1.0`; it does
+  not substitute a family or decision allocation. Existing fields retain their meanings.
 - Individual result rows display relative effects in percent and absolute
   effects in native units. Unbounded endpoints remain open; undefined endpoints
   remain unavailable rather than becoming infinite. Large finite effects stay
   finite in the display, and extreme standard-error diagnostics use compact
-  formatting. Numeric fields and serialization are unchanged.
+  formatting. Estimate numeric fields and model serialization are unchanged.
 
 ### Earlier release notes
 

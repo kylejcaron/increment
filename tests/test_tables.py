@@ -3369,21 +3369,32 @@ def test_readout_table_discloses_retained_alpha_when_level_rounds_to_one():
     assert "all intervals 100% (α=1e-17)" in html
 
 
-def test_readout_table_keeps_equal_levels_with_distinct_budgets_separate():
+@pytest.mark.parametrize(
+    ("level", "alphas"),
+    [(1.0, (1e-17, 1e-18)), (0.9999999999999999, (None, 1e-16))],
+)
+def test_readout_table_keeps_equal_levels_with_distinct_budgets_separate(level, alphas):
     pytest.importorskip("coeftable")
-    rows = estimates_to_readout(
-        [
-            _estimate("first", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
-            _estimate("second", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
-        ]
-    )
-    for row, alpha in zip(rows, (1e-17, 1e-18), strict=True):
-        row["level"] = 1.0
-        row["coverage_alpha"] = alpha
-
-    html = readout_table(rows).gt().as_raw_html()
-    assert "100% (α=1e-17) CI" in html
-    assert "100% (α=1e-18) CI" in html
+    estimates = [
+        LiftEstimate(
+            metric=metric,
+            group_id="T",
+            method="unadjusted",
+            method_role="decision",
+            lift=Estimate(value=0.12, lb=0.02, ub=0.22, level=level, alpha=alpha),
+        )
+        for metric, alpha in zip(("first", "second"), alphas, strict=True)
+    ]
+    text = _Dom(readout_table(estimates_to_readout(estimates)).gt().as_raw_html()).text
+    shown = re.findall(r"(\d+(?:\.\d+)?)%(?: \(α=[^)]+\))? CI", text)
+    assert len(shown) == 2
+    for percentage in map(float, shown):
+        assert percentage == pytest.approx(level * 100, rel=1e-15, abs=0)
+        if level < 1:
+            assert 0 < percentage < 100
+    for alpha in alphas:
+        if alpha is not None:
+            assert f"α={alpha!r}" in text
 
 
 def test_readout_table_retains_typed_contrast_interval_alpha():

@@ -705,6 +705,8 @@ def _format_coverage_levels(levels: list[float], alphas: list[float | None]) -> 
     for index, (level, alpha, label) in enumerate(zip(levels, alphas, labels, strict=True)):
         if len(identities_by_label[label]) > 1:
             exact = f"{level * 100:.15g}%"
+            if 0 < level < 1 and exact in ("0%", "100%"):
+                exact = _format_coverage(level)
             labels[index] = exact if alpha is None else f"{exact} (α={alpha!r})"
     return labels
 

@@ -1232,6 +1232,7 @@ rows:
 | Key | Meaning |
 |---|---|
 | `lift`, `lower`, `higher`, `level`, `open_side` | The row's estimate and interval. On a contrast row `lift` holds the additive estimate, so read it with `value_scale`. `open_side` comes from the row's `lift`, so a set-only row's open upper end shows only as `higher is None`. |
+| `coverage_alpha` | The displayed interval's stored noncoverage budget, such as `0.05` for 95% coverage. It survives when `level` rounds to `1.0`; null means the budget is unavailable. It is not a family allocation or a reconstructed complement. |
 | `stat_sig`, `null_lift`, `null_abs` | The verdict and the nulls it was tested against. |
 | `value_scale`, `estimand`, `inference`, `role`, `discovery` | Row identity and status. Contrast rows set `value_scale="absolute"` and `group_id=treatment_group`. |
 | `decision_scale`, `decision_available` | `LiftEstimate`, `BreakoutEstimate`, and `DailyLiftEstimate` only: the scale the verdict is made on (`"absolute"` for a declared absolute margin, an additive-zero decision, or a native absolute row; `"relative"` otherwise), and whether a `False` verdict is a genuine non-rejection rather than the absence of a test. |
