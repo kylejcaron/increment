@@ -536,9 +536,10 @@ def test_whole_and_segment_outcome_failures_stay_in_the_same_family():
     var_t, var_c = 4 / (400 * 12**2), 4 / (400 * 10**2)
     df = (var_t + var_c) ** 2 / ((var_t**2 + var_c**2) / 399)
     half_width = t.isf(0.05 / 6, df) * math.sqrt(var_t + var_c)
-    assert ours.alpha == pytest.approx(0.05 / 3)
-    assert (ours.lb, ours.ub) == pytest.approx(
-        (math.expm1(math.log(1.2) - half_width), math.expm1(math.log(1.2) + half_width))
+    _close(ours.alpha, 0.05 / 3)
+    _close(
+        (ours.lb, ours.ub),
+        (math.expm1(math.log(1.2) - half_width), math.expm1(math.log(1.2) + half_width)),
     )
 
 
