@@ -320,8 +320,11 @@ tested-null verdict separately from family selection, qualified by method,
 role, and arm when needed. Disconnected sets remain unions of intervals; their
 forest bars are omitted rather than filling the excluded gap. Confidence levels
 normally use up to two decimal places: an adjusted 98.333…% level displays as
-98.33%. Levels near 0% or 100% retain enough precision not to round to either
-endpoint.
+98.33%. Fractional levels near 0% or 100% retain enough precision not to round
+to either endpoint. If binary floating-point storage rounds a retained level
+to 100% despite a positive retained noncoverage budget, the display keeps 100% and
+shows that interval's own α budget; a relative confidence set shows its own
+budget separately.
 An undefined endpoint is shown with its reason and any finite opposite bound,
 never as infinity. Its numeric interval and forest bar are omitted rather
 than drawing a false open interval; an available point is still shown.

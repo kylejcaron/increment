@@ -15,7 +15,7 @@ from math import inf
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment._display import interval_text
-from increment.tables import _decision_available, _format_confidence_set
+from increment.tables import _decision_available, _format_confidence_set, _format_coverage
 
 if TYPE_CHECKING:
     from increment.dashboard._data import DashboardSnapshot
@@ -241,20 +241,20 @@ def primary_tone(row: Mapping[str, Any]) -> str:
     return "favorable" if observed == direction else "unfavorable"
 
 
-def percent_text(level: float) -> str:
+def percent_text(level: float, alpha: float | None = None) -> str:
     """A compact coverage percentage, retaining precision near zero and one."""
-    percent = level * 100
-    text = f"{percent:.2f}".rstrip("0").rstrip(".") + "%"
-    if 0 < level < 1 and text in ("0%", "100%"):
-        text = f"{percent:.15g}%"
-        if text in ("0%", "100%"):
-            text = f"{float(percent)!r}%"
-    return text
+    return _format_coverage(level, alpha)
 
 
 def primary_method(row: Mapping[str, Any]) -> str:
+    """Describe the displayed interval using its retained coverage budget."""
     level = row.get("level")
-    level_label = "" if level is None else f"{percent_text(float(level))} "
+    alpha = row.get("coverage_alpha", row.get("alpha"))
+    level_label = (
+        ""
+        if level is None
+        else f"{percent_text(float(level), alpha if isinstance(alpha, float) else None)} "
+    )
     inference = inference_word(str(row.get("inference", "fixed")))
     return f"{level_label}{esc(inference)} interval · {esc(tail_word(row))}"
 

@@ -345,7 +345,17 @@ def _primary_card(snapshot: DashboardSnapshot) -> str:
     tone = primary_tone(row)
     status = _primary_status(tone, significant=bool(row.get("stat_sig")))
     point = headline_number(row["lift"], row) if has_point else effect_html(row)
-    caption = primary_method(row)
+    row_estimate = next(
+        (
+            estimate
+            for estimate, readout in zip(snapshot.estimates, snapshot.readout_rows, strict=True)
+            if readout is row
+        ),
+        None,
+    )
+    lift = None if row_estimate is None else row_estimate.lift
+    method_row = {**row, "coverage_alpha": None if lift is None else lift.alpha}
+    caption = primary_method(method_row)
     if not has_point and confidence_set_text(row) is not None:
         point = ""
         caption = f"Point estimate unavailable · {caption}"
@@ -1993,6 +2003,7 @@ def _lift_trajectory_table(
     for row, svg in panels:
         reading = estimates_to_readout([row])[0]
         reading["alternative"] = row.alternative
+        reading["coverage_alpha"] = None if row.lift is None else row.lift.alpha
         readings.append(reading)
         name = _lift_reading_label(reading)
         cells.append(
@@ -2021,12 +2032,18 @@ def _lift_trajectory_table(
     row = panels[0][0]
     basis = "Exposure cohort" if row.ds_basis == "cohort" else "Observation date"
     dates = list(dict.fromkeys(str(reading["ds"]) for reading in readings))
-    levels = list(dict.fromkeys(reading.get("level") for reading in readings))
+    coverages = list(
+        dict.fromkeys((reading.get("level"), reading.get("coverage_alpha")) for reading in readings)
+    )
     caption = [*caption_context, basis]
     caption.append(f"Latest {dates[0]}" if len(dates) == 1 else "Latest dates vary by series")
-    if len(levels) == 1 and not is_missing(levels[0]):
-        caption.append(f"{percent_text(cast(float, levels[0]))} intervals")
-    elif len(levels) > 1:
+    if len(coverages) == 1 and not is_missing(coverages[0][0]):
+        level, alpha = coverages[0]
+        caption.append(
+            f"{percent_text(cast(float, level), alpha if isinstance(alpha, float) else None)} "
+            "intervals"
+        )
+    elif len(coverages) > 1:
         caption.append("Confidence levels vary by series")
     context = _chips(
         [

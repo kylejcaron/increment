@@ -1772,3 +1772,74 @@ def test_report_retains_directional_fieller_set_beside_central_interval(
 
 
 pytestmark = pytest.mark.integration
+
+
+def test_primary_coverage_discloses_retained_alpha_when_level_rounds_to_one(
+    storefront: DashboardSnapshot,
+) -> None:
+    index = next(
+        i
+        for i, row in enumerate(storefront.readout_rows)
+        if row["metric"] == storefront.primary_metric
+    )
+    estimate = storefront.estimates[index]
+    assert estimate.lift is not None
+    updated = list(storefront.estimates)
+    updated[index] = estimate.model_copy(
+        update={"lift": estimate.lift.model_copy(update={"level": 1.0, "alpha": 1e-17})}
+    )
+    rows = tuple(
+        {**dict(row), "level": 1.0} if row["metric"] == storefront.primary_metric else row
+        for row in storefront.readout_rows
+    )
+    snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=rows)
+    html = render_header(snapshot).text
+    assert "100% (α=1e-17)" in html
+
+
+def test_relative_set_coverage_discloses_its_own_retained_alpha() -> None:
+    from increment.dashboard._format import interval_html
+    from increment.estimation.inference import relative_confidence_set
+    from increment.estimation.results import JointContrastReference
+
+    region = relative_confidence_set(
+        JointContrastReference(a=10.0, c=0.0, var_a=1.0, var_c=1.0, cov_ac=0.0),
+        alpha=1e-17,
+        alternative="greater",
+    )
+    assert region.geometry in {"one_sided", "disconnected", "all_real"}
+    shown = interval_html({"relative_confidence_set": region, "value_scale": "relative"})
+    assert shown is not None
+    assert "100% (α=1e-17)" in shown
+
+
+def test_temporal_caption_does_not_merge_rounded_equal_levels_with_different_budgets(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimates
+    from increment.dashboard._html import temporal_figure
+    from increment.estimation.results import Estimate
+
+    seed = next(iter(temporal_rows(storefront, "cumulative_lift")))
+    rows = DailyLiftEstimates(
+        seed.model_copy(
+            update={
+                "ds": dt.date(2025, 1, day),
+                "dimension": "country",
+                "dimension_value": country,
+                "lift": Estimate(
+                    value=0.1,
+                    lb=0.05,
+                    ub=0.15,
+                    level=1.0,
+                    alpha=alpha,
+                ),
+            }
+        )
+        for country, alpha in (("DE", 1e-17), ("GB", 1e-18))
+        for day in range(1, 4)
+    )
+    rendered = temporal_figure(storefront, rows, metric=seed.metric, view="cumulative_lift")
+    assert "Confidence levels vary by series" in rendered
+    assert "100% (α=1e-17)" in rendered
+    assert "100% (α=1e-18)" in rendered

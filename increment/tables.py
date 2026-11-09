@@ -1358,6 +1358,19 @@ def _decision_available(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _format_coverage(level: float, alpha: float | None = None) -> str:
+    """Format a retained coverage level without hiding a rounded-away error budget."""
+    percent = level * 100
+    text = f"{percent:.2f}".rstrip("0").rstrip(".") + "%"
+    if 0 < level < 1 and text in ("0%", "100%"):
+        text = f"{percent:.15g}%"
+        if text in ("0%", "100%"):
+            text = f"{float(percent)!r}%"
+    if level == 1 and alpha is not None and alpha > 0:
+        text += f" (α={alpha!r})"
+    return text
+
+
 def _format_confidence_set(
     value: Any,
     *,
@@ -1407,8 +1420,8 @@ def _format_confidence_set(
     text = " ∪ ".join(interval_text(number(lower), number(upper)) for lower, upper in intervals)
     rendered = text if geometry == "bounded" else f"{geometry.replace('_', '-')}: {text}"
     if not _is_missing(relative):
-        level = f"{math.fsum((1.0, -relative.alpha)) * 100:.2f}".rstrip("0").rstrip(".")
-        return f"{level}% {rendered}"
+        coverage = _format_coverage(math.fsum((1.0, -relative.alpha)), relative.alpha)
+        return f"{coverage} {rendered}"
     return rendered
 
 
