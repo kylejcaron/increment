@@ -217,6 +217,7 @@ def load_metric_evidence_batch(
         index
         for index, request in enumerate(requests)
         if request.metric.type != "quantile"
+        and not request.by
         and not request.covariates
         and getattr(request.metric, "winsorization", None) is None
         and all(method.variance_reduction == "none" for method in request.methods)

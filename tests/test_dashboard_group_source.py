@@ -61,6 +61,7 @@ def _group_event_values(
             row["first_exposure_ts"] = datetime(2024, 12, 1, tzinfo=UTC)
     for row in events:
         row["price_value"] = row["value"]
+        row["declared_segment"] = row["unit_id"]
     if occurrence_labels:
         for index, row in enumerate(events):
             row["value"] = f"order-{index}"
@@ -186,7 +187,13 @@ def _native_groups(
                             "column": "price_value",
                             "dtype": "float",
                             "as_of": "static",
-                        }
+                        },
+                        {
+                            "name": "declared_segment",
+                            "column": "declared_segment",
+                            "dtype": "string",
+                            "as_of": "static",
+                        },
                     ],
                 }
             ],
@@ -205,6 +212,9 @@ def _native_groups(
                     "n_pre_periods": 0,
                     "allocation": {"baseline": 0.5, "candidate": 0.5},
                     "plan": plan,
+                    "breakouts": {
+                        "breakout": [{"property": "declared_segment", "source": "events"}]
+                    }.get(domain, []),
                 }
             ],
         }
@@ -394,6 +404,19 @@ def _assert_total_domain_parity(source, metrics):
             got, rows=tuple(sorted(got.rows, key=lambda row: row["group_id"]))
         ) == replace(expected, rows=tuple(sorted(expected.rows, key=lambda row: row["group_id"])))
     _assert_display_parity(source, metrics)
+
+
+@pytest.mark.integration
+def test_run_refuses_nonempty_by_instead_of_dropping_segments():
+    from increment import readouts
+    from increment.errors import UnsupportedRequestError
+
+    with _native_groups(domain="breakout", metric_names=("conversion", "mean")) as (_, _, resolver):
+        with pytest.raises(UnsupportedRequestError) as raised:
+            readouts.run(resolver._binding.source, by=("declared_segment",))
+
+        assert raised.value.code == "readout.run.segment_unsupported"
+        assert raised.value.context == {"metric": "conversion"}
 
 
 @pytest.mark.integration
