@@ -53,7 +53,7 @@ from increment.workflows import (
     sequential_snapshot,
 )
 from tests.analysis_factory import bound_source, declare_views, make_binding, view_readout
-from tests.warning_codes import warning_codes
+from tests.warning_codes import allow_warning_codes, warning_codes
 
 
 def _lift_rows(rows: object) -> list[LiftEstimate]:
@@ -1061,6 +1061,7 @@ def test_public_decision_keeps_assigned_and_triggered_families_separate(tmp_path
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:fact 'missing' has no loaded rows")
+@allow_warning_codes("readouts.run.cell_refused")
 def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingresses(
     tmp_path,
 ):
@@ -1155,7 +1156,13 @@ def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingres
             assert {cell.group_id for cell in family.members} == {"T"}
             assert family.complete is True
             missing = next(row for row in triggered if row.metric == "missing")
-            assert missing.relative_unavailable_reason == "nonpositive_arm_mean"
+            assert missing.failure_context is not None
+            assert (
+                missing.lift is None,
+                missing.sampling_available is False,
+                missing.failure_code,
+                missing.failure_context["reason"],
+            ) == (True, True, "estimation.engine.lift_guard", "zero_variance")
             revenue_treatment = next(
                 row for row in triggered if row.metric == "revenue" and row.group_id == "T"
             )

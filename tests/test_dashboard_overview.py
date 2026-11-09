@@ -11,7 +11,7 @@ pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
 
 from increment.dashboard._data import decision_rows
-from increment.dashboard._html import overview_rows
+from increment.dashboard._html import overview_rows, overview_table
 from tests.dashboard_snapshots import ADDED, COUNTRY, experiment_for, overview_snapshot
 
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
@@ -47,7 +47,6 @@ def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapsh
 
 
 def test_explore_tables_show_only_core_readout_columns(_family_presentation_snapshot):
-    from increment.dashboard._html import overview_table
 
     snapshot = _family_presentation_snapshot
     overview_html = overview_table(snapshot, COUNTRY)
@@ -198,6 +197,5 @@ def test_added_metric_inspector_discloses_retained_coverage_budget():
 
     details = render_metric_details(snapshot, metric=ADDED).text
     assert "100% (α=1e-17)" in details
-    from increment.dashboard._html import overview_table
 
     assert "100% (α=1e-17) CI" in overview_table(snapshot, None)

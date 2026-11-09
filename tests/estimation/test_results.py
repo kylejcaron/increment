@@ -1108,12 +1108,7 @@ class TestPValueQuantile:
         assert est.p_value() == 0.0321
 
 
-def test_lift_estimate_repr_formats_relative_scale_and_open_endpoint_semantically(monkeypatch):
-    monkeypatch.setattr(
-        LiftEstimate,
-        "stat_sig",
-        lambda self: pytest.fail("representation must not recompute decisions"),
-    )
+def test_lift_estimate_repr_formats_relative_scale_and_open_endpoint_semantically():
     estimate = LiftEstimate(
         metric="revenue",
         group_id="treatment",

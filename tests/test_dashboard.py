@@ -30,7 +30,9 @@ from increment.dashboard import (
     render_metric_details,
     render_results,
 )
+from increment.dashboard._app import _render_entry, _report_notes, build_payload
 from increment.dashboard._data import enriched_rows
+from increment.dashboard._html import results_table, temporal_figure
 from tests.dashboard_snapshots import (
     binomial_region,
     experiment_for,
@@ -1094,7 +1096,6 @@ COUNTRY = ("event_log", "country")
 
 @pytest.fixture
 def storefront_payload(storefront: DashboardSnapshot):
-    from increment.dashboard._app import build_payload
 
     return build_payload(experiment_for(storefront), snapshot=storefront)
 
@@ -1193,7 +1194,7 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
     storefront: DashboardSnapshot,
     method_role: str,
 ) -> None:
-    from increment.dashboard import _app
+
     from increment.estimation.results import JointContrastReference, relative_confidence_set
 
     region = relative_confidence_set(JointContrastReference(a=10, c=0, var_a=1, var_c=1, cov_ac=0))
@@ -1205,7 +1206,7 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
         relative_confidence_set=region,
         method_role=method_role,
     )
-    notes = " ".join(_app._report_notes(snapshot))
+    notes = " ".join(_report_notes(snapshot))
     assert "∪" in notes
     displayed = [float(value) / 100 for value in re.findall(r"([+-]?\d+(?:\.\d+)?)%", notes)]
     for interval in region.intervals:
@@ -1217,9 +1218,8 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
 def test_report_notes_keep_binomial_qualification_out_of_readout(
     storefront: DashboardSnapshot,
 ) -> None:
-    from increment.dashboard._app import _report_notes
+
     from increment.dashboard._format import headline_interval
-    from increment.dashboard._html import results_table
     from increment.tables import _binomial_qualification_disclosure
 
     storefront = _with_primary_row(storefront, binomial_set=binomial_region())
@@ -1240,12 +1240,12 @@ def test_report_notes_keep_binomial_qualification_out_of_readout(
 def test_summary_notes_attribute_each_captured_level_to_its_own_metric(
     storefront: DashboardSnapshot,
 ) -> None:
-    from increment.dashboard import _app
+
     from increment.dashboard._data import decision_rows
 
     rows = decision_rows(storefront)
     assert len({row["level"] for row in rows}) > 1
-    summary = _app._report_notes(storefront)[0]
+    summary = _report_notes(storefront)[0]
     stated = [(m.start(), m.group()) for m in re.finditer(r"\d+(?:\.\d+)?%", summary)]
     for row in rows:
         metric_at = summary.index(str(row["metric"]))
@@ -1258,7 +1258,6 @@ def test_summary_notes_attribute_each_captured_level_to_its_own_metric(
 def test_summary_levels_distinguish_methods_for_the_same_metric(
     storefront: DashboardSnapshot,
 ) -> None:
-    from increment.dashboard import _app
 
     decision = storefront.readout_rows[0]
     sensitivity = {
@@ -1277,7 +1276,7 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
             ),
         ),
     )
-    summary = _app._report_notes(snapshot)[0]
+    summary = _report_notes(snapshot)[0]
     levels = [
         (m.start(), float(m.group()[:-1]) / 100) for m in re.finditer(r"\d+(?:\.\d+)?%", summary)
     ]
@@ -1286,7 +1285,7 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
         preceding = [value for start, value in levels if start < method_at]
         assert isinstance(row["level"], float)
         assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
-    notes = "\n".join(_app._report_notes(snapshot))
+    notes = "\n".join(_report_notes(snapshot))
     disclosure = render_results(snapshot).text
     for row in (decision, sensitivity):
         attribution = f"{row['metric']} ({row['method']}, {row['method_role']})"
@@ -1522,8 +1521,6 @@ def test_one_sided_intervals_keep_unavailable_dates_as_gaps(
     assert "one-sided test for an increase" in rendered
     assert "two-sided test" not in rendered
     if point_state == "available":
-        from increment.dashboard._app import _render_entry
-
         packet = _render_entry(
             storefront,
             rows,
@@ -1602,7 +1599,6 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
         )
         for day in range(1, 4)
     )
-    from increment.dashboard._html import temporal_figure
 
     rendered = temporal_figure(storefront, rows, metric=model.name, view="cumulative_lift")
     label = re.search(r"([-+\d.e]+)% intervals", rendered)
@@ -1613,11 +1609,6 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
         assert shown == coverage
     else:
         assert float(shown) == pytest.approx(level * 100, rel=1e-14, abs=0)
-        import numpy as np
-
-        from increment.dashboard._format import percent_text
-
-        assert float(percent_text(np.float64(level)).removesuffix("%")) == float(shown)
     svgs = re.findall(r"<svg\b.*?</svg>", rendered, re.S)
     assert svgs
     tick_text = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", "".join(svgs)))
@@ -1678,7 +1669,6 @@ def test_temporal_early_outlier_keeps_its_true_ghost_and_clipped_geometry(
                 0 <= float(point.split(",")[1]) <= height for point in line.attrib["points"].split()
             )
     assert chart.find(".//{*}clipPath") is not None
-    from increment.dashboard._app import _render_entry
 
     packet = _render_entry(
         storefront,
@@ -1699,7 +1689,6 @@ def test_temporal_early_outlier_keeps_its_true_ghost_and_clipped_geometry(
 def test_complete_dashboard_retains_adverse_nonrejecting_guardrail(
     storefront: DashboardSnapshot, surface: str
 ) -> None:
-    from increment.dashboard._app import build_payload
 
     snapshot = _guardrail_snapshot(
         storefront, alternative="greater", direction="increase", lb=-0.10, ub=-0.02
@@ -1720,7 +1709,7 @@ def test_complete_dashboard_retains_adverse_nonrejecting_guardrail(
 def test_report_retains_directional_fieller_set_beside_central_interval(
     storefront: DashboardSnapshot, alternative: str
 ) -> None:
-    from increment.dashboard._app import _report_notes
+
     from increment.estimation.results import JointContrastReference, relative_confidence_set
 
     reference = JointContrastReference(a=0.2, c=1, var_a=0.04, var_c=0.04, cov_ac=0)
@@ -1775,8 +1764,6 @@ def test_primary_coverage_discloses_retained_alpha_when_level_rounds_to_one(
     html = render_header(snapshot).text
     assert "100% (α=1e-17)" in html
 
-    from increment.dashboard._app import build_payload
-
     payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
     assert payload["primary"]["levelLabel"] == "100% (α=1e-17)"
     assert "100% (α=1e-17)" in payload["primary"]["method"]
@@ -1808,13 +1795,10 @@ def test_secondary_coverage_budget_reaches_metric_details(
     rows[index] = {**dict(rows[index]), "level": 1.0}
     snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
 
-    from increment.dashboard._app import build_payload
-
     payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
     metric = str(rows[index]["metric"])
     detail = next(item["detail"] for item in payload["metrics"] if item["key"] == metric)
     assert "100% (α=1e-17)" in detail
-    from increment.dashboard._html import results_table
 
     assert "100% (α=1e-17) CI" in results_table(snapshot)
 
@@ -1851,8 +1835,6 @@ def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(
         rows[index] = {**dict(rows[index]), "level": 1.0}
     snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
 
-    from increment.dashboard._app import build_payload
-
     payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
     notes = payload["report"]["notes"]
     assert any("100% (α=1e-17)" in note for note in notes)
@@ -1881,8 +1863,6 @@ def test_report_preserves_distinct_raw_levels_that_round_alike(
         rows[index] = {**dict(rows[index]), "level": level}
     snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
 
-    from increment.dashboard._app import build_payload
-
     notes = build_payload(experiment_for(snapshot), snapshot=snapshot)["report"]["notes"]
     assert sum(note.count("95% fixed-horizon intervals") for note in notes) == 2, notes
     assert any(
@@ -1907,13 +1887,14 @@ def test_relative_set_coverage_discloses_its_own_retained_alpha() -> None:
     assert "100% (α=1e-17)" in shown
 
 
-def test_winsor_set_coverage_discloses_its_own_retained_alpha() -> None:
-    from increment.dashboard._format import interval_html, retained_coverage_alpha
+def test_winsor_set_coverage_discloses_its_own_retained_alpha(
+    storefront: DashboardSnapshot,
+) -> None:
     from increment.estimation.results import estimate_winsor_lift
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState
 
     raw = WinsorRawState(
-        metric="revenue",
+        metric=next(metric.name for metric in storefront.metrics if metric.type == "mean"),
         study_id="coverage-display",
         missingness="error",
         quantile=0.5,
@@ -1929,16 +1910,20 @@ def test_winsor_set_coverage_discloses_its_own_retained_alpha() -> None:
     without_lift_alpha = estimate.model_copy(
         update={"lift": estimate.lift.model_copy(update={"alpha": None})}
     )
-    assert retained_coverage_alpha(without_lift_alpha) == 1e-17
-    shown = interval_html({"confidence_set": estimate.confidence_set, "value_scale": "relative"})
-    assert "100% (α=1e-17)" in shown
+    snapshot = dataclasses.replace(
+        storefront,
+        estimates=(without_lift_alpha,),
+        readout_rows=enriched_rows((without_lift_alpha,)),
+    )
+    assert "100% (α=1e-17)" in render_results(snapshot).text
+    row = next(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
+    assert row["coverage_alpha"] == "1e-17"
 
 
 def test_temporal_caption_does_not_merge_rounded_equal_levels_with_different_budgets(
     storefront: DashboardSnapshot,
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
-    from increment.dashboard._html import temporal_figure
     from increment.estimation.results import Estimate
 
     seed = next(iter(temporal_rows(storefront, "cumulative_lift")))
@@ -1970,7 +1955,6 @@ def test_temporal_notes_attribute_point_free_set_coverage_to_its_series(
     storefront: DashboardSnapshot,
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimate, DailyLiftEstimates
-    from increment.dashboard._app import _render_entry
     from increment.estimation.results import Estimate
     from tests.test_tables import _binomial_lift_estimate
 

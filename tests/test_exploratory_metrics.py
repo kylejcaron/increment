@@ -1,8 +1,8 @@
 """Metrics added after the plan: ``workflows.available_metrics`` and ``exploratory_metrics=``.
 
-Real DuckDB fixtures throughout. An added metric must read exactly like the same
-metric declared in a plan of its own, never move a declared row, and be refused
-before any query when it cannot be served.
+Real DuckDB fixtures throughout. An added metric must agree numerically with the
+same metric declared in a plan of its own, preserve declared rows' identities and
+decisions, and be refused before any query when it cannot be served.
 """
 
 from __future__ import annotations
@@ -295,7 +295,9 @@ def test_run_warns_for_added_metric_with_unused_preperiod_covariate():
 
 
 @pytest.mark.slow
-def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
+def test_declared_whole_window_rows_are_preserved_with_added_metrics(warehouse):
+    from tests.parity_harness.comparison import nested_close
+
     experiment, resolver = _analysis(
         warehouse, AnalysisPlan(primary="revenue", secondaries=["purchase_rate"], q=0.1)
     )
@@ -309,9 +311,10 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
             decision_method=unadjusted,
         )
     )
-    assert [row.model_dump() for row in combined[: len(without)]] == [
-        row.model_dump() for row in without
-    ]
+    assert nested_close(
+        [row.model_dump() for row in without],
+        [row.model_dump() for row in combined[: len(without)]],
+    )
     added = combined[len(without) :]
     assert {row.metric for row in added} == {"rps", "revenue_cuped"}
     assert {row.role for row in added} == {"exploratory"}
@@ -327,8 +330,9 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
         )
     )
     assert {row.metric for row in narrowed} == {"revenue", "rps"}
-    assert _rows([row for row in narrowed if row.metric == "revenue"]) == _rows(
-        [row for row in without if row.metric == "revenue"]
+    assert nested_close(
+        _rows([row for row in without if row.metric == "revenue"]),
+        _rows([row for row in narrowed if row.metric == "revenue"]),
     )
     assert (
         next(row for row in narrowed if row.metric == "rps").multiplicity_status

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from tests.query.statement_census import JOURNEYS, count_statements
@@ -170,15 +172,23 @@ def test_compatible_metrics_share_executed_reductions(size, occurrence_only, col
         plans = census.plans
         assert len(plans) == 1
         assert plans[0].count("SEQ_SCAN") <= 4
-        from increment._evidence_loaders import load_moments_batch
-        from increment._evidence_types import MomentsRequest
+        from increment.evidence import DayAxisRequest, evidence_provider, request_evidence
 
         for grain in ("daily", "asof"):
             with count_statements(backend, explain_inserts=True) as census:
-                answers = load_moments_batch(
-                    source.day_source(metrics=metrics),
-                    tuple(MomentsRequest(metric, grain=grain) for metric in metrics),
+                acquired = request_evidence(
+                    evidence_provider(source.day_source(metrics=metrics)),
+                    DayAxisRequest(
+                        caller="run_daily" if grain == "daily" else "run_asof",
+                        grain=grain,
+                        metrics=tuple(metrics),
+                        dimension=None,
+                    ),
                 )
+                rows = [row for part in cast(Any, acquired).slices for row in part.rows]
+                answers = [
+                    [row for row in rows if row["metric"] == metric.name] for metric in metrics
+                ]
             assert all(
                 {row["metric"] for row in answer} == {metric.name}
                 for metric, answer in zip(metrics, answers, strict=True)

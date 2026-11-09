@@ -1312,7 +1312,7 @@ def _nightly_fixture(
 
 
 @pytest.mark.grid(
-    reason="Cases cover independent API pagination, malformed-data, timeout-cause, and writer-state transitions."
+    "Cases cover independent API pagination, malformed-data, timeout-cause, and writer-state transitions."
 )
 @pytest.mark.integration
 @pytest.mark.parametrize(

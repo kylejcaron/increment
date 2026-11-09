@@ -1218,7 +1218,6 @@ def test_group_summary_centered_moments(totals):
 
 def _availability_arms(con, values, sizes):
     from increment.estimation.armstats import ArmStats
-    from increment.estimation.engine import _df_to_arms
 
     parts = {"control": [], "treatment": []}
     offset = 0
@@ -1231,7 +1230,11 @@ def _availability_arms(con, values, sizes):
         offset += size
         totals = con.create_table(f"availability_{uuid.uuid4().hex}", pa.Table.from_pylist(rows))
         totals = totals.mutate(x=ibis.null().cast("float64"), y_den=ibis.null().cast("float64"))
-        for arm in _df_to_arms(con.to_pyarrow(group_summary(totals)).to_pylist()):
+        for row in con.to_pyarrow(group_summary(totals)).to_pylist():
+            arm = ArmStats(
+                study_id=row["experiment_id"],
+                **{name: value for name, value in row.items() if name in ArmStats.model_fields},
+            )
             parts[arm.group_id].append(arm)
     return [
         records[0] if len(records) == 1 else ArmStats.combine(records) for records in parts.values()

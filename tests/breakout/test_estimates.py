@@ -177,33 +177,55 @@ def test_segment_rekey_accepts_sensitivity_and_decision_rows_with_advisories():
     assert all(row.dimension == "country" and row.dimension_value == "US" for row in results)
 
 
-def test_rekeyed_advisories_match_segment_result_identity():
-    from increment.breakout.estimates import _rekey_segment_computation
-    from increment.estimation.advisory import ReadoutAdvisory
-    from increment.estimation.decision_types import (
-        ArmHypothesisKey,
-        DecisionComputation,
-        SegmentHypothesisKey,
-    )
+def _planned_breakout(
+    rows,
+    metrics,
+    *,
+    hypotheses,
+    methods=None,
+    method_roles=None,
+    correction="none",
+    q=0.1,
+):
+    from increment import readouts
+    from increment.decision import AbsoluteArmDecisionProcedure, RelativeArmDecisionProcedure
+    from increment.plan import compile_decision_plan
+    from increment.semantics.design import Randomized
+    from increment.sources import BreakoutMomentsSource
 
-    rows = [
-        _make_arm_row(50, 10.0, 4.0, country="US", group_id="control"),
-        _make_arm_row(50, 12.0, 4.0, country="US", group_id="treatment"),
-    ]
-    (result,) = estimate_lift([_mean_metric()], rows, control_group="control").results
-    key = ArmHypothesisKey(result.metric, result.group_id, result.estimand)
-    advisory = ReadoutAdvisory(code="test.advisory", context={"reason": "retained"}, message="note")
-    bundle = DecisionComputation(
-        results=(result,), evidence={}, failures={}, advisories={key: (advisory,)}
+    methods = methods or [Method(name="unadjusted")]
+    decision = next(
+        (method for method in methods if (method_roles or {}).get(method.name) == "decision"),
+        methods[0],
     )
-    rekeyed = _rekey_segment_computation(bundle, dimension="country", dimension_value="US")
-    segment_key = SegmentHypothesisKey(
-        result.metric, result.group_id, result.estimand, "country", "US"
+    procedures = {}
+    for metric in metrics:
+        alpha, alternative, null_lift, null_abs, role = hypotheses[metric.name]
+        common: dict[str, Any] = {
+            "metric": metric.name,
+            "alpha": alpha,
+            "alternative": alternative,
+            "role": role,
+            "decision_method": decision,
+            "sensitivity_methods": tuple(method for method in methods if method != decision),
+        }
+        procedures[metric.name] = (
+            RelativeArmDecisionProcedure(**common, null_lift=null_lift)
+            if null_abs is None
+            else AbsoluteArmDecisionProcedure(**common, null_abs=null_abs)
+        )
+    plan = compile_decision_plan(None, metrics).model_copy(
+        update={"declared": True, "alpha": alpha, "q": q, "procedures": procedures}
     )
-    assert rekeyed.advisories[segment_key] == (advisory,)
-    segment_result = cast(Any, rekeyed.results[0])
-    assert segment_result.dimension == "country"
-    assert segment_result.dimension_value == "US"
+    source = BreakoutMomentsSource(
+        rows,
+        dimension="country",
+        metrics=metrics,
+        study_id="exp1",
+        design=Randomized(control_group="control"),
+        plan=plan,
+    )
+    return readouts.breakout(source, "country", correction=correction, q=q)
 
 
 def _compiled_mean_breakout(
@@ -343,8 +365,6 @@ def test_compiled_segment_absolute_margin_uses_metric_units_and_additive_referen
 def test_absolute_segment_nonpositive_means_keep_bh_selection_and_fcr_on_replay():
     from scipy.stats import t
 
-    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
-
     differences = {"A": 0.2, "B": -0.5, "C": 0.5}
     rows = [
         _make_arm_row(
@@ -357,15 +377,13 @@ def test_absolute_segment_nonpositive_means_keep_bh_selection_and_fcr_on_replay(
         for segment, difference in differences.items()
         for arm, mean in (("control", -1.0), ("treatment", -1.0 + difference))
     ]
-    policy = _ReadoutCellPolicy(0.05, "less", 0.0, 0.5, "guardrail", "compiled_plan")
+    policy = (0.05, "less", 0.0, 0.5, "guardrail")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        result = _run_fixed_breakout(
+        result = _planned_breakout(
             rows,
             [_mean_metric()],
-            control_group="control",
-            dimension="country",
-            policy_by_metric={"rev": policy},
+            hypotheses={"rev": policy},
             correction="bh",
             q=0.03,
         )
@@ -403,7 +421,6 @@ def test_absolute_segment_nonpositive_means_keep_bh_selection_and_fcr_on_replay(
     ],
 )
 def test_absolute_segment_admission_preserves_count_and_relative_domain_gates(case, expected):
-    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
 
     ratio = case.startswith("ratio")
     metric = _ratio_metric("rev") if ratio else _mean_metric()
@@ -428,25 +445,22 @@ def test_absolute_segment_admission_preserves_count_and_relative_domain_gates(ca
         rows[1]["ref_den"] = None
     elif case == "ratio_zero_denominator":
         rows[1]["ref_den"] = 0.0
-    policy = _ReadoutCellPolicy(
+    policy = (
         0.05,
         "less",
         0.05 if case == "relative_null" else 0.0,
         None if case == "relative_null" else 0.5,
         "guardrail",
-        "compiled_plan",
     )
     methods = (
         [Method(name="cuped", variance_reduction="cuped")] if case == "ratio_scalar_cuped" else None
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        result = _run_fixed_breakout(
+        result = _planned_breakout(
             rows,
             [metric],
-            control_group="control",
-            dimension="country",
-            policy_by_metric={"rev": policy},
+            hypotheses={"rev": policy},
             methods=methods,
             correction="bh",
             q=0.1,
@@ -463,8 +477,6 @@ def test_absolute_segment_admission_preserves_count_and_relative_domain_gates(ca
 )
 def test_absolute_segment_nonpositive_mean_reaches_existing_additive_method(kind):
     from scipy.stats import t
-
-    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
 
     metric = _mean_metric() if kind == "cuped_mean" else _ratio_metric("rev")
     methods = [Method(name="cuped", variance_reduction="cuped")] if kind == "cuped_mean" else None
@@ -484,15 +496,13 @@ def test_absolute_segment_nonpositive_mean_reaches_existing_additive_method(kind
         )
         for arm, mean in (("control", -1.0), ("treatment", -0.8))
     ]
-    policy = _ReadoutCellPolicy(0.05, "less", 0.0, 0.5, "guardrail", "compiled_plan")
+    policy = (0.05, "less", 0.0, 0.5, "guardrail")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        result = _run_fixed_breakout(
+        result = _planned_breakout(
             rows,
             [metric],
-            control_group="control",
-            dimension="country",
-            policy_by_metric={"rev": policy},
+            hypotheses={"rev": policy},
             methods=methods,
             method_roles=(
                 {
@@ -524,23 +534,19 @@ def test_absolute_segment_nonpositive_mean_reaches_existing_additive_method(kind
 def test_absolute_ratio_cuped_fcr_keeps_nonpositive_sibling_out_of_method_input():
     from scipy.stats import t
 
-    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
-
     rows = [
         _make_arm_row(200, mean, 1.0, country="US", group_id=arm, sum_den=200.0, x_mean=0.0)
         for arm, mean in (("control", 10.0), ("good", 11.0), ("bad", -1.0))
     ]
     for row in rows:
         row["cxden"] = 0.0
-    policy = _ReadoutCellPolicy(0.05, "greater", 0.0, 0.5, "guardrail", "compiled_plan")
+    policy = (0.05, "greater", 0.0, 0.5, "guardrail")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        result = _run_fixed_breakout(
+        result = _planned_breakout(
             rows,
             [_ratio_metric("rev")],
-            control_group="control",
-            dimension="country",
-            policy_by_metric={"rev": policy},
+            hypotheses={"rev": policy},
             methods=[
                 Method(name="cuped", variance_reduction="cuped"),
                 Method(name="unadjusted"),
@@ -563,22 +569,19 @@ def test_absolute_ratio_cuped_fcr_keeps_nonpositive_sibling_out_of_method_input(
 
 
 def test_absolute_constant_nonpositive_segment_keeps_valid_bh_sibling():
-    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
 
     rows = [
         _make_arm_row(100, mean, variance, country=segment, group_id=arm)
         for segment, variance, treatment in (("constant", 0.0, -0.8), ("variable", 1.0, -1.5))
         for arm, mean in (("control", -1.0), ("treatment", treatment))
     ]
-    policy = _ReadoutCellPolicy(0.05, "less", 0.0, 0.5, "guardrail", "compiled_plan")
+    policy = (0.05, "less", 0.0, 0.5, "guardrail")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        result = _run_fixed_breakout(
+        result = _planned_breakout(
             rows,
             [_mean_metric()],
-            control_group="control",
-            dimension="country",
-            policy_by_metric={"rev": policy},
+            hypotheses={"rev": policy},
             correction="bh",
             q=0.04,
         )
@@ -595,8 +598,6 @@ def test_absolute_constant_nonpositive_segment_keeps_valid_bh_sibling():
 def test_absolute_mixed_binary_cuped_keeps_additive_row_and_count_only_bonferroni():
     from scipy.stats import t
 
-    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
-
     rows = [
         _conversion_arm_row(
             n,
@@ -610,15 +611,13 @@ def test_absolute_mixed_binary_cuped_keeps_additive_row_and_count_only_bonferron
     ]
     for row in rows:
         row["cx2"] = float(row["n"])
-    policy = _ReadoutCellPolicy(0.05, "less", 0.0, -0.1, "guardrail", "compiled_plan")
+    policy = (0.05, "less", 0.0, -0.1, "guardrail")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        result = _run_fixed_breakout(
+        result = _planned_breakout(
             rows,
             [_conversion_metric()],
-            control_group="control",
-            dimension="country",
-            policy_by_metric={"conv": policy},
+            hypotheses={"conv": policy},
             methods=[
                 Method(name="cuped", variance_reduction="cuped"),
                 Method(name="unadjusted"),
@@ -658,12 +657,10 @@ def test_compiled_segment_zero_null_keeps_one_sided_alternative_at_tiny_alpha():
 def test_segment_mixed_hypotheses_share_one_bh_family_and_fcr_cap():
     from scipy.stats import t
 
-    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
-
     policies = {
-        "rel": _ReadoutCellPolicy(0.05, "greater", -0.02, None, "primary", "compiled_plan"),
-        "abs": _ReadoutCellPolicy(0.05, "less", 0.0, 0.5, "guardrail", "compiled_plan"),
-        "zero": _ReadoutCellPolicy(0.05, "two-sided", 0.0, None, "secondary", "compiled_plan"),
+        "rel": (0.05, "greater", -0.02, None, "primary"),
+        "abs": (0.05, "less", 0.0, 0.5, "guardrail"),
+        "zero": (0.05, "two-sided", 0.0, None, "secondary"),
     }
     means = {"rel": (10.3, 9.7), "abs": (9.5, 11.0), "zero": (11.0, 10.0)}
     rows = [
@@ -678,12 +675,12 @@ def test_segment_mixed_hypotheses_share_one_bh_family_and_fcr_cap():
         for segment, mean_t in zip(("A", "B"), treatment_means, strict=True):
             vc, vt = 1.0 / 20000.0, 1.0 / (200 * mean_t**2)
             df = (vc + vt) ** 2 / ((vc**2 + vt**2) / 199)
-            z = (math.log(mean_t / 10.0) - math.log1p(policy.null_lift)) / math.sqrt(vc + vt)
+            z = (math.log(mean_t / 10.0) - math.log1p(policy[2])) / math.sqrt(vc + vt)
             p_values[(metric, segment)] = (
-                t.cdf((mean_t - 10.0 - policy.null_abs) / 0.1, 398)
-                if policy.null_abs is not None
+                t.cdf((mean_t - 10.0 - policy[3]) / 0.1, 398)
+                if policy[3] is not None
                 else t.sf(z, df)
-                if policy.alternative == "greater"
+                if policy[1] == "greater"
                 else 2 * t.sf(abs(z), df)
             )
     ordered = sorted(p_values, key=p_values.__getitem__)
@@ -691,12 +688,10 @@ def test_segment_mixed_hypotheses_share_one_bh_family_and_fcr_cap():
     selected = set(ordered[:rank])
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        result = _run_fixed_breakout(
+        result = _planned_breakout(
             rows,
             [_mean_metric(name) for name in policies],
-            control_group="control",
-            dimension="country",
-            policy_by_metric=policies,
+            hypotheses=policies,
             correction="bh",
             q=0.04,
         )
@@ -705,9 +700,9 @@ def test_segment_mixed_hypotheses_share_one_bh_family_and_fcr_cap():
     for row in result:
         policy = policies[row.metric]
         assert (row.alternative, row.null_lift, row.null_abs) == (
-            policy.alternative,
-            policy.null_lift,
-            policy.null_abs,
+            policy[1],
+            policy[2],
+            policy[3],
         )
         assert row.p_value() == pytest.approx(p_values[(row.metric, row.dimension_value)], rel=1e-9)
         assert row.family_size == 6
@@ -722,7 +717,6 @@ def test_segment_mixed_hypotheses_share_one_bh_family_and_fcr_cap():
 
 @pytest.mark.parametrize("kind", ["cuped", "ratio"])
 def test_shifted_segment_method_and_unavailable_rows_keep_complete_hypothesis(kind):
-    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
 
     metric = _mean_metric() if kind == "cuped" else _ratio_metric("rev")
     methods = [Method(name="cuped", variance_reduction="cuped")] if kind == "cuped" else None
@@ -739,15 +733,13 @@ def test_shifted_segment_method_and_unavailable_rows_keep_complete_hypothesis(ki
         for segment in ("A", "B")
         for arm, mean in (("control", 10.0), ("treatment", 10.0))
     ]
-    policy = _ReadoutCellPolicy(0.05, "less", 0.05, None, "guardrail", "compiled_plan")
+    policy = (0.05, "less", 0.05, None, "guardrail")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        result = _run_fixed_breakout(
+        result = _planned_breakout(
             rows,
             [metric],
-            control_group="control",
-            dimension="country",
-            policy_by_metric={"rev": policy},
+            hypotheses={"rev": policy},
             methods=methods,
             correction="bh",
             q=0.01,
@@ -3836,67 +3828,6 @@ class TestRunBreakoutDenseGrid:
         assert by_metric["rev"].excluded is None
         assert by_metric["sessions"].excluded == "no_control_arm"
         assert by_metric["sessions"].lift is None
-
-
-def test_breakout_replays_one_open_ended_warning_per_metric_across_segments(monkeypatch):
-    import increment.breakout.estimates as breakout
-    from increment.errors import warn
-    from increment.estimation.engine import _WARNINGS
-
-    original = breakout._estimate_lift
-    spec = _WARNINGS["estimation.engine.open_ended_sequential"]
-
-    def warn_then_estimate(*args, **kwargs):
-        metric = kwargs["metrics"][0]
-        warn(
-            spec,
-            context={
-                "metric_name": metric.name,
-                "windows": "window_days=None",
-                "fix": "Set window_days",
-            },
-        )
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(breakout, "_estimate_lift", warn_then_estimate)
-    metrics = [_mean_metric("rev"), _mean_metric("sessions")]
-    rows = [
-        _make_arm_row(
-            50,
-            mean,
-            4.0,
-            country=country,
-            group_id=group,
-            metric=metric,
-        )
-        for country, offset in (("US", 0.0), ("CA", 1.0))
-        for metric in ("rev", "sessions")
-        for group, mean in (
-            ("control", 10.0 + offset),
-            ("treatment_a", 11.0 + offset),
-            ("treatment_b", 12.0 + offset),
-        )
-    ]
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        for _ in range(2):
-            run_breakout(
-                rows,
-                metrics,
-                control_group="control",
-                dimension="country",
-            )
-    advisories = [
-        item.message
-        for item in caught
-        if isinstance(item.message, IncrementWarning) and item.message.code == spec.code
-    ]
-    assert [item.context["metric_name"] for item in advisories] == [
-        "rev",
-        "sessions",
-        "rev",
-        "sessions",
-    ]
 
 
 class TestRunBreakoutBinomialGateExemption:

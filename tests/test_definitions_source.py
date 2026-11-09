@@ -191,6 +191,21 @@ _PUBLIC_KEY_FIELDS = (
     "dimension",
     "dimension_value",
     "source",
+    "metric_type",
+    "role",
+    "alternative",
+    "reference_kind",
+    "sampling_available",
+    "sampling_reason_code",
+    "sampling_reason_context",
+    "unavailable",
+    "excluded",
+    "relative_unavailable_reason",
+    "failure_code",
+    "failure_context",
+    "decision_scope_complete",
+    "decision_scope_reason_code",
+    "decision_scope_reason_context",
 )
 
 
@@ -271,7 +286,10 @@ def test_definitions_and_adopted_public_views_match(
         else:
             assert adopted_value is not None
             for adopted_part, native_part in zip(adopted_value, native_value, strict=True):
-                assert adopted_part == pytest.approx(native_part, rel=1e-9, nan_ok=True), key
+                if native_part is None:
+                    assert adopted_part is None, key
+                else:
+                    assert adopted_part == pytest.approx(native_part, rel=1e-9, nan_ok=True), key
 
 
 @pytest.mark.slow

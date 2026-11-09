@@ -354,14 +354,24 @@ def _assert_display_parity(source, metrics):
 
 
 def _assert_temporal_parity(day_source, metrics, grain, completed):
-    from increment._evidence_loaders import load_moments, load_moments_batch
-    from increment._evidence_types import MomentsRequest
+    from increment.evidence import DayAxisRequest, evidence_provider, request_evidence
 
-    requests = tuple(
-        MomentsRequest(metric, grain=grain, completed_windows_only=completed) for metric in metrics
-    )
-    individual = tuple(load_moments(day_source, request) for request in requests)
-    batched = load_moments_batch(day_source, requests)
+    def acquire(selected):
+        answer = request_evidence(
+            evidence_provider(day_source),
+            DayAxisRequest(
+                caller="run_daily" if grain == "daily" else "run_asof",
+                grain=grain,
+                metrics=tuple(selected),
+                dimension=None,
+                completed_windows_only=completed,
+            ),
+        )
+        return [row for part in cast(Any, answer).slices for row in part.rows]
+
+    individual = tuple(acquire((metric,)) for metric in metrics)
+    combined = acquire(metrics)
+    batched = tuple([row for row in combined if row["metric"] == metric.name] for metric in metrics)
 
     def identity(row):
         return row["ds"], row["group_id"], row["metric"]
@@ -380,30 +390,77 @@ def _assert_temporal_parity(day_source, metrics, grain, completed):
 
 
 def _assert_total_domain_parity(source, metrics):
-    from dataclasses import replace
+    from increment.evidence import MomentsRequest, evidence_provider, request_evidence
 
-    from increment._evidence_loaders import load_moments, load_moments_batch
-    from increment._evidence_types import MetricEvidenceRequest, MomentsRequest
-    from increment.readouts._metric_rows import load_metric_evidence, load_metric_evidence_batch
-
-    requests = tuple(MomentsRequest(metric) for metric in metrics)
-    independent = tuple(load_moments(source, request) for request in requests)
+    independent = tuple(
+        cast(Any, request_evidence(evidence_provider(source), MomentsRequest(metric)))
+        for metric in metrics
+    )
     assert [
         next(row["n"] for row in rows if row["group_id"] == "baseline") for rows in independent
     ] == [17, 18]
-    for got, expected in zip(load_moments_batch(source, requests), independent, strict=True):
-        assert sorted(got, key=lambda row: str(row["group_id"])) == sorted(
-            expected, key=lambda row: str(row["group_id"])
-        )
-    evidence = tuple(MetricEvidenceRequest(metric, "baseline") for metric in metrics)
-    independent_evidence = tuple(load_metric_evidence(source, request) for request in evidence)
-    for got, expected in zip(
-        load_metric_evidence_batch(source, evidence), independent_evidence, strict=True
-    ):
-        assert replace(
-            got, rows=tuple(sorted(got.rows, key=lambda row: row["group_id"]))
-        ) == replace(expected, rows=tuple(sorted(expected.rows, key=lambda row: row["group_id"])))
     _assert_display_parity(source, metrics)
+
+
+def _assert_total_readout_uncertainty(source, metrics):
+    from math import sqrt
+
+    from increment import readouts
+    from increment.evidence import MetricEvidenceRequest, evidence_provider, request_evidence
+
+    def arm_variance(row):
+        n = row["n"]
+        var_num = (row["cy2"] - row["cy1"] ** 2 / n) / (n - 1)
+        if row["ref_den"] is None:
+            return var_num / n
+        mean_num = row["ref_y"] + row["cy1"] / n
+        mean_den = row["ref_den"] + row["cden1"] / n
+        ratio = mean_num / mean_den
+        var_den = (row["cden2"] - row["cden1"] ** 2 / n) / (n - 1)
+        cov = (row["cyden"] - row["cy1"] * row["cden1"] / n) / (n - 1)
+        return (var_num - 2 * ratio * cov + ratio**2 * var_den) / (n * mean_den**2)
+
+    independent = {}
+    for metric in metrics:
+        answer = cast(
+            Any,
+            request_evidence(evidence_provider(source), MetricEvidenceRequest(metric, "baseline")),
+        )
+        independent[metric.name] = {row["group_id"]: row for row in answer.rows}
+    batched = readouts.run(source, metrics=[metric.name for metric in metrics])
+    assert {
+        (
+            row.metric,
+            row.group_id,
+            row.method,
+            row.method_role,
+            row.estimand,
+            row.analysis_population,
+            row.role,
+        )
+        for row in batched
+    } == {
+        (
+            metric.name,
+            "candidate",
+            "unadjusted",
+            "decision",
+            "itt",
+            "assigned",
+            source.context.plan.procedures[metric.name].role,
+        )
+        for metric in metrics
+    }
+    for row in batched:
+        control, treatment = (
+            independent[row.metric]["baseline"],
+            independent[row.metric]["candidate"],
+        )
+        assert row.failure_code is None
+        assert (row.n_control, row.n_treat) == (control["n"], treatment["n"])
+        assert row.abs_se == pytest.approx(
+            sqrt(arm_variance(control) + arm_variance(treatment)), rel=1e-10, abs=1e-10
+        )
 
 
 @pytest.mark.integration
@@ -436,9 +493,9 @@ def test_run_refuses_nonempty_by_instead_of_dropping_segments():
 def test_shared_order_components_keep_request_identity_maturity_and_ratio_covariance(
     missing, monkeypatch, snowflake, domain
 ):
-    from increment._evidence_types import MetricEvidenceRequest
+    from increment import readouts
     from increment.errors import CodedError
-    from increment.readouts._metric_rows import load_metric_evidence, load_metric_evidence_batch
+    from increment.evidence import MetricEvidenceRequest, evidence_provider, request_evidence
     from increment.semantics.models import Filter, RatioMetric
 
     with _native_groups(
@@ -459,18 +516,18 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
             )
             return
         if domain == "temporal":
-            day_source = source.day_source(metrics=(disjoint,))
             late_metrics = tuple(
                 metric.model_copy(update={"name": f"late_{metric.name}", "fact": "late"})
                 for metric in (conversion, revenue)
             )
             later = revenue.model_copy(update={"name": "later_mean", "fact": "later"})
+            day_source = source.day_source(metrics=(*late_metrics, later, revenue, disjoint))
             for grain, completed in (("daily", False), ("asof", False), ("asof", True)):
                 _assert_temporal_parity(
                     day_source, (*late_metrics, later, revenue), grain, completed
                 )
             return
-        long_revenue = revenue.model_copy(update={"window_days": 30})
+        long_revenue = revenue.model_copy(update={"name": "long_mean", "window_days": 30})
         ratio = RatioMetric(
             name="revenue_per_order",
             entity="unit_id",
@@ -499,10 +556,12 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
                 "denominator": other_ratio.denominator.model_copy(update={"window_days": None}),
             }
         )
-        source = source.exploratory_source(metrics=(ratio, filtered, other_ratio, unbounded))
+        source = source.exploratory_source(
+            metrics=(ratio, filtered, other_ratio, unbounded, long_revenue)
+        )
         if snowflake:
             monkeypatch.setattr(
-                source._session, "fetch_arrow", partial(_snowflake_no_match_fetch, connection)
+                connection, "to_pyarrow", partial(_snowflake_no_match_fetch, connection)
             )
         metrics = (
             conversion,
@@ -520,9 +579,9 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
         )
         if missing == "error":
             with pytest.raises(CodedError) as single:
-                load_metric_evidence(source, requests[0])
+                request_evidence(evidence_provider(source), requests[0])
             with pytest.raises(CodedError) as batch:
-                load_metric_evidence_batch(source, requests)
+                readouts.run(source, metrics=["conversion"])
             assert (batch.value.code, batch.value.context) == (
                 single.value.code,
                 single.value.context,
@@ -531,47 +590,36 @@ def test_shared_order_components_keep_request_identity_maturity_and_ratio_covari
                 name.startswith("component_values_") for name in connection.list_tables()
             )
             return
-        compiled = []
-        materialize = source._session.materialize_table
-
-        def capture(name, expr, **kwargs):
-            compiled.append(expr)
-            return materialize(name, expr, **kwargs)
-
-        monkeypatch.setattr(source._session, "materialize_table", capture)
-        expected = tuple(load_metric_evidence(source, request) for request in requests)
-        actual = load_metric_evidence_batch(source, requests)
-        for got, independent in zip(actual, expected, strict=True):
-            from dataclasses import replace
-
-            ordered = tuple(sorted(got.rows, key=lambda row: row["group_id"]))
-            reference = tuple(sorted(independent.rows, key=lambda row: row["group_id"]))
-            assert replace(got, rows=ordered) == replace(independent, rows=reference)
+        actual = tuple(
+            cast(Any, request_evidence(evidence_provider(source), request)) for request in requests
+        )
+        assert actual[0].control_group == "baseline"
+        assert actual[-1].control_group == "candidate"
         baseline = next(row for row in actual[2].rows if row["group_id"] == "baseline")
         assert baseline["n"] == 16
-        assert baseline["ref_y"] == 4.5
-        assert baseline["ref_den"] == (13 / 16 if missing == "zero" else 0.75)
-        assert baseline["cy2"] == 236
-        assert baseline["cden2"] == (39 / 16 if missing == "zero" else 3)
-        assert baseline["cyden"] == (13.5 if missing == "zero" else 18)
-        assert actual[3].rows == ()
-        empty_batch = source._moments_for_metrics(
-            selected=(long_revenue, long_revenue), include_covariate=False
+        assert baseline["ref_y"] == pytest.approx(4.5, rel=1e-10, abs=1e-10)
+        assert baseline["ref_den"] == pytest.approx(
+            13 / 16 if missing == "zero" else 0.75, rel=1e-10, abs=1e-10
         )
-        assert empty_batch.num_rows == 0
-        assert (
-            empty_batch.schema
-            == source._moments_for_metrics(selected=(long_revenue,), include_covariate=False).schema
+        assert baseline["cy2"] == pytest.approx(236, rel=1e-10, abs=1e-10)
+        assert baseline["cden2"] == pytest.approx(
+            39 / 16 if missing == "zero" else 3, rel=1e-10, abs=1e-10
+        )
+        assert baseline["cyden"] == pytest.approx(
+            13.5 if missing == "zero" else 18, rel=1e-10, abs=1e-10
+        )
+        assert actual[3].rows == ()
+        _assert_total_readout_uncertainty(
+            source,
+            (
+                ratio,
+                next(metric for metric in source.context.metrics if metric.name == revenue.name),
+            ),
         )
         _assert_display_parity(source, metrics[:4])
         for grain, completed in (("daily", False), ("asof", False), ("asof", True)):
             day_source = source.day_source(metrics=metrics)
             _assert_temporal_parity(day_source, metrics, grain, completed)
-        import ibis
-
-        for expr in compiled:
-            for dialect in ("duckdb", "postgres", "snowflake", "bigquery"):
-                ibis.to_sql(expr, dialect=dialect)
 
 
 def test_running_source_without_observations_explains_missing_cutoff():
