@@ -116,6 +116,14 @@ alpha release is 1.0.0. Dependency changes are reflected in `pyproject.toml`.
 | Core | Pydantic 2.14.1, packaging 24.0, NumPy 2.5.4, SciPy 1.18.1, Narwhals 2.27.1, PyArrow 26.0.0 (25.0.0 excluded); PyYAML 6.0.1 on Python 3.12, 6.0.2 on 3.13, and 6.0.3 on 3.14 and newer |
 | `warehouse` extra | Ibis 10.1.0 on Python 3.12–3.13 and 11.0.0 on 3.14; SQLGlot `>=30.14`, excluding `30.18.0` through `30.27.0` inclusive, `30.29.0` and `30.30.0` (the declared warehouse-extra constraint) |
 
+The standalone `tables` extra accepts pandas 3.1; its CoefTable rendering path
+does not require Ibis. The `warehouse` extra retains `pandas>=3.0.5,<3.1`
+because Ibis 12 reads a deprecated pandas option that raises under this
+project's warnings-as-errors policy. Warehouse installs therefore include
+pandas directly, and `demo` inherits the same restriction through `warehouse`.
+The `dashboard` extra remains capped at `<3.1`; no dashboard-only pandas 3.1
+support is claimed.
+
 These floors describe supported dependency combinations, not statistical
 certification. Optional extras have their own dependencies in `pyproject.toml`.
 

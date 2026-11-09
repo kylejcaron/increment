@@ -1163,6 +1163,7 @@ dashboard = [
 demo = [
     { name = "duckdb" },
     { name = "ibis-framework", extra = ["duckdb"] },
+    { name = "pandas" },
     { name = "sqlglot" },
 ]
 tables = [
@@ -1171,6 +1172,7 @@ tables = [
 ]
 warehouse = [
     { name = "ibis-framework" },
+    { name = "pandas" },
     { name = "sqlglot" },
 ]
 
@@ -1237,7 +1239,9 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pandas", marker = "extra == 'dashboard'", specifier = ">=3.0.5,<3.1" },
-    { name = "pandas", marker = "extra == 'tables'", specifier = ">=3.0.5,<3.1" },
+    { name = "pandas", marker = "extra == 'demo'", specifier = ">=3.0.5,<3.1" },
+    { name = "pandas", marker = "extra == 'tables'", specifier = ">=3.0.5" },
+    { name = "pandas", marker = "extra == 'warehouse'", specifier = ">=3.0.5,<3.1" },
     { name = "pyarrow", marker = "python_full_version < '3.13'", specifier = "!=25.0.0,>=26.0.0" },
     { name = "pyarrow", marker = "python_full_version == '3.13.*'", specifier = "!=25.0.0,>=26.0.0" },
     { name = "pyarrow", marker = "python_full_version >= '3.14'", specifier = "!=25.0.0,>=26.0.0" },

@@ -726,6 +726,60 @@ class TestRelativeScaleGuardsKeepTheAdditiveRow:
         assert row.winsor_control_n_lower == len(raw_control)
         assert row.winsor_treatment_n_lower == int(np.sum(raw_treatment < 5.0))
 
+    def test_signed_fixed_caps_keep_additive_row_clipping_disclosure(self):
+        from increment import MetricSpec, Winsorization, run
+        from increment.estimation.results import LiftEstimate
+
+        control = np.tile([-30.0, -11.0, -3.0, 0.0, 3.0, 16.0], 20)
+        treatment = np.tile([-30.0, -9.0, -3.0, 0.0, 6.0, 30.0], 20)
+        frame = pd.DataFrame(
+            {
+                "unit": [f"u{i}" for i in range(240)],
+                "arm": ["control"] * 120 + ["treatment"] * 120,
+                "y": np.concatenate([control, treatment]),
+            }
+        )
+        experiment, reader = from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    type="mean",
+                    winsorization=Winsorization(lower_value=-12.0, upper_value=12.0),
+                )
+            ],
+        )
+        try:
+            result = run(experiment, reader)
+        finally:
+            reader.close()
+        (row,) = result.readout()
+        assert isinstance(row, LiftEstimate)
+        projected = result.to_frame(backend="pandas")
+        assert isinstance(projected, pd.DataFrame)
+        disclosure = {
+            "winsor_lower_bound": -12.0,
+            "winsor_upper_bound": 12.0,
+            "winsor_control_n": 120,
+            "winsor_control_n_lower": 20,
+            "winsor_control_n_upper": 20,
+            "winsor_treatment_n": 120,
+            "winsor_treatment_n_lower": 20,
+            "winsor_treatment_n_upper": 20,
+        }
+        for field, expected in disclosure.items():
+            assert getattr(row, field) == expected
+            assert projected.iloc[0][field] == expected
+        assert row.winsor_lower_percentile is row.winsor_upper_percentile is None
+        assert row.lift is None
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+        assert row.sampling_available
+        assert row.abs_diff == pytest.approx(5 / 6, rel=1e-12, abs=1e-12)
+
     @pytest.mark.parametrize(
         ("arms", "guard_reason"),
         [

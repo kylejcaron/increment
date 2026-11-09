@@ -940,8 +940,9 @@ its own JUnit artifact under a 90-minute limit. Separate jobs record the fast
 and slow duration weights without waiting for the full-suite shards; once every
 recording part passes, it publishes them and, on `main`, proposes the
 selection-map refresh.
-A failure creates or updates a GitHub issue labelled `nightly-failure`;
-tagging also requires a successful nightly run on the exact release SHA.
+A failed nightly run creates or updates the issue for an ordinary failed gate;
+cancelled full-suite shards count only when GitHub's explicit timeout annotation
+is present, so changes to that external diagnostic wording may require an update.
 
 The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or

@@ -519,6 +519,9 @@ Lift trajectories group the selected breakout's series in one table. Expand
 **Latest readings and qualifications** for exact estimates, intervals, dates,
 tested nulls, and the series' shared or individual qualifications.
 
+Absolute-value readings show the arm, value, and interval; observation dates
+remain on the chart rather than repeating in a separate column.
+
 The **Focus metric** list groups metrics by role and scrolls within a fixed
 height, so a long list does not push the plot down. From nine metrics on, a
 filter above it narrows the list by metric name or role; the selected metric

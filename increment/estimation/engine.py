@@ -3427,6 +3427,7 @@ def _asymptotic_lift_outcome(
             null_abs,
             preferred_direction,
         )
+        row = row.model_copy(update=_winsorization_result_fields(control, treatment))
         if strategy.metric_type == "ratio":
             row = row.model_copy(update=_ratio_arm_facts(control, treatment))
         return row, None

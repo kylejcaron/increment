@@ -2274,11 +2274,10 @@ def _latest_value_reading(rows: Sequence[Any], formatter: ct.Number) -> str:
     for row in rows:
         latest[row.group_id] = row
     return _table(
-        ["Arm", "Latest", "Value", "Interval"],
+        ["Arm", "Value", "Interval"],
         [
             [
                 esc(row.group_id),
-                esc(str(row.ds)),
                 esc(formatter(row.value.value))
                 if row.value is not None
                 else missing_html(row.unavailable),

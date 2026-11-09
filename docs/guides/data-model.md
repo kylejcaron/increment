@@ -138,12 +138,18 @@ a unit under a first-purchase exposure or a line item logged with it, therefore
 counts in neither the outcome nor the CUPED window. Encouragement uptake is the
 one exception: uptake at the exposure instant qualifies.
 
-**Dataframe.** `from_frame(..., shape="panel")` accepts sparse input and treats absent eligible
-unit-days as zero. A unit becomes eligible on its `exposure_date`. Without that
-column the rows cannot say whether a unit's absent days came before its exposure
-or after it with no activity, so only whole-window results of unwindowed metrics
-are available. Daily and as-of views, windowed and retention metrics, a windowed
-uptake, as-of compliance and sequential inference need `exposure_date=`; if every
+**Dataframe.** A sparse unit panel is not a raw event log: every assigned unit
+must appear at least once with its assignment and exposure identity. Missing
+unit-days for a represented unit are treated as zero, but zero filling cannot
+invent a wholly absent unit or recover its assignment. Start with the assignment
+table, aggregate activity to one row per unit/day, then left-join activity so
+inactive assigned units remain as zero-valued anchors.
+`from_frame(..., shape="panel")` accepts sparse input and fills absent eligible
+unit-days with zero. A unit becomes eligible on its `exposure_date`. Without
+that column, the rows cannot distinguish days before exposure from days with no
+activity, so only whole-window results of unwindowed metrics are available.
+Daily and as-of views, windowed and retention metrics, a windowed uptake,
+as-of compliance and sequential inference need `exposure_date=`; if every
 unit was exposed on the same day, add a column holding that date. `observation_end=`
 names the last observed day in the date column's own form: a date or an ISO-8601
 string such as `"2025-01-31"` for a calendar column, a number for a numeric day
@@ -156,6 +162,83 @@ densified temporarily; larger ones use a sparse day-at-a-time
 reduction. `densified_cells` counts the cells that needed zero fill inside each
 unit's eligible days, from its exposure date (or the first panel day) through the
 observation end (or the last panel day), not physical rows.
+
+For example, if assignments contain 100 units per arm but activity contains
+only 50 control and 60 treatment units, joining activity to assignments retains
+the absent units as zero-valued panel rows:
+
+Because every active unit has value 10, the activity-only means are
+descriptive and constant arms may not have a finite uncertainty interval.
+The actual inference below runs on the complete panel.
+
+```python
+from math import isclose
+
+import polars as pl
+
+import increment
+
+control_ids = [f"c{i}" for i in range(100)]
+treatment_ids = [f"t{i}" for i in range(100)]
+assignments = pl.DataFrame(
+    {
+        "user_id": control_ids + treatment_ids,
+        "variant": ["control"] * 100 + ["treatment"] * 100,
+        "exposure_date": ["2025-01-01"] * 200,
+    }
+)
+events = pl.DataFrame(
+    {
+        "user_id": control_ids[:50] + treatment_ids[:60],
+        "date": ["2025-01-01"] * 110,
+        "spend": [10.0] * 110,
+    }
+)
+activity = events.group_by("user_id", "date").agg(pl.col("spend").sum())
+assert activity.select(pl.struct("user_id", "date").n_unique()).item() == activity.height
+
+activity_only = activity.join(assignments, on="user_id", how="inner")
+complete = assignments.join(activity, on="user_id", how="left").with_columns(
+    pl.col("date").fill_null("2025-01-01"),
+    pl.col("spend").fill_null(0.0),
+)
+
+
+def analyze(panel):
+    experiment, reader = increment.from_frame(
+        panel,
+        shape="panel",
+        unit="user_id",
+        group="variant",
+        control="control",
+        date="date",
+        exposure_date="exposure_date",
+        observation_end="2025-01-01",
+        metrics={"spend": "mean"},
+    )
+    return next(iter(increment.run(experiment, reader).readout()))
+
+
+descriptive = activity_only.group_by("variant").agg(
+    pl.col("user_id").n_unique().alias("n"),
+    pl.col("spend").mean().alias("mean"),
+)
+control = descriptive.filter(pl.col("variant") == "control").row(0, named=True)
+treatment = descriptive.filter(pl.col("variant") == "treatment").row(0, named=True)
+assert (control["n"], treatment["n"]) == (50, 60)
+assert isclose(control["mean"], 10.0, rel_tol=1e-12, abs_tol=1e-12)
+assert isclose(treatment["mean"], 10.0, rel_tol=1e-12, abs_tol=1e-12)
+
+result = analyze(complete)
+assert (result.n_control, result.n_treat) == (100, 100)
+assert isclose(result.mean_control, 5.0, rel_tol=1e-12, abs_tol=1e-12)
+assert isclose(result.mean_treat, 6.0, rel_tol=1e-12, abs_tol=1e-12)
+assert isclose(result.require_lift().value, 0.2, rel_tol=1e-12, abs_tol=1e-12)
+```
+
+The activity-only means describe observed units only; they do not account for
+assigned units absent from the activity source. The complete panel retains all
+assignments, including zero-activity anchors.
 
 ??? info "Dataframe zero-fill route and memory limits"
     For small inputs, zero filling may use a temporary date spine when a scratch

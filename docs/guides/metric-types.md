@@ -105,8 +105,10 @@ increment.MetricSpec(
 
 Percentile bounds use the pooled eligible units across arms; fixed bounds use
 the values you declare. Zero is a regular observation. Results expose each
-arm's resolved cap and capped count. A difference in cap rates may signal a
-treatment-driven change in the tail; it is diagnostic, not an adjustment.
+arm's resolved cap and capped count. With fixed caps, these remain available
+when an arm's mean is zero or negative and relative lift cannot be reported.
+A difference in cap rates may signal a treatment-driven change in the tail;
+it is diagnostic, not an adjustment.
 
 ??? info "Percentile bound resolution"
     Percentile bounds are resolved once from the pooled eligible unit population
@@ -757,6 +759,103 @@ boolean columns use `conversion`. Integer columns are intentionally not
 inferred: choose `mean` or `conversion` explicitly, because an integer column
 may represent either a count or a 0/1 indicator. A bare name cannot be used
 with `from_moments`, which has no source dataframe schema.
+
+Storage dtype selects an inferred procedure: Boolean columns infer
+`conversion`, while floating-point columns infer `mean`, even when every value
+is `0.0` or `1.0`. Integer columns still require an explicit type. If a cast
+can change the storage dtype, declare the intended type before inspecting
+results; explicit `conversion` and `mean` preserve the chosen procedure across
+Boolean and floating-point storage.
+
+This deterministic example has 100 successes among 1,000 control units and 130
+among 1,000 treatment units. The inferred Boolean and floating-point columns
+select different procedures; each explicit declaration gives matching results
+for the two storage types:
+
+```python
+from math import isclose
+
+import polars as pl
+
+import increment
+
+n = 1000
+control_successes = 100
+treatment_successes = 130
+successes = (
+    [True] * control_successes
+    + [False] * (n - control_successes)
+    + [True] * treatment_successes
+    + [False] * (n - treatment_successes)
+)
+df = pl.DataFrame(
+    {
+        "user_id": [f"u{i:04d}" for i in range(2 * n)],
+        "variant": ["control"] * n + ["treatment"] * n,
+        "success_bool": successes,
+        "success_float": [float(value) for value in successes],
+    },
+    schema_overrides={"success_float": pl.Float64},
+)
+
+
+def analyze(column, metric_type=None):
+    metric = column if metric_type is None else increment.MetricSpec(name=column, type=metric_type)
+    experiment, reader = increment.from_frame(
+        df,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[metric],
+    )
+    return next(iter(increment.run(experiment, reader).readout()))
+
+
+boolean_inferred = analyze("success_bool")
+float_inferred = analyze("success_float")
+assert boolean_inferred.metric_type == "conversion"
+assert float_inferred.metric_type == "mean"
+assert boolean_inferred.reference_kind != float_inferred.reference_kind
+
+for row in (boolean_inferred, float_inferred):
+    print(
+        f"{row.metric_type} ({row.reference_kind}): "
+        f"p={row.p_value():.6g}; stat_sig={row.stat_sig()}"
+    )
+
+
+def assert_parity(left, right, expected_type):
+    assert left.metric_type == right.metric_type == expected_type
+    assert left.reference_kind == right.reference_kind
+    assert isclose(left.mean_control, right.mean_control, rel_tol=1e-12, abs_tol=1e-12)
+    assert isclose(left.mean_treat, right.mean_treat, rel_tol=1e-12, abs_tol=1e-12)
+    assert isclose(
+        left.require_lift().value,
+        right.require_lift().value,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+    assert isclose(left.p_value(), right.p_value(), rel_tol=1e-12, abs_tol=1e-12)
+    assert left.stat_sig() == right.stat_sig()
+
+
+assert_parity(
+    analyze("success_bool", "conversion"),
+    analyze("success_float", "conversion"),
+    "conversion",
+)
+assert_parity(
+    analyze("success_bool", "mean"),
+    analyze("success_float", "mean"),
+    "mean",
+)
+```
+
+Here the inferred Boolean result is `conversion` with a binomial reference
+(`p=0.06715`, `stat_sig=False`), while the inferred `Float64` result is `mean`
+with a t reference (`p=0.0364455`, `stat_sig=True`). The changed decision
+reflects dtype-selected procedures, not an arithmetic or backend failure.
 
 
 ```python
