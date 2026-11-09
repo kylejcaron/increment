@@ -573,13 +573,21 @@ def test_results_keep_selection_qualification_as_a_footnote(pricing: DashboardSn
             "selection_qualification": qualification,
             "family_q": 0.05,
             "family_size": 12,
+            **({"binomial_set": binomial_region()} if row["role"] == "secondary" else {}),
         }
-        if row["metric"] == pricing.primary_metric
+        if row["metric"] == pricing.primary_metric or row["role"] == "secondary"
         else row
         for row in pricing.readout_rows
     )
     html = render_results(dataclasses.replace(pricing, readout_rows=rows)).text
-    assert "Selection qualification" not in html
+    headers = {
+        re.sub(r"<[^>]+>", "", header).strip()
+        for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
+    }
+    assert {"Lift %", "Lift Plot"} <= headers
+    assert "Discovery" not in headers
+    assert "Numerical qualification" not in headers
+    assert "Selection qualification" not in headers
     assert "Selection evidence for" in html
     assert pricing.primary_metric in html
     assert qualification in html

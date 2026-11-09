@@ -4181,7 +4181,7 @@
     "tests/estimation/test_exploratory_family.py::test_refusals_survive_pickle_and_deepcopy[estimation.family.exploratory_row]": 0.002,
     "tests/estimation/test_exploratory_family.py::test_refusals_survive_pickle_and_deepcopy[estimation.family.exploratory_sequential]": 0.386,
     "tests/estimation/test_exploratory_family.py::test_segment_cells_from_different_fact_sources_are_separate_hypotheses": 0.05,
-    "tests/estimation/test_exploratory_family.py::test_segment_family_reproduces_run_breakout_for_a_conservative_nonrejection": 0.012,
+    "tests/estimation/test_exploratory_family.py::test_whole_and_segment_outcome_failures_stay_in_the_same_family": 0.012,
     "tests/estimation/test_exploratory_family.py::test_selected_exploratory_row_keeps_its_nominal_allocation": 0.002,
     "tests/estimation/test_exploratory_family.py::test_selected_intervals_equal_run_breakout_bh[0.05-greater]": 0.089,
     "tests/estimation/test_exploratory_family.py::test_selected_intervals_equal_run_breakout_bh[0.05-less]": 0.051,
