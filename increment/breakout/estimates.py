@@ -3394,6 +3394,21 @@ def _record_failed_pairs(
         unestimable.setdefault(pair, _failure_exclusion_reason(failure))
 
 
+def _record_method_exclusions(
+    excluded: Mapping[tuple[str, str], ExclusionReason],
+    methods: Sequence[Method],
+    roles: Mapping[str, Literal["decision", "sensitivity"]],
+    method_unestimable: dict[tuple[str, str, str], ExclusionReason],
+    unestimable: dict[tuple[str, str], ExclusionReason],
+) -> None:
+    """Keep each method's exclusion and only the decision method's family reason."""
+    for pair, reason in excluded.items():
+        for method in methods:
+            method_unestimable[(*pair, method.name)] = reason
+            if roles[method.name] == "decision":
+                unestimable.setdefault(pair, reason)
+
+
 def _keep_non_guard_failures(failures: Mapping[Any, Any], kept: dict[tuple[str, str], Any]) -> None:
     """Record failures that are not lift guards so the breakout computation reports
     them under their own code instead of an exclusion label."""
@@ -3783,8 +3798,11 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                 prior=metric_prior,
             )
             metric_evidence = (context.method_evidence or {}).get(metric.name)
+            absolute_ratio = metric.type == "ratio" and policy.null_abs is not None
             groups = _method_input_groups(
-                configured, mixed_groups, method_scoped=metric_evidence is not None
+                configured,
+                mixed_groups,
+                method_scoped=metric_evidence is not None or absolute_ratio,
             )
             for method_group in groups:
                 legacy_lane = method_group[0].variance_reduction == "cuped"
@@ -3819,14 +3837,16 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     "cuped_multicovariate",
                 ):
                     method_rows = _unadjusted_binomial_rows(rows)
-                elif mixed_groups is not None and legacy_lane:
+                elif legacy_lane and (mixed_groups is not None or absolute_ratio):
                     legacy_prepared = _prepare_lift_slice(
                         method_rows,
                         control_group=context.control_group,
                         metric_types={metric.name: metric.type},
                         binomial_gate_exempt_metrics=frozenset(),
                         nonpositive_mean_exempt_metrics=(
-                            frozenset({metric.name}) if policy.null_abs is not None else frozenset()
+                            frozenset({metric.name})
+                            if policy.null_abs is not None and metric.type != "ratio"
+                            else frozenset()
                         ),
                         warning_label=(
                             f"run_breakout: segment {context.dimension}="
@@ -3835,9 +3855,13 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                         unobserved_control_missing=True,
                     )
                     method_rows = legacy_prepared.live_rows
-                    for pair, reason in legacy_prepared.unestimable.items():
-                        for method in method_group:
-                            method_unestimable[(*pair, method.name)] = reason
+                    _record_method_exclusions(
+                        legacy_prepared.unestimable,
+                        method_group,
+                        resolved_roles,
+                        method_unestimable,
+                        unestimable,
+                    )
                     if not legacy_prepared.part.live_control_metrics:
                         continue
                 computation, skip_reason = _estimate_lift_computation_or_reason(
@@ -4745,20 +4769,8 @@ def _run_fixed_breakout(  # noqa: PLR0913
         control_group=control_group,
         methods_by_metric=methods_by_metric,
     )
-    # Scalar ratio CUPED still requires positive adjusted components on both scales.
     nonpositive_mean_exempt_metrics = frozenset(
-        metric.name
-        for metric in metrics
-        if policy_by_metric[metric.name].null_abs is not None
-        and not (
-            metric.type == "ratio"
-            and any(
-                method.variance_reduction == "cuped"
-                for method in _configured_methods_for_metric(
-                    metric.name, methods=methods, methods_by_metric=methods_by_metric
-                )
-            )
-        )
+        metric.name for metric in metrics if policy_by_metric[metric.name].null_abs is not None
     )
     prepared_by_segment: dict[str, _PreparedLiftSlice] = {}
     for value in sorted(segments):

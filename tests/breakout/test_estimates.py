@@ -437,9 +437,7 @@ def test_absolute_segment_admission_preserves_count_and_relative_domain_gates(ca
         "compiled_plan",
     )
     methods = (
-        [Method(name="unadjusted"), Method(name="cuped", variance_reduction="cuped")]
-        if case == "ratio_scalar_cuped"
-        else None
+        [Method(name="cuped", variance_reduction="cuped")] if case == "ratio_scalar_cuped" else None
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
@@ -459,7 +457,10 @@ def test_absolute_segment_admission_preserves_count_and_relative_domain_gates(ca
         assert (row.alternative, row.null_lift, row.null_abs) == policy[1:4]
 
 
-@pytest.mark.parametrize("kind", ["cuped_mean", "ratio"])
+@pytest.mark.parametrize(
+    "kind",
+    ["cuped_mean", "ratio", "ratio_mixed_unadjusted_decision", "ratio_mixed_cuped_decision"],
+)
 def test_absolute_segment_nonpositive_mean_reaches_existing_additive_method(kind):
     from scipy.stats import t
 
@@ -467,6 +468,10 @@ def test_absolute_segment_nonpositive_mean_reaches_existing_additive_method(kind
 
     metric = _mean_metric() if kind == "cuped_mean" else _ratio_metric("rev")
     methods = [Method(name="cuped", variance_reduction="cuped")] if kind == "cuped_mean" else None
+    mixed = kind.startswith("ratio_mixed")
+    if mixed:
+        methods = [Method(name="unadjusted"), Method(name="cuped", variance_reduction="cuped")]
+    decision = "cuped" if kind == "ratio_mixed_cuped_decision" else "unadjusted"
     rows = [
         _make_arm_row(
             100,
@@ -474,29 +479,46 @@ def test_absolute_segment_nonpositive_mean_reaches_existing_additive_method(kind
             1.0,
             country="US",
             group_id=arm,
-            x_mean=0.0 if kind == "cuped_mean" else None,
-            sum_den=100.0 if kind == "ratio" else None,
+            x_mean=0.0 if kind == "cuped_mean" or mixed else None,
+            sum_den=100.0 if kind.startswith("ratio") else None,
         )
         for arm, mean in (("control", -1.0), ("treatment", -0.8))
     ]
     policy = _ReadoutCellPolicy(0.05, "less", 0.0, 0.5, "guardrail", "compiled_plan")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        (row,) = _run_fixed_breakout(
+        result = _run_fixed_breakout(
             rows,
             [metric],
             control_group="control",
             dimension="country",
             policy_by_metric={"rev": policy},
             methods=methods,
-            correction="none",
+            method_roles=(
+                {
+                    name: "decision" if name == decision else "sensitivity"
+                    for name in ("unadjusted", "cuped")
+                }
+                if mixed
+                else None
+            ),
+            correction="bh" if mixed else "none",
             q=0.1,
         )
+    row = next(
+        row for row in result if row.method == ("cuped" if kind == "cuped_mean" else "unadjusted")
+    )
     assert row.excluded is None
     assert row.relative_unavailable_reason == "nonpositive_arm_mean"
     assert row.abs_diff == pytest.approx(0.2)
     assert row.abs_se == pytest.approx(math.sqrt(0.02))
     assert row.p_value() == pytest.approx(t.cdf(-0.3 / math.sqrt(0.02), 198))
+    if mixed:
+        cuped = next(row for row in result if row.method == "cuped")
+        assert cuped.excluded == "nonpositive_mean"
+        decision_row = next(row for row in result if row.method_role == "decision")
+        assert decision_row.family_size == 1
+        assert decision_row.discovery is (decision == "unadjusted")
 
 
 def test_absolute_mixed_binary_cuped_keeps_additive_row_and_count_only_bonferroni():
