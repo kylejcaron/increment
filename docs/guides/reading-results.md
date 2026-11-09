@@ -558,12 +558,13 @@ LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='d
   `r.relative_unavailable_reason` is `"nonpositive_arm_mean"` (an arm mean is
   zero or negative), `"delta_method_unreliable"` (an arm mean is close to zero
   relative to its standard error) or `"zero_variance"` (one arm's outcomes are
-  constant). There is **no** relative lift and **no** relative set. The additive
-  difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`
-  when both arms are constant at a non-positive mean (both arms constant at
-  positive means fail with `estimation.engine.lift_guard` instead). Check the
-  bounds before use. When the additive interval is present and the row's null
-  is the unshifted zero (no absolute or relative margin declared), it is the
+  constant). There is **no** relative lift and **no** relative set. An otherwise
+  estimable row keeps its additive difference in `r.abs_diff`; check `r.abs_lb`
+  and `r.abs_ub` before use. When both arms are constant, the cell instead has
+  `estimation.engine.lift_guard` with reason `"zero_variance"`, regardless of
+  whether the means are positive, zero or negative. When an additive interval
+  is present and the row's null is the unshifted zero (no absolute or relative
+  margin declared), it is the
   row's decision: `r.p_value()` is the additive test of the difference against
   zero under the row's alternative, using the reference the interval was cut
   from (Welch `t` or Normal, `r.abs_reference_kind`), and `r.stat_sig()` is
@@ -808,7 +809,7 @@ the row has **no** relative set, so read the additive `r.abs_diff`, plus
 |---|---|
 | Exact conversion row whose control arm has zero events | The ratio has a zero denominator, but `r.binomial_set` still bounds the lift. |
 | Joint ratio set with no representable point | `r.relative_confidence_set`; `r.relative_confidence_set.point_unavailable_reason` names the reason. |
-| Fixed-horizon mean row whose arm summaries block the log scale | `r.relative_unavailable_reason` is `"nonpositive_arm_mean"`, `"delta_method_unreliable"` or `"zero_variance"`: there is **no** relative set. `r.abs_diff` survives; `r.abs_lb` and `r.abs_ub` can be `None` when both arms are constant at a non-positive mean. |
+| Fixed-horizon mean row whose arm summaries block the log scale | `r.relative_unavailable_reason` is `"nonpositive_arm_mean"`, `"delta_method_unreliable"` or `"zero_variance"`: there is **no** relative set. An otherwise estimable row keeps `r.abs_diff`; check `r.abs_lb` and `r.abs_ub`. If both arms are constant, the cell has `estimation.engine.lift_guard` with reason `"zero_variance"`, irrespective of their means. |
 | Joint relative covariance unusable | `r.relative_unavailable_reason` is `"joint_covariance_unrepresentable"` (not representable as a float, extremely large scores) or `"joint_covariance_indefinite"` (not positive semidefinite; a singular one is still usable), with **no** relative set. Only `r.abs_diff` is guaranteed; `r.abs_se`, `r.abs_lb`, and `r.abs_ub` can each be `None`. |
 | Winsorized metric with a `confidence_set` | `r.confidence_set.relative` keeps a status and reason per endpoint (for example `unbounded` with `denominator_nonseparation`); the additive interval stays in `r.abs_lb` and `r.abs_ub`. |
 | Sequential row whose point is withheld | `r.sequential_result.bounds`, with `r.sequential_result.point_reason`. Check that `r.sequential_result.bounds.status` is not `"unavailable"` before reading endpoints, and read `bounds.reason` when it is. |

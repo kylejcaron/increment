@@ -154,33 +154,6 @@
       "stage": "preflight"
     },
     {
-      "cell": "mean-breakout-ni_margin-utc-error-from_definitions",
-      "ingress": "from_definitions",
-      "code": "readout.margin.breakout",
-      "context": [
-        "names"
-      ],
-      "stage": "preflight"
-    },
-    {
-      "cell": "mean-breakout-ni_margin-utc-error-from_unit_day_artifact",
-      "ingress": "from_unit_day_artifact",
-      "code": "readout.margin.breakout",
-      "context": [
-        "names"
-      ],
-      "stage": "preflight"
-    },
-    {
-      "cell": "mean-breakout-ni_margin-utc-error-from_unit_panel",
-      "ingress": "from_unit_panel",
-      "code": "readout.margin.breakout",
-      "context": [
-        "names"
-      ],
-      "stage": "preflight"
-    },
-    {
       "cell": "mean-daily-none-utc-error-from_unit_summary",
       "ingress": "from_unit_summary",
       "code": "evidence.grain_unavailable",
