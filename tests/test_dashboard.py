@@ -1387,7 +1387,9 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
         row.model_copy(
             update={
                 "method": "cuped" if row.metric == "revenue_per_user" else row.method,
-                "analysis_population": "triggered",
+                "analysis_population": "assigned"
+                if row.metric == "revenue_per_user"
+                else "triggered",
                 "null_lift": 0.01,
                 "posterior_prob_favorable": 0.73 if row.dimension_value == "CA" else None,
                 "posterior_available": False if row.dimension_value == "US" else None,
@@ -1429,6 +1431,16 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
     assert len(qualified) == 3
     outside = re.sub(r"<details\b.*?</details>", "", rendered, flags=re.S)
     assert "Scope and integrity unknown." not in outside and "Tested null:" not in outside
+    captions = re.findall(
+        r'<div class="inc-dashboard-temporal-table">\s*<p[^>]*>(.*?)</p>', rendered, re.S
+    )
+    assert len(captions) == 3
+    assert all(
+        any(metric in caption for caption in captions) for metric in {r.metric for r in mixed}
+    )
+    assert "Method:" in " ".join(captions) and "cuped" in " ".join(captions)
+    assert "Population:" in " ".join(captions)
+    assert "assigned" in " ".join(captions) and "triggered" in " ".join(captions)
     varied = next(detail for detail in qualified if "revenue_per_user" in detail)
     assert str(earlier_date) in varied and str(max(row.ds for row in data)) in varied
     assert "90%" in varied

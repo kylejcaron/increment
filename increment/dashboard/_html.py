@@ -1977,7 +1977,12 @@ def _lift_reading_label(row: Mapping[str, Any]) -> str:
     return " · ".join(str(row[key]) for key in ("segment", "group_id") if row.get(key) is not None)
 
 
-def _lift_trajectory_table(snapshot: DashboardSnapshot, panels: Sequence[tuple[Any, str]]) -> str:
+def _lift_trajectory_table(
+    snapshot: DashboardSnapshot,
+    panels: Sequence[tuple[Any, str]],
+    *,
+    caption_context: Sequence[str] = (),
+) -> str:
     readings = []
     cells = []
     advisory = []
@@ -2017,7 +2022,7 @@ def _lift_trajectory_table(snapshot: DashboardSnapshot, panels: Sequence[tuple[A
     basis = "Exposure cohort" if row.ds_basis == "cohort" else "Observation date"
     dates = list(dict.fromkeys(str(reading["ds"]) for reading in readings))
     levels = list(dict.fromkeys(reading.get("level") for reading in readings))
-    caption = [basis]
+    caption = [*caption_context, basis]
     caption.append(f"Latest {dates[0]}" if len(dates) == 1 else "Latest dates vary by series")
     if len(levels) == 1 and not is_missing(levels[0]):
         caption.append(f"{percent_text(cast(float, levels[0]))} intervals")
@@ -2170,7 +2175,29 @@ def _temporal_plots(
             f"{esc(_trajectory_label(row))}</figcaption>{svg}{latest}</figure>"
         )
     if lift:
-        return "".join(_lift_trajectory_table(snapshot, panels) for panels in lift_panels.values())
+        varying = (
+            [
+                (name, label)
+                for name, label in (
+                    ("source", "Source"),
+                    ("dimension", "Breakout"),
+                    ("analysis_population", "Population"),
+                    ("value_scale", "Scale"),
+                    ("method", "Method"),
+                    ("estimand", "Estimand"),
+                )
+                if len({getattr(panels[0][0], name) for panels in lift_panels.values()}) > 1
+            ]
+            if len(lift_panels) > 1
+            else []
+        )
+        for panels in lift_panels.values():
+            row = panels[0][0]
+            caption_context = [row.metric] if metric is None else []
+            caption_context.extend(f"{label}: {getattr(row, name)!r}" for name, label in varying)
+            fragments.append(
+                _lift_trajectory_table(snapshot, panels, caption_context=caption_context)
+            )
     return "".join(fragments)
 
 
