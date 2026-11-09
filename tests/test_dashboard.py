@@ -1804,6 +1804,62 @@ def test_primary_coverage_discloses_retained_alpha_when_level_rounds_to_one(
     assert "coverage_alpha" not in payload["readoutCsv"].splitlines()[0]
 
 
+def test_secondary_coverage_budget_reaches_metric_details(
+    storefront: DashboardSnapshot,
+) -> None:
+    index = next(
+        i
+        for i, row in enumerate(storefront.readout_rows)
+        if row["metric"] != storefront.primary_metric
+    )
+    estimate = storefront.estimates[index]
+    assert estimate.lift is not None
+    updated = list(storefront.estimates)
+    updated[index] = estimate.model_copy(
+        update={"lift": estimate.lift.model_copy(update={"level": 1.0, "alpha": 1e-17})}
+    )
+    rows = list(storefront.readout_rows)
+    rows[index] = {**dict(rows[index]), "level": 1.0}
+    snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
+
+    from increment.dashboard._app import build_payload
+
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    metric = str(rows[index]["metric"])
+    detail = next(item["detail"] for item in payload["metrics"] if item["key"] == metric)
+    assert "100% (α=1e-17)" in detail
+
+
+def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(
+    storefront: DashboardSnapshot,
+) -> None:
+    indices = [
+        i
+        for i, row in enumerate(storefront.readout_rows)
+        if row["metric"] != storefront.primary_metric
+        and storefront.estimates[i].confidence_set is None
+        and storefront.estimates[i].lift is not None
+    ][:2]
+    assert len(indices) == 2
+    updated = list(storefront.estimates)
+    rows = list(storefront.readout_rows)
+    for index, alpha in zip(indices, (1e-17, 0.05), strict=True):
+        estimate = updated[index]
+        assert estimate.lift is not None
+        updated[index] = estimate.model_copy(
+            update={"lift": estimate.lift.model_copy(update={"level": 1.0, "alpha": alpha})}
+        )
+        rows[index] = {**dict(rows[index]), "level": 1.0}
+    snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
+
+    from increment.dashboard._app import build_payload
+
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    notes = payload["report"]["notes"]
+    assert any("100% (α=1e-17) fixed-horizon intervals" in note for note in notes)
+    assert any("100% (α=0.05) fixed-horizon intervals" in note for note in notes)
+
+
 def test_relative_set_coverage_discloses_its_own_retained_alpha() -> None:
     from increment.dashboard._format import interval_html
     from increment.estimation.inference import relative_confidence_set

@@ -65,6 +65,7 @@ from increment.dashboard._format import (
     primary_tone,
     result_caveats,
     retained_coverage_alpha,
+    retained_coverage_alpha_for_row,
     robust_fence,
     share_text,
     tail_word,
@@ -1299,7 +1300,8 @@ def results_warnings(snapshot: DashboardSnapshot) -> str:
 def _role_disclosures(snapshot: DashboardSnapshot) -> list[str]:
     rows_by_role: dict[str, list[Mapping[str, Any]]] = {}
     for row in snapshot.readout_rows:
-        rows_by_role.setdefault(str(row.get("role") or "unassigned"), []).append(row)
+        enriched = {**row, "coverage_alpha": retained_coverage_alpha_for_row(snapshot, row)}
+        rows_by_role.setdefault(str(row.get("role") or "unassigned"), []).append(enriched)
     all_rows = snapshot.readout_rows
     several_arms = len({row.get("group_id") for row in all_rows}) > 1
     several_methods = len({(row.get("method"), row.get("method_role")) for row in all_rows}) > 1
@@ -1340,16 +1342,18 @@ def _role_disclosure(
     sentences.append(f"Outcomes: {outcomes}.")
     levelled = [
         (
-            f"{row.get('metric')} ({row.get('method')}, {row.get('method_role')})"
-            if several_methods
-            else row.get("metric"),
-            float(row["level"]),
+            (
+                f"{row.get('metric')} ({row.get('method')}, {row.get('method_role')})"
+                if several_methods
+                else row.get("metric")
+            ),
+            (float(row["level"]), row.get("coverage_alpha")),
         )
         for row in rows
         if row.get("level") is not None
     ]
     if levelled:
-        shown = esc(levels_by_metric(levelled, percent_text))
+        shown = esc(levels_by_metric(levelled, lambda coverage: percent_text(*coverage)))
         sentences.append(f"Interval level {shown}.")
         if any(row.get("alternative") in ("greater", "less") for row in rows):
             sentences.append(
@@ -1586,7 +1590,11 @@ def _metric_detail_entries(
         (
             "Interval",
             f"{interval_html(row)}"
-            + (f" at {percent_text(row['level'])}" if row.get("level") is not None else ""),
+            + (
+                f" at {percent_text(row['level'], retained_coverage_alpha_for_row(snapshot, row))}"
+                if row.get("level") is not None
+                else ""
+            ),
         ),
         ("Favorable direction", direction_text),
         ("Tested alternative", f"{esc(row.get('alternative'))} ({tail_word(row)})"),
@@ -2225,7 +2233,7 @@ def _value_interval(point: Any, formatter: ct.Number) -> str:
     upper = esc(formatter(point.ub)) if point.ub is not None else "∞"
     opening = "[" if point.lb is not None else "("
     closing = "]" if point.ub is not None else ")"
-    level = f"{percent_text(point.level)} " if point.level is not None else ""
+    level = f"{percent_text(point.level, point.alpha)} " if point.level is not None else ""
     return f"{level}{opening}{lower}, {upper}{closing}"
 
 
@@ -2309,7 +2317,9 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
             '<p class="inc-dashboard-note">No declared breakouts on this experiment, so '
             "there is no segment view.</p>"
         )
-    rows = estimates_to_readout(list(data))
+    estimates = list(data)
+    alphas = [retained_coverage_alpha(estimate) for estimate in estimates]
+    rows = estimates_to_readout(estimates)
     if not rows:
         return f'<p class="inc-dashboard-note">{missing_html("this breakout returned no segments")}</p>'
     table, metrics = readout_native(
@@ -2326,7 +2336,7 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
     resize_forest(table, width=charts.segment_forest_width, height=charts.segment_forest_height)
     return (
         _TABLE_WRAP.format(native_html(table, metrics))
-        + _segments_caption(rows)
+        + _segments_caption(rows, alphas)
         + _caveats_list(_segment_caveats(rows))
         + _geometry_disclosure(snapshot, rows, label=INTERVALS_DISCLOSURE)
         + _selection_qualification_notes(
@@ -2335,10 +2345,12 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
     )
 
 
-def _segments_caption(rows: Sequence[Mapping[str, Any]]) -> str:
+def _segments_caption(rows: Sequence[Mapping[str, Any]], alphas: Sequence[float | None]) -> str:
     segments = sorted({str(row.get("segment")) for row in rows})
     levelled = [
-        (row.get("metric"), float(row["level"])) for row in rows if row.get("level") is not None
+        (row.get("metric"), (float(row["level"]), alpha))
+        for row, alpha in zip(rows, alphas, strict=True)
+        if row.get("level") is not None
     ]
     entries = [
         ("Dimension", esc(rows[0].get("dimension"))),
@@ -2347,7 +2359,12 @@ def _segments_caption(rows: Sequence[Mapping[str, Any]]) -> str:
         ("Segments", f"{count_text(len(segments))}: {esc(', '.join(segments))}"),
         (
             "Interval level",
-            esc(levels_by_metric(levelled, lambda level: f"{level:.2%}"))
+            esc(
+                levels_by_metric(
+                    levelled,
+                    lambda coverage: percent_text(*coverage),
+                )
+            )
             if levelled
             else missing_html("no interval"),
         ),

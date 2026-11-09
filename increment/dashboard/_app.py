@@ -57,7 +57,7 @@ from increment.dashboard._format import (
     population_label,
     primary_method,
     primary_tone,
-    retained_coverage_alpha,
+    retained_coverage_alpha_for_row,
     robust_fence,
     tail_word,
     timestamp_label,
@@ -327,15 +327,7 @@ def _primary(snapshot: DashboardSnapshot) -> dict[str, Any]:
             "tone": "neutral",
         }
     level = row.get("level")
-    estimate = next(
-        (
-            estimate
-            for estimate, readout in zip(snapshot.estimates, snapshot.readout_rows, strict=True)
-            if readout is row
-        ),
-        None,
-    )
-    coverage_alpha = retained_coverage_alpha(estimate)
+    coverage_alpha = retained_coverage_alpha_for_row(snapshot, row)
     method_row = {**row, "coverage_alpha": coverage_alpha}
     return {
         "key": key,
@@ -539,7 +531,10 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     groups: dict[str, list[str]] = {}
     for row in rows:
         level = row.get("level")
-        prefix = "" if level is None or is_missing(level) else f"{percent_text(float(level))} "
+        alpha = retained_coverage_alpha_for_row(snapshot, row)
+        prefix = (
+            "" if level is None or is_missing(level) else f"{percent_text(float(level), alpha)} "
+        )
         kind = inference_word(str(row.get("inference", "fixed")))
         names = groups.setdefault(f"{prefix}{kind} intervals, {tail_word(row)}", [])
         if name(row) not in names:
@@ -552,7 +547,11 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
             + "; ".join(f"{label} ({', '.join(names)})" for label, names in groups.items())
             + "."
         )
-    levels = {float(row["level"]) for row in rows if not is_missing(row.get("level"))}
+    levels = {
+        percent_text(float(row["level"]), retained_coverage_alpha_for_row(snapshot, row))
+        for row in rows
+        if not is_missing(row.get("level"))
+    }
     if len(levels) > 1:
         notes.append("Interval levels differ; compare each interval only with its own level.")
     kinds = dict.fromkeys(str(row.get("inference", "fixed")) for row in rows)
@@ -844,12 +843,12 @@ def _notes(
     segmented = rows[0].dimension is not None
     points = [row.lift if lift else row.value for row in rows]
     levelled = [
-        (row.metric, point.level)
+        (row.metric, (point.level, point.alpha))
         for row, point in zip(rows, points, strict=True)
         if point is not None and point.level
     ]
     level_text = ", ".join(
-        percent_text(level) for level in sorted({level for _, level in levelled})
+        dict.fromkeys(percent_text(level, alpha) for _, (level, alpha) in levelled)
     )
     segments = sorted({str(row.dimension_value) for row in rows}) if segmented else []
     notes = [monitoring_sentence(rows, view=view)]
@@ -872,7 +871,8 @@ def _notes(
         )
     if level_text:
         notes.append(
-            f"Intervals are at level {levels_by_metric(levelled, percent_text)}. "
+            f"Intervals are at level "
+            f"{levels_by_metric(levelled, lambda coverage: percent_text(*coverage))}. "
             + (
                 "They describe the lift of each point, one look at a time."
                 if lift
@@ -910,8 +910,10 @@ def _segment_note(
     level = None if headline is None else headline.get("level")
     versus = (
         ""
-        if level is None or is_missing(level)
-        else f" (the headline uses {percent_text(float(level))})"
+        if headline is None or level is None or is_missing(level)
+        else (
+            f" (the headline uses {percent_text(float(level), retained_coverage_alpha_for_row(snapshot, headline))})"
+        )
     )
     declared = f" ({correction})" if correction else ""
     return (
