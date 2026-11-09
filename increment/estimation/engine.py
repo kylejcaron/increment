@@ -3404,6 +3404,16 @@ def _asymptotic_lift_outcome(
     except _RelativeScaleUnavailable as exc:
         if _ratio_denominator_unresolved(contrast, strategy, method_strategy.method):
             return _lift_guard_failure(treatment, method_strategy.method.name, method_role, exc)
+        if exc.abs_se_t == 0.0 and exc.abs_se_c == 0.0:
+            return _lift_guard_failure(
+                treatment,
+                method_strategy.method.name,
+                method_role,
+                LiftGuardError(
+                    "Both arms have zero outcome variance; sampling uncertainty is unavailable",
+                    reason="zero_variance",
+                ),
+            )
         row = _relative_unavailable_outcome(
             exc,
             contrast,

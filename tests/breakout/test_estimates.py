@@ -521,6 +521,77 @@ def test_absolute_segment_nonpositive_mean_reaches_existing_additive_method(kind
         assert decision_row.discovery is (decision == "unadjusted")
 
 
+def test_absolute_ratio_cuped_fcr_keeps_nonpositive_sibling_out_of_method_input():
+    from scipy.stats import t
+
+    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
+
+    rows = [
+        _make_arm_row(200, mean, 1.0, country="US", group_id=arm, sum_den=200.0, x_mean=0.0)
+        for arm, mean in (("control", 10.0), ("good", 11.0), ("bad", -1.0))
+    ]
+    for row in rows:
+        row["cxden"] = 0.0
+    policy = _ReadoutCellPolicy(0.05, "greater", 0.0, 0.5, "guardrail", "compiled_plan")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _run_fixed_breakout(
+            rows,
+            [_ratio_metric("rev")],
+            control_group="control",
+            dimension="country",
+            policy_by_metric={"rev": policy},
+            methods=[
+                Method(name="cuped", variance_reduction="cuped"),
+                Method(name="unadjusted"),
+            ],
+            method_roles={"cuped": "decision", "unadjusted": "sensitivity"},
+            correction="bh",
+            q=0.04,
+        )
+    by_cell = {(row.group_id, row.method): row for row in result}
+    selected = by_cell[("good", "cuped")]
+    assert selected.discovery is True
+    assert selected.family_size == 2
+    assert selected.abs_alpha == pytest.approx(0.02)
+    assert selected.abs_lb == pytest.approx(1.0 - t.isf(0.01, 398) * 0.1)
+    excluded = by_cell[("bad", "cuped")]
+    assert excluded.excluded == "nonpositive_mean"
+    assert excluded.discovery is False
+    assert excluded.family_size == 2
+    assert by_cell[("bad", "unadjusted")].excluded is None
+
+
+def test_absolute_constant_nonpositive_segment_keeps_valid_bh_sibling():
+    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
+
+    rows = [
+        _make_arm_row(100, mean, variance, country=segment, group_id=arm)
+        for segment, variance, treatment in (("constant", 0.0, -0.8), ("variable", 1.0, -1.5))
+        for arm, mean in (("control", -1.0), ("treatment", treatment))
+    ]
+    policy = _ReadoutCellPolicy(0.05, "less", 0.0, 0.5, "guardrail", "compiled_plan")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _run_fixed_breakout(
+            rows,
+            [_mean_metric()],
+            control_group="control",
+            dimension="country",
+            policy_by_metric={"rev": policy},
+            correction="bh",
+            q=0.04,
+        )
+    by_segment = {row.dimension_value: row for row in result}
+    assert by_segment["variable"].discovery is True
+    assert by_segment["variable"].family_size == 2
+    assert by_segment["constant"].discovery is False
+    assert by_segment["constant"].family_size == 2
+    assert by_segment["constant"].excluded == "zero_variance"
+    assert by_segment["constant"].p_value() is None
+    assert (by_segment["constant"].alternative, by_segment["constant"].null_abs) == ("less", 0.5)
+
+
 def test_absolute_mixed_binary_cuped_keeps_additive_row_and_count_only_bonferroni():
     from scipy.stats import t
 

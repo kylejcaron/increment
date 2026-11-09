@@ -372,33 +372,30 @@ class TestDegenerateData:
         assert lift.lb is not None and lift.ub is not None
         assert lift.lb < 0.0 < lift.ub
 
-    def test_both_arms_constant_keeps_lift_guard_failure(self):
-        """A real-valued mean metric whose arms are both constant at positive means has
+    @pytest.mark.parametrize(
+        ("control_mean", "treatment_mean", "null_abs"),
+        [(5.0, 5.0, None), (0.0, 0.25, 0.5), (-1.0, -0.75, 0.5), (-1.0, -0.75, None)],
+    )
+    def test_both_arms_constant_keeps_lift_guard_failure(
+        self, control_mean, treatment_mean, null_abs
+    ):
+        """A real-valued mean metric whose arms are both constant has
         no uncertainty on either scale, so the cell stays a keyed lift-guard
         failure. The boundary is retired only for the exact binomial route's
         conversion/retention metrics, and one constant arm keeps its additive
         row (TestRelativeScaleGuardsKeepTheAdditiveRow).
         """
-        n = 100
-        control = ArmStats.from_raw_sums(
-            study_id="exp1",
-            metric="rev",
-            group_id="control",
-            n=n,
-            sum_y=float(5 * n),
-            sum_y2=float(25 * n),
+        arms = [
+            _make_arm_stats(100, mean, 0.0, group_id=arm)
+            for arm, mean in (("control", control_mean), ("treatment", treatment_mean))
+        ]
+        computation = estimate_lift(
+            metrics=[_mean_metric()],
+            summary=_summary_df(arms),
+            control_group="control",
+            alternative="less",
+            null_abs=null_abs,
         )
-        treatment = ArmStats.from_raw_sums(
-            study_id="exp1",
-            metric="rev",
-            group_id="treatment",
-            n=n,
-            sum_y=float(5 * n),
-            sum_y2=float(25 * n),
-        )
-        df = _summary_df([control, treatment])
-
-        computation = estimate_lift(metrics=[_mean_metric()], summary=df, control_group="control")
         assert computation.results == ()
         (failure,) = computation.failures.values()
         assert failure.hypothesis.group_id == "treatment"

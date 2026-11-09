@@ -4325,6 +4325,18 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                     dimension_value=segment_value,
                 )
             )
+        if (
+            decision_method.variance_reduction == "cuped"
+            and metrics_by_name[metric_name].type == "ratio"
+            and policy.null_abs is not None
+        ):
+            metric_rows = _prepare_lift_slice(
+                metric_rows,
+                control_group=control_group,
+                metric_types={metric_name: "ratio"},
+                binomial_gate_exempt_metrics=frozenset(),
+                unobserved_control_missing=True,
+            ).live_rows
         if decision_method.variance_reduction == "cuped_multicovariate":
             # Only a selected cell is rebuilt at the FCR level; an unselected
             # sibling keeps its nominal row, so its wider interval is never built.
