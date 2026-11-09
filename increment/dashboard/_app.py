@@ -926,12 +926,13 @@ def _lift_notes(
                 f"{outside} estimate or bound values lie outside the typical range "
                 f"({fence[0] * 100:+.0f}% to {fence[1] * 100:+.0f}%) the chart is fitted to. They are "
                 "clipped at the plot edge and marked, with a faint trace of the full series, never "
-                "dropped; the table beside the chart shows the exact latest interval."
+                "dropped; the exact latest interval is in Latest readings and qualifications."
             )
     if has_open_side(rows):
         notes.append(
-            "One-sided interval: the open side has no finite bound, so only the finite side is "
-            "drawn, as its own labelled line."
+            "One-sided intervals have no finite endpoint on the open side. Shading is limited "
+            "to dates with a finite estimate and two finite bounds; no separate bound lines "
+            "are drawn. The retained latest interval is in Latest readings and qualifications."
         )
     headline = row_for_metric(snapshot, metric)
     if not segmented and headline is not None and not is_missing(headline.get("lift")):

@@ -1530,11 +1530,40 @@ def test_one_sided_intervals_keep_unavailable_dates_as_gaps(
     assert ("Estimate" in legends) == (point_state != "all_undefined")
     assert "one-sided test for an increase" in rendered
     assert "two-sided test" not in rendered
+    if point_state == "available":
+        from increment.dashboard._app import _render_entry
+
+        packet = _render_entry(
+            storefront,
+            rows,
+            metric=storefront.primary_metric,
+            view="cumulative_lift",
+            complete=False,
+            breakout=("event_log", "country"),
+            correction=None,
+        )
+        notes = " ".join(packet["notes"])
+        assert "labelled line" not in notes
+        assert "no separate bound lines" in notes
+        assert "Latest readings and qualifications" in notes
 
 
-@pytest.mark.parametrize("scale", ["relative", "absolute", "absolute_aware", "absolute_fold"])
+@pytest.mark.parametrize(
+    ("scale", "level", "coverage"),
+    [
+        ("relative", 0.95, "95"),
+        ("absolute", 0.95, "95"),
+        ("absolute_aware", 0.95, "95"),
+        ("absolute_fold", 0.95, "95"),
+        pytest.param("relative", 0.9833333333333333, "98.33", id="coverage-ordinary"),
+        pytest.param("relative", 0.99999, "99.999", id="coverage-near-one"),
+        pytest.param("relative", 0.00001, "0.001", id="coverage-near-zero"),
+        pytest.param("relative", 0.9999999999999999, None, id="coverage-adjacent-one"),
+        pytest.param("relative", 5e-324, None, id="coverage-smallest-positive"),
+    ],
+)
 def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
-    storefront: DashboardSnapshot, scale: str
+    storefront: DashboardSnapshot, scale: str, level: float, coverage: str | None
 ) -> None:
     from zoneinfo import ZoneInfo
 
@@ -1576,7 +1605,7 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
                     value=0.1 * day * magnitude,
                     lb=0.05 * day * magnitude,
                     ub=0.15 * day * magnitude,
-                    level=0.95,
+                    level=level,
                 ),
             }
         )
@@ -1585,6 +1614,14 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
     from increment.dashboard._html import temporal_figure
 
     rendered = temporal_figure(storefront, rows, metric=model.name, view="cumulative_lift")
+    label = re.search(r"([-+\d.e]+)% intervals", rendered)
+    assert label is not None
+    shown = label.group(1)
+    assert 0 < float(shown) < 100
+    if coverage is not None:
+        assert shown == coverage
+    else:
+        assert float(shown) == pytest.approx(level * 100, rel=1e-14, abs=0)
     svgs = re.findall(r"<svg\b.*?</svg>", rendered, re.S)
     assert svgs
     tick_text = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", "".join(svgs)))
@@ -1645,6 +1682,20 @@ def test_temporal_early_outlier_keeps_its_true_ghost_and_clipped_geometry(
                 0 <= float(point.split(",")[1]) <= height for point in line.attrib["points"].split()
             )
     assert chart.find(".//{*}clipPath") is not None
+    from increment.dashboard._app import _render_entry
+
+    packet = _render_entry(
+        storefront,
+        rows,
+        metric=seed.metric,
+        view="cumulative_lift",
+        complete=False,
+        breakout=None,
+        correction=None,
+    )
+    notes = " ".join(packet["notes"])
+    assert "table beside" not in notes
+    assert "Latest readings and qualifications" in notes
 
 
 @pytest.mark.slow

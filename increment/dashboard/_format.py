@@ -242,8 +242,14 @@ def primary_tone(row: Mapping[str, Any]) -> str:
 
 
 def percent_text(level: float) -> str:
-    """A coverage level as a trimmed two-decimal percentage, such as ``98.33%``."""
-    return f"{level * 100:.2f}".rstrip("0").rstrip(".") + "%"
+    """A compact coverage percentage, retaining precision near zero and one."""
+    percent = level * 100
+    text = f"{percent:.2f}".rstrip("0").rstrip(".") + "%"
+    if 0 < level < 1 and text in ("0%", "100%"):
+        text = f"{percent:.15g}%"
+        if text in ("0%", "100%"):
+            text = f"{percent!r}%"
+    return text
 
 
 def primary_method(row: Mapping[str, Any]) -> str:

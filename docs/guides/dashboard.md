@@ -300,7 +300,7 @@ restyle the notebook canvas.
 | `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set columns are omitted; levels and interpretation remain in notes and CSV. |
 | `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; for the experiment's own metrics, observed data by group with eligibility, exclusions, counts, units, and provenance. An added metric shows its Overview result instead. |
 | `load_explore(experiment, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a declared or added metric name selects its own captured series. Validates that `experiment` is the one the snapshot was prepared from, and the options, without resolving a source, querying the warehouse, or materializing; coded refusals stay specific to each state. |
-| `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section: standalone cumulative-lift or per-arm absolute-value SVG plots with lightweight latest-reading tables, the actual date basis and range, and visible unavailable-point reasons. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load the data. |
+| `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section: a shared table of cumulative-lift trajectories or per-arm absolute-value SVG plots, the actual date basis and range, and visible unavailable-point reasons. Exact lift readings and qualifications expand together. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load the data. |
 | `render_details(snapshot)` | Collapsible experiment metadata, per-metric policies, provenance, and static-snapshot limitations. |
 | `readout_csv(snapshot)` | The current headline readout as UTF-8 CSV bytes, for `mo.download`. |
 | `group_data_csv(snapshot, metric=None)` | The observed group-data rows as UTF-8 CSV bytes. Select one declared metric or export all; no warehouse query occurs. |
@@ -319,7 +319,9 @@ set endpoints. **Methods & assumptions** and Report notes disclose each row's
 tested-null verdict separately from family selection, qualified by method,
 role, and arm when needed. Disconnected sets remain unions of intervals; their
 forest bars are omitted rather than filling the excluded gap. Confidence levels
-use up to two decimal places: an adjusted 98.333…% level displays as 98.33%.
+normally use up to two decimal places: an adjusted 98.333…% level displays as
+98.33%. Levels near 0% or 100% retain enough precision not to round to either
+endpoint.
 An undefined endpoint is shown with its reason and any finite opposite bound,
 never as infinity. Its numeric interval and forest bar are omitted rather
 than drawing a false open interval; an available point is still shown.
@@ -503,6 +505,10 @@ captured separately, so two sources of the same property never mix and a
 refusal from one never hides the other. Unsupported engine requests display
 their refusal instead of substituting whole-experiment results.
 
+Lift trajectories group the selected breakout's series in one table. Expand
+**Latest readings and qualifications** for exact estimates, intervals, dates,
+tested nulls, and the series' shared or individual qualifications.
+
 The **Focus metric** list groups metrics by role and scrolls within a fixed
 height, so a long list does not push the plot down. From nine metrics on, a
 filter above it narrows the list by metric name or role; the selected metric
@@ -513,8 +519,10 @@ stays selected while it is filtered out of view.
     scale within each metric, and unrelated metrics keep separate scales and
     formatters. Date-basis disclosures distinguish observation dates from
     retention cohort dates. Missing estimates remain gaps; **Plot notes**
-    count unavailable points by reason. One-sided intervals show their finite
-    bound without inventing an endpoint. Absolute daily and cumulative plots
+    count unavailable points by reason. Lift shading appears only where both
+    interval bounds are finite. Open sides are not drawn as separate lines or
+    filled bands; their latest bounds remain in **Latest readings and
+    qualifications**. Absolute daily and cumulative plots
     show numeric y-axis ticks: rates and explicit `%` units display
     percentages, `USD` displays currency, `count` retains fractional values,
     and other declared units appear as suffixes. Formatting changes neither
