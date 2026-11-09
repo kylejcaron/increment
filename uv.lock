@@ -16,6 +16,14 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+build-constraints = [
+    { name = "packaging", url = "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl" },
+    { name = "setuptools", url = "https://files.pythonhosted.org/packages/ef/55/6dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610/setuptools-84.2.1-py3-none-any.whl" },
+    { name = "setuptools-scm", extras = ["toml"], url = "https://files.pythonhosted.org/packages/da/f5/54538a1f17ea753c42b0928dc2e62986d463f8c393340b9a1e602f2d4dd9/setuptools_scm-10.3.4-py3-none-any.whl" },
+    { name = "vcs-versioning", url = "https://files.pythonhosted.org/packages/73/1d/ad4064bf12f4503bf61e65d74c93c523672776d25ee0a06aaf42ae09ef3f/vcs_versioning-2.6.0-py3-none-any.whl" },
+]
+
 [[package]]
 name = "altair"
 version = "6.3.0"
@@ -1250,7 +1258,7 @@ core-test = [
     { name = "polars", specifier = ">=2.0.0" },
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-timeout", specifier = ">=2.4" },
-    { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "pytest-xdist", git = "https://github.com/pytest-dev/pytest-xdist.git?rev=9844b0e1c309780e23103424dc0b5635a3aa5259" },
     { name = "sybil", specifier = ">=10.1.0" },
     { name = "tach", specifier = ">=0.35.3" },
 ]
@@ -1271,7 +1279,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=6.0" },
     { name = "pytest-split", specifier = ">=0.11.0" },
     { name = "pytest-timeout", specifier = ">=2.4" },
-    { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "pytest-xdist", git = "https://github.com/pytest-dev/pytest-xdist.git?rev=9844b0e1c309780e23103424dc0b5635a3aa5259" },
     { name = "ruff", specifier = ">=0.17.2" },
     { name = "sybil", specifier = ">=10.1.0" },
     { name = "tach", specifier = ">=0.35.3" },
@@ -2820,15 +2828,11 @@ wheels = [
 
 [[package]]
 name = "pytest-xdist"
-version = "3.8.0"
-source = { registry = "https://pypi.org/simple" }
+version = "3.8.1.dev109+g9844b0e1c"
+source = { git = "https://github.com/pytest-dev/pytest-xdist.git?rev=9844b0e1c309780e23103424dc0b5635a3aa5259#9844b0e1c309780e23103424dc0b5635a3aa5259" }
 dependencies = [
     { name = "execnet" },
     { name = "pytest" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/78/b4/439b179d1ff526791eb921115fca8e44e596a13efeda518b9d845a619450/pytest_xdist-3.8.0.tar.gz", hash = "sha256:7e578125ec9bc6050861aa93f2d59f1d8d085595d6551c2c90b6f4fad8d3a9f1", size = 88069, upload-time = "2025-07-01T13:30:59.346Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ca/31/d4e37e9e550c2b92a9cbc2e4d0b7420a27224968580b5a447f420847c975/pytest_xdist-3.8.0-py3-none-any.whl", hash = "sha256:202ca578cfeb7370784a8c33d6d05bc6e13b4f25b5053c30a152269fd10f0b88", size = 46396, upload-time = "2025-07-01T13:30:56.632Z" },
 ]
 
 [[package]]

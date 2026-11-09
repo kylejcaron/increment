@@ -1,12 +1,8 @@
 """Carry pytest's rewritten test bytecode between CI jobs.
 
-pytest reuses a rewritten module while the pyc header's source mtime and size
-match the file, and a fresh checkout gives every file a new mtime. ``save``
-stores each rewritten pyc pytest would load for a tracked source, with the
-SHA-256 of that source. ``restore`` installs a stored pyc only when its source
-still has that digest, at the same absolute path, under the same interpreter
-and pytest, and stamps the header with the file's current mtime and size; every
-other module is rewritten from source as usual.
+Store the checked-hash bytecode pytest would load for each tracked source.
+Restore it unchanged only when the source digest, absolute checkout path,
+interpreter and pytest version match. Other modules are rewritten normally.
 """
 
 from __future__ import annotations
@@ -17,15 +13,14 @@ import importlib.util
 import json
 import os
 import shutil
-import struct
 import subprocess
 from pathlib import Path
 
 from _pytest.assertion.rewrite import PYC_TAIL, get_cache_dir
 
 _MANIFEST = "manifest.json"
-# PEP 552 timestamp pyc: magic, zero flags, then source mtime and size.
-_PREFIX = importlib.util.MAGIC_NUMBER + bytes(4)
+# PEP 552 checked-hash pyc: magic, flags=3, then the source hash.
+_PREFIX = importlib.util.MAGIC_NUMBER + b"\x03\x00\x00\x00"
 _HEADER_SIZE = 16
 
 
@@ -36,11 +31,6 @@ def _identity(root: Path) -> dict[str, str]:
 
 def _pyc(source: Path) -> Path:
     return get_cache_dir(source) / (source.name.removesuffix(".py") + PYC_TAIL)
-
-
-def _source_stamp(source: Path) -> bytes:
-    stat = source.stat()
-    return struct.pack("<LL", int(stat.st_mtime) & 0xFFFFFFFF, stat.st_size & 0xFFFFFFFF)
 
 
 def _digest(source: Path) -> str:
@@ -64,14 +54,17 @@ def save(root: Path, cache: Path) -> int:
         source = root / name
         try:
             data = _pyc(source).read_bytes()
-            current = data[:8] == _PREFIX and data[8:_HEADER_SIZE] == _source_stamp(source)
+            source_bytes = source.read_bytes()
+            current = data[:8] == _PREFIX and data[8:_HEADER_SIZE] == importlib.util.source_hash(
+                source_bytes
+            )
         except OSError:
             continue
         if current:
             staged = cache / Path(name).with_suffix(".pyc")
             staged.parent.mkdir(parents=True, exist_ok=True)
             staged.write_bytes(data)
-            digests[name] = _digest(source)
+            digests[name] = hashlib.sha256(source_bytes).hexdigest()
     manifest = {"identity": _identity(root), "sources": digests}
     (cache / _MANIFEST).write_text(json.dumps(manifest, sort_keys=True) + "\n")
     return len(digests)
@@ -97,7 +90,7 @@ def restore(root: Path, cache: Path) -> tuple[int, int]:
             pyc = _pyc(source)
             pyc.parent.mkdir(parents=True, exist_ok=True)
             partial = pyc.with_name(f"{pyc.name}.{os.getpid()}")
-            partial.write_bytes(data[:8] + _source_stamp(source) + data[_HEADER_SIZE:])
+            partial.write_bytes(data)
             partial.replace(pyc)
         except OSError:
             continue

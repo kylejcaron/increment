@@ -85,6 +85,17 @@ create or update the development environment with:
 uv sync --group dev --extra demo --extra tables --extra dashboard
 ```
 
+Both test groups pin an immutable, unreleased [xdist change](https://github.com/pytest-dev/pytest-xdist/pull/1402)
+for pytest 9.2's grouped collection and late shard selection. This is a source
+revision, not a published release; build-tool wheel URLs and SHA-256 fragments
+are pinned in `pyproject.toml`. Rewritten test-bytecode caches retain checked
+source hashes, so changing a checkout timestamp does not require rewriting an
+unchanged test.
+
+Use `WORKERS` without `PYTHON_CPU_COUNT=default`, which that xdist revision does
+not handle correctly. After a grouped worker crash, rerun the full selected
+tier rather than `--lf`: its failed-test cache can retain internal group IDs.
+
 `make install` synchronizes dependencies and installs hooks using the pinned
 stable `prek` user tool. If it is absent, the installer prints the exact
 `uv tool install prek==<version>` command from `uv.lock`; install it explicitly,

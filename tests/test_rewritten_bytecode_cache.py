@@ -39,7 +39,7 @@ def _pytest(root: Path) -> subprocess.CompletedProcess[str]:
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("COV_CORE_", "COVERAGE_", "PYTEST_XDIST_"))
-        and key not in {"PYTEST_PLUGINS", "PYTEST_ADDOPTS", "PYTHONDONTWRITEBYTECODE"}
+        and key not in {"PYTEST_ADDOPTS", "PYTHONDONTWRITEBYTECODE"}
     }
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:tach", "-q"],

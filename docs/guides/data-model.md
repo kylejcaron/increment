@@ -22,7 +22,7 @@ for i, revenue in enumerate([1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0]):
                 "user_id": f"u{i}",
                 "group_id": "control" if i < 4 else "treatment",
                 "experiment_id": "demo",
-                "ts": dt.datetime(2025, 1, 1, 12),
+                "ts": dt.datetime(2025, 1, 1, 12, 1 if event == "purchase" else 0),
                 "event": event,
                 "revenue": revenue if event == "purchase" else None,
             }
@@ -75,6 +75,10 @@ for row in demo_results:
 
 This self-contained example uses the `increment[demo]` extra, which supplies a
 compatible Ibis/DuckDB combination, plus `polars` to create a small event table.
+
+Purchases occur one minute after enrollment. Outcome windows exclude events
+at the exact enrollment timestamp.
+
 Increment builds the unit-by-day panel and exposes every query it runs. If your
 data is already one row per unit or per unit-day, use
 `from_frame(..., shape="summary")` or `shape="panel"` instead

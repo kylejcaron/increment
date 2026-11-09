@@ -109,7 +109,8 @@ dev = [
     # hold at 0.0.64 until the stricter checks are adopted incrementally (2026-10-28).
     "ty>=0.0.64,<0.0.65",
     "pytest-cov>=6.0",
-    "pytest-xdist>=3.6",
+    # pytest 9.2 needs xdist's stable grouped IDs, including late pytest-split changes.
+    "pytest-xdist @ git+https://github.com/pytest-dev/pytest-xdist.git@9844b0e1c309780e23103424dc0b5635a3aa5259",
     "psutil>=7.2.2",
     "nox>=2026.10.20",
     "virtualenv>=21.14.13",
@@ -129,7 +130,7 @@ dev = [
 ]
 core-test = [
     "pytest>=9.2.0",
-    "pytest-xdist>=3.6",
+    "pytest-xdist @ git+https://github.com/pytest-dev/pytest-xdist.git@9844b0e1c309780e23103424dc0b5635a3aa5259",
     "pytest-timeout>=2.4",
     "hypothesis>=6.170.9",
     "sybil>=10.1.0",
@@ -172,6 +173,13 @@ fallback-version = "0.0.0"
 
 [tool.uv]
 package = true
+# Keep source-build inputs identical to the reviewed xdist build.
+build-constraint-dependencies = [
+    "setuptools @ https://files.pythonhosted.org/packages/ef/55/6dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610/setuptools-84.2.1-py3-none-any.whl#sha256=ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2",
+    "setuptools-scm[toml] @ https://files.pythonhosted.org/packages/da/f5/54538a1f17ea753c42b0928dc2e62986d463f8c393340b9a1e602f2d4dd9/setuptools_scm-10.3.4-py3-none-any.whl#sha256=82f34c3e3084fc2b57d397200637cc13f2338004052d2fee47baa5f0e902464e",
+    "packaging @ https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl#sha256=d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+    "vcs-versioning @ https://files.pythonhosted.org/packages/73/1d/ad4064bf12f4503bf61e65d74c93c523672776d25ee0a06aaf42ae09ef3f/vcs_versioning-2.6.0-py3-none-any.whl#sha256=f8bebd1302ebc12e67ceb30fc7dd698ec969414b6fa43b30c3f14ac9b1e72c41",
+]
 
 [tool.pytest.ini_options]
 # Doc snippets (README.md, docs/) are collected by the root conftest's sybil
