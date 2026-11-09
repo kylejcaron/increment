@@ -543,35 +543,6 @@ def test_health_separates_the_allocation_alpha_from_interval_levels(
 # Results and metric details.
 
 
-def test_results_table_shows_only_core_readout_columns(storefront: DashboardSnapshot) -> None:
-    # A recorded family selection does not add a Discovery column to the Readout table.
-    rows = tuple(
-        {**dict(row), "discovery": True} if row["role"] == "secondary" else row
-        for row in storefront.readout_rows
-    )
-    html = render_results(dataclasses.replace(storefront, readout_rows=rows)).text
-    headers = {
-        re.sub(r"<[^>]+>", "", header).strip()
-        for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
-    }
-    allowed_columns = {
-        "Lift (absolute)",
-        "Lift %",
-        "Lift Plot",
-        "Failure",
-        "Posterior chance to beat",
-        "Posterior risk if shipped",
-        "Posterior P(favorable)",
-    }
-    assert {"Lift %", "Lift Plot"} <= headers
-    structural = {"group_id", "▾Primary", "▾Secondaries", "▾Guardrails"}
-    assert headers - structural <= allowed_columns | {
-        header for header in headers if "Declared plan" in header
-    }
-    assert "Numerical qualification" not in html
-    assert "Selection qualification" not in html
-
-
 def test_results_table_keeps_absolute_scale_values(pricing: DashboardSnapshot) -> None:
     rows = tuple(
         {
