@@ -248,7 +248,7 @@ def percent_text(level: float) -> str:
     if 0 < level < 1 and text in ("0%", "100%"):
         text = f"{percent:.15g}%"
         if text in ("0%", "100%"):
-            text = f"{percent!r}%"
+            text = f"{float(percent)!r}%"
     return text
 
 

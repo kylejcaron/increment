@@ -1622,6 +1622,11 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
         assert shown == coverage
     else:
         assert float(shown) == pytest.approx(level * 100, rel=1e-14, abs=0)
+        import numpy as np
+
+        from increment.dashboard._format import percent_text
+
+        assert float(percent_text(np.float64(level)).removesuffix("%")) == float(shown)
     svgs = re.findall(r"<svg\b.*?</svg>", rendered, re.S)
     assert svgs
     tick_text = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", "".join(svgs)))
