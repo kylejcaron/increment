@@ -57,7 +57,6 @@ from increment.dashboard._format import (
     population_label,
     primary_method,
     primary_tone,
-    retained_coverage_alpha,
     retained_coverage_alpha_for_row,
     robust_fence,
     tail_word,
@@ -240,15 +239,6 @@ def build_payload(experiment: Experiment, *, snapshot: DashboardSnapshot) -> dic
     return result
 
 
-def _readout_csv_with_coverage_alpha(snapshot: DashboardSnapshot) -> bytes:
-    """Export captured readout rows with each source interval's retained budget."""
-    rows = tuple(
-        {**row, "coverage_alpha": retained_coverage_alpha(estimate)}
-        for row, estimate in zip(snapshot.readout_rows, snapshot.estimates, strict=True)
-    )
-    return readout_csv(replace(snapshot, readout_rows=rows))
-
-
 def _build_payload_for_population(
     experiment: Experiment, *, snapshot: DashboardSnapshot
 ) -> dict[str, Any]:
@@ -283,7 +273,7 @@ def _build_payload_for_population(
         "health": _styled(render_health(snapshot).text),
         "provenance": _styled(render_details(snapshot).text),
         "metrics": [_metric_payload(snapshot, model.name) for model in all_metrics(snapshot)],
-        "readoutCsv": _readout_csv_with_coverage_alpha(snapshot).decode("utf-8"),
+        "readoutCsv": readout_csv(snapshot).decode("utf-8"),
         "scopes": scopes,
         "overview": {
             key: {
@@ -857,12 +847,12 @@ def _temporal_row_coverage(row: Any, *, lift: bool) -> tuple[float, float | None
         point = row.lift
         if point is not None and point.level is not None:
             return point.level, point.alpha, False
-        relative = getattr(row, "relative_confidence_set", None)
-        if relative is not None:
-            return 1.0 - relative.alpha, relative.alpha, True
         binomial = getattr(row, "binomial_set", None)
         if binomial is not None:
             return binomial.level, binomial.alpha, True
+        relative = getattr(row, "relative_confidence_set", None)
+        if relative is not None:
+            return 1.0 - relative.alpha, relative.alpha, True
         return None
     point = row.value
     if point is None or point.level is None:

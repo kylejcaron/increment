@@ -428,6 +428,7 @@ def _report_projection_to_readout(est: Any) -> dict[str, ReadoutValue]:
         effect = project_effect(est)
         point, lower, upper, alpha = effect.point, effect.lower, effect.upper, effect.alpha
         level = None if alpha is None else 1.0 - alpha
+        scale = effect.value_scale
         reason = (
             effect.reason or getattr(est, "excluded", None) or getattr(est, "unavailable", None)
         )
@@ -1413,12 +1414,12 @@ def _retained_coverage_alpha(estimate: Any) -> float | None:
     lift = getattr(estimate, "lift", None)
     if lift is not None:
         return lift.alpha
-    relative = getattr(estimate, "relative_confidence_set", None)
-    if relative is not None:
-        return relative.alpha
     binomial = getattr(estimate, "binomial_set", None)
     if binomial is not None:
         return binomial.alpha
+    relative = getattr(estimate, "relative_confidence_set", None)
+    if relative is not None:
+        return relative.alpha
     interval = getattr(estimate, "estimate", None)
     if interval is not None:
         return interval.alpha

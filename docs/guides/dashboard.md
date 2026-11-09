@@ -307,9 +307,9 @@ restyle the notebook canvas.
 
 Current readout rows carry one nullable `coverage_alpha` field: the retained
 noncoverage budget for that row's displayed interval or confidence set, blank
-when no retained budget is available. The dashboard export also projects this
-field from each snapshot's captured estimate when rendering older snapshots
-whose readout rows predate the field. It is never reconstructed from a rounded
+when no retained budget is available. `readout_csv` projects this field from
+each snapshot's captured estimate when rendering older snapshots whose
+readout rows predate the field. It is never reconstructed from a rounded
 coverage level or borrowed from another interval.
 
 Headline and metric-detail intervals retain declared one-sided bounds:

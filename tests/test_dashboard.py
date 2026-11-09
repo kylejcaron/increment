@@ -1806,6 +1806,10 @@ def test_primary_coverage_discloses_retained_alpha_when_level_rounds_to_one(
     assert primary_row["coverage_alpha"] == "1e-17"
     assert any(row["coverage_alpha"] == "" for row in rows)
 
+    direct_rows = list(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
+    direct_primary = next(row for row in direct_rows if row["metric"] == snapshot.primary_metric)
+    assert direct_primary["coverage_alpha"] == "1e-17"
+
 
 def test_secondary_coverage_budget_reaches_metric_details(
     storefront: DashboardSnapshot,
