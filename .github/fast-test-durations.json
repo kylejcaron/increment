@@ -11979,7 +11979,7 @@
     "tests/test_dashboard.py::test_load_explore_segments_with_no_metric_returns_every_declared_metric": 0.013,
     "tests/test_dashboard.py::test_metric_details_change_nothing_about_the_snapshot": 0.005,
     "tests/test_dashboard.py::test_metric_details_refuse_an_undeclared_metric": 0.002,
-    "tests/test_dashboard.py::test_one_sided_bound_lines_keep_unavailable_dates_as_gaps": 0.143,
+    "tests/test_dashboard.py::test_one_sided_intervals_keep_unavailable_dates_as_gaps": 0.143,
     "tests/test_dashboard.py::test_preparation_refuses_allocation_without_the_control_arm": 0.037,
     "tests/test_dashboard.py::test_preparation_refuses_more_than_one_declared_primary": 0.013,
     "tests/test_dashboard.py::test_preparation_surfaces_an_arm_label_absent_from_the_data": 0.077,
