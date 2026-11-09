@@ -371,6 +371,7 @@ def contrast_results_to_readout(
                 "dof": result.dof,
                 "alternative": result.alternative,
                 "alpha": result.alpha,
+                "coverage_alpha": estimate.alpha,
                 "open_side": estimate.open_side,
                 "dof_unavailable_reason": result.dof_unavailable_reason,
                 "standard_error_unavailable_reason": result.standard_error_unavailable_reason,
@@ -420,12 +421,13 @@ def _report_projection_to_readout(est: Any) -> dict[str, ReadoutValue]:
         lower = None if value is None else value.lb
         upper = None if value is None else value.ub
         alpha = None if value is None else value.alpha
+        level = None if value is None else value.level
         scale = "absolute"
         reason = est.unavailable
     else:
         effect = project_effect(est)
         point, lower, upper, alpha = effect.point, effect.lower, effect.upper, effect.alpha
-        scale = effect.value_scale
+        level = None if alpha is None else 1.0 - alpha
         reason = (
             effect.reason or getattr(est, "excluded", None) or getattr(est, "unavailable", None)
         )
@@ -437,7 +439,8 @@ def _report_projection_to_readout(est: Any) -> dict[str, ReadoutValue]:
         "lift": point,
         "lower": lower,
         "higher": upper,
-        "level": None if alpha is None else 1.0 - alpha,
+        "level": level,
+        "coverage_alpha": alpha,
         "stat_sig": None,
         "decision_scale": scale,
         "decision_available": point is not None,
@@ -518,6 +521,7 @@ def estimates_to_readout(
                     interpretation, est, source_snapshot_id=getattr(est, "source_snapshot_id", None)
                 )
             )
+        row["coverage_alpha"] = _retained_coverage_alpha(est)
         rows.append(row)
     return rows
 
@@ -1400,14 +1404,26 @@ def _format_coverage(level: float, alpha: float | None = None) -> str:
 
 def _retained_coverage_alpha(estimate: Any) -> float | None:
     """Return the noncoverage budget for the representation supplying the displayed level."""
+    sequential = getattr(estimate, "sequential_result", None)
+    if sequential is not None:
+        return float(sequential.bounds.alpha)
     confidence_set = getattr(estimate, "confidence_set", None)
     if confidence_set is not None:
         return confidence_set.alpha
     lift = getattr(estimate, "lift", None)
     if lift is not None:
         return lift.alpha
+    relative = getattr(estimate, "relative_confidence_set", None)
+    if relative is not None:
+        return relative.alpha
     binomial = getattr(estimate, "binomial_set", None)
-    return None if binomial is None else binomial.alpha
+    if binomial is not None:
+        return binomial.alpha
+    interval = getattr(estimate, "estimate", None)
+    if interval is not None:
+        return interval.alpha
+    value = getattr(estimate, "value", None)
+    return None if value is None else value.alpha
 
 
 def _format_confidence_set(
@@ -1777,7 +1793,6 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, .
             scope_notes = render_readout_qualifications(interpretation)
         row_data = estimates_to_readout(list(data))
         for projected, estimate in zip(row_data, data, strict=True):
-            projected["coverage_alpha"] = _retained_coverage_alpha(estimate)
             if metadata is not None:
                 projected["view_partial"] = metadata.partial
                 projected.update(
@@ -1795,8 +1810,6 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, .
                 scope_notes = render_readout_qualifications(interpret_readout(data, metadata))
             estimates = data
             data = estimates_to_readout(estimates)
-            for projected, estimate in zip(data, estimates, strict=True):
-                projected["coverage_alpha"] = _retained_coverage_alpha(estimate)
     frame = (
         nw.from_native(pd.DataFrame(data), eager_only=True)
         if isinstance(data, list)

@@ -57,6 +57,7 @@ from increment.dashboard._format import (
     population_label,
     primary_method,
     primary_tone,
+    retained_coverage_alpha,
     retained_coverage_alpha_for_row,
     robust_fence,
     tail_word,
@@ -239,6 +240,15 @@ def build_payload(experiment: Experiment, *, snapshot: DashboardSnapshot) -> dic
     return result
 
 
+def _readout_csv_with_coverage_alpha(snapshot: DashboardSnapshot) -> bytes:
+    """Export captured readout rows with each source interval's retained budget."""
+    rows = tuple(
+        {**row, "coverage_alpha": retained_coverage_alpha(estimate)}
+        for row, estimate in zip(snapshot.readout_rows, snapshot.estimates, strict=True)
+    )
+    return readout_csv(replace(snapshot, readout_rows=rows))
+
+
 def _build_payload_for_population(
     experiment: Experiment, *, snapshot: DashboardSnapshot
 ) -> dict[str, Any]:
@@ -273,7 +283,7 @@ def _build_payload_for_population(
         "health": _styled(render_health(snapshot).text),
         "provenance": _styled(render_details(snapshot).text),
         "metrics": [_metric_payload(snapshot, model.name) for model in all_metrics(snapshot)],
-        "readoutCsv": readout_csv(snapshot).decode("utf-8"),
+        "readoutCsv": _readout_csv_with_coverage_alpha(snapshot).decode("utf-8"),
         "scopes": scopes,
         "overview": {
             key: {
@@ -838,6 +848,28 @@ def _render_entry(
     }
 
 
+def _temporal_row_coverage(row: Any, *, lift: bool) -> tuple[float, float | None, bool] | None:
+    if lift:
+        sequential = getattr(row, "sequential_result", None)
+        if sequential is not None:
+            alpha = float(sequential.bounds.alpha)
+            return 1.0 - alpha, alpha, False
+        point = row.lift
+        if point is not None and point.level is not None:
+            return point.level, point.alpha, False
+        relative = getattr(row, "relative_confidence_set", None)
+        if relative is not None:
+            return 1.0 - relative.alpha, relative.alpha, True
+        binomial = getattr(row, "binomial_set", None)
+        if binomial is not None:
+            return binomial.level, binomial.alpha, True
+        return None
+    point = row.value
+    if point is None or point.level is None:
+        return None
+    return point.level, point.alpha, False
+
+
 def _notes(
     snapshot: DashboardSnapshot,
     rows: list[Any],
@@ -849,15 +881,26 @@ def _notes(
 ) -> list[str]:
     lift = view == "cumulative_lift"
     segmented = rows[0].dimension is not None
-    points = [row.lift if lift else row.value for row in rows]
-    levelled = [
-        (row.metric, (point.level, point.alpha))
-        for row, point in zip(rows, points, strict=True)
-        if point is not None and point.level
+    coverages = [
+        (row, coverage)
+        for row in rows
+        if (coverage := _temporal_row_coverage(row, lift=lift)) is not None
     ]
-    level_text = ", ".join(
-        dict.fromkeys(percent_text(level, alpha) for _, (level, alpha) in levelled)
-    )
+    distinct_coverages = {coverage[:2] for _, coverage in coverages}
+    if len(distinct_coverages) > 1:
+        levelled = [
+            (
+                f"{row.metric} · {row.dimension}={row.dimension_value} · {row.group_id}"
+                if row.dimension is not None
+                else f"{row.metric} · {row.group_id}",
+                coverage[:2],
+            )
+            for row, coverage in coverages
+        ]
+        level_text = levels_by_metric(levelled, lambda value: percent_text(*value))
+    else:
+        level_text = percent_text(*next(iter(distinct_coverages))) if distinct_coverages else ""
+    has_point_free_set = any(coverage[2] for _, coverage in coverages)
     segments = sorted({str(row.dimension_value) for row in rows}) if segmented else []
     notes = [monitoring_sentence(rows, view=view)]
     if view != "daily_values":
@@ -879,8 +922,12 @@ def _notes(
         )
     if level_text:
         notes.append(
-            f"Intervals are at level "
-            f"{levels_by_metric(levelled, lambda coverage: percent_text(*coverage))}. "
+            (
+                "Intervals and confidence sets are at level "
+                if has_point_free_set
+                else "Intervals are at level "
+            )
+            + f"{level_text}. "
             + (
                 "They describe the lift of each point, one look at a time."
                 if lift
@@ -888,7 +935,17 @@ def _notes(
             )
         )
     if segmented:
-        notes.append(_segment_note(snapshot, metric, segments, level_text, correction, lift=lift))
+        notes.append(
+            _segment_note(
+                snapshot,
+                metric,
+                segments,
+                level_text,
+                correction,
+                lift=lift,
+                has_point_free_set=has_point_free_set,
+            )
+        )
     if lift:
         notes.extend(_lift_notes(snapshot, rows, metric, segmented=segmented))
     return notes
@@ -902,6 +959,7 @@ def _segment_note(
     correction: str | None,
     *,
     lift: bool,
+    has_point_free_set: bool,
 ) -> str:
     if not lift:
         return (
@@ -925,10 +983,13 @@ def _segment_note(
     )
     declared = f" ({correction})" if correction else ""
     return (
-        f"Segment intervals carry the experiment's declared segment multiplicity{declared} across "
-        f"{len(segments)} segments, at interval level {level_text}{versus}. Segment lines are "
-        "pointwise and unadjusted for repeated looks over time. One significant segment is not "
-        "evidence of an interaction."
+        f"Segment "
+        f"{'intervals and confidence sets' if has_point_free_set else 'intervals'} "
+        f"carry the experiment's declared segment multiplicity{declared} across "
+        f"{len(segments)} segments, at "
+        f"{'coverage' if has_point_free_set else 'interval level'} {level_text}{versus}. "
+        "Segment lines are pointwise and unadjusted for repeated looks over time. One significant "
+        "segment is not evidence of an interaction."
     )
 
 

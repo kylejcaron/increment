@@ -1801,7 +1801,10 @@ def test_primary_coverage_discloses_retained_alpha_when_level_rounds_to_one(
     payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
     assert payload["primary"]["levelLabel"] == "100% (α=1e-17)"
     assert "100% (α=1e-17)" in payload["primary"]["method"]
-    assert "coverage_alpha" not in payload["readoutCsv"].splitlines()[0]
+    rows = list(csv.DictReader(io.StringIO(payload["readoutCsv"])))
+    primary_row = next(row for row in rows if row["metric"] == snapshot.primary_metric)
+    assert primary_row["coverage_alpha"] == "1e-17"
+    assert any(row["coverage_alpha"] == "" for row in rows)
 
 
 def test_secondary_coverage_budget_reaches_metric_details(
@@ -1846,11 +1849,21 @@ def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(
     assert len(indices) == 2
     updated = list(storefront.estimates)
     rows = list(storefront.readout_rows)
-    for index, alpha in zip(indices, (1e-17, 0.05), strict=True):
+    from increment.estimation.results import Estimate
+
+    for index, alpha in zip(indices, (1e-17, 1e-18), strict=True):
         estimate = updated[index]
         assert estimate.lift is not None
         updated[index] = estimate.model_copy(
-            update={"lift": estimate.lift.model_copy(update={"level": 1.0, "alpha": alpha})}
+            update={
+                "lift": Estimate(
+                    value=estimate.lift.value,
+                    lb=estimate.lift.lb,
+                    ub=estimate.lift.ub,
+                    level=1.0,
+                    alpha=alpha,
+                )
+            }
         )
         rows[index] = {**dict(rows[index]), "level": 1.0}
     snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
@@ -1859,8 +1872,8 @@ def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(
 
     payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
     notes = payload["report"]["notes"]
-    assert any("100% (α=1e-17) fixed-horizon intervals" in note for note in notes)
-    assert any("100% (α=0.05) fixed-horizon intervals" in note for note in notes)
+    assert any("100% (α=1e-17)" in note for note in notes)
+    assert any("100% (α=1e-18)" in note for note in notes)
 
 
 def test_report_preserves_distinct_raw_levels_that_round_alike(
@@ -1968,3 +1981,73 @@ def test_temporal_caption_does_not_merge_rounded_equal_levels_with_different_bud
     assert "Confidence levels vary by series" in rendered
     assert "100% (α=1e-17)" in rendered
     assert "100% (α=1e-18)" in rendered
+
+
+def test_temporal_notes_attribute_point_free_set_coverage_to_its_series(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimate, DailyLiftEstimates
+    from increment.dashboard._app import _render_entry
+    from increment.estimation.results import Estimate
+    from tests.test_tables import _binomial_lift_estimate
+
+    seed = next(iter(temporal_rows(storefront, "cumulative_lift")))
+    point_backed = seed.model_copy(
+        update={
+            "dimension": "country",
+            "dimension_value": "DE",
+            "lift": Estimate(value=0.1, lb=0.05, ub=0.15, level=0.95, alpha=0.05),
+        }
+    )
+    point_free_estimate = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200, alpha=0.04)
+    assert point_free_estimate.binomial_set is not None
+    point_free = DailyLiftEstimate.model_validate(
+        {
+            **seed.model_dump(mode="python"),
+            "dimension": "country",
+            "dimension_value": "GB",
+            "reference_kind": "binomial",
+            "lift": None,
+            "binomial_set": point_free_estimate.binomial_set,
+            "method": point_free_estimate.method,
+            "method_role": point_free_estimate.method_role,
+            "value_scale": point_free_estimate.value_scale,
+        }
+    )
+    rows = DailyLiftEstimates([point_backed, point_free])
+
+    packet = _render_entry(
+        storefront,
+        rows,
+        metric=seed.metric,
+        view="cumulative_lift",
+        complete=False,
+        breakout=("event_log", "country"),
+        correction=None,
+    )
+    notes = " ".join(packet["notes"])
+    coverage_groups = re.findall(r"(\d+(?:\.\d+)?%) \(([^)]+)\)", notes)
+    assert any(level == "95%" and "country=DE" in group for level, group in coverage_groups)
+    assert not any(level == "95%" and "country=GB" in group for level, group in coverage_groups)
+    assert any(level == "96%" and "country=GB" in group for level, group in coverage_groups)
+
+
+def test_daily_value_without_alpha_keeps_its_retained_level(storefront: DashboardSnapshot) -> None:
+    from datetime import date
+
+    from increment.breakout.estimates import DailyMetricValue, DailyMetricValues
+    from increment.estimation.results import Estimate
+    from increment.tables import estimates_to_readout
+
+    estimate = DailyMetricValue(
+        ds=date(2025, 1, 1),
+        metric="revenue",
+        group_id="treatment",
+        value=Estimate(value=0.1, lb=0.0, ub=0.2, level=0.95, alpha=None),
+        n=10,
+    )
+
+    (row,) = estimates_to_readout(DailyMetricValues([estimate]))
+
+    assert row["level"] == 0.95
+    assert row["coverage_alpha"] is None

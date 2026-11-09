@@ -302,8 +302,15 @@ restyle the notebook canvas.
 | `load_explore(experiment, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a declared or added metric name selects its own captured series. Validates that `experiment` is the one the snapshot was prepared from, and the options, without resolving a source, querying the warehouse, or materializing; coded refusals stay specific to each state. |
 | `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section: a shared table of cumulative-lift trajectories or per-arm absolute-value SVG plots, the actual date basis and range, and visible unavailable-point reasons. Exact lift readings and qualifications expand together. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load the data. |
 | `render_details(snapshot)` | Collapsible experiment metadata, per-metric policies, provenance, and static-snapshot limitations. |
-| `readout_csv(snapshot)` | The current headline readout as UTF-8 CSV bytes, for `mo.download`. |
+| `readout_csv(snapshot)` | The current headline readout as UTF-8 CSV bytes, for `mo.download`; includes nullable `coverage_alpha` from each row's captured displayed interval or set. |
 | `group_data_csv(snapshot, metric=None)` | The observed group-data rows as UTF-8 CSV bytes. Select one declared metric or export all; no warehouse query occurs. |
+
+Current readout rows carry one nullable `coverage_alpha` field: the retained
+noncoverage budget for that row's displayed interval or confidence set, blank
+when no retained budget is available. The dashboard export also projects this
+field from each snapshot's captured estimate when rendering older snapshots
+whose readout rows predate the field. It is never reconstructed from a rounded
+coverage level or borrowed from another interval.
 
 Headline and metric-detail intervals retain declared one-sided bounds:
 `(−∞, upper]` or `[lower, ∞)`. Relative effects use percentages; absolute

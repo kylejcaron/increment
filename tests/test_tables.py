@@ -3384,3 +3384,85 @@ def test_readout_table_keeps_equal_levels_with_distinct_budgets_separate():
     html = readout_table(rows).gt().as_raw_html()
     assert "100% (α=1e-17) CI" in html
     assert "100% (α=1e-18) CI" in html
+
+
+def test_readout_table_retains_typed_contrast_interval_alpha():
+    pytest.importorskip("coeftable")
+    from increment.estimation.contrast_results import ContrastResult, ContrastResults
+
+    result = ContrastResult(
+        metric="revenue",
+        control_group="control",
+        treatment_group="treatment",
+        estimand="retained_window_total_difference",
+        aggregation="sum",
+        probability_ct=0.5,
+        randomization_law="independent_bernoulli_order",
+        independence_grain="unit_cycle",
+        carryover_order=0,
+        observation_steps=3,
+        retained_steps=3,
+        estimate=Estimate(value=0.1, lb=0.0, ub=0.2, level=1.0, alpha=1e-17),
+        alternative="two-sided",
+        null_abs=0.0,
+        alpha=1e-17,
+        n_units=2,
+        n_cycles=2,
+        standard_error=0.25,
+        dof=1.0,
+        reference_spec=UnitCycleTApproximation(),
+    )
+
+    html = readout_table(ContrastResults([result])).gt().as_raw_html()
+
+    assert "all intervals 100% (α=1e-17)" in html
+
+
+def test_readout_table_retains_typed_daily_value_interval_alpha():
+    pytest.importorskip("coeftable")
+    from datetime import date
+
+    from increment.breakout.estimates import DailyMetricValue, DailyMetricValues
+
+    estimate = DailyMetricValue(
+        ds=date(2025, 1, 1),
+        metric="revenue",
+        group_id="treatment",
+        value=Estimate(value=0.1, lb=0.0, ub=0.2, level=1.0, alpha=1e-17),
+        n=10,
+    )
+
+    html = readout_table(DailyMetricValues([estimate])).gt().as_raw_html()
+
+    assert "all intervals 100% (α=1e-17)" in html
+
+
+def test_estimates_to_readout_preserves_alpha_for_flat_readout_table_route():
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=0.1, lb=0.0, ub=0.2, level=1.0, alpha=1e-17),
+    )
+
+    (row,) = estimates_to_readout([estimate])
+
+    assert row["coverage_alpha"] == 1e-17
+    html = readout_table([row]).gt().as_raw_html()
+    assert "all intervals 100% (α=1e-17)" in html
+
+
+def test_readout_table_discloses_point_free_sequential_budget_when_level_rounds_to_one():
+    reg = registration(alpha=Fraction(1, 10**17))
+    snapshot = capture(reg, records([0] * 96, [0, 1, 1, 1] * 24))
+    estimate = estimate_sequential(snapshot, AlwaysValid(registration=reg)).results[0]
+    assert estimate.lift is None
+    assert estimate.sequential_result is not None
+
+    (row,) = estimates_to_readout([estimate])
+
+    assert row["level"] == 1.0
+    assert row["coverage_alpha"] == pytest.approx(1e-17)
+    html = readout_table([row]).gt().as_raw_html()
+    assert "all intervals 100% (α=1e-17)" in html
