@@ -484,8 +484,8 @@ def test_a_cell_whose_estimation_failed_refuses_the_family_as_run_breakout_does(
         assert str(clone) == str(raised.value)
 
 
-def test_segment_family_reproduces_run_breakout_for_a_conservative_nonrejection():
-    """A zero-variance cell is a non-rejection that still counts toward ``m``."""
+def test_whole_and_segment_outcome_failures_stay_in_the_same_family():
+    """Both zero-variance cells count in ``m`` without inventing sampling evidence."""
     rows = [
         _mean_arm(400, 10.0, 4.0, metric="m_a", group_id="control", country="US"),
         _mean_arm(400, 12.0, 4.0, metric="m_a", group_id="treatment", country="US"),
@@ -495,19 +495,51 @@ def test_segment_family_reproduces_run_breakout_for_a_conservative_nonrejection(
     summary = pd.DataFrame(rows)
     metrics = [_mean_metric("m_a")]
     nominal = list(_breakout(summary=summary, metrics=metrics))
-    reference = list(_breakout(summary=summary, metrics=metrics, correction="bh", q=0.05))
+    computation = estimate_lift(metrics, summary.query("country == 'CA'"), control_group="control")
+    failure = next(iter(computation.failures.values()))
+    whole = LiftEstimate(
+        metric="m_a",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        role="exploratory",
+        lift=None,
+        failure_code=failure.code,
+        failure_context=failure.context,
+        sampling_available=False,
+        sampling_reason_code=failure.code,
+        sampling_reason_context=failure.context,
+    )
+    assert exploratory_family_exclusion(whole) is None
+    unsupported = whole.model_copy(update={"failure_code": "readout.cell.unsupported_request"})
+    assert exploratory_family_exclusion(unsupported) is not None
 
-    corrected = _segments(select_exploratory_family(nominal, q=0.05))
+    corrected = select_exploratory_family([*nominal, whole], q=0.05)
 
-    by_segment = {row.dimension_value: row for row in corrected}
+    by_segment = {row.dimension_value: row for row in _segments(corrected)}
     assert by_segment["CA"].excluded == "zero_variance"
     assert by_segment["CA"].discovery is False
     assert by_segment["US"].discovery is True
-    assert {row.family_size for row in corrected} == {2}
-    assert by_segment["US"].family_threshold == pytest.approx(0.025)
+    assert {row.family_size for row in corrected} == {3}
+    assert all(row.family_threshold == pytest.approx(0.05 / 3) for row in corrected)
+    retained = corrected[-1]
+    assert retained.discovery is False
+    assert retained.lift is None and retained.sampling_available is False
+    assert (retained.failure_code, retained.failure_context) == (failure.code, failure.context)
+    assert (retained.sampling_reason_code, retained.sampling_reason_context) == (
+        failure.code,
+        failure.context,
+    )
+    from scipy.stats import t
+
     ours = by_segment["US"].require_lift()
-    theirs = next(row for row in reference if row.dimension_value == "US").require_lift()
-    _close(ours.model_dump(), theirs.model_dump())
+    var_t, var_c = 4 / (400 * 12**2), 4 / (400 * 10**2)
+    df = (var_t + var_c) ** 2 / ((var_t**2 + var_c**2) / 399)
+    half_width = t.isf(0.05 / 6, df) * math.sqrt(var_t + var_c)
+    assert ours.alpha == pytest.approx(0.05 / 3)
+    assert (ours.lb, ours.ub) == pytest.approx(
+        (math.expm1(math.log(1.2) - half_width), math.expm1(math.log(1.2) + half_width))
+    )
 
 
 def test_a_cell_excluded_by_design_is_no_hypothesis_and_is_returned_unchanged():
