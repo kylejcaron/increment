@@ -3353,3 +3353,34 @@ def test_readout_table_markdown_label_text_is_readable_in_latex(surface):
     rows, kwargs = _readout_case(surface, "[marker](https://example.com/docs)")
 
     assert _LINK_TEXT in _latex_text(_as_latex(readout_table(rows, **kwargs)))
+
+
+def test_readout_table_discloses_retained_alpha_when_level_rounds_to_one():
+    pytest.importorskip("coeftable")
+    estimate = _estimate("revenue", "T", "unadjusted", 0.12, lb=0.02, ub=0.22)
+    estimate = estimate.model_copy(
+        update={"lift": estimate.lift.model_copy(update={"level": 1.0, "alpha": 1e-17})}
+    )
+    row = estimates_to_readout([estimate])[0]
+    row["level"] = 1.0
+    row["coverage_alpha"] = 1e-17
+
+    html = readout_table([row]).gt().as_raw_html()
+    assert "all intervals 100% (α=1e-17)" in html
+
+
+def test_readout_table_keeps_equal_levels_with_distinct_budgets_separate():
+    pytest.importorskip("coeftable")
+    rows = estimates_to_readout(
+        [
+            _estimate("first", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            _estimate("second", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+        ]
+    )
+    for row, alpha in zip(rows, (1e-17, 1e-18), strict=True):
+        row["level"] = 1.0
+        row["coverage_alpha"] = alpha
+
+    html = readout_table(rows).gt().as_raw_html()
+    assert "100% (α=1e-17) CI" in html
+    assert "100% (α=1e-18) CI" in html

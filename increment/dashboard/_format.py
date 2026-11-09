@@ -15,7 +15,12 @@ from math import inf
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment._display import interval_text
-from increment.tables import _decision_available, _format_confidence_set, _format_coverage
+from increment.tables import (
+    _decision_available,
+    _format_confidence_set,
+    _format_coverage,
+    _retained_coverage_alpha,
+)
 
 if TYPE_CHECKING:
     from increment.dashboard._data import DashboardSnapshot
@@ -248,14 +253,7 @@ def percent_text(level: float, alpha: float | None = None) -> str:
 
 def retained_coverage_alpha(estimate: Any) -> float | None:
     """Return the noncoverage budget for the representation supplying the shown level."""
-    confidence_set = getattr(estimate, "confidence_set", None)
-    if confidence_set is not None:
-        return confidence_set.alpha
-    lift = getattr(estimate, "lift", None)
-    if lift is not None:
-        return lift.alpha
-    binomial = getattr(estimate, "binomial_set", None)
-    return None if binomial is None else binomial.alpha
+    return _retained_coverage_alpha(estimate)
 
 
 def retained_coverage_alpha_for_row(

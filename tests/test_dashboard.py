@@ -1828,6 +1828,9 @@ def test_secondary_coverage_budget_reaches_metric_details(
     metric = str(rows[index]["metric"])
     detail = next(item["detail"] for item in payload["metrics"] if item["key"] == metric)
     assert "100% (α=1e-17)" in detail
+    from increment.dashboard._html import results_table
+
+    assert "100% (α=1e-17) CI" in results_table(snapshot)
 
 
 def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(
@@ -1858,6 +1861,38 @@ def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(
     notes = payload["report"]["notes"]
     assert any("100% (α=1e-17) fixed-horizon intervals" in note for note in notes)
     assert any("100% (α=0.05) fixed-horizon intervals" in note for note in notes)
+
+
+def test_report_preserves_distinct_raw_levels_that_round_alike(
+    storefront: DashboardSnapshot,
+) -> None:
+    indices = [
+        i
+        for i, row in enumerate(storefront.readout_rows)
+        if row["metric"] != storefront.primary_metric
+        and storefront.estimates[i].confidence_set is None
+        and storefront.estimates[i].lift is not None
+    ][:2]
+    assert len(indices) == 2
+    updated = list(storefront.estimates)
+    rows = list(storefront.readout_rows)
+    for index, level, alpha in zip(indices, (0.95, 0.95001), (0.05, 0.04999), strict=True):
+        estimate = updated[index]
+        assert estimate.lift is not None
+        updated[index] = estimate.model_copy(
+            update={"lift": estimate.lift.model_copy(update={"level": level, "alpha": alpha})}
+        )
+        rows[index] = {**dict(rows[index]), "level": level}
+    snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
+
+    from increment.dashboard._app import build_payload
+
+    notes = build_payload(experiment_for(snapshot), snapshot=snapshot)["report"]["notes"]
+    assert sum(note.count("95% fixed-horizon intervals") for note in notes) == 2, notes
+    assert any(
+        "Interval levels differ; compare each interval only with its own level." in note
+        for note in notes
+    )
 
 
 def test_relative_set_coverage_discloses_its_own_retained_alpha() -> None:

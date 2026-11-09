@@ -989,6 +989,7 @@ def _display_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 # Keep only the dashboard's core readout and declared advisory columns.
 _CORE_COLUMNS = frozenset(
     {
+        "Interval",
         "Lift (absolute)",
         "Lift %",
         "Lift Plot",
@@ -1056,8 +1057,12 @@ def _selection_qualification_notes(
 
 def results_table(snapshot: DashboardSnapshot) -> str:
     """The whole declared family as one native CoefTable, without redundant columns."""
+    rows = [
+        {**row, "coverage_alpha": retained_coverage_alpha_for_row(snapshot, row)}
+        for row in snapshot.readout_rows
+    ]
     table, metrics = readout_native(
-        _display_rows(snapshot.readout_rows),
+        _display_rows(rows),
         title="",
         subtitle=f"{snapshot.treatment_group} vs {snapshot.control_group}",
         theme=coeftable_theme(snapshot.config.theme),
@@ -1088,21 +1093,32 @@ def overview_rows(
     """
     overview = snapshot.overview
 
-    def exploratory(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    def exploratory(estimates: Sequence[Any]) -> list[dict[str, Any]]:
+        rows = enriched_rows(estimates)
         return [
-            {**row, "stat_sig": bool(row.get("discovery")), "_exploratory": True} for row in rows
+            {
+                **row,
+                "stat_sig": bool(row.get("discovery")),
+                "_exploratory": True,
+                "coverage_alpha": retained_coverage_alpha(estimate),
+            }
+            for estimate, row in zip(estimates, rows, strict=True)
         ]
 
     by_metric: dict[str, list[dict[str, Any]]] = {}
     for row in decision_rows(snapshot):
         by_metric.setdefault(str(row["metric"]), []).append(
-            {**row, "segment": f"{_WHOLE} · as in Readout"}
+            {
+                **row,
+                "segment": f"{_WHOLE} · as in Readout",
+                "coverage_alpha": retained_coverage_alpha_for_row(snapshot, row),
+            }
         )
     if overview is not None and overview.family_refusal is None:
-        for row in exploratory(enriched_rows(overview.exploratory)):
+        for row in exploratory(overview.exploratory):
             by_metric.setdefault(str(row["metric"]), []).append({**row, "segment": _WHOLE})
         segments = overview.segments.get(breakout, ()) if breakout is not None else ()
-        for row in exploratory(enriched_rows(segments)):
+        for row in exploratory(segments):
             # Segment cells sit in their metric's role section so they can nest beneath it, but
             # they belong to the exploratory family, never the metric's declared one.
             labelled = {**row, "segment": f"{row['segment']} · exploratory"}
@@ -1534,6 +1550,19 @@ def _added_metric_details(snapshot: DashboardSnapshot, model: Any) -> mo.Html:
             body,
             subtitle=model.description or "",
         )
+    estimate = next(
+        (
+            estimate
+            for estimate in (overview.exploratory if overview is not None else ())
+            if estimate.metric == model.name
+            and getattr(estimate, "method_role", "decision") == row.get("method_role")
+        ),
+        None,
+    )
+    row = {
+        **row,
+        "coverage_alpha": None if estimate is None else retained_coverage_alpha(estimate),
+    }
     state = (
         f'<p class="inc-dashboard-note">{esc(_added_family_state(snapshot, model.name, row))}</p>'
     )
@@ -1581,6 +1610,9 @@ def _metric_detail_entries(
     direction_text = esc(direction or "not declared")
     if declared is None and direction is not None:
         direction_text += ' <span class="inc-dashboard-reason">(library default)</span>'
+    coverage_alpha = row.get("coverage_alpha")
+    if coverage_alpha is None:
+        coverage_alpha = retained_coverage_alpha_for_row(snapshot, row)
     entries: list[tuple[str, str]] = [
         (
             "Role",
@@ -1591,7 +1623,7 @@ def _metric_detail_entries(
             "Interval",
             f"{interval_html(row)}"
             + (
-                f" at {percent_text(row['level'], retained_coverage_alpha_for_row(snapshot, row))}"
+                f" at {percent_text(row['level'], coverage_alpha)}"
                 if row.get("level") is not None
                 else ""
             ),
@@ -2319,7 +2351,10 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
         )
     estimates = list(data)
     alphas = [retained_coverage_alpha(estimate) for estimate in estimates]
-    rows = estimates_to_readout(estimates)
+    rows = [
+        {**row, "coverage_alpha": alpha}
+        for row, alpha in zip(estimates_to_readout(estimates), alphas, strict=True)
+    ]
     if not rows:
         return f'<p class="inc-dashboard-note">{missing_html("this breakout returned no segments")}</p>'
     table, metrics = readout_native(

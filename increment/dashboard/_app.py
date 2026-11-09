@@ -528,27 +528,35 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
             qualifiers.append(f"{row.get('method')}, {row.get('method_role')}")
         return f"{metric} ({'; '.join(qualifiers)})" if qualifiers else metric
 
-    groups: dict[str, list[str]] = {}
+    groups: dict[tuple[tuple[float, float | None] | None, str, str], list[str]] = {}
     for row in rows:
         level = row.get("level")
-        alpha = retained_coverage_alpha_for_row(snapshot, row)
-        prefix = (
-            "" if level is None or is_missing(level) else f"{percent_text(float(level), alpha)} "
+        coverage = (
+            None
+            if level is None or is_missing(level)
+            else (float(level), retained_coverage_alpha_for_row(snapshot, row))
         )
         kind = inference_word(str(row.get("inference", "fixed")))
-        names = groups.setdefault(f"{prefix}{kind} intervals, {tail_word(row)}", [])
+        key = (coverage, kind, tail_word(row))
+        names = groups.setdefault(key, [])
         if name(row) not in names:
             names.append(name(row))
+
+    def group_label(key: tuple[tuple[float, float | None] | None, str, str]) -> str:
+        coverage, kind, tail = key
+        prefix = "" if coverage is None else f"{percent_text(*coverage)} "
+        return f"{prefix}{kind} intervals, {tail}"
+
     if len(groups) == 1:
-        notes.append(f"All results: {next(iter(groups))}.")
+        notes.append(f"All results: {group_label(next(iter(groups)))}.")
     else:
         notes.append(
             "Intervals by metric: "
-            + "; ".join(f"{label} ({', '.join(names)})" for label, names in groups.items())
+            + "; ".join(f"{group_label(key)} ({', '.join(names)})" for key, names in groups.items())
             + "."
         )
     levels = {
-        percent_text(float(row["level"]), retained_coverage_alpha_for_row(snapshot, row))
+        (float(row["level"]), retained_coverage_alpha_for_row(snapshot, row))
         for row in rows
         if not is_missing(row.get("level"))
     }
