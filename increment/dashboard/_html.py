@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import fields, replace
 from importlib import resources
 from math import ceil, inf, isfinite, log10
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import coeftable as ct
 import marimo as mo
@@ -47,7 +47,6 @@ from increment.dashboard._format import (
     date_label,
     effect_html,
     esc,
-    has_open_side,
     headline_interval,
     headline_number,
     inference_label,
@@ -86,8 +85,10 @@ from increment.tables import (
     _failure_disclosure,
     _format_confidence_set,
     _format_metadata_stat,
+    _markdown_literal,
     _readout_evidence_notes,
     _readout_metadata_notes,
+    _segment_label,
     estimates_to_readout,
 )
 
@@ -1933,45 +1934,7 @@ def _lift_traces(snapshot: DashboardSnapshot, rows: Sequence[Any]) -> list[plots
             direction,
         )
     )
-    trace = _point_trace(rows, lift=True, color=color, label="Estimate")
-    open_set = any(row.binomial_set is not None and row.binomial_set.upper is None for row in rows)
-    if not has_open_side(rows) and not open_set:
-        return [trace]
-    # An open side has no endpoint: only finite sides get their own labelled line.
-    traces = [trace]
-    for label, values, opposite, color in (
-        ("Lower CI", trace.lower, trace.upper, theme.series_palette[0]),
-        ("Upper CI", trace.upper, trace.lower, theme.inconclusive),
-    ):
-        unbounded = [
-            value is not None and other is None
-            for value, other in zip(values, opposite, strict=True)
-        ]
-        # Include the captured boundary neighbour, not the rest of the finite ribbon.
-        values = [
-            value
-            if unbounded[index]
-            or (index > 0 and unbounded[index - 1])
-            or (index + 1 < len(unbounded) and unbounded[index + 1])
-            else None
-            for index, value in enumerate(values)
-        ]
-        if any(value is not None for value in values):
-            absent = [None] * len(trace.x)
-            traces.append(plots.Trace(trace.x, values, absent, absent, color, False, label))
-    return traces
-
-
-def _latest_lift_reading(row: Mapping[str, Any]) -> str:
-    return (
-        '<div class="inc-dashboard-trajectory-reading">'
-        f'<span class="inc-dashboard-note">{esc(str(row["ds"]))}</span>'
-        f"<strong>{effect_html(row)}</strong>"
-        f"<span>{interval_html(row)}</span>"
-        f"<span>{primary_method(row)}</span>"
-        f'<span class="inc-dashboard-note">Tested null: {esc(null_text(row))}</span>'
-        "</div>"
-    )
+    return [_point_trace(rows, lift=True, color=color, label="Estimate")]
 
 
 def _latest_lift_qualifications(
@@ -2018,6 +1981,7 @@ def _lift_trajectory_table(snapshot: DashboardSnapshot, panels: Sequence[tuple[A
     readings = []
     cells = []
     advisory = []
+    latest: dict[str, list[str]] = {}
     notes: dict[str, list[str]] = {}
     geometry: dict[str, list[str]] = {}
     caveats: dict[str, list[str]] = {}
@@ -2028,14 +1992,19 @@ def _lift_trajectory_table(snapshot: DashboardSnapshot, panels: Sequence[tuple[A
         name = _lift_reading_label(reading)
         cells.append(
             {
-                "Series": row.dimension_value
+                "Series": _segment_label(row.dimension_value)
                 if row.dimension_value is not None
                 else "Whole experiment",
-                "Arm": row.group_id,
-                "Latest": _latest_lift_reading(reading),
+                "Arm": _markdown_literal(row.group_id),
                 "Trajectory": svg,
             }
         )
+        point = (
+            f"{esc(str(reading['ds']))}: <strong>{effect_html(reading)}</strong>; "
+            f"{interval_html(reading)} · {primary_method(reading)} · "
+            f"Tested null: {esc(null_text(reading))}"
+        )
+        latest.setdefault(point, []).append(name)
         entries, qualifications = _latest_lift_qualifications(reading)
         advisory.extend((f"{name} · {label}", value) for label, value in entries)
         for note in qualifications:
@@ -2045,11 +2014,20 @@ def _lift_trajectory_table(snapshot: DashboardSnapshot, panels: Sequence[tuple[A
         for caveat in result_caveats([reading]):
             caveats.setdefault(caveat, []).append(name)
     row = panels[0][0]
+    basis = "Exposure cohort" if row.ds_basis == "cohort" else "Observation date"
+    dates = list(dict.fromkeys(str(reading["ds"]) for reading in readings))
+    levels = list(dict.fromkeys(reading.get("level") for reading in readings))
+    caption = [basis]
+    caption.append(f"Latest {dates[0]}" if len(dates) == 1 else "Latest dates vary by series")
+    if len(levels) == 1 and not is_missing(levels[0]):
+        caption.append(f"{percent_text(cast(float, levels[0]))} intervals")
+    elif len(levels) > 1:
+        caption.append("Confidence levels vary by series")
     context = _chips(
         [
             ("Metric", esc(row.metric)),
             ("Population", esc(row.analysis_population)),
-            ("Date axis", "Exposure cohort" if row.ds_basis == "cohort" else "Observation date"),
+            ("Date axis", basis),
             ("Scale", esc(row.value_scale)),
             ("Method", esc(row.method)),
             ("Estimand", esc(row.estimand)),
@@ -2060,27 +2038,25 @@ def _lift_trajectory_table(snapshot: DashboardSnapshot, panels: Sequence[tuple[A
         pd.DataFrame(cells),
         rows="Series",
         nest="Arm",
-        columns=(ct.Passthrough("Latest", "Latest"), ct.Passthrough("Trajectory", "Trajectory")),
+        columns=(ct.Passthrough("Trajectory", "Trajectory"),),
         theme=coeftable_theme(snapshot.config.theme),
     )
-    return (
-        '<div class="inc-dashboard-temporal-table">'
-        + context
-        + _TABLE_WRAP.format(native_html(table, {}))
+    details = (
+        context
+        + _list(_attributed_trajectory_notes(latest), css_class="inc-dashboard-reasons")
         + (_chips(advisory) if advisory else "")
         + _list(
             _attributed_trajectory_notes(notes), css_class="inc-dashboard-family-qualifications"
         )
-        + (
-            _disclosure(
-                INTERVALS_DISCLOSURE,
-                _list(_attributed_trajectory_notes(geometry), css_class="inc-dashboard-reasons"),
-            )
-            if geometry
-            else ""
-        )
+        + _list(_attributed_trajectory_notes(geometry), css_class="inc-dashboard-reasons")
         + _selection_qualification_notes(readings, name=_lift_reading_label)
         + _caveats_list(_attributed_trajectory_notes(caveats))
+    )
+    return (
+        '<div class="inc-dashboard-temporal-table">'
+        f'<p class="inc-dashboard-note">{esc(" · ".join(caption))}</p>'
+        + _TABLE_WRAP.format(native_html(table, {}))
+        + _disclosure("Latest readings and qualifications", details)
         + "</div>"
     )
 

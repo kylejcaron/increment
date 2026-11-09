@@ -749,8 +749,32 @@ def test_render_explore_segments_show_a_truthful_empty_state_without_breakouts(
 def test_dashboard_tables_escape_warehouse_segment_values_and_arm_names(
     storefront: DashboardSnapshot,
 ) -> None:
+    from html.parser import HTMLParser
+
     from increment.breakout.estimates import BreakoutEstimate, BreakoutEstimates
     from increment.estimation.results import Estimate
+
+    class Cells(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.cells: list[str] = []
+            self.links: list[str] = []
+            self.current: list[str] | None = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("td", "th"):
+                self.current = []
+            elif tag == "a" and self.current is not None:
+                self.links.append(dict(attrs).get("href") or "")
+
+        def handle_data(self, data):
+            if self.current is not None:
+                self.current.append(data)
+
+        def handle_endtag(self, tag):
+            if tag in ("td", "th") and self.current is not None:
+                self.cells.append("".join(self.current).strip())
+                self.current = None
 
     hostile = "<img src=x onerror=alert(1)>"
     results = render_results(
@@ -789,12 +813,25 @@ def test_dashboard_tables_escape_warehouse_segment_values_and_arm_names(
             for item in storefront.group_data
         ),
     )
+    labels = (
+        ("US", storefront.treatment_group),
+        ("**US**", f"**{storefront.treatment_group}**"),
+        ("[US](https://example.com)", f"[{storefront.treatment_group}](https://example.com)"),
+    )
     temporal = render_explore(
         renamed,
         DailyLiftEstimates(
-            row.model_copy(update={"metric": hostile})
+            row.model_copy(
+                update={
+                    "metric": hostile,
+                    "dimension": "country",
+                    "dimension_value": series,
+                    "group_id": arm,
+                }
+            )
             for row in temporal_rows(storefront, "cumulative_lift")
             if row.metric == storefront.primary_metric
+            for series, arm in labels
         ),
         metric=hostile,
         view="cumulative_lift",
@@ -802,6 +839,11 @@ def test_dashboard_tables_escape_warehouse_segment_values_and_arm_names(
     for html in (results, segments, temporal):
         assert hostile not in html
         assert "&lt;img src=x onerror=alert(1)&gt;" in html
+    parsed = Cells()
+    parsed.feed("".join(re.findall(r"<table\b.*?</table>", temporal, re.S)))
+    assert not parsed.links
+    for series, arm in labels:
+        assert series in parsed.cells and arm in parsed.cells
 
 
 @pytest.mark.parametrize(
@@ -1340,6 +1382,7 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
 
     data = temporal_rows(storefront, "cumulative_lift", segmented=True)
     assert isinstance(data, DailyLiftEstimates)
+    earlier_date = min(row.ds for row in data)
     mixed = DailyLiftEstimates(
         row.model_copy(
             update={
@@ -1354,9 +1397,19 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
                 "posterior_reason_context": {"reason": "us_prior_guard"}
                 if row.dimension_value == "US"
                 else None,
+                "lift": row.lift.model_copy(update={"level": 0.9})
+                if row.metric == "revenue_per_user"
+                and row.dimension_value == "US"
+                and row.lift is not None
+                else row.lift,
             }
         )
         for row in data
+        if not (
+            row.metric == "revenue_per_user"
+            and row.dimension_value == "US"
+            and row.ds != earlier_date
+        )
     )
     rendered = render_explore(storefront, mixed, metric=None, view="cumulative_lift").text
     assert "revenue_per_user" in rendered and storefront.primary_metric in rendered
@@ -1368,12 +1421,25 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
     assert f"US · {storefront.treatment_group}" in rendered
     assert "73.0%" in rendered and "us_prior_guard" in rendered
     assert "cuped" in rendered
+    assert all(
+        "Latest" not in table for table in re.findall(r"<table\b.*?</table>", rendered, re.S)
+    )
+    details = re.findall(r"<details\b.*?</details>", rendered, re.S)
+    qualified = [detail for detail in details if "Scope and integrity unknown." in detail]
+    assert len(qualified) == 3
+    outside = re.sub(r"<details\b.*?</details>", "", rendered, flags=re.S)
+    assert "Scope and integrity unknown." not in outside and "Tested null:" not in outside
+    varied = next(detail for detail in qualified if "revenue_per_user" in detail)
+    assert str(earlier_date) in varied and str(max(row.ds for row in data)) in varied
+    assert "90%" in varied
+    assert rendered.count("Latest dates vary by series") == 1
+    assert rendered.count("Confidence levels vary by series") == 1
 
 
 @pytest.mark.parametrize(
     "point_state", ["available", "early_undefined", "all_undefined", "finite_tail"]
 )
-def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
+def test_one_sided_intervals_keep_unavailable_dates_as_gaps(
     storefront: DashboardSnapshot, point_state: str
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
@@ -1443,15 +1509,15 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
     assert (
         len(polylines)
         == {
-            "available": 4,
-            "early_undefined": 3,
-            "all_undefined": 2,
-            "finite_tail": 3,
+            "available": 2,
+            "early_undefined": 1,
+            "all_undefined": 0,
+            "finite_tail": 2,
         }[point_state]
     )
-    # A missing point does not erase a retained bound; a genuinely missing date breaks both.
+    # Missing points break the estimate; open bounds stay in details, not extra CI lines.
     assert all(len(points.split()) == 2 for points in polylines)
-    assert "Lower CI" in rendered and "Upper CI" not in rendered
+    assert "Lower CI" not in rendered and "Upper CI" not in rendered
     interval = (
         "[+5.0%, +15.0%]"
         if point_state == "finite_tail"
