@@ -860,6 +860,10 @@ whose control mean is negative has no relative lift and no relative set; its
 additive interval carries the decision:
 
 ```python
+import polars as pl
+
+import increment
+
 k = 40
 negative = pl.DataFrame(
     {
@@ -890,8 +894,11 @@ a finite lower and an unbounded upper relative endpoint, each with its own
 status:
 
 ```python
+import polars as pl
+
 import increment
 
+k = 40
 zero_control = pl.DataFrame(
     {
         "user_id": [f"u{i:03d}" for i in range(2 * k)],
@@ -1213,6 +1220,7 @@ converted = table.filter(pl.col("metric") == "converted").row(0, named=True)
 assert converted["lift"] is None
 assert converted["set_lower"] is not None and converted["set_upper"] is None
 
+contrasts = increment.run(experiment, reader).readout()
 assert "estimate" in contrasts.to_frame(backend="polars").columns
 ```
 
@@ -1232,6 +1240,7 @@ rows:
 ```python
 from increment.tables import estimates_to_readout
 
+contrasts = increment.run(experiment, reader).readout()
 rows = estimates_to_readout([*results, *contrasts])
 by_metric = {row["metric"]: row for row in rows}
 

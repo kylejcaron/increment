@@ -249,18 +249,44 @@ result = increment.run(restored, reader)
 print(increment.render(result, "brief"))
 ```
 
-For a registered sequential definition, capture through the builder's pair
+For a panel-backed sequential definition, capture through the builder's pair
 before running. Supply an `as_of` horizon when required by the source:
 
-<!-- skip: next "requires a configured warehouse and a registered sequential definition" -->
 ```python
+import polars as pl
+
 import increment
 from increment.workflows import capture_sequential
 
-experiment, reader = increment.from_definitions(
-    "definitions.yml", con, experiment_name="sequential_experiment"
+panel = pl.DataFrame(
+    {
+        "user_id": [f"u{index}" for index in range(8)],
+        "variant": ["control"] * 4 + ["treatment"] * 4,
+        "day": [1] * 8,
+        "enrolled_on": [1] * 8,
+        "revenue": [float(index + 1) for index in range(8)],
+    }
 )
-capture_sequential(experiment, reader, finalized=True, as_of=as_of)
+experiment, reader = increment.from_frame(
+    panel,
+    shape="panel",
+    unit="user_id",
+    group="variant",
+    date="day",
+    exposure_date="enrolled_on",
+    design=increment.Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    ),
+    metrics=[increment.MetricSpec(name="revenue", type="mean", window_days=1)],
+    observation_end=2,
+    plan=increment.AnalysisPlan(
+        primary="revenue",
+        inference=increment.InferenceSpec(kind="asymptotic_mean"),
+    ),
+)
+capture_sequential(experiment, reader, finalized=True, as_of=1)
 result = increment.run(experiment, reader)
 ```
 
@@ -532,7 +558,7 @@ three `Runnable` fields rather than treating unknown requirements as supported:
 ```python
 import increment
 
-status = increment.runnable(restored, "revenue")["randomized.unadjusted"]
+status = increment.runnable(experiment, "revenue")["randomized.unadjusted"]
 if status.unknown:
     print("not established offline:", status.unknown)
 elif status.static_refusals:
