@@ -125,6 +125,36 @@ def run_tests(tests: list[str], *, forced_fail: bool) -> int:
     return code
 
 
+def run_statistics(tests: list[str]) -> int:
+    """Associate real trampoline hits with pytest's public test identities."""
+    import pytest
+    from mutmut.runners.harness import PytestRunner
+    from mutmut.state import state
+
+    stats = state()
+
+    class StatsCollector:
+        def pytest_runtest_logstart(self, nodeid: str) -> None:
+            stats.duration_by_test[nodeid] = 0
+
+        def pytest_runtest_teardown(self, item: pytest.Item) -> None:
+            for function in stats._stats:
+                stats.tests_by_mangled_function_name[function].add(
+                    item.nodeid.removeprefix("mutants/")
+                )
+            stats._stats.clear()
+
+        def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+            if report.when == "call":
+                stats.duration_by_test[report.nodeid] += report.duration
+
+    runner = PytestRunner()
+    with chdir("mutants"):
+        return runner.execute_pytest(
+            runner._pytest_args_regular_run(tests), plugins=[StatsCollector()]
+        )
+
+
 def worker(stage: str, source: str, tests: list[str]) -> int:
     # mutmut's internal generation/stats API is deliberately version-pinned.
     from mutmut.__main__ import (
@@ -160,7 +190,7 @@ def worker(stage: str, source: str, tests: list[str]) -> int:
     print(f"SOURCE {module_file}", flush=True)
     if stage == "stats":
         set_mutant_under_test("stats")
-        code = PytestRunner().run_stats(tests=[])
+        code = run_statistics([])
         Path("associations.json").write_text(
             json.dumps(
                 {
