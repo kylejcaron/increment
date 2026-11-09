@@ -2259,15 +2259,15 @@ def _partition_nonpositive_mean_rows(
     control_group: str,
     metric_types: Mapping[str, str],
     binomial_gate_exempt_metrics: frozenset[str],
+    nonpositive_mean_exempt_metrics: frozenset[str] = frozenset(),
 ) -> _MeanPartition:
     """Split *rows* on a per-row, family-dependent estimability gate.
 
     Rows with no usable metric observations are retained as a distinct unavailable reason;
-    other rows with ``n < 2`` or a nonpositive outcome/denominator mean are dropped when
-    log-scale variance models require those quantities. Exact binomial rows
-    remain eligible at ``n=1`` and with zero means. Mixed adjusted/unadjusted
-    requests receive a method-specific partition; this function only identifies
-    excluded rows.
+    other rows with ``n < 2`` are dropped. Nonpositive outcome means are admitted
+    for absolute hypotheses with an additive reference; ratio denominators must
+    remain positive. Exact binomial rows remain eligible at ``n=1`` and with zero means.
+    Mixed adjusted/unadjusted requests receive a method-specific partition.
 
     ``lost_control_metrics`` is every metric with a control row among
     *rows* but not among ``live``; ``live_control_metrics`` is every
@@ -2288,7 +2288,7 @@ def _partition_nonpositive_mean_rows(
         if int(row["n"]) < 2:
             dropped.append(_DroppedRow(row, "few_units"))
             continue
-        if _mean_y(row) <= 0.0:
+        if metric_name not in nonpositive_mean_exempt_metrics and _mean_y(row) <= 0.0:
             dropped.append(_DroppedRow(row, "nonpositive_mean"))
             continue
         if metric_types.get(metric_name) == "ratio":
@@ -3183,6 +3183,7 @@ def _prepare_lift_slice(
     control_group: str,
     metric_types: Mapping[str, str],
     binomial_gate_exempt_metrics: frozenset[str],
+    nonpositive_mean_exempt_metrics: frozenset[str] = frozenset(),
     warning_label: str | None = None,
     unobserved_control_missing: bool = False,
 ) -> _PreparedLiftSlice:
@@ -3198,6 +3199,7 @@ def _prepare_lift_slice(
         control_group=control_group,
         metric_types=metric_types,
         binomial_gate_exempt_metrics=binomial_gate_exempt_metrics,
+        nonpositive_mean_exempt_metrics=nonpositive_mean_exempt_metrics,
     )
     if warning_label is not None:
         _warn_nonpositive_mean_partition(part, label=warning_label)
@@ -3300,6 +3302,7 @@ def _count_estimable_cells(
     control_group: str,
     metric_types: Mapping[str, str],
     scalar_cuped_decisions: frozenset[str],
+    nonpositive_mean_exempt_metrics: frozenset[str] = frozenset(),
 ) -> dict[str, int]:
     """Per metric, how many (treatment arm, segment) cells its decision method's arm counts
     can estimate: that metric's Bonferroni ``k``, known before any outcome is read, and the
@@ -3314,6 +3317,7 @@ def _count_estimable_cells(
                 control_group=control_group,
                 metric_types=metric_types,
                 binomial_gate_exempt_metrics=frozenset(),
+                nonpositive_mean_exempt_metrics=nonpositive_mean_exempt_metrics,
                 unobserved_control_missing=True,
             ).unestimable
             if scalar_cuped_decisions
@@ -3821,6 +3825,9 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                         control_group=context.control_group,
                         metric_types={metric.name: metric.type},
                         binomial_gate_exempt_metrics=frozenset(),
+                        nonpositive_mean_exempt_metrics=(
+                            frozenset({metric.name}) if policy.null_abs is not None else frozenset()
+                        ),
                         warning_label=(
                             f"run_breakout: segment {context.dimension}="
                             f"{context.segment_value!r} method={method_group[0].name!r}"
@@ -4738,6 +4745,21 @@ def _run_fixed_breakout(  # noqa: PLR0913
         control_group=control_group,
         methods_by_metric=methods_by_metric,
     )
+    # Scalar ratio CUPED still requires positive adjusted components on both scales.
+    nonpositive_mean_exempt_metrics = frozenset(
+        metric.name
+        for metric in metrics
+        if policy_by_metric[metric.name].null_abs is not None
+        and not (
+            metric.type == "ratio"
+            and any(
+                method.variance_reduction == "cuped"
+                for method in _configured_methods_for_metric(
+                    metric.name, methods=methods, methods_by_metric=methods_by_metric
+                )
+            )
+        )
+    )
     prepared_by_segment: dict[str, _PreparedLiftSlice] = {}
     for value in sorted(segments):
         prepared_by_segment[value] = _prepare_lift_slice(
@@ -4745,6 +4767,7 @@ def _run_fixed_breakout(  # noqa: PLR0913
             control_group=control_group,
             metric_types={m.name: m.type for m in metrics},
             binomial_gate_exempt_metrics=binomial_gate_exempt_metrics,
+            nonpositive_mean_exempt_metrics=nonpositive_mean_exempt_metrics,
             warning_label=f"run_breakout: segment {dimension}={value!r}",
             unobserved_control_missing=True,
         )
@@ -4755,6 +4778,7 @@ def _run_fixed_breakout(  # noqa: PLR0913
             all_pairs,
             control_group=control_group,
             metric_types={m.name: m.type for m in metrics},
+            nonpositive_mean_exempt_metrics=nonpositive_mean_exempt_metrics,
             scalar_cuped_decisions=_scalar_cuped_decision_metrics(
                 metrics,
                 methods=methods,

@@ -212,6 +212,7 @@ def _compiled_mean_breakout(
     margin=None,
     margin_abs=None,
     direction="increase",
+    control_mean=10.0,
     treatment_mean=10.0,
     alpha=0.05,
     correction="none",
@@ -234,7 +235,7 @@ def _compiled_mean_breakout(
                 "country": "US",
                 "rev": mean + offset,
             }
-            for arm, mean in (("control", 10.0), ("treatment", treatment_mean))
+            for arm, mean in (("control", control_mean), ("treatment", treatment_mean))
             for i, offset in enumerate([-1.0, 1.0] * 50)
         ]
     )
@@ -306,16 +307,245 @@ def test_compiled_segment_relative_margin_uses_declared_welch_tail(alternative, 
         )
 
 
-def test_compiled_segment_absolute_margin_uses_metric_units_and_additive_reference():
+@pytest.mark.parametrize(
+    ("control_mean", "treatment_mean"),
+    [(10.0, 10.25), (0.0, 0.25), (-1.0, -0.75), (0.25, 0.0)],
+)
+def test_compiled_segment_absolute_margin_uses_metric_units_and_additive_reference(
+    control_mean, treatment_mean
+):
     from scipy.stats import t
 
-    (row,) = _compiled_mean_breakout(margin_abs=0.5, direction="decrease", treatment_mean=10.25)
+    (row,) = _compiled_mean_breakout(
+        margin_abs=0.5,
+        direction="decrease",
+        control_mean=control_mean,
+        treatment_mean=treatment_mean,
+    )
+    difference = treatment_mean - control_mean
     se = math.sqrt(2.0 / 99.0)
+    assert row.excluded is None
     assert (row.alternative, row.null_lift, row.null_abs) == ("less", 0.0, 0.5)
-    assert row.p_value() == pytest.approx(t.cdf((0.25 - 0.5) / se, 198))
-    assert row.abs_ub == pytest.approx(0.25 + t.isf(0.05, 198) * se)
+    assert row.p_value() == pytest.approx(t.cdf((difference - 0.5) / se, 198))
+    assert row.abs_diff == pytest.approx(difference)
+    assert row.abs_se == pytest.approx(se)
+    assert row.abs_ub == pytest.approx(difference + t.isf(0.05, 198) * se)
+    assert row.abs_reference_kind == "t"
+    assert row.abs_reference_df == pytest.approx(198)
     assert row.abs_alpha == pytest.approx(0.1)
     assert row.stat_sig() is True
+    if min(control_mean, treatment_mean) <= 0.0:
+        assert row.lift is None
+        assert row.relative_confidence_set is None
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+
+
+def test_absolute_segment_nonpositive_means_keep_bh_selection_and_fcr_on_replay():
+    from scipy.stats import t
+
+    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
+
+    differences = {"A": 0.2, "B": -0.5, "C": 0.5}
+    rows = [
+        _make_arm_row(
+            100,
+            mean,
+            100.0 / 99.0,
+            country=segment,
+            group_id=arm,
+        )
+        for segment, difference in differences.items()
+        for arm, mean in (("control", -1.0), ("treatment", -1.0 + difference))
+    ]
+    policy = _ReadoutCellPolicy(0.05, "less", 0.0, 0.5, "guardrail", "compiled_plan")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _run_fixed_breakout(
+            rows,
+            [_mean_metric()],
+            control_group="control",
+            dimension="country",
+            policy_by_metric={"rev": policy},
+            correction="bh",
+            q=0.03,
+        )
+    se = math.sqrt(2.0 / 99.0)
+    for original in result:
+        row = BreakoutEstimate.model_validate_json(original.model_dump_json())
+        difference = differences[row.dimension_value]
+        assert row.excluded is None
+        assert row.lift is None
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+        assert (row.alternative, row.null_lift, row.null_abs) == ("less", 0.0, 0.5)
+        assert row.p_value() == pytest.approx(t.cdf((difference - 0.5) / se, 198))
+        assert row.discovery is (row.dimension_value != "C")
+        assert row.family_size == 3
+        assert row.family_threshold == pytest.approx(0.02)
+        if row.discovery:
+            assert row.family_nominal_alpha == 0.05
+        assert row.abs_alpha == pytest.approx(0.02 if row.discovery else 0.1)
+        tail = 0.01 if row.discovery else 0.05
+        assert row.abs_ub == pytest.approx(difference + t.isf(tail, 198) * se)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("zero_control_n", "missing_metric_observations"),
+        ("zero_treatment_n", "missing_metric_observations"),
+        ("one_control_n", "no_control_arm"),
+        ("one_treatment_n", "few_units"),
+        ("absent_control", "no_control_arm"),
+        ("ratio_missing_denominator", "nonpositive_mean"),
+        ("ratio_zero_denominator", "nonpositive_mean"),
+        ("ratio_scalar_cuped", "nonpositive_mean"),
+        ("relative_null", "nonpositive_mean"),
+    ],
+)
+def test_absolute_segment_admission_preserves_count_and_relative_domain_gates(case, expected):
+    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
+
+    ratio = case.startswith("ratio")
+    metric = _ratio_metric("rev") if ratio else _mean_metric()
+    control_mean = 1.0 if case.endswith("_n") or case == "absent_control" else -1.0
+    rows = [
+        _make_arm_row(
+            100,
+            mean,
+            1.0,
+            country="US",
+            group_id=arm,
+            sum_den=100.0 if ratio else None,
+            x_mean=0.0 if case == "ratio_scalar_cuped" else None,
+        )
+        for arm, mean in (("control", control_mean), ("treatment", control_mean + 0.2))
+    ]
+    if case == "absent_control":
+        rows.pop(0)
+    elif case.endswith("_n"):
+        rows[0 if "control" in case else 1]["n"] = 0 if case.startswith("zero") else 1
+    elif case == "ratio_missing_denominator":
+        rows[1]["ref_den"] = None
+    elif case == "ratio_zero_denominator":
+        rows[1]["ref_den"] = 0.0
+    policy = _ReadoutCellPolicy(
+        0.05,
+        "less",
+        0.05 if case == "relative_null" else 0.0,
+        None if case == "relative_null" else 0.5,
+        "guardrail",
+        "compiled_plan",
+    )
+    methods = (
+        [Method(name="unadjusted"), Method(name="cuped", variance_reduction="cuped")]
+        if case == "ratio_scalar_cuped"
+        else None
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _run_fixed_breakout(
+            rows,
+            [metric],
+            control_group="control",
+            dimension="country",
+            policy_by_metric={"rev": policy},
+            methods=methods,
+            correction="bh",
+            q=0.1,
+        )
+    assert all(row.excluded == expected for row in result)
+    assert all(row.p_value() is None for row in result)
+    for row in result:
+        assert (row.alternative, row.null_lift, row.null_abs) == policy[1:4]
+
+
+@pytest.mark.parametrize("kind", ["cuped_mean", "ratio"])
+def test_absolute_segment_nonpositive_mean_reaches_existing_additive_method(kind):
+    from scipy.stats import t
+
+    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
+
+    metric = _mean_metric() if kind == "cuped_mean" else _ratio_metric("rev")
+    methods = [Method(name="cuped", variance_reduction="cuped")] if kind == "cuped_mean" else None
+    rows = [
+        _make_arm_row(
+            100,
+            mean,
+            1.0,
+            country="US",
+            group_id=arm,
+            x_mean=0.0 if kind == "cuped_mean" else None,
+            sum_den=100.0 if kind == "ratio" else None,
+        )
+        for arm, mean in (("control", -1.0), ("treatment", -0.8))
+    ]
+    policy = _ReadoutCellPolicy(0.05, "less", 0.0, 0.5, "guardrail", "compiled_plan")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        (row,) = _run_fixed_breakout(
+            rows,
+            [metric],
+            control_group="control",
+            dimension="country",
+            policy_by_metric={"rev": policy},
+            methods=methods,
+            correction="none",
+            q=0.1,
+        )
+    assert row.excluded is None
+    assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+    assert row.abs_diff == pytest.approx(0.2)
+    assert row.abs_se == pytest.approx(math.sqrt(0.02))
+    assert row.p_value() == pytest.approx(t.cdf(-0.3 / math.sqrt(0.02), 198))
+
+
+def test_absolute_mixed_binary_cuped_keeps_additive_row_and_count_only_bonferroni():
+    from scipy.stats import t
+
+    from increment.breakout.estimates import _ReadoutCellPolicy, _run_fixed_breakout
+
+    rows = [
+        _conversion_arm_row(
+            n,
+            successes,
+            country=segment,
+            group_id=arm,
+            with_covariate=True,
+        )
+        for segment, n, successes_t in (("A", 100, 0), ("B", 1, 0), ("C", 100, 50))
+        for arm, successes in (("control", max(n // 2, 1)), ("treatment", successes_t))
+    ]
+    for row in rows:
+        row["cx2"] = float(row["n"])
+    policy = _ReadoutCellPolicy(0.05, "less", 0.0, -0.1, "guardrail", "compiled_plan")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _run_fixed_breakout(
+            rows,
+            [_conversion_metric()],
+            control_group="control",
+            dimension="country",
+            policy_by_metric={"conv": policy},
+            methods=[
+                Method(name="cuped", variance_reduction="cuped"),
+                Method(name="unadjusted"),
+            ],
+            method_roles={"cuped": "decision", "unadjusted": "sensitivity"},
+            correction="bonferroni",
+            q=0.1,
+        )
+    by_cell = {(row.dimension_value, row.method): row for row in result}
+    additive = by_cell[("A", "cuped")]
+    se = math.sqrt(0.25 / 99.0)
+    assert additive.excluded is None
+    assert additive.relative_unavailable_reason == "nonpositive_arm_mean"
+    assert additive.p_value() == pytest.approx(t.cdf(-0.4 / se, 99))
+    assert additive.abs_alpha == pytest.approx(0.05)
+    assert additive.abs_ub == pytest.approx(-0.5 + t.isf(0.025, 99) * se)
+    assert by_cell[("C", "cuped")].abs_alpha == pytest.approx(0.05)
+    assert by_cell[("B", "cuped")].excluded == "few_units"
+    assert by_cell[("B", "unadjusted")].excluded is None
+    assert by_cell[("B", "unadjusted")].reference_kind == "binomial"
 
 
 def test_compiled_segment_zero_null_keeps_one_sided_alternative_at_tiny_alpha():
