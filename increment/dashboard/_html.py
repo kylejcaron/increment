@@ -1938,50 +1938,45 @@ def _lift_traces(snapshot: DashboardSnapshot, rows: Sequence[Any]) -> list[plots
     if not has_open_side(rows) and not open_set:
         return [trace]
     # An open side has no endpoint: only finite sides get their own labelled line.
-    traces = [trace._replace(show_ribbon=False)]
-    for label, values, color in (
-        ("Lower CI", trace.lower, theme.series_palette[0]),
-        ("Upper CI", trace.upper, theme.inconclusive),
+    traces = [trace]
+    for label, values, opposite, color in (
+        ("Lower CI", trace.lower, trace.upper, theme.series_palette[0]),
+        ("Upper CI", trace.upper, trace.lower, theme.inconclusive),
     ):
+        unbounded = [
+            value is not None and other is None
+            for value, other in zip(values, opposite, strict=True)
+        ]
+        # Include the captured boundary neighbour, not the rest of the finite ribbon.
+        values = [
+            value
+            if unbounded[index]
+            or (index > 0 and unbounded[index - 1])
+            or (index + 1 < len(unbounded) and unbounded[index + 1])
+            else None
+            for index, value in enumerate(values)
+        ]
         if any(value is not None for value in values):
             absent = [None] * len(trace.x)
             traces.append(plots.Trace(trace.x, values, absent, absent, color, False, label))
     return traces
 
 
-def _latest_lift_reading(snapshot: DashboardSnapshot, row: Any) -> str:
-    reading = estimates_to_readout([row])[0]
-    reading["alternative"] = row.alternative
-    latest = _table(
-        [
-            "Latest",
-            "Lift (absolute)" if row.value_scale == "absolute" else "Lift %",
-            "Interval",
-            "Inference",
-            "Tested null",
-        ],
-        [
-            [
-                esc(str(row.ds)),
-                effect_html(reading),
-                interval_html(reading),
-                primary_method(reading),
-                esc(null_text(reading)),
-            ]
-        ],
-    )
+def _latest_lift_reading(row: Mapping[str, Any]) -> str:
     return (
-        latest
-        + _latest_lift_qualifications(reading)
-        + _geometry_disclosure(snapshot, [reading], label=INTERVALS_DISCLOSURE)
-        + _selection_qualification_notes(
-            [reading], name=lambda reading: f"{reading.get('metric')} · {reading.get('group_id')}"
-        )
-        + _caveats_list(result_caveats([reading]))
+        '<div class="inc-dashboard-trajectory-reading">'
+        f'<span class="inc-dashboard-note">{esc(str(row["ds"]))}</span>'
+        f"<strong>{effect_html(row)}</strong>"
+        f"<span>{interval_html(row)}</span>"
+        f"<span>{primary_method(row)}</span>"
+        f'<span class="inc-dashboard-note">Tested null: {esc(null_text(row))}</span>'
+        "</div>"
     )
 
 
-def _latest_lift_qualifications(row: Mapping[str, Any]) -> str:
+def _latest_lift_qualifications(
+    row: Mapping[str, Any],
+) -> tuple[list[tuple[str, str]], list[str]]:
     entries = []
     if not is_missing(row.get("discovery")):
         entries.append(("Discovery", "Yes" if row["discovery"] else "No"))
@@ -2005,18 +2000,96 @@ def _latest_lift_qualifications(row: Mapping[str, Any]) -> str:
         entries.append((label, esc(_format_metadata_stat(value, percentage=percentage))))
     frame = pd.DataFrame([row])
     notes = _readout_metadata_notes(frame) + _readout_evidence_notes(frame)
-    return (_chips(entries) if entries else "") + _list(
-        [esc(note) for note in notes], css_class="inc-dashboard-family-qualifications"
+    return entries, notes
+
+
+def _attributed_trajectory_notes(notes: Mapping[str, Sequence[str]]) -> list[str]:
+    return [
+        f"<strong>{esc(', '.join(dict.fromkeys(names)))}</strong>: {text}"
+        for text, names in notes.items()
+    ]
+
+
+def _lift_reading_label(row: Mapping[str, Any]) -> str:
+    return " · ".join(str(row[key]) for key in ("segment", "group_id") if row.get(key) is not None)
+
+
+def _lift_trajectory_table(snapshot: DashboardSnapshot, panels: Sequence[tuple[Any, str]]) -> str:
+    readings = []
+    cells = []
+    advisory = []
+    notes: dict[str, list[str]] = {}
+    geometry: dict[str, list[str]] = {}
+    caveats: dict[str, list[str]] = {}
+    for row, svg in panels:
+        reading = estimates_to_readout([row])[0]
+        reading["alternative"] = row.alternative
+        readings.append(reading)
+        name = _lift_reading_label(reading)
+        cells.append(
+            {
+                "Series": row.dimension_value
+                if row.dimension_value is not None
+                else "Whole experiment",
+                "Arm": row.group_id,
+                "Latest": _latest_lift_reading(reading),
+                "Trajectory": svg,
+            }
+        )
+        entries, qualifications = _latest_lift_qualifications(reading)
+        advisory.extend((f"{name} · {label}", value) for label, value in entries)
+        for note in qualifications:
+            notes.setdefault(esc(note), []).append(name)
+        for explanation in _geometry_explanations(snapshot, reading):
+            geometry.setdefault(esc(explanation), []).append(name)
+        for caveat in result_caveats([reading]):
+            caveats.setdefault(caveat, []).append(name)
+    row = panels[0][0]
+    context = _chips(
+        [
+            ("Metric", esc(row.metric)),
+            ("Population", esc(row.analysis_population)),
+            ("Date axis", "Exposure cohort" if row.ds_basis == "cohort" else "Observation date"),
+            ("Scale", esc(row.value_scale)),
+            ("Method", esc(row.method)),
+            ("Estimand", esc(row.estimand)),
+            *([("Source", esc(row.source))] if row.source is not None else []),
+        ]
+    )
+    table = ct.CoefTable(
+        pd.DataFrame(cells),
+        rows="Series",
+        nest="Arm",
+        columns=(ct.Passthrough("Latest", "Latest"), ct.Passthrough("Trajectory", "Trajectory")),
+        theme=coeftable_theme(snapshot.config.theme),
+    )
+    return (
+        '<div class="inc-dashboard-temporal-table">'
+        + context
+        + _TABLE_WRAP.format(native_html(table, {}))
+        + (_chips(advisory) if advisory else "")
+        + _list(
+            _attributed_trajectory_notes(notes), css_class="inc-dashboard-family-qualifications"
+        )
+        + (
+            _disclosure(
+                INTERVALS_DISCLOSURE,
+                _list(_attributed_trajectory_notes(geometry), css_class="inc-dashboard-reasons"),
+            )
+            if geometry
+            else ""
+        )
+        + _selection_qualification_notes(readings, name=_lift_reading_label)
+        + _caveats_list(_attributed_trajectory_notes(caveats))
+        + "</div>"
     )
 
 
-def _trajectory_label(row: Any, *, lift: bool) -> str:
+def _trajectory_label(row: Any) -> str:
     basis = "Exposure cohort" if row.ds_basis == "cohort" else "Observation date"
     parts = [row.metric, row.analysis_population, basis]
     if row.dimension is not None:
         parts.append(f"{row.dimension}: {row.dimension_value}")
-    if lift:
-        parts.extend((row.group_id, row.method, row.estimand))
     return " · ".join(parts)
 
 
@@ -2035,7 +2108,7 @@ def _trajectory_scale_key(row: Any, *, lift: bool) -> tuple[Any, ...]:
 def _temporal_plots(
     snapshot: DashboardSnapshot, data: Any, *, metric: str | None, view: str
 ) -> str:
-    """Project captured rows directly onto public SVG primitives; no table engine is needed."""
+    """Project captured series once, with a small table for compatible lift readings."""
     lift = view == "cumulative_lift"
     rows = [
         row
@@ -2070,13 +2143,14 @@ def _temporal_plots(
         prepared.append((group, traces))
     charts = snapshot.config.theme.charts
     fragments = []
+    lift_panels: dict[tuple[Any, ...], list[tuple[Any, str]]] = {}
     for group, traces in prepared:
         row = group[-1]
         peers = [
             trace
             for other, series in prepared
             if _trajectory_scale_key(other[0], lift=lift) == _trajectory_scale_key(row, lift=lift)
-            for trace in series
+            for trace in (series[:1] if lift else series)
         ]
         ref = (
             ((row.null_abs or 0.0) if row.value_scale == "absolute" else row.null_lift)
@@ -2111,13 +2185,16 @@ def _temporal_plots(
             width=width,
             height=charts.time_height if lift else charts.absolute_height,
         )
-        latest = (
-            _latest_lift_reading(snapshot, row) if lift else _latest_value_reading(group, formatter)
-        )
+        if lift:
+            lift_panels.setdefault(_trajectory_scale_key(row, lift=True), []).append((row, svg))
+            continue
+        latest = _latest_value_reading(group, formatter)
         fragments.append(
             f'<figure class="inc-dashboard-trajectory"><figcaption>'
-            f"{esc(_trajectory_label(row, lift=lift))}</figcaption>{svg}{latest}</figure>"
+            f"{esc(_trajectory_label(row))}</figcaption>{svg}{latest}</figure>"
         )
+    if lift:
+        return "".join(_lift_trajectory_table(snapshot, panels) for panels in lift_panels.values())
     return "".join(fragments)
 
 

@@ -339,8 +339,54 @@
   overflow-wrap: anywhere;
 }
 
+.inc-dashboard-trajectory-svg {
+  max-width: 100%;
+}
+
 .inc-dashboard-trajectory-svg svg {
   display: block;
+  width: 100%;
+  height: auto;
+}
+
+.inc-dashboard-temporal-table .gt_table {
+  width: 100% !important;
+  min-width: 42rem;
+  table-layout: fixed;
+}
+
+.inc-dashboard-temporal-table .gt_table :is(th, td):first-child {
+  width: 8%;
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+}
+
+.inc-dashboard-temporal-table .gt_table :is(th, td):nth-child(2) {
+  width: 8%;
+}
+
+.inc-dashboard-temporal-table .gt_table :is(th, td):nth-child(3) {
+  width: 24%;
+}
+
+.inc-dashboard-temporal-table .gt_table :is(th, td):last-child {
+  width: 60%;
+}
+
+.inc-dashboard-temporal-table .gt_row .inc-dashboard-table-wrap {
+  margin: 0;
+}
+
+.inc-dashboard-trajectory-reading {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.inc-dashboard-trajectory-reading > strong {
+  font-size: 18px;
 }
 
 .inc-dashboard-unavailable-reasons {

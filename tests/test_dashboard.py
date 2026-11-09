@@ -1345,6 +1345,15 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
             update={
                 "method": "cuped" if row.metric == "revenue_per_user" else row.method,
                 "analysis_population": "triggered",
+                "null_lift": 0.01,
+                "posterior_prob_favorable": 0.73 if row.dimension_value == "CA" else None,
+                "posterior_available": False if row.dimension_value == "US" else None,
+                "posterior_reason_code": "estimation.engine.lift_guard"
+                if row.dimension_value == "US"
+                else None,
+                "posterior_reason_context": {"reason": "us_prior_guard"}
+                if row.dimension_value == "US"
+                else None,
             }
         )
         for row in data
@@ -1353,13 +1362,22 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
     assert "revenue_per_user" in rendered and storefront.primary_metric in rendered
     assert "US" in rendered and "CA" in rendered
     assert "triggered" in rendered
+    assert len(re.findall(r'<table\b[^>]*\bclass="[^"]*\bgt_table\b', rendered)) == 3
+    assert rendered.count("Scope and integrity unknown.") == 3
+    assert f"CA · {storefront.treatment_group}" in rendered
+    assert f"US · {storefront.treatment_group}" in rendered
+    assert "73.0%" in rendered and "us_prior_guard" in rendered
+    assert "cuped" in rendered
 
 
-@pytest.mark.parametrize("point_state", ["available", "early_undefined", "all_undefined"])
+@pytest.mark.parametrize(
+    "point_state", ["available", "early_undefined", "all_undefined", "finite_tail"]
+)
 def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
     storefront: DashboardSnapshot, point_state: str
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
+    from increment.estimation.results import Estimate
 
     rows = DailyLiftEstimates(
         _open_sided_lift(
@@ -1371,7 +1389,20 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
         ).model_copy(update={"lift": None})
         for day in range(1, 6)
     )
-    if point_state != "available":
+    if point_state == "finite_tail":
+        rows = DailyLiftEstimates(
+            row.model_copy(
+                update={
+                    "lift": Estimate(
+                        value=0.02 * day, lb=0.02 * day - 0.05, ub=0.02 * day + 0.05, level=0.95
+                    )
+                }
+            )
+            if day >= 4
+            else row
+            for day, row in enumerate(rows, 1)
+        )
+    if point_state in ("early_undefined", "all_undefined"):
         region = binomial_region()
         region = type(region).model_validate(
             {
@@ -1399,12 +1430,36 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
     rendered = render_explore(
         storefront, rows, metric=storefront.primary_metric, view="cumulative_lift"
     ).text
+    if point_state == "finite_tail":
+        chart = ET.fromstring(re.findall(r"<svg\b.*?</svg>", rendered, re.S)[0])
+        bands = [p for p in chart.findall(".//{*}polygon") if p.get("fill-opacity") == "0.15"]
+        assert len(bands) == 1, "finite dates retain their ribbon even after an open interval"
+        final_run = chart.findall(".//{*}polyline")[1]
+        start = float(final_run.attrib["points"].split()[0].split(",")[0])
+        assert all(
+            float(p.split(",")[0]) >= start - 0.02 for p in bands[0].attrib["points"].split()
+        )
     polylines = re.findall(r'<polyline[^>]*points="([^"]+)"', rendered)
-    assert len(polylines) == {"available": 4, "early_undefined": 3, "all_undefined": 2}[point_state]
+    assert (
+        len(polylines)
+        == {
+            "available": 4,
+            "early_undefined": 3,
+            "all_undefined": 2,
+            "finite_tail": 3,
+        }[point_state]
+    )
     # A missing point does not erase a retained bound; a genuinely missing date breaks both.
     assert all(len(points.split()) == 2 for points in polylines)
     assert "Lower CI" in rendered and "Upper CI" not in rendered
-    assert ("[+5.0%, ∞)" if point_state != "all_undefined" else "-100.0%, ∞)") in rendered
+    interval = (
+        "[+5.0%, +15.0%]"
+        if point_state == "finite_tail"
+        else "[+5.0%, ∞)"
+        if point_state != "all_undefined"
+        else "-100.0%, ∞)"
+    )
+    assert interval in rendered
     legends = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", rendered))
     assert ("Estimate" in legends) == (point_state != "all_undefined")
     assert "one-sided test for an increase" in rendered
