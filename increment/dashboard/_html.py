@@ -64,6 +64,7 @@ from increment.dashboard._format import (
     primary_method,
     primary_tone,
     result_caveats,
+    retained_coverage_alpha,
     robust_fence,
     share_text,
     tail_word,
@@ -353,8 +354,7 @@ def _primary_card(snapshot: DashboardSnapshot) -> str:
         ),
         None,
     )
-    lift = None if row_estimate is None else row_estimate.lift
-    method_row = {**row, "coverage_alpha": None if lift is None else lift.alpha}
+    method_row = {**row, "coverage_alpha": retained_coverage_alpha(row_estimate)}
     caption = primary_method(method_row)
     if not has_point and confidence_set_text(row) is not None:
         point = ""
@@ -2003,7 +2003,7 @@ def _lift_trajectory_table(
     for row, svg in panels:
         reading = estimates_to_readout([row])[0]
         reading["alternative"] = row.alternative
-        reading["coverage_alpha"] = None if row.lift is None else row.lift.alpha
+        reading["coverage_alpha"] = retained_coverage_alpha(row)
         readings.append(reading)
         name = _lift_reading_label(reading)
         cells.append(

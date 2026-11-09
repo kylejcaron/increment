@@ -1422,6 +1422,10 @@ def _format_confidence_set(
     if not _is_missing(relative):
         coverage = _format_coverage(math.fsum((1.0, -relative.alpha)), relative.alpha)
         return f"{coverage} {rendered}"
+    if not _is_missing(binomial):
+        return f"{_format_coverage(binomial.level, binomial.alpha)} {rendered}"
+    if not _is_missing(value):
+        return f"{_format_coverage(value.level, value.alpha)} {rendered}"
     return rendered
 
 

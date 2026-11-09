@@ -508,6 +508,14 @@ class TestLiftEstimateToRowBinomialSetOnly:
         assert row["higher"] == est.binomial_set.upper
         assert row["level"] == pytest.approx(est.binomial_set.level)
 
+    def test_zero_control_count_table_discloses_binomial_set_coverage(self):
+        pytest.importorskip("coeftable")
+        est = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200)
+
+        html = readout_table(estimates_to_readout([est])).gt().as_raw_html()
+
+        assert "95% " in html
+
     def test_readout_table_discloses_binomial_numerical_qualification(self):
         pytest.importorskip("coeftable")
         est = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200)

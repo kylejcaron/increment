@@ -57,6 +57,7 @@ from increment.dashboard._format import (
     population_label,
     primary_method,
     primary_tone,
+    retained_coverage_alpha,
     robust_fence,
     tail_word,
     timestamp_label,
@@ -326,13 +327,27 @@ def _primary(snapshot: DashboardSnapshot) -> dict[str, Any]:
             "tone": "neutral",
         }
     level = row.get("level")
+    estimate = next(
+        (
+            estimate
+            for estimate, readout in zip(snapshot.estimates, snapshot.readout_rows, strict=True)
+            if readout is row
+        ),
+        None,
+    )
+    coverage_alpha = retained_coverage_alpha(estimate)
+    method_row = {**row, "coverage_alpha": coverage_alpha}
     return {
         "key": key,
         "label": _label(key),
         "effect": _plain(effect_html(row)),
         "interval": _plain(headline_interval(row)),
-        "levelLabel": None if level is None or is_missing(level) else percent_text(float(level)),
-        "method": _plain(primary_method(row)),
+        "levelLabel": (
+            None
+            if level is None or is_missing(level)
+            else percent_text(float(level), coverage_alpha)
+        ),
+        "method": _plain(primary_method(method_row)),
         "tone": primary_tone(row),
     }
 

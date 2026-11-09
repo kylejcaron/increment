@@ -246,6 +246,18 @@ def percent_text(level: float, alpha: float | None = None) -> str:
     return _format_coverage(level, alpha)
 
 
+def retained_coverage_alpha(estimate: Any) -> float | None:
+    """Return the noncoverage budget for the representation supplying the shown level."""
+    confidence_set = getattr(estimate, "confidence_set", None)
+    if confidence_set is not None:
+        return confidence_set.alpha
+    lift = getattr(estimate, "lift", None)
+    if lift is not None:
+        return lift.alpha
+    binomial = getattr(estimate, "binomial_set", None)
+    return None if binomial is None else binomial.alpha
+
+
 def primary_method(row: Mapping[str, Any]) -> str:
     """Describe the displayed interval using its retained coverage budget."""
     level = row.get("level")

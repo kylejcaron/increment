@@ -1796,6 +1796,13 @@ def test_primary_coverage_discloses_retained_alpha_when_level_rounds_to_one(
     html = render_header(snapshot).text
     assert "100% (α=1e-17)" in html
 
+    from increment.dashboard._app import build_payload
+
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    assert payload["primary"]["levelLabel"] == "100% (α=1e-17)"
+    assert "100% (α=1e-17)" in payload["primary"]["method"]
+    assert "coverage_alpha" not in payload["readoutCsv"].splitlines()[0]
+
 
 def test_relative_set_coverage_discloses_its_own_retained_alpha() -> None:
     from increment.dashboard._format import interval_html
@@ -1810,6 +1817,33 @@ def test_relative_set_coverage_discloses_its_own_retained_alpha() -> None:
     assert region.geometry in {"one_sided", "disconnected", "all_real"}
     shown = interval_html({"relative_confidence_set": region, "value_scale": "relative"})
     assert shown is not None
+    assert "100% (α=1e-17)" in shown
+
+
+def test_winsor_set_coverage_discloses_its_own_retained_alpha() -> None:
+    from increment.dashboard._format import interval_html, retained_coverage_alpha
+    from increment.estimation.results import estimate_winsor_lift
+    from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState
+
+    raw = WinsorRawState(
+        metric="revenue",
+        study_id="coverage-display",
+        missingness="error",
+        quantile=0.5,
+        inference=WinsorInferenceSpec(method="influence-normal-v1"),
+        arms=(
+            RawArm(group_id="control", values=tuple(float(i) for i in range(1, 41))),
+            RawArm(group_id="treatment", values=tuple(float(i) * 1.1 for i in range(1, 41))),
+        ),
+    )
+    estimate = estimate_winsor_lift(raw, "control", "treatment", alpha=1e-17)
+    assert estimate.confidence_set is not None
+    assert estimate.lift is not None
+    without_lift_alpha = estimate.model_copy(
+        update={"lift": estimate.lift.model_copy(update={"alpha": None})}
+    )
+    assert retained_coverage_alpha(without_lift_alpha) == 1e-17
+    shown = interval_html({"confidence_set": estimate.confidence_set, "value_scale": "relative"})
     assert "100% (α=1e-17)" in shown
 
 
