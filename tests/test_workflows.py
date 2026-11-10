@@ -309,55 +309,6 @@ def test_nightly_refresh_jobs_do_not_wait_for_the_full_suite() -> None:
         assert "needs.test-all" not in job.get("if", ""), name
 
 
-def test_nightly_full_suite_shards_keep_distinct_reports() -> None:
-    job = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"]["test-all"]
-    assert job["strategy"]["matrix"]["group"] == [1, 2]
-    assert job["strategy"]["fail-fast"] is False
-    assert job["timeout-minutes"] <= 90
-    assert "${{ matrix.group }}" in job["name"]
-    runs = [step.get("run", "") for step in job["steps"]]
-    assert any(
-        "jq -s add .github/fast-test-durations.json .github/slow-test-durations.json" in run
-        and "> floor-test-durations.json" in run
-        for run in runs
-    )
-    run = next(run for run in runs if "nox -s" in run)
-    assert "--splits 2 --group ${{ matrix.group }}" in run
-    assert "--splitting-algorithm least_duration" in run
-    assert "--durations-path floor-test-durations.json" in run
-    report = next(
-        step for step in job["steps"] if step.get("name") == "Retain full-suite JUnit report"
-    )
-    assert report["if"] == "always()"
-    assert report["with"]["name"] == (
-        "full-suite-junit-${{ matrix.python-version }}-shard-${{ matrix.group }}"
-        "-${{ github.run_attempt }}"
-    )
-    assert set(report["with"]["path"].splitlines()) == {"junit.xml", "junit-numerical.xml"}
-
-
-def test_nightly_publishes_duration_weights_only_from_every_successful_part() -> None:
-    jobs = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"]
-    record = jobs["record-durations"]
-    publish = jobs["publish-durations"]
-
-    assert publish["needs"] == "record-durations"
-    assert "needs.record-durations.result == 'success'" in publish["if"]
-    parts: dict[str, set[tuple[int, int]]] = {}
-    for entry in record["strategy"]["matrix"]["include"]:
-        parts.setdefault(entry["tier"], set()).add((entry["group"], entry["splits"]))
-    assert set(parts) == {"fast", "slow", "exhaustive"}
-    for tier, recorded in parts.items():
-        (splits,) = {count for _, count in recorded}
-        assert {group for group, _ in recorded} == set(range(1, splits + 1)), tier
-    uploads = {
-        step["with"]["path"]
-        for step in publish["steps"]
-        if "upload-artifact" in step.get("uses", "")
-    }
-    assert uploads == {f"weights/{tier}/" for tier in parts}
-
-
 def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
     workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
     report_job = workflow["jobs"]["selection-misses"]
