@@ -63,12 +63,14 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
         group: [1, 2]
+    env:
+      INCREMENT_NIGHTLY_PART: ${{ matrix.group }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "${{ matrix.python-version }}"}
-      - run: jq -s add .github/fast-test-durations.json .github/slow-test-durations.json > floor-test-durations.json
+      - run: jq -s add .github/fast-test-durations.json .github/slow-test-durations.json .github/exhaustive-test-durations.json .github/examples-test-durations.json .github/tooling-test-durations.json > floor-test-durations.json
       - run: uv run --with nox nox -s "tests_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml --cpu-report cpu.json -n auto --dist loadgroup --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path floor-test-durations.json
       - name: Retain full-suite JUnit report
         if: always()
@@ -107,6 +109,8 @@ jobs:
           - {tier: slow, group: 4, splits: 4}
           - {tier: exhaustive, group: 1, splits: 2}
           - {tier: exhaustive, group: 2, splits: 2}
+          - {tier: examples, group: 1, splits: 1}
+          - {tier: tooling, group: 1, splits: 1}
     env:
       TIER: ${{ matrix.tier }}
       GROUP: ${{ matrix.group }}
@@ -120,7 +124,7 @@ jobs:
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       # The committed weights split the parts; --clean-durations keeps only the tests this part ran.
       - name: Record ${{ matrix.tier }}-test durations
-        run: make "test-$TIER" WORKERS="$WORKERS" PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/$TIER-test-durations.json --splits $SPLITS --group $GROUP --splitting-algorithm least_duration"
+        run: make test-tier TIER="$TIER" WORKERS="$WORKERS" PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/$TIER-test-durations.json --splits $SPLITS --group $GROUP --splitting-algorithm least_duration"
       - name: Describe the recorded part
         run: |
           mkdir durations-part
@@ -217,6 +221,20 @@ jobs:
         with:
           name: exhaustive-test-durations
           path: weights/exhaustive/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload examples-test durations
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: examples-test-durations
+          path: weights/examples/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload tooling-test durations
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tooling-test-durations
+          path: weights/tooling/
           if-no-files-found: error
           retention-days: 30
   refresh-selection-map:

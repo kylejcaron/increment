@@ -247,6 +247,8 @@ def tests_full(session: nox.Session) -> None:
     )
     if tier == "focused":
         return
+    if os.environ.get("INCREMENT_NIGHTLY_PART", "1") != "1":
+        return
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--cpu-report", type=Path)
     args, _ = parser.parse_known_args(session.posargs)
