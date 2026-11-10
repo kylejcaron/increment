@@ -797,6 +797,13 @@ call and teardown. To record weights locally, run the complete tier;
 make test-fast WORKERS=4 PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/fast-test-durations.json"
 ```
 
+Nightly full-suite parts balance the union of fast, slow, exhaustive, examples
+and tooling weights using `least_duration`; weekly dependency-floor parts use
+the same union. Unrecorded nodes, including compile-registry tests, retain the
+average-duration fallback. The retained numerical cases run once per
+interpreter, in the first nightly part; an unsharded manual invocation still
+runs them.
+
 The sharded run weighs a test in an `xdist_group` under `<node ID>@<group>`,
 while the single-process selection prediction looks up its bare node ID, so
 give each grouped weight both keys and round to milliseconds:
@@ -921,14 +928,12 @@ The
 on dispatch on any ref. It runs the full fast and slow tiers with the full
 parity matrix, numerical certification, parameter recovery, examples, and a
 randomized-order fast run with its seed logged. The full-suite matrix uses two
-duration-balanced shards per Python version: each combines fast, slow,
-exhaustive, examples and tooling weights for `pytest-split`'s `least_duration`
-algorithm, and retains its own JUnit artifact under a 90-minute limit. Unknown
-nodes, including compile-registry tests, retain the average-duration fallback.
-The retained numerical cases run once per interpreter, in
-the first part; an unsharded manual invocation still runs them. Separate jobs
-record and publish the duration weights without waiting for the full-suite
-shards and, on `main`, propose the selection-map refresh.
+duration-balanced shards per Python version: each combines the recorded
+weights described above for `pytest-split`'s `least_duration` algorithm, and retains
+its own JUnit artifact under a 90-minute limit. Separate jobs record the fast
+and slow duration weights without waiting for the full-suite shards; once every
+recording part passes, it publishes them and, on `main`, proposes the
+selection-map refresh.
 A failure creates or updates a GitHub issue labelled `nightly-failure`;
 tagging also requires a successful nightly run on the exact release SHA.
 
@@ -941,7 +946,6 @@ limit, create or update a GitHub issue labelled `weekly-failure`.
 Each interpreter's dependency-floor suite uses three duration-balanced parts,
 each with its own retained JUnit report and the same 90-minute limit. The
 retained numerical cases run once per interpreter, in the first part.
-The dependency-floor parts combine the same duration-weight files as nightly.
 The newest-dependency run keeps its fast, slow and compile-registry tiers in
 one job. Its exhaustive tier runs in four shards split by
 `.github/exhaustive-test-durations.json`, each under a 60-minute limit. One job
