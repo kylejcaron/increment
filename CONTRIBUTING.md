@@ -781,13 +781,17 @@ documentation snippet and strict-docs checks when changed
 paths require them. The machine-generated `.github/fast-test-durations.json`
 weights come from a complete, passing local fast run on 2026-11-01 (Python 3.13,
 four `xdist` workers); only their proportions matter, and absent weights do not
-omit tests. The nightly workflow records the fast and slow weights on Python
-3.12 with four workers in their own jobs, apart from the full suite, and
-uploads the `fast-test-durations` and `slow-test-durations` artifacts only when
-every recorded part of that tier passed. Each artifact holds the merged weights,
-already normalized as below, and a `metadata.json` naming the source commit and
-run; copy the weights over the committed file. To record them locally instead,
-run the complete tier; `--clean-durations` drops tests that no longer exist:
+omit tests. The nightly workflow records fast, slow, exhaustive, examples and
+tooling weights on Python 3.12 with four workers, apart from the full suite.
+It publishes each `<tier>-test-durations` artifact only after every recording
+part passes. Each artifact contains normalized weights and a `metadata.json`
+naming the source commit and run; copy the weights over the committed file.
+The examples and tooling weights were seeded from the two Python 3.12 JUnit
+artifacts in hosted run
+[42635564852](https://github.com/kylejcaron/increment/actions/runs/42635564852)
+at `0381d0f5725228a45288125493abc2e1714d65f6`; JUnit seconds include setup,
+call and teardown. To record weights locally, run the complete tier;
+`--clean-durations` drops tests that no longer exist:
 
 ```bash
 make test-fast WORKERS=4 PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/fast-test-durations.json"
@@ -802,7 +806,7 @@ uv run --no-sync python - <<'PY'
 import json
 from pathlib import Path
 
-for tier in ("fast", "slow"):
+for tier in ("fast", "slow", "exhaustive", "examples", "tooling"):
     path = Path(f".github/{tier}-test-durations.json")
     durations = json.loads(path.read_text())
     for nodeid, seconds in list(durations.items()):
@@ -917,12 +921,14 @@ The
 on dispatch on any ref. It runs the full fast and slow tiers with the full
 parity matrix, numerical certification, parameter recovery, examples, and a
 randomized-order fast run with its seed logged. The full-suite matrix uses two
-duration-balanced shards per Python version: each combines the nightly fast
-and slow weights for `pytest-split`'s `least_duration` algorithm, and retains
-its own JUnit artifact under a 90-minute limit. Separate jobs record the fast
-and slow duration weights without waiting for the full-suite shards; once every
-recording part passes, it publishes them and, on `main`, proposes the
-selection-map refresh.
+duration-balanced shards per Python version: each combines fast, slow,
+exhaustive, examples and tooling weights for `pytest-split`'s `least_duration`
+algorithm, and retains its own JUnit artifact under a 90-minute limit. Unknown
+nodes, including compile-registry tests, retain the average-duration fallback.
+The retained numerical cases run once per interpreter, in
+the first part; an unsharded manual invocation still runs them. Separate jobs
+record and publish the duration weights without waiting for the full-suite
+shards and, on `main`, propose the selection-map refresh.
 A failure creates or updates a GitHub issue labelled `nightly-failure`;
 tagging also requires a successful nightly run on the exact release SHA.
 
@@ -935,6 +941,7 @@ limit, create or update a GitHub issue labelled `weekly-failure`.
 Each interpreter's dependency-floor suite uses three duration-balanced parts,
 each with its own retained JUnit report and the same 90-minute limit. The
 retained numerical cases run once per interpreter, in the first part.
+The dependency-floor parts combine the same duration-weight files as nightly.
 The newest-dependency run keeps its fast, slow and compile-registry tiers in
 one job. Its exhaustive tier runs in four shards split by
 `.github/exhaustive-test-durations.json`, each under a 60-minute limit. One job
