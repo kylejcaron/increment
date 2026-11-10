@@ -531,7 +531,19 @@ def test_fact_with_no_rows_warns(tmp_path, feed, expected, absent):
     carry and still runs; a feed loaded only before launch is censored as before."""
     con = ibis.duckdb.connect()
     con.create_table("events", _feed_events(**feed))
-    experiment, reader = from_definitions(_feed_defs(tmp_path), con, experiment_name="exp")
+    defs_path = _feed_defs(tmp_path)
+    defs_path.write_text(
+        defs_path.read_text()
+        .replace(
+            "experiments:\n",
+            "  - {name: converted_copy, type: conversion, entity: user_id, fact: purchase, window_days: 3}\nexperiments:\n",
+        )
+        .replace(
+            "plan: {primary: converted}",
+            "plan: {primary: converted, secondaries: [converted_copy]}",
+        )
+    )
+    experiment, reader = from_definitions(defs_path, con, experiment_name="exp")
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
         run(experiment, reader)
@@ -539,6 +551,7 @@ def test_fact_with_no_rows_warns(tmp_path, feed, expected, absent):
     assert expected in codes
     assert absent not in codes
     if expected == "source.native.fact_no_rows":
+        assert codes.count(expected) == 1
         context = warning_context(record, expected)
         assert (context["fact"], context["fact_source"]) == ("purchase", "events")
         assert "Purchase" in cast("tuple[str, ...]", context["observed_events"])

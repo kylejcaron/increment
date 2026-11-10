@@ -685,6 +685,9 @@ class ReadoutMetadata(_ReadoutModel):
 
     @model_validator(mode="after")
     def _records_are_unique_and_scoped(self):
+        scoped_cells = {
+            source_id: set(source.cells) for source_id, source in self.scope.by_source.items()
+        }
         seen = set()
         for record in self.cells:
             key = (record.source_snapshot_id, record.cell)
@@ -696,7 +699,7 @@ class ReadoutMetadata(_ReadoutModel):
                 )
             seen.add(key)
             source = self.scope.by_source.get(record.source_snapshot_id)
-            if source is None or record.cell not in source.cells:
+            if source is None or record.cell not in scoped_cells[record.source_snapshot_id]:
                 refuse_readout(
                     "readout.serialization.identity_mismatch",
                     source_snapshot_id=record.source_snapshot_id,
@@ -1045,6 +1048,10 @@ def cell_order(cell):
 def validate_collection(rows, metadata):
     if metadata is None:
         return
+    scoped_cells = {
+        source_id: set(source.cells) for source_id, source in metadata.scope.by_source.items()
+    }
+    records = {(record.source_snapshot_id, record.cell): record for record in metadata.cells}
     seen = set()
     for row in rows:
         cell = CellKey.from_row(row)
@@ -1058,7 +1065,7 @@ def validate_collection(rows, metadata):
             )
         seen.add(pair)
         source = metadata.scope.by_source.get(source_id)
-        if source is None or cell not in source.cells:
+        if source is None or cell not in scoped_cells[source_id]:
             refuse_readout(
                 "readout.serialization.identity_mismatch",
                 source_snapshot_id=source_id,
@@ -1072,7 +1079,9 @@ def validate_collection(rows, metadata):
                 missing_fields=("prior_free_reference_kind", "prior_free_reference_df"),
                 remedy="recompute_from_source",
             )
-        record = metadata.record(source_id, cell)
+        record = records.get(pair)
+        if record is None:
+            record = metadata.record(source_id, cell)
         failure = record.failure
         if cell.method is not None and (
             getattr(row, "failure_code", None) != (None if failure is None else failure.code)

@@ -517,13 +517,14 @@ def examples(session: nox.Session) -> None:
 
 @nox.session(python="3.12")
 def docs_snippets(session: nox.Session) -> None:
-    """Execute shipped README/docs Python snippets concurrently by file."""
+    """Execute shipped README/docs Python snippets, excluding private plans."""
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     _run_pytest_tier(
         session,
         "fast",
         "README.md",
         "docs",
+        "--ignore=docs/superpowers",
         "-q",
         "-n",
         "2",

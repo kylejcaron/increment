@@ -537,6 +537,24 @@ def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypat
             )
         assert raised.value.code == "evidence.breakout_unavailable"
         assert reads == 0
+        day_source = source.day_source(metrics=(metric,))
+        for malformed_source, malformed in (
+            (day_source, MomentsRequest(metric, grain="asof", method=Method(name="unadjusted"))),
+            (
+                source,
+                MomentsRequest(
+                    metric, method=Method(name="unadjusted"), completed_windows_only=True
+                ),
+            ),
+        ):
+            with pytest.raises(CapabilityError) as single:
+                request_evidence(evidence_provider(malformed_source), malformed)
+            assert single.value.code == (
+                "evidence.grain_unavailable"
+                if malformed.grain == "asof"
+                else "evidence.operation_unavailable"
+            )
+        assert reads == 0
 
         total_rows = cast(
             MomentRows,

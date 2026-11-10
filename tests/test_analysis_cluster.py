@@ -258,7 +258,10 @@ def test_native_and_frame_substrates_agree_on_the_clustered_estimate(tmp_path):
     )
 
     assert native.require_lift().value == pytest.approx(frame.require_lift().value, rel=1e-9)
-    assert native.require_lift().log_se == pytest.approx(frame.require_lift().log_se, rel=1e-9)
+    if frame.require_lift().log_se is None:
+        assert native.require_lift().log_se is None
+    else:
+        assert native.require_lift().log_se == pytest.approx(frame.require_lift().log_se, rel=1e-9)
     assert native.require_lift().lb == pytest.approx(frame.require_lift().lb, rel=1e-9)
     assert (native.n_clusters, native.dof) == (frame.n_clusters, frame.dof)
 

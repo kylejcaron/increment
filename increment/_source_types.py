@@ -6,7 +6,7 @@ point upward at `decision`, `sources`, `semantics`, or `_analysis_config`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from inspect import getattr_static
@@ -208,6 +208,11 @@ class EvidenceCapabilities:
     capture: Literal["snapshot", "immutable", "live"] = "live"
     assignment_relation: Literal["none", "ledger", "reduced"] = "none"
     grain_route: str | None = None
+
+
+MOMENTS_BATCH_OWNERS: dict[
+    type, Callable[[Any, Sequence[MomentsRequest]], tuple[MomentRows | None, ...]]
+] = {}
 
 
 class _OwnedLoaderAdapter:

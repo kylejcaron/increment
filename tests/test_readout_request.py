@@ -233,19 +233,6 @@ def test_readout_request_rejects_dimensions_when_source_declares_none():
     assert source.moment_calls == 0
 
 
-def test_run_refuses_nonempty_by_instead_of_dropping_segments():
-    """Reject breakouts rather than merge segments under (metric, group_id).
-
-    Declaring a dimension on the source does not make run() segment-aware.
-    """
-    source = _panel_source(breakouts=("segment",))
-
-    with pytest.raises(UnsupportedRequestError) as raised:
-        readouts.run(cast(EvidenceSource, source), by=["segment"])
-
-    assert getattr(raised.value, "code", None) == "readout.run.segment_unsupported"
-
-
 def test_arm_cluster_sequential_refusal_uses_the_canonical_compatibility_code() -> None:
     from increment.compatibility import ARM_COMPATIBILITY_REFUSALS
 

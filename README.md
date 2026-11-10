@@ -17,16 +17,30 @@ interval, and says plainly when the data cannot support a conclusion.
 > Read the [statistical limitations](https://getincrement.io/docs/limitations/)
 > before relying on a result.
 
-[Documentation](https://getincrement.io/docs/) ·
-[Quickstart guide](https://getincrement.io/docs/guides/quickstart/) ·
+[Released documentation](https://getincrement.io/docs/) ·
+[Released quickstart](https://getincrement.io/docs/guides/quickstart/) ·
 [Examples](https://github.com/kylejcaron/increment/blob/main/examples/README.md) ·
 [Website](https://getincrement.io/)
 
 ## Install
 
+The examples below use the repository API (`from_frame`, `from_definitions`,
+and `run`) from the pinned source revision. The latest published PyPI release,
+`0.1.0a2`, has a different API; its `Analysis` examples are not interchangeable
+with this README. For the release's API, see its
+[0.1.0a2 package documentation](https://pypi.org/project/increment/0.1.0a2/).
+For the API shown here, install the matching source:
+
 ```bash
-pip install increment polars
+python -m pip install "increment @ git+https://github.com/kylejcaron/increment.git@0381d0f5725228a45288125493abc2e1714d65f6" polars
 ```
+
+The archived guides below contain outdated unversioned install commands.
+Keep this README's pinned source routes, including the `demo` extra below.
+
+[Quickstart examples at this revision](https://github.com/kylejcaron/increment/blob/0381d0f5725228a45288125493abc2e1714d65f6/docs/guides/quickstart.md) ·
+[data model](https://github.com/kylejcaron/increment/blob/0381d0f5725228a45288125493abc2e1714d65f6/docs/guides/data-model.md) ·
+[metric types](https://github.com/kylejcaron/increment/blob/0381d0f5725228a45288125493abc2e1714d65f6/docs/guides/metric-types.md)
 
 Increment needs Python 3.12 or newer. It reads pandas, Polars and PyArrow
 dataframes; this example uses Polars.
@@ -90,10 +104,14 @@ tells you how many you need.
 - `from_frame` describes the experiment: the column that identifies users
   (`unit`), the column that holds the variant (`group`), the control variant,
   and the metrics. `shape="summary"` means one row per user; use
-  `shape="panel"` for one row per user per day.
-- Each metric's type comes from its column: numbers are averaged, and
-  true/false columns become conversion rates. For a 0/1 integer column, say
-  which you mean: `metrics={"converted": "conversion"}`.
+  `shape="panel"` for one row per user per day; include every assigned unit at
+  least once with its assignment and exposure date ([sparse-panel preparation](https://getincrement.io/docs/guides/data-model/#one-row-per-unit-per-day)).
+- Each metric's type comes from its column: floating-point numbers use `mean`,
+  and Boolean columns use `conversion`. A floating-point 0/1 outcome still uses
+  `mean`; if a cast can change a Boolean to float, declare the intended type
+  explicitly before inspecting results, for example
+  `metrics={"converted": "conversion"}`. Integer columns also need an explicit
+  type because they may represent either a count or a binary outcome.
 - `from_frame` also returns a reader, which reads your data when `run` needs
   it. `run(experiment, reader)` analyzes the experiment. `result.readout()`
   lists the estimates; `result.to_frame()` returns them as a dataframe.
@@ -110,10 +128,11 @@ Next: [declare the split, a primary metric and guardrails](https://getincrement.
 
 Describe your tables, metrics and experiments once in YAML, then run the
 analysis inside your warehouse through [Ibis](https://ibis-project.org/).
-Install the `warehouse` extra and your warehouse's Ibis backend:
+Install the `warehouse` extra from the same pinned source, plus the Ibis backend
+you use:
 
 ```bash
-pip install "increment[warehouse]" "ibis-framework[snowflake]"
+python -m pip install "increment[warehouse] @ git+https://github.com/kylejcaron/increment.git@0381d0f5725228a45288125493abc2e1714d65f6" "ibis-framework[snowflake]"
 ```
 
 <!-- skip: next "requires a configured warehouse and project definitions" -->
@@ -161,12 +180,15 @@ lists which methods combine.
 
 ## Optional extras
 
-| Install | Adds |
+These extras are for the pinned source revision used by this README, not an
+unpinned PyPI release:
+
+| Pinned-source install | Adds |
 |---|---|
-| `increment[warehouse]` | Ibis and SQLGlot for SQL warehouses; add your warehouse's Ibis backend |
-| `increment[demo]` | Warehouse support and DuckDB, for local examples |
-| `increment[tables]` | Formatted readout tables (CoefTable and pandas) |
-| `increment[dashboard]` | An HTML experiment dashboard (marimo, anywidget, CoefTable and pandas) |
+| `increment[warehouse] @ git+https://github.com/kylejcaron/increment.git@0381d0f5725228a45288125493abc2e1714d65f6` | Ibis and SQLGlot for SQL warehouses; add your warehouse's Ibis backend |
+| `increment[demo] @ git+https://github.com/kylejcaron/increment.git@0381d0f5725228a45288125493abc2e1714d65f6` | Warehouse support and DuckDB, for local examples |
+| `increment[tables] @ git+https://github.com/kylejcaron/increment.git@0381d0f5725228a45288125493abc2e1714d65f6` | Formatted readout tables (CoefTable and pandas) |
+| `increment[dashboard] @ git+https://github.com/kylejcaron/increment.git@0381d0f5725228a45288125493abc2e1714d65f6` | An HTML experiment dashboard (marimo, anywidget, CoefTable and pandas) |
 
 ## Before you rely on a result
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import overlay_configs, validate_scalar_route
-from increment._evidence_loaders import view_population
+from increment._evidence_loaders import load_moments_batch, view_population
 from increment._evidence_types import (
     BreakoutCell,
     BreakoutIdentity,
@@ -16,7 +16,7 @@ from increment._evidence_types import (
     UnitRowsRequest,
 )
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
-from increment._source_types import declared_evidence, is_custom_source
+from increment._source_types import MOMENTS_BATCH_OWNERS, declared_evidence, is_custom_source
 from increment.errors import CodedError
 from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._evidence import (
@@ -34,7 +34,7 @@ from increment.readouts._source_digest import input_evidence
 from increment.semantics.design import Encouragement
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from increment.semantics.models import Metric
     from increment.sources import EvidenceSource
@@ -201,6 +201,49 @@ def load_metric_evidence(
     return _load_metric_evidence(src, request, _snapshot_active=scope_active)
 
 
+def load_metric_evidence_batch(
+    src: EvidenceSource, requests: Sequence[MetricEvidenceRequest], *, scope_active: bool = False
+) -> tuple[MetricEvidence, ...]:
+    """Acquire compatible ordinary rows together without merging request identities."""
+    from increment._evidence_refusals import require_evidence
+
+    for request in requests:
+        require_evidence(src, request=request)
+    if type(src) not in MOMENTS_BATCH_OWNERS:
+        return tuple(
+            load_metric_evidence(src, request, scope_active=scope_active) for request in requests
+        )
+    eligible = [
+        index
+        for index, request in enumerate(requests)
+        if request.metric.type != "quantile"
+        and not request.by
+        and not request.covariates
+        and getattr(request.metric, "winsorization", None) is None
+        and all(method.variance_reduction == "none" for method in request.methods)
+    ]
+    scalar = declared_evidence(src).scalar
+    moment_requests = tuple(
+        MomentsRequest(
+            request.metric,
+            by=request.by,
+            population=request.population,
+            method=request.methods[0]
+            if request.methods and scalar is not None and scalar.method_evidence
+            else None,
+        )
+        for index in eligible
+        for request in (requests[index],)
+    )
+    ordinary = dict(zip(eligible, load_moments_batch(src, moment_requests), strict=True))
+    return tuple(
+        _load_metric_evidence(
+            src, request, _snapshot_active=scope_active, _ordinary_rows=ordinary.get(index)
+        )
+        for index, request in enumerate(requests)
+    )
+
+
 def _load_percentile_winsor_evidence(
     src: EvidenceSource,
     metric: Metric,
@@ -276,6 +319,7 @@ def _load_metric_evidence(  # noqa: PLR0915
     request: MetricEvidenceRequest,
     *,
     _snapshot_active: bool = False,
+    _ordinary_rows: tuple[Mapping[str, Any], ...] | None = None,
 ) -> MetricEvidence:
     metric = request.metric
     by = request.by
@@ -341,7 +385,9 @@ def _load_metric_evidence(  # noqa: PLR0915
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
     method_refusals = ()
     scalar = declared_evidence(src).scalar
-    if scalar_methods:
+    if _ordinary_rows is not None:
+        rows = list(_ordinary_rows)
+    elif scalar_methods:
         rows, method_rows, method_refusals = _scalar_method_rows(
             src, metric, scalar_methods, methods[0], by=by, population=request.population
         )

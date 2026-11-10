@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import date
@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from increment._evidence_loaders import (
     load_moments,
+    load_moments_batch,
     load_unit_rows,
     require_request_evidence,
     source_for_population,
@@ -348,10 +349,15 @@ def acquire_observational_inputs(
     from increment.estimation.adjust import ObservationalEvidence
 
     evidence = ObservationalEvidence(
-        {
-            metric.name: tuple(load_moments(src, MomentsRequest(metric, population=population)))
-            for metric in metrics
-        },
+        dict(
+            zip(
+                (metric.name for metric in metrics),
+                load_moments_batch(
+                    src, tuple(MomentsRequest(metric, population=population) for metric in metrics)
+                ),
+                strict=True,
+            )
+        ),
         cluster=src.context.cluster,
     )
     frames: dict[tuple[str, tuple[str, ...]], Any] = {}
@@ -1247,35 +1253,37 @@ def _rows(
     require_uptake: bool | None = None,
 ) -> Iterator[DayAxisSlice]:
     by = req.by or ((req.dimension,) if req.dimension is not None else ())
-    for view, metrics in _groups(req):
-        rows: list[dict[str, Any]] = []
-        for metric in metrics:
-            routed, answer = _route_provider_request(
-                src,
-                MomentsRequest(
-                    metric=metric,
-                    grain=req.grain,
-                    by=by,
-                    include_covariate=_include_covariate(req, metric),
-                    completed_windows_only=req.completed_windows_only,
-                    population=req.population,
-                    experiment=req.experiment,
-                ),
-            )
-            if routed:
-                rows.extend(cast(Iterable[dict[str, Any]], answer))
-                continue
-            if validate_daily_readout:
-                _validate_daily_readout(src, req, metric)
-            kwargs = _metric_kwargs(metric, req)
-            if require_uptake is not None:
-                kwargs["require_uptake"] = require_uptake
-            rows.extend(
-                cast(
-                    "Iterable[dict[str, Any]]",
-                    _builtin_source(src).moments(metric, by=by, **kwargs),
+    if validate_daily_readout:
+        for metric in req.metrics:
+            _validate_daily_readout(src, req, metric)
+    requests = tuple(
+        MomentsRequest(
+            metric=metric,
+            grain=req.grain,
+            by=by,
+            include_covariate=_include_covariate(req, metric),
+            completed_windows_only=req.completed_windows_only,
+            population=req.population,
+            experiment=req.experiment,
+        )
+        for metric in req.metrics
+    )
+    if (
+        require_uptake is not None
+        and getattr(src.context.design, "mechanism", None) == "encouragement"
+    ):
+        answers = tuple(
+            tuple(
+                cast(Any, _builtin_source(src)).moments(
+                    metric, by=by, require_uptake=require_uptake, **_metric_kwargs(metric, req)
                 )
             )
+            for metric in req.metrics
+        )
+    else:
+        answers = load_moments_batch(src, requests)
+    for view, metrics in _groups(req):
+        rows = [dict(row) for metric in metrics for row in answers[req.metrics.index(metric)]]
         yield DayAxisSlice(rows, metrics, view, req.dimension, None)
 
 

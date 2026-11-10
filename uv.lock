@@ -16,6 +16,14 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+build-constraints = [
+    { name = "packaging", url = "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl" },
+    { name = "setuptools", url = "https://files.pythonhosted.org/packages/ef/55/6dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610/setuptools-84.2.1-py3-none-any.whl" },
+    { name = "setuptools-scm", extras = ["toml"], url = "https://files.pythonhosted.org/packages/da/f5/54538a1f17ea753c42b0928dc2e62986d463f8c393340b9a1e602f2d4dd9/setuptools_scm-10.3.4-py3-none-any.whl" },
+    { name = "vcs-versioning", url = "https://files.pythonhosted.org/packages/73/1d/ad4064bf12f4503bf61e65d74c93c523672776d25ee0a06aaf42ae09ef3f/vcs_versioning-2.6.0-py3-none-any.whl" },
+]
+
 [[package]]
 name = "altair"
 version = "6.3.0"
@@ -43,15 +51,15 @@ wheels = [
 
 [[package]]
 name = "anyio"
-version = "4.14.2"
+version = "4.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' and sys_platform != 'emscripten'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15' and sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/cc/a381afa6efea9f496eff839d4a6a1aed3bfafc7b3ab4b0d1b243a12573dd/anyio-4.14.2.tar.gz", hash = "sha256:cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f", size = 260176, upload-time = "2026-07-12T20:29:07.082Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/d2/f4d173e22df740bc37b1db102b386ba719b66e95b0f0d751f556b387e6d2/anyio-4.15.1.tar.gz", hash = "sha256:9f28306018cbd6d329e64a36d58256edff76dd996fe423bc957326e578b82a94", size = 276966, upload-time = "2026-09-05T10:42:39.44Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl", hash = "sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494", size = 125813, upload-time = "2026-07-12T20:29:05.763Z" },
+    { url = "https://files.pythonhosted.org/packages/12/b8/4bd346e22b28902df4d651910f5242c28d84e4a5c2435ca5c3f797ed7e2e/anyio-4.15.1-py3-none-any.whl", hash = "sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101", size = 132079, upload-time = "2026-09-05T10:42:37.923Z" },
 ]
 
 [[package]]
@@ -1155,6 +1163,7 @@ dashboard = [
 demo = [
     { name = "duckdb" },
     { name = "ibis-framework", extra = ["duckdb"] },
+    { name = "pandas" },
     { name = "sqlglot" },
 ]
 tables = [
@@ -1163,6 +1172,7 @@ tables = [
 ]
 warehouse = [
     { name = "ibis-framework" },
+    { name = "pandas" },
     { name = "sqlglot" },
 ]
 
@@ -1229,7 +1239,9 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pandas", marker = "extra == 'dashboard'", specifier = ">=3.0.5,<3.1" },
-    { name = "pandas", marker = "extra == 'tables'", specifier = ">=3.0.5,<3.1" },
+    { name = "pandas", marker = "extra == 'demo'", specifier = ">=3.0.5,<3.1" },
+    { name = "pandas", marker = "extra == 'tables'", specifier = ">=3.0.5" },
+    { name = "pandas", marker = "extra == 'warehouse'", specifier = ">=3.0.5,<3.1" },
     { name = "pyarrow", marker = "python_full_version < '3.13'", specifier = "!=25.0.0,>=26.0.0" },
     { name = "pyarrow", marker = "python_full_version == '3.13.*'", specifier = "!=25.0.0,>=26.0.0" },
     { name = "pyarrow", marker = "python_full_version >= '3.14'", specifier = "!=25.0.0,>=26.0.0" },
@@ -1248,9 +1260,9 @@ core-test = [
     { name = "hypothesis", specifier = ">=6.170.9" },
     { name = "pandas", specifier = ">=3.0.5,<3.1" },
     { name = "polars", specifier = ">=2.0.0" },
-    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-timeout", specifier = ">=2.4" },
-    { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "pytest-xdist", git = "https://github.com/pytest-dev/pytest-xdist.git?rev=9844b0e1c309780e23103424dc0b5635a3aa5259" },
     { name = "sybil", specifier = ">=10.1.0" },
     { name = "tach", specifier = ">=0.35.3" },
 ]
@@ -1266,12 +1278,12 @@ dev = [
     { name = "prek", specifier = ">=0.5.7" },
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "pydoclint", specifier = ">=0.11.1" },
-    { name = "pytest", specifier = "==9.1.1" },
+    { name = "pytest", specifier = "==9.2.0" },
     { name = "pytest-benchmark", specifier = ">=5.3.0" },
     { name = "pytest-cov", specifier = ">=6.0" },
     { name = "pytest-split", specifier = ">=0.11.0" },
     { name = "pytest-timeout", specifier = ">=2.4" },
-    { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "pytest-xdist", git = "https://github.com/pytest-dev/pytest-xdist.git?rev=9844b0e1c309780e23103424dc0b5635a3aa5259" },
     { name = "ruff", specifier = ">=0.17.2" },
     { name = "sybil", specifier = ">=10.1.0" },
     { name = "tach", specifier = ">=0.35.3" },
@@ -2753,7 +2765,7 @@ wheels = [
 
 [[package]]
 name = "pytest"
-version = "9.1.1"
+version = "9.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
@@ -2762,9 +2774,9 @@ dependencies = [
     { name = "pluggy" },
     { name = "pygments" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/79/42/bb4641652e58dedeac2ec51abc1f8cae4fee4ec63899a0999016229a0f2a/pytest-9.2.0.tar.gz", hash = "sha256:97c4f3b1f3c7414aa36465e09b8220f1d03627993bd51b1282e193753c80557b", size = 1797555, upload-time = "2026-10-27T21:30:20.728Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+    { url = "https://files.pythonhosted.org/packages/51/39/1f5d8c8877a0fa327db959c19341d4be61660de1ab6b7391f9eb805bcd67/pytest-9.2.0-py3-none-any.whl", hash = "sha256:07acdcf88ec174f907dc01af70bf52d49b014bbab03faeeade31c96b18c2e588", size = 411776, upload-time = "2026-10-27T21:30:19.131Z" },
 ]
 
 [[package]]
@@ -2820,15 +2832,11 @@ wheels = [
 
 [[package]]
 name = "pytest-xdist"
-version = "3.8.0"
-source = { registry = "https://pypi.org/simple" }
+version = "3.8.1.dev109+g9844b0e1c"
+source = { git = "https://github.com/pytest-dev/pytest-xdist.git?rev=9844b0e1c309780e23103424dc0b5635a3aa5259#9844b0e1c309780e23103424dc0b5635a3aa5259" }
 dependencies = [
     { name = "execnet" },
     { name = "pytest" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/78/b4/439b179d1ff526791eb921115fca8e44e596a13efeda518b9d845a619450/pytest_xdist-3.8.0.tar.gz", hash = "sha256:7e578125ec9bc6050861aa93f2d59f1d8d085595d6551c2c90b6f4fad8d3a9f1", size = 88069, upload-time = "2025-07-01T13:30:59.346Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ca/31/d4e37e9e550c2b92a9cbc2e4d0b7420a27224968580b5a447f420847c975/pytest_xdist-3.8.0-py3-none-any.whl", hash = "sha256:202ca578cfeb7370784a8c33d6d05bc6e13b4f25b5053c30a152269fd10f0b88", size = 46396, upload-time = "2025-07-01T13:30:56.632Z" },
 ]
 
 [[package]]

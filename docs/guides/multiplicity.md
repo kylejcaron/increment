@@ -117,6 +117,31 @@ Leaving `view_multiplicity=None` keeps the per-route defaults: randomized breako
 !!! warning "Choose a supported view correction"
     `q` is accepted only with `correction="bh"`; setting it with `"bonferroni"` or `"none"` is refused. Sequential dataframe breakouts require a complete `InferenceSpec.segments` roster before outcomes. Asymptotic breakouts refuse BH. Encouragement cannot combine predeclared segments with `SequentialCompliancePolicy(family=True)`; use separately allocated uptake cells (`family=False`) or an unsegmented joint family.
 
+Fixed-horizon randomized breakouts use each metric's declared hypothesis,
+including its one-sided alternative and relative or absolute margin. A
+guardrail's hypothesis does not turn a segment into a registered ship decision:
+every segment remains exploratory and cannot change the headline verdict.
+Absolute margins are tested in metric units on the additive reference, not by
+asking whether the relative interval excludes zero.
+
+The nominal segment level is `AnalysisPlan.alpha`, without the whole-window
+primary/arm split. With no correction each cell uses that level. Bonferroni
+divides it once by each metric's count-eligible arm/segment cells; for example,
+five eligible cells still use `alpha / 5`, even with several primary metrics.
+BH selects one flat metric × arm × segment family at `q` and caps selected
+interval alpha at `min(q * R / m, alpha)`. Scalar CUPED, supported ratio metrics
+and fixed declared winsor caps retain their existing estimators. Clustered,
+quantile, estimated-percentile-cap and observational restrictions remain;
+shifted multi-covariate linear-CUPED and encouragement segments are not
+implemented. Registered sequential breakouts retain their separate
+checkpoint-based route.
+
+Forwarding the declared alternative corrects previously two-sided compiled
+one-sided zero-null segment results. Two-sided zero-null segment allocation and
+standalone defaults are unchanged. Adding a margin member or correcting a
+member's tail can also change BH selection and selected intervals of its
+siblings; not every zero-margin output is therefore unchanged.
+
 ??? info "View defaults and family construction"
     `AnalysisPlan.view_multiplicity: MultiplicitySpec | None` governs segmented breakout and as-of views specifically, independent of the top-level `secondaries`/`q` family above. `MultiplicitySpec(correction="bh", q=0.10)`, `MultiplicitySpec(correction="bonferroni")`, and `MultiplicitySpec(correction="none")` are the three options; `q` is only accepted under `correction="bh"` (and defaults to `0.10` there if omitted) -- setting `q` under `"bonferroni"` or `"none"` is refused.
 

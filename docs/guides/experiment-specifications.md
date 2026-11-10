@@ -71,7 +71,7 @@ If an in-memory learner configuration cannot be serialized, `RunResult`
 remains usable in memory, while storing or serializing it refuses with
 `wire.procedure.runtime_method`.
 
-`Experiment.compile()` returns one run-wide `EvidenceScope` inventory and one `AnalysisRequest` for each selected view. Both contain the declared metrics, with any switchback view's metric selection applied. Each request retains its view, registration hash, and source-reference name.
+`Experiment.compile()` returns one run-wide `EvidenceScope` inventory and one `AnalysisRequest` for each selected view. Both contain the declared metrics, with any breakout or switchback view's metric selection applied. Each request retains its view, registration hash, and source-reference name.
 
 `runnable(experiment, metric)` is an offline preflight. It does not open a source. If a source has no recorded capabilities, the returned estimator entries name those capabilities as `unknown`; known data-dependent conditions such as usable denominators and sample floors remain deferred until execution. Its `static_refusals` contain only known incompatibilities.
 
@@ -147,6 +147,77 @@ accepts any of them with the experiment and reads whatever rows that reader
 holds. A dataframe reader keeps the rows its frame held when the builder ran;
 a warehouse reader reads live on every call.
 
+## Save selected segments with the complete decision
+
+`View.breakout(..., metrics=(metric, ...))` selects registered metric definitions
+for that breakout only; an empty tuple keeps all declared metrics. Add the
+breakout with `with_views` to retain the overall view, including every primary
+and guardrail procedure. The complete decision and selected segments share one
+run, source snapshot and evidence capture:
+
+```python
+from tempfile import TemporaryDirectory
+
+import increment
+import pandas as pd
+from increment.evidence import BreakoutIdentity
+from increment.store import ParquetResultsStore
+from increment.workflows import metrics
+
+units = pd.DataFrame(
+    {
+        "unit": range(80),
+        "arm": ["control"] * 40 + ["treatment"] * 40,
+        "country": ["US", "GB"] * 40,
+        "revenue": [10.0 + index % 7 for index in range(80)],
+        "latency": [100.0 + index % 5 for index in range(80)],
+    }
+)
+experiment, reader = increment.from_frame(
+    units,
+    shape="summary",
+    unit="unit",
+    group="arm",
+    control="control",
+    metrics=[
+        increment.MetricSpec(name="revenue", type="mean", preferred_direction="increase"),
+        increment.MetricSpec(name="latency", type="mean", preferred_direction="decrease"),
+    ],
+    plan=increment.AnalysisPlan(
+        primary="revenue",
+        guardrails=[increment.ExperimentMetric(metric="latency", margin_abs=5.0)],
+    ),
+    breakouts=["country"],
+)
+revenue = next(metric for metric in metrics(experiment, reader) if metric.name == "revenue")
+segments = increment.View.breakout((BreakoutIdentity("country", source=None),), metrics=(revenue,))
+experiment = experiment.with_views(segments)
+with reader, TemporaryDirectory() as directory:
+    store = ParquetResultsStore(directory)
+    result = increment.run(experiment, reader, results_store=store)
+    handle = store.open_run(
+        result.run.experiment_id, result.run.analysis_spec_hash, result.run.run_id
+    )
+    restored = increment.RunResult.from_handle(handle, registration=experiment.registration)
+    assert restored.decisions == result.decisions
+```
+
+A saved or logged selective breakout must accompany the complete overall
+decision in the same invocation. A global incomplete `run(metrics=...)`
+selection or a selective breakout without that overall view refuses with
+`store.decision.reference_invalid` before reading or writing. Selected metrics
+must match their registered definitions; this is not a route for adding
+`exploratory_metrics`.
+
+Breakout evidence remains monitoring evidence: its cells retain
+`decision.not_evaluated.monitoring_view`, and even a rejecting segment cannot
+change the overall program verdict. Saved family events retain their segment
+references and replay that evidence. `ParquetResultsStore` and
+`WarehouseResultsStore` preserve the same cells, unavailable reasons and source
+identity; `RunResult.from_handle` restores them for decisions, frames and
+reports without a reader. Selecting a metric does not bypass its existing
+breakout compatibility checks.
+
 ## Building and running
 
 Each module builder returns an experiment and the reader that reads its
@@ -178,18 +249,44 @@ result = increment.run(restored, reader)
 print(increment.render(result, "brief"))
 ```
 
-For a registered sequential definition, capture through the builder's pair
+For a panel-backed sequential definition, capture through the builder's pair
 before running. Supply an `as_of` horizon when required by the source:
 
-<!-- skip: next "requires a configured warehouse and a registered sequential definition" -->
 ```python
+import polars as pl
+
 import increment
 from increment.workflows import capture_sequential
 
-experiment, reader = increment.from_definitions(
-    "definitions.yml", con, experiment_name="sequential_experiment"
+panel = pl.DataFrame(
+    {
+        "user_id": [f"u{index}" for index in range(8)],
+        "variant": ["control"] * 4 + ["treatment"] * 4,
+        "day": [1] * 8,
+        "enrolled_on": [1] * 8,
+        "revenue": [float(index + 1) for index in range(8)],
+    }
 )
-capture_sequential(experiment, reader, finalized=True, as_of=as_of)
+experiment, reader = increment.from_frame(
+    panel,
+    shape="panel",
+    unit="user_id",
+    group="variant",
+    date="day",
+    exposure_date="enrolled_on",
+    design=increment.Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    ),
+    metrics=[increment.MetricSpec(name="revenue", type="mean", window_days=1)],
+    observation_end=2,
+    plan=increment.AnalysisPlan(
+        primary="revenue",
+        inference=increment.InferenceSpec(kind="asymptotic_mean"),
+    ),
+)
+capture_sequential(experiment, reader, finalized=True, as_of=1)
 result = increment.run(experiment, reader)
 ```
 
@@ -461,7 +558,7 @@ three `Runnable` fields rather than treating unknown requirements as supported:
 ```python
 import increment
 
-status = increment.runnable(restored, "revenue")["randomized.unadjusted"]
+status = increment.runnable(experiment, "revenue")["randomized.unadjusted"]
 if status.unknown:
     print("not established offline:", status.unknown)
 elif status.static_refusals:

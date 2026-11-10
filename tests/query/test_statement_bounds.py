@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from tests.query.statement_census import JOURNEYS, count_statements
@@ -124,3 +126,77 @@ def test_statement_counts_stay_within_bounds(journey, seeded_con):
     bounds = BOUND[journey]
     assert census.total <= bounds["total"]
     assert all(census.by_kind[kind] <= bounds[kind] for kind in census.by_kind)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "size,occurrence_only,collision",
+    [
+        (5, False, False),
+        (10, False, False),
+        (20, False, False),
+        (30, False, False),
+        (5, True, False),
+        (5, False, True),
+    ],
+)
+def test_compatible_metrics_share_executed_reductions(size, occurrence_only, collision):
+    from tests.test_dashboard_group_source import _native_groups
+
+    with _native_groups(
+        metric_names=("conversion", "mean"),
+        occurrence_labels=occurrence_only,
+        domain="value_collision" if collision else None,
+    ) as (backend, _, resolver):
+        source = resolver._binding.source
+        base = [
+            metric.model_copy(update={"aggregation": "count"})
+            if occurrence_only and metric.type == "mean"
+            else metric
+            for metric in resolver._binding.metrics
+        ]
+        metrics = [
+            base[index % len(base)].model_copy(update={"name": f"metric_{index}"})
+            for index in range(size)
+        ]
+        source = source.exploratory_source(metrics=metrics)
+        with count_statements(backend, explain_inserts=True) as census:
+            rows = source._moments_for_metrics(
+                selected=metrics, include_covariate=False
+            ).to_pylist()
+        assert {row["metric"] for row in rows} == {metric.name for metric in metrics}
+        assert census.by_kind["select"] <= 6
+        assert census.by_kind["create_temp"] <= 1
+        assert census.by_kind["other"] <= 1
+        assert not any(name.startswith("component_values_") for name in backend.list_tables())
+        plans = census.plans
+        assert len(plans) == 1
+        assert plans[0].count("SEQ_SCAN") <= 4
+        from increment.evidence import DayAxisRequest, evidence_provider, request_evidence
+
+        for grain in ("daily", "asof"):
+            with count_statements(backend, explain_inserts=True) as census:
+                acquired = request_evidence(
+                    evidence_provider(source.day_source(metrics=metrics)),
+                    DayAxisRequest(
+                        caller="run_daily" if grain == "daily" else "run_asof",
+                        grain=grain,
+                        metrics=tuple(metrics),
+                        dimension=None,
+                    ),
+                )
+                rows = [row for part in cast(Any, acquired).slices for row in part.rows]
+                answers = [
+                    [row for row in rows if row["metric"] == metric.name] for metric in metrics
+                ]
+            assert all(
+                {row["metric"] for row in answer} == {metric.name}
+                for metric, answer in zip(metrics, answers, strict=True)
+            )
+            assert census.by_kind["select"] <= 5
+            assert census.by_kind["create_temp"] <= 1
+            assert census.by_kind["other"] <= 1
+            assert not any(name.startswith("component_values_") for name in backend.list_tables())
+            plans = census.plans
+            assert len(plans) == 1
+            assert plans[0].count("SEQ_SCAN") <= 4

@@ -890,6 +890,54 @@ def test_fractional_day_labels_keep_their_offsets(backend: str) -> None:
     assert _sum_y(moments["treatment"]) == pytest.approx(22.0)
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+@pytest.mark.parametrize(
+    "day_type,exposure_type",
+    [
+        (pa.date32(), pa.timestamp("us")),
+        (pa.timestamp("us"), pa.date32()),
+    ],
+)
+def test_calendar_day_and_exposure_types_share_exact_eligible_coordinates(
+    backend, day_type, exposure_type
+):
+    import polars as pl
+
+    days = [date(2026, 1, day) for day in (1, 2, 3)]
+    table = pa.table(
+        {
+            "u": ["c", "c", "t"],
+            "g": ["control", "control", "treatment"],
+            "d": pa.array(days, type=pa.date32()).cast(day_type),
+            "e": pa.array([days[0], days[0], days[1]], type=pa.date32()).cast(exposure_type),
+            "y": [1.0, 2.0, 3.0],
+        }
+    )
+    frame: Any = {"pandas": table.to_pandas(), "polars": pl.from_arrow(table), "pyarrow": table}[
+        backend
+    ]
+    source = from_unit_panel(
+        frame,
+        unit="u",
+        group="g",
+        date="d",
+        exposure_date="e",
+        control="control",
+        metrics=[MetricSpec(name="y", type="mean", window_days=2)],
+        observation_end=days[-1],
+    )
+    # The control exposure admits all three days; treatment admits two; three rows exist.
+    assert source.densified_cells == 2
+    assert _counts(source) == {"control": 1, "treatment": 1}
+    assert {
+        row["group_id"]: (row["n"], _sum_y(row))
+        for row in _moments(source, source.context.metrics[0])
+    } == {
+        "control": (1, 3.0),
+        "treatment": (1, 3.0),
+    }
+
+
 def test_numeric_day_axis_with_calendar_exposure_date_refuses() -> None:
     """A numeric date column combined with a calendar exposure_date is a
     contradictory day axis - previously silently filtered every row as
@@ -990,20 +1038,24 @@ def test_integer_observation_end_beyond_the_signed_range_refuses(
         assert exc_info.value.context["issue"] == "out_of_range"
 
 
-def test_observation_end_at_the_signed_day_maximum_builds() -> None:
-    """2**63 - 1, as a Python integer or a NumPy int64, is the last day a numeric day column
-    counts, so it bounds the panel without refusing."""
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+def test_observation_end_at_the_signed_day_maximum_keeps_completed_units(backend: str) -> None:
+    """An exposure at -1 is mature by MAX, without overflowing its elapsed days."""
     import numpy as np
+    import polars as pl
 
     frame = pa.table(
         {
             "user_id": ["c1", "c1", "t1", "t1"],
             "variant": ["control", "control", "treatment", "treatment"],
-            "day": [0, 1, 0, 1],
-            "exposed_on": [0] * 4,
+            "day": [-1, 0, -1, 0],
+            "exposed_on": [-1] * 4,
             "revenue": [1.0, 2.0, 3.0, 4.0],
         }
     )
+    frame: Any = {"pandas": frame.to_pandas(), "polars": pl.from_arrow(frame), "pyarrow": frame}[
+        backend
+    ]
     ends: tuple[Any, ...] = (2**63 - 1, np.int64(2**63 - 1))
     for end in ends:
         source = from_unit_panel(
@@ -1012,11 +1064,101 @@ def test_observation_end_at_the_signed_day_maximum_builds() -> None:
             group="variant",
             date="day",
             control="control",
-            metrics={"revenue": "mean"},
+            metrics=[MetricSpec(name="revenue", type="mean", window_days=2)],
             exposure_date="exposed_on",
             observation_end=end,
         )
         assert _counts(source) == {"control": 1, "treatment": 1}
+        rows = {row["group_id"]: row for row in _moments(source, source.context.metrics[0])}
+        assert {group: row["n"] for group, row in rows.items()} == {
+            "control": 1,
+            "treatment": 1,
+        }
+        assert {group: _sum_y(row) for group, row in rows.items()} == {
+            "control": 3.0,
+            "treatment": 7.0,
+        }
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+def test_densified_cells_orders_extreme_days_exactly_under_reordering(backend: str) -> None:
+    import polars as pl
+
+    minimum, maximum = -(2**63), 2**63 - 1
+    days = [minimum, minimum + 1, -1, 0, 1, maximum - 1, maximum]
+    exposures = [minimum, -1, maximum - 1]
+    rows = [
+        {"u": f"{arm}{i}", "g": arm, "d": day, "e": exposed, "y": 1.0}
+        for arm in ("control", "treatment")
+        for i, (day, exposed) in enumerate(zip((minimum, 0, maximum), exposures, strict=True))
+    ]
+    rows.extend(
+        {"u": "control0", "g": "control", "d": day, "e": minimum, "y": 1.0} for day in days[1:-1]
+    )
+    for ordered in (rows, list(reversed(rows)), rows[4:] + rows[:4]):
+        table = pa.Table.from_pylist(ordered)
+        frame: Any = {
+            "pandas": table.to_pandas(),
+            "polars": pl.from_arrow(table),
+            "pyarrow": table,
+        }[backend]
+        source = from_unit_panel(
+            frame,
+            unit="u",
+            group="g",
+            date="d",
+            exposure_date="e",
+            control="control",
+            metrics={"y": "mean"},
+        )
+        # Per arm the three exposures admit 7, 5 and 2 days; eleven rows are observed.
+        assert source.densified_cells == 2 * (7 + 5 + 2) - len(rows)
+        assert _counts(source) == {"control": 3, "treatment": 3}
+
+
+@pytest.mark.parametrize(
+    ("day", "exposure", "window", "expected"),
+    [
+        (1, -1, 3, 1.0),
+        (1, -1, 2, 0.0),
+        (-(2**63), 2**63 - 1, 1, 0.0),
+        (2**63 - 1, -1, 2, 0.0),
+        (2**63 - 1, 2**63 - 2, 2, 1.0),
+    ],
+    ids=[
+        "cross-sign-in-window",
+        "cross-sign-at-boundary",
+        "negative-overflow",
+        "positive-overflow",
+        "huge-neighbors",
+    ],
+)
+def test_integer_elapsed_windows_do_not_wrap_or_round_neighbors(day, exposure, window, expected):
+    table = pa.table(
+        {
+            "u": ["c", "t"],
+            "g": ["control", "treatment"],
+            "d": [day] * 2,
+            "e": [exposure] * 2,
+            "y": [1.0] * 2,
+        }
+    )
+    source = from_unit_panel(
+        table,
+        unit="u",
+        group="g",
+        date="d",
+        exposure_date="e",
+        control="control",
+        metrics=[MetricSpec(name="y", type="mean", window_days=window)],
+        observation_end=2**63 - 1,
+    )
+    assert source.densified_cells == 0
+    rows = _moments(source, source.context.metrics[0])
+    assert {row["group_id"]: (row["n"], _sum_y(row)) for row in rows} == {
+        "control": (1, expected),
+        "treatment": (1, expected),
+    }
 
 
 def test_asof_cumulative_moments_refuses_ambiguous_date_like_labels() -> None:
@@ -2158,19 +2300,32 @@ def test_panel_quantile_ignores_pre_exposure_decoys(backend: str, value_column: 
         )
 
 
-def test_panel_breakout_identity_survives_sparse_zero_fill() -> None:
-    frame = pa.table(
-        {
-            "user_id": ["u1", "u1", "u2"],
-            "variant": ["control", "control", "treatment"],
-            "day": ["d1", "d2", "d1"],
-            "country": ["US", "US", "CA"],
-            "plan": ["free", "free", "paid"],
-            "revenue": [1.0, 2.0, 3.0],
-        }
-    )
+@pytest.mark.parametrize("backend", ["arrow", "arrow_chunked", "polars", "pandas"])
+@pytest.mark.parametrize("excluded", ["none", "null_exposure", "late"])
+def test_panel_breakout_identity_survives_sparse_zero_fill(backend: str, excluded: str) -> None:
+    columns: dict[str, list[Any]] = {
+        "user_id": ["u1", "u1", "u2"],
+        "variant": ["control", "control", "treatment"],
+        "day": [0, 1, 0],
+        "exposed_on": [0, 0, 0],
+        "country": ["US", "US", None],
+        "plan": ["free", "free", "paid"],
+        "revenue": [1.0, 2.0, 3.0],
+    }
+    if excluded != "none":
+        exposure = None if excluded == "null_exposure" else 2
+        for name, values in {
+            "user_id": ["excluded", "excluded"],
+            "variant": ["treatment", "treatment"],
+            "day": [0, 1],
+            "exposed_on": [exposure, exposure],
+            "country": ["US", "CA"],
+            "plan": ["free", "paid"],
+            "revenue": [99.0, 99.0],
+        }.items():
+            columns[name].extend(values)
     src = from_unit_panel(
-        _exposed_on(frame, "d1"),
+        _panel_backend(backend, columns),
         unit="user_id",
         group="variant",
         date="day",
@@ -2178,23 +2333,27 @@ def test_panel_breakout_identity_survives_sparse_zero_fill() -> None:
         metrics={"revenue": "mean"},
         breakouts=["country", "plan"],
         exposure_date="exposed_on",
+        observation_end=1,
+        on_unassigned="exclude",
     )
+    expected_counts = {"control": 1, "treatment": 1}
+    if excluded == "null_exposure":
+        expected_counts["(unassigned)"] = 1
+    assert _counts(src) == expected_counts
     assert src.densified_cells == 1
     metric = _metric(src, "revenue")
     day2_by_country = {
         (row["country"], row["group_id"]): row
         for row in _moments(src, metric, grain="daily", by=["country"])
-        if row["ds"] == "d2"
+        if row["ds"] == 1
     }
-    assert set(day2_by_country) == {("US", "control"), ("CA", "treatment")}
-    # u2's day-2 cell exists only because densification zero-filled it, and it
-    # carries u2's own breakout identity rather than a null segment.
-    assert day2_by_country[("CA", "treatment")]["n"] == 1
-    assert _sum_y(day2_by_country[("CA", "treatment")]) == 0.0
+    assert set(day2_by_country) == {("US", "control"), ("__null__", "treatment")}
+    assert day2_by_country[("__null__", "treatment")]["n"] == 1
+    assert _sum_y(day2_by_country[("__null__", "treatment")]) == 0.0
     day2_by_plan = {
         (row["plan"], row["group_id"]): row
         for row in _moments(src, metric, grain="daily", by=["plan"])
-        if row["ds"] == "d2"
+        if row["ds"] == 1
     }
     assert set(day2_by_plan) == {("free", "control"), ("paid", "treatment")}
     assert day2_by_plan[("paid", "treatment")]["n"] == 1
@@ -2482,38 +2641,145 @@ def test_panel_srm_without_independent_scheme_is_not_applicable(panel_frame: pa.
     assert "integrity.allocation_scheme_missing" in result.reason
 
 
-def test_panel_duplicate_unit_day_raises() -> None:
-    dup_rows = [*_PANEL_ROWS, _PANEL_ROWS[0]]
+@pytest.mark.parametrize("conflict", ["assignment", "exposure", "null_exposure", "late"])
+def test_panel_duplicate_unit_day_refuses_before_conflicts_and_exclusions(conflict: str) -> None:
+    frame = pa.table(
+        {
+            "u": ["c", "t", "bad", "bad"],
+            "g": [
+                "control",
+                "treatment",
+                "control",
+                "treatment" if conflict == "assignment" else "control",
+            ],
+            "d": [0, 0, 1, 1],
+            "e": [
+                0,
+                0,
+                None if conflict == "null_exposure" else 2,
+                None if conflict == "null_exposure" else (3 if conflict == "exposure" else 2),
+            ],
+            "y": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
     with pytest.raises(InvalidRequestError) as exc:
         from_unit_panel(
-            _panel_table(dup_rows),
-            unit="user_id",
-            group="variant",
-            date="day",
+            frame,
+            unit="u",
+            group="g",
+            date="d",
+            exposure_date="e",
             control="control",
-            metrics={"revenue": "mean"},
+            metrics={"y": "mean"},
+            observation_end=1,
+            on_unassigned="exclude",
         )
     assert exc.value.code == "source.panel.duplicate_unit_days"
+    assert exc.value.context == {
+        "unit": "u",
+        "date": "d",
+        "count": 1,
+        "examples": (("bad", 1),),
+        "route": "aggregate same-day events onto one row before from_unit_panel",
+    }
 
 
-def test_panel_conflicting_group_per_unit_raises(panel_frame: pa.Table) -> None:
-    conflicting_rows = [*_PANEL_ROWS[:-1], ("u8", "control", "d3", 8.0, 3.0)]
+@pytest.mark.parametrize("chunked", [False, True])
+def test_panel_assignment_conflict_refuses_before_exposure_conflict_and_exclusion(
+    chunked: bool,
+) -> None:
+    frame = pa.table(
+        {
+            "u": ["c", "bad", "bad"],
+            "g": ["control", "control", "treatment"],
+            "d": [0, 0, 1],
+            "e": [0, 2, None],
+            "y": [1.0, 2.0, 3.0],
+        }
+    )
+    if chunked:
+        frame = pa.concat_tables([frame.slice(0, 2), frame.slice(2)])
     with pytest.raises(InvalidRequestError) as exc:
         from_unit_panel(
-            _panel_table(conflicting_rows),
-            unit="user_id",
-            group="variant",
-            date="day",
+            frame,
+            unit="u",
+            group="g",
+            date="d",
+            exposure_date="e",
             control="control",
-            metrics={"revenue": "mean"},
+            metrics={"y": "mean"},
+            observation_end=1,
+            on_unassigned="exclude",
         )
     assert exc.value.code == "source.panel.multi_group_unit"
+    assert exc.value.context == {
+        "unit": "u",
+        "group": "g",
+        "count": 1,
+        "examples": ("bad",),
+        "route": "ensure each unit has one group across the whole panel",
+    }
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "context"),
+    [
+        (
+            "control",
+            "source.frame.control_missing",
+            {"control": "absent", "group": "g", "observed": ("control", "treatment")},
+        ),
+        ("uptake", "source.frame.uptake_not_binary", {"uptake": "dosed", "values": (0.5,)}),
+        (
+            "missing",
+            "frame.validation.metric_value_missing",
+            {"metric": "y", "column": "y", "n_missing": 1},
+        ),
+        (
+            "conversion",
+            "source.frame.conversion_not_binary",
+            {"metric": "y", "column": "y", "values": (0.5,)},
+        ),
+    ],
+)
+def test_panel_value_validation_precedes_breakout_conflict(
+    failure: str, code: str, context: dict[str, Any]
+) -> None:
+    frame = pa.table(
+        {
+            "u": ["c", "c", "t"],
+            "g": ["control", "control", "treatment"],
+            "day": [0, 1, 0],
+            "segment": ["US", None, "CA"],
+            "dosed": [0.5 if failure in ("control", "uptake") else 0.0, 1.0, 0.0],
+            "y": [None if failure == "missing" else 0.5, 1.0, 0.0],
+        }
+    )
+    with pytest.raises(InvalidRequestError) as exc:
+        from_unit_panel(
+            frame,
+            unit="u",
+            group="g",
+            date="day",
+            uptake="dosed",
+            control="absent" if failure == "control" else "control",
+            metrics=[MetricSpec(name="y", type="conversion")],
+            breakouts=["segment"],
+        )
+    assert exc.value.code == code
+    for key, value in context.items():
+        assert exc.value.context[key] == value
 
 
 def _panel_backend(backend: str, columns: Mapping[str, Sequence[object]]) -> Any:
     table = pa.table(columns)
     if backend == "arrow":
         return table
+    if backend == "arrow_chunked":
+        later = pa.concat_tables(
+            [table.slice(2, 1), table.slice(1, 1), table.slice(3)]
+        ).combine_chunks()
+        return pa.concat_tables([table.slice(0, 1), later])
     if backend == "polars":
         import polars as pl
 
@@ -3962,26 +4228,50 @@ def test_windowed_metric_requires_exposure_date(panel_frame: pa.Table) -> None:
     assert exc.value.code == "source.panel.exposure_date"
 
 
-def test_exposure_date_must_be_constant_per_unit() -> None:
-    rows = [
-        ("u1", "control", date(2025, 1, 1), date(2025, 1, 1), 4.0),
-        ("u1", "control", date(2025, 1, 2), date(2025, 1, 2), 5.0),  # differs from row above
-    ]
-    cols = list(zip(*rows, strict=True))
-    table = pa.table(
-        dict(zip(["user_id", "variant", "day", "exposed_on", "revenue"], cols, strict=True))
+@pytest.mark.parametrize("backend", ["arrow", "polars", "pandas"])
+@pytest.mark.parametrize("second_exposure", [3, None], ids=["different", "null"])
+@pytest.mark.parametrize("axis", ["integer", "calendar"])
+def test_exposure_conflict_refuses_before_exclusion_and_breakout_conflict(
+    backend: str, second_exposure: int | None, axis: str
+) -> None:
+    days: list[Any] = [0, 0, 1]
+    exposures: list[Any] = [0, 2, second_exposure]
+    if axis == "calendar":
+        base = date(2026, 1, 1)
+        days = [base + timedelta(days=value) for value in days]
+        exposures = [None if value is None else base + timedelta(days=value) for value in exposures]
+    frame = _panel_backend(
+        backend,
+        {
+            "u": ["c", "bad", "bad"],
+            "g": ["control"] * 3,
+            "d": days,
+            "e": exposures,
+            "y": [1.0, 2.0, 3.0],
+            "segment": ["US", "US", None],
+        },
     )
     with pytest.raises(InvalidRequestError) as exc:
         from_unit_panel(
-            table,
-            unit="user_id",
-            group="variant",
-            date="day",
+            frame,
+            unit="u",
+            group="g",
+            date="d",
+            exposure_date="e",
             control="control",
-            metrics={"revenue": "mean"},
-            exposure_date="exposed_on",
+            metrics={"y": "mean"},
+            observation_end=days[-1],
+            on_unassigned="exclude",
+            breakouts=["segment"],
         )
     assert exc.value.code == "source.panel.exposure_date"
+    assert exc.value.context == {
+        "issue": "per-unit values are not constant",
+        "column": "e",
+        "count": 1,
+        "examples": ("bad",),
+        "route": "provide one exposure_date value per unit across the panel",
+    }
 
 
 def test_censoring_warns_past_threshold() -> None:

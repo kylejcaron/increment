@@ -804,6 +804,60 @@ def test_panel_asof_excludes_future_enrollment_and_out_of_window_uptake():
         assert arm.uptake_total / arm.n_units == expected
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+def test_panel_compliance_invalid_as_of_has_serializable_axis_refusal(backend):
+    import copy
+    import pickle
+    from collections.abc import MutableMapping
+    from operator import setitem
+
+    import polars as pl
+
+    table = pa.Table.from_pylist(
+        [
+            {"unit": group, "arm": group, "ds": 0, "exposed": -1, "clicked": 1.0, "y": 1.0}
+            for group in ("control", "treatment")
+        ]
+    )
+    frame: Any = {"pandas": table.to_pandas(), "polars": pl.from_arrow(table), "pyarrow": table}[
+        backend
+    ]
+    source = from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="ds",
+        exposure_date="exposed",
+        control="control",
+        design=design(2),
+        metrics={"y": "mean"},
+    )
+    for as_of, issue in (
+        (2**63, "out_of_range"),
+        (float("nan"), "unparseable"),
+        (date(2026, 1, 1), "wrong_kind"),
+    ):
+        with pytest.raises(CodedError) as raised:
+            _compliance(source, design(2), as_of=as_of, completed_windows_only=True)
+        refusal = raised.value
+        assert refusal.code == "source.panel.as_of"
+        assert refusal.context["axis_kind"] == "numeric"
+        assert refusal.context["issue"] == issue
+        expected_value = (
+            "nan" if issue == "unparseable" else repr(as_of) if issue == "wrong_kind" else as_of
+        )
+        assert refusal.context["value"] == expected_value
+        for restored in (copy.deepcopy(refusal), pickle.loads(pickle.dumps(refusal))):
+            assert (restored.code, dict(restored.context)) == (refusal.code, dict(refusal.context))
+            with pytest.raises(TypeError):
+                setitem(cast(MutableMapping[str, object], restored.context), "issue", "changed")
+    summary = _compliance(source, design(2), as_of=2**63 - 1, completed_windows_only=True)
+    assert {arm.group_id: (arm.n_units, arm.uptake_total) for arm in summary.arms} == {
+        "control": (1, 1.0),
+        "treatment": (1, 1.0),
+    }
+
+
 def test_cube_snapshots_caller_owned_nested_compliance_payload(tmp_path):
     import pyarrow.parquet as pq
 

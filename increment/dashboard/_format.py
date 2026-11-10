@@ -15,7 +15,12 @@ from math import inf
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment._display import interval_text
-from increment.tables import _decision_available, _format_confidence_set
+from increment.tables import (
+    _decision_available,
+    _format_confidence_set,
+    _format_coverage,
+    _retained_coverage_alpha,
+)
 
 if TYPE_CHECKING:
     from increment.dashboard._data import DashboardSnapshot
@@ -241,14 +246,40 @@ def primary_tone(row: Mapping[str, Any]) -> str:
     return "favorable" if observed == direction else "unfavorable"
 
 
-def percent_text(level: float) -> str:
-    """A coverage level as a trimmed two-decimal percentage, such as ``98.33%``."""
-    return f"{level * 100:.2f}".rstrip("0").rstrip(".") + "%"
+def percent_text(level: float, alpha: float | None = None) -> str:
+    """A compact coverage percentage, retaining precision near zero and one."""
+    return _format_coverage(level, alpha)
+
+
+def retained_coverage_alpha(estimate: Any) -> float | None:
+    """Return the noncoverage budget for the representation supplying the shown level."""
+    return _retained_coverage_alpha(estimate)
+
+
+def retained_coverage_alpha_for_row(
+    snapshot: DashboardSnapshot, row: Mapping[str, Any]
+) -> float | None:
+    """Match a displayed readout row to its captured estimate and retain its own budget."""
+    estimate = next(
+        (
+            estimate
+            for estimate, readout in zip(snapshot.estimates, snapshot.readout_rows, strict=True)
+            if readout is row
+        ),
+        None,
+    )
+    return retained_coverage_alpha(estimate)
 
 
 def primary_method(row: Mapping[str, Any]) -> str:
+    """Describe the displayed interval using its retained coverage budget."""
     level = row.get("level")
-    level_label = "" if level is None else f"{percent_text(float(level))} "
+    alpha = row.get("coverage_alpha", row.get("alpha"))
+    level_label = (
+        ""
+        if level is None
+        else f"{percent_text(float(level), alpha if isinstance(alpha, float) else None)} "
+    )
     inference = inference_word(str(row.get("inference", "fixed")))
     return f"{level_label}{esc(inference)} interval · {esc(tail_word(row))}"
 
@@ -355,18 +386,16 @@ ROLE_LABELS = {
 }
 
 
-def levels_by_metric(pairs: Iterable[tuple[Any, float]], fmt: Callable[[float], str]) -> str:
-    """Captured interval levels, attributed to their metrics only when they differ."""
-    by_level: dict[float, list[str]] = {}
+def levels_by_metric(pairs: Iterable[tuple[Any, Any]], fmt: Callable[[Any], str]) -> str:
+    """Captured interval coverage, attributed to its metric only when displays differ."""
+    by_level: dict[Any, list[str]] = {}
     for metric, level in pairs:
-        names = by_level.setdefault(float(level), [])
+        names = by_level.setdefault(level, [])
         if str(metric) not in names:
             names.append(str(metric))
     if len(by_level) == 1:
         return fmt(next(iter(by_level)))
-    return "; ".join(
-        f"{fmt(level)} ({', '.join(names)})" for level, names in sorted(by_level.items())
-    )
+    return "; ".join(f"{fmt(level)} ({', '.join(names)})" for level, names in by_level.items())
 
 
 def monitoring_sentence(rows: Sequence[Any], *, view: str) -> str:

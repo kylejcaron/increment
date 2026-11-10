@@ -33,9 +33,8 @@ def worker_project(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "\n[tool.pytest.ini_options]\n"
     )
     env = dict(os.environ)
-    # The isolated sample loads no caller plugins and imports only its own tree.
-    for key in ("PYTHONPATH", "PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
-        env.pop(key, None)
+    # Preserve explicitly configured plugins and their caller import paths.
+    env.pop("PYTEST_ADDOPTS", None)
     env.update(MUTANT_UNDER_TEST="", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
     log = tmp_path / "generate.log"
     code, _ = execute("generate", "sample/value.py", [], tmp_path, env, log, 30)
@@ -232,12 +231,18 @@ class TestKillMatrix:
         from scripts import mutation_campaign
 
         # An external pytest plugin must remain importable from each stage's caller environment.
-        monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+        caller_pythonpath = os.environ.get("PYTHONPATH", "")
+        caller_plugins = os.environ.get("PYTEST_PLUGINS", "")
         plugin_path = tmp_path / "plugins"
         plugin_path.mkdir()
         (plugin_path / "campaign_plugin.py").write_text("")
-        monkeypatch.setenv("PYTHONPATH", str(plugin_path))
-        monkeypatch.setenv("PYTEST_PLUGINS", "campaign_plugin")
+        monkeypatch.setenv(
+            "PYTHONPATH",
+            os.pathsep.join([str(mutation_campaign.ROOT), str(plugin_path), caller_pythonpath]),
+        )
+        monkeypatch.setenv(
+            "PYTEST_PLUGINS", ",".join(filter(None, [caller_plugins, "campaign_plugin"]))
+        )
 
         work, _ = worker_project
         pyproject = work / "pyproject.toml"
@@ -276,19 +281,35 @@ class TestKillMatrix:
         assert "kill_matrix" not in baseline_report
         assert baseline_report["schema_version"] == 3
 
-    def test_statistics_worker_returns_without_running_baseline_tests(
-        self, worker_project, monkeypatch
-    ):
-        from contextlib import chdir
+    def test_statistics_worker_returns_without_running_baseline_tests(self, worker_project):
+        import json
 
-        from scripts import mutation_campaign
-
-        work, _ = worker_project
-
-        def unexpected_baseline(*args, **kwargs):
-            raise AssertionError("stats stage must not invoke the baseline test runner")
-
-        monkeypatch.setattr(mutation_campaign, "run_tests", unexpected_baseline)
-        with chdir(work):
-            assert mutation_campaign.worker("stats", "sample/value.py", []) == 0
-        assert (work / "associations.json").exists()
+        work, env = worker_project
+        calls = work / "test-calls.txt"
+        (work / "mutants/tests/test_value.py").write_text(
+            "from pathlib import Path\n"
+            "import pytest\n"
+            "from sample.value import value\n"
+            "class TestValue:\n"
+            "    @pytest.mark.parametrize('expected', [1, 1], ids=['first', 'second'])\n"
+            "    def test_value(self, expected, request):\n"
+            f"        with Path({str(calls)!r}).open('a') as stream:\n"
+            "            stream.write(request.node.nodeid + '\\n')\n"
+            "        assert value() == expected\n"
+            "def test_unrelated(request):\n"
+            f"    with Path({str(calls)!r}).open('a') as stream:\n"
+            "        stream.write(request.node.nodeid + '\\n')\n"
+        )
+        log = work / "stats.log"
+        code, _ = execute("stats", "sample/value.py", [], work, env, log, 30)
+        assert code == 0, log.read_text()
+        associated = [
+            "tests/test_value.py::TestValue::test_value[first]",
+            "tests/test_value.py::TestValue::test_value[second]",
+        ]
+        assert json.loads((work / "associations.json").read_text()) == {
+            "sample.value.x_value": associated
+        }
+        assert calls.read_text().splitlines() == associated + [
+            "tests/test_value.py::test_unrelated"
+        ]

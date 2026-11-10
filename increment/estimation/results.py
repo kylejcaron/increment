@@ -40,7 +40,12 @@ from pydantic import (
 )
 
 from increment._canonical import canonical_json_bytes, canonical_json_loads
-from increment._display import format_interval
+from increment._display import (
+    format_effect,
+    format_effect_interval,
+    format_interval,
+    interval_text,
+)
 from increment._immutable import _FrozenMapping
 from increment._literals import (
     ALTERNATIVE_VALUES,
@@ -2057,26 +2062,51 @@ class LiftEstimate(_RowIdentity):
             if reason is not None:
                 details.append(f"reason={reason!r}")
             return f"LiftEstimate({', '.join(details)})"
+        relative_scale = self.value_scale == "relative"
+        unit = self.value_scale
         if self.confidence_set is not None:
             region = self.confidence_set
             qualification = _selection_qualification(self)
             suffix = (
                 f", selection_qualification={qualification!r}" if qualification is not None else ""
             )
-            return (
-                f"LiftEstimate({identity}, "
-                f"value={region.point!r}, lower={region.relative.lower!r}, "
-                f"upper={region.relative.upper!r}, reference='confidence_set'{suffix})"
+            value = (
+                "unavailable"
+                if region.point is None
+                else format_effect(region.point, relative=relative_scale)
             )
-        unit = self.value_scale
+            bounds = region.relative
+
+            def endpoint_text(endpoint: Any) -> str | None:
+                if endpoint.status == "finite":
+                    assert endpoint.value is not None
+                    return format_effect(endpoint.value, relative=relative_scale)
+                if endpoint.status == "unbounded":
+                    return None
+                return f"unavailable({endpoint.reason})"
+
+            interval = interval_text(endpoint_text(bounds.lower), endpoint_text(bounds.upper))
+            endpoint_status = (bounds.lower.status, bounds.upper.status)
+            endpoint_reasons = (bounds.lower.reason, bounds.upper.reason)
+            endpoint_details = (
+                f", endpoint_status={endpoint_status!r}, endpoint_reasons={endpoint_reasons!r}"
+            )
+            return (
+                f"LiftEstimate({identity}, value={value} ({unit}), interval={interval}, "
+                f"reference='confidence_set'{endpoint_details}{suffix})"
+            )
         if self.relative_unavailable_reason is not None:
             qualification = _selection_qualification(self)
             suffix = (
                 f", selection_qualification={qualification!r}" if qualification is not None else ""
             )
+            value = (
+                "unavailable"
+                if self.lift is None
+                else format_effect(self.lift.value, relative=relative_scale)
+            )
             return (
-                f"LiftEstimate({identity}, "
-                f"value={None if self.lift is None else self.lift.value!r}, "
+                f"LiftEstimate({identity}, value={value} ({unit}), "
                 f"relative_unavailable={self.relative_unavailable_reason!r}, "
                 f"abs_diff={self.abs_diff!r}{suffix})"
             )
@@ -2086,15 +2116,26 @@ class LiftEstimate(_RowIdentity):
             suffix = (
                 f", selection_qualification={qualification!r}" if qualification is not None else ""
             )
+            value = (
+                "unavailable"
+                if self.lift is None
+                else format_effect(self.lift.value, relative=relative_scale)
+            )
+            intervals = tuple(
+                format_effect_interval(lower, upper, relative=relative_scale)
+                for lower, upper in relative.intervals
+            )
             return (
-                f"LiftEstimate({identity}, "
-                f"value="
-                f"{None if self.lift is None else self.lift.value!r} ({unit}), "
-                f"relative_set={relative.geometry}:{relative.intervals!r}, "
+                f"LiftEstimate({identity}, value={value} ({unit}), "
+                f"relative_set={relative.geometry}:{intervals!r}, "
                 f"discovery={self.discovery!r}{suffix})"
             )
         if self.sequential_result is not None:
-            value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
+            value = (
+                "unavailable"
+                if self.lift is None
+                else format_effect(self.lift.value, relative=relative_scale)
+            )
             interval = ", ".join(
                 _sequential_display_parts(
                     self.sequential_result, point_available=self.lift is not None
@@ -2104,20 +2145,16 @@ class LiftEstimate(_RowIdentity):
             value = "unavailable"
             bset = self.binomial_set
             assert bset is not None, "validated: lift=None implies a binomial_set"
-            interval = (
-                f"interval=({bset.lower:+.4g}, "
-                f"{'+inf' if bset.upper is None else f'{bset.upper:+.4g}'})"
+            interval = "interval=" + format_effect_interval(
+                bset.lower, bset.upper, relative=relative_scale
             )
         else:
-            value = f"{self.lift.value:+.4g}"
-            if self.lift.open_side == "lower" and self.lift.ub is not None:
-                interval = f"interval=(-inf, {self.lift.ub:+.4g})"
-            elif self.lift.open_side == "upper" and self.lift.lb is not None:
-                interval = f"interval=({self.lift.lb:+.4g}, +inf)"
-            elif self.lift.lb is None or self.lift.ub is None:
-                interval = "interval=None"
-            else:
-                interval = f"interval=({self.lift.lb:+.4g}, {self.lift.ub:+.4g})"
+            value = format_effect(self.lift.value, relative=relative_scale)
+            interval = (
+                "interval=None"
+                if self.lift.lb is None and self.lift.ub is None
+                else f"interval={format_effect_interval(self.lift.lb, self.lift.ub, relative=relative_scale)}"
+            )
             decision_alpha = row_decision_alpha(self)
             # The level this construction decides at, shown where it is not simply the
             # interval's own level complement: a plan-allocated (Bonferroni-split) or

@@ -32,7 +32,7 @@ from increment.estimation.decision_types import (
 )
 from increment.estimation.engine import _lift_decision_bundle, escalate_family_member
 from increment.estimation.family import _require_q, family_discovery, select_family
-from increment.estimation.multiplicity import design_excluded
+from increment.estimation.multiplicity import design_excluded, outcome_non_rejection
 from increment.estimation.readout_types import refuse_legacy_sampling
 from increment.estimation.results import reinterval_selected, with_score_margin
 
@@ -222,6 +222,14 @@ def _require_admissible(rows: Sequence[object]) -> None:
             refuse(spec, rows=labels, reasons=(_ADMISSION_REASONS[code],) * len(labels))
 
 
+def _family_view(row: LiftEstimate | BreakoutEstimate) -> LiftEstimate | None:
+    if row.lift is None and outcome_non_rejection(
+        row.failure_code, (row.failure_context or {}).get("reason")
+    ):
+        return None
+    return row._family_view()
+
+
 def exploratory_family_exclusion(row: LiftEstimate | BreakoutEstimate) -> str | None:
     """Why *row* cannot join an exploratory family, or ``None`` when it can.
 
@@ -235,7 +243,7 @@ def exploratory_family_exclusion(row: LiftEstimate | BreakoutEstimate) -> str | 
     code = _admission_hazard(row)
     if code is not None:
         return _ADMISSION_REASONS[code]
-    view = row._family_view()
+    view = _family_view(row)
     if view is None:
         return None
     construction, reason = classify(view)
@@ -266,7 +274,7 @@ def _members(rows: Sequence[LiftEstimate | BreakoutEstimate]) -> list[_Member]:
     for index, row in enumerate(rows):
         scope = _scope_of(row)
         key = _in_scope(ArmHypothesisKey(row.metric, row.group_id, row.estimand), scope)
-        view = row._family_view()
+        view = _family_view(row)
         if view is not None and row.method_role == "decision":
             view = with_score_margin(escalate_family_member(view))
         construction, reason = ("unavailable", "") if view is None else classify(view)
@@ -316,12 +324,17 @@ def _exploratory_computation(members: Sequence[_Member]) -> DecisionComputation[
             failures[key] = DecisionFailure(key, failure.code, failure.context)
     for member in members:
         if member.view is None:
-            reason = getattr(member.row, "excluded", None)
-            failures[member.key] = DecisionFailure(
-                member.key,
-                f"breakout.{reason}",
-                {"metric": member.row.metric, "group_id": member.row.group_id, "reason": reason},
-            )
+            code = member.row.failure_code
+            context = member.row.failure_context
+            if code is None:
+                reason = getattr(member.row, "excluded", None)
+                code = f"breakout.{reason}"
+                context = {
+                    "metric": member.row.metric,
+                    "group_id": member.row.group_id,
+                    "reason": reason,
+                }
+            failures[member.key] = DecisionFailure(member.key, code, context or {})
     return DecisionComputation(results=(), evidence=evidence, failures=failures)
 
 
@@ -339,7 +352,7 @@ def _stamped[R: BaseModel](row: R, view: LiftEstimate | None, **family: object) 
 
 
 def _nominal_call_alpha(row: LiftEstimate | BreakoutEstimate) -> float | None:
-    view = row._family_view()
+    view = _family_view(row)
     if view is None:
         return None
     construction, _ = classify(view)

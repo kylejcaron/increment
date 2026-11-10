@@ -60,11 +60,9 @@ EXPECTED_POSITIVE_PART_SCALE = _REFUSALS[
 
 
 class Normal(CodedModel, BaseModel):
-    """Normal distribution: scalar parameters (no array support needed;
-    estimates are scalar per metric x method x arm).
-    """
+    """Normal distribution with finite scalar parameters."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, allow_inf_nan=False)
 
     mu: float
     sigma: float = Field(gt=0)  # positivity via pydantic validation

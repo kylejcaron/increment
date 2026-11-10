@@ -209,7 +209,7 @@ class BreakoutReadouts:
                         window_days=metric.window_days,
                     )
             return req
-        if route not in (ARTIFACT_ROUTE, NATIVE_ROUTE, PANEL_ROUTE) or not req.metrics:
+        if not req.metrics:
             return req
         identities = self._identities(self._src)
         if not identities:

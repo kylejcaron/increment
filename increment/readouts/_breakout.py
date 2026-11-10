@@ -18,7 +18,8 @@ from increment.breakout.estimates import (
     BreakoutEstimate,
     BreakoutEstimates,
     _breakout_estimate_row,
-    run_breakout,
+    _ReadoutCellPolicy,
+    _run_fixed_breakout,
 )
 from increment.errors import CodedError
 from increment.estimation.encouragement import (
@@ -42,7 +43,6 @@ from increment.readouts._common import (
     _require_design,
     _runtime_method_roles,
     _runtime_methods,
-    _sequential_inference,
     _warn,
 )
 from increment.readouts._encouragement import _encouragement_cell_identities
@@ -525,11 +525,10 @@ def _breakout_impl(
     ever declared (`src.plan.declared`): an undeclared plan resolves to
     alpha=0.05 and inference=None.
 
-    Delegates the randomized per-segment split to run_breakout, supplying
-    each metric's moments broken out by dimension; a segment with no
-    usable control arm comes back as an excluded row. Every row is
-    stamped `role="exploratory"` - breakout has no plan-declared
-    primary/secondary/guardrail role concept, unlike run().
+    Delegates randomized per-segment inference to the fixed-breakout operation,
+    supplying each metric's complete compiled hypothesis and acquired moments.
+    Every segment remains exploratory, even when its hypothesis comes from a
+    registered primary or guardrail.
 
     Under Encouragement, partitions moments the same way and runs
     estimate_encouragement once per (segment, metric) pair, at the
@@ -561,14 +560,12 @@ def _breakout_impl(
     prior changes posterior fields only; BH selection still consumes the row's sampling evidence.
 
 
-    Under a fixed-horizon plan, a metric with a non-inferiority margin --
-    declared on the Metric (margin/margin_abs) or bound on the plan
-    (ExperimentMetric.margin/margin_abs) -- is refused with
-    ``readout.margin.breakout``: fixed-horizon segment rows build no shifted
-    null, so a margin would change what the same metric's stat_sig means
-    between views. The whole-window guardrail read is run(). A registered
-    sequential breakout instead tests each segment cell against its
-    registered null, which must equal the compiled margin null.
+    Fixed-horizon randomized segments retain each compiled null and alternative
+    at the plan's nominal alpha before the breakout-specific correction.
+    Scalar CUPED, fixed caps and supported ratios retain their existing
+    constructions. Shifted linear-CUPED and encouragement segments are not
+    implemented; their margin refusal remains. Registered sequential breakouts
+    instead use their retained checkpoints and registered nulls.
 
     metrics narrows the reported names; an unknown one raises before any
     moments run.
@@ -587,7 +584,6 @@ def _breakout_impl(
     design = _require_design(src, "breakout")
     plan = src.context.plan
     alpha = plan.alpha
-    inference = _sequential_inference(plan)
     selected = request.metrics
     resolved_configs = request.configs
     configs = {config.metric.name: config for config in resolved_configs}
@@ -758,61 +754,39 @@ def _breakout_impl(
             method_evidence=method_evidence,
         )
         return scoped(stamp_multiplicity_status(encouragement_rows), encouragement_advisories)
-    results: list[BreakoutEstimate] = []
     advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] = {}
-    if correction == "bh":
-        # One flat family across every (metric, arm, segment) cell this
-        # call produces: a single run_breakout call over every selected
-        # metric together, not one call per metric (which would scope
-        # the family to one metric at a time).
-        combined_rows = None
+    results: list[BreakoutEstimate] = []
+    metric_groups = (selected,) if correction == "bh" else tuple((metric,) for metric in selected)
+    for metric_group in metric_groups:
         results.extend(
-            run_breakout(
-                combined_rows,
-                selected,
+            _run_fixed_breakout(
+                None,
+                metric_group,
                 control_group=design.control_group,
                 source=source_name,
                 dimension=dimension,
-                methods=None,
-                prior=None,
+                policy_by_metric={
+                    metric.name: _ReadoutCellPolicy(
+                        alpha=alpha,
+                        alternative=plan.procedures[metric.name].alternative,
+                        null_lift=float(getattr(plan.procedures[metric.name], "null_lift", 0.0)),
+                        null_abs=getattr(plan.procedures[metric.name], "null_abs", None),
+                        role=plan.procedures[metric.name].role if plan.declared else None,
+                        policy_name="compiled_plan",
+                    )
+                    for metric in metric_group
+                },
                 _prior_by_metric={name: config.prior for name, config in configs.items()},
                 _method_evidence_by_metric=method_evidence,
-                alpha=alpha,
                 correction=correction,
                 q=q,
-                inference=inference,
                 method_roles_by_metric=roles_by_metric,
                 methods_by_metric=methods_by_metric,
-                policy_name="compiled_plan",
                 unit_frames_by_metric=unit_frames_by_metric,
                 covariates_by_metric=covariates_by_metric,
                 _cell_advisories=advisories,
             )
         )
-    else:
-        for metric in selected:
-            rows = None
-            metric_methods = methods_by_metric[metric.name]
-            results.extend(
-                run_breakout(
-                    rows,
-                    [metric],
-                    control_group=design.control_group,
-                    source=source_name,
-                    dimension=dimension,
-                    methods=metric_methods,
-                    prior=configs[metric.name].prior,
-                    _method_evidence_by_metric=method_evidence,
-                    alpha=alpha,
-                    correction=correction,
-                    inference=inference,
-                    method_roles=roles_by_metric[metric.name],
-                    policy_name="compiled_plan",
-                    unit_frames_by_metric=unit_frames_by_metric,
-                    covariates_by_metric=covariates_by_metric,
-                    _cell_advisories=advisories,
-                )
-            )
     return scoped(stamp_multiplicity_status(results), advisories)
 
 

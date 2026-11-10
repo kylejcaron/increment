@@ -151,10 +151,10 @@ def _dashboard_reads_of(metric: str, tmp_path, monkeypatch, *, plan: str) -> int
 # Small fixtures trip estimator reliability warnings; the subject is which data is read.
 @pytest.mark.slow
 @pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
-def test_a_dashboard_reads_a_metric_as_often_alone_as_among_others(tmp_path, monkeypatch):
-    """Each Explore view reads a metric's evidence once, however many metrics are declared."""
+def test_adding_metrics_does_not_increase_existing_metric_dashboard_reads(tmp_path, monkeypatch):
+    """Compatible metrics may share reads but must not repeat existing metric evidence."""
     metric = "checkout_conversion"
     alone = _dashboard_reads_of(metric, tmp_path / "alone", monkeypatch, plan=_ALONE)
     among = _dashboard_reads_of(metric, tmp_path / "among", monkeypatch, plan=_AMONG_OTHERS)
     assert alone > 0
-    assert among == alone
+    assert among <= alone

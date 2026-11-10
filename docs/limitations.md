@@ -1040,11 +1040,11 @@ row's result. `r.relative_unavailable_reason` names the cause:
 With no declared margin, the additive difference tested against zero decides the row: its
 `p_value()`, `stat_sig()` and family selection. A declared relative margin has no additive
 counterpart, so such a row stays a conservative non-rejection with `p_value()` 1.0. A declared
-prior marks only the posterior unavailable and leaves the sampling row unchanged. When both
-arms are constant, neither scale has an uncertainty. If both arm means are positive, the cell
-fails with `estimation.engine.lift_guard`; if either is zero or negative, the row keeps
-`"nonpositive_arm_mean"` and its additive difference with no bounds, a conservative
-non-rejection with `p_value()` 1.0.
+prior marks only the posterior unavailable and leaves an otherwise estimable sampling row
+unchanged. When both arms are constant, neither scale has uncertainty: the cell has
+`estimation.engine.lift_guard` with reason `"zero_variance"`, whether its means are positive,
+zero or negative. It remains an unavailable member of its family, counted as a non-rejection;
+it is not an additive row with an invented zero-standard-error test.
 
 A ratio metric's additive difference divides by the same denominator means as its log
 ratio, so it can replace a blocked log scale only when both arms resolve their denominator

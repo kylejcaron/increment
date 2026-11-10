@@ -1176,9 +1176,14 @@ def _preflight_persistence(
     compiled = binding.plan if contrast is None else contrast
     _validate_registered_options(compiled, registered)
     if selected is None:
-        # Each view then reads its default roster, which the run saves under the registration.
+        complete_overall = any(scope.view == "run" for scope in experiment.views) and set(
+            experiment.metrics
+        ) == set(compiled.procedures)
         for scope in experiment.views:
-            if metrics := default_metrics(experiment, scope):
+            metrics = default_metrics(experiment, scope)
+            if scope.view == "breakout" and scope.metrics and complete_overall:
+                continue
+            if metrics:
                 _validate_registered_options(compiled, {"metrics": metrics})
     if saving and any(
         _selected_percentile_winsorization(binding, operation_options(experiment, scope, overrides))

@@ -263,7 +263,11 @@ reports that the procedure was not recorded rather than inferring it from
 the interval or guarantee.
 
 Ordinary `str(row)` and `repr(row)` use the same compact semantic display for
-arm, breakout, daily, and additive contrast rows. A missing point is not
+arm, breakout, daily, and additive contrast rows. `LiftEstimate` displays
+relative point estimates and finite interval endpoints as percentages (with a
+closed finite end and an open infinite end); absolute-scale points and
+intervals stay in the metric's original units. The representation reads only
+stored fields and never recalculates inference. A missing point is not
 necessarily a failed cell: a point-unavailable result can retain an unbounded
 or disconnected confidence set, whose geometry remains visible in the display.
 For a coded cell failure only, `row.reason` returns the persisted
@@ -539,7 +543,7 @@ revenue result identity: method unadjusted; method role decision; estimand itt.
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
 Multiplicity (outcome): undeclared_plan; family retained scope.
 revenue / treatment: lift=+9.47% [+3.27%, +16.04%] significant=True
-LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+1.616, +inf), route='finite_sample', discovery=None)
+LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=[161.6%, ∞), route='finite_sample', discovery=None)
 ```
 
 ## Read the row's scale
@@ -554,12 +558,13 @@ LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='d
   `r.relative_unavailable_reason` is `"nonpositive_arm_mean"` (an arm mean is
   zero or negative), `"delta_method_unreliable"` (an arm mean is close to zero
   relative to its standard error) or `"zero_variance"` (one arm's outcomes are
-  constant). There is **no** relative lift and **no** relative set. The additive
-  difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`
-  when both arms are constant at a non-positive mean (both arms constant at
-  positive means fail with `estimation.engine.lift_guard` instead). Check the
-  bounds before use. When the additive interval is present and the row's null
-  is the unshifted zero (no absolute or relative margin declared), it is the
+  constant). There is **no** relative lift and **no** relative set. An otherwise
+  estimable row keeps its additive difference in `r.abs_diff`; check `r.abs_lb`
+  and `r.abs_ub` before use. When both arms are constant, the cell instead has
+  `estimation.engine.lift_guard` with reason `"zero_variance"`, regardless of
+  whether the means are positive, zero or negative. When an additive interval
+  is present and the row's null is the unshifted zero (no absolute or relative
+  margin declared), it is the
   row's decision: `r.p_value()` is the additive test of the difference against
   zero under the row's alternative, using the reference the interval was cut
   from (Welch `t` or Normal, `r.abs_reference_kind`), and `r.stat_sig()` is
@@ -804,7 +809,7 @@ the row has **no** relative set, so read the additive `r.abs_diff`, plus
 |---|---|
 | Exact conversion row whose control arm has zero events | The ratio has a zero denominator, but `r.binomial_set` still bounds the lift. |
 | Joint ratio set with no representable point | `r.relative_confidence_set`; `r.relative_confidence_set.point_unavailable_reason` names the reason. |
-| Fixed-horizon mean row whose arm summaries block the log scale | `r.relative_unavailable_reason` is `"nonpositive_arm_mean"`, `"delta_method_unreliable"` or `"zero_variance"`: there is **no** relative set. `r.abs_diff` survives; `r.abs_lb` and `r.abs_ub` can be `None` when both arms are constant at a non-positive mean. |
+| Fixed-horizon mean row whose arm summaries block the log scale | `r.relative_unavailable_reason` is `"nonpositive_arm_mean"`, `"delta_method_unreliable"` or `"zero_variance"`: there is **no** relative set. An otherwise estimable row keeps `r.abs_diff`; check `r.abs_lb` and `r.abs_ub`. If both arms are constant, the cell has `estimation.engine.lift_guard` with reason `"zero_variance"`, irrespective of their means. |
 | Joint relative covariance unusable | `r.relative_unavailable_reason` is `"joint_covariance_unrepresentable"` (not representable as a float, extremely large scores) or `"joint_covariance_indefinite"` (not positive semidefinite; a singular one is still usable), with **no** relative set. Only `r.abs_diff` is guaranteed; `r.abs_se`, `r.abs_lb`, and `r.abs_ub` can each be `None`. |
 | Winsorized metric with a `confidence_set` | `r.confidence_set.relative` keeps a status and reason per endpoint (for example `unbounded` with `denominator_nonseparation`); the additive interval stays in `r.abs_lb` and `r.abs_ub`. |
 | Sequential row whose point is withheld | `r.sequential_result.bounds`, with `r.sequential_result.point_reason`. Check that `r.sequential_result.bounds.status` is not `"unavailable"` before reading endpoints, and read `bounds.reason` when it is. |
@@ -855,6 +860,10 @@ whose control mean is negative has no relative lift and no relative set; its
 additive interval carries the decision:
 
 ```python
+import polars as pl
+
+import increment
+
 k = 40
 negative = pl.DataFrame(
     {
@@ -885,8 +894,11 @@ a finite lower and an unbounded upper relative endpoint, each with its own
 status:
 
 ```python
+import polars as pl
+
 import increment
 
+k = 40
 zero_control = pl.DataFrame(
     {
         "user_id": [f"u{i:03d}" for i in range(2 * k)],
@@ -1208,6 +1220,7 @@ converted = table.filter(pl.col("metric") == "converted").row(0, named=True)
 assert converted["lift"] is None
 assert converted["set_lower"] is not None and converted["set_upper"] is None
 
+contrasts = increment.run(experiment, reader).readout()
 assert "estimate" in contrasts.to_frame(backend="polars").columns
 ```
 
@@ -1219,6 +1232,7 @@ rows:
 | Key | Meaning |
 |---|---|
 | `lift`, `lower`, `higher`, `level`, `open_side` | The row's estimate and interval. On a contrast row `lift` holds the additive estimate, so read it with `value_scale`. `open_side` comes from the row's `lift`, so a set-only row's open upper end shows only as `higher is None`. |
+| `coverage_alpha` | The displayed interval's stored noncoverage budget, such as `0.05` for 95% coverage. It survives when `level` rounds to `1.0`; null means the budget is unavailable. It is not a family allocation or a reconstructed complement. |
 | `stat_sig`, `null_lift`, `null_abs` | The verdict and the nulls it was tested against. |
 | `value_scale`, `estimand`, `inference`, `role`, `discovery` | Row identity and status. Contrast rows set `value_scale="absolute"` and `group_id=treatment_group`. |
 | `decision_scale`, `decision_available` | `LiftEstimate`, `BreakoutEstimate`, and `DailyLiftEstimate` only: the scale the verdict is made on (`"absolute"` for a declared absolute margin, an additive-zero decision, or a native absolute row; `"relative"` otherwise), and whether a `False` verdict is a genuine non-rejection rather than the absence of a test. |
@@ -1227,6 +1241,7 @@ rows:
 ```python
 from increment.tables import estimates_to_readout
 
+contrasts = increment.run(experiment, reader).readout()
 rows = estimates_to_readout([*results, *contrasts])
 by_metric = {row["metric"]: row for row in rows}
 

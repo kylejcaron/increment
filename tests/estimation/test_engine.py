@@ -372,33 +372,30 @@ class TestDegenerateData:
         assert lift.lb is not None and lift.ub is not None
         assert lift.lb < 0.0 < lift.ub
 
-    def test_both_arms_constant_keeps_lift_guard_failure(self):
-        """A real-valued mean metric whose arms are both constant at positive means has
+    @pytest.mark.parametrize(
+        ("control_mean", "treatment_mean", "null_abs"),
+        [(5.0, 5.0, None), (0.0, 0.25, 0.5), (-1.0, -0.75, 0.5), (-1.0, -0.75, None)],
+    )
+    def test_both_arms_constant_keeps_lift_guard_failure(
+        self, control_mean, treatment_mean, null_abs
+    ):
+        """A real-valued mean metric whose arms are both constant has
         no uncertainty on either scale, so the cell stays a keyed lift-guard
         failure. The boundary is retired only for the exact binomial route's
         conversion/retention metrics, and one constant arm keeps its additive
         row (TestRelativeScaleGuardsKeepTheAdditiveRow).
         """
-        n = 100
-        control = ArmStats.from_raw_sums(
-            study_id="exp1",
-            metric="rev",
-            group_id="control",
-            n=n,
-            sum_y=float(5 * n),
-            sum_y2=float(25 * n),
+        arms = [
+            _make_arm_stats(100, mean, 0.0, group_id=arm)
+            for arm, mean in (("control", control_mean), ("treatment", treatment_mean))
+        ]
+        computation = estimate_lift(
+            metrics=[_mean_metric()],
+            summary=_summary_df(arms),
+            control_group="control",
+            alternative="less",
+            null_abs=null_abs,
         )
-        treatment = ArmStats.from_raw_sums(
-            study_id="exp1",
-            metric="rev",
-            group_id="treatment",
-            n=n,
-            sum_y=float(5 * n),
-            sum_y2=float(25 * n),
-        )
-        df = _summary_df([control, treatment])
-
-        computation = estimate_lift(metrics=[_mean_metric()], summary=df, control_group="control")
         assert computation.results == ()
         (failure,) = computation.failures.values()
         assert failure.hypothesis.group_id == "treatment"
@@ -728,6 +725,60 @@ class TestRelativeScaleGuardsKeepTheAdditiveRow:
         assert row.winsor_lower_bound == pytest.approx(5.0)
         assert row.winsor_control_n_lower == len(raw_control)
         assert row.winsor_treatment_n_lower == int(np.sum(raw_treatment < 5.0))
+
+    def test_signed_fixed_caps_keep_additive_row_clipping_disclosure(self):
+        from increment import MetricSpec, Winsorization, run
+        from increment.estimation.results import LiftEstimate
+
+        control = np.tile([-30.0, -11.0, -3.0, 0.0, 3.0, 16.0], 20)
+        treatment = np.tile([-30.0, -9.0, -3.0, 0.0, 6.0, 30.0], 20)
+        frame = pd.DataFrame(
+            {
+                "unit": [f"u{i}" for i in range(240)],
+                "arm": ["control"] * 120 + ["treatment"] * 120,
+                "y": np.concatenate([control, treatment]),
+            }
+        )
+        experiment, reader = from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    type="mean",
+                    winsorization=Winsorization(lower_value=-12.0, upper_value=12.0),
+                )
+            ],
+        )
+        try:
+            result = run(experiment, reader)
+        finally:
+            reader.close()
+        (row,) = result.readout()
+        assert isinstance(row, LiftEstimate)
+        projected = result.to_frame(backend="pandas")
+        assert isinstance(projected, pd.DataFrame)
+        disclosure = {
+            "winsor_lower_bound": -12.0,
+            "winsor_upper_bound": 12.0,
+            "winsor_control_n": 120,
+            "winsor_control_n_lower": 20,
+            "winsor_control_n_upper": 20,
+            "winsor_treatment_n": 120,
+            "winsor_treatment_n_lower": 20,
+            "winsor_treatment_n_upper": 20,
+        }
+        for field, expected in disclosure.items():
+            assert getattr(row, field) == expected
+            assert projected.iloc[0][field] == expected
+        assert row.winsor_lower_percentile is row.winsor_upper_percentile is None
+        assert row.lift is None
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+        assert row.sampling_available
+        assert row.abs_diff == pytest.approx(5 / 6, rel=1e-12, abs=1e-12)
 
     @pytest.mark.parametrize(
         ("arms", "guard_reason"),

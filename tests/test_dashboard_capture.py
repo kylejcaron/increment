@@ -59,7 +59,6 @@ from increment.errors import (
     CodedError,
     IncrementRuntimeWarning,
     InvalidRequestError,
-    UnsupportedRequestError,
 )
 from increment.evidence import BreakoutIdentity
 from increment.workflows import capture_sequential
@@ -1985,21 +1984,29 @@ def test_load_explore_segments_filter_by_dimension_source_and_method_without_lea
     assert {e.method_role for e in filtered} == {"decision"}
 
 
-def test_load_explore_segments_with_no_metric_reads_every_declared_metric() -> None:
-    """``metric=None`` is one real breakout call over every declared metric, so the declared
-    guardrail's margin, which a breakout cannot test, refuses that read by name."""
-    saved = frozen("explore")
-    assert tuple(metric.name for metric in saved.snapshot.metrics) == _NAMES
-    with pytest.raises(UnsupportedRequestError) as caught:
-        load_explore(
-            saved.experiment,
-            snapshot=saved.snapshot,
-            metric=None,
-            view="segments",
-            breakout=COUNTRY,
-        )
-    assert caught.value.code == "readout.margin.breakout"
-    assert caught.value.context["names"] == ("session_seconds",)
+@pytest.mark.integration
+def test_load_explore_segments_with_no_metric_reads_every_declared_metric(tmp_path) -> None:
+    """The disconnected all-metric view retains the guardrail's segment hypothesis."""
+    with _explore_source(tmp_path) as (_, experiment, resolver, config):
+        snapshot = _prepared(experiment, resolver, config)
+    assert tuple(metric.name for metric in snapshot.metrics) == _NAMES
+    rows = load_explore(
+        experiment,
+        snapshot=snapshot,
+        metric=None,
+        view="segments",
+        breakout=COUNTRY,
+    )
+    assert isinstance(rows, BreakoutEstimates)
+    assert {row.metric for row in rows} == set(_NAMES)
+    guardrails = [row for row in rows if row.metric == "session_seconds"]
+    assert guardrails
+    assert all(
+        (row.null_lift, row.null_abs, row.alternative, row.role)
+        == (0.02, None, "less", "exploratory")
+        for row in guardrails
+    )
+    assert all(row.p_value() is not None for row in guardrails)
 
 
 @pytest.mark.integration
@@ -2233,6 +2240,13 @@ def test_one_family_covers_added_metrics_and_every_segment_cell():
         assert {cell.metric for cell in segments} >= {ADDED, "checkout_conversion"}
     assert len(tested) == overview.family_size > len(overview.exploratory)
     assert {cell.family_size for cell in tested} == {overview.family_size}
+    assert overview.family_size == 2 + 2 * 2 * 6
+    assert overview.exclusions == ()
+    failed = next(cell for cell in overview.exploratory if cell.metric == SECOND)
+    assert failed.failure_code == "estimation.engine.lift_guard"
+    assert failed.failure_context is not None
+    assert failed.failure_context["reason"] == "zero_variance"
+    assert failed.sampling_available is False and failed.discovery is False
     selected = next(cell for cell in tested if cell.discovery is True)
     assert selected.lift is not None
     restored = type(selected).model_validate_json(selected.model_dump_json())
@@ -2316,11 +2330,7 @@ def test_each_metrics_segments_are_its_own_bh_step_up():
     snapshot = _offered_shown(saved.snapshot)
     close = partial(pytest.approx, rel=TOLERANCE, abs=TOLERANCE)
     selected = rejected = reissued = 0
-    # A breakout cannot test the guardrail's margin, so its segment view refuses.
-    guardrails = {row.metric for row in snapshot.estimates if row.role == "guardrail"}
     for model in (*snapshot.metrics, *snapshot.offered_metrics):
-        if model.name in guardrails:
-            continue
         rows = load_explore(
             saved.experiment,
             snapshot=snapshot,
@@ -2349,7 +2359,12 @@ def test_each_metrics_segments_are_its_own_bh_step_up():
                 continue
             assert row.lift is not None
             level = min(cutoff, _ALPHA) if chosen and cutoff is not None else _ALPHA
-            assert row.lift.alpha == close(level), (row.metric, row.dimension_value)
+            display_alpha = (
+                level
+                if row.alternative == "two-sided" or row.lift.open_side is not None
+                else 2 * level
+            )
+            assert row.lift.alpha == close(display_alpha), (row.metric, row.dimension_value)
             selected += chosen
             rejected += not chosen
             reissued += level < _ALPHA

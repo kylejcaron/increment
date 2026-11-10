@@ -693,8 +693,10 @@ def test_honest_cate_and_targeting_reports_have_report_only_cells():
         for status in (cell.components["sampling"][0], restored.components["sampling"][0]):
             assert status.state == ("unavailable" if expected is None else "available")
             assert expected is None or status.code is None
-        table = readout_table(AnalysisEnvelope((restored,), None))._repr_html_()
-        assert "revenue" in table
+        table = readout_table(AnalysisEnvelope((restored,), None))
+        (shown,) = table.data.to_dict("records")
+        assert shown["value_scale"] == summary.value_scale
+        assert "revenue" in table._repr_html_()
     brief = render(AnalysisEnvelope(tuple(restored_cells), None), "brief")
     retained = 0
     for restored in restored_cells:

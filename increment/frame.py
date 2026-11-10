@@ -62,7 +62,9 @@ from increment._frame_panel import (
     _fact_max_observed_dates,
     _labels_through,
     _normalize_observation_end,
+    _normalize_panel_day,
     _prepare_panel,
+    _resolve_empty_panel_axis,
     _scratch_name,
     _validate_panel_declarations,
 )
@@ -76,6 +78,7 @@ from increment._frame_validation import (  # noqa: F401
     _group_counts,
     _normalize_breakout_names,
     _normalized_breakout_expr,
+    _panel_validation_summary,
     _refuse_noncanonical_boolean_levels,
     _reject_cluster_request,
     _reject_covariates,
@@ -2341,7 +2344,8 @@ class FramePanelSource(SequentialSourceMixin):
         """Design-level uptake sufficient state off the unit x day panel --
         independent of any metric's own y-column, missingness policy, or
         per-day emission gate. *as_of*, when given, matches this source's
-        own ``ds`` day-axis values and freezes the cumulative cohort of units
+        own ``ds`` day-axis values (calendar columns also accept dates, naive
+        datetimes and ISO-8601 strings) and freezes the cumulative cohort of units
         exposed through that day, so it needs a declared ``exposure_date``;
         ``None`` reads the declared window in full.
         ``from_unit_panel`` never carries a declared cluster, so the
@@ -2372,12 +2376,15 @@ class FramePanelSource(SequentialSourceMixin):
             from increment._evidence_types import validate_compliance_completion
 
             validate_compliance_completion(design, as_of=as_of)
+        normalized_as_of = _normalize_panel_day(
+            self._sparse_panel, date="ds", value=as_of, purpose="compliance"
+        )
         rows = _compliance_arm_rows_panel(
             self._sparse_panel,
             uptake=self._uptake,
             window_days=self._window_days,
             exposure=self._exposure,
-            as_of=None if as_of is None else self._observable_through(as_of),
+            as_of=None if as_of is None else self._observable_through(normalized_as_of),
             completed_windows_only=completed_windows_only,
         )
         return ComplianceSummary(
@@ -2538,6 +2545,9 @@ class FramePanelSource(SequentialSourceMixin):
         if uptake is not None:
             metric_columns = sorted({*metric_columns, uptake})
         nwf = _coerce_metric_columns(nwf, metric_columns)
+        nwf = _resolve_empty_panel_axis(
+            nwf, date=date, exposure_date=exposure_date, observation_end=observation_end
+        )
         _validate_frame_boundary(
             nwf, unit=unit, date=date, exposure_date=exposure_date, specs=specs
         )
@@ -2556,12 +2566,23 @@ class FramePanelSource(SequentialSourceMixin):
         )
         if registration is None:
             _validate_control(nwf, group, control)
-        _reject_duplicate_unit_days(nwf, unit, date)
-        _validate_single_group_per_unit(nwf, unit, group)
+        validation = _panel_validation_summary(
+            nwf, unit=unit, group=group, date=date, exposure_date=exposure_date, breakouts=breakouts
+        )
+        if validation.duplicate_days:
+            _reject_duplicate_unit_days(nwf, unit, date)
+        if validation.multiple_groups:
+            _validate_single_group_per_unit(nwf, unit, group)
         _validate_exposure_date(
-            nwf, unit=unit, exposure_date=exposure_date, specs=specs, design=design
+            nwf,
+            unit=unit,
+            exposure_date=exposure_date,
+            specs=specs,
+            design=design,
+            constant=not validation.multiple_exposures,
         )
         null_exposure = 0
+        late = 0
         if exposure_date is not None:
             nwf, null_exposure = _resolve_null_exposure(
                 nwf,
@@ -2592,7 +2613,15 @@ class FramePanelSource(SequentialSourceMixin):
                 defer_scalar_failures=registration is None,
             )
         _validate_conversion_binary(nwf, specs)
-        identity = _unit_identity(nwf, unit=unit, group=group, breakouts=breakouts)
+        identity = _unit_identity(
+            nwf,
+            unit=unit,
+            group=group,
+            breakouts=breakouts,
+            summary=validation,
+            excluded=bool(null_exposure or late),
+        )
+        del validation
 
         value_columns = sorted({c for s in specs for c in (s.y_column, s.denominator) if c})
         if uptake is not None:
@@ -2730,6 +2759,8 @@ def from_unit_panel(  # noqa: PLR0913
         it are not analysed; windowed metrics censor units not mature by it.
     on_unassigned : {"error", "exclude"}
         Null-*group*/exposure-date policy: refuse (default) or exclude.
+        Duplicate days and changing assignment/exposure values refuse before
+        exposure exclusions; breakout labels need be constant only for retained units.
 
     Returns
     -------

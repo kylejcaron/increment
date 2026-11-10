@@ -57,6 +57,7 @@ from increment.dashboard._format import (
     population_label,
     primary_method,
     primary_tone,
+    retained_coverage_alpha_for_row,
     robust_fence,
     tail_word,
     timestamp_label,
@@ -326,13 +327,19 @@ def _primary(snapshot: DashboardSnapshot) -> dict[str, Any]:
             "tone": "neutral",
         }
     level = row.get("level")
+    coverage_alpha = retained_coverage_alpha_for_row(snapshot, row)
+    method_row = {**row, "coverage_alpha": coverage_alpha}
     return {
         "key": key,
         "label": _label(key),
         "effect": _plain(effect_html(row)),
         "interval": _plain(headline_interval(row)),
-        "levelLabel": None if level is None or is_missing(level) else percent_text(float(level)),
-        "method": _plain(primary_method(row)),
+        "levelLabel": (
+            None
+            if level is None or is_missing(level)
+            else percent_text(float(level), coverage_alpha)
+        ),
+        "method": _plain(primary_method(method_row)),
         "tone": primary_tone(row),
     }
 
@@ -521,23 +528,38 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
             qualifiers.append(f"{row.get('method')}, {row.get('method_role')}")
         return f"{metric} ({'; '.join(qualifiers)})" if qualifiers else metric
 
-    groups: dict[str, list[str]] = {}
+    groups: dict[tuple[tuple[float, float | None] | None, str, str], list[str]] = {}
     for row in rows:
         level = row.get("level")
-        prefix = "" if level is None or is_missing(level) else f"{percent_text(float(level))} "
+        coverage = (
+            None
+            if level is None or is_missing(level)
+            else (float(level), retained_coverage_alpha_for_row(snapshot, row))
+        )
         kind = inference_word(str(row.get("inference", "fixed")))
-        names = groups.setdefault(f"{prefix}{kind} intervals, {tail_word(row)}", [])
+        key = (coverage, kind, tail_word(row))
+        names = groups.setdefault(key, [])
         if name(row) not in names:
             names.append(name(row))
+
+    def group_label(key: tuple[tuple[float, float | None] | None, str, str]) -> str:
+        coverage, kind, tail = key
+        prefix = "" if coverage is None else f"{percent_text(*coverage)} "
+        return f"{prefix}{kind} intervals, {tail}"
+
     if len(groups) == 1:
-        notes.append(f"All results: {next(iter(groups))}.")
+        notes.append(f"All results: {group_label(next(iter(groups)))}.")
     else:
         notes.append(
             "Intervals by metric: "
-            + "; ".join(f"{label} ({', '.join(names)})" for label, names in groups.items())
+            + "; ".join(f"{group_label(key)} ({', '.join(names)})" for key, names in groups.items())
             + "."
         )
-    levels = {float(row["level"]) for row in rows if not is_missing(row.get("level"))}
+    levels = {
+        (float(row["level"]), retained_coverage_alpha_for_row(snapshot, row))
+        for row in rows
+        if not is_missing(row.get("level"))
+    }
     if len(levels) > 1:
         notes.append("Interval levels differ; compare each interval only with its own level.")
     kinds = dict.fromkeys(str(row.get("inference", "fixed")) for row in rows)
@@ -816,6 +838,28 @@ def _render_entry(
     }
 
 
+def _temporal_row_coverage(row: Any, *, lift: bool) -> tuple[float, float | None, bool] | None:
+    if lift:
+        sequential = getattr(row, "sequential_result", None)
+        if sequential is not None:
+            alpha = float(sequential.bounds.alpha)
+            return 1.0 - alpha, alpha, False
+        point = row.lift
+        if point is not None and point.level is not None:
+            return point.level, point.alpha, False
+        binomial = getattr(row, "binomial_set", None)
+        if binomial is not None:
+            return binomial.level, binomial.alpha, True
+        relative = getattr(row, "relative_confidence_set", None)
+        if relative is not None:
+            return 1.0 - relative.alpha, relative.alpha, True
+        return None
+    point = row.value
+    if point is None or point.level is None:
+        return None
+    return point.level, point.alpha, False
+
+
 def _notes(
     snapshot: DashboardSnapshot,
     rows: list[Any],
@@ -827,15 +871,26 @@ def _notes(
 ) -> list[str]:
     lift = view == "cumulative_lift"
     segmented = rows[0].dimension is not None
-    points = [row.lift if lift else row.value for row in rows]
-    levelled = [
-        (row.metric, point.level)
-        for row, point in zip(rows, points, strict=True)
-        if point is not None and point.level
+    coverages = [
+        (row, coverage)
+        for row in rows
+        if (coverage := _temporal_row_coverage(row, lift=lift)) is not None
     ]
-    level_text = ", ".join(
-        percent_text(level) for level in sorted({level for _, level in levelled})
-    )
+    distinct_coverages = {coverage[:2] for _, coverage in coverages}
+    if len(distinct_coverages) > 1:
+        levelled = [
+            (
+                f"{row.metric} · {row.dimension}={row.dimension_value} · {row.group_id}"
+                if row.dimension is not None
+                else f"{row.metric} · {row.group_id}",
+                coverage[:2],
+            )
+            for row, coverage in coverages
+        ]
+        level_text = levels_by_metric(levelled, lambda value: percent_text(*value))
+    else:
+        level_text = percent_text(*next(iter(distinct_coverages))) if distinct_coverages else ""
+    has_point_free_set = any(coverage[2] for _, coverage in coverages)
     segments = sorted({str(row.dimension_value) for row in rows}) if segmented else []
     notes = [monitoring_sentence(rows, view=view)]
     if view != "daily_values":
@@ -857,7 +912,12 @@ def _notes(
         )
     if level_text:
         notes.append(
-            f"Intervals are at level {levels_by_metric(levelled, percent_text)}. "
+            (
+                "Intervals and confidence sets are at level "
+                if has_point_free_set
+                else "Intervals are at level "
+            )
+            + f"{level_text}. "
             + (
                 "They describe the lift of each point, one look at a time."
                 if lift
@@ -865,7 +925,17 @@ def _notes(
             )
         )
     if segmented:
-        notes.append(_segment_note(snapshot, metric, segments, level_text, correction, lift=lift))
+        notes.append(
+            _segment_note(
+                snapshot,
+                metric,
+                segments,
+                level_text,
+                correction,
+                lift=lift,
+                has_point_free_set=has_point_free_set,
+            )
+        )
     if lift:
         notes.extend(_lift_notes(snapshot, rows, metric, segmented=segmented))
     return notes
@@ -879,6 +949,7 @@ def _segment_note(
     correction: str | None,
     *,
     lift: bool,
+    has_point_free_set: bool,
 ) -> str:
     if not lift:
         return (
@@ -895,15 +966,20 @@ def _segment_note(
     level = None if headline is None else headline.get("level")
     versus = (
         ""
-        if level is None or is_missing(level)
-        else f" (the headline uses {percent_text(float(level))})"
+        if headline is None or level is None or is_missing(level)
+        else (
+            f" (the headline uses {percent_text(float(level), retained_coverage_alpha_for_row(snapshot, headline))})"
+        )
     )
     declared = f" ({correction})" if correction else ""
     return (
-        f"Segment intervals carry the experiment's declared segment multiplicity{declared} across "
-        f"{len(segments)} segments, at interval level {level_text}{versus}. Segment lines are "
-        "pointwise and unadjusted for repeated looks over time. One significant segment is not "
-        "evidence of an interaction."
+        f"Segment "
+        f"{'intervals and confidence sets' if has_point_free_set else 'intervals'} "
+        f"carry the experiment's declared segment multiplicity{declared} across "
+        f"{len(segments)} segments, at "
+        f"{'coverage' if has_point_free_set else 'interval level'} {level_text}{versus}. "
+        "Segment lines are pointwise and unadjusted for repeated looks over time. One significant "
+        "segment is not evidence of an interaction."
     )
 
 
@@ -926,12 +1002,13 @@ def _lift_notes(
                 f"{outside} estimate or bound values lie outside the typical range "
                 f"({fence[0] * 100:+.0f}% to {fence[1] * 100:+.0f}%) the chart is fitted to. They are "
                 "clipped at the plot edge and marked, with a faint trace of the full series, never "
-                "dropped; the table beside the chart shows the exact latest interval."
+                "dropped; the exact latest interval is in Latest readings and qualifications."
             )
     if has_open_side(rows):
         notes.append(
-            "One-sided interval: the open side has no finite bound, so only the finite side is "
-            "drawn, as its own labelled line."
+            "One-sided intervals have no finite endpoint on the open side. Shading is limited "
+            "to dates with a finite estimate and two finite bounds; no separate bound lines "
+            "are drawn. The retained latest interval is in Latest readings and qualifications."
         )
     headline = row_for_metric(snapshot, metric)
     if not segmented and headline is not None and not is_missing(headline.get("lift")):

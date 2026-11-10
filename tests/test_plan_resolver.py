@@ -719,11 +719,7 @@ def test_wire_rejects_tampered_nonprimary_alpha():
 
 
 def test_wire_rejects_nonfinite_normal_prior():
-    """A nonfinite prior arriving via raw wire JSON is caught at the
-    payload boundary (NormalPriorSpec's own field constraint, reused
-    directly as the wire type) before decision_wire's own
-    already-constructed-object check ever runs; that check stays live
-    for a runtime Normal(mu=inf) built in-process."""
+    """Raw wire JSON is rejected by its payload schema; runtime checks remain defensive."""
     compiled = compile_decision_plan(None, [_mean("rev")])
     raw = json.loads(compiled_plan_to_json(compiled))
     raw["procedures"]["rev"]["prior"] = {"mu": float("nan"), "sigma": 1.0}

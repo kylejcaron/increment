@@ -371,6 +371,7 @@ def contrast_results_to_readout(
                 "dof": result.dof,
                 "alternative": result.alternative,
                 "alpha": result.alpha,
+                "coverage_alpha": estimate.alpha,
                 "open_side": estimate.open_side,
                 "dof_unavailable_reason": result.dof_unavailable_reason,
                 "standard_error_unavailable_reason": result.standard_error_unavailable_reason,
@@ -420,11 +421,13 @@ def _report_projection_to_readout(est: Any) -> dict[str, ReadoutValue]:
         lower = None if value is None else value.lb
         upper = None if value is None else value.ub
         alpha = None if value is None else value.alpha
+        level = None if value is None else value.level
         scale = "absolute"
         reason = est.unavailable
     else:
         effect = project_effect(est)
         point, lower, upper, alpha = effect.point, effect.lower, effect.upper, effect.alpha
+        level = None if alpha is None else 1.0 - alpha
         scale = effect.value_scale
         reason = (
             effect.reason or getattr(est, "excluded", None) or getattr(est, "unavailable", None)
@@ -437,7 +440,8 @@ def _report_projection_to_readout(est: Any) -> dict[str, ReadoutValue]:
         "lift": point,
         "lower": lower,
         "higher": upper,
-        "level": None if alpha is None else 1.0 - alpha,
+        "level": level,
+        "coverage_alpha": alpha,
         "stat_sig": None,
         "decision_scale": scale,
         "decision_available": point is not None,
@@ -518,6 +522,7 @@ def estimates_to_readout(
                     interpretation, est, source_snapshot_id=getattr(est, "source_snapshot_id", None)
                 )
             )
+        row["coverage_alpha"] = _retained_coverage_alpha(est)
         rows.append(row)
     return rows
 
@@ -686,11 +691,24 @@ def _column_values(frame: Any, column: str) -> list[Any] | None:
     return frame[column].to_list() if column in frame.columns else None
 
 
-def _format_level(level: float) -> str:
-    """Interval level as a percentage, trailing zeros dropped: 95, 90,
-    98.33. A Bonferroni-corrected level is an exact fraction, so plain
-    ``%g`` would print 98.3333 - two decimals is the display grain."""
-    return f"{level * 100:.2f}".rstrip("0").rstrip(".")
+def _format_level(level: float, alpha: float | None = None) -> str:
+    """Format a coverage label with the shared compact precision and retained budget."""
+    return _format_coverage(level, alpha)
+
+
+def _format_coverage_levels(levels: list[float], alphas: list[float | None]) -> list[str]:
+    """Disambiguate different captured coverages that would otherwise share a rounded label."""
+    labels = [_format_level(level, alpha) for level, alpha in zip(levels, alphas, strict=True)]
+    identities_by_label: dict[str, set[tuple[float, float | None]]] = {}
+    for identity, label in zip(zip(levels, alphas, strict=True), labels, strict=True):
+        identities_by_label.setdefault(label, set()).add(identity)
+    for index, (level, alpha, label) in enumerate(zip(levels, alphas, labels, strict=True)):
+        if len(identities_by_label[label]) > 1:
+            exact = f"{level * 100:.15g}%"
+            if 0 < level < 1 and exact in ("0%", "100%"):
+                exact = _format_coverage(level)
+            labels[index] = exact if alpha is None else f"{exact} (α={alpha!r})"
+    return labels
 
 
 def _format_metadata_stat(value: Any, *, percentage: bool) -> str:
@@ -733,24 +751,26 @@ def _failure_disclosure(
 def _interval_level_note(
     frame: Any, *, show_interval_level: bool, has_confidence_sets: bool
 ) -> str | None:
-    """Header disclosure when every row shares ONE non-95% level - a
-    Bonferroni-corrected breakout, or a table of one-sided rows. Stating
-    it once beats a column repeating the same cell on every row; varying
-    levels stay per-row (``_rendered_metadata_columns``). ``None`` when
-    the caller opted out, levels are absent, vary, or sit at 95%."""
+    """Header disclosure when every row shares one non-default retained coverage."""
     if not show_interval_level:
         return None
     levels = _column_values(frame, "level")
     if levels is None:
         return None
-    distinct = {v for v in levels if not _is_missing(v)}
-    if len(distinct) != 1:
+    alpha_values = _column_values(frame, "coverage_alpha") or [None] * len(levels)
+    coverages = {
+        (float(level), None if _is_missing(alpha) else cast(float, alpha))
+        for level, alpha in zip(levels, alpha_values, strict=True)
+        if not _is_missing(level)
+    }
+    if len(coverages) != 1:
         return None
-    (level,) = distinct
-    if math.isclose(level, 0.95):
+    level, alpha = next(iter(coverages))
+    if math.isclose(level, 0.95) and (alpha is None or math.isclose(alpha, 0.05)):
         return None
     scope = "display intervals" if has_confidence_sets else "all intervals"
-    return f"{scope} {_format_level(level)}%"
+    label = _format_coverage_levels([level], [alpha])[0]
+    return f"{scope} {label}"
 
 
 _MULTIPLICITY_STATUS_LABELS = {
@@ -1186,10 +1206,24 @@ def _rendered_metadata_columns(
     columns.update(_row_qualification_columns(frame, n))
     levels = _column_values(frame, "level")
     if show_interval_level and levels is not None:
-        distinct = {v for v in levels if not _is_missing(v)}
-        if len(distinct) > 1:
+        alpha_values = _column_values(frame, "coverage_alpha") or [None] * n
+        identities = [
+            (float(level), None if _is_missing(alpha) else cast(float, alpha))
+            for level, alpha in zip(levels, alpha_values, strict=True)
+            if not _is_missing(level)
+        ]
+        if len(set(identities)) > 1:
+            labels = _format_coverage_levels(
+                [float(level) for level in levels if not _is_missing(level)],
+                [
+                    None if _is_missing(alpha) else cast(float, alpha)
+                    for level, alpha in zip(levels, alpha_values, strict=True)
+                    if not _is_missing(level)
+                ],
+            )
+            iterator = iter(labels)
             columns["Interval"] = [
-                "" if _is_missing(v) else f"{_format_level(v)}% CI" for v in levels
+                "" if _is_missing(level) else f"{next(iterator)} CI" for level in levels
             ]
 
     evidence_columns = [
@@ -1358,6 +1392,43 @@ def _decision_available(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _format_coverage(level: float, alpha: float | None = None) -> str:
+    """Format a retained coverage level without hiding a rounded-away error budget."""
+    percent = level * 100
+    text = f"{percent:.2f}".rstrip("0").rstrip(".") + "%"
+    if 0 < level < 1 and text in ("0%", "100%"):
+        text = f"{percent:.15g}%"
+        if text in ("0%", "100%"):
+            text = f"{float(percent)!r}%"
+    if level == 1 and alpha is not None and alpha > 0:
+        text += f" (α={alpha!r})"
+    return text
+
+
+def _retained_coverage_alpha(estimate: Any) -> float | None:
+    """Return the noncoverage budget for the representation supplying the displayed level."""
+    sequential = getattr(estimate, "sequential_result", None)
+    if sequential is not None:
+        return float(sequential.bounds.alpha)
+    confidence_set = getattr(estimate, "confidence_set", None)
+    if confidence_set is not None:
+        return confidence_set.alpha
+    lift = getattr(estimate, "lift", None)
+    if lift is not None:
+        return lift.alpha
+    binomial = getattr(estimate, "binomial_set", None)
+    if binomial is not None:
+        return binomial.alpha
+    relative = getattr(estimate, "relative_confidence_set", None)
+    if relative is not None:
+        return relative.alpha
+    interval = getattr(estimate, "estimate", None)
+    if interval is not None:
+        return interval.alpha
+    value = getattr(estimate, "value", None)
+    return None if value is None else value.alpha
+
+
 def _format_confidence_set(
     value: Any,
     *,
@@ -1407,8 +1478,12 @@ def _format_confidence_set(
     text = " ∪ ".join(interval_text(number(lower), number(upper)) for lower, upper in intervals)
     rendered = text if geometry == "bounded" else f"{geometry.replace('_', '-')}: {text}"
     if not _is_missing(relative):
-        level = f"{math.fsum((1.0, -relative.alpha)) * 100:.2f}".rstrip("0").rstrip(".")
-        return f"{level}% {rendered}"
+        coverage = _format_coverage(math.fsum((1.0, -relative.alpha)), relative.alpha)
+        return f"{coverage} {rendered}"
+    if not _is_missing(binomial):
+        return f"{_format_coverage(binomial.level, binomial.alpha)} {rendered}"
+    if not _is_missing(value):
+        return f"{_format_coverage(value.level, value.alpha)} {rendered}"
     return rendered
 
 
@@ -1720,12 +1795,12 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, .
             interpretation = interpret_readout(data, metadata)
             scope_notes = render_readout_qualifications(interpretation)
         row_data = estimates_to_readout(list(data))
-        if metadata is not None:
-            for projected, row in zip(row_data, data, strict=True):
+        for projected, estimate in zip(row_data, data, strict=True):
+            if metadata is not None:
                 projected["view_partial"] = metadata.partial
                 projected.update(
                     readout_evidence_columns(
-                        interpretation, row, source_snapshot_id=row.source_snapshot_id
+                        interpretation, estimate, source_snapshot_id=estimate.source_snapshot_id
                     )
                 )
         data = row_data
@@ -1736,7 +1811,8 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, .
         if is_result_collection:
             if metadata is not None:
                 scope_notes = render_readout_qualifications(interpret_readout(data, metadata))
-            data = estimates_to_readout(data)
+            estimates = data
+            data = estimates_to_readout(estimates)
     frame = (
         nw.from_native(pd.DataFrame(data), eager_only=True)
         if isinstance(data, list)

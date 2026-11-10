@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
@@ -14,6 +15,61 @@ from increment.workflows import capture_sequential
 pytestmark = pytest.mark.slow
 
 
+def _group_event_values(
+    enrolled, events, *, occurrence_labels, late_fact, null_values, filtered_domain, domain
+):
+    if late_fact:
+        for fact, day in (("late", 15), ("later", 17)):
+            events.append(
+                {
+                    "unit_id": "not-enrolled",
+                    "event": fact,
+                    "value": 1.0,
+                    "ts": datetime(2025, 1, day, tzinfo=UTC),
+                }
+            )
+    if null_values:
+        events.append(
+            {
+                "unit_id": "baseline-0",
+                "event": "purchase",
+                "value": None,
+                "ts": datetime(2025, 1, 2, tzinfo=UTC),
+            }
+        )
+    if filtered_domain:
+        events.append(
+            {
+                "unit_id": "not-enrolled",
+                "event": "purchase",
+                "value": -1.0,
+                "ts": datetime(2025, 1, 15, tzinfo=UTC),
+            }
+        )
+    if domain == "anchor_collision":
+        for row in enrolled:
+            row["ts"] += timedelta(hours=12)
+        events.append(
+            {
+                "unit_id": "baseline-1",
+                "event": "purchase",
+                "value": 900.0,
+                "ts": datetime(2025, 1, 1, 11, tzinfo=UTC),
+            }
+        )
+        for row in events:
+            row["first_exposure_ts"] = datetime(2024, 12, 1, tzinfo=UTC)
+    for row in events:
+        row["price_value"] = row["value"]
+        row["declared_segment"] = row["unit_id"]
+    if occurrence_labels:
+        for index, row in enumerate(events):
+            row["value"] = f"order-{index}"
+    if domain == "value_collision":
+        for row in events:
+            row["ds"] = row.pop("value")
+
+
 @contextmanager
 def _native_groups(
     *,
@@ -24,6 +80,11 @@ def _native_groups(
     large=False,
     sequential=False,
     metric_names=None,
+    fact_missing="error",
+    null_values=False,
+    occurrence_labels=False,
+    unequal_freshness=False,
+    domain=None,
 ):
     import ibis
     import pyarrow as pa
@@ -31,7 +92,17 @@ def _native_groups(
     from increment import from_definitions
     from increment.semantics.models import Definitions
 
-    common = {"entity": "unit_id", "preferred_direction": "increase"}
+    late_fact, filtered_domain = domain in ("temporal", "total"), domain == "total"
+
+    common = {
+        "entity": "unit_id",
+        "preferred_direction": "increase",
+        **(
+            {"filters": [{"property": "price", "op": "gt", "values": [0]}]}
+            if filtered_domain
+            else {}
+        ),
+    }
     metrics = [
         {
             **common,
@@ -91,6 +162,7 @@ def _native_groups(
         metrics = [metric for metric in metrics if metric["name"] in metric_names]
         plan["primary"] = metrics[0]["name"]
         plan["secondaries"] = [metric["name"] for metric in metrics[1:]]
+    value_column = "ds" if domain == "value_collision" else "value"
     definitions = Definitions.model_validate(
         {
             "dialect": "duckdb",
@@ -101,8 +173,27 @@ def _native_groups(
                     "timestamp_column": "ts",
                     "entities": ["unit_id"],
                     "facts": [
-                        {"name": name, "column": "value"}
-                        for name in ("purchase", "return", "denominator")
+                        {"name": name, "column": value_column, "missing": fact_missing}
+                        for name in (
+                            "purchase",
+                            "return",
+                            "denominator",
+                            *(("late", "later") if late_fact else ()),
+                        )
+                    ],
+                    "properties": [
+                        {
+                            "name": "price",
+                            "column": "price_value",
+                            "dtype": "float",
+                            "as_of": "static",
+                        },
+                        {
+                            "name": "declared_segment",
+                            "column": "declared_segment",
+                            "dtype": "string",
+                            "as_of": "static",
+                        },
                     ],
                 }
             ],
@@ -121,6 +212,9 @@ def _native_groups(
                     "n_pre_periods": 0,
                     "allocation": {"baseline": 0.5, "candidate": 0.5},
                     "plan": plan,
+                    "breakouts": {
+                        "breakout": [{"property": "declared_segment", "source": "events"}]
+                    }.get(domain, []),
                 }
             ],
         }
@@ -166,15 +260,34 @@ def _native_groups(
             enrolled.append(
                 {"unit_id": name, "group_id": "baseline", "ts": datetime(2025, 1, day, tzinfo=UTC)}
             )
+    if filtered_domain:
+        enrolled.append(
+            {
+                "unit_id": "beyond-original",
+                "group_id": "baseline",
+                "ts": datetime(2025, 1, 12, tzinfo=UTC),
+            }
+        )
     for fact in ("purchase", "return", "denominator"):
         events.append(
             {
                 "unit_id": "not-enrolled",
                 "event": fact,
                 "value": 99.0,
-                "ts": datetime(2025, 1, 10, tzinfo=UTC),
+                "ts": datetime(
+                    2025, 1, 3 if unequal_freshness and fact != "purchase" else 10, tzinfo=UTC
+                ),
             }
         )
+    _group_event_values(
+        enrolled,
+        events,
+        occurrence_labels=occurrence_labels,
+        late_fact=late_fact,
+        null_values=null_values,
+        filtered_domain=filtered_domain,
+        domain=domain,
+    )
     connection = ibis.duckdb.connect()
     connection.create_table("enrolled", pa.Table.from_pylist(enrolled))
     connection.create_table("events", pa.Table.from_pylist(events))
@@ -195,6 +308,318 @@ def _capture(resolver, *names):
     return {
         (row.metric, row.group_id): row for row in dashboard_group_data(binding, metrics=metrics)
     }
+
+
+def _snowflake_no_match_fetch(connection, query):
+    """Execute conditional counts with Snowflake's NULL-on-no-match semantics."""
+    import ibis
+    import pyarrow as pa
+    import sqlglot
+    from sqlglot import exp
+
+    statement = sqlglot.parse_one(ibis.to_sql(query, dialect="duckdb"), read="duckdb")
+    converted = 0
+    for conditional in tuple(statement.find_all(exp.Filter)):
+        if isinstance(conditional.this, exp.Count) and isinstance(conditional.this.this, exp.Star):
+            converted += 1
+            conditional.replace(
+                exp.Nullif(this=conditional.copy(), expression=exp.Literal.number(0))
+            )
+    assert "COUNT_IF(" not in ibis.to_sql(query, dialect="snowflake") or converted
+    cursor = connection.raw_sql(statement.sql("duckdb"))
+    columns = [column[0] for column in cursor.description]
+    rows = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+    return pa.Table.from_pylist(rows, schema=query.schema().to_pyarrow())
+
+
+def _assert_display_parity(source, metrics):
+    from dataclasses import fields
+
+    independent = [
+        row for metric in metrics for row in source.dashboard_group_data(metrics=(metric,))
+    ]
+    batched = source.dashboard_group_data(metrics=metrics)
+
+    def order(row):
+        return row.metric, row.group_id, row.eligible_units
+
+    for got, reference in zip(
+        sorted(batched, key=order), sorted(independent, key=order), strict=True
+    ):
+        for field in fields(reference):
+            value = getattr(reference, field.name)
+            assert getattr(got, field.name) == (
+                pytest.approx(value) if isinstance(value, float) else value
+            )
+
+
+def _assert_temporal_parity(day_source, metrics, grain, completed):
+    from increment.evidence import DayAxisRequest, evidence_provider, request_evidence
+
+    def acquire(selected):
+        answer = request_evidence(
+            evidence_provider(day_source),
+            DayAxisRequest(
+                caller="run_daily" if grain == "daily" else "run_asof",
+                grain=grain,
+                metrics=tuple(selected),
+                dimension=None,
+                completed_windows_only=completed,
+            ),
+        )
+        return [row for part in cast(Any, answer).slices for row in part.rows]
+
+    individual = tuple(acquire((metric,)) for metric in metrics)
+    combined = acquire(metrics)
+    batched = tuple([row for row in combined if row["metric"] == metric.name] for metric in metrics)
+
+    def identity(row):
+        return row["ds"], row["group_id"], row["metric"]
+
+    for got, independent in zip(batched, individual, strict=True):
+        got, independent = sorted(got, key=identity), sorted(independent, key=identity)
+        assert len(got) == len(independent)
+        for row, reference in zip(got, independent, strict=True):
+            assert row.keys() == reference.keys()
+            for key, value in reference.items():
+                assert row[key] == (
+                    pytest.approx(value, rel=1e-10, abs=1e-10)
+                    if isinstance(value, float)
+                    else value
+                )
+
+
+def _assert_total_domain_parity(source, metrics):
+    from increment.evidence import MomentsRequest, evidence_provider, request_evidence
+
+    independent = tuple(
+        cast(Any, request_evidence(evidence_provider(source), MomentsRequest(metric)))
+        for metric in metrics
+    )
+    assert [
+        next(row["n"] for row in rows if row["group_id"] == "baseline") for rows in independent
+    ] == [17, 18]
+    _assert_display_parity(source, metrics)
+
+
+def _assert_total_readout_uncertainty(source, metrics):
+    from math import sqrt
+
+    from increment import readouts
+    from increment.evidence import MetricEvidenceRequest, evidence_provider, request_evidence
+
+    def arm_variance(row):
+        n = row["n"]
+        var_num = (row["cy2"] - row["cy1"] ** 2 / n) / (n - 1)
+        if row["ref_den"] is None:
+            return var_num / n
+        mean_num = row["ref_y"] + row["cy1"] / n
+        mean_den = row["ref_den"] + row["cden1"] / n
+        ratio = mean_num / mean_den
+        var_den = (row["cden2"] - row["cden1"] ** 2 / n) / (n - 1)
+        cov = (row["cyden"] - row["cy1"] * row["cden1"] / n) / (n - 1)
+        return (var_num - 2 * ratio * cov + ratio**2 * var_den) / (n * mean_den**2)
+
+    independent = {}
+    for metric in metrics:
+        answer = cast(
+            Any,
+            request_evidence(evidence_provider(source), MetricEvidenceRequest(metric, "baseline")),
+        )
+        independent[metric.name] = {row["group_id"]: row for row in answer.rows}
+    batched = readouts.run(source, metrics=[metric.name for metric in metrics])
+    assert {
+        (
+            row.metric,
+            row.group_id,
+            row.method,
+            row.method_role,
+            row.estimand,
+            row.analysis_population,
+            row.role,
+        )
+        for row in batched
+    } == {
+        (
+            metric.name,
+            "candidate",
+            "unadjusted",
+            "decision",
+            "itt",
+            "assigned",
+            source.context.plan.procedures[metric.name].role,
+        )
+        for metric in metrics
+    }
+    for row in batched:
+        control, treatment = (
+            independent[row.metric]["baseline"],
+            independent[row.metric]["candidate"],
+        )
+        assert row.failure_code is None
+        assert (row.n_control, row.n_treat) == (control["n"], treatment["n"])
+        assert row.abs_se == pytest.approx(
+            sqrt(arm_variance(control) + arm_variance(treatment)), rel=1e-10, abs=1e-10
+        )
+
+
+@pytest.mark.integration
+def test_run_refuses_nonempty_by_instead_of_dropping_segments():
+    from increment import readouts
+    from increment.errors import UnsupportedRequestError
+
+    with _native_groups(domain="breakout", metric_names=("conversion", "mean")) as (_, _, resolver):
+        with pytest.raises(UnsupportedRequestError) as raised:
+            readouts.run(resolver._binding.source, by=("declared_segment",))
+
+        assert raised.value.code == "readout.run.segment_unsupported"
+        assert raised.value.context == {"metric": "conversion"}
+
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore:.*censoring dropped:increment.errors.IncrementWarning")
+@pytest.mark.parametrize(
+    "missing,snowflake,domain",
+    [
+        ("zero", False, None),
+        ("skip", False, None),
+        ("error", False, None),
+        ("zero", True, None),
+        ("zero", False, "temporal"),
+        ("zero", False, "total"),
+        ("zero", False, "anchor_collision"),
+    ],
+)
+def test_shared_order_components_keep_request_identity_maturity_and_ratio_covariance(
+    missing, monkeypatch, snowflake, domain
+):
+    from increment import readouts
+    from increment.errors import CodedError
+    from increment.evidence import MetricEvidenceRequest, evidence_provider, request_evidence
+    from increment.semantics.models import Filter, RatioMetric
+
+    with _native_groups(
+        extra_exclusions=True,
+        metric_names=("conversion", "mean", "retention"),
+        domain=domain,
+        fact_missing=missing,
+        null_values=True,
+        unequal_freshness=True,
+    ) as (connection, _, resolver):
+        source = resolver._binding.source
+        conversion, revenue, disjoint = resolver._binding.metrics
+        conversion = conversion.model_copy(update={"window_days": 7})
+        revenue = revenue.model_copy(update={"window_days": 1 if domain == "total" else 7})
+        if domain == "total":
+            _assert_total_domain_parity(
+                source, (revenue, revenue.model_copy(update={"fact": "late"}))
+            )
+            return
+        if domain == "temporal":
+            late_metrics = tuple(
+                metric.model_copy(update={"name": f"late_{metric.name}", "fact": "late"})
+                for metric in (conversion, revenue)
+            )
+            later = revenue.model_copy(update={"name": "later_mean", "fact": "later"})
+            day_source = source.day_source(metrics=(*late_metrics, later, revenue, disjoint))
+            for grain, completed in (("daily", False), ("asof", False), ("asof", True)):
+                _assert_temporal_parity(
+                    day_source, (*late_metrics, later, revenue), grain, completed
+                )
+            return
+        long_revenue = revenue.model_copy(update={"name": "long_mean", "window_days": 30})
+        ratio = RatioMetric(
+            name="revenue_per_order",
+            entity="unit_id",
+            preferred_direction="increase",
+            numerator={"fact": "purchase", "aggregation": "sum", "window_days": 7},
+            denominator={"fact": "purchase", "aggregation": "count", "window_days": 7},
+        )
+        filtered = revenue.model_copy(
+            update={
+                "name": "expensive",
+                "filters": (Filter(property="price", op="gt", values=(5,)),),
+            }
+        )
+        other_ratio = ratio.model_copy(
+            update={
+                "name": "revenue_per_denominator",
+                "denominator": ratio.denominator.model_copy(
+                    update={"fact": "denominator", "aggregation": "sum"}
+                ),
+            }
+        )
+        unbounded = other_ratio.model_copy(
+            update={
+                "name": "unbounded",
+                "numerator": other_ratio.numerator.model_copy(update={"window_days": None}),
+                "denominator": other_ratio.denominator.model_copy(update={"window_days": None}),
+            }
+        )
+        source = source.exploratory_source(
+            metrics=(ratio, filtered, other_ratio, unbounded, long_revenue)
+        )
+        if snowflake:
+            monkeypatch.setattr(
+                connection, "to_pyarrow", partial(_snowflake_no_match_fetch, connection)
+            )
+        metrics = (
+            conversion,
+            revenue,
+            ratio,
+            long_revenue,
+            disjoint,
+            filtered,
+            other_ratio,
+            unbounded,
+        )
+        requests = (
+            *(MetricEvidenceRequest(metric, "baseline") for metric in metrics),
+            MetricEvidenceRequest(conversion, "candidate"),
+        )
+        if missing == "error":
+            with pytest.raises(CodedError) as single:
+                request_evidence(evidence_provider(source), requests[0])
+            with pytest.raises(CodedError) as batch:
+                readouts.run(source, metrics=["conversion"])
+            assert (batch.value.code, batch.value.context) == (
+                single.value.code,
+                single.value.context,
+            )
+            assert not any(
+                name.startswith("component_values_") for name in connection.list_tables()
+            )
+            return
+        actual = tuple(
+            cast(Any, request_evidence(evidence_provider(source), request)) for request in requests
+        )
+        assert actual[0].control_group == "baseline"
+        assert actual[-1].control_group == "candidate"
+        baseline = next(row for row in actual[2].rows if row["group_id"] == "baseline")
+        assert baseline["n"] == 16
+        assert baseline["ref_y"] == pytest.approx(4.5, rel=1e-10, abs=1e-10)
+        assert baseline["ref_den"] == pytest.approx(
+            13 / 16 if missing == "zero" else 0.75, rel=1e-10, abs=1e-10
+        )
+        assert baseline["cy2"] == pytest.approx(236, rel=1e-10, abs=1e-10)
+        assert baseline["cden2"] == pytest.approx(
+            39 / 16 if missing == "zero" else 3, rel=1e-10, abs=1e-10
+        )
+        assert baseline["cyden"] == pytest.approx(
+            13.5 if missing == "zero" else 18, rel=1e-10, abs=1e-10
+        )
+        assert actual[3].rows == ()
+        _assert_total_readout_uncertainty(
+            source,
+            (
+                ratio,
+                next(metric for metric in source.context.metrics if metric.name == revenue.name),
+            ),
+        )
+        _assert_display_parity(source, metrics[:4])
+        for grain, completed in (("daily", False), ("asof", False), ("asof", True)):
+            day_source = source.day_source(metrics=metrics)
+            _assert_temporal_parity(day_source, metrics, grain, completed)
 
 
 def test_running_source_without_observations_explains_missing_cutoff():
@@ -463,8 +888,12 @@ def test_group_capture_materializes_only_bounded_aggregate_rows(monkeypatch):
 
         monkeypatch.setattr(connection, "to_pyarrow", capture)
         rows = _capture(resolver)
-    assert len(rows) == 10
-    assert max(row_counts) <= 2
+    assert set(rows) == {
+        (metric, arm)
+        for metric in ("conversion", "mean", "retention", "ratio", "quantile")
+        for arm in ("baseline", "candidate")
+    }
+    assert max(row_counts) <= len(rows)
 
 
 @pytest.mark.parametrize("kind", ["swapped_metric", "foreign_prefix"])

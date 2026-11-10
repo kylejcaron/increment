@@ -970,7 +970,7 @@ def _segment_frame(segments: dict[str, tuple[int, float]], *, seed: int) -> pd.D
     )
 
 
-def _run_breakout_view(frame: pd.DataFrame, plan: AnalysisPlan):
+def _run_breakout_view(frame: pd.DataFrame, plan: AnalysisPlan, *, metric_types=None):
     from increment import run
 
     experiment, reader = from_frame(
@@ -979,7 +979,7 @@ def _run_breakout_view(frame: pd.DataFrame, plan: AnalysisPlan):
         unit="unit",
         group="arm",
         control="control",
-        metrics={"revenue": "mean"},
+        metrics=metric_types or {"revenue": "mean"},
         breakouts=["country"],
         plan=plan,
     )
@@ -1034,10 +1034,10 @@ def test_bonferroni_counts_estimable_segments_and_keeps_low_reliability_verdicts
     assert [member.dimension_value for member in family.members] == ["A", "B", "LOW"]
 
 
-def test_two_arm_bonferroni_family_spans_arm_and_segment():
-    """With two treatment arms every estimable (arm, segment) cell counts: the five cells are
-    read at 1 - 0.05/5, the one-unit cell (C, t2) is an unavailable row outside the family,
-    and the family and its rows report both axes."""
+@pytest.mark.parametrize("correction", ["none", "bonferroni"])
+def test_two_arm_bonferroni_family_spans_arm_and_segment(correction):
+    """Two primaries do not split the exploratory nominal alpha: each metric's five
+    count-eligible arm/segment cells receive alpha/5, excluding its one-unit cell."""
     rng = np.random.default_rng(11)
     frame = pd.DataFrame(
         [
@@ -1052,26 +1052,38 @@ def test_two_arm_bonferroni_family_spans_arm_and_segment():
             for index in range(1 if (segment, arm) == ("C", "t2") else 200)
         ]
     )
+    frame["other"] = 2 * frame["revenue"]
     result = _run_breakout_view(
         frame,
         AnalysisPlan(
-            primary="revenue", view_multiplicity=MultiplicitySpec(correction="bonferroni")
+            primary=("revenue", "other"),
+            view_multiplicity=MultiplicitySpec(correction=correction),
         ),
+        metric_types={"revenue": "mean", "other": "mean"},
     )
     readout = result.readout(_BREAKOUT)
-    rows = {(row.dimension_value, row.group_id): row for row in readout}
+    cell_alpha = 0.05 / (5 if correction == "bonferroni" else 1)
+    rows = {(row.dimension_value, row.group_id): row for row in readout if row.metric == "revenue"}
+    assert all(
+        row.require_lift().alpha == pytest.approx(cell_alpha)
+        for row in readout
+        if row.excluded is None
+    )
 
     sparse = rows.pop(("C", "t2"))
     assert (sparse.excluded, sparse.family_id) == ("few_units", None)
     cells = [("A", "t1"), ("A", "t2"), ("B", "t1"), ("B", "t2"), ("C", "t1")]
     assert {key: row.require_lift().level for key, row in rows.items()} == dict.fromkeys(
-        cells, pytest.approx(1 - 0.05 / 5)
+        cells, pytest.approx(1 - cell_alpha)
     )
-    (family,) = readout.metadata.scope.families
-    assert family.family is not None
-    assert {(m.dimension_value, m.group_id) for m in family.members} == set(cells)
-    assert family.family.axes == ("arm", "segment")
-    assert {row.family_axes for row in rows.values()} == {("arm", "segment")}
+    assert len(readout.metadata.scope.families) == (2 if correction == "bonferroni" else 0)
+    for family in readout.metadata.scope.families:
+        assert family.family is not None
+        assert {(m.dimension_value, m.group_id) for m in family.members} == set(cells)
+        assert family.family.axes == ("arm", "segment")
+    assert {row.family_axes for row in rows.values()} == (
+        {("arm", "segment")} if correction == "bonferroni" else {None}
+    )
 
 
 def test_bonferroni_breakout_without_an_estimable_segment_has_no_family():
@@ -1429,30 +1441,17 @@ def test_run_breakout_removed_kwargs_raise_typeerror(con):
         view_readout(experiment, resolver, _BREAKOUT, q=0.05)
 
 
-def test_run_breakout_refuses_a_declared_margin_metric(con):
-    """readouts.breakout() refuses any metric declaring
-    Metric.margin/margin_abs with NotImplementedError - breakout rows are
-    tested two-sided vs 0 and a per-segment shifted null is not built.
-    This pins that refusal on the breakout view's
-    definitions-backed path, routed through readouts.breakout().
-    model_copy pattern mirrors
-    test_analysis_run_native_declared_margin_abs_reaches_the_estimate,
-    applied to the breakout path instead of run()."""
+def test_native_and_custom_margin_breakouts_replay_the_declared_hypothesis(con):
     fixture_experiment, fixture_resolver = _analysis_with_country_breakout(con)
     experiment, resolver = make_binding_like(
         fixture_resolver,
         [
-            # margin_abs requires an explicitly-declared direction (the semantics
-            # layer refuses a defaulted one) -- declare it so this test exercises
-            # breakout()'s own margin refusal, not that upstream validation.
             m.model_copy(update={"margin_abs": 1.0, "preferred_direction": "decrease"})
             if m.name == "revenue"
             else m
             for m in metrics(fixture_experiment, fixture_resolver)
         ],
     )
-    with pytest.raises(UnsupportedRequestError) as raised:
-        view_readout(experiment, resolver, _BREAKOUT)
     from contextlib import contextmanager
     from typing import Any, cast
 
@@ -1461,7 +1460,6 @@ def test_run_breakout_refuses_a_declared_margin_metric(con):
 
     source = cast(Any, held_source(resolver))
     builtin = evidence_provider(source)
-    scope_entries = 0
 
     class Provider:
         context = source.context
@@ -1498,8 +1496,6 @@ def test_run_breakout_refuses_a_declared_margin_metric(con):
         def scope(self, request: EvidenceScope):
             @contextmanager
             def scoped():
-                nonlocal scope_entries
-                scope_entries += 1
                 yield source
 
             return EvidenceScopeResult(scoped(), request)
@@ -1510,14 +1506,104 @@ def test_run_breakout_refuses_a_declared_margin_metric(con):
     )
     assert experiment_definition(custom_experiment, custom_resolver) is not None
     try:
-        with pytest.raises(UnsupportedRequestError) as custom_raised:
-            view_readout(custom_experiment, custom_resolver, _BREAKOUT)
-        assert custom_raised.value.code == "readout.margin.breakout"
-        assert scope_entries == 0
+        from increment.breakout.estimates import BreakoutEstimates
+        from increment.result_envelope import AnalysisEnvelope, result_rows
+
+        native = view_readout(experiment, resolver, _BREAKOUT)
+        custom = view_readout(custom_experiment, custom_resolver, _BREAKOUT)
+
+        def coordinates(row):
+            return row.metric, row.group_id, row.dimension_value, row.method
+
+        assert {
+            coordinates(row): (row.null_abs, row.alternative, row.excluded) for row in native
+        } == {coordinates(row): (row.null_abs, row.alternative, row.excluded) for row in custom}
+        assert all(
+            row.null_abs == 1.0 and row.alternative == "less"
+            for row in native
+            if row.metric == "revenue"
+        )
+        restored = AnalysisEnvelope.from_payload(
+            AnalysisEnvelope(tuple(native.as_cells()), native.metadata).to_payload()
+        )
+        replayed = BreakoutEstimates(result_rows(restored.cells), metadata=restored.metadata)
+        for live, replay in zip(native, replayed, strict=True):
+            decoded = BreakoutEstimate.model_validate_json(live.model_dump_json())
+            assert (decoded.null_abs, decoded.alternative, decoded.p_value()) == (
+                replay.null_abs,
+                replay.alternative,
+                replay.p_value(),
+            )
+        frame = replayed.to_frame(backend="pandas")
+        assert isinstance(frame, pd.DataFrame)
+        assert set(frame.loc[frame.metric == "revenue", "null_abs"]) == {1.0}
     finally:
         custom_resolver.close()
         resolver.close()
-    assert raised.value.code == "readout.margin.breakout"
+
+
+def test_linear_cuped_segment_margin_retains_construction_refusal():
+    from increment import CupedCovariate, ExperimentMetric, Method, MetricSpec, run
+
+    method = Method.cuped_multicovariate(covariates=[CupedCovariate(name="pre", kind="continuous")])
+    frame = _segment_frame({"A": (30, 0.0)}, seed=1)
+    frame["pre"] = np.tile(np.arange(30, dtype=float), 2)
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(name="revenue", decision_method=method, preferred_direction="increase")
+        ],
+        breakouts=["country"],
+        plan=AnalysisPlan(primary=ExperimentMetric(metric="revenue", margin=0.02)),
+    )
+    try:
+        with pytest.raises(UnsupportedRequestError) as raised:
+            run(experiment.with_views(_BREAKOUT), reader, views=(_BREAKOUT,))
+        assert raised.value.code == "readout.margin.breakout"
+        assert raised.value.context == {"names": ("revenue",)}
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("correction", ["none", "bonferroni"])
+def test_fixed_breakout_keeps_each_metrics_present_segment_roster(correction):
+    from increment.readouts import breakout
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import MeanMetric
+    from increment.sources import BreakoutMomentsSource
+
+    source = BreakoutMomentsSource(
+        [
+            {
+                "experiment_id": "sparse",
+                "metric": metric,
+                "group_id": arm,
+                "country": segment,
+                "n": 10,
+                "ref_y": 10.0,
+                "cy1": 0.0,
+                "cy2": 9.0,
+            }
+            for metric, segment in (("revenue", "A"), ("other", "B"))
+            for arm in ("control", "treatment")
+        ],
+        dimension="country",
+        metrics=[MeanMetric(name=name, entity="unit", fact=name) for name in ("revenue", "other")],
+        study_id="sparse",
+        design=Randomized(control_group="control"),
+        plan=AnalysisPlan(
+            primary=("revenue", "other"),
+            view_multiplicity=MultiplicitySpec(correction=correction),
+        ),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        rows = breakout(source, "country")
+    assert {(row.metric, row.dimension_value) for row in rows} == {("revenue", "A"), ("other", "B")}
 
 
 def test_run_breakout_refuses_when_no_breakouts_declared(con, example_definitions):

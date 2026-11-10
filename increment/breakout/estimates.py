@@ -2259,15 +2259,15 @@ def _partition_nonpositive_mean_rows(
     control_group: str,
     metric_types: Mapping[str, str],
     binomial_gate_exempt_metrics: frozenset[str],
+    nonpositive_mean_exempt_metrics: frozenset[str] = frozenset(),
 ) -> _MeanPartition:
     """Split *rows* on a per-row, family-dependent estimability gate.
 
     Rows with no usable metric observations are retained as a distinct unavailable reason;
-    other rows with ``n < 2`` or a nonpositive outcome/denominator mean are dropped when
-    log-scale variance models require those quantities. Exact binomial rows
-    remain eligible at ``n=1`` and with zero means. Mixed adjusted/unadjusted
-    requests receive a method-specific partition; this function only identifies
-    excluded rows.
+    other rows with ``n < 2`` are dropped. Nonpositive outcome means are admitted
+    for absolute hypotheses with an additive reference; ratio denominators must
+    remain positive. Exact binomial rows remain eligible at ``n=1`` and with zero means.
+    Mixed adjusted/unadjusted requests receive a method-specific partition.
 
     ``lost_control_metrics`` is every metric with a control row among
     *rows* but not among ``live``; ``live_control_metrics`` is every
@@ -2288,7 +2288,7 @@ def _partition_nonpositive_mean_rows(
         if int(row["n"]) < 2:
             dropped.append(_DroppedRow(row, "few_units"))
             continue
-        if _mean_y(row) <= 0.0:
+        if metric_name not in nonpositive_mean_exempt_metrics and _mean_y(row) <= 0.0:
             dropped.append(_DroppedRow(row, "nonpositive_mean"))
             continue
         if metric_types.get(metric_name) == "ratio":
@@ -2508,6 +2508,8 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
     method_fit_answers: Sequence[Any] = (),
     breakout_cell: Any | None = None,
     family_member: bool = False,
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
     from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
     from increment.errors import CodedError
@@ -2652,8 +2654,8 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                             method,
                             role,
                             alternative=alternative,
-                            null_lift=0.0,
-                            null_abs=None,
+                            null_lift=null_lift,
+                            null_abs=null_abs,
                             prior=prior,
                             code=exc.code,
                             context=exc.context,
@@ -2680,6 +2682,8 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
             prior=prior,
             alpha=alpha,
             alternative=alternative,
+            null_lift=null_lift,
+            null_abs=null_abs,
             inference=inference,
             method_roles=method_roles,
             family_member=family_member,
@@ -2716,6 +2720,8 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                     prior=prior,
                     alpha=alpha,
                     alternative=alternative,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
                     inference=inference,
                     method_roles=method_roles,
                     unit_frame=unit_frame,
@@ -2749,6 +2755,8 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                     method_role=role,
                     estimand="itt",
                     alternative=alternative,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
                     preferred_direction=metric.declared_preferred_direction,
                     failure_code=exc.code,
                     failure_context=failure_context,
@@ -2835,7 +2843,7 @@ def _encouragement_rows_for_slice(  # noqa: PLR0913
     estimands: Sequence[str],
     methods: list[Method] | None,
     prior: Prior | None,
-    policy: _DailyCellPolicy,
+    policy: _ReadoutCellPolicy,
     ds_value: date | datetime | str | int | float,
     ds_basis: Literal["calendar", "cohort"],
     dimension: str | None,
@@ -3114,9 +3122,8 @@ class _BreakoutContext(NamedTuple):
     methods_by_metric: Mapping[str, list[Method]] | None
     prior: Prior | None
     prior_by_metric: Mapping[str, Prior | None] | None
-    # Each metric's per-cell level; Bonferroni divides alpha by its count-estimable cells.
-    alpha_by_metric: Mapping[str, float]
-    alternative: str
+    # Each metric's complete hypothesis at its count-eligible per-cell level.
+    policy_by_metric: Mapping[str, _ReadoutCellPolicy]
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None
@@ -3176,6 +3183,7 @@ def _prepare_lift_slice(
     control_group: str,
     metric_types: Mapping[str, str],
     binomial_gate_exempt_metrics: frozenset[str],
+    nonpositive_mean_exempt_metrics: frozenset[str] = frozenset(),
     warning_label: str | None = None,
     unobserved_control_missing: bool = False,
 ) -> _PreparedLiftSlice:
@@ -3191,6 +3199,7 @@ def _prepare_lift_slice(
         control_group=control_group,
         metric_types=metric_types,
         binomial_gate_exempt_metrics=binomial_gate_exempt_metrics,
+        nonpositive_mean_exempt_metrics=nonpositive_mean_exempt_metrics,
     )
     if warning_label is not None:
         _warn_nonpositive_mean_partition(part, label=warning_label)
@@ -3293,6 +3302,7 @@ def _count_estimable_cells(
     control_group: str,
     metric_types: Mapping[str, str],
     scalar_cuped_decisions: frozenset[str],
+    nonpositive_mean_exempt_metrics: frozenset[str] = frozenset(),
 ) -> dict[str, int]:
     """Per metric, how many (treatment arm, segment) cells its decision method's arm counts
     can estimate: that metric's Bonferroni ``k``, known before any outcome is read, and the
@@ -3307,6 +3317,7 @@ def _count_estimable_cells(
                 control_group=control_group,
                 metric_types=metric_types,
                 binomial_gate_exempt_metrics=frozenset(),
+                nonpositive_mean_exempt_metrics=nonpositive_mean_exempt_metrics,
                 unobserved_control_missing=True,
             ).unestimable
             if scalar_cuped_decisions
@@ -3381,6 +3392,21 @@ def _record_failed_pairs(
     """Label each failed (metric, arm) pair even when other arms of the metric estimated."""
     for pair, failure in _failed_pairs(failures):
         unestimable.setdefault(pair, _failure_exclusion_reason(failure))
+
+
+def _record_method_exclusions(
+    excluded: Mapping[tuple[str, str], ExclusionReason],
+    methods: Sequence[Method],
+    roles: Mapping[str, Literal["decision", "sensitivity"]],
+    method_unestimable: dict[tuple[str, str, str], ExclusionReason],
+    unestimable: dict[tuple[str, str], ExclusionReason],
+) -> None:
+    """Keep each method's exclusion and only the decision method's family reason."""
+    for pair, reason in excluded.items():
+        for method in methods:
+            method_unestimable[(*pair, method.name)] = reason
+            if roles[method.name] == "decision":
+                unestimable.setdefault(pair, reason)
 
 
 def _keep_non_guard_failures(failures: Mapping[Any, Any], kept: dict[tuple[str, str], Any]) -> None:
@@ -3752,6 +3778,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
             rows = [r for r in prepared.live_rows if str(r["metric"]) == metric.name]
             if not rows:
                 continue
+            policy = context.policy_by_metric[metric.name]
             if context.correction == "bh":
                 metric_rows[(context.segment_value, metric.name)] = rows
             configured = _configured_methods_for_metric(
@@ -3771,8 +3798,11 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                 prior=metric_prior,
             )
             metric_evidence = (context.method_evidence or {}).get(metric.name)
+            absolute_ratio = metric.type == "ratio" and policy.null_abs is not None
             groups = _method_input_groups(
-                configured, mixed_groups, method_scoped=metric_evidence is not None
+                configured,
+                mixed_groups,
+                method_scoped=metric_evidence is not None or absolute_ratio,
             )
             for method_group in groups:
                 legacy_lane = method_group[0].variance_reduction == "cuped"
@@ -3807,12 +3837,17 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     "cuped_multicovariate",
                 ):
                     method_rows = _unadjusted_binomial_rows(rows)
-                elif mixed_groups is not None and legacy_lane:
+                elif legacy_lane and (mixed_groups is not None or absolute_ratio):
                     legacy_prepared = _prepare_lift_slice(
                         method_rows,
                         control_group=context.control_group,
                         metric_types={metric.name: metric.type},
                         binomial_gate_exempt_metrics=frozenset(),
+                        nonpositive_mean_exempt_metrics=(
+                            frozenset({metric.name})
+                            if policy.null_abs is not None and metric.type != "ratio"
+                            else frozenset()
+                        ),
                         warning_label=(
                             f"run_breakout: segment {context.dimension}="
                             f"{context.segment_value!r} method={method_group[0].name!r}"
@@ -3820,9 +3855,13 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                         unobserved_control_missing=True,
                     )
                     method_rows = legacy_prepared.live_rows
-                    for pair, reason in legacy_prepared.unestimable.items():
-                        for method in method_group:
-                            method_unestimable[(*pair, method.name)] = reason
+                    _record_method_exclusions(
+                        legacy_prepared.unestimable,
+                        method_group,
+                        resolved_roles,
+                        method_unestimable,
+                        unestimable,
+                    )
                     if not legacy_prepared.part.live_control_metrics:
                         continue
                 computation, skip_reason = _estimate_lift_computation_or_reason(
@@ -3830,8 +3869,10 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     summary=method_rows,
                     control_group=context.control_group,
                     prior=metric_prior,
-                    alpha=context.alpha_by_metric[metric.name],
-                    alternative=context.alternative,
+                    alpha=policy.alpha,
+                    alternative=policy.alternative,
+                    null_lift=policy.null_lift,
+                    null_abs=policy.null_abs,
                     methods=method_group,
                     inference=context.inference,
                     method_roles={
@@ -4057,7 +4098,7 @@ def _append_breakout_slice_rows(
                 dimension=context.dimension,
                 dimension_value=context.segment_value,
                 source=context.source,
-                alternative=context.alternative,
+                policy=context.policy_by_metric[outcome.metric],
                 lift=None,
                 **family,
             )
@@ -4071,7 +4112,7 @@ def _unavailable_breakout_row(
     dimension: str,
     dimension_value: str,
     source: str | None,
-    alternative: str,
+    policy: _ReadoutCellPolicy,
     **family: Any,
 ) -> BreakoutEstimate:
     """One identity-preserving unavailable row with its exact reason, and the
@@ -4084,7 +4125,10 @@ def _unavailable_breakout_row(
         "dimension": dimension,
         "dimension_value": dimension_value,
         "source": source,
-        "alternative": alternative,
+        "alternative": policy.alternative,
+        "null_lift": policy.null_lift,
+        "null_abs": policy.null_abs,
+        "policy_name": policy.policy_name,
         "lift": None,
         "excluded": outcome.reason,
         "failure_code": None if outcome.failure is None else outcome.failure.code,
@@ -4126,7 +4170,7 @@ class _BreakoutFamilyContext(NamedTuple):
     methods_by_metric: Mapping[str, list[Method]] | None
     prior: Prior | None
     prior_by_metric: Mapping[str, Prior | None] | None
-    alternative: str
+    policy_by_metric: Mapping[str, _ReadoutCellPolicy]
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None
     method_evidence: Mapping[str, Any] | None = None
@@ -4167,7 +4211,6 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
     prior = context.prior
     prior_by_metric = context.prior_by_metric
     method_roles = context.method_roles
-    alternative = context.alternative
     method_roles_by_metric = context.method_roles_by_metric
     from increment.decision import DecisionFailure, SegmentHypothesisKey
 
@@ -4261,6 +4304,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
     reestimated: dict[tuple[str, str], list[LiftEstimate]] = {}
     decision_method_by_metric: dict[str, Method] = {}
     for segment_value, metric_name in selected_segment_metrics:
+        policy = context.policy_by_metric[metric_name]
         metric_rows = metric_rows_by_segment_metric[(segment_value, metric_name)]
         metric_methods = (methods_by_metric or {}).get(metric_name, methods) or [
             Method(name="unadjusted")
@@ -4281,16 +4325,28 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                     dimension_value=segment_value,
                 )
             )
+        if (
+            decision_method.variance_reduction == "cuped"
+            and metrics_by_name[metric_name].type == "ratio"
+            and policy.null_abs is not None
+        ):
+            metric_rows = _prepare_lift_slice(
+                metric_rows,
+                control_group=control_group,
+                metric_types={metric_name: "ratio"},
+                binomial_gate_exempt_metrics=frozenset(),
+                unobserved_control_missing=True,
+            ).live_rows
         if decision_method.variance_reduction == "cuped_multicovariate":
             # Only a selected cell is rebuilt at the FCR level; an unselected
             # sibling keeps its nominal row, so its wider interval is never built.
-            selected_alpha = _fcr_alpha_for(alternative, outcome.fcr_alpha)
+            selected_alpha = _fcr_alpha_for(policy.alternative, outcome.fcr_alpha)
             reestimated[(segment_value, metric_name)] = [
                 open_bound_from_two_sided_at_target(
                     reintervalize_cuped_decision(
                         row,
                         selected_alpha,
-                        alternative=alternative,
+                        alternative=policy.alternative,
                         metric=metrics_by_name[metric_name],
                         method=decision_method,
                         prior=(prior_by_metric or {}).get(metric_name, prior),
@@ -4308,12 +4364,14 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             summary=metric_rows,
             control_group=control_group,
             prior=(prior_by_metric or {}).get(metric_name, prior),
-            alpha=_fcr_alpha_for(alternative, outcome.fcr_alpha),
+            alpha=_fcr_alpha_for(policy.alternative, outcome.fcr_alpha),
             methods=[decision_method],
-            alternative=alternative,
+            alternative=policy.alternative,
+            null_lift=policy.null_lift,
+            null_abs=policy.null_abs,
             inference=None,
             method_roles={decision_name: "decision"},
-            route_tail=fcr_route_tail(alternative, outcome.fcr_alpha),
+            route_tail=fcr_route_tail(policy.alternative, outcome.fcr_alpha),
         )
         if re_estimates:
             reestimated[(segment_value, metric_name)] = [
@@ -4345,7 +4403,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                     if estimate.method_role == "decision"
                     else None,
                     "family_nominal_alpha": (
-                        family_record["family_nominal_alpha"]
+                        alpha
                         if estimate.method_role == "decision" and family_discovery(outcome, key)
                         else None
                     ),
@@ -4409,7 +4467,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                 dimension=dimension,
                 dimension_value=segment_value,
                 source=original.source,
-                alternative=match.alternative,
+                policy=context.policy_by_metric[match.metric],
                 n_treat=original.n_treat,
                 n_control=original.n_control,
                 low_reliability=original.low_reliability,
@@ -4638,6 +4696,57 @@ def run_breakout(  # noqa: PLR0913
         sequential_refuse(
             "source.invalid", "exact breakout snapshot requires its registered runtime"
         )
+    return _run_fixed_breakout(
+        summary,
+        metrics,
+        control_group=control_group,
+        dimension=dimension,
+        source=source,
+        methods=methods,
+        prior=prior,
+        correction=correction,
+        q=q,
+        policy_by_metric={
+            metric.name: _ReadoutCellPolicy(alpha, alternative, 0.0, None, None, policy_name)
+            for metric in metrics
+        },
+        reliability_floor=reliability_floor,
+        method_roles=method_roles,
+        method_roles_by_metric=method_roles_by_metric,
+        methods_by_metric=methods_by_metric,
+        _prior_by_metric=_prior_by_metric,
+        _method_evidence_by_metric=_method_evidence_by_metric,
+        unit_frames_by_metric=unit_frames_by_metric,
+        covariates_by_metric=covariates_by_metric,
+        _cell_advisories=_cell_advisories,
+    )
+
+
+def _run_fixed_breakout(  # noqa: PLR0913
+    summary: IntoDataFrame | Iterable[Mapping[str, Any]] | None,
+    metrics: Sequence[Metric],
+    *,
+    control_group: str,
+    dimension: str,
+    policy_by_metric: Mapping[str, _ReadoutCellPolicy],
+    correction: Correction,
+    q: float,
+    source: str | None = None,
+    methods: list[Method] | None = None,
+    prior: Prior | None = None,
+    reliability_floor: int = DEFAULT_RELIABILITY_FLOOR,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
+    method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]]
+    | None = None,
+    methods_by_metric: Mapping[str, list[Method]] | None = None,
+    _prior_by_metric: Mapping[str, Prior | None] | None = None,
+    _method_evidence_by_metric: Mapping[str, Any] | None = None,
+    unit_frames_by_metric: Mapping[str, Mapping[str, Any]] | None = None,
+    covariates_by_metric: Mapping[str, Sequence[Any]] | None = None,
+    _cell_advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None = None,
+) -> BreakoutEstimates:
+    """Estimate acquired fixed-horizon segment evidence under complete hypotheses."""
+    inference = None
     resolved_methods = methods if methods is not None else [Method(name="unadjusted")]
     _validate_methods(resolved_methods)
     binomial_gate_exempt_metrics = _binomial_gate_exempt_metrics(
@@ -4672,6 +4781,9 @@ def run_breakout(  # noqa: PLR0913
         control_group=control_group,
         methods_by_metric=methods_by_metric,
     )
+    nonpositive_mean_exempt_metrics = frozenset(
+        metric.name for metric in metrics if policy_by_metric[metric.name].null_abs is not None
+    )
     prepared_by_segment: dict[str, _PreparedLiftSlice] = {}
     for value in sorted(segments):
         prepared_by_segment[value] = _prepare_lift_slice(
@@ -4679,6 +4791,7 @@ def run_breakout(  # noqa: PLR0913
             control_group=control_group,
             metric_types={m.name: m.type for m in metrics},
             binomial_gate_exempt_metrics=binomial_gate_exempt_metrics,
+            nonpositive_mean_exempt_metrics=nonpositive_mean_exempt_metrics,
             warning_label=f"run_breakout: segment {dimension}={value!r}",
             unobserved_control_missing=True,
         )
@@ -4689,6 +4802,7 @@ def run_breakout(  # noqa: PLR0913
             all_pairs,
             control_group=control_group,
             metric_types={m.name: m.type for m in metrics},
+            nonpositive_mean_exempt_metrics=nonpositive_mean_exempt_metrics,
             scalar_cuped_decisions=_scalar_cuped_decision_metrics(
                 metrics,
                 methods=methods,
@@ -4702,8 +4816,12 @@ def run_breakout(  # noqa: PLR0913
         if correction == "bonferroni"
         else {}
     )
-    alpha_by_metric = {
-        metric.name: _conservative_divide(alpha, max(estimable.get(metric.name, 0), 1))
+    cell_policies = {
+        metric.name: policy_by_metric[metric.name]._replace(
+            alpha=_conservative_divide(
+                policy_by_metric[metric.name].alpha, max(estimable.get(metric.name, 0), 1)
+            )
+        )
         for metric in metrics
     }
     results: list[BreakoutEstimate] = []
@@ -4724,8 +4842,7 @@ def run_breakout(  # noqa: PLR0913
             methods_by_metric,
             prior,
             _prior_by_metric,
-            alpha_by_metric,
-            alternative,
+            cell_policies,
             inference,
             method_roles,
             method_roles_by_metric,
@@ -4757,21 +4874,23 @@ def run_breakout(  # noqa: PLR0913
         correction,
         q,
         inference,
-        alpha,
+        next(iter(policy_by_metric.values())).alpha if policy_by_metric else 0.05,
         control_group,
         dimension,
         methods,
         methods_by_metric,
         prior,
         _prior_by_metric,
-        alternative,
+        policy_by_metric,
         method_roles,
         method_roles_by_metric,
         _method_evidence_by_metric,
     )
     results = _apply_breakout_family_correction(results, family_context)
-    if policy_name != "default_exploratory":
-        results = [row.model_copy(update={"policy_name": policy_name}) for row in results]
+    results = [
+        row.model_copy(update={"policy_name": policy_by_metric[row.metric].policy_name})
+        for row in results
+    ]
 
     output = BreakoutEstimates(stamp_multiplicity_status(results, correction=correction))
     return output
@@ -4996,7 +5115,7 @@ def _nan_lift_rows(  # noqa: PLR0913
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]]
     | None = None,
     unavailable_methods: Mapping[tuple[str, str], set[str]] | None = None,
-    policy_by_metric: Mapping[str, _DailyCellPolicy] | None = None,
+    policy_by_metric: Mapping[str, _ReadoutCellPolicy] | None = None,
 ) -> list[DailyLiftEstimate]:
     """One unavailable ``DailyLiftEstimate`` per (metric, arm) x method.
 
@@ -5010,7 +5129,7 @@ def _nan_lift_rows(  # noqa: PLR0913
     for (metric, group_id), reason in sorted(unestimable.items()):
         policy = (policy_by_metric or {}).get(
             metric,
-            _DailyCellPolicy(0.05, alternative, 0.0, None, None, "default_exploratory"),
+            _ReadoutCellPolicy(0.05, alternative, 0.0, None, None, "default_exploratory"),
         )
         for method in (methods_by_metric or {}).get(metric, resolved):
             if unavailable_methods is not None and method.name not in unavailable_methods.get(
@@ -5077,7 +5196,7 @@ def _asof_monitoring_note(
     return "; ".join(dict.fromkeys(notes)) or None
 
 
-class _DailyCellPolicy(NamedTuple):
+class _ReadoutCellPolicy(NamedTuple):
     """Complete decision policy for one metric in one date/segment slice."""
 
     alpha: float
@@ -5143,7 +5262,7 @@ def _estimate_itt_slice_or_unavailable(
     slice_metrics: Sequence[Metric],
     prepared: _PreparedLiftSlice,
     context: _DailyLiftContext,
-    policy_by_metric: Mapping[str, _DailyCellPolicy],
+    policy_by_metric: Mapping[str, _ReadoutCellPolicy],
 ) -> _DailyMetricPass:
     """Estimate ITT cells and track method-specific unavailable cells."""
     unestimable = dict(prepared.unestimable)
@@ -5279,7 +5398,7 @@ def _daily_lift_rows_for_slice(
     ds_value: date | datetime | str | int | float,
     dim_value: str | None,
     context: _DailyLiftContext,
-    policy_by_metric: Mapping[str, _DailyCellPolicy],
+    policy_by_metric: Mapping[str, _ReadoutCellPolicy],
 ) -> list[DailyLiftEstimate]:
     """Project estimated and unavailable ITT cells for one day slice."""
     rows: list[DailyLiftEstimate] = []
@@ -5371,7 +5490,7 @@ def _append_daily_encouragement_rows(
     slice_metrics: Sequence[Metric],
     estimands: Sequence[str],
     context: _DailyLiftContext,
-    policy_by_metric: Mapping[str, _DailyCellPolicy],
+    policy_by_metric: Mapping[str, _ReadoutCellPolicy],
     *,
     ds_value: date | datetime | str | int | float,
     dim_value: str | None,
@@ -5448,10 +5567,10 @@ def resolve_daily_cell_policy(
     view: DayAxisView,
     plan: CompiledDecisionPlan | None,
     segment_count_by_metric: Mapping[str, int] | None,
-) -> _DailyCellPolicy:
+) -> _ReadoutCellPolicy:
     """Resolve a metric's compiled policy for one date/segment slice."""
     if plan is None:
-        return _DailyCellPolicy(alpha, alternative, 0.0, None, None, "default_exploratory")
+        return _ReadoutCellPolicy(alpha, alternative, 0.0, None, None, "default_exploratory")
     procedure = plan.procedures[metric.name]
     n_arms = len({str(row["group_id"]) for row in metric_rows} - {str(control_group)})
     n_segments = (segment_count_by_metric or {}).get(metric.name, 1)
@@ -5464,7 +5583,7 @@ def resolve_daily_cell_policy(
         view=resolver_view,
         mechanism=getattr(design, "mechanism", None),
     )
-    return _DailyCellPolicy(
+    return _ReadoutCellPolicy(
         alpha=cell_alpha,
         alternative=procedure.alternative,
         null_lift=float(getattr(procedure, "null_lift", 0.0)),
@@ -5478,7 +5597,7 @@ def _resolve_daily_cell_policy(
     context: _DailyLiftContext,
     metric: Metric,
     metric_rows: Sequence[Mapping[str, Any]],
-) -> _DailyCellPolicy:
+) -> _ReadoutCellPolicy:
     """Resolve the complete policy for one metric/date/segment slice.
 
     Arm cardinality is date-local: a later arm must not spend an earlier date's
@@ -5641,7 +5760,7 @@ def run_daily_lift(  # noqa: PLR0913
     | None = None,
     segment_roster_by_metric: Mapping[str, Sequence[str]] | None = None,
     treatment_arms: Sequence[str] = (),
-    _policy_by_cell: Mapping[tuple[date, str, str | None], Mapping[str, _DailyCellPolicy]]
+    _policy_by_cell: Mapping[tuple[date, str, str | None], Mapping[str, _ReadoutCellPolicy]]
     | None = None,
     plan: CompiledDecisionPlan | None = None,
     _cell_advisories: dict[CellKey, tuple[ReadoutAdvisory, ...]] | None = None,
@@ -5691,7 +5810,7 @@ def run_daily_lift(  # noqa: PLR0913
     treatment_arms : Sequence[str]
         The design's declared treatment arms. Each one, and each arm observed for a
         metric anywhere in *summary*, is a cell on every day slice of that metric.
-    _policy_by_cell : Mapping[tuple[date, str, str | None], Mapping[str, _DailyCellPolicy]] | None
+    _policy_by_cell : Mapping[tuple[date, str, str | None], Mapping[str, _ReadoutCellPolicy]] | None
         Internal compiled per-day, per-metric cell policy supplied by plan execution.
     _cell_advisories : dict[CellKey, tuple[ReadoutAdvisory, ...]] | None
         Internal: filled with the estimators' typed advisories, keyed by the full

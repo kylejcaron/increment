@@ -5,7 +5,6 @@ import re
 import shlex
 import subprocess
 import sys
-import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -401,26 +400,6 @@ def test_core_install_job_runs_listed_modules_without_warehouse_packages() -> No
         if step.get("name") == "Check required jobs and gate decisions"
     )
     assert gate_env["CORE_INSTALL_RESULT"] == "${{ needs.core-install.result }}"
-
-
-def test_core_test_dependencies_exclude_warehouse_backends() -> None:
-    project = tomllib.loads(Path("pyproject.toml").read_text())
-    requirements = project["dependency-groups"]["core-test"]
-    assert {
-        "pytest",
-        "pytest-xdist",
-        "pytest-timeout",
-        "hypothesis",
-        "sybil",
-        "tach",
-        "polars",
-        "pandas",
-    } <= {requirement.split(">")[0].split("=")[0] for requirement in requirements}
-    assert not any(
-        name in requirement.lower()
-        for requirement in requirements
-        for name in ("ibis", "sqlglot", "duckdb")
-    )
 
 
 def test_weekly_floor_parts_cover_each_interpreter_with_distinct_reports() -> None:
@@ -961,8 +940,15 @@ def test_weekly_exhaustive_tier_runs_in_full_partitions_at_newest_dependencies()
         ), name
 
 
-def _report_fires(condition: str, results: list[str]) -> bool:
-    """Evaluate the reporter's ``if`` for a scheduled run whose needed jobs ended with *results*."""
+def _report_fires(
+    condition: str,
+    results: list[str],
+    *,
+    event_name: str = "schedule",
+    needs_results: dict[str, str] | None = None,
+    report_output: str = "false",
+) -> bool:
+    """Evaluate the parsed reporter condition for its event, needs, and step state."""
     expression = condition.strip().removeprefix("${{").removesuffix("}}")
     expression = re.sub(
         r"contains\(needs\.\*\.result, '(\w+)'\)",
@@ -970,8 +956,24 @@ def _report_fires(condition: str, results: list[str]) -> bool:
         expression,
     )
     expression = expression.replace("always()", "True")
+    expression = expression.replace("failure()", str("failure" in results))
+    expression = expression.replace("cancelled()", str("cancelled" in results))
+    expression = expression.replace(
+        "success()", str(all(result == "success" for result in results))
+    )
+    expression = re.sub(
+        r"needs\.([-\w]+)\.result",
+        lambda match: repr((needs_results or {}).get(match.group(1), "success")),
+        expression,
+    )
+    expression = expression.replace(
+        "steps.classify.outputs.report == 'true'", str(report_output == "true")
+    )
     expression = expression.replace("&&", " and ").replace("||", " or ")
-    scope = {"github": SimpleNamespace(event_name="schedule"), "inputs": SimpleNamespace(target="")}
+    scope = {
+        "github": SimpleNamespace(event_name=event_name),
+        "inputs": SimpleNamespace(target=""),
+    }
     return eval(expression, {"__builtins__": {}}, scope)
 
 
@@ -983,6 +985,420 @@ def test_weekly_failure_report_fires_when_any_weekly_job_fails_or_times_out() ->
     for result in ("failure", "cancelled"):
         assert _report_fires(report["if"], ["success", result, "skipped"]), result
     assert not _report_fires(report["if"], ["success", "skipped"])
+
+
+def _workflow_context_value(expression: str, context: dict[str, dict[str, str]]) -> str:
+    expression = expression.strip()
+    contains = re.fullmatch(r"contains\(needs\.\*\.result,\s*'([^']+)'\)", expression)
+    if contains:
+        return str(contains.group(1) in context["needs"].values()).lower()
+    need = re.fullmatch(r"needs\.([-\w]+)\.result", expression)
+    if need:
+        return str(context["needs"][need.group(1)])
+    github = re.fullmatch(r"github\.([-\w]+)", expression)
+    if github:
+        return str(context["github"][github.group(1)])
+    raise AssertionError(f"unhandled workflow expression: {expression}")
+
+
+def _render_workflow_env(
+    expressions: dict[str, str],
+    context: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    return {
+        key: re.sub(
+            r"\$\{\{\s*([^}]+)\s*\}\}",
+            lambda match: _workflow_context_value(match.group(1), context),
+            value,
+        )
+        for key, value in expressions.items()
+    }
+
+
+def _install_fake_gh(
+    directory: Path,
+    fixture_path: Path,
+    state_path: Path,
+    fixture: dict[str, object],
+) -> None:
+    executable = directory / "gh"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, re, sys\n"
+        "from pathlib import Path\n"
+        "fixture = json.loads(Path(os.environ['GH_FIXTURE']).read_text())\n"
+        "context = fixture['api_context']\n"
+        "state_path = Path(os.environ['GH_STATE'])\n"
+        "state = json.loads(state_path.read_text())\n"
+        "args = sys.argv[1:]\n"
+        "def fail(message):\n"
+        "    print('OFFLINE_FIXTURE_PROTOCOL_ERROR: ' + message, file=sys.stderr); sys.exit(2)\n"
+        "def save(): state_path.write_text(json.dumps(state))\n"
+        "if args and args[0] == 'api':\n"
+        "    if len(args) == 2: paginate, path = False, args[1]\n"
+        "    elif len(args) == 3 and args[1] == '--paginate': paginate, path = True, args[2]\n"
+        "    else: fail('unsupported local gh api flags')\n"
+        "    jobs_path = f\"repos/{context['repository']}/actions/runs/{context['run_id']}/attempts/{context['attempt']}/jobs?per_page=100\"\n"
+        "    check_prefix = f\"repos/{context['repository']}/check-runs/\"\n"
+        "    if path == jobs_path:\n"
+        "        pages = fixture['jobs']\n"
+        "        fail_after_first = fixture.get('fail_jobs_after_first_page', False)\n"
+        "    elif path.startswith(check_prefix) and path.endswith('/annotations?per_page=100'):\n"
+        "        check_id = path[len(check_prefix):-len('/annotations?per_page=100')]\n"
+        "        if not re.fullmatch(r'[0-9]+', check_id) or check_id not in context['check_run_ids']:\n"
+        "            fail('unexpected local check-run endpoint')\n"
+        "        pages = fixture['annotations'].get(check_id, [])\n"
+        "        fail_after_first = False\n"
+        "    else: fail('unexpected local API endpoint')\n"
+        "    if fixture.get('api_error'):\n"
+        "        print('offline API fixture failure', file=sys.stderr); sys.exit(1)\n"
+        "    selected_pages = pages if paginate else pages[:1]\n"
+        "    for page_index, page in enumerate(selected_pages):\n"
+        "        print(json.dumps(page))\n"
+        "        if fail_after_first and page_index == 0:\n"
+        "            print('offline partial API fixture failure', file=sys.stderr); sys.exit(1)\n"
+        "elif args[:2] == ['label', 'create']:\n"
+        "    expected = ['label', 'create', 'nightly-failure', '--repo', context['repository'], '--color', 'B60205', '--description', 'Opened automatically when a nightly validation gate fails', '--force']\n"
+        "    if args != expected: fail('unexpected local label command')\n"
+        "    if fixture.get('label_error'):\n"
+        "        print('offline label fixture failure', file=sys.stderr); sys.exit(1)\n"
+        "    state['labels'].append('nightly-failure'); save()\n"
+        "elif args[:2] == ['issue', 'list']:\n"
+        "    expected = ['issue', 'list', '--repo', context['repository'], '--label', 'nightly-failure', '--state', 'open', '--json', 'number', '--jq', '.[0].number // empty']\n"
+        "    if args != expected: fail('unexpected local issue-list command')\n"
+        "    print(state['issues'][0]['number'] if state['issues'] else '')\n"
+        "elif args[:2] == ['issue', 'create']:\n"
+        "    run_url = context['run_url']\n"
+        "    expected = ['issue', 'create', '--repo', context['repository'], '--title', f'Nightly validation failed: {run_url}', '--label', 'nightly-failure', '--body', f'A nightly test suite failed. See {run_url} for logs and retained evidence artifacts.']\n"
+        "    if args != expected: fail('unexpected local issue-create command')\n"
+        "    state['issues'].append({'number': max((i['number'] for i in state['issues']), default=0) + 1}); save()\n"
+        "elif args[:2] == ['issue', 'comment']:\n"
+        "    if len(args) != 7 or args[2] != str(state['issues'][0]['number']) or args[3:5] != ['--repo', context['repository']] or args[5:] != ['--body', f\"Nightly validation failed again: {context['run_url']}\"]:\n"
+        "        fail('unexpected local issue-comment command')\n"
+        "    state['comments'] += 1; save()\n"
+        "else:\n"
+        "    fail('unsupported local gh fixture command')\n"
+    )
+    executable.chmod(0o755)
+    fixture_path.write_text(json.dumps(fixture))
+    existing = fixture.get("existing_issue")
+    state_path.write_text(
+        json.dumps(
+            {
+                "labels": [],
+                "issues": [] if existing is None else [{"number": existing}],
+                "comments": 0,
+            }
+        )
+    )
+
+
+def _nightly_job_record(
+    check_url: str,
+    attempt: int,
+    *,
+    name: str = "full suite (locked dependencies, slow + examples, 3.12, shard 1/2)",
+    conclusion: str = "cancelled",
+    run_attempt: int | None = None,
+    url: str | None = None,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "status": "completed",
+        "conclusion": conclusion,
+        "run_attempt": attempt if run_attempt is None else run_attempt,
+        "check_run_url": check_url if url is None else url,
+    }
+
+
+def _nightly_job_pages(
+    scenario: str, check_url: str, attempt: int
+) -> tuple[list[dict[str, object]], str | None]:
+    def record(
+        *,
+        name: str = "full suite (locked dependencies, slow + examples, 3.12, shard 1/2)",
+        conclusion: str = "cancelled",
+        run_attempt: int | None = None,
+        url: str | None = None,
+    ) -> dict[str, object]:
+        return _nightly_job_record(
+            check_url,
+            attempt,
+            name=name,
+            conclusion=conclusion,
+            run_attempt=run_attempt,
+            url=url,
+        )
+
+    if scenario == "direct_current_timeout":
+        return [{"jobs": [record(conclusion="timed_out")]}], "reported"
+    if scenario == "paginated_timeout_annotation":
+        return [
+            {
+                "jobs": [
+                    record(
+                        name="other suite (locked dependencies, slow + examples, 3.12, shard 1/2)"
+                    )
+                ]
+            },
+            {"jobs": [record()]},
+        ], "reported"
+    if scenario == "unrelated_near_name_old_attempt":
+        return [
+            {
+                "jobs": [
+                    record(run_attempt=1, conclusion="timed_out"),
+                    record(
+                        name="other suite (locked dependencies, slow + examples, 3.12, shard 1/2)",
+                        conclusion="timed_out",
+                    ),
+                    record(
+                        name="full suite (locked dependencies, slow + examples, 3.12, shard 3/2)",
+                        conclusion="timed_out",
+                    ),
+                ]
+            }
+        ], "classification_error"
+    if scenario in {"malformed_jobs", "wrong_type_job_status"}:
+        malformed = record(conclusion="timed_out")
+        if scenario == "malformed_jobs":
+            del malformed["run_attempt"]
+        else:
+            malformed["status"] = 404
+        return [{"jobs": [record(), malformed]}], "classification_error"
+    if scenario == "empty_jobs_body":
+        return [], "classification_error"
+    if scenario == "partial_jobs_api_failure":
+        return [
+            {"jobs": [record(conclusion="timed_out")]},
+            {"jobs": [record(conclusion="failure")]},
+        ], "classification_error"
+    if scenario == "foreign_check_url":
+        return [
+            {"jobs": [record(url="https://attacker.example/repos/owner/project/check-runs/77")]}
+        ], "classification_error"
+    if scenario == "label_failure":
+        return [{"jobs": [record(conclusion="timed_out")]}], "label_failure"
+    if scenario in {
+        "empty_annotation_body",
+        "empty_annotation_page",
+        "existing_issue_update",
+        "malformed_annotation",
+        "manual_cancel_after_95_minutes",
+        "warning_timeout_message",
+    }:
+        return [{"jobs": [record()]}], None
+    return [], None
+
+
+def _nightly_annotation_pages(
+    scenario: str,
+) -> tuple[dict[str, list[list[dict[str, object]]]], str | None]:
+    timeout = {
+        "annotation_level": "failure",
+        "message": "The job has exceeded the maximum execution time of 1h30m0s",
+    }
+    cancelled = {"annotation_level": "failure", "message": "The operation was canceled."}
+    if scenario == "paginated_timeout_annotation":
+        return {
+            "77": [
+                [{"annotation_level": "failure", "message": "A different annotation"}],
+                [timeout],
+            ]
+        }, None
+    if scenario == "manual_cancel_after_95_minutes":
+        return {"77": [[{**cancelled, "duration_minutes": 95}]]}, None
+    if scenario == "malformed_jobs":
+        return {"77": [[cancelled]]}, None
+    if scenario == "wrong_type_job_status":
+        return {"77": [[cancelled]]}, None
+    if scenario == "empty_annotation_body":
+        return {"77": []}, "classification_error"
+    if scenario == "empty_annotation_page":
+        return {"77": [[]]}, None
+    if scenario == "existing_issue_update":
+        return {"77": [[timeout]]}, "updated"
+    if scenario == "malformed_annotation":
+        return {"77": [[{"message": timeout["message"]}]]}, "classification_error"
+    if scenario == "warning_timeout_message":
+        return {"77": [[{**timeout, "annotation_level": "warning"}]]}, None
+    return {}, None
+
+
+def _nightly_fixture(
+    scenario: str,
+    required_needs: list[str],
+    check_url: str,
+    attempt: int,
+) -> tuple[dict[str, object], dict[str, str], str, str]:
+    fixture: dict[str, object] = {"jobs": [], "annotations": {}}
+    needs = dict.fromkeys(required_needs, "success")
+    event_name = "schedule"
+    expected = "no_report"
+    if scenario == "ordinary_failure_api_unavailable":
+        needs["test-all"] = "failure"
+        fixture["api_error"] = True
+        expected = "reported"
+    elif scenario == "pull_request":
+        event_name = "pull_request"
+        needs["test-all"] = "cancelled"
+        expected = "not_scheduled"
+    elif scenario in {"skipped", "success"}:
+        if scenario == "skipped":
+            needs["test-all"] = "skipped"
+    else:
+        needs["test-all"] = "cancelled"
+        job_pages, job_expected = _nightly_job_pages(scenario, check_url, attempt)
+        fixture["jobs"] = job_pages
+        annotation_pages, annotation_expected = _nightly_annotation_pages(scenario)
+        fixture["annotations"] = annotation_pages
+        expected = annotation_expected or job_expected or expected
+        if scenario == "partial_jobs_api_failure":
+            fixture["fail_jobs_after_first_page"] = True
+        elif scenario == "existing_issue_update":
+            fixture["existing_issue"] = 7
+        elif scenario == "label_failure":
+            fixture["label_error"] = True
+    return fixture, needs, event_name, expected
+
+
+@pytest.mark.grid(
+    "Cases cover independent API pagination, malformed-data, timeout-cause, and writer-state transitions."
+)
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "ordinary_failure_api_unavailable",
+        "direct_current_timeout",
+        "paginated_timeout_annotation",
+        "manual_cancel_after_95_minutes",
+        "unrelated_near_name_old_attempt",
+        "malformed_jobs",
+        "wrong_type_job_status",
+        "empty_jobs_body",
+        "empty_annotation_body",
+        "empty_annotation_page",
+        "partial_jobs_api_failure",
+        "existing_issue_update",
+        "label_failure",
+        "malformed_annotation",
+        "foreign_check_url",
+        "warning_timeout_message",
+        "success",
+        "skipped",
+        "pull_request",
+    ],
+)
+def test_nightly_offline_reporter_chain_smoke(scenario: str, tmp_path: Path) -> None:
+    """Run the parsed job, classifier and gated writer shells against local external state."""
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/nightly.yml").read_text())
+    job = workflow["jobs"]["report-failure"]
+    repository = "owner/project"
+    api_url = "https://api.github.com"
+    attempt = 2
+    check_url = f"{api_url}/repos/{repository}/check-runs/77"
+    fixture, needs, event_name, expected = _nightly_fixture(
+        scenario, job["needs"], check_url, attempt
+    )
+    fixture["api_context"] = {
+        "repository": repository,
+        "run_id": "123",
+        "attempt": attempt,
+        "check_run_ids": ["77"],
+        "run_url": "https://github.com/owner/project/actions/runs/123",
+    }
+
+    context: dict[str, dict[str, str]] = {
+        "github": {
+            "event_name": event_name,
+            "repository": repository,
+            "run_id": "123",
+            "run_attempt": str(attempt),
+            "api_url": api_url,
+            "server_url": "https://github.com",
+            "token": "offline-test-token",
+        },
+        "needs": needs,
+    }
+    need_results = list(needs.values())
+    if not _report_fires(job["if"], need_results, event_name=event_name, needs_results=needs):
+        assert expected == "not_scheduled"
+        return
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fixture_path = tmp_path / "fixture.json"
+    state_path = tmp_path / "issue-state.json"
+    _install_fake_gh(fake_bin, fixture_path, state_path, fixture)
+    output_path = tmp_path / "output"
+    env = os.environ | _render_workflow_env(
+        job["env"] | job["steps"][0]["env"],
+        context,
+    )
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "GH_FIXTURE": str(fixture_path),
+            "GH_STATE": str(state_path),
+            "GITHUB_OUTPUT": str(output_path),
+        }
+    )
+    classifier = job["steps"][0]
+    classified = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", classifier["run"]],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if classified.returncode:
+        assert expected == "classification_error", classified.stderr
+        assert "OFFLINE_FIXTURE_PROTOCOL_ERROR" not in classified.stderr
+        assert classified.stderr
+        report_value = "false"
+        classifier_succeeded = False
+    else:
+        assert expected != "classification_error", "malformed classification data succeeded"
+        report_value = dict(line.split("=", 1) for line in output_path.read_text().splitlines())[
+            "report"
+        ]
+        classifier_succeeded = True
+        assert (report_value == "true") == (expected in {"reported", "updated", "label_failure"})
+
+    previous_steps_succeeded = classifier_succeeded
+    for step in job["steps"][1:]:
+        prior_result = [] if previous_steps_succeeded else ["failure"]
+        if not _report_fires(
+            step["if"],
+            prior_result,
+            event_name=event_name,
+            report_output=report_value,
+        ):
+            continue
+        step_env = env | _render_workflow_env(step.get("env", {}), context)
+        result = subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+            cwd=root,
+            env=step_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            assert expected == "label_failure", result.stderr
+            assert step["name"] == "Ensure the tracking label exists"
+            previous_steps_succeeded = False
+        else:
+            assert expected != "label_failure", "issue writer ran after label setup failed"
+
+    external = json.loads(state_path.read_text())
+    expected_issue_count = 1 if expected in {"reported", "updated"} else 0
+    assert len(external["issues"]) == expected_issue_count
+    assert bool(external["labels"]) == (expected in {"reported", "updated"})
+    assert external["comments"] == (1 if expected == "updated" else 0)
 
 
 def test_live_bigquery_probes_run_in_full_partitions_that_take_turns() -> None:

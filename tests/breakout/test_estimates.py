@@ -177,33 +177,655 @@ def test_segment_rekey_accepts_sensitivity_and_decision_rows_with_advisories():
     assert all(row.dimension == "country" and row.dimension_value == "US" for row in results)
 
 
-def test_rekeyed_advisories_match_segment_result_identity():
-    from increment.breakout.estimates import _rekey_segment_computation
-    from increment.estimation.advisory import ReadoutAdvisory
-    from increment.estimation.decision_types import (
-        ArmHypothesisKey,
-        DecisionComputation,
-        SegmentHypothesisKey,
+def _planned_breakout(
+    rows,
+    metrics,
+    *,
+    hypotheses,
+    methods=None,
+    method_roles=None,
+    correction="none",
+    q=0.1,
+):
+    from increment import readouts
+    from increment.decision import AbsoluteArmDecisionProcedure, RelativeArmDecisionProcedure
+    from increment.plan import compile_decision_plan
+    from increment.semantics.design import Randomized
+    from increment.sources import BreakoutMomentsSource
+
+    methods = methods or [Method(name="unadjusted")]
+    decision = next(
+        (method for method in methods if (method_roles or {}).get(method.name) == "decision"),
+        methods[0],
+    )
+    procedures = {}
+    for metric in metrics:
+        alpha, alternative, null_lift, null_abs, role = hypotheses[metric.name]
+        common: dict[str, Any] = {
+            "metric": metric.name,
+            "alpha": alpha,
+            "alternative": alternative,
+            "role": role,
+            "decision_method": decision,
+            "sensitivity_methods": tuple(method for method in methods if method != decision),
+        }
+        procedures[metric.name] = (
+            RelativeArmDecisionProcedure(**common, null_lift=null_lift)
+            if null_abs is None
+            else AbsoluteArmDecisionProcedure(**common, null_abs=null_abs)
+        )
+    plan = compile_decision_plan(None, metrics).model_copy(
+        update={"declared": True, "alpha": alpha, "q": q, "procedures": procedures}
+    )
+    source = BreakoutMomentsSource(
+        rows,
+        dimension="country",
+        metrics=metrics,
+        study_id="exp1",
+        design=Randomized(control_group="control"),
+        plan=plan,
+    )
+    return readouts.breakout(source, "country", correction=correction, q=q)
+
+
+def _compiled_mean_breakout(
+    *,
+    alternative="two-sided",
+    margin=None,
+    margin_abs=None,
+    direction="increase",
+    control_mean=10.0,
+    treatment_mean=10.0,
+    alpha=0.05,
+    correction="none",
+):
+    from increment import (
+        AnalysisPlan,
+        ExperimentMetric,
+        MetricSpec,
+        MultiplicitySpec,
+        View,
+        from_frame,
+        run,
     )
 
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"{arm}-{i}",
+                "arm": arm,
+                "country": "US",
+                "rev": mean + offset,
+            }
+            for arm, mean in (("control", control_mean), ("treatment", treatment_mean))
+            for i, offset in enumerate([-1.0, 1.0] * 50)
+        ]
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        breakouts=["country"],
+        metrics=[
+            MetricSpec(
+                name="rev",
+                type="mean",
+                preferred_direction=direction,
+            )
+        ],
+        plan=AnalysisPlan(
+            primary=ExperimentMetric(metric="rev", margin=margin, margin_abs=margin_abs),
+            alpha=alpha,
+            alternative=alternative,
+            view_multiplicity=MultiplicitySpec(correction=correction),
+        ),
+    )
+    view = View(view="breakout", grain="total")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            return run(experiment.with_views(view), reader).readout(view)
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize(
+    ("alternative", "null", "direction"),
+    [("greater", -0.02, "increase"), ("less", 0.05, "decrease")],
+)
+def test_compiled_segment_relative_margin_uses_declared_welch_tail(alternative, null, direction):
+    from scipy.stats import t
+
+    for delta in (-0.01, 0.0, 0.01):
+        mean_t = 10.0 * (1.0 + null + delta)
+        (row,) = _compiled_mean_breakout(
+            margin=abs(null), direction=direction, treatment_mean=mean_t
+        )
+        variance = 100.0 / 99.0
+        v_c, v_t = variance / (100 * 10.0**2), variance / (100 * mean_t**2)
+        df = (v_c + v_t) ** 2 / ((v_c**2 + v_t**2) / 99)
+        z = (math.log(mean_t / 10.0) - math.log1p(null)) / math.sqrt(v_c + v_t)
+        expected = t.sf(z, df) if alternative == "greater" else t.cdf(z, df)
+        assert (row.alternative, row.null_lift, row.null_abs) == (alternative, null, None)
+        assert row.p_value() == pytest.approx(expected, rel=1e-10, abs=1e-13)
+        assert row.require_lift().alpha == pytest.approx(0.1)
+        assert row.role == "exploratory"
+        reference_rows = [
+            _make_arm_row(100, mean, variance, country="US", group_id=arm)
+            for arm, mean in (("control", 10.0), ("treatment", mean_t))
+        ]
+        (reference,) = estimate_lift(
+            [_mean_metric()],
+            reference_rows,
+            control_group="control",
+            alpha=0.05,
+            alternative=alternative,
+            null_lift=null,
+        ).results
+        assert (row.require_lift().lb, row.require_lift().ub) == pytest.approx(
+            (reference.require_lift().lb, reference.require_lift().ub)
+        )
+
+
+@pytest.mark.parametrize(
+    ("control_mean", "treatment_mean"),
+    [(10.0, 10.25), (0.0, 0.25), (-1.0, -0.75), (0.25, 0.0)],
+)
+def test_compiled_segment_absolute_margin_uses_metric_units_and_additive_reference(
+    control_mean, treatment_mean
+):
+    from scipy.stats import t
+
+    (row,) = _compiled_mean_breakout(
+        margin_abs=0.5,
+        direction="decrease",
+        control_mean=control_mean,
+        treatment_mean=treatment_mean,
+    )
+    difference = treatment_mean - control_mean
+    se = math.sqrt(2.0 / 99.0)
+    assert row.excluded is None
+    assert (row.alternative, row.null_lift, row.null_abs) == ("less", 0.0, 0.5)
+    assert row.p_value() == pytest.approx(t.cdf((difference - 0.5) / se, 198))
+    assert row.abs_diff == pytest.approx(difference)
+    assert row.abs_se == pytest.approx(se)
+    assert row.abs_ub == pytest.approx(difference + t.isf(0.05, 198) * se)
+    assert row.abs_reference_kind == "t"
+    assert row.abs_reference_df == pytest.approx(198)
+    assert row.abs_alpha == pytest.approx(0.1)
+    assert row.stat_sig() is True
+    if min(control_mean, treatment_mean) <= 0.0:
+        assert row.lift is None
+        assert row.relative_confidence_set is None
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+
+
+def test_absolute_segment_nonpositive_means_keep_bh_selection_and_fcr_on_replay():
+    from scipy.stats import t
+
+    differences = {"A": 0.2, "B": -0.5, "C": 0.5}
     rows = [
-        _make_arm_row(50, 10.0, 4.0, country="US", group_id="control"),
-        _make_arm_row(50, 12.0, 4.0, country="US", group_id="treatment"),
+        _make_arm_row(
+            100,
+            mean,
+            100.0 / 99.0,
+            country=segment,
+            group_id=arm,
+        )
+        for segment, difference in differences.items()
+        for arm, mean in (("control", -1.0), ("treatment", -1.0 + difference))
     ]
-    (result,) = estimate_lift([_mean_metric()], rows, control_group="control").results
-    key = ArmHypothesisKey(result.metric, result.group_id, result.estimand)
-    advisory = ReadoutAdvisory(code="test.advisory", context={"reason": "retained"}, message="note")
-    bundle = DecisionComputation(
-        results=(result,), evidence={}, failures={}, advisories={key: (advisory,)}
+    policy = (0.05, "less", 0.0, 0.5, "guardrail")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _planned_breakout(
+            rows,
+            [_mean_metric()],
+            hypotheses={"rev": policy},
+            correction="bh",
+            q=0.03,
+        )
+    se = math.sqrt(2.0 / 99.0)
+    for original in result:
+        row = BreakoutEstimate.model_validate_json(original.model_dump_json())
+        difference = differences[row.dimension_value]
+        assert row.excluded is None
+        assert row.lift is None
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+        assert (row.alternative, row.null_lift, row.null_abs) == ("less", 0.0, 0.5)
+        assert row.p_value() == pytest.approx(t.cdf((difference - 0.5) / se, 198))
+        assert row.discovery is (row.dimension_value != "C")
+        assert row.family_size == 3
+        assert row.family_threshold == pytest.approx(0.02)
+        if row.discovery:
+            assert row.family_nominal_alpha == 0.05
+        assert row.abs_alpha == pytest.approx(0.02 if row.discovery else 0.1)
+        tail = 0.01 if row.discovery else 0.05
+        assert row.abs_ub == pytest.approx(difference + t.isf(tail, 198) * se)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("zero_control_n", "missing_metric_observations"),
+        ("zero_treatment_n", "missing_metric_observations"),
+        ("one_control_n", "no_control_arm"),
+        ("one_treatment_n", "few_units"),
+        ("absent_control", "no_control_arm"),
+        ("ratio_missing_denominator", "nonpositive_mean"),
+        ("ratio_zero_denominator", "nonpositive_mean"),
+        ("ratio_scalar_cuped", "nonpositive_mean"),
+        ("relative_null", "nonpositive_mean"),
+    ],
+)
+def test_absolute_segment_admission_preserves_count_and_relative_domain_gates(case, expected):
+
+    ratio = case.startswith("ratio")
+    metric = _ratio_metric("rev") if ratio else _mean_metric()
+    control_mean = 1.0 if case.endswith("_n") or case == "absent_control" else -1.0
+    rows = [
+        _make_arm_row(
+            100,
+            mean,
+            1.0,
+            country="US",
+            group_id=arm,
+            sum_den=100.0 if ratio else None,
+            x_mean=0.0 if case == "ratio_scalar_cuped" else None,
+        )
+        for arm, mean in (("control", control_mean), ("treatment", control_mean + 0.2))
+    ]
+    if case == "absent_control":
+        rows.pop(0)
+    elif case.endswith("_n"):
+        rows[0 if "control" in case else 1]["n"] = 0 if case.startswith("zero") else 1
+    elif case == "ratio_missing_denominator":
+        rows[1]["ref_den"] = None
+    elif case == "ratio_zero_denominator":
+        rows[1]["ref_den"] = 0.0
+    policy = (
+        0.05,
+        "less",
+        0.05 if case == "relative_null" else 0.0,
+        None if case == "relative_null" else 0.5,
+        "guardrail",
     )
-    rekeyed = _rekey_segment_computation(bundle, dimension="country", dimension_value="US")
-    segment_key = SegmentHypothesisKey(
-        result.metric, result.group_id, result.estimand, "country", "US"
+    methods = (
+        [Method(name="cuped", variance_reduction="cuped")] if case == "ratio_scalar_cuped" else None
     )
-    assert rekeyed.advisories[segment_key] == (advisory,)
-    segment_result = cast(Any, rekeyed.results[0])
-    assert segment_result.dimension == "country"
-    assert segment_result.dimension_value == "US"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _planned_breakout(
+            rows,
+            [metric],
+            hypotheses={"rev": policy},
+            methods=methods,
+            correction="bh",
+            q=0.1,
+        )
+    assert all(row.excluded == expected for row in result)
+    assert all(row.p_value() is None for row in result)
+    for row in result:
+        assert (row.alternative, row.null_lift, row.null_abs) == policy[1:4]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["cuped_mean", "ratio", "ratio_mixed_unadjusted_decision", "ratio_mixed_cuped_decision"],
+)
+def test_absolute_segment_nonpositive_mean_reaches_existing_additive_method(kind):
+    from scipy.stats import t
+
+    metric = _mean_metric() if kind == "cuped_mean" else _ratio_metric("rev")
+    methods = [Method(name="cuped", variance_reduction="cuped")] if kind == "cuped_mean" else None
+    mixed = kind.startswith("ratio_mixed")
+    if mixed:
+        methods = [Method(name="unadjusted"), Method(name="cuped", variance_reduction="cuped")]
+    decision = "cuped" if kind == "ratio_mixed_cuped_decision" else "unadjusted"
+    rows = [
+        _make_arm_row(
+            100,
+            mean,
+            1.0,
+            country="US",
+            group_id=arm,
+            x_mean=0.0 if kind == "cuped_mean" or mixed else None,
+            sum_den=100.0 if kind.startswith("ratio") else None,
+        )
+        for arm, mean in (("control", -1.0), ("treatment", -0.8))
+    ]
+    policy = (0.05, "less", 0.0, 0.5, "guardrail")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _planned_breakout(
+            rows,
+            [metric],
+            hypotheses={"rev": policy},
+            methods=methods,
+            method_roles=(
+                {
+                    name: "decision" if name == decision else "sensitivity"
+                    for name in ("unadjusted", "cuped")
+                }
+                if mixed
+                else None
+            ),
+            correction="bh" if mixed else "none",
+            q=0.1,
+        )
+    row = next(
+        row for row in result if row.method == ("cuped" if kind == "cuped_mean" else "unadjusted")
+    )
+    assert row.excluded is None
+    assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+    assert row.abs_diff == pytest.approx(0.2)
+    assert row.abs_se == pytest.approx(math.sqrt(0.02))
+    assert row.p_value() == pytest.approx(t.cdf(-0.3 / math.sqrt(0.02), 198))
+    if mixed:
+        cuped = next(row for row in result if row.method == "cuped")
+        assert cuped.excluded == "nonpositive_mean"
+        decision_row = next(row for row in result if row.method_role == "decision")
+        assert decision_row.family_size == 1
+        assert decision_row.discovery is (decision == "unadjusted")
+
+
+def test_absolute_ratio_cuped_fcr_keeps_nonpositive_sibling_out_of_method_input():
+    from scipy.stats import t
+
+    rows = [
+        _make_arm_row(200, mean, 1.0, country="US", group_id=arm, sum_den=200.0, x_mean=0.0)
+        for arm, mean in (("control", 10.0), ("good", 11.0), ("bad", -1.0))
+    ]
+    for row in rows:
+        row["cxden"] = 0.0
+    policy = (0.05, "greater", 0.0, 0.5, "guardrail")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _planned_breakout(
+            rows,
+            [_ratio_metric("rev")],
+            hypotheses={"rev": policy},
+            methods=[
+                Method(name="cuped", variance_reduction="cuped"),
+                Method(name="unadjusted"),
+            ],
+            method_roles={"cuped": "decision", "unadjusted": "sensitivity"},
+            correction="bh",
+            q=0.04,
+        )
+    by_cell = {(row.group_id, row.method): row for row in result}
+    selected = by_cell[("good", "cuped")]
+    assert selected.discovery is True
+    assert selected.family_size == 2
+    assert selected.abs_alpha == pytest.approx(0.02)
+    assert selected.abs_lb == pytest.approx(1.0 - t.isf(0.01, 398) * 0.1)
+    excluded = by_cell[("bad", "cuped")]
+    assert excluded.excluded == "nonpositive_mean"
+    assert excluded.discovery is False
+    assert excluded.family_size == 2
+    assert by_cell[("bad", "unadjusted")].excluded is None
+
+
+def test_absolute_constant_nonpositive_segment_keeps_valid_bh_sibling():
+
+    rows = [
+        _make_arm_row(100, mean, variance, country=segment, group_id=arm)
+        for segment, variance, treatment in (("constant", 0.0, -0.8), ("variable", 1.0, -1.5))
+        for arm, mean in (("control", -1.0), ("treatment", treatment))
+    ]
+    policy = (0.05, "less", 0.0, 0.5, "guardrail")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _planned_breakout(
+            rows,
+            [_mean_metric()],
+            hypotheses={"rev": policy},
+            correction="bh",
+            q=0.04,
+        )
+    by_segment = {row.dimension_value: row for row in result}
+    assert by_segment["variable"].discovery is True
+    assert by_segment["variable"].family_size == 2
+    assert by_segment["constant"].discovery is False
+    assert by_segment["constant"].family_size == 2
+    assert by_segment["constant"].excluded == "zero_variance"
+    assert by_segment["constant"].p_value() is None
+    assert (by_segment["constant"].alternative, by_segment["constant"].null_abs) == ("less", 0.5)
+
+
+def test_absolute_mixed_binary_cuped_keeps_additive_row_and_count_only_bonferroni():
+    from scipy.stats import t
+
+    rows = [
+        _conversion_arm_row(
+            n,
+            successes,
+            country=segment,
+            group_id=arm,
+            with_covariate=True,
+        )
+        for segment, n, successes_t in (("A", 100, 0), ("B", 1, 0), ("C", 100, 50))
+        for arm, successes in (("control", max(n // 2, 1)), ("treatment", successes_t))
+    ]
+    for row in rows:
+        row["cx2"] = float(row["n"])
+    policy = (0.05, "less", 0.0, -0.1, "guardrail")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _planned_breakout(
+            rows,
+            [_conversion_metric()],
+            hypotheses={"conv": policy},
+            methods=[
+                Method(name="cuped", variance_reduction="cuped"),
+                Method(name="unadjusted"),
+            ],
+            method_roles={"cuped": "decision", "unadjusted": "sensitivity"},
+            correction="bonferroni",
+            q=0.1,
+        )
+    by_cell = {(row.dimension_value, row.method): row for row in result}
+    additive = by_cell[("A", "cuped")]
+    se = math.sqrt(0.25 / 99.0)
+    assert additive.excluded is None
+    assert additive.relative_unavailable_reason == "nonpositive_arm_mean"
+    assert additive.p_value() == pytest.approx(t.cdf(-0.4 / se, 99))
+    assert additive.abs_alpha == pytest.approx(0.05)
+    assert additive.abs_ub == pytest.approx(-0.5 + t.isf(0.025, 99) * se)
+    assert by_cell[("C", "cuped")].abs_alpha == pytest.approx(0.05)
+    assert by_cell[("B", "cuped")].excluded == "few_units"
+    assert by_cell[("B", "unadjusted")].excluded is None
+    assert by_cell[("B", "unadjusted")].reference_kind == "binomial"
+
+
+def test_compiled_segment_zero_null_keeps_one_sided_alternative_at_tiny_alpha():
+    from scipy.stats import t
+
+    (row,) = _compiled_mean_breakout(alternative="greater", treatment_mean=12.0, alpha=1e-20)
+    variance = 100.0 / 99.0
+    vc, vt = variance / 10000.0, variance / 14400.0
+    df = (vc + vt) ** 2 / ((vc**2 + vt**2) / 99)
+    assert row.alternative == "greater"
+    assert row.null_lift == 0.0
+    assert row.require_lift().alpha == 2e-20
+    expected_lower = math.expm1(math.log(1.2) - t.isf(1e-20, df) * math.sqrt(vc + vt))
+    assert row.require_lift().lb == pytest.approx(expected_lower, rel=1e-10)
+
+
+def test_segment_mixed_hypotheses_share_one_bh_family_and_fcr_cap():
+    from scipy.stats import t
+
+    policies = {
+        "rel": (0.05, "greater", -0.02, None, "primary"),
+        "abs": (0.05, "less", 0.0, 0.5, "guardrail"),
+        "zero": (0.05, "two-sided", 0.0, None, "secondary"),
+    }
+    means = {"rel": (10.3, 9.7), "abs": (9.5, 11.0), "zero": (11.0, 10.0)}
+    rows = [
+        _make_arm_row(200, mean, 1.0, country=segment, metric=metric, group_id=arm)
+        for metric, treatment_means in means.items()
+        for segment, mean_t in zip(("A", "B"), treatment_means, strict=True)
+        for arm, mean in (("control", 10.0), ("treatment", mean_t))
+    ]
+    p_values = {}
+    for metric, treatment_means in means.items():
+        policy = policies[metric]
+        for segment, mean_t in zip(("A", "B"), treatment_means, strict=True):
+            vc, vt = 1.0 / 20000.0, 1.0 / (200 * mean_t**2)
+            df = (vc + vt) ** 2 / ((vc**2 + vt**2) / 199)
+            z = (math.log(mean_t / 10.0) - math.log1p(policy[2])) / math.sqrt(vc + vt)
+            p_values[(metric, segment)] = (
+                t.cdf((mean_t - 10.0 - policy[3]) / 0.1, 398)
+                if policy[3] is not None
+                else t.sf(z, df)
+                if policy[1] == "greater"
+                else 2 * t.sf(abs(z), df)
+            )
+    ordered = sorted(p_values, key=p_values.__getitem__)
+    rank = max((i for i, key in enumerate(ordered, 1) if p_values[key] <= 0.04 * i / 6), default=0)
+    selected = set(ordered[:rank])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _planned_breakout(
+            rows,
+            [_mean_metric(name) for name in policies],
+            hypotheses=policies,
+            correction="bh",
+            q=0.04,
+        )
+    assert selected == {("rel", "A"), ("abs", "A"), ("zero", "A")}
+    assert {(row.metric, row.dimension_value) for row in result if row.discovery} == selected
+    for row in result:
+        policy = policies[row.metric]
+        assert (row.alternative, row.null_lift, row.null_abs) == (
+            policy[1],
+            policy[2],
+            policy[3],
+        )
+        assert row.p_value() == pytest.approx(p_values[(row.metric, row.dimension_value)], rel=1e-9)
+        assert row.family_size == 6
+        assert row.role == "exploratory"
+        if row.discovery:
+            assert row.require_lift().alpha == pytest.approx(min(0.04 * rank / 6, 0.05))
+            assert row.family_nominal_alpha == 0.05
+    absolute = next(row for row in result if row.metric == "abs" and row.discovery)
+    assert absolute.abs_ub == pytest.approx(-0.5 + t.isf(0.01, 398) * 0.1)
+    assert absolute.abs_lb == pytest.approx(-0.5 - t.isf(0.01, 398) * 0.1)
+
+
+@pytest.mark.parametrize("kind", ["cuped", "ratio"])
+def test_shifted_segment_method_and_unavailable_rows_keep_complete_hypothesis(kind):
+
+    metric = _mean_metric() if kind == "cuped" else _ratio_metric("rev")
+    methods = [Method(name="cuped", variance_reduction="cuped")] if kind == "cuped" else None
+    rows = [
+        _make_arm_row(
+            200 if segment == "A" else 1,
+            mean,
+            4.0,
+            country=segment,
+            group_id=arm,
+            x_mean=1.0 if kind == "cuped" else None,
+            sum_den=400.0 if kind == "ratio" else None,
+        )
+        for segment in ("A", "B")
+        for arm, mean in (("control", 10.0), ("treatment", 10.0))
+    ]
+    policy = (0.05, "less", 0.05, None, "guardrail")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        result = _planned_breakout(
+            rows,
+            [metric],
+            hypotheses={"rev": policy},
+            methods=methods,
+            correction="bh",
+            q=0.01,
+        )
+        (reference,) = estimate_lift(
+            [metric],
+            rows[:2],
+            control_group="control",
+            methods=methods,
+            alpha=0.01,
+            alternative="less",
+            null_lift=0.05,
+        ).results
+    by_segment = {row.dimension_value: row for row in result}
+    selected, unavailable = by_segment["A"], by_segment["B"]
+    assert selected.discovery is True
+    assert selected.family_size == 1
+    assert selected.require_lift().ub == pytest.approx(reference.require_lift().ub)
+    assert unavailable.excluded == "few_units"
+    for row in result:
+        assert (row.alternative, row.null_lift, row.null_abs, row.policy_name) == (
+            "less",
+            0.05,
+            None,
+            "compiled_plan",
+        )
+
+
+def test_conversion_segment_absolute_margin_uses_restricted_score_tail():
+    from scipy.optimize import brentq
+    from scipy.stats import norm
+
+    from increment import (
+        AnalysisPlan,
+        ExperimentMetric,
+        MetricSpec,
+        MultiplicitySpec,
+        View,
+        from_frame,
+        run,
+    )
+
+    for successes_t in (10, 20, 30):
+        frame = pd.DataFrame(
+            [
+                {"unit": f"{arm}-{i}", "arm": arm, "country": "US", "conv": int(i < successes)}
+                for arm, successes in (("control", 10), ("treatment", successes_t))
+                for i in range(100)
+            ]
+        )
+        experiment, reader = from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="conv", type="conversion", preferred_direction="decrease")],
+            breakouts=["country"],
+            plan=AnalysisPlan(
+                primary=ExperimentMetric(metric="conv", margin_abs=0.1),
+                view_multiplicity=MultiplicitySpec(correction="bh", q=0.1),
+            ),
+        )
+        view = View(view="breakout", grain="total")
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", IncrementWarning)
+                (row,) = run(experiment.with_views(view), reader).readout(view)
+        finally:
+            reader.close()
+        assert isinstance(row, BreakoutEstimate)
+
+        def derivative(pc, successes_t=successes_t):
+            if pc == 0.0:
+                return math.inf
+            if pc == 0.9:
+                return -math.inf
+            pt = pc + 0.1
+            return 10 / pc - 90 / (1 - pc) + successes_t / pt - (100 - successes_t) / (1 - pt)
+
+        pc = brentq(derivative, 0.0, 0.9)
+        pt = pc + 0.1
+        se = math.sqrt((pc * (1 - pc) + pt * (1 - pt)) / 100 * 200 / 199)
+        expected = norm.cdf((successes_t / 100 - 0.1 - 0.1) / se)
+        assert (row.alternative, row.null_abs, row.abs_reference_kind) == ("less", 0.1, "score")
+        assert row.p_value() == pytest.approx(expected, rel=1e-8, abs=1e-13)
 
 
 # CRITICAL: never call estimate_lift on a multi-segment summary at once.
@@ -3206,67 +3828,6 @@ class TestRunBreakoutDenseGrid:
         assert by_metric["rev"].excluded is None
         assert by_metric["sessions"].excluded == "no_control_arm"
         assert by_metric["sessions"].lift is None
-
-
-def test_breakout_replays_one_open_ended_warning_per_metric_across_segments(monkeypatch):
-    import increment.breakout.estimates as breakout
-    from increment.errors import warn
-    from increment.estimation.engine import _WARNINGS
-
-    original = breakout._estimate_lift
-    spec = _WARNINGS["estimation.engine.open_ended_sequential"]
-
-    def warn_then_estimate(*args, **kwargs):
-        metric = kwargs["metrics"][0]
-        warn(
-            spec,
-            context={
-                "metric_name": metric.name,
-                "windows": "window_days=None",
-                "fix": "Set window_days",
-            },
-        )
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(breakout, "_estimate_lift", warn_then_estimate)
-    metrics = [_mean_metric("rev"), _mean_metric("sessions")]
-    rows = [
-        _make_arm_row(
-            50,
-            mean,
-            4.0,
-            country=country,
-            group_id=group,
-            metric=metric,
-        )
-        for country, offset in (("US", 0.0), ("CA", 1.0))
-        for metric in ("rev", "sessions")
-        for group, mean in (
-            ("control", 10.0 + offset),
-            ("treatment_a", 11.0 + offset),
-            ("treatment_b", 12.0 + offset),
-        )
-    ]
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        for _ in range(2):
-            run_breakout(
-                rows,
-                metrics,
-                control_group="control",
-                dimension="country",
-            )
-    advisories = [
-        item.message
-        for item in caught
-        if isinstance(item.message, IncrementWarning) and item.message.code == spec.code
-    ]
-    assert [item.context["metric_name"] for item in advisories] == [
-        "rev",
-        "sessions",
-        "rev",
-        "sessions",
-    ]
 
 
 class TestRunBreakoutBinomialGateExemption:

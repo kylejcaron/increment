@@ -79,10 +79,13 @@ results = increment.run(experiment, reader).readout()
 print(results)
 ```
 
+<!-- output -->
+
 ```text
 assigned — treatment vs control
+purchase: control → treatment; effect=64.6342%; interval=[-31.8461%, 328.175%]; estimand=itt; stat_sig=False
 purchase (primary, relative lift): 64.6342%, set [-31.8461%, 328.175%] at 95% confidence.
-purchase interpretation: does not reject; inconclusive, not evidence of no effect.
+purchase interpretation: does not reject; the retained sequential procedure has not rejected.
 purchase sequential ratio confidence set interval: [0.681539, 4.28175].
 purchase test alternative: two-sided; null (relative lift): 0%.
 purchase result identity: method unadjusted; method role decision; estimand itt.

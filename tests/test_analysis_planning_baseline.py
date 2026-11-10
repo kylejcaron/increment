@@ -51,6 +51,20 @@ def _plan(pilot: tuple[Any, Any], metric, outcome_id=None):
     return baseline
 
 
+def _assert_baselines_match(actual: Baseline, expected: Baseline, *, rel: float) -> None:
+    actual_fields = actual.model_dump()
+    expected_fields = expected.model_dump()
+    assert actual_fields.keys() == expected_fields.keys()
+    for field, expected_value in expected_fields.items():
+        actual_value = actual_fields[field]
+        if expected_value is None:
+            assert actual_value is None, field
+        elif isinstance(expected_value, float):
+            assert actual_value == pytest.approx(expected_value, rel=rel, abs=1e-12), field
+        else:
+            assert actual_value == expected_value, field
+
+
 def _abs_se(pilot: tuple[Any, Any]):
     row = run(*pilot).readout()[0]
     assert isinstance(row, LiftEstimate) and row.abs_se is not None
@@ -1000,7 +1014,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
         )
         artifact = _plan(reopened, "revenue")
         for baseline in (native, artifact):
-            assert baseline.model_dump() == pytest.approx(manual.model_dump(), rel=1e-12)
+            _assert_baselines_match(baseline, manual, rel=1e-12)
             assert baseline.design_effect == pytest.approx(
                 1 + ((1 + manual.cluster_size_cv**2) * float(analyzed_mean) - 1) * float(icc)
             )
@@ -1033,7 +1047,18 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
                 minimum_detectable_effect(1000, manual, procedure, design),
             )
             for observed, independent in zip(actual, expected, strict=True):
-                assert observed.model_dump() == pytest.approx(independent.model_dump(), rel=1e-12)
+                observed_fields = observed.model_dump()
+                independent_fields = independent.model_dump()
+                assert observed_fields.keys() == independent_fields.keys()
+                for field, expected_value in independent_fields.items():
+                    if expected_value is None:
+                        assert observed_fields[field] is None, field
+                    elif isinstance(expected_value, float):
+                        assert observed_fields[field] == pytest.approx(expected_value, rel=1e-12), (
+                            field
+                        )
+                    else:
+                        assert observed_fields[field] == expected_value, field
     finally:
         pilot[1].close()
         if reopened is not None:
@@ -1079,7 +1104,7 @@ def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path
             ],
         )
         artifact = _plan(reopened, "revenue")
-        assert native.model_dump() == pytest.approx(artifact.model_dump(), rel=1e-12)
+        _assert_baselines_match(native, artifact, rel=1e-12)
         assert native.mean == pytest.approx(27.0)
         assert native.trigger_rate == pytest.approx(6 / 24)
         assert native.cluster_participation == pytest.approx(3 / 4)
@@ -1280,9 +1305,9 @@ class TestPlanningBaselineOnWarehouseRoutes:
                     TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
                 ],
             )
-            assert _plan(
-                reopened, "revenue", "trigger-artifact-complete"
-            ).model_dump() == pytest.approx(native.model_dump(), rel=1e-12)
+            _assert_baselines_match(
+                _plan(reopened, "revenue", "trigger-artifact-complete"), native, rel=1e-12
+            )
         finally:
             con.disconnect()
 
@@ -1481,12 +1506,10 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 ],
             )
             artifact = _plan(reopened, "revenue")
-            assert artifact.model_dump() == pytest.approx(native.model_dump(), rel=1e-12)
+            _assert_baselines_match(artifact, native, rel=1e-12)
             native_ratio = _plan(pilot, "rps")
             artifact_ratio = _plan(reopened, "rps")
-            assert artifact_ratio.model_dump() == pytest.approx(
-                native_ratio.model_dump(), rel=1e-12
-            )
+            _assert_baselines_match(artifact_ratio, native_ratio, rel=1e-12)
             assert (native_ratio.mean, native_ratio.var) == pytest.approx(
                 (expected_ratio, bounded_ratio_var), rel=1e-12
             )
@@ -2096,11 +2119,11 @@ class TestPlanningBaselineParity:
         try:
             oracle = pilots["from_unit_summary"]
             for metric in ("revenue", "purchase_rate", "rps", "revenue_cuped", "rps_cuped"):
-                expected = _plan(oracle, metric).model_dump()
+                expected = _plan(oracle, metric)
                 for name, pilot in pilots.items():
                     outcome_id = mean_outcomes[name] if metric == "revenue" else None
-                    actual = _plan(pilot, metric, outcome_id).model_dump()
-                    assert actual == pytest.approx(expected, rel=1e-9, abs=1e-12), (name, metric)
+                    actual = _plan(pilot, metric, outcome_id)
+                    _assert_baselines_match(actual, expected, rel=1e-9)
             assert _plan(oracle, "revenue_cuped").cuped_rho > 0.2
             assert _plan(oracle, "rps_cuped").cuped_rho > 0.05
         finally:
@@ -2120,8 +2143,8 @@ class TestPlanningBaselineParity:
                 for name, outcome_id in cluster_outcomes.items():
                     actual = _plan(
                         pilots[name], metric, outcome_id if metric == "revenue" else None
-                    ).model_dump()
-                    assert actual == pytest.approx(expected.model_dump(), rel=1e-9), (name, metric)
+                    )
+                    _assert_baselines_match(actual, expected, rel=1e-9)
                 unit_level = _plan(pilots["unclustered"], metric)
                 # Control holds 60 units in 13 contributing clusters: the clustered
                 # variance is bounded on 12 degrees of freedom, the per-unit one on 59.
@@ -2182,14 +2205,14 @@ class TestPlanningBaselineParity:
     def test_encouragement_compliance_matches_across_constructors(self, tmp_path):
         pilots, connections = _encouragement_pilots(tmp_path)
         try:
-            dumped = {name: _plan(pilot, "revenue").model_dump() for name, pilot in pilots.items()}
+            baselines = {name: _plan(pilot, "revenue") for name, pilot in pilots.items()}
         finally:
             for con in connections:
                 con.disconnect()
-        oracle = dumped["from_unit_summary"]
-        assert 0.0 < oracle["compliance"] < 1.0
-        for name, actual in dumped.items():
-            assert actual == pytest.approx(oracle, rel=1e-9), name
+        oracle = baselines["from_unit_summary"]
+        assert 0.0 < oracle.compliance < 1.0
+        for actual in baselines.values():
+            _assert_baselines_match(actual, oracle, rel=1e-9)
 
 
 class TestPlanningBaselineOnSwitchback:

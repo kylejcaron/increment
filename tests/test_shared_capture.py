@@ -271,6 +271,7 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
 @pytest.mark.slow
 def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
     from increment.result_envelope import AnalysisEnvelope
+    from increment.semantics.models import MeanMetric
     from increment.store import ParquetResultsStore, Run
 
     rows = ds.event_rows()
@@ -290,7 +291,10 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
             View(view="run", grain="total"),
             View(view="daily", grain="daily"),
             View(view="asof", grain="asof"),
-            View(view="breakout", grain="total", segment=(BreakoutIdentity("store", None),)),
+            View.breakout(
+                (BreakoutIdentity("store", None),),
+                metrics=(MeanMetric.model_validate(dict(experiment.metrics["revenue"])),),
+            ),
         )
         experiment = replace(experiment, views=scopes)
         separate = [
@@ -347,7 +351,6 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
         )
         metadata = selected.run.metadata
         assert metadata is not None and len(metadata.captures) == 1
-        from increment.semantics.models import MeanMetric
 
         unregistered = MeanMetric(
             name="unregistered_revenue",

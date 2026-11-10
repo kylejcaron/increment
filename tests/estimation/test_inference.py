@@ -58,6 +58,27 @@ class TestNormal:
             Normal(mu=0.0, sigma=-1.0)
         assert raised.value.code == "model.field.range"
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("mu", float("nan")),
+            ("mu", float("inf")),
+            ("mu", float("-inf")),
+            ("sigma", float("nan")),
+            ("sigma", float("inf")),
+            ("sigma", float("-inf")),
+        ],
+    )
+    def test_nonfinite_parameters_are_rejected_at_construction(self, field, value):
+        from increment.estimators import Normal as PublicNormal
+
+        parameters = {"mu": 0.0, "sigma": 1.0}
+        parameters[field] = value
+        with pytest.raises(InvalidRequestError) as raised:
+            PublicNormal(**parameters)
+        assert raised.value.code == "model.field.nonfinite"
+        assert raised.value.context["field"] == field
+
     def test_precision(self):
         n = Normal(mu=0.0, sigma=2.0)
         assert n.precision == pytest.approx(0.25, rel=1e-12)

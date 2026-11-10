@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import uuid
-from typing import Literal
+from typing import Literal, cast
 
 import ibis
 import numpy as np
@@ -1216,6 +1216,87 @@ def test_group_summary_centered_moments(totals):
     assert abs(var_from_moments - np_var) < 1e-9
 
 
+def _availability_arms(con, values, sizes):
+    from increment.estimation.armstats import ArmStats
+
+    parts = {"control": [], "treatment": []}
+    offset = 0
+    for size in sizes:
+        rows = [
+            {"experiment_id": "stable", "metric": "m", "group_id": group, "y": value}
+            for group in parts
+            for value in values[offset : offset + size]
+        ]
+        offset += size
+        totals = con.create_table(f"availability_{uuid.uuid4().hex}", pa.Table.from_pylist(rows))
+        totals = totals.mutate(x=ibis.null().cast("float64"), y_den=ibis.null().cast("float64"))
+        for row in con.to_pyarrow(group_summary(totals)).to_pylist():
+            arm = ArmStats(
+                study_id=row["experiment_id"],
+                **{name: value for name, value in row.items() if name in ArmStats.model_fields},
+            )
+            parts[arm.group_id].append(arm)
+    return [
+        records[0] if len(records) == 1 else ArmStats.combine(records) for records in parts.values()
+    ]
+
+
+@pytest.mark.parametrize("spread", ["constant", "neighbor", "positive"])
+def test_group_summary_availability_survives_reordered_and_partitioned_reductions(con, spread):
+    from fractions import Fraction
+
+    from increment.declarations import ArmHypothesisKey
+    from increment.estimation.engine import estimate_lift
+
+    values = {
+        "constant": [0.1] * 7,
+        "neighbor": [0.1] * 6 + [math.nextafter(0.1, math.inf)],
+        "positive": [0.1, 0.2] * 3 + [0.1],
+    }[spread]
+    exact = [Fraction(value) for value in values]
+    exact_mean = sum(exact) / len(exact)
+    variance = float(sum((value - exact_mean) ** 2 for value in exact) / (len(exact) - 1))
+    numerical = []
+    for order in (values, list(reversed(values))):
+        for sizes in ((7,), (2, 5), (3, 4)):
+            arms = _availability_arms(con, order, sizes)
+            summary = [
+                {key: value for key, value in arm.model_dump().items() if key != "study_id"}
+                | {"experiment_id": arm.study_id}
+                for arm in arms
+            ]
+            outcome = estimate_lift(
+                [MeanMetric(name="m", entity="user", fact="m")], summary, control_group="control"
+            )
+            available = spread != "constant"
+            failure = next(iter(outcome.failures.values()), None)
+            if outcome.results:
+                identity = (outcome.results[0].metric, outcome.results[0].group_id)
+            else:
+                assert failure is not None and isinstance(failure.hypothesis, ArmHypothesisKey)
+                identity = (failure.hypothesis.metric, failure.hypothesis.group_id)
+            assert (
+                identity,
+                bool(outcome.results),
+                failure.code if failure else None,
+                failure.context["reason"] if failure else None,
+            ) == (
+                ("m", "treatment"),
+                available,
+                None if available else "estimation.engine.lift_guard",
+                None if available else "zero_variance",
+            )
+            for arm in arms:
+                assert arm.var_y() == pytest.approx(variance, rel=1e-12, abs=0.0)
+            if available:
+                (result,) = outcome.results
+                lift = result.require_lift()
+                assert lift.log_se is not None and math.isfinite(lift.log_se)
+                numerical.append((lift.value, lift.log_se, result.abs_diff, result.abs_se))
+    for actual in numerical[1:]:
+        assert actual == pytest.approx(numerical[0], rel=1e-12, abs=0.0)
+
+
 def test_group_summary_x_moments_null_when_unmaterialized(totals):
     """x-den moments are None (not 0) when CUPED is not enabled."""
     summary = group_summary(totals).execute()
@@ -1227,6 +1308,23 @@ def test_group_summary_x_moments_null_when_unmaterialized(totals):
 
 
 # Step 4b — type-aggregation dispatch + windowed censoring
+
+
+@pytest.fixture
+def snowflake_censor_execute(con):
+    """Execute translated counts with Snowflake's null-on-no-match semantics."""
+    import sqlglot
+    from sqlglot import exp
+
+    def execute(query):
+        statement = sqlglot.parse_one(ibis.to_sql(query, dialect="snowflake"), read="snowflake")
+        for count_if in tuple(statement.find_all(exp.CountIf)):
+            count_if.replace(exp.Nullif(this=count_if.copy(), expression=exp.Literal.number(0)))
+        cursor = con.raw_sql(statement.sql("duckdb"))
+        columns = [column[0] for column in cursor.description]
+        return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+
+    return execute
 
 
 def test_retention_metric_dispatch(exposures, page_view_events, experiment, retention_metric):
@@ -1258,7 +1356,17 @@ def test_censoring_fence_keeps_unit_whose_last_window_day_is_observable(
     spine, stats = unit_day_spine_stats(
         exposures, events, censored_experiment, conversion_metric.name
     )
-    totals = unit_totals(spine, stats, conversion_metric, censored_experiment).execute()
+    counts = []
+
+    def execute(query):
+        rows = query.execute().to_dict("records")
+        counts.extend(rows)
+        return rows
+
+    totals = unit_totals(
+        spine, stats, conversion_metric, censored_experiment, warn_on_censoring=execute
+    ).execute()
+    assert counts == [{"enrolled": 3, "kept": 3}]
     # u5's window [Aug 3, Aug 4) has its last day == experiment.end, so the fence
     # treats it as final (KEPT), and its 13:00 purchase scores y=1.
     assert sorted(totals["unit_id"].tolist()) == ["u1", "u2", "u5"]
@@ -1279,7 +1387,9 @@ def test_censoring_drops_late_enrollee_conversion(
     spine, stats = unit_day_spine_stats(exposures, events, censored_experiment, metric.name)
     with pytest.warns(IncrementWarning) as rec:
         totals = unit_totals(spine, stats, metric, censored_experiment).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == 3
+    assert context["dropped"] == 1
     # u5 enrolled Aug 3; last window day Aug 4 > experiment.end Aug 3 → DROPPED
     assert "u5" not in totals["unit_id"].values
     assert sorted(totals["unit_id"].tolist()) == ["u1", "u2"]
@@ -1296,13 +1406,17 @@ def test_censoring_drops_late_enrollee_retention(
     )
     with pytest.warns(IncrementWarning) as rec:
         totals = unit_totals(spine, stats, retention_metric, censored_experiment).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == 3
+    assert context["dropped"] == 1
     # u5 enrolled on Aug 3, threshold_days=2 → window Aug 5 > experiment.end Aug 3 → DROPPED
     assert "u5" not in totals["unit_id"].values
     assert sorted(totals["unit_id"].tolist()) == ["u1", "u2"]
 
 
-def test_unit_totals_never_admits_a_unit_whose_window_outruns_the_data(con):
+def test_unit_totals_never_admits_a_unit_whose_window_outruns_the_data(
+    con, snowflake_censor_execute
+):
     """A declared end past the available data must not score units on absent events.
 
     u1's window closes 2025-08-15, but the event log stops on 2025-08-05
@@ -1347,13 +1461,21 @@ def test_unit_totals_never_admits_a_unit_whose_window_outruns_the_data(con):
     exposures = first_exposures(exposure_rows, experiment)
     events = metric_events(purchase_rows, metric)
     spine, stats = unit_day_spine_stats(exposures, events, experiment, metric.name)
+    spine = con.create_table("avail_census_spine", obj=spine)
 
     with pytest.warns(IncrementWarning) as rec:
         totals = unit_totals(
-            spine, stats, metric, experiment, data_as_of=dt.datetime(2025, 8, 5)
+            spine,
+            stats,
+            metric,
+            experiment,
+            data_as_of=dt.datetime(2025, 8, 5),
+            warn_on_censoring=snowflake_censor_execute,
         ).execute()
 
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == 1
+    assert context["dropped"] == 1
     assert len(totals) == 0, (
         "u1's 14-day window closes 2025-08-15 but data is only loaded through "
         "2025-08-05; it must be censored, not scored on unobserved days"
@@ -1487,7 +1609,7 @@ def test_unit_totals_warns_when_censoring_drops_a_material_share(con):
         end=dt.datetime(2025, 8, 20),
         plan=AnalysisPlan(),
     )
-    # 1 unit matures by 2025-08-20; 9 do not.
+    # A 14-day window ends on exposure day + 13, including the maturity edge.
     rows = [
         {
             "unit_id": "u_early",
@@ -1500,7 +1622,7 @@ def test_unit_totals_warns_when_censoring_drops_a_material_share(con):
     rows += [
         {
             "unit_id": f"u_late{i}",
-            "ts": dt.datetime(2025, 8, 15, 9, 0, 0),
+            "ts": dt.datetime(2025, 8, 7 if i == 0 else 15, 9, 0, 0),
             "event": "test_exposure",
             "experiment_id": "exp_test",
             "group_id": "treatment",
@@ -1508,25 +1630,30 @@ def test_unit_totals_warns_when_censoring_drops_a_material_share(con):
         for i in range(9)
     ]
     exposure_rows = con.create_table("warn_exposures", obj=rows)
-    purchase_rows = con.create_table(
-        "warn_purchases",
-        obj=[
-            {
-                "unit_id": "u_early",
-                "ts": dt.datetime(2025, 8, 3, 10, 0, 0),
-                "event": "purchase",
-                "value": 1.0,
-            }
-        ],
-    )
+    purchase = {
+        "unit_id": "u_early",
+        "ts": dt.datetime(2025, 8, 3, 10, 0, 0),
+        "event": "purchase",
+        "value": 1.0,
+    }
+    purchase_rows = con.create_table("warn_purchases", obj=[purchase, purchase])
+    expected_kept = {
+        row["unit_id"]
+        for row in rows
+        if cast(dt.datetime, row["ts"]).date() + dt.timedelta(days=13) <= dt.date(2025, 8, 20)
+    }
     exposures = first_exposures(exposure_rows, experiment)
     events = metric_events(purchase_rows, metric)
     spine, stats = unit_day_spine_stats(exposures, events, experiment, metric.name)
 
     with pytest.warns(IncrementWarning) as rec:
-        unit_totals(spine, stats, metric, experiment).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
-    cause = str(warning_context(rec, "frame.censoring.dropped_units")["cause"])
+        totals = unit_totals(spine, stats, metric, experiment).execute()
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == len(rows)
+    assert context["dropped"] == len(rows) - len(expected_kept)
+    assert set(totals["unit_id"]) == expected_kept
+    assert totals.set_index("unit_id").loc["u_early", "y"] == 1.0
+    cause = str(context["cause"])
     assert "observation_end" in cause
 
 
@@ -1636,7 +1763,7 @@ def test_unit_totals_warns_running_experiment_does_not_suggest_observation_end(c
     units whose data hasn't arrived, reproducing the exact bug this
     mechanism exists to prevent.
     """
-    metric = ConversionMetric(name="converted", entity="unit_id", fact="purchase", window_days=14)
+    metric = ConversionMetric(name="converted", entity="unit_id", fact="purchase", window_days=3)
     experiment = Experiment(
         name="exp_running_warn",
         unit="unit_id",
@@ -1646,17 +1773,17 @@ def test_unit_totals_warns_running_experiment_does_not_suggest_observation_end(c
         end=None,
         plan=AnalysisPlan(),
     )
-    # end=None derives the panel extent from the single observed purchase
-    # (2025-08-03); every unit's 14-day window closes well after that, so all are censored.
+    # The purchase observes Aug 3: u0 matures exactly there, u1 is immature,
+    # and u2 has no observed day because enrollment is after that edge.
     rows = [
         {
             "unit_id": f"u{i}",
-            "ts": dt.datetime(2025, 8, 1, 9, 0, 0),
+            "ts": dt.datetime(2025, 8, day, 9, 0, 0),
             "event": "test_exposure",
             "experiment_id": "exp_running_warn",
             "group_id": "treatment",
         }
-        for i in range(10)
+        for i, day in enumerate((1, 2, 4))
     ]
     exposure_rows = con.create_table("running_warn_exposures", obj=rows)
     purchase_rows = con.create_table(
@@ -1674,12 +1801,15 @@ def test_unit_totals_warns_running_experiment_does_not_suggest_observation_end(c
     events = metric_events(purchase_rows, metric)
     spine, stats = unit_day_spine_stats(exposures, events, experiment, metric.name)
 
-    # observation_horizon=None -> observable_end falls back to panel.ds.max(),
-    # trimmed to the latest observed purchase; every unit's window closes well after that.
+    # The cutoff is the last observed day, not the last enrollment date.
     import pytest
 
     with pytest.warns(IncrementWarning) as record:
-        unit_totals(spine, stats, metric, experiment).execute()
+        totals = unit_totals(spine, stats, metric, experiment).execute()
+    context = warning_context(record, "frame.censoring.dropped_units")
+    assert context["enrolled"] == len(rows)
+    assert context["dropped"] == 2
+    assert totals["unit_id"].tolist() == ["u0"]
 
     message = str(record[0].message)
     assert "observation_end" not in message, message
@@ -3836,12 +3966,15 @@ def test_empty_events_panel_censors_every_unit_when_end_is_unset(con, retention_
     spine, stats = unit_day_spine_stats(exposures, events, running, retention_metric.name)
     with pytest.warns(IncrementWarning) as rec:
         totals = unit_totals(spine, stats, retention_metric, running).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    context = warning_context(rec, "frame.censoring.dropped_units")
+    assert context["enrolled"] == 2
+    assert context["dropped"] == 2
 
     assert len(totals) == 0, "no unit has an observed calendar day yet"
 
 
-def test_empty_events_windowed_metric_censors_every_unit(con):
+@pytest.mark.parametrize("enrolled", [True, False], ids=["unobserved", "empty-population"])
+def test_empty_events_windowed_metric_censors_every_unit(con, snowflake_censor_execute, enrolled):
     """Zero events + no declared end must never admit windowed units as y = 0.
 
     Zero matching events NULLs `unit_day_spine_stats`' event-horizon
@@ -3852,9 +3985,11 @@ def test_empty_events_windowed_metric_censors_every_unit(con):
     drops both units before their 7-day windows are ever evaluated --
     the honest reading when no time beyond enrollment was observed.
     """
+    import warnings
+
     metric = ConversionMetric(name="converted", entity="unit_id", fact="purchase", window_days=7)
     exposure_rows = con.create_table(
-        "noevents_exposures",
+        f"noevents_exposures_{enrolled}",
         obj=[
             {
                 "unit_id": "u1",
@@ -3875,7 +4010,7 @@ def test_empty_events_windowed_metric_censors_every_unit(con):
     # No purchase rows at all - only a non-matching event so the table
     # has the right schema but metric_events yields zero rows.
     no_purchases = con.create_table(
-        "noevents_purchases",
+        f"noevents_purchases_{enrolled}",
         obj=[
             {
                 "unit_id": "nobody",
@@ -3895,11 +4030,21 @@ def test_empty_events_windowed_metric_censors_every_unit(con):
         plan=AnalysisPlan(),
     )
     exposures = first_exposures(exposure_rows, running)
+    if not enrolled:
+        exposures = exposures.filter(False)
     events = metric_events(no_purchases, metric)
     spine, stats = unit_day_spine_stats(exposures, events, running, metric.name)
-    with pytest.warns(IncrementWarning) as rec:
-        totals = unit_totals(spine, stats, metric, running).execute()
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
+    spine = con.create_table(f"noevents_census_spine_{enrolled}", obj=spine)
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always", IncrementWarning)
+        totals = unit_totals(
+            spine, stats, metric, running, warn_on_censoring=snowflake_censor_execute
+        ).execute()
+    assert len(rec) == int(enrolled)
+    if enrolled:
+        context = warning_context(rec, "frame.censoring.dropped_units")
+        assert context["enrolled"] == 2
+        assert context["dropped"] == 2
 
     assert len(totals) == 0, "no unit's window closed within observed enrollment time"
 

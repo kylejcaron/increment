@@ -41,6 +41,7 @@ from increment._evidence_types import (
     AssignmentRequest,
     BreakoutIdentity,
     EvidenceScope,
+    MomentsRequest,
     evidence_scope_dependencies,
 )
 from increment._frame_validation import (
@@ -50,9 +51,13 @@ from increment._frame_validation import (
     COVARIATE_IMPUTE_ALL_NULL as _NATIVE_COVARIATE_IMPUTE_ALL_NULL,
 )
 from increment._immutable import _FrozenMapping
-from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
+from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW, DAY_GRAIN
 from increment._source_operations import DashboardGroupData
-from increment._source_types import EvidenceCapabilities, ScalarEvidenceDeclaration
+from increment._source_types import (
+    MOMENTS_BATCH_OWNERS,
+    EvidenceCapabilities,
+    ScalarEvidenceDeclaration,
+)
 from increment._window import NO_DATA_SIGNAL, outcome_band
 from increment.errors import PACKAGE_FRAMES, CodedError, RefusalSpec
 from increment.errors import refuse as _refuse
@@ -88,6 +93,7 @@ from increment.query.artifact_ports import artifact_query_ports
 from increment.query.builders import (
     _apply_filter,
     _attach_uptake_flag,
+    _censor_to_observable_window,
     _dense_unit_days,
     _local_date,
     _naive_utc_ts,
@@ -101,8 +107,11 @@ from increment.query.builders import (
     cluster_exposure_counts,
     cohort_group_summary,
     compliance_event_horizon,
+    component_day_stats,
+    component_window_values,
     daily_exposure_counts,
     daily_group_summary,
+    emit_centered_moments,
     first_exposures,
     group_summary,
     join_breakout_dimension,
@@ -124,6 +133,7 @@ from increment.query.builders import (
     unit_day_panel,
     unit_day_spine_stats,
     unit_totals,
+    warn_censored_units,
     window_bound_stats,
     winsorize_unit_totals,
 )
@@ -170,6 +180,7 @@ from increment.semantics.models import (
     CupedCovariateBinding,
     Definitions,
     Experiment,
+    FactNullPolicy,
     Factor,
     FactSource,
     MeanMetric,
@@ -2602,16 +2613,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         outcome reads for *exposures* and the *pre_period* covariate rows, refused
         before the outcome moments are read.
         """
-        facts = tuple(
-            dict.fromkeys(
-                (metric.numerator.fact, metric.denominator.fact)
-                if isinstance(metric, RatioMetric)
-                else (metric.fact,)
-            )
-        )
+        return self._metrics_censoring_bookkeeping((metric,), exposures, pre_period)
+
+    def _metrics_censoring_bookkeeping(
+        self, metrics: Sequence[Metric], exposures: Table, pre_period: Sequence[PrePeriodRows] = ()
+    ) -> Callable[[Table], list[dict[str, Any]]]:
+        """Validate nulls and unloaded feeds in one shared censoring census."""
+        facts = tuple(dict.fromkeys(ref.fact for metric in metrics for ref in fact_refs(metric)))
         sources = [_find_fact_source(self._defs, fact)[0] for fact in facts]
         null_counts = self._null_value_counts(
-            (OutcomeRows(metric, exposures),), pre_period=pre_period
+            tuple(OutcomeRows(metric, exposures) for metric in metrics), pre_period=pre_period
         )
 
         def execute(query: Table) -> list[dict[str, Any]]:
@@ -2911,7 +2922,19 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 if population == "triggered"
                 else self._get_exposures()
             )
-            for metric in metrics:
+            batched = self._moments_batch(
+                tuple(MomentsRequest(metric, population=population) for metric in metrics),
+                display=True,
+            )
+            for metric, batch_rows in zip(metrics, batched, strict=True):
+                if batch_rows is not None:
+                    rows.extend(
+                        _observed_dashboard_group(
+                            metric, record, outcome_band(metric), population=population
+                        )
+                        for record in batch_rows
+                    )
+                    continue
                 _panel, spine, stats, _events, den_events, _facts, _value, data_as_of = (
                     self._build_panel_for_metric(exposures, metric, population=population)
                 )
@@ -3400,6 +3423,421 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 sql_results[key] = ibis_to_sql(summary_by, dialect=self._backend or self._con.name)
         return sql_results
 
+    def _component_batch_key(self, request: MomentsRequest) -> tuple[Any, ...] | None:
+        """Admit additive component evidence without changing unsupported requests."""
+        metric = request.metric
+        if (
+            request.by
+            or request.include_covariate
+            or self._experiment.cluster is not None
+            or isinstance(self.context.design, Encouragement)
+            or getattr(metric, "winsorization", None) is not None
+            or metric.type not in ("conversion", "mean", "ratio")
+            or (request.method is not None and request.method.variance_reduction != "none")
+        ):
+            return None
+        if request.grain == "total" and not any(
+            config.metric.name == metric.name for config in self.context.configs
+        ):
+            overlay_configs((metric,), self.context.configs, methods=None, prior=None)
+        refs = (
+            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
+        )
+        keys = []
+        for ref in refs:
+            if getattr(ref, "aggregation", "count") not in ("sum", "count"):
+                return None
+            source, fact = _find_fact_source(self._defs, ref.fact)
+            if (
+                _resolve_value_column(source, fact) is None
+                and getattr(ref, "aggregation", "count") != "count"
+            ):
+                return None
+            keys.append(
+                (
+                    source.name,
+                    tuple(
+                        sorted(
+                            (flt.property, flt.op, tuple(map(repr, flt.values)))
+                            for flt in ref.filters
+                        )
+                    ),
+                    fact.missing,
+                )
+            )
+        if any(key != keys[0] for key in keys):
+            return None
+        return (
+            *keys[0],
+            request.population,
+            request.grain,
+            request.completed_windows_only,
+            repr(request.experiment),
+            self._site_observation_cutoff(),
+        )
+
+    @staticmethod
+    def _metric_horizon_streams(metric: Metric) -> frozenset[tuple[Any, ...]]:
+        return frozenset(
+            (
+                ref.fact,
+                tuple(
+                    sorted(
+                        (flt.property, flt.op, tuple(map(repr, flt.values))) for flt in ref.filters
+                    )
+                ),
+            )
+            for ref in fact_refs(metric)
+        )
+
+    def _moments_batch(
+        self,
+        requests: Sequence[MomentsRequest],
+        *,
+        display: bool = False,
+        day_source: bool = False,
+        horizon_metrics: Sequence[Metric] | None = None,
+    ) -> tuple[tuple[Mapping[str, Any], ...] | None, ...]:
+        """Acquire compatible requests from one component and one shared unit reduction."""
+        groups: dict[tuple[Any, ...], list[int]] = {}
+        answers: list[tuple[Mapping[str, Any], ...] | None] = [None] * len(requests)
+        common_horizon = frozenset(
+            stream
+            for metric in dict.fromkeys((*self._horizon_metrics, *(horizon_metrics or ())))
+            for stream in self._metric_horizon_streams(metric)
+        )
+        for index, request in enumerate(requests):
+            if request.population == "triggered" and request.grain != "total" and not day_source:
+                continue
+            key = self._component_batch_key(request)
+            if key is not None:
+                key = (*key, common_horizon | self._metric_horizon_streams(request.metric))
+                groups.setdefault(key, []).append(index)
+        for indices in groups.values():
+            if len(indices) < 2:
+                continue
+            selected = [requests[index] for index in indices]
+            component_names: list[str] = []
+            try:
+                group_rows = self._component_batch_rows(
+                    selected,
+                    display=display,
+                    horizon_metrics=horizon_metrics,
+                    component_names=component_names,
+                )
+            except CodedError as error:
+                if error.code != "query.session.snapshot.materialization_failed":
+                    raise
+                continue
+            finally:
+                for relation in tuple(self._session._materialized):
+                    if relation.requested_name not in component_names:
+                        continue
+                    try:
+                        self._session._drop_materialized_relation(relation)
+                    except Exception:
+                        continue
+                    self._session._materialized.remove(relation)
+            for index, rows in zip(indices, group_rows, strict=True):
+                answers[index] = rows
+        return tuple(answers)
+
+    def _component_batch_values(
+        self,
+        requests: Sequence[MomentsRequest],
+        horizon_metrics: Sequence[Metric] | None,
+        component_names: list[str],
+    ) -> tuple[Table, Table, list[int | None], list[tuple[int, ...]]]:
+        """Build shared conditional component values before metric projections."""
+        first = requests[0]
+        metrics = [request.metric for request in requests]
+        horizon_metrics = tuple(
+            dict.fromkeys(
+                (*(self._horizon_metrics if horizon_metrics is None else horizon_metrics), *metrics)
+            )
+        )
+        components: list[tuple[str, str | None, FactNullPolicy, bool]] = []
+        component_indices: dict[tuple[str, str | None, FactNullPolicy], int] = {}
+        parts = []
+        for metric in metrics:
+            refs = (
+                (metric.numerator, metric.denominator)
+                if isinstance(metric, RatioMetric)
+                else (metric,)
+            )
+            indices = []
+            for ref in refs:
+                source, fact = _find_fact_source(self._defs, ref.fact)
+                key = (ref.fact, _resolve_value_column(source, fact), fact.missing)
+                index = component_indices.setdefault(key, len(component_indices))
+                value_required = (
+                    getattr(ref, "type", None) != "conversion"
+                    and getattr(ref, "aggregation", "count") != "count"
+                )
+                if index == len(components):
+                    components.append((*key, value_required))
+                elif value_required:
+                    components[index] = (*key, True)
+                indices.append(index)
+            parts.append(tuple(indices))
+        ref = metrics[0].numerator if isinstance(metrics[0], RatioMetric) else metrics[0]
+        source, _ = _find_fact_source(self._defs, ref.fact)
+        raw = self._get_fact_table(source)
+        facts = raw
+        for flt in ref.filters:
+            facts = _apply_filter(facts, flt)
+        self._validate_mixed_assignments()
+        exposures = (
+            self._get_trigger_population(operation="moments")
+            if first.population == "triggered"
+            else self._get_exposures()
+        )
+        anchors = exposures
+        if first.population == "triggered":
+            anchors = exposures.mutate(first_exposure_ts=exposures.first_trigger_ts)
+        evidence = self._session.source_snapshot_evidence
+        experiment = self._experiment
+        horizon = self._union_event_horizon(horizon_metrics)
+        pinned_end = None
+        if evidence is not None:
+            facts = facts.filter(
+                facts.ts <= _utc_timestamp_literal(facts.ts, evidence.observation_cutoff_ts)
+            )
+            experiment = self._pinned_spine_experiment(metrics[0], evidence)
+            pinned_end = experiment.observation_horizon_day
+            if pinned_end is not None:
+                horizon = (
+                    ibis.literal(pinned_end)
+                    if first.grain != "total"
+                    else ibis.least(horizon, ibis.literal(pinned_end))
+                )
+        spine = panel_spine(anchors, experiment, end_date=cast(ir.Scalar, horizon))
+        if first.grain != "total":
+            spine = spine.filter(spine.ds.notnull())
+        stats = component_day_stats(facts, anchors, self._experiment, components)
+        joined = spine.left_join(stats, ["unit_id", "ds"], rname="{name}_stats")
+        dense = joined.select(
+            *(spine[column] for column in spine.columns),
+            **{
+                f"{name}_{index}": ibis.coalesce(joined[f"{name}_{index}"], 0)
+                for index in range(len(components))
+                for name in ("n_events", "sum_value")
+            },
+        )
+        windows = list(dict.fromkeys(outcome_band(item)[1] for item in metrics))
+        values = component_window_values(
+            dense, windows, grain=first.grain, n_components=len(components)
+        )
+        for index, (fact, _, _, _) in enumerate(components):
+            edge = (
+                ibis.literal(pinned_end) if pinned_end is not None else self._data_as_of(raw, fact)
+            )
+            values = values.cross_join(edge.name(f"__data_as_of_{index}").as_table())
+        # Small selections stay in the statement's common relation; wider ones
+        # amortize a TEMP relation across their projections and eligibility count.
+        if len(requests) >= 5:
+            name = self._session.temp_name(
+                "component_values", str(len(self._session._materialized))
+            )
+            component_names.append(name)
+            values = self._session.materialize_table(name, values, required=True)
+        return values, exposures, windows, parts
+
+    def _component_censoring(
+        self,
+        values: Table,
+        metrics: Sequence[Metric],
+        data_as_of: Sequence[ir.Scalar],
+        parts: Sequence[tuple[int, ...]],
+        exposures: Table,
+    ) -> None:
+        """Count maturity per request on the shared one-row-per-enrollee relation."""
+        eligibility: dict[str, ir.Scalar] = {}
+        observed_edges = [
+            cast(
+                ir.Scalar,
+                values[f"__data_as_of_{indices[0]}"].max()
+                if len(indices) == 1
+                else ibis.least(*(values[f"__data_as_of_{index}"].max() for index in indices)),
+            )
+            for indices in parts
+        ]
+        for index, metric in enumerate(metrics):
+            observed, complete, _ = _observable_window_flags(
+                values, metric, self._experiment, data_as_of[index]
+            )
+            eligibility[f"kept_{index}"] = cast(
+                ir.Scalar, ibis.coalesce(values.count(where=observed & complete), 0)
+            )
+        census = self._metrics_censoring_bookkeeping(metrics, exposures)(
+            values.aggregate(
+                [
+                    values.count().name("enrolled"),
+                    *(edge.name(f"_as_of_{index}") for index, edge in enumerate(observed_edges)),
+                    *(value.name(name) for name, value in eligibility.items()),
+                ]
+            )
+        )[0]
+        for index, metric in enumerate(metrics):
+            warn_censored_units(
+                metric,
+                self._experiment,
+                census["enrolled"],
+                census[f"kept_{index}"],
+                census[f"_as_of_{index}"],
+            )
+
+    def _component_batch_rows(
+        self,
+        requests: Sequence[MomentsRequest],
+        *,
+        display: bool = False,
+        horizon_metrics: Sequence[Metric] | None = None,
+        component_names: list[str],
+    ) -> tuple[tuple[Mapping[str, Any], ...], ...]:
+        first = requests[0]
+        metrics = [request.metric for request in requests]
+        values, exposures, windows, parts = self._component_batch_values(
+            requests, horizon_metrics, component_names
+        )
+        edges = [
+            cast(
+                ir.Scalar,
+                values[f"__data_as_of_{indices[0]}"].max().as_scalar()
+                if len(indices) == 1
+                else ibis.least(
+                    *(values[f"__data_as_of_{index}"].max().as_scalar() for index in indices)
+                ),
+            )
+            for indices in parts
+        ]
+        if first.grain == "total" and not display:
+            self._component_censoring(values, metrics, edges, parts, exposures)
+        long = []
+        accounting_rows = []
+        for index, request in enumerate(requests):
+            item = request.metric
+            data_as_of = edges[index]
+            numerator_component = parts[index][0]
+            window_index = windows.index(outcome_band(item)[1])
+            counts = values[f"n_events_{numerator_component}_{window_index}"].cast("float64")
+            summed = values[f"sum_value_{numerator_component}_{window_index}"]
+            numerator = item.numerator if isinstance(item, RatioMetric) else item
+            y = counts if getattr(numerator, "aggregation", None) == "count" else summed
+            if item.type == "conversion":
+                y = (counts > 0).cast("int32").cast("float64")
+            denominator = ibis.null().cast("float64")
+            if isinstance(item, RatioMetric):
+                denominator_component = parts[index][1]
+                denominator = values[
+                    f"{'n_events' if item.denominator.aggregation == 'count' else 'sum_value'}_{denominator_component}_{window_index}"
+                ].cast("float64")
+            rows = values.mutate(
+                metric=ibis.literal(item.name),
+                __request=ibis.literal(index),
+                y=y,
+                y_den=denominator,
+                x=ibis.null().cast("float64"),
+                successes=y.cast("int64")
+                if item.type == "conversion"
+                else ibis.null().cast("int64"),
+            )
+            if display:
+                observed, complete, edge = _observable_window_flags(
+                    rows, item, self._experiment, data_as_of
+                )
+                if self._experiment.observation_horizon is None:
+                    edge = (
+                        rows.ds.max().as_scalar().notnull().ifelse(edge, ibis.null().cast("date"))
+                    )
+                accounting_rows.append(
+                    rows.select(
+                        "metric",
+                        "__request",
+                        "group_id",
+                        "unit_id",
+                        observed=observed,
+                        complete=complete,
+                        observation_end=edge,
+                        event_count=counts,
+                    )
+                )
+            if first.grain == "total":
+                rows = _censor_to_observable_window(
+                    rows, item, self._experiment, data_as_of, warn_on_censoring=False
+                )
+            elif first.grain == "daily":
+                rows = window_bound_stats(rows, item)
+            elif request.completed_windows_only:
+                days = outcome_band(item)[1]
+                if days is not None:
+                    rows = rows.filter(
+                        rows.ds >= rows.first_exposure_date + ibis.interval(days=days)
+                    )
+                if days is not None and isinstance(item, RatioMetric):
+                    rows = _censor_to_observable_window(
+                        rows, item, self._experiment, data_as_of, warn_on_censoring=False
+                    )
+            columns = [
+                "experiment_id",
+                "unit_id",
+                "group_id",
+                "metric",
+                "__request",
+                "y",
+                "y_den",
+                "x",
+                "successes",
+            ]
+            if first.grain != "total":
+                columns.insert(0, "ds")
+            long.append(rows.select(*columns))
+        combined = ibis.union(*long)
+        if display:
+            keys = ["metric", "__request", "group_id"]
+            window = ibis.window(group_by=keys)
+            scaled = combined.mutate(
+                scale_y=combined.y.abs().max().over(window),
+                scale_y_den=combined.y_den.abs().max().over(window),
+            )
+            normalized = scaled.mutate(
+                y=scaled.y / (scaled.scale_y > 0).ifelse(scaled.scale_y, 1.0),
+                y_den=scaled.y_den / (scaled.scale_y_den > 0).ifelse(scaled.scale_y_den, 1.0),
+            )
+            scales = scaled.group_by(keys).aggregate(
+                scale_y=scaled.scale_y.max(), scale_y_den=scaled.scale_y_den.max()
+            )
+            summary = group_summary(normalized, by=["__request"]).left_join(scales, keys)
+            all_units = ibis.union(*accounting_rows)
+            accounting = all_units.group_by(keys).aggregate(
+                assigned=all_units.count(),
+                no_observed=ibis.coalesce(all_units.count(where=~all_units.observed), 0),
+                not_mature=ibis.coalesce(
+                    all_units.count(where=all_units.observed & ~all_units.complete), 0
+                ),
+                observation_end=all_units.observation_end.max(),
+                event_count=all_units.event_count.sum(
+                    where=all_units.observed & all_units.complete
+                ),
+            )
+            summary = accounting.left_join(summary, keys, rname="{name}_summary")
+        elif first.grain == "total":
+            summary = group_summary(combined, by=["__request"])
+        else:
+            summary = emit_centered_moments(
+                combined,
+                DAY_GRAIN,
+                keys=["ds", "experiment_id", "metric", "group_id", "__request"],
+                columns={"y": "y", "den": "y_den"},
+            )
+        null_counts = self._null_value_counts(
+            tuple(OutcomeRows(item, exposures) for item in metrics)
+        )
+        result: list[list[Mapping[str, Any]]] = [[] for _ in requests]
+        for row in self._checked_rows(summary, null_counts):
+            result[int(row.pop("__request"))].append(row)
+        return tuple(tuple(rows) for rows in result)
+
     def _moments_for_metrics(
         self,
         methods: list[Any] | None = None,
@@ -3413,6 +3851,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Every selected metric's ``group_summary`` moments, unioned into
         one arrow table -- the shared substrate ``export()``/``moments()``/
         ``DefinitionsMomentSource.moments_source()`` all serve from.
+
+        Compatible additive metrics share component windows and a centered
+        group reduction; other evidence retains its independent source route.
 
         *methods*/*prior* are opaque here (typed loosely to keep this
         module's own imports SQL/query-only, never reaching into the
@@ -3461,7 +3902,36 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_events, uptake_window_days = self._resolve_uptake(cluster, operation="moments")
 
         tables: list[pa.Table] = []
-        for metric, config in zip(effective, configs, strict=True):
+        batched = self._moments_batch(
+            tuple(
+                MomentsRequest(
+                    metric,
+                    population=population,
+                    include_covariate=include_covariate
+                    and (
+                        self._experiment.n_pre_periods > 0
+                        or any(
+                            method.variance_reduction == "cuped"
+                            for method in effective_methods(config, design=self.context.design)
+                        )
+                    ),
+                )
+                for metric, config in zip(effective, configs, strict=True)
+            )
+        )
+        batch_schema = None
+        if any(rows is not None for rows in batched):
+            schema_rows = exposures.select("experiment_id", "group_id").mutate(
+                metric=ibis.literal(""),
+                y=ibis.null().cast("float64"),
+                x=ibis.null().cast("float64"),
+                y_den=ibis.null().cast("float64"),
+            )
+            batch_schema = group_summary(schema_rows).schema().to_pyarrow()
+        for metric, config, batch_rows in zip(effective, configs, batched, strict=True):
+            if batch_rows is not None:
+                tables.append(pa.Table.from_pylist(list(batch_rows), schema=batch_schema))
+                continue
             panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
                 self._build_panel_for_metric(exposures, metric, population)
             )
@@ -3508,7 +3978,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
             tables.append(self._session.fetch_arrow(summary))
 
-        return pa.concat_tables(tables)
+        return pa.concat_tables(tables, promote_options="default") if tables else pa.table({})
 
     def _windowed_metric_sum(
         self,
@@ -3871,6 +4341,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             compliance_provider=self.compliance_summary,
             compliance_dates_provider=self.compliance_dates,
             validated_assignments=self._validated_assignments,
+            batch_moments=partial(
+                self._moments_batch, day_source=True, horizon_metrics=effective_horizon
+            ),
         )
 
     def _breakout_moments_source(
@@ -5499,3 +5972,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         return self._day_axis_source(selected=selected, _legacy_facade=False)
 
     breakout_moments = _breakout_moments_source
+
+
+MOMENTS_BATCH_OWNERS[DefinitionsMomentSource] = DefinitionsMomentSource._moments_batch
+MOMENTS_BATCH_OWNERS[_DaySource] = lambda source, requests: source._batch_moments(requests)

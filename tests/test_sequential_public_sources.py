@@ -930,8 +930,19 @@ def test_panel_capture_clamps_cursor_to_observation_end_and_continues_after_exte
         )
 
     experiment, resolver = source(days[1])
-    snapshot = workflows.capture_sequential(experiment, resolver, finalized=True, as_of=days[3])
+    for invalid in (1, "not-a-date", date(2026, 1, 1).isoformat() + "T00:00:00+00:00"):
+        with pytest.raises(CapabilityError) as raised:
+            workflows.capture_sequential(experiment, resolver, finalized=True, as_of=invalid)
+        assert raised.value.code == "sequential.source.invalid"
+    with pytest.raises(CapabilityError) as unread:
+        sequential_snapshot(experiment, resolver)
+    assert unread.value.code == "sequential.capture.required"
+    snapshot = workflows.capture_sequential(
+        experiment, resolver, finalized=True, as_of=days[3].isoformat()
+    )
     assert snapshot.reveal_cursor == days[1]
+    assert len(snapshot.records) == 4
+    assert sorted(state.n for state in snapshot.states) == [2, 2]
     asof = View(view="asof", grain="asof", completion_policy=True)
     (row,) = view_readout(experiment, resolver, asof)
     assert row.ds == days[1]
@@ -944,10 +955,8 @@ def test_panel_capture_clamps_cursor_to_observation_end_and_continues_after_exte
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
 @pytest.mark.parametrize("day_type", ["int64", "uint64"], ids=["signed", "unsigned"])
-def test_panel_capture_as_of_beyond_the_signed_range_refuses(backend, day_type):
-    """Days are counted as signed 64-bit offsets, so a capture as of a day past 2**63 - 1 on
-    an integer day column refuses on every backend, whether the day is a Python integer or a
-    NumPy scalar, and the source retains no checkpoint."""
+def test_panel_capture_invalid_numeric_as_of_refuses_without_checkpoint(backend, day_type):
+    """Invalid capture days refuse before arithmetic and leave no checkpoint."""
     import numpy as np
     import polars as pl
     import pyarrow as pa
@@ -977,13 +986,112 @@ def test_panel_capture_as_of_beyond_the_signed_range_refuses(backend, day_type):
         experiment_id="experiment",
         plan=_plan(specs, "bernoulli", date="day", exposure_date="exposed"),
     )
-    for as_of in (2**63, np.float64(2**63), np.uint64(2**64 - 1)):
+    for index, as_of in enumerate(
+        (
+            date(2026, 1, 1),
+            float("nan"),
+            True,
+            "1",
+            float("inf"),
+            2**63,
+            np.float64(2**63),
+            np.uint64(2**64 - 1),
+        )
+    ):
         with pytest.raises(CapabilityError) as raised:
             workflows.capture_sequential(*analysis, finalized=True, as_of=as_of)
         assert raised.value.code == "sequential.source.invalid"
+        if index >= 4:
+            assert dict(raised.value.context) == {
+                "reason": "as_of is outside the signed 64-bit range "
+                "(-9223372036854775808 to 9223372036854775807) of the numeric day column"
+            }
     with pytest.raises(CapabilityError) as unread:
         sequential_snapshot(*analysis)
     assert unread.value.code == "sequential.capture.required"
+
+
+def test_empty_pandas_object_calendar_cutoff_does_not_reclassify_typed_labels():
+    from datetime import datetime
+
+    import pandas as pd
+    import pyarrow as pa
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=1)]
+    plan = _plan(specs, "bernoulli", date="day", exposure_date="exposed")
+    end = date(2026, 1, 2)
+    for calendar_hint in ("cutoff", "exposure", "unused-label"):
+        frame = pd.DataFrame(
+            {
+                "unit": pd.Series(dtype="str"),
+                "arm": pd.Series(dtype="str"),
+                "day": pd.Series(dtype=object),
+                "exposed": pd.Series(
+                    dtype="datetime64[us]" if calendar_hint == "exposure" else object
+                ),
+                "outcome": pd.Series(dtype=float),
+            }
+        )
+        if calendar_hint == "unused-label":
+            frame["unused_calendar"] = pd.Series(dtype="datetime64[us]")
+        cutoff = "d1" if calendar_hint == "unused-label" else end
+        analysis = from_frame(
+            frame,
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="day",
+            exposure_date="exposed",
+            control="control",
+            metrics=specs,
+            experiment_id="experiment",
+            plan=plan,
+            observation_end=None if calendar_hint == "exposure" else cutoff,
+        )
+        snapshot = workflows.capture_sequential(*analysis, finalized=True, as_of=cutoff)
+        assert snapshot.records == ()
+        assert snapshot.assignment_counts == {}
+        assert snapshot.reveal_cursor == (
+            "d1" if calendar_hint == "unused-label" else datetime(2026, 1, 2)
+        )
+
+    for frame in (
+        pd.DataFrame(
+            {
+                "unit": pd.Series(dtype="str"),
+                "arm": pd.Series(dtype="str"),
+                "day": pd.Series(dtype="string"),
+                "exposed": pd.Series(dtype="string"),
+                "outcome": pd.Series(dtype=float),
+            }
+        ),
+        pa.table(
+            {
+                "unit": pa.array([], type=pa.string()),
+                "arm": pa.array([], type=pa.string()),
+                "day": pa.array([], type=pa.string()),
+                "exposed": pa.array([], type=pa.string()),
+                "outcome": pa.array([], type=pa.float64()),
+            }
+        ),
+    ):
+        with pytest.raises(InvalidRequestError) as raised:
+            from_frame(
+                frame,
+                shape="panel",
+                unit="unit",
+                group="arm",
+                date="day",
+                exposure_date="exposed",
+                control="control",
+                metrics=specs,
+                experiment_id="experiment",
+                plan=plan,
+                observation_end=end,
+            )
+        assert raised.value.code == "source.panel.observation_end"
+        assert raised.value.context["axis_kind"] == "label"
+        assert raised.value.context["issue"] == "wrong_kind"
 
 
 @pytest.mark.parametrize("scratch_budget", [0, 64 * 1024 * 1024])

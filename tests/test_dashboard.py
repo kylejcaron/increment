@@ -8,6 +8,7 @@ import datetime as dt
 import io
 import json
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,9 @@ from increment.dashboard import (
     render_metric_details,
     render_results,
 )
+from increment.dashboard._app import _render_entry, _report_notes, build_payload
 from increment.dashboard._data import enriched_rows
+from increment.dashboard._html import results_table, temporal_figure
 from tests.dashboard_snapshots import (
     binomial_region,
     experiment_for,
@@ -542,35 +545,6 @@ def test_health_separates_the_allocation_alpha_from_interval_levels(
 # Results and metric details.
 
 
-def test_results_table_shows_only_core_readout_columns(storefront: DashboardSnapshot) -> None:
-    # A recorded family selection does not add a Discovery column to the Readout table.
-    rows = tuple(
-        {**dict(row), "discovery": True} if row["role"] == "secondary" else row
-        for row in storefront.readout_rows
-    )
-    html = render_results(dataclasses.replace(storefront, readout_rows=rows)).text
-    headers = {
-        re.sub(r"<[^>]+>", "", header).strip()
-        for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
-    }
-    allowed_columns = {
-        "Lift (absolute)",
-        "Lift %",
-        "Lift Plot",
-        "Failure",
-        "Posterior chance to beat",
-        "Posterior risk if shipped",
-        "Posterior P(favorable)",
-    }
-    assert {"Lift %", "Lift Plot"} <= headers
-    structural = {"group_id", "▾Primary", "▾Secondaries", "▾Guardrails"}
-    assert headers - structural <= allowed_columns | {
-        header for header in headers if "Declared plan" in header
-    }
-    assert "Numerical qualification" not in html
-    assert "Selection qualification" not in html
-
-
 def test_results_table_keeps_absolute_scale_values(pricing: DashboardSnapshot) -> None:
     rows = tuple(
         {
@@ -601,13 +575,21 @@ def test_results_keep_selection_qualification_as_a_footnote(pricing: DashboardSn
             "selection_qualification": qualification,
             "family_q": 0.05,
             "family_size": 12,
+            **({"binomial_set": binomial_region()} if row["role"] == "secondary" else {}),
         }
-        if row["metric"] == pricing.primary_metric
+        if row["metric"] == pricing.primary_metric or row["role"] == "secondary"
         else row
         for row in pricing.readout_rows
     )
     html = render_results(dataclasses.replace(pricing, readout_rows=rows)).text
-    assert "Selection qualification" not in html
+    headers = {
+        re.sub(r"<[^>]+>", "", header).strip()
+        for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
+    }
+    assert {"Lift %", "Lift Plot"} <= headers
+    assert "Discovery" not in headers
+    assert "Numerical qualification" not in headers
+    assert "Selection qualification" not in headers
     assert "Selection evidence for" in html
     assert pricing.primary_metric in html
     assert qualification in html
@@ -684,15 +666,28 @@ def test_the_second_experiment_uses_the_same_result_sections(
 
 
 @pytest.mark.parametrize("view", ["cumulative_lift", "daily_values", "cumulative_values"])
-def test_all_temporal_views_render_every_declared_metric_in_one_table(
+def test_all_temporal_views_render_every_declared_metric(
     storefront: DashboardSnapshot, view: ExploreView
 ) -> None:
     data = temporal_rows(storefront, view)
     expected = {metric.name for metric in storefront.metrics}
     assert {row.metric for row in data} == expected
+    if view == "cumulative_lift":
+        data = type(data)(
+            row.model_copy(update={"ds": row.ds + dt.timedelta(days=3)})
+            if row.metric == storefront.primary_metric
+            else row
+            for row in data
+        )
     html = render_explore(storefront, data, metric=None, view=view).text
     for metric in expected:
         assert metric in html
+    if view == "cumulative_lift":
+        endpoints = [
+            float(points.split()[-1].split(",")[0])
+            for points in re.findall(r'<polyline[^>]*points="([^"]+)"', html)
+        ]
+        assert max(endpoints) - min(endpoints) > 100
 
 
 def test_all_metric_daily_table_keeps_cohort_and_calendar_rows_distinct(
@@ -711,6 +706,13 @@ def test_all_metric_daily_table_keeps_cohort_and_calendar_rows_distinct(
     html = render_explore(storefront, mixed, metric=None, view="daily_values").text
     assert "Exposure cohort" in html
     assert "Observation date" in html
+    incompatible = DailyMetricValues(
+        row.model_copy(update={"ds_basis": "cohort"}) if index == 0 else row
+        for index, row in enumerate(data)
+    )
+    refused = render_explore(storefront, incompatible, metric=None, view="daily_values").text
+    assert "cannot share one axis" in refused
+    assert "<svg" not in refused
 
 
 def test_render_explore_segments_show_a_truthful_empty_state_without_breakouts(
@@ -728,8 +730,32 @@ def test_render_explore_segments_show_a_truthful_empty_state_without_breakouts(
 def test_dashboard_tables_escape_warehouse_segment_values_and_arm_names(
     storefront: DashboardSnapshot,
 ) -> None:
+    from html.parser import HTMLParser
+
     from increment.breakout.estimates import BreakoutEstimate, BreakoutEstimates
     from increment.estimation.results import Estimate
+
+    class Cells(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.cells: list[str] = []
+            self.links: list[str] = []
+            self.current: list[str] | None = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("td", "th"):
+                self.current = []
+            elif tag == "a" and self.current is not None:
+                self.links.append(dict(attrs).get("href") or "")
+
+        def handle_data(self, data):
+            if self.current is not None:
+                self.current.append(data)
+
+        def handle_endtag(self, tag):
+            if tag in ("td", "th") and self.current is not None:
+                self.cells.append("".join(self.current).strip())
+                self.current = None
 
     hostile = "<img src=x onerror=alert(1)>"
     results = render_results(
@@ -750,9 +776,55 @@ def test_dashboard_tables_escape_warehouse_segment_values_and_arm_names(
         metric=storefront.primary_metric,
         view="segments",
     ).text
-    for html in (results, segments):
+    from increment.breakout.estimates import DailyLiftEstimates
+
+    renamed = dataclasses.replace(
+        storefront,
+        metrics=tuple(
+            model.model_copy(update={"name": hostile})
+            if model.name == storefront.primary_metric
+            else model
+            for model in storefront.metrics
+        ),
+        primary_metric=hostile,
+        group_data=tuple(
+            dataclasses.replace(item, metric=hostile)
+            if item.metric == storefront.primary_metric
+            else item
+            for item in storefront.group_data
+        ),
+    )
+    labels = (
+        ("US", storefront.treatment_group),
+        ("**US**", f"**{storefront.treatment_group}**"),
+        ("[US](https://example.com)", f"[{storefront.treatment_group}](https://example.com)"),
+    )
+    temporal = render_explore(
+        renamed,
+        DailyLiftEstimates(
+            row.model_copy(
+                update={
+                    "metric": hostile,
+                    "dimension": "country",
+                    "dimension_value": series,
+                    "group_id": arm,
+                }
+            )
+            for row in temporal_rows(storefront, "cumulative_lift")
+            if row.metric == storefront.primary_metric
+            for series, arm in labels
+        ),
+        metric=hostile,
+        view="cumulative_lift",
+    ).text
+    for html in (results, segments, temporal):
         assert hostile not in html
         assert "&lt;img src=x onerror=alert(1)&gt;" in html
+    parsed = Cells()
+    parsed.feed("".join(re.findall(r"<table\b.*?</table>", temporal, re.S)))
+    assert not parsed.links
+    for series, arm in labels:
+        assert series in parsed.cells and arm in parsed.cells
 
 
 @pytest.mark.parametrize(
@@ -829,8 +901,16 @@ def test_dashboard_tables_neutralize_dangerous_label_links(
 def test_daily_values_report_their_actual_calendar_basis_and_gap_reasons(
     storefront: DashboardSnapshot,
 ) -> None:
+    from increment.estimation.results import Estimate
+
     data = temporal_rows(storefront, "daily_values").filter(
         lambda row: row.metric == storefront.primary_metric
+    )
+    data = type(data)(
+        row.model_copy(update={"value": Estimate(value=0.3)})
+        if row.group_id == storefront.control_group and row.value is not None
+        else row
+        for row in data
     )
     frame: Any = data.to_frame(backend="pandas")
     assert set(frame["ds_basis"].dropna()) == {"calendar"}
@@ -839,6 +919,10 @@ def test_daily_values_report_their_actual_calendar_basis_and_gap_reasons(
 
     html = render_explore(storefront, data, metric="checkout_conversion", view="daily_values").text
     assert "nonpositive_mean" in html
+    assert "30.0%" in html
+    assert "[20.0%, 40.0%]" in html
+    assert "no interval available" in html
+    assert "(−∞, ∞)" not in html
 
 
 @pytest.mark.slow
@@ -1012,7 +1096,6 @@ COUNTRY = ("event_log", "country")
 
 @pytest.fixture
 def storefront_payload(storefront: DashboardSnapshot):
-    from increment.dashboard._app import build_payload
 
     return build_payload(experiment_for(storefront), snapshot=storefront)
 
@@ -1111,7 +1194,7 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
     storefront: DashboardSnapshot,
     method_role: str,
 ) -> None:
-    from increment.dashboard import _app
+
     from increment.estimation.results import JointContrastReference, relative_confidence_set
 
     region = relative_confidence_set(JointContrastReference(a=10, c=0, var_a=1, var_c=1, cov_ac=0))
@@ -1123,7 +1206,7 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
         relative_confidence_set=region,
         method_role=method_role,
     )
-    notes = " ".join(_app._report_notes(snapshot))
+    notes = " ".join(_report_notes(snapshot))
     assert "∪" in notes
     displayed = [float(value) / 100 for value in re.findall(r"([+-]?\d+(?:\.\d+)?)%", notes)]
     for interval in region.intervals:
@@ -1135,9 +1218,8 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
 def test_report_notes_keep_binomial_qualification_out_of_readout(
     storefront: DashboardSnapshot,
 ) -> None:
-    from increment.dashboard._app import _report_notes
+
     from increment.dashboard._format import headline_interval
-    from increment.dashboard._html import results_table
     from increment.tables import _binomial_qualification_disclosure
 
     storefront = _with_primary_row(storefront, binomial_set=binomial_region())
@@ -1158,12 +1240,12 @@ def test_report_notes_keep_binomial_qualification_out_of_readout(
 def test_summary_notes_attribute_each_captured_level_to_its_own_metric(
     storefront: DashboardSnapshot,
 ) -> None:
-    from increment.dashboard import _app
+
     from increment.dashboard._data import decision_rows
 
     rows = decision_rows(storefront)
     assert len({row["level"] for row in rows}) > 1
-    summary = _app._report_notes(storefront)[0]
+    summary = _report_notes(storefront)[0]
     stated = [(m.start(), m.group()) for m in re.finditer(r"\d+(?:\.\d+)?%", summary)]
     for row in rows:
         metric_at = summary.index(str(row["metric"]))
@@ -1176,7 +1258,6 @@ def test_summary_notes_attribute_each_captured_level_to_its_own_metric(
 def test_summary_levels_distinguish_methods_for_the_same_metric(
     storefront: DashboardSnapshot,
 ) -> None:
-    from increment.dashboard import _app
 
     decision = storefront.readout_rows[0]
     sensitivity = {
@@ -1195,7 +1276,7 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
             ),
         ),
     )
-    summary = _app._report_notes(snapshot)[0]
+    summary = _report_notes(snapshot)[0]
     levels = [
         (m.start(), float(m.group()[:-1]) / 100) for m in re.finditer(r"\d+(?:\.\d+)?%", summary)
     ]
@@ -1204,7 +1285,7 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
         preceding = [value for start, value in levels if start < method_at]
         assert isinstance(row["level"], float)
         assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
-    notes = "\n".join(_app._report_notes(snapshot))
+    notes = "\n".join(_report_notes(snapshot))
     disclosure = render_results(snapshot).text
     for row in (decision, sensitivity):
         attribution = f"{row['metric']} ({row['method']}, {row['method_role']})"
@@ -1212,8 +1293,12 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
         assert attribution in disclosure
 
 
+@pytest.mark.parametrize(
+    "status,discovery",
+    [("exploratory_family", True), ("exploratory_family", False), ("exploratory_unadjusted", None)],
+)
 def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
-    storefront: DashboardSnapshot,
+    storefront: DashboardSnapshot, status: str, discovery: bool | None
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
     from increment.estimation.results import Estimate
@@ -1225,19 +1310,47 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
         row.model_copy(
             update={
                 "lift": Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
-                "discovery": True,
+                "discovery": discovery,
                 "family_q": 0.05,
                 "family_procedure": "bh",
-                "multiplicity_status": "exploratory_family",
+                "multiplicity_status": status,
+                "decision_scope_complete": discovery is True,
+                "null_lift": 0.01,
+                "posterior_prob_favorable": 0.73 if discovery is not None else None,
+                "posterior_available": False if discovery is None else None,
+                "posterior_reason_code": "estimation.engine.lift_guard"
+                if discovery is None
+                else None,
+                "posterior_reason_context": {"reason": "delta_method_unreliable"}
+                if discovery is None
+                else None,
             }
         )
         for row in series
     )
     from increment.tables import estimates_to_readout
 
-    assert estimates_to_readout(rising)[0]["selection_qualification"] is not None
+    assert (estimates_to_readout(rising)[0]["selection_qualification"] is not None) == (
+        discovery is True
+    )
     html = render_explore(storefront, rising, metric=model.name, view="cumulative_lift").text
-    assert "Selection evidence for" in html
+    assert ("Selection evidence for" in html) == (discovery is True)
+    if discovery is not None:
+        assert "Discovery" in html and ("Yes" if discovery else "No") in html
+    if status == "exploratory_unadjusted":
+        assert "unadjusted for multiplicity" in html.casefold()
+    else:
+        assert "Exploratory family" in html
+    assert ("Decision scope is incomplete" in html) == (discovery is not True)
+    if discovery is None:
+        assert "Posterior unavailable" in html
+        assert "estimation.engine.lift_guard" in html
+        assert "delta_method_unreliable" in html
+    else:
+        assert "Posterior P(favorable)" in html and "73.0%" in html
+    from increment.dashboard._theme import coeftable_theme
+
+    assert f'stroke="{coeftable_theme(storefront.config.theme).unfavorable}"' in html
 
 
 def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
@@ -1247,19 +1360,80 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
 
     data = temporal_rows(storefront, "cumulative_lift", segmented=True)
     assert isinstance(data, DailyLiftEstimates)
+    earlier_date = min(row.ds for row in data)
     mixed = DailyLiftEstimates(
-        row.model_copy(update={"method": "cuped"}) if row.metric == "revenue_per_user" else row
+        row.model_copy(
+            update={
+                "method": "cuped" if row.metric == "revenue_per_user" else row.method,
+                "analysis_population": "assigned"
+                if row.metric == "revenue_per_user"
+                else "triggered",
+                "null_lift": 0.01,
+                "posterior_prob_favorable": 0.73 if row.dimension_value == "CA" else None,
+                "posterior_available": False if row.dimension_value == "US" else None,
+                "posterior_reason_code": "estimation.engine.lift_guard"
+                if row.dimension_value == "US"
+                else None,
+                "posterior_reason_context": {"reason": "us_prior_guard"}
+                if row.dimension_value == "US"
+                else None,
+                "lift": row.lift.model_copy(update={"level": 0.9})
+                if row.metric == "revenue_per_user"
+                and row.dimension_value == "US"
+                and row.lift is not None
+                else row.lift,
+            }
+        )
         for row in data
+        if not (
+            row.metric == "revenue_per_user"
+            and row.dimension_value == "US"
+            and row.ds != earlier_date
+        )
     )
     rendered = render_explore(storefront, mixed, metric=None, view="cumulative_lift").text
     assert "revenue_per_user" in rendered and storefront.primary_metric in rendered
     assert "US" in rendered and "CA" in rendered
+    assert "triggered" in rendered
+    assert len(re.findall(r'<table\b[^>]*\bclass="[^"]*\bgt_table\b', rendered)) == 3
+    assert rendered.count("Scope and integrity unknown.") == 3
+    assert f"CA · {storefront.treatment_group}" in rendered
+    assert f"US · {storefront.treatment_group}" in rendered
+    assert "73.0%" in rendered and "us_prior_guard" in rendered
+    assert "cuped" in rendered
+    assert all(
+        "Latest" not in table for table in re.findall(r"<table\b.*?</table>", rendered, re.S)
+    )
+    details = re.findall(r"<details\b.*?</details>", rendered, re.S)
+    qualified = [detail for detail in details if "Scope and integrity unknown." in detail]
+    assert len(qualified) == 3
+    outside = re.sub(r"<details\b.*?</details>", "", rendered, flags=re.S)
+    assert "Scope and integrity unknown." not in outside and "Tested null:" not in outside
+    captions = re.findall(
+        r'<div class="inc-dashboard-temporal-table">\s*<p[^>]*>(.*?)</p>', rendered, re.S
+    )
+    assert len(captions) == 3
+    assert all(
+        any(metric in caption for caption in captions) for metric in {r.metric for r in mixed}
+    )
+    assert "Method:" in " ".join(captions) and "cuped" in " ".join(captions)
+    assert "Population:" in " ".join(captions)
+    assert "assigned" in " ".join(captions) and "triggered" in " ".join(captions)
+    varied = next(detail for detail in qualified if "revenue_per_user" in detail)
+    assert str(earlier_date) in varied and str(max(row.ds for row in data)) in varied
+    assert "90%" in varied
+    assert rendered.count("Latest dates vary by series") == 1
+    assert rendered.count("Confidence levels vary by series") == 1
 
 
-def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
-    storefront: DashboardSnapshot,
+@pytest.mark.parametrize(
+    "point_state", ["available", "early_undefined", "all_undefined", "finite_tail"]
+)
+def test_one_sided_intervals_keep_unavailable_dates_as_gaps(
+    storefront: DashboardSnapshot, point_state: str
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
+    from increment.estimation.results import Estimate
 
     rows = DailyLiftEstimates(
         _open_sided_lift(
@@ -1271,13 +1445,243 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
         ).model_copy(update={"lift": None})
         for day in range(1, 6)
     )
+    if point_state == "finite_tail":
+        rows = DailyLiftEstimates(
+            row.model_copy(
+                update={
+                    "lift": Estimate(
+                        value=0.02 * day, lb=0.02 * day - 0.05, ub=0.02 * day + 0.05, level=0.95
+                    )
+                }
+            )
+            if day >= 4
+            else row
+            for day, row in enumerate(rows, 1)
+        )
+    if point_state in ("early_undefined", "all_undefined"):
+        region = binomial_region()
+        region = type(region).model_validate(
+            {
+                **region.model_dump(),
+                "lower": -1.0,
+                "upper": None,
+                "geometry": "lower_bound",
+                "x_c": 0,
+                "x_t": 0,
+            }
+        )
+        rows = DailyLiftEstimates(
+            type(row).model_validate(
+                {
+                    **row.model_dump(),
+                    "lift": None,
+                    "binomial_set": region,
+                    "reference_kind": "binomial",
+                }
+            )
+            if day != 3 and (point_state == "all_undefined" or day < 3)
+            else row
+            for day, row in enumerate(rows, 1)
+        )
     rendered = render_explore(
         storefront, rows, metric=storefront.primary_metric, view="cumulative_lift"
     ).text
+    if point_state == "finite_tail":
+        chart = ET.fromstring(re.findall(r"<svg\b.*?</svg>", rendered, re.S)[0])
+        bands = [p for p in chart.findall(".//{*}polygon") if p.get("fill-opacity") == "0.15"]
+        assert len(bands) == 1, "finite dates retain their ribbon even after an open interval"
+        final_run = chart.findall(".//{*}polyline")[1]
+        start = float(final_run.attrib["points"].split()[0].split(",")[0])
+        assert all(
+            float(p.split(",")[0]) >= start - 0.02 for p in bands[0].attrib["points"].split()
+        )
     polylines = re.findall(r'<polyline[^>]*points="([^"]+)"', rendered)
-    assert polylines
-    # Each estimate and bound is two separate two-date segments, never a bridge.
+    assert (
+        len(polylines)
+        == {
+            "available": 2,
+            "early_undefined": 1,
+            "all_undefined": 0,
+            "finite_tail": 2,
+        }[point_state]
+    )
+    # Missing points break the estimate; open bounds stay in details, not extra CI lines.
     assert all(len(points.split()) == 2 for points in polylines)
+    assert "Lower CI" not in rendered and "Upper CI" not in rendered
+    interval = (
+        "[+5.0%, +15.0%]"
+        if point_state == "finite_tail"
+        else "[+5.0%, ∞)"
+        if point_state != "all_undefined"
+        else "-100.0%, ∞)"
+    )
+    assert interval in rendered
+    legends = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", rendered))
+    assert ("Estimate" in legends) == (point_state != "all_undefined")
+    assert "one-sided test for an increase" in rendered
+    assert "two-sided test" not in rendered
+    if point_state == "available":
+        packet = _render_entry(
+            storefront,
+            rows,
+            metric=storefront.primary_metric,
+            view="cumulative_lift",
+            complete=False,
+            breakout=("event_log", "country"),
+            correction=None,
+        )
+        notes = " ".join(packet["notes"])
+        assert "labelled line" not in notes
+        assert "no separate bound lines" in notes
+        assert "Latest readings and qualifications" in notes
+
+
+@pytest.mark.parametrize(
+    ("scale", "level", "coverage"),
+    [
+        ("relative", 0.95, "95"),
+        ("absolute", 0.95, "95"),
+        ("absolute_aware", 0.95, "95"),
+        ("absolute_fold", 0.95, "95"),
+        pytest.param("relative", 0.9833333333333333, "98.33", id="coverage-ordinary"),
+        pytest.param("relative", 0.99999, "99.999", id="coverage-near-one"),
+        pytest.param("relative", 0.00001, "0.001", id="coverage-near-zero"),
+        pytest.param("relative", 0.9999999999999999, None, id="coverage-adjacent-one"),
+        pytest.param("relative", 5e-324, None, id="coverage-smallest-positive"),
+    ],
+)
+def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
+    storefront: DashboardSnapshot, scale: str, level: float, coverage: str | None
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    from increment.breakout.estimates import DailyLiftEstimates
+    from increment.estimation.results import Estimate
+
+    model = next(model for model in storefront.metrics if model.name == "revenue_per_user")
+    seed = next(
+        row for row in temporal_rows(storefront, "cumulative_lift") if row.metric == model.name
+    )
+    magnitude = 1 if scale == "relative" else 100
+    dates = (
+        [
+            dt.datetime(2025, 11, 2, 1, 30, tzinfo=dt.timezone(dt.timedelta(hours=-4))),
+            dt.datetime(2025, 11, 2, 1, 30, tzinfo=dt.timezone(dt.timedelta(hours=-5))),
+            dt.datetime(2025, 11, 2, 2, 30, tzinfo=dt.timezone(dt.timedelta(hours=-5))),
+        ]
+        if scale == "absolute_aware"
+        else [dt.date(2025, 1, day) for day in range(1, 4)]
+    )
+    folded = scale == "absolute_fold"
+    if folded:
+        zone = ZoneInfo("America/New_York")
+        dates = [
+            dt.datetime(2025, 11, 2, 0, 45, tzinfo=zone),
+            dt.datetime(2025, 11, 2, 1, 45, tzinfo=zone, fold=0),
+            dt.datetime(2025, 11, 2, 1, 15, tzinfo=zone, fold=1),
+        ]
+    scale = scale.split("_", 1)[0]
+    rows = DailyLiftEstimates(
+        seed.model_copy(
+            update={
+                "ds": dates[day - 1],
+                "value_scale": scale,
+                "alternative": "less",
+                "null_lift": 0.15 if scale == "relative" else 0.0,
+                "null_abs": 15.0 if scale == "absolute" else None,
+                "lift": Estimate(
+                    value=0.1 * day * magnitude,
+                    lb=0.05 * day * magnitude,
+                    ub=0.15 * day * magnitude,
+                    level=level,
+                ),
+            }
+        )
+        for day in range(1, 4)
+    )
+
+    rendered = temporal_figure(storefront, rows, metric=model.name, view="cumulative_lift")
+    label = re.search(r"([-+\d.e]+)% intervals", rendered)
+    assert label is not None
+    shown = label.group(1)
+    assert 0 < float(shown) < 100
+    if coverage is not None:
+        assert shown == coverage
+    else:
+        assert float(shown) == pytest.approx(level * 100, rel=1e-14, abs=0)
+    svgs = re.findall(r"<svg\b.*?</svg>", rendered, re.S)
+    assert svgs
+    tick_text = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", "".join(svgs)))
+    assert ("%" in tick_text) == (scale == "relative")
+    assert "Latest" in rendered
+    assert ("+30.0%" if scale == "relative" else "+30") in rendered
+    chart = ET.fromstring(svgs[0])
+    line = chart.find(".//{*}polyline")
+    assert line is not None
+    points = [tuple(map(float, point.split(","))) for point in line.attrib["points"].split()]
+    assert len(points) == 3
+    assert points[0][0] < points[1][0] < points[2][0]
+    if folded:
+        assert points[1][0] - points[0][0] == pytest.approx(
+            2 * (points[2][0] - points[1][0]), abs=0.03
+        )
+    else:
+        assert points[1][0] == pytest.approx((points[0][0] + points[2][0]) / 2, abs=0.02)
+    assert points[1][1] == pytest.approx((points[0][1] + points[2][1]) / 2, abs=0.02)
+    reference = next(
+        line for line in chart.findall(".//{*}line") if "stroke-dasharray" in line.attrib
+    )
+    assert float(reference.attrib["y1"]) == pytest.approx(
+        (points[0][1] + points[1][1]) / 2, abs=0.02
+    )
+    assert chart.find(".//{*}polygon") is not None
+    assert "one-sided test for a decrease" in rendered
+    assert "two-sided test" not in rendered
+
+
+def test_temporal_early_outlier_keeps_its_true_ghost_and_clipped_geometry(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimates
+    from increment.estimation.results import Estimate
+
+    seed = next(iter(temporal_rows(storefront, "cumulative_lift")))
+    rows = DailyLiftEstimates(
+        seed.model_copy(
+            update={
+                "ds": dt.date(2025, 1, day),
+                "lift": Estimate(value=value, lb=value - 0.01, ub=value + 0.01, level=0.95),
+            }
+        )
+        for day, value in enumerate((10, 0.02, 0.04, 0.06, 0.08, 0.1), 1)
+    )
+    rendered = render_explore(storefront, rows, metric=seed.metric, view="cumulative_lift").text
+    match = re.search(r"<svg\b.*?</svg>", rendered, re.S)
+    assert match is not None
+    chart = ET.fromstring(match.group())
+    height = float(chart.attrib["height"])
+    lines = chart.findall(".//{*}polyline")
+    ghost = next(line for line in lines if line.get("stroke-opacity") == "0.35")
+    assert any(float(point.split(",")[1]) < 0 for point in ghost.attrib["points"].split())
+    for line in lines:
+        if line.get("stroke-opacity") is None:
+            assert all(
+                0 <= float(point.split(",")[1]) <= height for point in line.attrib["points"].split()
+            )
+    assert chart.find(".//{*}clipPath") is not None
+
+    packet = _render_entry(
+        storefront,
+        rows,
+        metric=seed.metric,
+        view="cumulative_lift",
+        complete=False,
+        breakout=None,
+        correction=None,
+    )
+    notes = " ".join(packet["notes"])
+    assert "table beside" not in notes
+    assert "Latest readings and qualifications" in notes
 
 
 @pytest.mark.slow
@@ -1285,7 +1689,6 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
 def test_complete_dashboard_retains_adverse_nonrejecting_guardrail(
     storefront: DashboardSnapshot, surface: str
 ) -> None:
-    from increment.dashboard._app import build_payload
 
     snapshot = _guardrail_snapshot(
         storefront, alternative="greater", direction="increase", lb=-0.10, ub=-0.02
@@ -1306,7 +1709,7 @@ def test_complete_dashboard_retains_adverse_nonrejecting_guardrail(
 def test_report_retains_directional_fieller_set_beside_central_interval(
     storefront: DashboardSnapshot, alternative: str
 ) -> None:
-    from increment.dashboard._app import _report_notes
+
     from increment.estimation.results import JointContrastReference, relative_confidence_set
 
     reference = JointContrastReference(a=0.2, c=1, var_a=0.04, var_c=0.04, cov_ac=0)
@@ -1337,3 +1740,281 @@ def test_report_retains_directional_fieller_set_beside_central_interval(
 
 
 pytestmark = pytest.mark.integration
+
+
+def test_primary_coverage_discloses_retained_alpha_when_level_rounds_to_one(
+    storefront: DashboardSnapshot,
+) -> None:
+    index = next(
+        i
+        for i, row in enumerate(storefront.readout_rows)
+        if row["metric"] == storefront.primary_metric
+    )
+    estimate = storefront.estimates[index]
+    assert estimate.lift is not None
+    updated = list(storefront.estimates)
+    updated[index] = estimate.model_copy(
+        update={"lift": estimate.lift.model_copy(update={"level": 1.0, "alpha": 1e-17})}
+    )
+    rows = tuple(
+        {**dict(row), "level": 1.0} if row["metric"] == storefront.primary_metric else row
+        for row in storefront.readout_rows
+    )
+    snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=rows)
+    html = render_header(snapshot).text
+    assert "100% (α=1e-17)" in html
+
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    assert payload["primary"]["levelLabel"] == "100% (α=1e-17)"
+    assert "100% (α=1e-17)" in payload["primary"]["method"]
+    rows = list(csv.DictReader(io.StringIO(payload["readoutCsv"])))
+    primary_row = next(row for row in rows if row["metric"] == snapshot.primary_metric)
+    assert primary_row["coverage_alpha"] == "1e-17"
+    assert any(row["coverage_alpha"] == "" for row in rows)
+
+    direct_rows = list(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
+    direct_primary = next(row for row in direct_rows if row["metric"] == snapshot.primary_metric)
+    assert direct_primary["coverage_alpha"] == "1e-17"
+
+
+def test_secondary_coverage_budget_reaches_metric_details(
+    storefront: DashboardSnapshot,
+) -> None:
+    index = next(
+        i
+        for i, row in enumerate(storefront.readout_rows)
+        if row["metric"] != storefront.primary_metric
+    )
+    estimate = storefront.estimates[index]
+    assert estimate.lift is not None
+    updated = list(storefront.estimates)
+    updated[index] = estimate.model_copy(
+        update={"lift": estimate.lift.model_copy(update={"level": 1.0, "alpha": 1e-17})}
+    )
+    rows = list(storefront.readout_rows)
+    rows[index] = {**dict(rows[index]), "level": 1.0}
+    snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
+
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    metric = str(rows[index]["metric"])
+    detail = next(item["detail"] for item in payload["metrics"] if item["key"] == metric)
+    assert "100% (α=1e-17)" in detail
+
+    assert "100% (α=1e-17) CI" in results_table(snapshot)
+
+
+def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(
+    storefront: DashboardSnapshot,
+) -> None:
+    indices = [
+        i
+        for i, row in enumerate(storefront.readout_rows)
+        if row["metric"] != storefront.primary_metric
+        and storefront.estimates[i].confidence_set is None
+        and storefront.estimates[i].lift is not None
+    ][:2]
+    assert len(indices) == 2
+    updated = list(storefront.estimates)
+    rows = list(storefront.readout_rows)
+    from increment.estimation.results import Estimate
+
+    for index, alpha in zip(indices, (1e-17, 1e-18), strict=True):
+        estimate = updated[index]
+        assert estimate.lift is not None
+        updated[index] = estimate.model_copy(
+            update={
+                "lift": Estimate(
+                    value=estimate.lift.value,
+                    lb=estimate.lift.lb,
+                    ub=estimate.lift.ub,
+                    level=1.0,
+                    alpha=alpha,
+                )
+            }
+        )
+        rows[index] = {**dict(rows[index]), "level": 1.0}
+    snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
+
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    notes = payload["report"]["notes"]
+    assert any("100% (α=1e-17)" in note for note in notes)
+    assert any("100% (α=1e-18)" in note for note in notes)
+
+
+def test_report_preserves_distinct_raw_levels_that_round_alike(
+    storefront: DashboardSnapshot,
+) -> None:
+    indices = [
+        i
+        for i, row in enumerate(storefront.readout_rows)
+        if row["metric"] != storefront.primary_metric
+        and storefront.estimates[i].confidence_set is None
+        and storefront.estimates[i].lift is not None
+    ][:2]
+    assert len(indices) == 2
+    updated = list(storefront.estimates)
+    rows = list(storefront.readout_rows)
+    for index, level, alpha in zip(indices, (0.95, 0.95001), (0.05, 0.04999), strict=True):
+        estimate = updated[index]
+        assert estimate.lift is not None
+        updated[index] = estimate.model_copy(
+            update={"lift": estimate.lift.model_copy(update={"level": level, "alpha": alpha})}
+        )
+        rows[index] = {**dict(rows[index]), "level": level}
+    snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
+
+    notes = build_payload(experiment_for(snapshot), snapshot=snapshot)["report"]["notes"]
+    assert sum(note.count("95% fixed-horizon intervals") for note in notes) == 2, notes
+    assert any(
+        "Interval levels differ; compare each interval only with its own level." in note
+        for note in notes
+    )
+
+
+def test_relative_set_coverage_discloses_its_own_retained_alpha() -> None:
+    from increment.dashboard._format import interval_html
+    from increment.estimation.inference import relative_confidence_set
+    from increment.estimation.results import JointContrastReference
+
+    region = relative_confidence_set(
+        JointContrastReference(a=10.0, c=0.0, var_a=1.0, var_c=1.0, cov_ac=0.0),
+        alpha=1e-17,
+        alternative="greater",
+    )
+    assert region.geometry in {"one_sided", "disconnected", "all_real"}
+    shown = interval_html({"relative_confidence_set": region, "value_scale": "relative"})
+    assert shown is not None
+    assert "100% (α=1e-17)" in shown
+
+
+def test_winsor_set_coverage_discloses_its_own_retained_alpha(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.estimation.results import estimate_winsor_lift
+    from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState
+
+    raw = WinsorRawState(
+        metric=next(metric.name for metric in storefront.metrics if metric.type == "mean"),
+        study_id="coverage-display",
+        missingness="error",
+        quantile=0.5,
+        inference=WinsorInferenceSpec(method="influence-normal-v1"),
+        arms=(
+            RawArm(group_id="control", values=tuple(float(i) for i in range(1, 41))),
+            RawArm(group_id="treatment", values=tuple(float(i) * 1.1 for i in range(1, 41))),
+        ),
+    )
+    estimate = estimate_winsor_lift(raw, "control", "treatment", alpha=1e-17)
+    assert estimate.confidence_set is not None
+    assert estimate.lift is not None
+    without_lift_alpha = estimate.model_copy(
+        update={"lift": estimate.lift.model_copy(update={"alpha": None})}
+    )
+    snapshot = dataclasses.replace(
+        storefront,
+        estimates=(without_lift_alpha,),
+        readout_rows=enriched_rows((without_lift_alpha,)),
+    )
+    assert "100% (α=1e-17)" in render_results(snapshot).text
+    row = next(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
+    assert row["coverage_alpha"] == "1e-17"
+
+
+def test_temporal_caption_does_not_merge_rounded_equal_levels_with_different_budgets(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimates
+    from increment.estimation.results import Estimate
+
+    seed = next(iter(temporal_rows(storefront, "cumulative_lift")))
+    rows = DailyLiftEstimates(
+        seed.model_copy(
+            update={
+                "ds": dt.date(2025, 1, day),
+                "dimension": "country",
+                "dimension_value": country,
+                "lift": Estimate(
+                    value=0.1,
+                    lb=0.05,
+                    ub=0.15,
+                    level=1.0,
+                    alpha=alpha,
+                ),
+            }
+        )
+        for country, alpha in (("DE", 1e-17), ("GB", 1e-18))
+        for day in range(1, 4)
+    )
+    rendered = temporal_figure(storefront, rows, metric=seed.metric, view="cumulative_lift")
+    assert "Confidence levels vary by series" in rendered
+    assert "100% (α=1e-17)" in rendered
+    assert "100% (α=1e-18)" in rendered
+
+
+def test_temporal_notes_attribute_point_free_set_coverage_to_its_series(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimate, DailyLiftEstimates
+    from increment.estimation.results import Estimate
+    from tests.test_tables import _binomial_lift_estimate
+
+    seed = next(iter(temporal_rows(storefront, "cumulative_lift")))
+    point_backed = seed.model_copy(
+        update={
+            "dimension": "country",
+            "dimension_value": "DE",
+            "lift": Estimate(value=0.1, lb=0.05, ub=0.15, level=0.95, alpha=0.05),
+        }
+    )
+    point_free_estimate = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200, alpha=0.04)
+    assert point_free_estimate.binomial_set is not None
+    point_free = DailyLiftEstimate.model_validate(
+        {
+            **seed.model_dump(mode="python"),
+            "dimension": "country",
+            "dimension_value": "GB",
+            "reference_kind": "binomial",
+            "lift": None,
+            "binomial_set": point_free_estimate.binomial_set,
+            "method": point_free_estimate.method,
+            "method_role": point_free_estimate.method_role,
+            "value_scale": point_free_estimate.value_scale,
+        }
+    )
+    rows = DailyLiftEstimates([point_backed, point_free])
+
+    packet = _render_entry(
+        storefront,
+        rows,
+        metric=seed.metric,
+        view="cumulative_lift",
+        complete=False,
+        breakout=("event_log", "country"),
+        correction=None,
+    )
+    notes = " ".join(packet["notes"])
+    coverage_groups = re.findall(r"(\d+(?:\.\d+)?%) \(([^)]+)\)", notes)
+    assert any(level == "95%" and "country=DE" in group for level, group in coverage_groups)
+    assert not any(level == "95%" and "country=GB" in group for level, group in coverage_groups)
+    assert any(level == "96%" and "country=GB" in group for level, group in coverage_groups)
+
+
+def test_daily_value_without_alpha_keeps_its_retained_level(storefront: DashboardSnapshot) -> None:
+    from datetime import date
+
+    from increment.breakout.estimates import DailyMetricValue, DailyMetricValues
+    from increment.estimation.results import Estimate
+    from increment.tables import estimates_to_readout
+
+    estimate = DailyMetricValue(
+        ds=date(2025, 1, 1),
+        metric="revenue",
+        group_id="treatment",
+        value=Estimate(value=0.1, lb=0.0, ub=0.2, level=0.95, alpha=None),
+        n=10,
+    )
+
+    (row,) = estimates_to_readout(DailyMetricValues([estimate]))
+
+    assert row["level"] == 0.95
+    assert row["coverage_alpha"] is None

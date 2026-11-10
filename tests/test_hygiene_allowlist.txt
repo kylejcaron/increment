@@ -7,7 +7,6 @@ tests/test_readout_execution_context.py::test_mutable_sql_panel_is_not_reported_
 tests/test_readout_execution_context.py::test_whole_window_assigned_and_triggered_reads_share_capture.count_snapshot::_con
 # H3: patches targeting increment internals
 tests/breakout/test_daily.py 1
-tests/breakout/test_estimates.py 1
 tests/breakout/test_heterogeneity.py 2
 tests/breakout/test_rollout.py 1
 tests/calibration/test_logged_policy_adaptive.py 1
@@ -107,7 +106,7 @@ tests/test_examples_custom_provider.py 1
 tests/test_kernel_contracts.py 4
 tests/binary_sequential_cases.py 1
 tests/breakout/test_daily.py 3
-tests/breakout/test_estimates.py 3
+tests/breakout/test_estimates.py 1
 tests/breakout/test_heterogeneity.py 2
 tests/compatibility_catalog.py 9
 tests/dashboard_snapshots.py 5
@@ -236,7 +235,7 @@ tests/test_cuped_portable_journey.py 1
 tests/test_cuped_review_followups.py 1
 tests/test_cuped_route_admission.py 4
 tests/test_cuped_warehouse_cells.py 16
-tests/test_dashboard.py 15
+tests/test_dashboard.py 14
 tests/test_dashboard_capture.py 10
 tests/test_dashboard_group_data.py 5
 tests/test_dashboard_group_laws.py 1

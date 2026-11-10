@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from increment._evidence_types import MetricEvidence
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import PreferredDirection, Role
-from increment.errors import CodedError
+from increment.errors import PACKAGE_FRAMES, CodedError
 from increment.estimation.engine import (
     CELL_ESTIMATION_GUARD_CODES as _CELL_ESTIMATION_GUARD_CODES,
 )
@@ -34,7 +34,7 @@ def _emit_captured_lift_warnings(
     captured: list[Any],
     advisory_seen: set[tuple[object, ...]],
 ) -> None:
-    """Replay estimator warnings, deduplicating explicitly keyed warnings and
+    """Replay estimator warnings at the caller, deduplicating keyed advisories and
     denominator-skew warnings once per metric and flagged arm.
     """
     for record in captured:
@@ -49,7 +49,7 @@ def _emit_captured_lift_warnings(
             if dedupe_key in advisory_seen:
                 continue
             advisory_seen.add(dedupe_key)
-        warnings.warn(record.message, record.category, stacklevel=3)
+        warnings.warn(record.message, record.category, skip_file_prefixes=PACKAGE_FRAMES)
 
 
 def _method_unit_frame(

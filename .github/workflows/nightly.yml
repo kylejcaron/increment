@@ -381,14 +381,85 @@ jobs:
     name: report a failed nightly gate
     runs-on: ubuntu-latest
     needs: [test-all, record-durations, publish-durations, test-scientific, randomized-fast, mutation-evidence, warehouse-postgres, benchmark]
-    if: github.event_name != 'pull_request' && failure()
+    if: always() && github.event_name != 'pull_request'
     timeout-minutes: 10
     permissions:
+      actions: read
+      checks: read
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Classify nightly failure
+        id: classify
+        env:
+          NEEDS_FAILED: ${{ contains(needs.*.result, 'failure') }}
+          FULL_SUITE_RESULT: ${{ needs.test-all.result }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          API_URL: ${{ github.api_url }}
+        run: |
+          set -euo pipefail
+          if [[ "$NEEDS_FAILED" == true ]]; then
+            echo "report=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$FULL_SUITE_RESULT" != cancelled ]]; then
+            echo "report=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          jobs=$(gh api --paginate \
+            "repos/$REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" |
+            jq -s '
+              if length > 0 and all(.[]; type == "object" and (.jobs | type == "array") and
+                  all(.jobs[]; type == "object" and (.name | type == "string") and
+                    (.status | type == "string") and
+                    (.run_attempt | type == "number" and floor == .) and
+                    has("conclusion") and
+                    (.conclusion == null or (.conclusion | type == "string")) and
+                    (.check_run_url | type == "string")))
+              then [.[].jobs[]]
+              else error("invalid jobs response")
+              end')
+          candidates=$(jq -c --argjson attempt "$RUN_ATTEMPT" '
+            [.[] | select(
+              .status == "completed" and .run_attempt == $attempt and
+              (.name | test("^full suite \\(locked dependencies, slow \\+ examples, 3\\.(12|13|14), shard [12]/2\\)$"))
+            )]' <<<"$jobs")
+          if [[ "$(jq 'length' <<<"$candidates")" == 0 ]]; then
+            echo "No current-attempt full-suite job found" >&2
+            exit 1
+          fi
+          if jq -e 'any(.[]; .conclusion == "timed_out")' <<<"$candidates" >/dev/null; then
+            echo "report=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          while IFS= read -r job; do
+            conclusion=$(jq -er '.conclusion | strings' <<<"$job")
+            [[ "$conclusion" == cancelled ]] || continue
+            check_url=$(jq -er '.check_run_url | strings' <<<"$job")
+            prefix="$API_URL/repos/$REPOSITORY/check-runs/"
+            [[ "$check_url" == "$prefix"* ]] || { echo "Unexpected check-run URL" >&2; exit 1; }
+            check_id=${check_url#"$prefix"}
+            [[ "$check_id" =~ ^[0-9]+$ ]] || { echo "Invalid check-run ID" >&2; exit 1; }
+            annotations=$(gh api --paginate \
+              "repos/$REPOSITORY/check-runs/$check_id/annotations?per_page=100" |
+              jq -s '
+                if length > 0 and all(.[]; type == "array" and all(.[]; type == "object" and
+                    (.annotation_level | type == "string") and (.message | type == "string")))
+                then add
+                else error("invalid annotations response")
+                end')
+            if jq -e 'any(.[]; .annotation_level == "failure" and .message == "The job has exceeded the maximum execution time of 1h30m0s")' \
+              <<<"$annotations" >/dev/null; then
+              echo "report=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done < <(jq -c '.[]' <<<"$candidates")
+          echo "report=false" >> "$GITHUB_OUTPUT"
       - name: Ensure the tracking label exists
+        if: success() && steps.classify.outputs.report == 'true'
         run: |
           gh label create nightly-failure \
             --repo "$REPOSITORY" \
@@ -397,6 +468,7 @@ jobs:
             --force
         env: {REPOSITORY: "${{ github.repository }}"}
       - name: File or update the tracking issue
+        if: success() && steps.classify.outputs.report == 'true'
         run: |
           set -euo pipefail
           existing=$(gh issue list \

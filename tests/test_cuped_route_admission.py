@@ -256,9 +256,12 @@ def test_explicit_checkpoint_plan_preserves_saved_scalar_recipe(tmp_path, monkey
         assert actual.require_lift().value == pytest.approx(
             expected.require_lift().value, rel=1e-10
         )
-        assert actual.require_lift().log_se == pytest.approx(
-            expected.require_lift().log_se, rel=1e-10
-        )
+        if expected.require_lift().log_se is None:
+            assert actual.require_lift().log_se is None
+        else:
+            assert actual.require_lift().log_se == pytest.approx(
+                expected.require_lift().log_se, rel=1e-10
+            )
     else:
         monkeypatch.setattr(MomentsSource, "adopt_sequential_snapshot", unread)
         monkeypatch.setattr(MomentsSource, "moments", unread)

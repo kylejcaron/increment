@@ -1882,22 +1882,160 @@ def _refuse_noncanonical_boolean_levels(frame: nw.DataFrame[Any], registration: 
             )
 
 
-def _unit_identity(
-    frame: nw.DataFrame[Any], *, unit: str, group: str, breakouts: Sequence[str]
-) -> nw.DataFrame[Any]:
-    """One validated group/breakout identity row per unit."""
+@dataclass(frozen=True, slots=True)
+class _PanelValidationSummary:
+    """Per-unit identities and constancy flags before exposure exclusions."""
+
+    units: nw.DataFrame[Any]
+    duplicate_days: bool
+    multiple_groups: bool
+    multiple_exposures: bool
+
+
+def _panel_validation_summary(
+    frame: nw.DataFrame[Any],
+    *,
+    unit: str,
+    group: str,
+    date: str,
+    exposure_date: str | None,
+    breakouts: Sequence[str],
+) -> _PanelValidationSummary:
+    """Reduce the assigned rows once; postpone breakout checks until exclusions finish."""
+    exposure_dtype = None if exposure_date is None else frame.schema[exposure_date]
+    ordered_exposure = exposure_dtype is not None and (
+        exposure_dtype.is_integer() or isinstance(exposure_dtype, nw.Date | nw.Datetime)
+    )
+    exposure_aggs = []
+    exposure_conflict = nw.lit(False)
+    if exposure_date is not None:
+        if ordered_exposure:
+            exposure_aggs = [
+                nw.col("__exposure__").min().alias("__exposure_min__"),
+                nw.col("__exposure__").max().alias("__exposure_max__"),
+                nw.col("__exposure_null__").any(),
+            ]
+            # Extrema ignore nulls: all-null is constant, mixed null/observed is not.
+            exposure_conflict = (
+                nw.col("__exposure_min__") != nw.col("__exposure_max__")
+            ).fill_null(False) | (
+                nw.col("__exposure_null__") & ~nw.col("__exposure_min__").is_null()
+            )
+        else:
+            # Float/opaque equality retains the backend's null and NaN distinctions.
+            exposure_aggs = [nw.col("__exposure__").n_unique().alias("__exposures__")]
+            exposure_conflict = nw.col("__exposures__") > 1
     normalized = frame.select(
         nw.col(unit).alias("unit_id"),
         nw.col(group).alias("group_id"),
+        nw.col(date).alias("__day__"),
+        *([nw.col(exposure_date).alias("__exposure__")] if exposure_date is not None else []),
+        *(
+            [nw.col(exposure_date).is_null().alias("__exposure_null__")]
+            if exposure_date is not None and ordered_exposure
+            else []
+        ),
         *[_normalized_breakout_expr(frame, name) for name in breakouts],
     )
-    for name in breakouts:
-        values = normalized.select("unit_id", name).unique()
+    label_dictionaries: dict[str, Any] = {}
+    if frame.implementation.value == "pyarrow":
+        # Arrow's string extrema keep native per-group string vectors outside its pool.
+        native = normalized.to_native()
+        for name in ("group_id", *breakouts):
+            encoded = native[name].dictionary_encode().combine_chunks()
+            label_dictionaries[name] = encoded.dictionary
+            native = native.set_column(native.schema.get_field_index(name), name, encoded.indices)
+        normalized = nw.from_native(native, eager_only=True)
+        del native, encoded
+    if label_dictionaries and (exposure_date is None or ordered_exposure):
+        # Separate Arrow min/max calls each retain both extrema internally.
+        # Unit/day keys are already non-null, so native counts include every row.
+        aggregations = [
+            ("unit_id", "count"),
+            ("__day__", "count_distinct"),
+            ("group_id", "min_max"),
+        ]
+        columns = ["unit_id", "__rows__", "__days__", "group_id", "__group_max__"]
+        for i, name in enumerate(breakouts):
+            aggregations.append((name, "min_max"))
+            columns.extend((name, f"__breakout_max_{i}__"))
+        if exposure_date is not None:
+            aggregations.extend([("__exposure__", "min_max"), ("__exposure_null__", "any")])
+            columns.extend(("__exposure_min__", "__exposure_max__", "__exposure_null__"))
+        native = normalized.to_native().group_by("unit_id").aggregate(aggregations)
+        units = nw.from_native(native.flatten().rename_columns(columns), eager_only=True)
+        del native
+    else:
+        units = normalized.group_by("unit_id").agg(
+            nw.len().alias("__rows__"),
+            nw.col("__day__").n_unique().alias("__days__"),
+            nw.col("group_id").min(),
+            nw.col("group_id").max().alias("__group_max__"),
+            *exposure_aggs,
+            *[nw.col(name).min() for name in breakouts],
+            *[
+                nw.col(name).max().alias(f"__breakout_max_{i}__")
+                for i, name in enumerate(breakouts)
+            ],
+        )
+    del normalized
+    flags = units.select(
+        (nw.col("__rows__") > nw.col("__days__")).any().alias("duplicate_days"),
+        (nw.col("group_id") != nw.col("__group_max__")).any().alias("multiple_groups"),
+        (exposure_conflict.any() if exposure_date is not None else nw.lit(False)).alias(
+            "multiple_exposures"
+        ),
+    ).row(0)
+    identities = units.select(
+        "unit_id",
+        "group_id",
+        *breakouts,
+        *[
+            (nw.col(name) != nw.col(f"__breakout_max_{i}__")).alias(f"__breakout_{i}__")
+            for i, name in enumerate(breakouts)
+        ],
+    )
+    del units
+    if label_dictionaries:
+        native = identities.to_native()
+        for name, dictionary in label_dictionaries.items():
+            native = native.set_column(
+                native.schema.get_field_index(name), name, dictionary.take(native[name])
+            )
+        identities = nw.from_native(native, eager_only=True)
+    return _PanelValidationSummary(
+        units=identities,
+        duplicate_days=bool(flags[0]),
+        multiple_groups=bool(flags[1]),
+        multiple_exposures=bool(flags[2]),
+    )
+
+
+def _unit_identity(
+    frame: nw.DataFrame[Any],
+    *,
+    unit: str,
+    group: str,
+    breakouts: Sequence[str],
+    summary: _PanelValidationSummary,
+    excluded: bool,
+) -> nw.DataFrame[Any]:
+    """Project retained identities, checking breakouts only after value validation."""
+    units = summary.units
+    if excluded:
+        units = units.join(
+            frame.select(nw.col(unit).alias("unit_id")).unique(), on="unit_id", how="semi"
+        )
+    for i, name in enumerate(breakouts):
+        if not units.select(nw.col(f"__breakout_{i}__").any()).item():
+            continue
+        # Preserve offender ordering and context on the invalid-input path.
+        values = frame.select(
+            nw.col(unit).alias("unit_id"), _normalized_breakout_expr(frame, name)
+        ).unique()
         conflicts = (
             values.group_by("unit_id").agg(nw.len().alias("__n__")).filter(nw.col("__n__") > 1)
         )
-        if conflicts.is_empty():
-            continue
         offenders = conflicts["unit_id"].to_list()
         shown = ", ".join(repr(value) for value in offenders[:5])
         more = f" (and {len(offenders) - 5} more)" if len(offenders) > 5 else ""
@@ -1908,7 +2046,7 @@ def _unit_identity(
             shown=shown,
             more=more,
         )
-    return normalized.unique(subset=["unit_id"])
+    return units.select("unit_id", "group_id", *breakouts)
 
 
 def _validate_exposure_date(
@@ -1918,6 +2056,7 @@ def _validate_exposure_date(
     exposure_date: str | None,
     specs: Sequence[MetricSpec],
     design: Randomized | Encouragement | Observational | None,
+    constant: bool = False,
 ) -> None:
     """A unit's day 0 must be an explicit, per-unit-constant exposure date
     whenever a quantity counts days from it: a metric with ``window_days`` or
@@ -1951,6 +2090,8 @@ def _validate_exposure_date(
                 examples=(design.uptake.fact,),
                 route="pass exposure_date=<column name>",
             )
+        return
+    if constant:
         return
 
     conflicts = (

@@ -19,6 +19,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
+import increment
 from increment import from_frame, readouts
 from increment.breakout.estimates import LiftEstimates
 from increment.compatibility import _conservative_ratio
@@ -453,6 +454,53 @@ def test_run_deduplicates_cluster_advisories_per_metric():
             )
     assert raised.value.code == "estimation.engine.small_total_clusters"
     assert raised.value.context["metric_name"] == "revenue"
+
+
+def test_public_run_replayed_warning_identifies_consumer_call():
+    import sys
+
+    frame = pd.DataFrame(
+        [
+            {"unit": f"{arm}-{index}", "arm": arm, "revenue": value}
+            for arm, value in (("control", 10.0), ("treatment", 12.0))
+            for index in range(64)
+        ]
+    )
+    experiment, reader = increment.from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="revenue")],
+        plan=AnalysisPlan(primary="revenue"),
+    )
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        public_call_line = sys._getframe().f_lineno + 1
+        result = increment.run(experiment, reader).readout()
+
+    advisory = next(
+        warning
+        for warning in captured
+        if isinstance(warning.message, IncrementWarning)
+        and warning.message.code == "readouts.run.cell_refused"
+    )
+    assert advisory.filename == __file__
+    assert advisory.lineno == public_call_line
+    assert advisory.category is IncrementWarning
+    message = cast(IncrementWarning, advisory.message)
+    assert message.code == "readouts.run.cell_refused"
+    assert set(message.context) == {"metric_name", "group_id", "method_name", "reason"}
+    assert message.context["metric_name"] == "revenue"
+    assert message.context["group_id"] == "treatment"
+    assert message.context["method_name"] == "unadjusted"
+    assert isinstance(message.context["reason"], str)
+    (row,) = cast(LiftEstimates, result)
+    assert row.failure_code == "estimation.engine.lift_guard"
+    assert row.failure_context is not None
+    assert row.failure_context["reason"] == "zero_variance"
 
 
 def test_captured_advisories_dedupe_only_by_declared_warning_identity():

@@ -77,7 +77,7 @@ from increment.estimation.exploratory_family import (
     select_exploratory_family,
 )
 from increment.estimation.health import ExperimentHealth
-from increment.tables import estimates_to_readout
+from increment.tables import _retained_coverage_alpha, estimates_to_readout
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -523,6 +523,12 @@ def readout_csv(snapshot: DashboardSnapshot) -> bytes:
     receive an apostrophe for safe human-facing downloads.
     """
     rows = snapshot.readout_rows
+
+    if len(rows) == len(snapshot.estimates):
+        rows = tuple(
+            {**row, "coverage_alpha": _retained_coverage_alpha(estimate)}
+            for row, estimate in zip(rows, snapshot.estimates, strict=True)
+        )
     collection = snapshot.readout_collection
     if collection is not None and len(collection) == len(rows) == len(snapshot.estimates):
         interpretation = interpret_readout(collection, collection.metadata)

@@ -116,6 +116,14 @@ alpha release is 1.0.0. Dependency changes are reflected in `pyproject.toml`.
 | Core | Pydantic 2.14.1, packaging 24.0, NumPy 2.5.4, SciPy 1.18.1, Narwhals 2.27.1, PyArrow 26.0.0 (25.0.0 excluded); PyYAML 6.0.1 on Python 3.12, 6.0.2 on 3.13, and 6.0.3 on 3.14 and newer |
 | `warehouse` extra | Ibis 10.1.0 on Python 3.12–3.13 and 11.0.0 on 3.14; SQLGlot `>=30.14`, excluding `30.18.0` through `30.27.0` inclusive, `30.29.0` and `30.30.0` (the declared warehouse-extra constraint) |
 
+The standalone `tables` extra accepts pandas 3.1; its CoefTable rendering path
+does not require Ibis. The `warehouse` extra retains `pandas>=3.0.5,<3.1`
+because Ibis 12 reads a deprecated pandas option that raises under this
+project's warnings-as-errors policy. Warehouse installs therefore include
+pandas directly, and `demo` inherits the same restriction through `warehouse`.
+The `dashboard` extra remains capped at `<3.1`; no dashboard-only pandas 3.1
+support is claimed.
+
 These floors describe supported dependency combinations, not statistical
 certification. Optional extras have their own dependencies in `pyproject.toml`.
 
@@ -124,6 +132,72 @@ certification. Optional extras have their own dependencies in `pyproject.toml`.
 A bug fix may change a previously incorrect numerical answer. Disclose
 numerical corrections in release notes; compatibility does not preserve wrong
 values.
+
+### Current changes
+
+- Warehouse summaries preserve exact zero variance for constant input groups.
+  Nonconstant neighboring values retain their positive variance; no minimum
+  variance threshold is introduced. This corrects availability that could
+  depend on aggregate order. The numerical reference remains
+  `tests/fixtures/parity_baseline.json`; ordinary estimates retain their
+  existing tolerances.
+- `View.breakout(segment, *, population="assigned", metrics=())` accepts an
+  optional tuple of registered metric definitions. An empty tuple selects the
+  experiment's metrics. Save or log a selective breakout alongside the complete
+  overall primary and guardrail decision in the same `run`. Global incomplete
+  metric selections and selective breakouts without that overall decision
+  still refuse before acquisition or writes. Both stores preserve the scoped
+  family evidence and unavailable cells; no saved-format migration is needed.
+- Fixed-horizon randomized breakouts use each declared metric's margin and
+  alternative where the existing estimator supports that hypothesis. They
+  remain exploratory: nominal alpha and count-based correction are unchanged,
+  not replaced by headline primary allocation. Previously ignored one-sided
+  zero-null alternatives are now honored; this can change p-values, selection
+  and other members' corrected intervals in the same family. Unsupported
+  encouragement and multi-covariate CUPED margins retain their refusal.
+  Absolute-margin segments retain valid additive inference at zero or negative
+  arm means. When both arms are constant, mean-based inference instead reports
+  `estimation.engine.lift_guard` with reason `"zero_variance"`, irrespective of
+  their means; the unavailable cell remains a family non-rejection.
+- Frame capture and compliance cutoffs share the panel's time-axis validation.
+  Ambiguous empty pandas calendar columns can use their declared exposure
+  column or calendar construction cutoff; explicitly typed label columns stay
+  labels. Integer elapsed-day predicates do not wrap, and eligibility counts
+  retain exact coordinate ordering.
+  Construction keeps `source.panel.observation_end`; sequential capture keeps
+  `sequential.source.invalid` and its existing context. Invalid panel compliance
+  cutoffs now use `source.panel.as_of` with `value`, `axis_kind` and `issue`;
+  summary-frame compliance retains `source.frame.compliance_asof`.
+- Exact dataframe reductions use bounded scratch space and a value-checked
+  integer path without changing dataframe snapshot identities or rounded-once
+  sums. Warehouse censor diagnostics count the enrolled population before dense
+  event joins, preserving the warning and maturity counts.
+- Compatible warehouse-backed count, mean and ratio metrics reuse source
+  reductions across whole-window and time-series results. Each request keeps
+  its own observation window, eligible units and completion rules. Requests
+  that cannot share work retain their existing paths; custom readers do not
+  need a new interface. This does not promise one query for every analysis.
+- Preparing large dashboards checks result identity without repeatedly scanning
+  every result. Existing result identities, ordering and numerical values are unchanged.
+- Explore lift charts group compatible breakout and arm series in one table.
+  Shading covers finite confidence intervals; open sides are not drawn as
+  separate lines or invented bands. Exact latest values, available bounds and
+  attributed qualifications expand together, including when a point estimate
+  is unavailable. Labels remain literal, and multi-metric plots retain visible
+  identities. Confidence levels near 0% or 100% retain their precision; when a
+  stored level rounds to 100%, its positive noncoverage budget remains explicit.
+  Timestamps with UTC offsets retain their actual spacing and ordering,
+  including repeated local clock times. Exported pages still allow previously
+  unopened chart selections without a data source.
+- Flat readout rows and dashboard CSVs add nullable `coverage_alpha`, the stored
+  noncoverage budget of the displayed interval. This preserves the interval's
+  own budget through flattening, including when `level` rounds to `1.0`; it does
+  not substitute a family or decision allocation. Existing fields retain their meanings.
+- Individual result rows display relative effects in percent and absolute
+  effects in native units. Unbounded endpoints remain open; undefined endpoints
+  remain unavailable rather than becoming infinite. Large finite effects stay
+  finite in the display, and extreme standard-error diagnostics use compact
+  formatting. Estimate numeric fields and model serialization are unchanged.
 
 ### Earlier release notes
 
@@ -684,22 +758,23 @@ values.
   (`"nonpositive_arm_mean"`). With no declared margin, `p_value()`,
   `stat_sig()` and family selection read the additive difference against
   zero; a declared relative margin stays a non-rejection with p-value 1. A
-  constant arm's interval is the other arm's one-sample t. When both arms are
-  constant at positive means, the cell still fails with
-  `estimation.engine.lift_guard`; at a zero or negative mean it keeps its
-  unbounded additive row as before. A ratio metric whose denominator mean is
+  constant arm's interval is the other arm's one-sample t when that arm varies.
+  When both arms are constant, the cell fails with `estimation.engine.lift_guard`
+  and reason `"zero_variance"`, whether the means are positive, zero or negative.
+  A ratio metric whose denominator mean is
   too noisy in either arm (relative standard error above 0.15, where the
   `ratio_denominator_precision` note applies; on a scalar CUPED row, the
   CUPED-adjusted denominator mean) still fails with these guards.
   With such a denominator, a ratio row with a zero or negative numerator mean,
   which kept an additive row, now fails the same way (`reason`
   `"non_positive_mean"`): its additive difference shares that denominator. A
-  declared prior no longer turns a non-positive-mean decision row into that
-  failure: the row keeps its sampling interval, p-value and verdict and marks
-  only its posterior unavailable (`posterior_reason_code`
-  `"estimation.engine.lift_guard"`). Breakout and daily cells that these
-  guards excluded as `zero_variance` or `extreme_ratio` are now live rows.
-  Migration: where code expected these cells to fail, read
+  declared prior no longer turns an otherwise estimable non-positive-mean
+  decision row into that failure: the row keeps its sampling interval, p-value
+  and verdict and marks only its posterior unavailable (`posterior_reason_code`
+  `"estimation.engine.lift_guard"`). Breakout and daily cells previously excluded
+  as `zero_variance` or `extreme_ratio` can retain additive inference when the
+  combined uncertainty is positive; both-constant cells remain unavailable.
+  Migration: where an additive row is present, read
   `relative_unavailable_reason` and the `abs_*` fields; the row's note names
   the condition. Where code read a noisy-denominator ratio's
   `"nonpositive_arm_mean"` row, handle the `estimation.engine.lift_guard`

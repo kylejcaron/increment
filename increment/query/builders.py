@@ -1739,11 +1739,97 @@ def _dense_unit_days(
     )
 
 
+def component_day_stats(
+    facts: ir.Table,
+    exposures: ir.Table,
+    experiment: Experiment,
+    components: Sequence[tuple[str, str | None, FactNullPolicy, bool]],
+) -> ir.Table:
+    """Reduce several value columns from one physical fact stream without row multiplication."""
+    values = facts.select(
+        "unit_id",
+        "ts",
+        "event",
+        **{
+            f"__component_value_{index}": facts[column]
+            for index, (_, column, missing, required) in enumerate(components)
+            if column is not None and (required or missing != "zero")
+        },
+    )
+    anchors = exposures.select("unit_id", "first_exposure_ts")
+    joined = values.inner_join(anchors, "unit_id")
+    joined = joined.filter(joined.ts > anchors.first_exposure_ts)
+    days = joined.mutate(ds=_local_date(joined.ts, experiment))
+    aggregates: dict[str, ir.Value] = {}
+    for index, (fact, column, missing, value_required) in enumerate(components):
+        included = days.event == fact
+        value = (
+            ibis.literal(1.0)
+            if column is None or not value_required
+            else days[f"__component_value_{index}"]
+        )
+        if value.type().is_boolean():
+            value = cast("ir.BooleanValue", value).ifelse(ibis.literal(1), ibis.literal(0))
+        value = value.cast("float64")
+        if column is not None and missing != "zero":
+            included &= days[f"__component_value_{index}"].notnull()
+        aggregates[f"n_events_{index}"] = days.count(where=included)
+        aggregates[f"sum_value_{index}"] = included.ifelse(ibis.coalesce(value, 0.0), 0.0).sum()
+    return days.group_by(["unit_id", "ds"]).aggregate(**aggregates)
+
+
+def component_window_values(
+    dense: ir.Table,
+    windows: Sequence[int | None],
+    *,
+    grain: str,
+    n_components: int,
+) -> ir.Table:
+    """Reduce one component's conditional windows together, retaining zero-event units."""
+    expressions: dict[str, ir.Value] = {}
+    prefix = ibis.cumulative_window(group_by=["experiment_id", "unit_id"], order_by="ds")
+    for component in range(n_components):
+        for index, days in enumerate(windows):
+            admitted = dense.ds.notnull()
+            if days is not None:
+                admitted &= dense.ds < dense.first_exposure_date + ibis.interval(days=days)
+            for name in ("n_events", "sum_value"):
+                value = admitted.ifelse(dense[f"{name}_{component}"], 0)
+                if grain == "asof":
+                    reduced = value.sum().over(prefix)
+                elif grain == "daily":
+                    reduced = value
+                else:
+                    reduced = value.sum()
+                expressions[f"{name}_{component}_{index}"] = reduced
+    if grain != "total":
+        return dense.select(
+            "experiment_id", "unit_id", "group_id", "first_exposure_date", "ds", **expressions
+        )
+    return dense.group_by(
+        ["experiment_id", "unit_id", "group_id", "first_exposure_date"]
+    ).aggregate(ds=dense.ds.max(), **expressions)
+
+
+def _enrolled_unit_population(spine: ir.Table) -> ir.Table:
+    """Keep one row per enrollee, including a unit with no observed day."""
+    if "day_offset" in spine.columns:
+        return spine.filter((spine.day_offset == 0) | spine.day_offset.isnull()).select(
+            "unit_id", "first_exposure_date", "ds"
+        )
+    return spine.group_by("unit_id").aggregate(
+        first_exposure_date=spine.first_exposure_date.max(),
+        ds=spine.ds.max(),
+    )
+
+
 def _observable_window_flags(
     dense: ir.Table,
     metric: Metric,
     experiment: Experiment,
     data_as_of: ir.Scalar | dt.date | dt.datetime | None,
+    *,
+    observable_end: ir.Value | None = None,
 ) -> tuple[ir.BooleanValue, ir.BooleanValue, ir.Value]:
     """Return observation and maturity predicates plus their shared cutoff."""
     fe_date = dense.first_exposure_date
@@ -1753,10 +1839,11 @@ def _observable_window_flags(
         if final_maturity_day is None
         else fe_date + _days_literal(final_maturity_day).as_interval("D")
     )
-    if experiment.observation_horizon is not None:
-        observable_end = ibis.literal(experiment.observation_horizon_day)
-    else:
-        observable_end = dense.ds.max().as_scalar()
+    if observable_end is None:
+        if experiment.observation_horizon is not None:
+            observable_end = ibis.literal(experiment.observation_horizon_day)
+        else:
+            observable_end = dense.ds.max().as_scalar()
     if data_as_of is not None:
         if isinstance(data_as_of, dt.datetime):
             as_of_expr = ibis.literal(data_as_of.date())
@@ -1779,11 +1866,12 @@ def _censor_to_observable_window(
     data_as_of: ir.Scalar | dt.date | dt.datetime | None,
     *,
     warn_on_censoring: bool,
+    censor_population: ir.Table | None = None,
     execute: Callable[[ir.Table], list[dict[str, Any]]] | None = None,
 ) -> ir.Table:
     """Drop units whose metric window is not observable yet, and units
     with no observed day at all (a null-date spine row)."""
-    has_observed_day, window_complete, _ = _observable_window_flags(
+    has_observed_day, window_complete, observable_end = _observable_window_flags(
         dense, metric, experiment, data_as_of
     )
     dense_before_censor = dense
@@ -1792,10 +1880,18 @@ def _censor_to_observable_window(
     if not warn_on_censoring:
         return dense
 
-    flagged = dense_before_censor.mutate(_kept=kept)
+    population = (
+        _enrolled_unit_population(dense_before_censor)
+        if censor_population is None
+        else censor_population
+    )
+    observed, complete, _ = _observable_window_flags(
+        population, metric, experiment, None, observable_end=observable_end
+    )
+    flagged = population.mutate(_kept=observed & complete)
     counts_query = flagged.aggregate(
-        enrolled=flagged.unit_id.nunique(),
-        kept=flagged.unit_id.nunique(where=flagged._kept),
+        enrolled=flagged.count(),
+        kept=ibis.coalesce(flagged.count(where=flagged._kept), 0),
     )
     if execute is None:
 
@@ -1809,7 +1905,6 @@ def _censor_to_observable_window(
     if not enrolled or dropped / enrolled <= CENSOR_WARN_FRACTION:
         return dense
 
-    horizon_date = experiment.observation_horizon_day
     if data_as_of is None:
         as_of_date = None
     elif isinstance(data_as_of, dt.datetime):
@@ -1826,6 +1921,22 @@ def _censor_to_observable_window(
             else (resolved.date() if hasattr(resolved, "date") else resolved)
         )
 
+    warn_censored_units(metric, experiment, enrolled, kept, as_of_date)
+    return dense
+
+
+def warn_censored_units(
+    metric: Metric,
+    experiment: Experiment,
+    enrolled: int,
+    kept: int,
+    as_of_date: dt.date | None,
+) -> None:
+    """Emit the same censoring advisory from scalar or shared eligibility counts."""
+    dropped = enrolled - kept
+    if not enrolled or dropped / enrolled <= CENSOR_WARN_FRACTION:
+        return
+    horizon_date = experiment.observation_horizon_day
     if horizon_date is not None:
         if as_of_date is not None and as_of_date < horizon_date:
             cause = (
@@ -1863,7 +1974,6 @@ def _censor_to_observable_window(
         cause=cause,
         stacklevel=3,
     )
-    return dense
 
 
 def _aggregate_unit_outcome(
@@ -2077,7 +2187,8 @@ def unit_totals(  # noqa: PLR0913
     warn_on_censoring : bool | Callable[[ir.Table], list[dict[str, Any]]]
         A callable executes bookkeeping tables and returns rows through the
         owning source. Otherwise, warn on a material drop (default True).
-        Warning bookkeeping costs an extra execution round-trip.
+        Warning bookkeeping counts one row per enrollee before event joins
+        and costs an extra execution round-trip.
     uptake_exposures : ir.Table | None
         Assignment exposure anchors for encouragement uptake; defaults to the outcome spine.
     explicit_covariate : bool
@@ -2117,6 +2228,8 @@ def unit_totals(  # noqa: PLR0913
         while cluster_alias in occupied:
             cluster_alias += "_"
 
+    censor_population = _enrolled_unit_population(spine) if warn_on_censoring else None
+
     dense = _dense_unit_days(spine, stats, cluster=cluster, cluster_alias=cluster_alias).mutate(
         metric=ibis.literal(metric.name)
     )
@@ -2126,6 +2239,7 @@ def unit_totals(  # noqa: PLR0913
         experiment,
         data_as_of,
         warn_on_censoring=bool(warn_on_censoring),
+        censor_population=censor_population,
         execute=warn_on_censoring if callable(warn_on_censoring) else None,
     )
     dense = window_bound_stats(dense, metric)
@@ -2161,9 +2275,10 @@ def emit_centered_moments(
     in *table*; a variable or mask the plan declares but *columns* omits is
     emitted as typed NULLs, so the row shape never depends on the input.
     Two-phase aggregation: window means per group become the references,
-    then one aggregate sums the residual products against them, in the
-    plan's moment order (family by family, winsor passthrough, then the
-    masked family). No variance reduction here; that lives on ``ArmStats``.
+    except an exactly constant group uses its observed value so residuals
+    vanish before summation. Then one aggregate sums the residual products
+    in the plan's moment order (family by family, winsor passthrough, then
+    the masked family). Variance reduction lives on ``ArmStats``.
 
     A passthrough column is carried through unchanged: a ``max`` column by
     maximum, a ``sum`` column by sum, and an ``int64`` sum as an exact integer
@@ -2176,9 +2291,12 @@ def emit_centered_moments(
     live = [variable for variable in plan.variables if variable in columns]
     masks = [mask for mask in plan.masked if mask in columns]
     ref_name = {variable: plan.name(("ref", (variable,), None)) for variable in live}
-    centered = table.mutate(
-        **{ref_name[variable]: table[columns[variable]].mean().over(window) for variable in live}
-    )
+    references = {}
+    for variable in live:
+        value = table[columns[variable]]
+        lower, upper = value.min().over(window), value.max().over(window)
+        references[ref_name[variable]] = (lower == upper).ifelse(lower, value.mean().over(window))
+    centered = table.mutate(**references)
     residual = {
         variable: centered[columns[variable]] - centered[ref_name[variable]] for variable in live
     }

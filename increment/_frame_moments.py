@@ -96,9 +96,8 @@ if TYPE_CHECKING:
 # A finite float is an integer times a power of two: integer parts summed on a shared
 # scale give one total in any order, partitioning or dataframe library, rounded once.
 
-#: Rows a float64 bincount bin may take while each partial sum stays an exact multiple
-#: of the bin's scale below 2**53 of it (27-bit high, 26-bit low mantissa halves).
-_BIN_ROWS = 1 << 26
+#: Bounded row scratch; below the 2**26 exact-bin ceiling for 27/26-bit mantissa halves.
+_SUM_ROWS = 1 << 16
 _EXPONENTS = 2048
 #: Biased exponents from which 2**26 binned values could overflow a float64 bin sum.
 _BIN_OVERFLOW = 2046 - 26
@@ -133,9 +132,16 @@ def exact_sum(values: Iterable[float]) -> float:
 
 
 def _exact_group_sums(codes: np.ndarray, n_groups: int, values: np.ndarray) -> np.ndarray:
-    """``exact_sum`` of each group's *values*; *codes* holds each row's group in ``range(n_groups)``."""
+    """``exact_sum`` of each group's *values* in code order, with bounded exponent scratch.
+
+    Nonnegative integers use float64 accumulation only when a conservative bound proves
+    every partial total is below 2**53. Other values retain the rounded-once exact reducer.
+    """
     values = np.ascontiguousarray(values, dtype=np.float64)
     codes = np.asarray(codes, dtype=np.int64)
+    integer_sums = _integer_group_sums(codes, n_groups, values)
+    if integer_sums is not None:
+        return integer_sums
     finite = np.isfinite(values)
     special_codes, special = codes[~finite], values[~finite]
     live = finite & (values != 0.0)
@@ -154,6 +160,26 @@ def _exact_group_sums(codes: np.ndarray, n_groups: int, values: np.ndarray) -> n
     return sums
 
 
+def _integer_group_sums(codes: np.ndarray, n_groups: int, values: np.ndarray) -> np.ndarray | None:
+    """Exact sums when nonnegative integral values have provably representable totals.
+
+    For maximum M > 0 and group row count c, c <= (2**53 - 1) // M bounds every
+    accumulation prefix below 2**53. Python integer division cannot overflow.
+    """
+    maximum = float(values.max(initial=0.0))
+    if not maximum < 2**53 or not values.min(initial=0.0) >= 0.0:
+        return None
+    for start in range(0, len(values), _SUM_ROWS):
+        chunk = values[start : start + _SUM_ROWS]
+        if np.any(chunk != np.floor(chunk)):
+            return None
+    if maximum:
+        count = int(np.bincount(codes, minlength=n_groups).max(initial=0))
+        if count > ((1 << 53) - 1) // int(maximum):
+            return None
+    return np.bincount(codes, weights=values, minlength=n_groups).astype(np.float64, copy=False)
+
+
 def _exponent_partials(
     codes: np.ndarray, n_groups: int, values: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -161,31 +187,42 @@ def _exponent_partials(
 
     Per group and exponent, the high and low mantissa halves each sum to a multiple of
     the bin's scale below 2**53 of it, so every float64 partial sum is exact. Exponents
-    whose bin sums could overflow pass through unchanged.
+    whose bin sums could overflow pass through unchanged. Row and bin scratch are bounded;
+    occupied bins are compacted when the global bin space exceeds the row slice. Every
+    nonzero bin partial is retained separately for the final rounded-once exact reduction.
     """
-    bits = values.view(np.uint64)
-    exponent = ((bits >> np.uint64(52)) & np.uint64(0x7FF)).astype(np.int64)
-    passed = exponent >= _BIN_OVERFLOW
-    kept = (codes[passed], values[passed])
-    if len(kept[1]):
-        binned = ~passed
-        codes, values, bits = codes[binned], values[binned], bits[binned]
-        exponent = exponent[binned]
-    bins = codes * _EXPONENTS + exponent
-    high = (bits & ~_LOW_HALF).view(np.float64)
-    low = values - high
     size = n_groups * _EXPONENTS
-    partials = [np.zeros(0)]
-    for start in range(0, len(values), _BIN_ROWS):
-        rows = slice(start, start + _BIN_ROWS)
-        partials.append(np.bincount(bins[rows], weights=high[rows], minlength=size))
-        partials.append(np.bincount(bins[rows], weights=low[rows], minlength=size))
-    stacked = np.concatenate(partials)
-    nonzero = np.flatnonzero(stacked)
-    return (
-        np.concatenate([(nonzero % size) // _EXPONENTS, kept[0]]),
-        np.concatenate([stacked[nonzero], kept[1]]),
-    )
+    partial_codes = [np.zeros(0, dtype=np.int64)]
+    partial_values = [np.zeros(0)]
+    for start in range(0, len(values), _SUM_ROWS):
+        chunk_codes = codes[start : start + _SUM_ROWS]
+        chunk_values = values[start : start + _SUM_ROWS]
+        bits = chunk_values.view(np.uint64)
+        exponent = ((bits >> np.uint64(52)) & np.uint64(0x7FF)).astype(np.int64)
+        passed = exponent >= _BIN_OVERFLOW
+        if passed.any():
+            partial_codes.append(chunk_codes[passed])
+            partial_values.append(chunk_values[passed])
+            binned = ~passed
+            chunk_codes, chunk_values, bits = (
+                chunk_codes[binned],
+                chunk_values[binned],
+                bits[binned],
+            )
+            exponent = exponent[binned]
+        bins = chunk_codes * _EXPONENTS + exponent
+        occupied = None
+        if size > _SUM_ROWS:
+            occupied, bins = np.unique(bins, return_inverse=True)
+        high = (bits & ~_LOW_HALF).view(np.float64)
+        low = chunk_values - high
+        for half in (high, low):
+            partial = np.bincount(bins, weights=half)
+            nonzero = np.flatnonzero(partial)
+            original = nonzero if occupied is None else occupied[nonzero]
+            partial_codes.append(original // _EXPONENTS)
+            partial_values.append(partial[nonzero])
+    return np.concatenate(partial_codes), np.concatenate(partial_values)
 
 
 def _limb_sums(codes: np.ndarray, n_groups: int, values: np.ndarray) -> np.ndarray:

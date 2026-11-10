@@ -85,6 +85,17 @@ create or update the development environment with:
 uv sync --group dev --extra demo --extra tables --extra dashboard
 ```
 
+Both test groups pin an immutable, unreleased [xdist change](https://github.com/pytest-dev/pytest-xdist/pull/1402)
+for pytest 9.2's grouped collection and late shard selection. This is a source
+revision, not a published release; build-tool wheel URLs and SHA-256 fragments
+are pinned in `pyproject.toml`. Rewritten test-bytecode caches retain checked
+source hashes, so changing a checkout timestamp does not require rewriting an
+unchanged test.
+
+Use `WORKERS` without `PYTHON_CPU_COUNT=default`, which that xdist revision does
+not handle correctly. After a grouped worker crash, rerun the full selected
+tier rather than `--lf`: its failed-test cache can retain internal group IDs.
+
 `make install` synchronizes dependencies and installs hooks using the pinned
 stable `prek` user tool. If it is absent, the installer prints the exact
 `uv tool install prek==<version>` command from `uv.lock`; install it explicitly,
@@ -271,6 +282,12 @@ The parameter-recovery, numerical-certification, scientific and examples tests
 also carry `slow`; the marker expressions keep their purpose-specific gates
 separate. `pytest-timeout` supplies the 300-second per-test hang guard. There
 are no tier-level wall-clock budgets.
+
+Use the locked test dependencies. Pytest 9.2 fixes
+[nested fixture resolution for mixed file selections](https://github.com/pytest-dev/pytest/issues/14964);
+AnyIO 4.15.1 or newer also avoids
+[its pytest-plugin import warning](https://github.com/agronholm/anyio/issues/1271).
+Do not reorder selections or suppress warnings to accommodate older versions.
 
 #### Isolated core-test install
 
@@ -934,8 +951,9 @@ its own JUnit artifact under a 90-minute limit. Separate jobs record the fast
 and slow duration weights without waiting for the full-suite shards; once every
 recording part passes, it publishes them and, on `main`, proposes the
 selection-map refresh.
-A failure creates or updates a GitHub issue labelled `nightly-failure`;
-tagging also requires a successful nightly run on the exact release SHA.
+A failed nightly run creates or updates the issue for an ordinary failed gate;
+cancelled full-suite shards count only when GitHub's explicit timeout annotation
+is present, so changes to that external diagnostic wording may require an update.
 
 The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or

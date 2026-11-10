@@ -11,7 +11,7 @@ pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
 
 from increment.dashboard._data import decision_rows
-from increment.dashboard._html import overview_rows
+from increment.dashboard._html import overview_rows, overview_table
 from tests.dashboard_snapshots import ADDED, COUNTRY, experiment_for, overview_snapshot
 
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
@@ -47,7 +47,6 @@ def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapsh
 
 
 def test_explore_tables_show_only_core_readout_columns(_family_presentation_snapshot):
-    from increment.dashboard._html import overview_table
 
     snapshot = _family_presentation_snapshot
     overview_html = overview_table(snapshot, COUNTRY)
@@ -179,3 +178,24 @@ def test_added_metric_inspector_shows_its_overview_result():
     assert "Added purchase count per enrolled user." in details
     assert "In the exploratory family, not a discovery" in details
     assert "Overview result" in details
+
+
+def test_added_metric_inspector_discloses_retained_coverage_budget():
+    from increment.dashboard import render_metric_details
+
+    snapshot = overview_snapshot()
+    assert snapshot.overview is not None
+    row = snapshot.overview.exploratory[0]
+    assert row.lift is not None
+    estimate = row.model_copy(
+        update={"lift": row.lift.model_copy(update={"level": 1.0, "alpha": 1e-17})}
+    )
+    snapshot = dataclasses.replace(
+        snapshot,
+        overview=dataclasses.replace(snapshot.overview, exploratory=(estimate,)),
+    )
+
+    details = render_metric_details(snapshot, metric=ADDED).text
+    assert "100% (α=1e-17)" in details
+
+    assert "100% (α=1e-17) CI" in overview_table(snapshot, None)

@@ -461,7 +461,7 @@ def infer_lift(  # noqa: PLR0913
         raise LiftGuardError(
             "An arm mean is close to zero relative to its standard error, so the log-scale "
             "relative lift is unreliable (combined log-scale standard error "
-            f"{se_log_rr:.3f} >= {LOG_DELTA_METHOD_MAX_SE})",
+            f"{se_log_rr:g} >= {LOG_DELTA_METHOD_MAX_SE})",
             reason="delta_method_unreliable",
         )
 
