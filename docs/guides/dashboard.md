@@ -306,14 +306,15 @@ Evidence disclosures use labeled records rather than diagnostic transcripts:
 - **Table evidence and checks**, including in Report, uses labeled records grouped
   by population, source, and comparison. Counts, completeness, and testing groups
   stay distinct; full source references and diagnostic context expand separately.
-  **Per-result confidence and prior evidence** retains each metric and segment's
-  own confidence level and noncoverage budget, with method attribution and any
-  posterior-unavailability code and context.
+  **Per-result evidence** retains each metric and segment's own confidence level
+  and noncoverage budget, family-selection status, interval qualifications, method
+  attribution, and any posterior-unavailability code and context. An unselected
+  segment's nominal interval cannot color its plot as a family-selected finding.
 - **How to read these intervals** groups metric-specific exceptions and states
   shared explanations once. Construction and numerical qualifications have
   their own reference.
-- **Methods & assumptions** groups the declared tests, boundaries, and confidence
-  levels by metric role, without repeating the result verdicts.
+- **Methods & assumptions** groups declared tests, boundaries, confidence
+  levels, and stored test outcomes by metric role.
 - **Technical details** presents one diagnostic per card, with nested context as
   labeled fields and lists. Trigger checks that do not apply share one explanation.
 

@@ -168,10 +168,16 @@ def _reading_evidence(row: Mapping[str, Any]) -> str:
     fields = [
         _evidence_pair("Confidence", confidence),
         _evidence_pair("Retained noncoverage budget (α)", alpha),
+        _evidence_pair(
+            "Family selection",
+            _metadata_state(row.get("discovery"), yes="selected", no="not selected"),
+        ),
     ]
     for key, label in (("dimension", "Breakout"), ("source", "Breakout source")):
         if row.get(key) is not None:
             fields.append(_evidence_pair(label, row[key]))
+    if row.get("note"):
+        fields.append(_evidence_pair("Interval qualification", row["note"]))
     if any(
         row.get(key) is not None
         for key in ("posterior_available", "posterior_reason_code", "posterior_reason_context")
@@ -419,7 +425,7 @@ def _readout_evidence(rows: Sequence[dict[str, Any]], subtitle: Any) -> str:
             + '</h4><dl class="inc-dashboard-kv">'
             + "".join(fields)
             + "</dl>"
-            + '<details class="inc-dashboard-disclosure"><summary>Per-result confidence and prior evidence</summary>'
+            + '<details class="inc-dashboard-disclosure"><summary>Per-result evidence</summary>'
             + '<div class="inc-dashboard-evidence-stack">'
             + "".join(readings)
             + "</div></details>"

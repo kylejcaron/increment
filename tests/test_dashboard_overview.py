@@ -10,6 +10,8 @@ import pytest
 pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
 
+from increment.breakout.estimates import BreakoutEstimates
+from increment.dashboard import render_explore
 from increment.dashboard._data import decision_rows
 from increment.dashboard._html import overview_rows, overview_table
 from tests.dashboard_snapshots import ADDED, COUNTRY, experiment_for, overview_snapshot
@@ -267,3 +269,61 @@ def test_segment_posterior_refusals_keep_each_segment_identity_and_context():
         assert segment in matching[0] and original.method in matching[0]
         assert "estimation.engine.lift_guard" in matching[0]
         assert "unknown" in matching[0]
+
+
+@pytest.mark.integration
+def test_segment_family_selection_is_explicit_and_unselected_forest_is_neutral():
+    snapshot = overview_snapshot()
+    assert snapshot.overview is not None
+    original = snapshot.overview.segments[COUNTRY][0]
+
+    def shown(discovery):
+        segment = original.model_copy(update={"discovery": discovery})
+        markup = render_explore(
+            snapshot, BreakoutEstimates([segment]), metric=segment.metric, view="segments"
+        ).text
+        plots = "".join(re.findall(r"<svg\b.*?</svg>", markup, re.S))
+        return markup, set(re.findall(r'\bstroke="([^"]+)"', plots))
+
+    selected, selected_colors = shown(True)
+    unselected, unselected_colors = shown(False)
+    assert selected_colors != unselected_colors
+    for markup, status in ((selected, "selected"), (unselected, "not selected")):
+        readings = re.findall(
+            r'<section\b[^>]*class="[^"]*\binc-dashboard-cell-evidence\b[^"]*"[^>]*>(.*?)</section>',
+            markup,
+            re.S,
+        )
+        assert any(
+            original.metric in reading
+            and str(original.dimension_value) in reading
+            and f"<dd>{status}</dd>" in reading
+            for reading in readings
+        )
+        headers = re.findall(r"<th\b[^>]*>(.*?)</th>", markup, re.S)
+        assert not any(re.sub(r"<[^>]+>", "", header).strip() == "Discovery" for header in headers)
+
+
+@pytest.mark.integration
+def test_segment_numerical_notes_keep_metric_and_segment_attribution():
+    snapshot = overview_snapshot()
+    assert snapshot.overview is not None
+    original = snapshot.overview.segments[COUNTRY][0]
+    notes = {
+        "US": "Precision target missed: residual 0.03.",
+        "CA": "Precision target missed: residual 0.07.",
+    }
+    segments = BreakoutEstimates(
+        original.model_copy(update={"dimension_value": segment, "note": note})
+        for segment, note in notes.items()
+    )
+    rendered = render_explore(snapshot, segments, metric=original.metric, view="segments").text
+    readings = re.findall(
+        r'<section\b[^>]*class="[^"]*\binc-dashboard-cell-evidence\b[^"]*"[^>]*>(.*?)</section>',
+        rendered,
+        re.S,
+    )
+    for segment, note in notes.items():
+        matching = [reading for reading in readings if note in reading]
+        assert len(matching) == 1
+        assert original.metric in matching[0] and segment in matching[0]

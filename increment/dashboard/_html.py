@@ -1492,7 +1492,8 @@ def _colour_discoveries_only(table: ct.CoefTable) -> None:
     if "_exploratory" not in frame.columns:
         return
     marked = frame["_exploratory"].astype("boolean").fillna(False).astype(bool)
-    neutral = frozenset(int(i) for i in frame.index[marked & ~frame["stat_sig"].astype(bool)])
+    selected = frame["discovery"].astype("boolean").fillna(False).astype(bool)
+    neutral = frozenset(int(i) for i in frame.index[marked & ~selected])
     if not neutral:
         return
 
@@ -2688,7 +2689,7 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
     estimates = list(data)
     alphas = [retained_coverage_alpha(estimate) for estimate in estimates]
     rows = [
-        {**row, "coverage_alpha": alpha}
+        {**row, "coverage_alpha": alpha, "_exploratory": row.get("discovery") is not None}
         for row, alpha in zip(estimates_to_readout(estimates), alphas, strict=True)
     ]
     if not rows:
@@ -2705,6 +2706,7 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
     _keep_core_columns(table)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.segment_forest_width, height=charts.segment_forest_height)
+    _colour_discoveries_only(table)
     return (
         _TABLE_WRAP.format(native_html(table, metrics))
         + _segments_caption(rows, alphas)
