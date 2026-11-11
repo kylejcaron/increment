@@ -276,8 +276,11 @@ def test_interval_levels_keep_two_decimals_in_every_disclosure(
 # Adverse warnings
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(("mean_shift", "verdict"), [(1.0, "reject"), (0.05, "not_reject")])
-def test_additive_zero_decisions_reach_the_dashboard_outcome_and_null(mean_shift, verdict):
+def test_additive_zero_decisions_reach_the_dashboard_outcome_and_null(
+    mean_shift, verdict, storefront
+):
     """A nonpositive-mean cell decided on its additive interval is a real test: its
     outcome is its verdict, never 'unavailable', and the tested null is the additive zero."""
     from increment.dashboard._format import null_text, primary_tone, result_outcome
@@ -291,10 +294,20 @@ def test_additive_zero_decisions_reach_the_dashboard_outcome_and_null(mean_shift
     assert null_text(row) == "+0 absolute"
     assert primary_tone(row) in ("neutral", "inconclusive")
     if mean_shift == 1.0:
-        from increment.dashboard._format import guardrail_text
-
-        label = guardrail_text({**row, "role": "guardrail", "alternative": "greater"})
-        assert re.search(r"\b0\b.*absolute", label)
+        guardrail = cell.model_copy(
+            update={"metric": GUARDRAIL, "role": "guardrail", "alternative": "greater"}
+        )
+        snapshot = _rebuilt(
+            storefront,
+            tuple(
+                guardrail if estimate.metric == GUARDRAIL else estimate
+                for estimate in storefront.estimates
+            ),
+        )
+        rendered = render_results(snapshot).text
+        caption = re.search(r'<small class="inc-dashboard-guardrail">(.*?)</small>', rendered, re.S)
+        assert caption is not None
+        assert re.search(r"\b0\b.*absolute", re.sub(r"<[^>]+>", "", caption.group(1)))
 
 
 @pytest.mark.integration
