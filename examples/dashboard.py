@@ -2,9 +2,10 @@
 # [tool.marimo.display]
 # theme = "light"
 # ///
+
 import marimo
 
-__generated_with = "0.23.15"
+__generated_with = "0.25.2"
 app = marimo.App(width="full", css_file="dashboard.css")
 
 
@@ -61,7 +62,14 @@ def _(demo, mo):
 
 
 @app.cell
-def _(con, demo, demo_manifest, experiment_definition, experiment_name, increment):
+def _(
+    con,
+    demo,
+    demo_manifest,
+    experiment_definition,
+    experiment_name,
+    increment,
+):
     experiment, reader = increment.from_definitions(
         demo.DEFINITIONS, con, experiment_name=experiment_name.value
     )
@@ -77,7 +85,14 @@ def _(con, demo, demo_manifest, experiment_definition, experiment_name, incremen
 
 
 @app.cell
-def _(DashboardConfig, demo, demo_manifest, experiment, experiment_definition, reader):
+def _(
+    DashboardConfig,
+    demo,
+    demo_manifest,
+    experiment,
+    experiment_definition,
+    reader,
+):
     definition = experiment_definition(experiment, reader)
     config = DashboardConfig(
         expected_allocation=definition.allocation,

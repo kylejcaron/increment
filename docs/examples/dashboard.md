@@ -28,6 +28,18 @@ A triggered population is read up to an explicit event-time cutoff, so the
 notebook passes the generated snapshot's cutoff to `from_definitions` when the
 selected experiment declares a trigger.
 
+The demo defines windows by outcome rather than applying one window everywhere:
+
+| Metrics | Observation window |
+|---|---|
+| Conversion, revenue per user, orders per user | First 14 days after assignment |
+| D7 retention | A return during days 7–13 after assignment |
+| Checkout latency, average order value, page views and checkout loads per user | Observed post-assignment events through the snapshot cutoff, with no fixed endpoint |
+
+**Completed windows only** therefore delays fixed-window outcomes, not the
+operational metrics. It changes Explore only; the main Readout still requires
+complete observation for the fixed-window outcomes.
+
 Explore compares native CoefTable relative-lift or per-arm absolute
 trajectories across declared breakouts. Report provides the full-readout CSV
 and **Print / Save PDF**; browser controls and CSV downloads also work in the

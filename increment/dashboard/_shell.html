@@ -255,8 +255,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .health-intro { font-size: 13px; line-height: 1.7; color: var(--muted); max-width: 680px; margin: 0 0 14px; }
 .health-status { font-size: 13px; line-height: 1.6; max-width: 760px; margin: 0 0 22px; padding: 10px 14px; border-left: 3px solid var(--line); background: var(--tint); overflow-wrap: anywhere; }
 .health-status strong { display: block; font-weight: 650; }
-.health-status[data-kind="healthy"] { border-left-color: var(--favorable); background: var(--favorable-bg); }
-.health-status[data-kind="warning"] { border-left-color: var(--inconclusive); background: var(--inconclusive-bg); }
+.health-status-detail { margin-top: 6px; font-size: 12px; }
+.health-status-detail > summary { cursor: pointer; color: var(--muted); }
 .health-surface { background: var(--surface); border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 22px 27px; }
 .health-surface .inc-dashboard-status { font-size: 15px; }
 
@@ -294,9 +294,9 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .rpt-title { font-size: 30px; line-height: 1.12; letter-spacing: -.01em; margin: 0 0 8px; overflow-wrap: anywhere; }
 .rpt-meta { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0; overflow-wrap: anywhere; }
 .rpt-meta:empty { display: none; }
-.rpt-qualifications { padding: 12px 14px; margin: 0 0 14px; border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); background: var(--tint); color: var(--ink); font-size: 11px; line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
-.rpt-qualifications h2 { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; margin: 0 0 5px; color: var(--muted); }
-.rpt-qualifications p { margin: 0; }
+.rpt-qualifications { padding: 12px 14px; margin: 0 0 14px; border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); background: var(--tint); color: var(--ink); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.rpt-qualifications > summary, .rpt-notes-disclosure > summary { cursor: pointer; font-weight: 600; }
+.rpt-qualifications p { margin: 8px 0 0; white-space: pre-line; }
 /* Primary card: the estimate carries the tone; the interval beneath is smaller and neutral. */
 .rpt-primary { display: block; min-width: 210px; max-width: 280px; margin: 0; padding: 11px 16px 12px; }
 .rpt-primary-label { margin: 0 0 4px; font-size: 10px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; overflow-wrap: anywhere; }
@@ -481,6 +481,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   .rpt .rpt-results tr[data-ct-group-member] { display: table-row !important; }
   .rpt .rpt-results .ct-caret { display: none !important; }
   .rpt .rpt-slot details::details-content { content-visibility: visible !important; height: auto !important; }
+  .rpt details:not([open]) > :not(summary) { display: block !important; }
 }
 </style>
 <script>
@@ -682,7 +683,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       <p class="explore-empty" id="explore-empty" hidden>No exploratory views were captured with this snapshot.</p>
       <section class="explore-overview" id="explore-overview" aria-label="Overview of every metric">
         <div class="table-surface native-output" id="overview-table" role="region" tabindex="0"></div>
-        <details class="metric-detail plot-notes" id="overview-notes" open>
+        <details class="metric-detail plot-notes" id="overview-notes">
           <summary id="overview-notes-summary"></summary>
           <ul id="overview-notes-list"></ul>
         </details>
@@ -734,7 +735,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
         <p>Assignment, allocation, and available result checks.</p>
       </div>
       <p class="health-intro">Health describes the quality of the available experiment checks—not whether a treatment is beneficial or safe to ship. Review assignment warnings, metric caveats, and allocation evidence here.</p>
-      <p class="health-status" id="health-status" hidden></p>
+      <div class="health-status" id="health-status" hidden></div>
       <div class="health-surface native-output" id="health-evidence"></div>
     </section>
 
@@ -757,10 +758,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
                 <p class="rpt-brand">increment <span>/ experiment report</span></p>
                 <p class="rpt-kind">Snapshot report</p>
               </div>
-              <section class="rpt-qualifications" id="report-qualifications" aria-label="Readout qualifications" hidden>
-                <h2>Readout qualifications</h2>
-                <p id="report-qualifications-text"></p>
-              </section>
+              <div class="rpt-qualifications native-output" id="report-qualifications" aria-label="Readout qualifications" hidden></div>
               <div class="rpt-summary">
                 <div>
                   <h1 class="rpt-title" id="report-title"></h1>
@@ -782,13 +780,13 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
             <section class="rpt-section" id="report-health-section" aria-labelledby="rpt-h-health" hidden>
               <h2 class="rpt-h2" id="rpt-h-health">Allocation health</h2>
-              <p class="rpt-health-status" id="report-health-status"></p>
+              <div class="rpt-health-status" id="report-health-status"></div>
             </section>
 
-            <section class="rpt-section" id="report-notes-section" aria-labelledby="rpt-h-notes" hidden>
-              <h2 class="rpt-h2" id="rpt-h-notes">Notes</h2>
+            <details class="rpt-section rpt-notes-disclosure" id="report-notes-section" hidden>
+              <summary class="rpt-h2" id="rpt-h-notes">Interpretation notes &amp; metric outcomes</summary>
               <ul class="rpt-notes" id="report-notes"></ul>
-            </section>
+            </details>
 
             <footer class="rpt-footer" id="report-footer" hidden><p id="report-context"></p></footer>
           </div>
@@ -1276,7 +1274,14 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     if (!healthStatus) { node.hidden = true; return; }
     node.hidden = false;
     node.dataset.kind = healthKind;
-    node.replaceChildren(el('strong', { text: str(healthStatus.label) }), document.createTextNode(str(healthStatus.detail)));
+    const detail = str(healthStatus.detail);
+    const evidence = detail ? (
+      healthKind === 'healthy'
+        ? el('details', { className: 'health-status-detail' },
+          el('summary', { text: 'Health details' }), el('span', { text: detail }))
+        : el('span', { text: detail })
+    ) : null;
+    node.replaceChildren(el('strong', { text: str(healthStatus.label) }), ...(evidence ? [evidence] : []));
   }
   function mountHealth() {
     renderHealthStatus($('health-status'));
@@ -1292,7 +1297,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     $('report-title').textContent = str(data.title);
     $('report-meta').textContent = str(data.meta);
     const qualifications = str(report.qualifications);
-    $('report-qualifications-text').textContent = qualifications;
+    mountNative($('report-qualifications'), qualifications, { metrics: 'label' });
     $('report-qualifications').hidden = qualifications === '';
     const box = $('report-primary-box');
     box.hidden = true;
@@ -1313,6 +1318,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     renderHealthStatus($('report-health-status'));
     $('report-health-section').hidden = !healthStatus;
     const notes = Array.isArray(report.notes) ? report.notes.map(str).filter(Boolean) : [];
+    $('rpt-h-notes').textContent = 'Interpretation notes & metric outcomes (' + notes.length + ')';
     $('report-notes').replaceChildren(...notes.map((note) => el('li', { text: note })));
     $('report-notes-section').hidden = notes.length === 0;
     const context = str(report.context);

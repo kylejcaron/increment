@@ -14,11 +14,11 @@ function assertViewSelected(dashboard, view) {
   assert.equal(dashboard.panels[view].hidden, false);
 }
 
-// Ids of every element whose text is exactly `text`.
+// Ids of every element holding exactly this population's text or native evidence.
 function holders(dashboard, text) {
   return dashboard.document
     .querySelectorAll("[id]")
-    .filter((node) => node.textContent === text)
+    .filter((node) => node.textContent === text || node.innerHTML === text)
     .map((node) => node.id);
 }
 
@@ -74,17 +74,17 @@ test("population switching updates visible readouts and downloads without losing
   assertViewSelected(dashboard, "report");
   const triggeredUrl = dashboard.reportDownload.href;
   assert.equal(await dashboard.objectUrls.get(triggeredUrl).text(), triggered.readoutCsv);
-  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications-text"]);
+  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications"]);
   selectPopulation(dashboard, "assigned");
   assertViewSelected(dashboard, "report");
   const assignedUrl = dashboard.reportDownload.href;
   assert.notEqual(assignedUrl, triggeredUrl);
   assert.equal(await dashboard.objectUrls.get(assignedUrl).text(), assigned.readoutCsv);
-  assert.deepEqual(holders(dashboard, assigned.report.qualifications), ["report-qualifications-text"]);
+  assert.deepEqual(holders(dashboard, assigned.report.qualifications), ["report-qualifications"]);
   selectPopulation(dashboard, "triggered");
   assertViewSelected(dashboard, "report");
   assert.equal(await dashboard.objectUrls.get(dashboard.reportDownload.href).text(), triggered.readoutCsv);
-  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications-text"]);
+  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications"]);
 });
 
 test("population selection survives a host refresh restore", () => {

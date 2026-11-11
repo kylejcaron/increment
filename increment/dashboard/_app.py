@@ -32,7 +32,6 @@ from increment.dashboard._data import (
     load_explore,
     metric_names,
     readout_csv,
-    readout_interpretation_text,
     row_for_metric,
     show_exploratory_metrics,
 )
@@ -63,6 +62,7 @@ from increment.dashboard._format import (
     timestamp_label,
 )
 from increment.dashboard._html import (
+    _qualification_block,
     overview_notes,
     overview_table,
     render_details,
@@ -265,7 +265,7 @@ def _build_payload_for_population(
         ),
         "report": {
             "results": _styled(table),
-            "qualifications": readout_interpretation_text(snapshot),
+            "qualifications": _styled(_qualification_block(snapshot)),
             "notes": _report_notes(snapshot),
             "context": _report_context(snapshot),
         },

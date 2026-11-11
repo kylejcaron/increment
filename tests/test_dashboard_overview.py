@@ -50,7 +50,12 @@ def test_explore_tables_show_only_core_readout_columns(_family_presentation_snap
 
     snapshot = _family_presentation_snapshot
     overview_html = overview_table(snapshot, COUNTRY)
-    assert "Discovery" in overview_html
+    headers = {
+        re.sub(r"<[^>]+>", "", header).strip()
+        for header in re.findall(r"<th[^>]*>(.*?)</th>", overview_html, flags=re.DOTALL)
+    }
+    assert {"Discovery", "Interval"}.isdisjoint(headers)
+    assert "Lift Plot" in headers
     assert "Numerical qualification" not in overview_html
     assert "Selection qualification" not in overview_html
 
@@ -197,5 +202,3 @@ def test_added_metric_inspector_discloses_retained_coverage_budget():
 
     details = render_metric_details(snapshot, metric=ADDED).text
     assert "100% (α=1e-17)" in details
-
-    assert "100% (α=1e-17) CI" in overview_table(snapshot, None)

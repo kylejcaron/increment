@@ -4,7 +4,7 @@ metrics:
   # Primary
   - type: conversion
     name: conversion_rate
-    description: "Did the user complete an order within the analysis window?"
+    description: "Did the user complete an order within 14 days after assignment?"
     entity: user_id
     preferred_direction: increase
     fact: order
@@ -13,7 +13,7 @@ metrics:
   # Secondary
   - type: mean
     name: revenue_per_user
-    description: "Total completed-order revenue per enrolled user"
+    description: "Completed-order revenue in the first 14 days after assignment per enrolled user"
     entity: user_id
     preferred_direction: increase
     fact: order
@@ -22,17 +22,17 @@ metrics:
 
   - type: ratio
     name: average_order_value
-    description: "Average order value: total revenue / total orders"
+    description: "Average value of observed post-assignment orders: total revenue / total orders"
     entity: user_id
     preferred_direction: increase
     numerator:
       fact: order
       aggregation: sum
-      window_days: 14
+      window_days: null
     denominator:
       fact: order
       aggregation: count
-      window_days: 14
+      window_days: null
 
   # Guardrails
   - type: retention
@@ -51,7 +51,7 @@ metrics:
     numerator:
       fact: page_load
       aggregation: sum
-      window_days: 14
+      window_days: null
       filters:
         - property: page
           op: equals
@@ -59,7 +59,7 @@ metrics:
     denominator:
       fact: page_load
       aggregation: count
-      window_days: 14
+      window_days: null
       filters:
         - property: page
           op: equals
@@ -69,7 +69,7 @@ metrics:
   # to Explore as exploratory metrics.
   - type: mean
     name: orders_per_user
-    description: "Completed orders per enrolled user"
+    description: "Completed orders in the first 14 days after assignment per enrolled user"
     entity: user_id
     preferred_direction: increase
     fact: order
@@ -78,21 +78,21 @@ metrics:
 
   - type: mean
     name: page_views_per_user
-    description: "Page views per enrolled user"
+    description: "Observed post-assignment page views per enrolled user"
     entity: user_id
     preferred_direction: increase
     fact: page_view
     aggregation: count
-    window_days: 14
+    window_days: null
 
   - type: mean
     name: checkout_loads_per_user
-    description: "Checkout page loads per enrolled user"
+    description: "Observed post-assignment checkout page loads per enrolled user"
     entity: user_id
     preferred_direction: decrease
     fact: page_load
     aggregation: count
-    window_days: 14
+    window_days: null
     filters:
       - property: page
         op: equals

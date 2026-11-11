@@ -19,10 +19,11 @@ import marimo as mo
 import pandas as pd
 from coeftable import plots
 
-from increment._interpretation import interpret_readout, render_readout_text
+from increment._interpretation import _coherence_qualifications, interpret_readout
 from increment.dashboard._data import (
     _OVERVIEW_WHOLE,
     DashboardSnapshot,
+    _analysis_integrity_qualification,
     _dashboard_allocation_qualification,
     _default_population,
     _population_snapshot,
@@ -32,7 +33,6 @@ from increment.dashboard._data import (
     enriched_rows,
     estimate_for_metric,
     group_data_rows,
-    readout_interpretation_text,
     require_metric,
     row_for_metric,
 )
@@ -58,7 +58,6 @@ from increment.dashboard._format import (
     monitoring_sentence,
     null_text,
     number_text,
-    outcome_label,
     percent_text,
     population_label,
     primary_method,
@@ -95,6 +94,7 @@ from increment.tables import (
 )
 
 if TYPE_CHECKING:
+    from increment._interpretation import InterpretedGroup, ReadoutInterpretation
     from increment.breakout.estimates import (
         BreakoutEstimates,
         DailyLiftEstimates,
@@ -233,27 +233,262 @@ def _header_chips(snapshot: DashboardSnapshot) -> str:
     return _chips(chips)
 
 
-def _qualification_fragment(text: str) -> str:
-    if not text:
+def _evidence_card(title: str, body: str) -> str:
+    return f'<section class="inc-dashboard-evidence-card"><h4>{esc(title)}</h4>{body}</section>'
+
+
+def _technical_value(value: Any) -> str:
+    """Render nested captured context as fields, never as a Python container repr."""
+    if value is None:
+        return '<span class="inc-dashboard-note">Not recorded</span>'
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, Mapping):
+        return (
+            _kv(
+                [
+                    (str(key).replace("_", " ").capitalize(), _technical_value(item))
+                    for key, item in value.items()
+                ]
+            )
+            if value
+            else '<span class="inc-dashboard-note">No additional fields</span>'
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return (
+            _list([_technical_value(item) for item in value], css_class="inc-dashboard-reasons")
+            if value
+            else '<span class="inc-dashboard-note">None recorded</span>'
+        )
+    return esc(value)
+
+
+def _completeness(*, value: bool | None) -> str:
+    return "Complete" if value is True else "Incomplete" if value is False else "Not recorded"
+
+
+def _integrity_summary(group: InterpretedGroup) -> str:
+    return {
+        "not_rejected": "No mismatch detected; this does not prove valid randomization.",
+        "failed": "Assignment integrity check failed.",
+        "not_applicable": "Not an assignment check for this population.",
+        "not_checked_missing_declaration": "Not checked: the assignment declaration is incomplete.",
+    }.get(group.integrity_status, "Not established; missing evidence is not a pass.")
+
+
+def _qualification_fragment(
+    snapshot: DashboardSnapshot, interpretation: ReadoutInterpretation
+) -> str:
+    population = _default_population(snapshot)
+    groups = [g for g in interpretation.groups if g.population in (None, population)]
+    if not groups:
         return ""
-    content = esc(text).replace("\n", "<br>")
-    return (
-        '<div class="inc-dashboard-status">'
-        f"<strong>Readout qualifications</strong><p>{content}</p></div>"
+    blocks = []
+    if population == "triggered":
+        assigned = snapshot.population_collections.get("assigned")
+        assignment = interpret_readout(
+            snapshot.population_estimates.get("assigned", ()) if assigned is None else assigned,
+            None if assigned is None else assigned.metadata,
+        )
+        records = [
+            _kv([("Assignment check", esc(_integrity_summary(group)))])
+            + _disclosure(
+                "Recorded assignment check",
+                _kv(
+                    [
+                        ("Recorded check", esc(_analysis_integrity_qualification(group))),
+                        (
+                            "Source snapshot",
+                            f"<code>{esc(group.source_snapshot_id or 'Unknown')}</code>",
+                        ),
+                    ]
+                ),
+            )
+            for group in assignment.groups
+            if group.population == "assigned"
+        ]
+        blocks.append(
+            _evidence_card(
+                "Assignment evidence · assigned population",
+                "".join(records)
+                if records
+                else _status("warn", "Assignment evidence was not captured."),
+            )
+        )
+    allocation = snapshot.triggered_allocation if population == "triggered" else snapshot.allocation
+    allocation_text, _ = _dashboard_allocation_qualification(snapshot, population)
+    for group in groups:
+        title = f"{population.capitalize()} · {group.treatment_group or 'Unknown arm'} vs {group.control_group or 'unknown control'}"
+        required = (
+            f"{sum(cell.available for cell in group.required_cells)} of "
+            f"{len(group.required_cells)} required results available"
+            if group.decision_complete is not None
+            else "Required result list not recorded"
+        )
+        checks = _kv(
+            [
+                ("Analysis integrity", esc(_integrity_summary(group))),
+                (
+                    "Dashboard allocation",
+                    esc(allocation_verdict(allocation, population=population))
+                    if allocation is not None
+                    else "Not available; see the recorded reason below.",
+                ),
+                ("Required results", esc(required)),
+                ("Expected comparisons", _completeness(value=group.roster_complete)),
+                (
+                    "View",
+                    "Partial" if group.partial or group.hidden_cells else "All captured rows shown",
+                ),
+            ]
+        )
+        families = (
+            _table(
+                ["Multiple-testing group", "Status", "Comparisons"],
+                [
+                    [
+                        esc(family.name),
+                        _completeness(value=family.complete),
+                        count_text(len(family.members)),
+                    ]
+                    for family in group.retained_families
+                ],
+            )
+            if group.retained_families
+            else '<p class="inc-dashboard-note">No multiple-testing group record was captured.</p>'
+        )
+        blocks.append(_evidence_card(title, checks + families))
+        cautions = result_caveats(estimates_to_readout(group.visible_rows))
+        cautions.extend(esc(advisory.message) for advisory in group.advisories)
+        if cautions:
+            blocks.append(_evidence_card("Cautions", _caveats_list(cautions)))
+        if group.unavailable_cells:
+            blocks.append(
+                _evidence_card(
+                    "Unavailable results",
+                    _table(
+                        ["Metric", "Reason"],
+                        [
+                            [
+                                esc(cell.key.metric),
+                                esc(cell.failure_message or "No reason recorded"),
+                            ]
+                            for cell in group.unavailable_cells
+                        ],
+                    ),
+                )
+            )
+        records = [
+            ("Source snapshot", f"<code>{esc(group.source_snapshot_id or 'Unknown')}</code>"),
+            ("Recorded analysis check", esc(_analysis_integrity_qualification(group))),
+            ("Analysis check context", _technical_value(group.integrity_context)),
+            ("Recorded allocation check", esc(allocation_text)),
+            ("Comparison roster source", _technical_value(group.roster_source)),
+            ("Hidden results", count_text(len(group.hidden_cells))),
+        ]
+        for family in group.retained_families:
+            records.append((f"Group ID · {family.name}", f"<code>{esc(family.family_id)}</code>"))
+            if family.family is not None:
+                records.append(
+                    (
+                        f"Correction plan · {family.name}",
+                        _technical_value(family.family.model_dump(mode="json")),
+                    )
+                )
+        for cell in group.source_cells:
+            if cell.failure_code is not None:
+                records.append(
+                    (
+                        f"Unavailable · {cell.key.metric}",
+                        _kv(
+                            [
+                                ("Code", f"<code>{esc(cell.failure_code)}</code>"),
+                                ("Context", _technical_value(cell.failure_context)),
+                            ]
+                        ),
+                    )
+                )
+            if cell.posterior_reason_code is not None:
+                records.append(
+                    (
+                        f"Prior advisory · {cell.key.metric}",
+                        _kv(
+                            [
+                                ("Code", f"<code>{esc(cell.posterior_reason_code)}</code>"),
+                                ("Context", _technical_value(cell.posterior_reason_context)),
+                            ]
+                        ),
+                    )
+                )
+        for advisory in group.advisories:
+            records.append((f"Caution · {advisory.code}", _technical_value(advisory.context)))
+        blocks.append(_disclosure(f"Provenance and recorded checks · {title}", _kv(records)))
+    blocks.append(
+        _disclosure(
+            "Capture details",
+            _kv(
+                [
+                    ("Evidence capture", _technical_value(interpretation.coherence)),
+                    ("Acquisition modes", _technical_value(interpretation.effective_modes)),
+                    (
+                        "Capture qualifications",
+                        _list(
+                            [
+                                esc(item.text)
+                                for item in _coherence_qualifications(
+                                    interpretation, include_uniform_capture=True
+                                )
+                            ],
+                            css_class="inc-dashboard-reasons",
+                        ),
+                    ),
+                ]
+            ),
+        )
+    )
+    return _disclosure(
+        "Readout qualifications and evidence",
+        '<div class="inc-dashboard-evidence-stack">' + "".join(blocks) + "</div>",
     )
 
 
 def _qualification_block(snapshot: DashboardSnapshot) -> str:
-    return _qualification_fragment(readout_interpretation_text(snapshot))
+    collection = snapshot.readout_collection
+    interpretation = interpret_readout(
+        snapshot.estimates if collection is None else collection,
+        None if collection is None else collection.metadata,
+    )
+    warnings: dict[str, None] = {}
+    for qualification in _coherence_qualifications(interpretation):
+        if qualification.weakens:
+            warnings[qualification.text] = None
+    for group in interpretation.groups:
+        if group.integrity_status == "failed":
+            warnings["Assignment integrity check failed."] = None
+        elif group.integrity_status not in ("not_rejected", "not_applicable"):
+            warnings["Assignment integrity was not established; review the evidence."] = None
+        if group.decision_complete is False:
+            warnings["Required decision results are incomplete."] = None
+        if group.roster_complete is False:
+            warnings["The declared comparison roster is incomplete."] = None
+        if any(not family.complete for family in group.retained_families):
+            warnings["A multiple-testing family is incomplete."] = None
+        if group.partial or group.hidden_cells:
+            warnings["This is a partial view of the captured results."] = None
+        if group.unavailable_cells:
+            warnings["Some results are unavailable; review their recorded reasons."] = None
+    return "".join(_status("warn", message) for message in warnings) + _qualification_fragment(
+        snapshot, interpretation
+    )
 
 
 def _added_qualification_block(snapshot: DashboardSnapshot, metric: str) -> str:
     population = _default_population(snapshot)
     overview = snapshot.overview
     if overview is None:
-        return _qualification_fragment(
-            f"Readout qualifications unavailable for added metric {metric}: "
-            "its collection evidence was not captured."
+        return _status(
+            "warn",
+            f"Evidence unavailable for added metric {metric}: its collection was not captured.",
         )
     capture = next(
         (
@@ -267,31 +502,18 @@ def _added_qualification_block(snapshot: DashboardSnapshot, metric: str) -> str:
         None,
     )
     if capture is None:
-        return _qualification_fragment(
-            f"Readout qualifications unavailable for added metric {metric}: "
-            "its collection evidence was not captured."
+        return _status(
+            "warn",
+            f"Evidence unavailable for added metric {metric}: its collection was not captured.",
         )
     collection = capture.load()
     rows = tuple(row for row in overview.exploratory if row.metric == metric)
     if not rows:
-        return _qualification_fragment(
-            f"Readout qualifications unavailable for added metric {metric}: "
-            "its retained result was not captured."
+        return _status(
+            "warn", f"Evidence unavailable for added metric {metric}: its result was not captured."
         )
     interpretation = interpret_readout(rows, getattr(collection, "metadata", None))
-    rendered = []
-    for group in interpretation.groups:
-        if group.population not in (None, population):
-            continue
-        allocation, _ = _dashboard_allocation_qualification(snapshot, population)
-        evidence = render_readout_text(replace(interpretation, groups=(group,)))
-        rendered.append(
-            f"Source snapshot: {group.source_snapshot_id or 'unknown'}\n"
-            + allocation
-            + "\n"
-            + evidence
-        )
-    return _qualification_fragment("\n\n".join(rendered))
+    return _qualification_fragment(snapshot, interpretation)
 
 
 def _header_cards(snapshot: DashboardSnapshot) -> str:
@@ -526,6 +748,7 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
 
 def _technical_details_block(snapshot: DashboardSnapshot) -> str:
     details: list[str] = []
+    no_trigger = []
     for label, refusal in (
         ("Assigned allocation", snapshot.allocation_refusal),
         ("Assigned allocation history", snapshot.allocation_history_refusal),
@@ -535,33 +758,66 @@ def _technical_details_block(snapshot: DashboardSnapshot) -> str:
         if refusal is not None:
             code, reason = refusal
             details.append(
-                f"<h4>{esc(label)}</h4><dl><dt>Code</dt><dd>{esc(code)}</dd>"
-                f"<dt>Reason</dt><dd>{esc(reason)}</dd></dl>"
+                _evidence_card(
+                    label,
+                    _kv(
+                        [
+                            ("Code", f"<code>{esc(code)}</code>"),
+                            ("Reason", esc(reason)),
+                        ]
+                    ),
+                )
             )
     if snapshot.health is not None:
         for check in snapshot.health.checks:
             if check.code is None and not check.context:
                 continue
-            identity = [check.analysis_population]
+            if (
+                check.analysis_population == "triggered"
+                and check.availability == "not_applicable"
+                and check.code is None
+                and check.metric is None
+                and check.feed is None
+                and set(check.context) == {"reason"}
+                and check.context["reason"] == "This experiment does not declare a trigger."
+            ):
+                no_trigger.append(esc(check.check.replace("_", " ").title()))
+                continue
+            values = [("Population", esc(check.analysis_population))]
             if check.metric is not None:
-                identity.append(f"metric {check.metric}")
+                values.append(("Metric", esc(check.metric)))
             if check.feed is not None:
-                identity.append(f"feed {check.feed}")
-            values = []
+                values.append(("Feed", esc(check.feed)))
             if check.code is not None:
-                values.append(f"<dt>Code</dt><dd>{esc(check.code)}</dd>")
+                values.append(("Code", f"<code>{esc(check.code)}</code>"))
             values.extend(
-                f"<dt>{esc(key.replace('_', ' ').title())}</dt><dd>{esc(value)}</dd>"
+                (key.replace("_", " ").title(), _technical_value(item))
                 for key, item in check.context.items()
-                for value in [str(item)]
             )
             details.append(
-                f"<h4>{esc(check.check.replace('_', ' ').title())} "
-                f"({esc(', '.join(identity))})</h4><dl>{''.join(values)}</dl>"
+                _evidence_card(
+                    check.check.replace("_", " ").title(),
+                    _kv(values),
+                )
             )
+    if no_trigger:
+        details.append(
+            _evidence_card(
+                "Trigger checks · not applicable",
+                _kv(
+                    [
+                        ("Reason", "This experiment does not declare a trigger."),
+                        ("Checks", _list(no_trigger, css_class="inc-dashboard-reasons")),
+                    ]
+                ),
+            )
+        )
     if not details:
         return ""
-    return _disclosure("Technical details", "".join(details))
+    return _disclosure(
+        "Technical details",
+        '<div class="inc-dashboard-evidence-stack">' + "".join(details) + "</div>",
+    )
 
 
 def _allocation_history_table(
@@ -989,25 +1245,20 @@ def _display_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 # Keep only the dashboard's core readout and declared advisory columns.
 _CORE_COLUMNS = frozenset(
     {
-        "Interval",
         "Lift (absolute)",
         "Lift %",
         "Lift Plot",
         "Failure",
-        "Discovery",
         "Posterior chance to beat",
         "Posterior risk if shipped",
         "Posterior P(favorable)",
     }
 )
 
-# The Readout leaves family selection to its notes, the Report and the metric inspector.
-_READOUT_COLUMNS = _CORE_COLUMNS - {"Discovery"}
 
-
-def _keep_core_columns(table: ct.CoefTable, columns: frozenset[str] = _CORE_COLUMNS) -> None:
+def _keep_core_columns(table: ct.CoefTable) -> None:
     table.columns = tuple(
-        column for column in table.columns if getattr(column, "label", None) in columns
+        column for column in table.columns if getattr(column, "label", None) in _CORE_COLUMNS
     )
 
 
@@ -1022,16 +1273,45 @@ def _geometry_disclosure(
     label: str,
     name: Callable[[Mapping[str, Any]], str] = lambda row: str(row.get("metric")),
 ) -> str:
-    geometry = _list(
-        [
-            f"<strong>{esc(name(row))}</strong>: {esc(text)}"
-            for row in rows
-            for text in _geometry_explanations(snapshot, row)
-        ],
-        css_class="inc-dashboard-reasons",
+    explanations: dict[str, list[str]] = {}
+    technical: dict[str, list[str]] = {}
+    for row in rows:
+        qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
+        for text in _geometry_explanations(snapshot, row):
+            if qualification and text == qualification:
+                technical.setdefault(esc(text), []).append(name(row))
+            else:
+                explanations.setdefault(text, []).append(name(row))
+    specific: dict[str, list[str]] = {}
+    shared = []
+    for text, names in explanations.items():
+        unique = list(dict.fromkeys(names))
+        if len(unique) > 1:
+            shared.append(f"{esc(text)} <small>Applies to: {esc(', '.join(unique))}.</small>")
+        else:
+            specific.setdefault(unique[0], []).append(esc(text))
+    cards = [
+        _evidence_card(metric.replace("_", " "), _list(notes, css_class="inc-dashboard-reasons"))
+        for metric, notes in specific.items()
+    ]
+    if shared:
+        cards.append(
+            _evidence_card(
+                "Shared interval notes", _list(shared, css_class="inc-dashboard-reasons")
+            )
+        )
+    if technical:
+        cards.append(
+            _disclosure(
+                "Construction and numerical qualifications",
+                _list(_attributed_trajectory_notes(technical), css_class="inc-dashboard-reasons"),
+            )
+        )
+    return (
+        _disclosure(label, '<div class="inc-dashboard-evidence-stack">' + "".join(cards) + "</div>")
+        if cards
+        else ""
     )
-
-    return _disclosure(label, geometry) if geometry else ""
 
 
 def _selection_qualification_notes(
@@ -1070,7 +1350,7 @@ def results_table(snapshot: DashboardSnapshot) -> str:
         advisory=True,
         show_interval_level=True,
     )
-    _keep_core_columns(table, _READOUT_COLUMNS)
+    _keep_core_columns(table)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.forest_width, height=charts.forest_height)
     return _TABLE_WRAP.format(native_html(table, metrics)) + _selection_qualification_notes(
@@ -1222,39 +1502,47 @@ def overview_notes(
     if overview is None:
         return notes
     for metric, place, refusal in overview.refusals:
-        notes.append(f"{metric} ({place}) is unavailable: {refusal} ({refusal.code}).")
+        notes.extend(
+            [
+                f"Unavailable: {metric} ({place}) — {refusal}.",
+                f"Refusal code for {metric} ({place}): {refusal.code}.",
+            ]
+        )
     if overview.family_refusal is not None:
         refusal = overview.family_refusal
-        notes.append(
-            f"Exploratory cells are not shown: {refusal} ({refusal.code}). Uncorrected "
-            "exploratory estimates are not substituted."
+        notes.extend(
+            [
+                f"Exploratory results unavailable: {refusal}.",
+                f"Refusal code: {refusal.code}.",
+                "Uncorrected exploratory estimates are not substituted.",
+            ]
         )
         return notes
     shown = {model.name for model in snapshot.exploratory_metrics}
     hidden = [model.name for model in snapshot.offered_metrics if model.name not in shown]
-    not_shown = f" ({count_text(len(hidden))} not shown: {', '.join(hidden)})" if hidden else ""
-    notes.append(
-        f"Exploratory family: Benjamini-Hochberg at q = {overview.family_q:.3g} across "
-        f"{count_text(overview.family_size)} comparisons: every eligible whole-experiment cell of "
-        f"every saved metric the definitions offer{not_shown}, and every eligible segment cell of "
-        "every metric and declared breakout; cells it cannot take are listed with their reasons. "
-        "Every eligible comparison counts whether or not its metric is shown, so choosing what "
-        "to display never changes the correction. "
-        "BH controls the false discovery rate under independence or positive dependence; these "
-        "comparisons share units and the control arm, and that condition is not checked."
+    notes.extend(
+        [
+            f"Exploratory selection: Benjamini-Hochberg; q = {overview.family_q:.3g}; "
+            f"{count_text(overview.family_size)} comparisons.",
+            "Included comparisons: every eligible whole-experiment result for every saved metric "
+            "the definitions offer, plus eligible segment results for every metric and declared breakout.",
+            "Display choices do not change the correction: eligible comparisons count even "
+            "when their metric is not shown.",
+            "Assumption: false discovery rate control requires independent or positively dependent comparisons.",
+            "That condition is not checked: these comparisons share units and the control arm.",
+            "Plot colors: only selected exploratory discoveries are colored as findings, "
+            "with FCR-adjusted intervals.",
+            "Other exploratory intervals are unadjusted and neutral, even when they exclude zero.",
+            "Use exploratory results to generate hypotheses, not confirmatory conclusions.",
+        ]
     )
-    notes.append(
-        "Only BH discoveries are coloured as findings, with FCR-adjusted intervals. Other "
-        "exploratory intervals are unadjusted and drawn in the neutral colour even when they "
-        "exclude zero. Exploratory results generate hypotheses; they are not confirmatory."
-    )
+    if hidden:
+        notes.append(f"Not shown ({count_text(len(hidden))} metrics): {', '.join(hidden)}.")
     if overview.exclusions:
-        cells = "; ".join(
-            f"{metric} ({place}): {reason}" for metric, place, reason in overview.exclusions
-        )
-        notes.append(
-            "Not in the exploratory family, so never marked as discoveries (shown unadjusted "
-            f"when their metric is shown): {cells}."
+        notes.extend(
+            f"Excluded from exploratory selection: {metric} ({place}) — {reason}. "
+            "Shown unadjusted when displayed; never marked as a discovery."
+            for metric, place, reason in overview.exclusions
         )
     return notes
 
@@ -1264,8 +1552,10 @@ def results_notes(snapshot: DashboardSnapshot) -> str:
     return _geometry_disclosure(
         snapshot, snapshot.readout_rows, label=INTERVALS_DISCLOSURE
     ) + _disclosure(
-        "Statistical interpretation",
-        _list(_role_disclosures(snapshot), css_class="inc-dashboard-reasons"),
+        "Methods & assumptions",
+        '<div class="inc-dashboard-evidence-stack">'
+        + "".join(_role_disclosures(snapshot))
+        + "</div>",
     )
 
 
@@ -1343,62 +1633,73 @@ def _role_disclosure(
     several_arms: bool,
     several_methods: bool,
 ) -> str:
-    label = ROLE_LABELS.get(role, role)
-    tails = "; ".join(f"{esc(row.get('metric'))} {tail_word(row)}" for row in rows)
-    sentences = [f"<strong>{esc(label)}</strong>: {tails}."]
-
-    def name(row: Mapping[str, Any]) -> str:
-        metric = str(row.get("metric"))
-        qualifiers = [str(row.get("group_id"))] if several_arms else []
+    headers = ["Metric"]
+    if several_arms:
+        headers.append("Arm")
+    if several_methods:
+        headers.append("Method")
+    headers.extend(["Declared test", "Test boundary", "Confidence"])
+    cells = []
+    for row in rows:
+        values = [esc(row.get("metric"))]
+        if several_arms:
+            values.append(esc(row.get("group_id")))
         if several_methods:
-            qualifiers.append(f"{row.get('method')}, {row.get('method_role')}")
-        return f"{metric} ({'; '.join(qualifiers)})" if qualifiers else metric
-
-    outcomes = "; ".join(f"{esc(name(row))}: {esc(outcome_label(row))}" for row in rows)
-    sentences.append(f"Outcomes: {outcomes}.")
-    levelled = [
-        (
-            (
-                f"{row.get('metric')} ({row.get('method')}, {row.get('method_role')})"
-                if several_methods
-                else row.get("metric")
-            ),
-            (float(row["level"]), row.get("coverage_alpha")),
+            values.append(esc(f"{row.get('method')} · {row.get('method_role')}"))
+        values.extend(
+            [
+                esc(tail_word(row)),
+                esc(null_text(row)),
+                percent_text(float(row["level"]), row.get("coverage_alpha"))
+                if row.get("level") is not None
+                else missing_html("no interval"),
+            ]
         )
-        for row in rows
-        if row.get("level") is not None
-    ]
-    if levelled:
-        shown = esc(levels_by_metric(levelled, lambda coverage: percent_text(*coverage)))
-        sentences.append(f"Interval level {shown}.")
-        if any(row.get("alternative") in ("greater", "less") for row in rows):
-            sentences.append(
-                "A one-sided test and a two-sided interval at a different level "
-                "are not the same statement."
-            )
+        cells.append(values)
+    notes = []
+    method = (
+        _kv(
+            [
+                (
+                    "Analysis method",
+                    esc(str(rows[0].get("method") or "Not recorded").replace("_", " ")),
+                )
+            ]
+        )
+        if not several_methods
+        else ""
+    )
+    if any(row.get("alternative") in ("greater", "less") for row in rows):
+        notes.append(
+            "A one-sided test and a two-sided interval at a different confidence level "
+            "answer different questions."
+        )
     if role == "secondary":
-        sentences.append(_discovery_sentence(rows))
+        notes.append(_discovery_sentence(rows))
     if role == "guardrail":
-        sentences.append(
-            "A guardrail that did not reject means the declared test did not reject. "
-            "It is not evidence of no harm, and not a two-sided conclusion."
+        notes.append(
+            "A guardrail that did not reject is not evidence of no harm, "
+            "and does not give a two-sided conclusion."
         )
-    return " ".join(sentences)
+    return _evidence_card(
+        ROLE_LABELS.get(role, role),
+        method + _table(headers, cells) + _list(notes, css_class="inc-dashboard-reasons"),
+    )
 
 
 def _discovery_sentence(rows: Sequence[Mapping[str, Any]]) -> str:
     axes = next((row.get("family_axes") for row in rows if row.get("family_axes")), None)
     q = next((row.get("family_q") for row in rows if row.get("family_q") is not None), None)
     if axes is None and q is None:
-        return "No discovery family was applied to these rows."
+        return "No multiple-testing selection was recorded for these rows."
     parts = []
     if axes:
-        parts.append(f"family axes {esc(', '.join(str(axis) for axis in axes))}")
+        parts.append(f"comparisons grouped by {esc(', '.join(str(axis) for axis in axes))}")
     if q is not None:
         parts.append(f"q = {number_text(float(q), 3)}")
     return (
-        f"Family selection ({'; '.join(parts)}) is distinct from the row's tested-alternative "
-        "verdict. Its metadata is retained in metric details and CSV."
+        f"Selection settings: {'; '.join(parts)}. "
+        "Selection is separate from the individual test result."
     )
 
 
@@ -1538,12 +1839,20 @@ def _added_metric_details(snapshot: DashboardSnapshot, model: Any) -> mo.Html:
                 ),
                 None,
             )
-        reason = (
-            "no whole-experiment result for this added metric"
-            if refused is None
-            else f"{refused} ({refused.code})"
+        body = (
+            f'<p class="inc-dashboard-note">{missing_html("no whole-experiment result for this added metric")}</p>'
+            + note
         )
-        body = f'<p class="inc-dashboard-note">{missing_html(reason)}</p>' + note
+        if refused is not None:
+            body += _evidence_card(
+                "Read refusal",
+                _kv(
+                    [
+                        ("Reason", esc(str(refused))),
+                        ("Code", f"<code>{esc(refused.code)}</code>"),
+                    ]
+                ),
+            )
         return _section(
             "metric-details",
             f"Metric: {model.name}",
@@ -1592,13 +1901,26 @@ def _group_data_disclosure(snapshot: DashboardSnapshot, metric: str) -> str:
     return _disclosure(
         "Data by group",
         _group_data_table(snapshot, metric)
-        + '<p class="inc-dashboard-note">Observed values are pre-adjustment aggregates. '
-        "Eligibility uses the same cohort and metric window as the analysis. For fixed-horizon "
-        "retention, assigned = eligible + not mature + no observed day + other exclusions; "
-        "the observation cutoff and window endpoints are shown when captured. "
-        "CUPED, a prior, or winsorization can make the reported effect differ from these raw values. "
-        "Only retained transformed inputs are shown in the separate analysis-input row; "
-        "pre-transform outcomes absent from a checkpoint remain unavailable.</p>",
+        + _kv(
+            [
+                ("Observed values", "Pre-adjustment aggregates."),
+                ("Eligibility", "The same cohort and metric window as the analysis."),
+                (
+                    "Fixed-horizon retention",
+                    "Assigned = eligible + not mature + no observed day + other exclusions. "
+                    "Observation cutoff and window endpoints are shown when captured.",
+                ),
+                (
+                    "Adjusted results",
+                    "CUPED, a prior, or winsorization can make the reported effect differ from raw values.",
+                ),
+                (
+                    "Analysis inputs",
+                    "Only retained transformed inputs appear in the separate analysis-input row. "
+                    "Pre-transform outcomes absent from a checkpoint remain unavailable.",
+                ),
+            ]
+        ),
     )
 
 
@@ -2023,14 +2345,15 @@ def _attributed_trajectory_notes(notes: Mapping[str, Sequence[str]]) -> list[str
     ]
 
 
-def _lift_reading_label(row: Mapping[str, Any]) -> str:
+def _trajectory_reading_label(row: Mapping[str, Any]) -> str:
     return " · ".join(str(row[key]) for key in ("segment", "group_id") if row.get(key) is not None)
 
 
-def _lift_trajectory_table(
+def _trajectory_table(
     snapshot: DashboardSnapshot,
-    panels: Sequence[tuple[Any, str]],
+    panels: Sequence[tuple[Sequence[Any], str, ct.Number]],
     *,
+    lift: bool,
     caption_context: Sequence[str] = (),
 ) -> str:
     readings = []
@@ -2040,21 +2363,39 @@ def _lift_trajectory_table(
     notes: dict[str, list[str]] = {}
     geometry: dict[str, list[str]] = {}
     caveats: dict[str, list[str]] = {}
-    for row, svg in panels:
-        reading = estimates_to_readout([row])[0]
-        reading["alternative"] = row.alternative
-        reading["coverage_alpha"] = retained_coverage_alpha(row)
-        readings.append(reading)
-        name = _lift_reading_label(reading)
+    for series, svg, formatter in panels:
+        row = series[-1]
+        latest_by_arm = {item.group_id: item for item in series}
         cells.append(
             {
                 "Series": _segment_label(row.dimension_value)
                 if row.dimension_value is not None
                 else "Whole experiment",
-                "Arm": _markdown_literal(row.group_id),
+                "Arm": _markdown_literal(" / ".join(latest_by_arm)),
                 "Trajectory": svg,
             }
         )
+        if not lift:
+            for latest_row in latest_by_arm.values():
+                reading = estimates_to_readout([latest_row])[0]
+                readings.append(reading)
+                name = _trajectory_reading_label(reading)
+                value = (
+                    esc(formatter(latest_row.value.value))
+                    if latest_row.value is not None
+                    else missing_html(latest_row.unavailable)
+                )
+                point = (
+                    f"{esc(str(reading['ds']))}: <strong>{value}</strong>; "
+                    f"{_value_interval(latest_row.value, formatter)}"
+                )
+                latest.setdefault(point, []).append(name)
+            continue
+        reading = estimates_to_readout([row])[0]
+        readings.append(reading)
+        name = _trajectory_reading_label(reading)
+        reading["alternative"] = row.alternative
+        reading["coverage_alpha"] = retained_coverage_alpha(row)
         point = (
             f"{esc(str(reading['ds']))}: <strong>{effect_html(reading)}</strong>; "
             f"{interval_html(reading)} · {primary_method(reading)} · "
@@ -2069,7 +2410,7 @@ def _lift_trajectory_table(
             geometry.setdefault(esc(explanation), []).append(name)
         for caveat in result_caveats([reading]):
             caveats.setdefault(caveat, []).append(name)
-    row = panels[0][0]
+    row = panels[0][0][-1]
     basis = "Exposure cohort" if row.ds_basis == "cohort" else "Observation date"
     dates = list(dict.fromkeys(str(reading["ds"]) for reading in readings))
     coverages = list(
@@ -2091,8 +2432,7 @@ def _lift_trajectory_table(
             ("Population", esc(row.analysis_population)),
             ("Date axis", basis),
             ("Scale", esc(row.value_scale)),
-            ("Method", esc(row.method)),
-            ("Estimand", esc(row.estimand)),
+            *([("Method", esc(row.method)), ("Estimand", esc(row.estimand))] if lift else []),
             *([("Source", esc(row.source))] if row.source is not None else []),
         ]
     )
@@ -2111,7 +2451,7 @@ def _lift_trajectory_table(
             _attributed_trajectory_notes(notes), css_class="inc-dashboard-family-qualifications"
         )
         + _list(_attributed_trajectory_notes(geometry), css_class="inc-dashboard-reasons")
-        + _selection_qualification_notes(readings, name=_lift_reading_label)
+        + (_selection_qualification_notes(readings, name=_trajectory_reading_label) if lift else "")
         + _caveats_list(_attributed_trajectory_notes(caveats))
     )
     return (
@@ -2121,14 +2461,6 @@ def _lift_trajectory_table(
         + _disclosure("Latest readings and qualifications", details)
         + "</div>"
     )
-
-
-def _trajectory_label(row: Any) -> str:
-    basis = "Exposure cohort" if row.ds_basis == "cohort" else "Observation date"
-    parts = [row.metric, row.analysis_population, basis]
-    if row.dimension is not None:
-        parts.append(f"{row.dimension}: {row.dimension_value}")
-    return " · ".join(parts)
 
 
 def _trajectory_scale_key(row: Any, *, lift: bool) -> tuple[Any, ...]:
@@ -2146,7 +2478,7 @@ def _trajectory_scale_key(row: Any, *, lift: bool) -> tuple[Any, ...]:
 def _temporal_plots(
     snapshot: DashboardSnapshot, data: Any, *, metric: str | None, view: str
 ) -> str:
-    """Project captured series once, with a small table for compatible lift readings."""
+    """Render compatible captured trajectories together in native tables."""
     lift = view == "cumulative_lift"
     rows = [
         row
@@ -2171,17 +2503,17 @@ def _temporal_plots(
         else:
             traces = [
                 _point_trace(
-                    [row for row in group if row.group_id == arm],
+                    [item for item in group if item.group_id == arm],
                     lift=False,
                     color=theme.series_palette[0 if arm == snapshot.control_group else 1],
                     label=arm,
                 )
-                for arm in dict.fromkeys(row.group_id for row in group)
+                for arm in dict.fromkeys(item.group_id for item in group)
             ]
         prepared.append((group, traces))
     charts = snapshot.config.theme.charts
     fragments = []
-    lift_panels: dict[tuple[Any, ...], list[tuple[Any, str]]] = {}
+    panels_by_scale: dict[tuple[Any, ...], list[tuple[Sequence[Any], str, ct.Number]]] = {}
     for group, traces in prepared:
         row = group[-1]
         peers = [
@@ -2223,38 +2555,31 @@ def _temporal_plots(
             width=width,
             height=charts.time_height if lift else charts.absolute_height,
         )
-        if lift:
-            lift_panels.setdefault(_trajectory_scale_key(row, lift=True), []).append((row, svg))
-            continue
-        latest = _latest_value_reading(group, formatter)
-        fragments.append(
-            f'<figure class="inc-dashboard-trajectory"><figcaption>'
-            f"{esc(_trajectory_label(row))}</figcaption>{svg}{latest}</figure>"
+        panels_by_scale.setdefault(_trajectory_scale_key(row, lift=lift), []).append(
+            (group, svg, formatter)
         )
-    if lift:
-        varying = (
-            [
-                (name, label)
-                for name, label in (
-                    ("source", "Source"),
-                    ("dimension", "Breakout"),
-                    ("analysis_population", "Population"),
-                    ("value_scale", "Scale"),
-                    ("method", "Method"),
-                    ("estimand", "Estimand"),
-                )
-                if len({getattr(panels[0][0], name) for panels in lift_panels.values()}) > 1
-            ]
-            if len(lift_panels) > 1
-            else []
-        )
-        for panels in lift_panels.values():
-            row = panels[0][0]
-            caption_context = [row.metric] if metric is None else []
-            caption_context.extend(f"{label}: {getattr(row, name)!r}" for name, label in varying)
-            fragments.append(
-                _lift_trajectory_table(snapshot, panels, caption_context=caption_context)
+    varying = (
+        [
+            (name, label)
+            for name, label in (
+                ("source", "Source"),
+                ("dimension", "Breakout"),
+                ("analysis_population", "Population"),
+                ("value_scale", "Scale"),
+                *([("method", "Method"), ("estimand", "Estimand")] if lift else []),
             )
+            if len({getattr(panels[0][0][-1], name) for panels in panels_by_scale.values()}) > 1
+        ]
+        if len(panels_by_scale) > 1
+        else []
+    )
+    for panels in panels_by_scale.values():
+        row = panels[0][0][-1]
+        caption_context = [row.metric] if metric is None else []
+        caption_context.extend(f"{label}: {getattr(row, name)!r}" for name, label in varying)
+        fragments.append(
+            _trajectory_table(snapshot, panels, lift=lift, caption_context=caption_context)
+        )
     return "".join(fragments)
 
 
@@ -2267,25 +2592,6 @@ def _value_interval(point: Any, formatter: ct.Number) -> str:
     closing = "]" if point.ub is not None else ")"
     level = f"{percent_text(point.level, point.alpha)} " if point.level is not None else ""
     return f"{level}{opening}{lower}, {upper}{closing}"
-
-
-def _latest_value_reading(rows: Sequence[Any], formatter: ct.Number) -> str:
-    latest: dict[str, Any] = {}
-    for row in rows:
-        latest[row.group_id] = row
-    return _table(
-        ["Arm", "Value", "Interval"],
-        [
-            [
-                esc(row.group_id),
-                esc(formatter(row.value.value))
-                if row.value is not None
-                else missing_html(row.unavailable),
-                _value_interval(row.value, formatter),
-            ]
-            for row in latest.values()
-        ],
-    )
 
 
 def _percent_axis(estimates: Sequence[Any]) -> ct.Percent:

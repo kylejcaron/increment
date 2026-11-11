@@ -613,6 +613,11 @@ def test_results_show_available_prior_advisory_columns(pricing: DashboardSnapsho
 
 def test_results_render_every_declared_role_group(storefront: DashboardSnapshot) -> None:
     html = render_results(storefront).text
+    headers = {
+        re.sub(r"<[^>]+>", "", header).strip()
+        for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
+    }
+    assert "Interval" not in headers
     groups = (
         ("Primary", "checkout_conversion"),
         ("Secondaries", "revenue_per_user"),
@@ -632,6 +637,11 @@ def test_results_render_every_declared_role_group(storefront: DashboardSnapshot)
         section = "".join(body for group, body in members if group == headings[role])
         assert metric in section
         assert all(other not in section for _, other in groups if other != metric)
+    source_id = storefront.readout_rows[0]["source_snapshot_id"]
+    assert isinstance(source_id, str)
+    assert source_id in html
+    unfolded = re.sub(r"<details\b.*?</details>", "", html, flags=re.DOTALL)
+    assert source_id not in unfolded
 
 
 def test_metric_details_change_nothing_about_the_snapshot(
@@ -682,6 +692,17 @@ def test_all_temporal_views_render_every_declared_metric(
     html = render_explore(storefront, data, metric=None, view=view).text
     for metric in expected:
         assert metric in html
+    tables = re.findall(r'<table\b[^>]*\bclass="[^"]*\bgt_table\b.*?</table>', html, re.S)
+    assert len(tables) == len(expected)
+    for table in tables:
+        body = re.search(r"<tbody\b[^>]*>(.*?)</tbody>", table, re.S)
+        assert body is not None
+        assert len(re.findall(r"<tr\b", body.group(1))) == 1
+        assert storefront.treatment_group in table
+        if view != "cumulative_lift":
+            assert storefront.control_group in table
+            strokes = set(re.findall(r'<polyline\b[^>]*stroke="([^"]+)"', table))
+            assert len(strokes) == 2
     if view == "cumulative_lift":
         endpoints = [
             float(points.split()[-1].split(",")[0])
@@ -1285,12 +1306,24 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
         preceding = [value for start, value in levels if start < method_at]
         assert isinstance(row["level"], float)
         assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
-    notes = "\n".join(_report_notes(snapshot))
     disclosure = render_results(snapshot).text
+    table_rows = [
+        re.sub(r"<[^>]+>", " ", body)
+        for body in re.findall(r"<tr\b[^>]*>(.*?)</tr>", disclosure, re.DOTALL)
+    ]
     for row in (decision, sensitivity):
-        attribution = f"{row['metric']} ({row['method']}, {row['method_role']})"
-        assert attribution in notes
-        assert attribution in disclosure
+        expected_level = row["level"]
+        assert isinstance(expected_level, float)
+        assert any(
+            str(row["metric"]) in body
+            and str(row["method"]) in body
+            and str(row["method_role"]) in body
+            and any(
+                float(level) / 100 == pytest.approx(expected_level, abs=0.00005)
+                for level in re.findall(r"(\d+(?:\.\d+)?)%", body)
+            )
+            for body in table_rows
+        )
 
 
 @pytest.mark.parametrize(
@@ -1799,8 +1832,6 @@ def test_secondary_coverage_budget_reaches_metric_details(
     metric = str(rows[index]["metric"])
     detail = next(item["detail"] for item in payload["metrics"] if item["key"] == metric)
     assert "100% (α=1e-17)" in detail
-
-    assert "100% (α=1e-17) CI" in results_table(snapshot)
 
 
 def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(

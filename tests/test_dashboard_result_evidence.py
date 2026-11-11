@@ -15,7 +15,12 @@ import pytest
 pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
 
-from increment.dashboard import DashboardSnapshot, render_details, render_metric_details
+from increment.dashboard import (
+    DashboardSnapshot,
+    render_details,
+    render_metric_details,
+    render_results,
+)
 from increment.dashboard._format import (
     complete_confidence_set_text,
     confidence_set_text,
@@ -285,3 +290,32 @@ def test_additive_zero_decisions_reach_the_dashboard_outcome_and_null(mean_shift
     assert outcome.unavailable_reason is None
     assert null_text(row) == "+0 absolute"
     assert primary_tone(row) in ("neutral", "inconclusive")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("alternative", "relative_margin", "absolute_margin", "expected"),
+    [
+        ("greater", -0.02, None, "Guardrail: no more than a 2% relative decrease"),
+        ("less", 0.05, None, "Guardrail: no more than a 5% relative increase"),
+        ("less", 0.0, 5.0, "Guardrail: no more than 5 absolute units of increase"),
+        ("greater", 0.03, None, "Guardrail: at least a 3% relative increase"),
+    ],
+)
+def test_guardrail_metric_label_states_declared_direction_and_scale(
+    storefront, alternative, relative_margin, absolute_margin, expected
+):
+    rows = tuple(
+        {
+            **row,
+            "alternative": alternative,
+            "null_lift": relative_margin,
+            "null_abs": absolute_margin,
+            "decision_scale": "relative" if absolute_margin is None else "absolute",
+        }
+        if row["metric"] == GUARDRAIL
+        else row
+        for row in storefront.readout_rows
+    )
+    html = render_results(dataclasses.replace(storefront, readout_rows=rows)).text
+    assert expected in re.sub(r"<[^>]+>", "", html)

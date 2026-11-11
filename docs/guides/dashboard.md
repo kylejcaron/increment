@@ -127,11 +127,12 @@ integrity metadata. Relative configured allocation weights are displayed as
 normalized shares (for example, `{control: 1, treatment: 1}` means 50% / 50%).
 The complete dashboard's hero shows the date window, inference description,
 and configured source label as metadata, with the primary effect; it does not
-repeat the qualifications. Readout shows the selected population's
-qualifications above its table, and Report places them at its start, before
-its effect and results table. An added metric's inspector uses that metric's
-captured collection evidence and retained qualifications, not the
-confirmatory Readout's rows.
+repeat the qualifications. Readout, Health, metric inspection, and Report keep
+the full qualification transcript in closed disclosures. Table evidence and
+checks are expandable too, rather than repeating as a large table heading.
+Missing evidence, incomplete decisions, and adverse-result warnings remain
+visible as short notices. An added metric's inspector uses that metric's
+captured collection evidence, not the confirmatory Readout's rows.
 The Health tab keeps the allocation summary and available, warning, and
 unavailable checks visible. Checks that do not apply because no trigger is
 declared collapse into one summary line; diagnostic codes and context are in
@@ -169,10 +170,16 @@ that population; assignment counts remain separately labeled.
 
 Readout tables keep the core metric and arm identity, lift, and lift plot, with
 failure or prior-advisory columns when those values exist. A row's family
-selection appears in the metric inspector, the Report notes and the
-qualifications rather than as a table column; the Explore overview keeps its
-**Discovery** column. Numerical qualification appears in the metric
-inspector's interval-reading disclosure rather than the headline interval.
+selection appears in metric details, Report notes, qualifications, and CSV,
+not in a separate **Discovery** column. Explore forest colors still distinguish
+corrected discoveries from non-discoveries. Numerical qualification appears in
+the inspector's interval-reading disclosure rather than the headline interval.
+
+Guardrail rows show their declared limit beneath the metric name, for example
+“Guardrail: no more than a 2% relative decrease.” This describes the threshold,
+not whether the result met it. Absolute margins are identified as absolute
+units; a required improvement is not described as an allowed deterioration.
+The word **Guardrail** uses the same orange as the dashed threshold marker.
 
 Explore requests must match the snapshot's experiment and metric
 configuration, including arms, windows, breakouts, and policy. Matching only
@@ -291,6 +298,30 @@ restyle the notebook canvas.
 
 ## Sections
 
+Evidence disclosures use labeled records rather than diagnostic transcripts:
+
+- **Readout qualifications and evidence** summarizes assignment checks, result
+  availability, expected comparisons, and multiple-testing groups. Exact source
+  identifiers, recorded check contexts, and capture settings expand separately.
+- **Table evidence and checks**, including in Report, uses labeled records grouped
+  by population, source, and comparison. Counts, completeness, and testing groups
+  stay distinct; full source references and diagnostic context expand separately.
+- **How to read these intervals** groups metric-specific exceptions and states
+  shared explanations once. Construction and numerical qualifications have
+  their own reference.
+- **Methods & assumptions** groups the declared tests, boundaries, and confidence
+  levels by metric role, without repeating the result verdicts.
+- **Technical details** presents one diagnostic per card, with nested context as
+  labeled fields and lists. Trigger checks that do not apply share one explanation.
+
+Report reuses the Readout qualification renderer rather than a separate plain-text
+transcript. Explore's Overview notes separate correction settings, comparison
+coverage, assumptions, and exclusions into short items.
+
+Material warnings remain visible outside the disclosures. Exact intervals,
+refusal codes, and provenance remain available; presentation changes do not
+recompute the captured evidence.
+
 | Call | Renders |
 |---|---|
 | `render_dashboard(experiment, snapshot=...)` | The complete four-tab dashboard as a marimo anywidget: native plots, scoped controls, metric inspectors, health, provenance, and a Report with the full captured metric family. Its Explore **Added metrics** control re-renders the same snapshot in a running notebook; it never reads the warehouse. |
@@ -300,7 +331,7 @@ restyle the notebook canvas.
 | `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set columns are omitted; levels and interpretation remain in notes and CSV. |
 | `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; for the experiment's own metrics, observed data by group with eligibility, exclusions, counts, units, and provenance. An added metric shows its Overview result instead. |
 | `load_explore(experiment, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a declared or added metric name selects its own captured series. Validates that `experiment` is the one the snapshot was prepared from, and the options, without resolving a source, querying the warehouse, or materializing; coded refusals stay specific to each state. |
-| `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section: a shared table of cumulative-lift trajectories or per-arm absolute-value SVG plots, the actual date basis and range, and visible unavailable-point reasons. Exact lift readings and qualifications expand together. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load the data. |
+| `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section: native CoefTable trajectories for cumulative lift and daily or cumulative absolute values, the actual date basis and range, and visible unavailable-point reasons. Exact readings and qualifications expand together. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load the data. |
 | `render_details(snapshot)` | Collapsible experiment metadata, per-metric policies, provenance, and static-snapshot limitations. |
 | `readout_csv(snapshot)` | The current headline readout as UTF-8 CSV bytes, for `mo.download`; includes nullable `coverage_alpha` from each row's captured displayed interval or set. |
 | `group_data_csv(snapshot, metric=None)` | The observed group-data rows as UTF-8 CSV bytes. Select one declared metric or export all; no warehouse query occurs. |
@@ -515,12 +546,24 @@ captured separately, so two sources of the same property never mix and a
 refusal from one never hides the other. Unsupported engine requests display
 their refusal instead of substituting whole-experiment results.
 
-Lift trajectories group the selected breakout's series in one table. Expand
-**Latest readings and qualifications** for exact estimates, intervals, dates,
-tested nulls, and the series' shared or individual qualifications.
+Each point's date is the calendar date as of which the estimate is computed,
+not the users' assignment date. **Completed windows only** excludes a user
+until their full post-assignment metric window has elapsed; otherwise their
+partial follow-up can contribute. For a 14-day window, users assigned January
+15 first qualify on January 29. This can move the first plotted date and change
+later estimates, because it changes which users contribute at each date.
+Metrics with no fixed post-assignment endpoint do not need this maturity wait;
+the checkbox adds no outcome-window exclusion for them. Their events contribute
+through the captured observation cutoff, rather than stopping at a fixed day
+after assignment.
 
-Absolute-value readings show the arm, value, and interval; observation dates
-remain on the chart rather than repeating in a separate column.
+All time-series views use native CoefTable trajectory tables. Lift has one row
+per comparison and segment; absolute values overlay control and treatment in
+one chart per segment, with shared scales for the selected metric. Observation
+dates remain on the charts, not in a separate column.
+
+Expand **Latest readings and qualifications** for exact values, intervals,
+dates, and retained qualifications. Lift readings also include tested nulls.
 
 The **Focus metric** list groups metrics by role and scrolls within a fixed
 height, so a long list does not push the plot down. From nine metrics on, a
@@ -651,8 +694,9 @@ experiment's own metrics. All downloads use the captured snapshot.
     bands remain legible; narrow tables scroll horizontally instead of
     shrinking the plots. Both the hero and Report primary card retain the
     captured uncertainty interval; the Report uses smaller, muted interval
-    text. Tables omit the repeated **Confidence** column without changing
-    statistical metadata or interval levels.
+    text. Tables omit the standalone **Interval** text column while keeping
+    forest plots; exact bounds and confidence levels remain available in metric
+    inspection, notes, and CSV.
 
     Report retains every metric result and interval, compact allocation
     health, essential inference notes, and source/capture context.

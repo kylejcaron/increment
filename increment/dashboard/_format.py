@@ -338,6 +338,41 @@ def null_text(row: Mapping[str, Any]) -> str:
     return f"{float(null_lift):+.1%} relative"
 
 
+def guardrail_text(row: Mapping[str, Any]) -> str:
+    """Describe the declared guardrail boundary, not the observed outcome."""
+    if row.get("role") != "guardrail":
+        return ""
+    absolute = decision_scale(row) == "absolute"
+    boundary = row.get("null_abs") if absolute else row.get("null_lift")
+    if is_missing(boundary):
+        if absolute and row.get("value_scale") == "absolute":
+            boundary = row.get("null_lift")
+        else:
+            return "Guardrail: threshold unavailable"
+    if boundary is None or is_missing(boundary):
+        return "Guardrail: threshold unavailable"
+    boundary = float(boundary)
+    amount = (
+        f"{abs(boundary):.4g} absolute units of"
+        if absolute
+        else f"a {abs(boundary) * 100:.4g}% relative"
+    )
+    alternative = row.get("alternative")
+    if alternative == "greater":
+        return (
+            f"Guardrail: no more than {amount} decrease"
+            if boundary <= 0
+            else f"Guardrail: at least {amount} increase"
+        )
+    if alternative == "less":
+        return (
+            f"Guardrail: no more than {amount} increase"
+            if boundary >= 0
+            else f"Guardrail: at least {amount} decrease"
+        )
+    return f"Guardrail threshold: {null_text(row)}"
+
+
 @dataclass(frozen=True)
 class ResultOutcome:
     """Semantic row verdict for dashboard consumers."""
