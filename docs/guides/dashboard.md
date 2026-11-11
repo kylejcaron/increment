@@ -549,9 +549,13 @@ captured separately, so two sources of the same property never mix and a
 refusal from one never hides the other. Unsupported engine requests display
 their refusal instead of substituting whole-experiment results.
 
-Each point's date is the calendar date as of which the estimate is computed,
-not the user's enrollment date. **Completed windows only** excludes a user
-until their full metric window has elapsed; otherwise their partial follow-up
+Cumulative views use the calendar date as of which the estimate is computed.
+**Daily values** uses the date basis stated beneath its chart: for retention,
+dates identify exposure cohorts, not the day of return. A cohort starts at
+assignment in the Assigned population or first trigger in the Triggered population.
+
+For cumulative views, **Completed windows only** excludes a user until their
+full metric window has elapsed; otherwise their partial follow-up
 can contribute. The clock starts at assignment in the Assigned population,
 and at the first trigger in the Triggered population. A user assigned January
 15 qualifies for a 14-day Assigned window on January 29; if they first trigger

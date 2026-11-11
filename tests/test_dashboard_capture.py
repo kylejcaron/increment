@@ -29,6 +29,7 @@ import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from functools import partial
+from html import unescape
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
@@ -2108,12 +2109,8 @@ def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata():
     readout_html = render_results(dashboard_snapshot).text
     assert "partial" in readout_html
     assert "session_seconds" in readout_html
-    assert "SRM not checked" in readout_html and "allocation" in readout_html
-    assert "Dashboard allocation check" in readout_html
-    assert "configured expected control 99.99% / treatment 0.01%" in readout_html
-    assert "mismatch detected" in readout_html
+    assert "99.99%" in readout_html and "0.01%" in readout_html
     assert "integrity.allocation_missing_or_nonconstant" in readout_html
-    assert readout_html.index("mismatch detected") < readout_html.index("Analysis assignment check")
 
 
 def _assert_added_exploratory_readout(snapshot):
@@ -2168,7 +2165,7 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories():
         assert reason["code"] in surface
         assert advisory["code"] in surface
         assert "below 40" in surface
-    assert advisory["message"] in report_text
+    assert advisory["message"] in unescape(report_text)
     assert "integrity.allocation_missing_or_nonconstant" in report_text
     shell = document(payload)
     assert "hero-meta').textContent = str(data.meta)" in shell

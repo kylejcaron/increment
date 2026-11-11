@@ -390,14 +390,11 @@ def result_outcome(row: Mapping[str, Any]) -> ResultOutcome:
 
 def outcome_label(row: Mapping[str, Any]) -> str:
     """Format emitted decision and family fields; do not infer either from effect geometry."""
-    significant = row.get("stat_sig")
-    availability = row.get("sampling_available")
-    if significant is True:
-        verdict = "rejects the declared null"
-    elif significant is False and availability is not False:
-        verdict = "does not reject the declared null"
-    else:
-        verdict = "inference unavailable"
+    verdict = {
+        "reject": "rejects the declared null",
+        "not_reject": "does not reject the declared null",
+        "unavailable": "inference unavailable",
+    }[result_outcome(row).verdict]
     discovery = row.get("discovery")
     selection = (
         "selected by the family procedure"

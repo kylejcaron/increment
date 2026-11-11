@@ -326,13 +326,23 @@ def test_guardrail_metric_label_states_declared_direction_and_scale(
     assert expected in re.sub(r"<[^>]+>", "", html)
 
 
+@pytest.mark.parametrize("state", ("stat_sig", "decision_available"))
 @pytest.mark.integration
-def test_guardrail_verdict_disclosures_change_with_stored_decision_not_zero_crossing(storefront):
+def test_guardrail_disclosures_distinguish_captured_verdict_and_availability(storefront, state):
     def readings(reject):
         rows = tuple(
             {
                 **row,
-                "stat_sig": reject,
+                "stat_sig": False,
+                "sampling_available": True,
+                "decision_available": True,
+                state: reject,
+                "sequential_status": "unavailable"
+                if state == "decision_available" and not reject
+                else "interval",
+                "inference": "asymptotic_mean"
+                if state == "decision_available"
+                else row["inference"],
                 "alternative": "less",
                 "null_lift": 0.05,
                 "lift": 0.02,
