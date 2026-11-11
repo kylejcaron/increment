@@ -306,6 +306,9 @@ Evidence disclosures use labeled records rather than diagnostic transcripts:
 - **Table evidence and checks**, including in Report, uses labeled records grouped
   by population, source, and comparison. Counts, completeness, and testing groups
   stay distinct; full source references and diagnostic context expand separately.
+  **Per-result confidence and prior evidence** retains each metric and segment's
+  own confidence level and noncoverage budget, with method attribution and any
+  posterior-unavailability code and context.
 - **How to read these intervals** groups metric-specific exceptions and states
   shared explanations once. Construction and numerical qualifications have
   their own reference.
@@ -547,15 +550,16 @@ refusal from one never hides the other. Unsupported engine requests display
 their refusal instead of substituting whole-experiment results.
 
 Each point's date is the calendar date as of which the estimate is computed,
-not the users' assignment date. **Completed windows only** excludes a user
-until their full post-assignment metric window has elapsed; otherwise their
-partial follow-up can contribute. For a 14-day window, users assigned January
-15 first qualify on January 29. This can move the first plotted date and change
-later estimates, because it changes which users contribute at each date.
-Metrics with no fixed post-assignment endpoint do not need this maturity wait;
-the checkbox adds no outcome-window exclusion for them. Their events contribute
-through the captured observation cutoff, rather than stopping at a fixed day
-after assignment.
+not the user's enrollment date. **Completed windows only** excludes a user
+until their full metric window has elapsed; otherwise their partial follow-up
+can contribute. The clock starts at assignment in the Assigned population,
+and at the first trigger in the Triggered population. A user assigned January
+15 qualifies for a 14-day Assigned window on January 29; if they first trigger
+January 20, their Triggered window completes February 3. This can move the
+first plotted date and change which users contribute to later estimates.
+Metrics with no fixed endpoint do not need this maturity wait; the checkbox
+adds no outcome-window exclusion for them. Their events contribute from the
+selected population's start through the captured observation cutoff.
 
 All time-series views use native CoefTable trajectory tables. Lift has one row
 per comparison and segment; absolute values overlay control and treatment in

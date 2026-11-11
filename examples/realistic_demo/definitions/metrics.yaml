@@ -4,7 +4,7 @@ metrics:
   # Primary
   - type: conversion
     name: conversion_rate
-    description: "Did the user complete an order within 14 days after assignment?"
+    description: "Completed order within 14 days of assignment, or first trigger in the Triggered population"
     entity: user_id
     preferred_direction: increase
     fact: order
@@ -13,7 +13,7 @@ metrics:
   # Secondary
   - type: mean
     name: revenue_per_user
-    description: "Completed-order revenue in the first 14 days after assignment per enrolled user"
+    description: "Revenue per user during the first 14 days from assignment, or first trigger in the Triggered population"
     entity: user_id
     preferred_direction: increase
     fact: order
@@ -22,7 +22,7 @@ metrics:
 
   - type: ratio
     name: average_order_value
-    description: "Average value of observed post-assignment orders: total revenue / total orders"
+    description: "Average value of observed orders: total revenue / total orders"
     entity: user_id
     preferred_direction: increase
     numerator:
@@ -37,7 +37,7 @@ metrics:
   # Guardrails
   - type: retention
     name: d7_retention
-    description: "User returned (page_view) at least once during days 7-13 post-exposure"
+    description: "A return during days 7-13 from assignment, or first trigger in the Triggered population"
     entity: user_id
     preferred_direction: increase
     fact: page_view
@@ -69,7 +69,7 @@ metrics:
   # to Explore as exploratory metrics.
   - type: mean
     name: orders_per_user
-    description: "Completed orders in the first 14 days after assignment per enrolled user"
+    description: "Orders per user during the first 14 days from assignment, or first trigger in the Triggered population"
     entity: user_id
     preferred_direction: increase
     fact: order
@@ -78,7 +78,7 @@ metrics:
 
   - type: mean
     name: page_views_per_user
-    description: "Observed post-assignment page views per enrolled user"
+    description: "Observed page views per user"
     entity: user_id
     preferred_direction: increase
     fact: page_view
@@ -87,7 +87,7 @@ metrics:
 
   - type: mean
     name: checkout_loads_per_user
-    description: "Observed post-assignment checkout page loads per enrolled user"
+    description: "Observed checkout page loads per user"
     entity: user_id
     preferred_direction: decrease
     fact: page_load

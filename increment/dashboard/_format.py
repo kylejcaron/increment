@@ -320,18 +320,19 @@ def decision_scale(row: Mapping[str, Any]) -> str:
     return "relative" if is_missing(row.get("null_abs")) else "absolute"
 
 
+def _absolute_null(row: Mapping[str, Any]) -> Any:
+    null = row.get("null_abs")
+    if not is_missing(null):
+        return null
+    if row.get("value_scale") == "absolute":
+        return row.get("null_lift") or 0.0
+    return 0.0
+
+
 def null_text(row: Mapping[str, Any]) -> str:
     """The tested null on the row's own decision scale."""
     if decision_scale(row) == "absolute":
-        null_abs = row.get("null_abs")
-        if not is_missing(null_abs):
-            null = null_abs
-        elif row.get("value_scale") == "absolute":
-            # A native absolute row's null_lift is already in the metric's units.
-            null = row.get("null_lift") or 0.0
-        else:
-            null = 0.0
-        return f"{null:+,.4g} absolute"
+        return f"{_absolute_null(row):+,.4g} absolute"
     null_lift = row.get("null_lift")
     if null_lift is None:
         return missing_html("no null boundary reported")
@@ -343,12 +344,7 @@ def guardrail_text(row: Mapping[str, Any]) -> str:
     if row.get("role") != "guardrail":
         return ""
     absolute = decision_scale(row) == "absolute"
-    boundary = row.get("null_abs") if absolute else row.get("null_lift")
-    if is_missing(boundary):
-        if absolute and row.get("value_scale") == "absolute":
-            boundary = row.get("null_lift")
-        else:
-            return "Guardrail: threshold unavailable"
+    boundary = _absolute_null(row) if absolute else row.get("null_lift")
     if boundary is None or is_missing(boundary):
         return "Guardrail: threshold unavailable"
     boundary = float(boundary)

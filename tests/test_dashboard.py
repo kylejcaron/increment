@@ -143,6 +143,26 @@ def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) 
     assert "candidate" in html
 
 
+def test_dashboard_allocation_mismatch_stays_visible_before_the_readout(
+    storefront: DashboardSnapshot,
+) -> None:
+    assert storefront.allocation is not None
+    expected = {storefront.control_group: 0.25, storefront.treatment_group: 0.75}
+    snapshot = dataclasses.replace(
+        storefront,
+        config=dataclasses.replace(storefront.config, expected_allocation=expected),
+        allocation=storefront.allocation.model_copy(
+            update={"expected": expected, "is_srm": True, "log_e_value": 100.0}
+        ),
+    )
+    rendered = render_results(snapshot).text
+    visible = rendered.split("<details", 1)[0]
+    warnings = re.findall(
+        r'<p class="[^"]*inc-dashboard-status--warn[^"]*">(.*?)</p>', visible, re.S
+    )
+    assert any("allocation" in warning.lower() and "assigned" in warning for warning in warnings)
+
+
 def test_assigned_health_collapses_inapplicable_checks_and_omits_duplicate_allocation(
     pricing: DashboardSnapshot,
 ) -> None:

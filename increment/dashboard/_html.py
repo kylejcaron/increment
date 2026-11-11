@@ -58,6 +58,7 @@ from increment.dashboard._format import (
     monitoring_sentence,
     null_text,
     number_text,
+    outcome_label,
     percent_text,
     population_label,
     primary_method,
@@ -268,12 +269,31 @@ def _completeness(*, value: bool | None) -> str:
 
 
 def _integrity_summary(group: InterpretedGroup) -> str:
+    if group.population == "triggered" and group.integrity_status == "not_checked_missing_counts":
+        return "Not an assignment check: triggered counts are selected after assignment."
     return {
         "not_rejected": "No mismatch detected; this does not prove valid randomization.",
         "failed": "Assignment integrity check failed.",
         "not_applicable": "Not an assignment check for this population.",
         "not_checked_missing_declaration": "Not checked: the assignment declaration is incomplete.",
     }.get(group.integrity_status, "Not established; missing evidence is not a pass.")
+
+
+def _assignment_groups(
+    snapshot: DashboardSnapshot, interpretation: ReadoutInterpretation
+) -> tuple[InterpretedGroup, ...]:
+    if _default_population(snapshot) != "triggered":
+        return tuple(
+            group
+            for group in interpretation.groups
+            if group.population in (None, _default_population(snapshot))
+        )
+    collection = snapshot.population_collections.get("assigned")
+    assigned = interpret_readout(
+        snapshot.population_estimates.get("assigned", ()) if collection is None else collection,
+        None if collection is None else collection.metadata,
+    )
+    return tuple(group for group in assigned.groups if group.population == "assigned")
 
 
 def _qualification_fragment(
@@ -285,11 +305,7 @@ def _qualification_fragment(
         return ""
     blocks = []
     if population == "triggered":
-        assigned = snapshot.population_collections.get("assigned")
-        assignment = interpret_readout(
-            snapshot.population_estimates.get("assigned", ()) if assigned is None else assigned,
-            None if assigned is None else assigned.metadata,
-        )
+        assignment = _assignment_groups(snapshot, interpretation)
         records = [
             _kv([("Assignment check", esc(_integrity_summary(group)))])
             + _disclosure(
@@ -304,8 +320,7 @@ def _qualification_fragment(
                     ]
                 ),
             )
-            for group in assignment.groups
-            if group.population == "assigned"
+            for group in assignment
         ]
         blocks.append(
             _evidence_card(
@@ -459,14 +474,28 @@ def _qualification_block(snapshot: DashboardSnapshot) -> str:
         None if collection is None else collection.metadata,
     )
     warnings: dict[str, None] = {}
+    population = _default_population(snapshot)
+    _, allocation_mismatch = _dashboard_allocation_qualification(snapshot, population)
+    if allocation_mismatch:
+        warnings[f"Dashboard allocation check ({population}) detected a mismatch."] = None
     for qualification in _coherence_qualifications(interpretation):
         if qualification.weakens:
             warnings[qualification.text] = None
-    for group in interpretation.groups:
+    assignment = _assignment_groups(snapshot, interpretation)
+    if not assignment:
+        warnings["Assignment evidence was not captured."] = None
+    for group in assignment:
         if group.integrity_status == "failed":
             warnings["Assignment integrity check failed."] = None
         elif group.integrity_status not in ("not_rejected", "not_applicable"):
             warnings["Assignment integrity was not established; review the evidence."] = None
+    for group in interpretation.groups:
+        if group.population == "triggered" and group.integrity_status not in (
+            "not_rejected",
+            "not_applicable",
+            "not_checked_missing_counts",
+        ):
+            warnings[f"Triggered-population integrity: {_integrity_summary(group)}"] = None
         if group.decision_complete is False:
             warnings["Required decision results are incomplete."] = None
         if group.roster_complete is False:
@@ -1415,7 +1444,7 @@ def overview_rows(
     if breakout is None:
         return [{key: value for key, value in row.items() if key != "segment"} for row in ordered]
     # Segment nesting needs one method column; each row is its metric's decision method.
-    return [{**row, "method": "decision"} for row in ordered]
+    return [{**row, "_evidence_method": row["method"], "method": "decision"} for row in ordered]
 
 
 def overview_table(snapshot: DashboardSnapshot, breakout: tuple[str | None, str] | None) -> str:
@@ -1638,7 +1667,7 @@ def _role_disclosure(
         headers.append("Arm")
     if several_methods:
         headers.append("Method")
-    headers.extend(["Declared test", "Test boundary", "Confidence"])
+    headers.extend(["Declared test", "Test boundary", "Confidence", "Test outcome"])
     cells = []
     for row in rows:
         values = [esc(row.get("metric"))]
@@ -1653,6 +1682,7 @@ def _role_disclosure(
                 percent_text(float(row["level"]), row.get("coverage_alpha"))
                 if row.get("level") is not None
                 else missing_html("no interval"),
+                esc(outcome_label(row)),
             ]
         )
         cells.append(values)
@@ -1953,6 +1983,7 @@ def _metric_detail_entries(
         ("Favorable direction", direction_text),
         ("Tested alternative", f"{esc(row.get('alternative'))} ({tail_word(row)})"),
         ("Null boundary", null_text(row)),
+        ("Test outcome", esc(outcome_label(row))),
         ("Inference", esc(inference_word(str(row.get("inference", "fixed"))))),
         ("Analysis population", esc(row.get("analysis_population", "assigned"))),
         ("Decision method", esc(row.get("method", "unknown"))),

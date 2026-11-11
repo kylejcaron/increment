@@ -32,9 +32,12 @@ The demo defines windows by outcome rather than applying one window everywhere:
 
 | Metrics | Observation window |
 |---|---|
-| Conversion, revenue per user, orders per user | First 14 days after assignment |
-| D7 retention | A return during days 7–13 after assignment |
-| Checkout latency, average order value, page views and checkout loads per user | Observed post-assignment events through the snapshot cutoff, with no fixed endpoint |
+| Conversion, revenue per user, orders per user | First 14 days |
+| D7 retention | A return during days 7–13 |
+| Checkout latency, average order value, page views and checkout loads per user | Observed events through the snapshot cutoff, with no fixed endpoint |
+
+All windows start at assignment in the Assigned population and at the user's
+first trigger in the Triggered population.
 
 **Completed windows only** therefore delays fixed-window outcomes, not the
 operational metrics. It changes Explore only; the main Readout still requires

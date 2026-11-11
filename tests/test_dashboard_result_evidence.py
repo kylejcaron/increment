@@ -290,6 +290,11 @@ def test_additive_zero_decisions_reach_the_dashboard_outcome_and_null(mean_shift
     assert outcome.unavailable_reason is None
     assert null_text(row) == "+0 absolute"
     assert primary_tone(row) in ("neutral", "inconclusive")
+    if mean_shift == 1.0:
+        from increment.dashboard._format import guardrail_text
+
+        label = guardrail_text({**row, "role": "guardrail", "alternative": "greater"})
+        assert re.search(r"\b0\b.*absolute", label)
 
 
 @pytest.mark.integration
@@ -319,3 +324,36 @@ def test_guardrail_metric_label_states_declared_direction_and_scale(
     )
     html = render_results(dataclasses.replace(storefront, readout_rows=rows)).text
     assert expected in re.sub(r"<[^>]+>", "", html)
+
+
+@pytest.mark.integration
+def test_guardrail_verdict_disclosures_change_with_stored_decision_not_zero_crossing(storefront):
+    def readings(reject):
+        rows = tuple(
+            {
+                **row,
+                "stat_sig": reject,
+                "alternative": "less",
+                "null_lift": 0.05,
+                "lift": 0.02,
+                "lower": 0.01,
+                "higher": 0.03,
+            }
+            if row["metric"] == GUARDRAIL
+            else row
+            for row in storefront.readout_rows
+        )
+        snapshot = dataclasses.replace(storefront, readout_rows=rows)
+        readout_row = next(
+            body
+            for body in re.findall(r"<tr\b[^>]*>(.*?)</tr>", results_notes(snapshot), re.S)
+            if GUARDRAIL in body
+        )
+        detail = render_metric_details(snapshot, metric=GUARDRAIL).text
+        outcome = re.search(r"<dt>Test outcome</dt><dd>(.*?)</dd>", detail, re.S)
+        assert outcome is not None
+        return readout_row, outcome.group(1)
+
+    rejected = readings(True)
+    not_rejected = readings(False)
+    assert all(a != b for a, b in zip(rejected, not_rejected, strict=True))

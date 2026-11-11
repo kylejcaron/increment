@@ -25,7 +25,7 @@ from coeftable.collapsible import make_collapsible
 from coeftable.labels import ROW_LABEL
 from great_tables import html as gt_html
 
-from increment.dashboard._format import guardrail_text
+from increment.dashboard._format import guardrail_text, percent_text
 from increment.tables import readout_table
 
 if TYPE_CHECKING:
@@ -144,15 +144,68 @@ def _evidence_pair(label: str, value: Any) -> str:
     return "<dt>" + html.escape(label) + "</dt><dd>" + html.escape(_metadata_value(value)) + "</dd>"
 
 
+def _evidence_label(row: Mapping[str, Any]) -> str:
+    return " · ".join(
+        str(value)
+        for value in (
+            row.get("metric"),
+            row.get("segment"),
+            row.get("_evidence_method", row.get("method")),
+            row.get("method_role"),
+        )
+        if value is not None
+    )
+
+
+def _reading_evidence(row: Mapping[str, Any]) -> str:
+    level = row.get("level")
+    alpha = row.get("coverage_alpha", row.get("alpha"))
+    confidence = (
+        percent_text(float(level), float(alpha) if isinstance(alpha, (int, float)) else None)
+        if isinstance(level, (int, float))
+        else None
+    )
+    fields = [
+        _evidence_pair("Confidence", confidence),
+        _evidence_pair("Retained noncoverage budget (α)", alpha),
+    ]
+    for key, label in (("dimension", "Breakout"), ("source", "Breakout source")):
+        if row.get(key) is not None:
+            fields.append(_evidence_pair(label, row[key]))
+    if any(
+        row.get(key) is not None
+        for key in ("posterior_available", "posterior_reason_code", "posterior_reason_context")
+    ):
+        fields.append(
+            _evidence_pair(
+                "Prior advisory",
+                _metadata_state(row.get("posterior_available"), yes="available", no="unavailable"),
+            )
+        )
+        if row.get("posterior_reason_code") is not None:
+            fields.append(_evidence_pair("Reason code", row["posterior_reason_code"]))
+        if row.get("posterior_reason_context") is not None:
+            fields.append(
+                "<dt>Reason context</dt><dd>"
+                + _metadata_context(row["posterior_reason_context"])
+                + "</dd>"
+            )
+    return (
+        '<section class="inc-dashboard-evidence-card inc-dashboard-cell-evidence"><h5>'
+        + html.escape(_evidence_label(row))
+        + '</h5><dl class="inc-dashboard-kv">'
+        + "".join(fields)
+        + "</dl></section>"
+    )
+
+
 def _cell_evidence(
     row: Mapping[str, Any], fields: list[str], references: list[str], seen: set[Any]
 ) -> None:
     failure_code = row.get("failure_code")
     failure_context = row.get("failure_context")
     failure_message = row.get("failure_message")
-    label = " · ".join(
-        str(row[key]) for key in ("metric", "method", "method_role") if row.get(key) is not None
-    )
+    label = _evidence_label(row)
     failure = (label, failure_code, failure_context, failure_message)
     failure_key = json.dumps(failure, sort_keys=True, default=str)
     if any(value is not None for value in failure[1:]) and failure_key not in seen:
@@ -262,12 +315,16 @@ def _readout_evidence(rows: Sequence[dict[str, Any]], subtitle: Any) -> str:
         heading = comparison or population or "Readout checks"
         if population and comparison and population != comparison:
             heading = f"{comparison} — {population}"
+        integrity_label = (
+            "Triggered-population integrity" if population == "triggered" else "Assignment check"
+        )
         fields: list[str] = []
         references: list[str] = []
         other_seen = set()
         integrity_seen = set()
         roster_seen = set()
         family_seen = set()
+        readings = []
         for row in members:
             integrity = tuple(
                 row.get(key)
@@ -291,10 +348,15 @@ def _readout_evidence(rows: Sequence[dict[str, Any]], subtitle: Any) -> str:
                     "failed": "Assignment check failed",
                     "not_applicable": "Not an assignment check for this population",
                     "not_checked_missing_declaration": "Not checked: assignment declaration incomplete",
+                    "not_checked_missing_counts": (
+                        "Not an assignment check: triggered counts are selected after assignment"
+                        if population == "triggered"
+                        else "Not checked: assignment counts are missing"
+                    ),
                 }.get(status, status)
                 fields.extend(
                     [
-                        _evidence_pair("Assignment check", description),
+                        _evidence_pair(integrity_label, description),
                         _evidence_pair("Required results", required),
                         _evidence_pair("Available results", available),
                     ]
@@ -339,9 +401,10 @@ def _readout_evidence(rows: Sequence[dict[str, Any]], subtitle: Any) -> str:
                     fields.append(_evidence_pair(label, display))
             _cell_evidence(row, fields, references, other_seen)
             _family_evidence(row, fields, references, family_seen)
+            readings.append(_reading_evidence(row))
 
         if not integrity_seen:
-            fields.insert(0, _evidence_pair("Assignment check", None))
+            fields.insert(0, _evidence_pair(integrity_label, None))
         if source is not None:
             references.insert(0, _evidence_pair("Source reference", source))
         reference = (
@@ -356,6 +419,10 @@ def _readout_evidence(rows: Sequence[dict[str, Any]], subtitle: Any) -> str:
             + '</h4><dl class="inc-dashboard-kv">'
             + "".join(fields)
             + "</dl>"
+            + '<details class="inc-dashboard-disclosure"><summary>Per-result confidence and prior evidence</summary>'
+            + '<div class="inc-dashboard-evidence-stack">'
+            + "".join(readings)
+            + "</div></details>"
             + reference
             + "</section>"
         )
@@ -380,6 +447,8 @@ def readout_native(
     subtitle = options.pop("subtitle", "")
     table = readout_table(list(rows), title="", subtitle="", **options)
     evidence = _readout_evidence(rows, subtitle)
+    # Great Tables interprets double braces as units even inside an HTML header.
+    evidence = evidence.replace("{", "&#123;").replace("}", "&#125;")
     disclosure = gt_html(
         '<details class="inc-dashboard-table-evidence" '
         'style="font-size:12px;font-weight:normal;line-height:1.5;text-align:left">'

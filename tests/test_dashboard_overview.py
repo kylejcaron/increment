@@ -202,3 +202,68 @@ def test_added_metric_inspector_discloses_retained_coverage_budget():
 
     details = render_metric_details(snapshot, metric=ADDED).text
     assert "100% (α=1e-17)" in details
+
+
+@pytest.mark.integration
+def test_segment_reading_retains_its_own_confidence_budget():
+    snapshot = overview_snapshot()
+    overview = snapshot.overview
+    assert overview is not None
+    segment = overview.segments[COUNTRY][0]
+    assert segment.lift is not None
+    segment = segment.model_copy(
+        update={"lift": segment.lift.model_copy(update={"level": 1.0, "alpha": 1e-17})}
+    )
+    snapshot = dataclasses.replace(
+        snapshot, overview=dataclasses.replace(overview, segments={COUNTRY: (segment,)})
+    )
+    rendered = overview_table(snapshot, COUNTRY)
+    assert "1e-17" in rendered
+    readings = re.findall(
+        r'<section\b[^>]*class="[^"]*\binc-dashboard-cell-evidence\b[^"]*"[^>]*>(.*?)</section>',
+        rendered,
+        re.S,
+    )
+    assert any(
+        segment.metric in reading
+        and str(segment.dimension_value) in reading
+        and segment.method in reading
+        and "100%" in reading
+        and "1e-17" in reading
+        for reading in readings
+    )
+
+
+@pytest.mark.integration
+def test_segment_posterior_refusals_keep_each_segment_identity_and_context():
+    snapshot = overview_snapshot()
+    overview = snapshot.overview
+    assert overview is not None
+    original = overview.segments[COUNTRY][0]
+    segments = tuple(
+        original.model_copy(
+            update={
+                "dimension_value": segment,
+                "posterior_available": False,
+                "posterior_reason_code": "estimation.engine.lift_guard",
+                "posterior_reason_context": {"reason": reason, "sample_size": None},
+            }
+        )
+        for segment, reason in (("US", "us_guard"), ("CA", "ca_guard"))
+    )
+    snapshot = dataclasses.replace(
+        snapshot, overview=dataclasses.replace(overview, segments={COUNTRY: segments})
+    )
+    rendered = overview_table(snapshot, COUNTRY)
+    assert "estimation.engine.lift_guard" in rendered
+    readings = re.findall(
+        r'<section\b[^>]*class="[^"]*\binc-dashboard-cell-evidence\b[^"]*"[^>]*>(.*?)</section>',
+        rendered,
+        re.S,
+    )
+    for segment, reason in (("US", "us_guard"), ("CA", "ca_guard")):
+        matching = [reading for reading in readings if reason in reading]
+        assert len(matching) == 1
+        assert segment in matching[0] and original.method in matching[0]
+        assert "estimation.engine.lift_guard" in matching[0]
+        assert "unknown" in matching[0]
