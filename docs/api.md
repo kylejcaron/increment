@@ -135,6 +135,12 @@ values.
 
 ### Current changes
 
+- Summary SQL previews organize the warehouse calculation into named stages
+  for unit measurements, analysis rows, group references and centered moments.
+  Public signatures, result columns, eligibility rules and statistical
+  calculations are unchanged. Generated stage names are presentation details;
+  the executable preview does not promise a particular warehouse execution plan.
+
 - Warehouse summaries preserve exact zero variance for constant input groups.
   Nonconstant neighboring values retain their positive variance; no minimum
   variance threshold is introduced. This corrects availability that could
