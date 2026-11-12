@@ -7,11 +7,14 @@ from collections.abc import Mapping
 from typing import cast
 
 import ibis
+import ibis.common.exceptions as ibis_errors
 import ibis.expr.operations as ops
 import ibis.expr.types as ir
 import sqlglot
 from ibis.common.graph import Graph, Node
 from sqlglot import exp
+
+from increment._compile_gaps import load_dialect_compiler
 
 _REFERENCE_NODES = (ops.Field, ops.CountStar, ops.CountDistinctStar)
 
@@ -93,6 +96,12 @@ class SummarySqlStages:
 
     def to_sql(self, relation: ir.Table, *, dialect: str | None = None) -> str:
         """Compile safe named boundaries without mutating the original graph."""
+        if dialect is None:
+            try:
+                dialect = relation._find_backend(use_default=True).name
+            except ibis_errors.IbisError:
+                dialect = "duckdb"
+        load_dialect_compiler(dialect)
         root = relation.op()
         candidates = _cte_candidates(root, self._marked)
         occupied = _occupied_names(root, dialect)

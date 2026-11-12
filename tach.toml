@@ -1174,7 +1174,7 @@ depends_on = [
 [[modules]]
 path = "increment.query._summary_sql"
 layer = "core"
-depends_on = []
+depends_on = ["increment._compile_gaps"]
 
 [[modules]]
 path = "increment.query._workflows"

@@ -185,3 +185,28 @@ def test_stages_keep_correlated_scalar_bound_to_its_outer_row(con):
         {"value": 2, "next_value": 3},
         {"value": 3, "next_value": None},
     ]
+
+
+@pytest.mark.integration
+def test_supplied_summary_scans_names_in_its_inferred_backend_dialect(con, monkeypatch):
+    import ibis.expr.operations as ops
+
+    from increment.query.source import SqlPanelSource
+    from increment.semantics.models import MeanMetric
+
+    monkeypatch.setattr(type(con), "name", "bigquery")
+    supplied = ops.SQLQueryResult(
+        query="SELECT `metric`, `value` FROM `inc_supplied_summary`",
+        schema=ibis.schema({"metric": "string", "value": "float64"}),
+        source=con,
+    ).to_expr()
+    source = SqlPanelSource(
+        con,
+        supplied,
+        metrics=[MeanMetric(name="revenue", entity="user", fact="revenue", aggregation="sum")],
+        study_id="study",
+    )
+    query = source.summary_sql()["revenue"]
+    tree = sqlglot.parse_one(query, read="bigquery")
+    assert "inc_supplied_summary_2" in {cte.alias for cte in tree.ctes}
+    assert any(table.name == "inc_supplied_summary" for table in tree.find_all(exp.Table))

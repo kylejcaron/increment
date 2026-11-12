@@ -2278,7 +2278,7 @@ def unit_totals(  # noqa: PLR0913
         totals, dense, metric, by, properties_table, cluster, cluster_alias
     )
     if _sql_stages is not None:
-        _sql_stages.mark("unit_outcomes", totals)
+        _sql_stages.mark("unit_measurements", totals)
     return totals
 
 
