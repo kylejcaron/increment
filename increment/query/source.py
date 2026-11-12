@@ -32,6 +32,7 @@ from increment._frame_validation import _reject_windowed_specs
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics, synthesise_metric
 from increment.errors import CapabilityError, CodedError, refuse
 from increment.estimation._readout_refusals import refuse_observational_quantile
+from increment.query._summary_sql import SummarySqlStages
 from increment.query.artifact_contract import (
     REFUSALS as _ARTIFACT_REFUSALS,
 )
@@ -250,6 +251,7 @@ class SqlPanelSource:
     ) -> None:
         self._con = con
         self._summary = summary
+        self._summary_sql_stages: SummarySqlStages | None = None
         self._unassigned = unassigned
         self._enrollment_counts: dict[str, int] | None = None
         self._missing_value_accounts: Mapping[str, MissingValueAccount] = {}
@@ -389,7 +391,11 @@ class SqlPanelSource:
         totals = transformed[0]
         for other in transformed[1:]:
             totals = totals.union(other)
-        summary = group_summary(totals, binary_metrics=declared_binary_metrics(metric_objects))
+        stages = SummarySqlStages()
+        stages.mark("unit_outcomes", totals)
+        summary = group_summary(
+            totals, binary_metrics=declared_binary_metrics(metric_objects), _sql_stages=stages
+        )
         source = cls(
             con,
             summary,
@@ -400,6 +406,7 @@ class SqlPanelSource:
             unassigned=unassigned,
             specs=specs,
         )
+        source._summary_sql_stages = stages
         source._enrollment_counts = _group_counts(nwf, group)
         source._missing_value_accounts = MappingProxyType(missing_value_accounts)
         return source
@@ -501,8 +508,12 @@ class SqlPanelSource:
             from increment._evidence_refusals import require_evidence
 
             require_evidence(self, grain=grain, operation="sql")
+        stages = self._summary_sql_stages
+        if stages is None:
+            stages = SummarySqlStages()
+            stages.mark("supplied_summary", self._summary)
         return {
-            m.name: ibis.to_sql(self._summary.filter(self._summary.metric == m.name))
+            m.name: stages.to_sql(self._summary.filter(self._summary.metric == m.name))
             for m in self._context.metrics
         }
 

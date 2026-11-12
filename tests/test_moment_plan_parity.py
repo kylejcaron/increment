@@ -256,7 +256,11 @@ def test_unit_grain_every_family_agrees():
         uptake="took",
     ).raw_moments
     con = ibis.duckdb.connect()
-    builder_rows = con.to_pyarrow(group_summary(_totals(con, units))).to_pylist()
+    from increment.query._summary_sql import SummarySqlStages
+
+    stages = SummarySqlStages()
+    summary = group_summary(_totals(con, units), _sql_stages=stages)
+    builder_rows = con.sql(stages.to_sql(summary, dialect="duckdb")).to_pyarrow().to_pylist()
     _assert_rows_agree(frame_rows, builder_rows, cross_family=("cden3",))
 
 
@@ -275,7 +279,11 @@ def test_cluster_grain_agrees(uptake: bool):
     ).raw_moments
     con = ibis.duckdb.connect()
     totals = _totals(con, units, metric="rev")
-    builder_rows = con.to_pyarrow(group_summary(totals, cluster="store", uptake=uptake)).to_pylist()
+    from increment.query._summary_sql import SummarySqlStages
+
+    stages = SummarySqlStages()
+    summary = group_summary(totals, cluster="store", uptake=uptake, _sql_stages=stages)
+    builder_rows = con.sql(stages.to_sql(summary, dialect="duckdb")).to_pyarrow().to_pylist()
     _assert_rows_agree(frame_rows, builder_rows, cross_family=("cden2", "cden3", "cyden", "cxden"))
 
 

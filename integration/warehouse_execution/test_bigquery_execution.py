@@ -20,9 +20,14 @@ from integration.warehouse_execution._suite import (
     run_artifact_sequential_identity_probe,
     run_materialized_cache_correction_probe,
     run_ratio_metric_probe,
+    run_summary_sql_probe,
 )
 
 pytestmark = pytest.mark.warehouse_bigquery
+
+
+def test_summary_sql_preview(bigquery_con):
+    run_summary_sql_probe(bigquery_con, dialect="bigquery")
 
 
 def test_bigquery_float_token_probe_matches_rows_by_id(monkeypatch):

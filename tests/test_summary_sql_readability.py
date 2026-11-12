@@ -131,3 +131,57 @@ def test_rendering_does_not_mutate_graph_or_accumulate_names():
     stages.to_sql(filtered, dialect="postgres")
     assert stages.to_sql(result, dialect="duckdb") == first
     assert ibis.to_sql(result, dialect="duckdb") == original
+
+
+@pytest.mark.integration
+def test_sql_computed_summary_keeps_metric_filter_and_named_reduction(con):
+    import polars as pl
+
+    from increment.frame import MetricSpec
+    from increment.query.source import SqlPanelSource
+
+    source = SqlPanelSource.from_frame_via_memtable(
+        con,
+        pl.DataFrame(
+            {
+                "unit": ["a", "b", "c"],
+                "arm": ["C", "T", "T"],
+                "revenue": [2.0, 3.0, 5.0],
+                "other": [7.0, 11.0, 13.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        metrics=[MetricSpec(name="revenue"), MetricSpec(name="other")],
+        study_id="study",
+    )
+    source.moments(source.context.metrics[0])
+    sql = source.summary_sql()["revenue"]
+    stages = {cte.alias for cte in sqlglot.parse_one(sql, read="duckdb").ctes}
+    assert {"inc_group_references", "inc_group_moments"} <= stages
+    rows = con.sql(sql).to_pyarrow().to_pylist()
+    assert {row["metric"] for row in rows} == {"revenue"}
+    assert {row["group_id"]: (row["n"], row["ref_y"], row["cy2"]) for row in rows} == {
+        "C": (1, 2.0, 0.0),
+        "T": (2, 4.0, 2.0),
+    }
+
+
+@pytest.mark.integration
+def test_stages_keep_correlated_scalar_bound_to_its_outer_row(con):
+    from increment.query._summary_sql import SummarySqlStages
+
+    table = con.create_table("scope_values", ibis.memtable({"value": [1, 2, 3]}))
+    other = table.view()
+    inner = other.filter(other.value > table.value)
+    next_value = inner.aggregate(next_value=inner.value.min()).as_scalar()
+    result = table.select(value=table.value, next_value=next_value)
+    stages = SummarySqlStages()
+    stages.mark("correlated_input", inner)
+    stages.mark("group_moments", result)
+    rows = con.sql(stages.to_sql(result, dialect="duckdb")).to_pyarrow().to_pylist()
+    assert sorted(rows, key=lambda row: row["value"]) == [
+        {"value": 1, "next_value": 2},
+        {"value": 2, "next_value": 3},
+        {"value": 3, "next_value": None},
+    ]

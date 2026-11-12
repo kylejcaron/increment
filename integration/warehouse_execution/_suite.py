@@ -13,11 +13,13 @@ import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from uuid import uuid4
 
 from increment import View, from_definitions, from_unit_day_artifact, run, workflows
 from increment._dashboard_capture import dashboard_group_data
 from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.evidence import BreakoutIdentity
+from increment.query import summary_sql
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.session import WarehouseArtifactStore
 
@@ -303,6 +305,39 @@ experiments:
                 }
             )
     return yaml, rows
+
+
+def run_summary_sql_probe(con, dialect: str) -> None:
+    """Execute the public summary preview against hand-derived arm moments."""
+    table_name = f"events_summary_sql_{uuid4().hex[:12]}"
+    definitions, rows = _materialized_cache_fixture(con, dialect)
+    definitions = definitions.replace(
+        _qualified_table_identifier(con, dialect, "events_cache_smoke"),
+        _qualified_table_identifier(con, dialect, table_name),
+    )
+    con.create_table(table_name, obj=rows)
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "definitions.yaml"
+            path.write_text(definitions)
+            experiment, reader = from_definitions(path, con, experiment_name="exp", store="none")
+            try:
+                query = summary_sql(experiment, reader)["revenue"]
+                summary = con.sql(query)
+                assert tuple(summary.columns[:4]) == ("experiment_id", "metric", "group_id", "n")
+                actual = {row["group_id"]: row for row in summary.to_pyarrow().to_pylist()}
+                assert set(actual) == {"control", "treatment"}
+                for arm, expected in (("control", 11.0), ("treatment", 13.0)):
+                    row = actual[arm]
+                    assert row["n"] == 30
+                    assert abs(row["ref_y"] - expected) < 1e-9
+                    assert abs(row["cy1"]) < 1e-9
+                    assert abs(row["cy2"] - 20.0) < 1e-9
+                    assert row["successes"] is None
+            finally:
+                reader.close()
+    finally:
+        con.drop_table(table_name, force=True)
 
 
 def run_materialized_cache_correction_probe(
