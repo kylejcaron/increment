@@ -43,6 +43,7 @@ from increment.errors import (
     refusals,
 )
 from increment.errors import warn as _warn_spec
+from increment.query._summary_sql import SummarySqlStages
 from increment.query.artifact_contract import _aggregate_sum_within_extrema
 from increment.semantics.models import (
     _DAY_BOUNDARY_RE,
@@ -1981,6 +1982,8 @@ def _aggregate_unit_outcome(
     spine: ir.Table,
     metric: Metric,
     den_stats: ir.Table | None,
+    *,
+    _sql_stages: SummarySqlStages | None = None,
 ) -> ir.Table:
     """Aggregate a bounded dense relation according to its metric kind."""
     keys = dense.select("unit_id", "experiment_id", "group_id", "metric").distinct()
@@ -2012,6 +2015,9 @@ def _aggregate_unit_outcome(
             den_spine = spine.mutate(_spine_variant=ibis.literal("ratio_denominator"))
             den_dense = _dense_unit_days(den_spine, den_stats)
             den_dense = window_bound_stats(den_dense, metric)
+            if _sql_stages is not None:
+                _sql_stages.mark("denominator_outcome_days", den_dense)
+                _sql_stages.mark("numerator_outcomes", num_totals)
             den_keys = (
                 den_dense.select("unit_id", "experiment_id", "group_id")
                 .mutate(metric=ibis.literal(metric.name))
@@ -2019,6 +2025,8 @@ def _aggregate_unit_outcome(
             )
             den_totals = _measure_totals(den_keys, den_dense, metric.denominator.aggregation)
             den_totals = den_totals.select("unit_id", y_den=den_totals.y)
+            if _sql_stages is not None:
+                _sql_stages.mark("denominator_outcomes", den_totals)
             totals = num_totals.join(den_totals, "unit_id")
             return totals.select("unit_id", "experiment_id", "group_id", "metric", "y", "y_den")
         case _:
@@ -2126,6 +2134,7 @@ def unit_totals(  # noqa: PLR0913
     *,
     explicit_covariate: bool = False,
     covariate_missing: str | None = None,
+    _sql_stages: SummarySqlStages | None = None,
 ) -> ir.Table:
     """Aggregate spine + sparse stats to one row per unit (window aggregate).
 
@@ -2196,6 +2205,8 @@ def unit_totals(  # noqa: PLR0913
     covariate_missing : str | None
         Missing-value policy for an explicitly bound CUPED covariate. ``None``
         preserves legacy zero-fill for implicit outcome-preperiod covariates.
+    _sql_stages : SummarySqlStages | None
+        Internal semantic boundaries for SQL previews; no execution changes.
 
     Returns
     -------
@@ -2233,6 +2244,8 @@ def unit_totals(  # noqa: PLR0913
     dense = _dense_unit_days(spine, stats, cluster=cluster, cluster_alias=cluster_alias).mutate(
         metric=ibis.literal(metric.name)
     )
+    if _sql_stages is not None:
+        _sql_stages.mark("dense_outcome_days", dense)
     dense = _censor_to_observable_window(
         dense,
         metric,
@@ -2243,7 +2256,9 @@ def unit_totals(  # noqa: PLR0913
         execute=warn_on_censoring if callable(warn_on_censoring) else None,
     )
     dense = window_bound_stats(dense, metric)
-    totals = _aggregate_unit_outcome(dense, spine, metric, den_stats)
+    if _sql_stages is not None:
+        _sql_stages.mark("eligible_outcome_days", dense)
+    totals = _aggregate_unit_outcome(dense, spine, metric, den_stats, _sql_stages=_sql_stages)
 
     totals = _attach_covariate(
         totals,
@@ -2259,7 +2274,12 @@ def unit_totals(  # noqa: PLR0913
         uptake_events,
         uptake_window_days,
     )
-    return _project_unit_totals(totals, dense, metric, by, properties_table, cluster, cluster_alias)
+    totals = _project_unit_totals(
+        totals, dense, metric, by, properties_table, cluster, cluster_alias
+    )
+    if _sql_stages is not None:
+        _sql_stages.mark("unit_outcomes", totals)
+    return totals
 
 
 def emit_centered_moments(
@@ -2268,6 +2288,7 @@ def emit_centered_moments(
     *,
     keys: Sequence[str],
     columns: Mapping[str, str],
+    _sql_stages: SummarySqlStages | None = None,
 ) -> ir.Table:
     """One centered-moment row per *keys* from *table*, shaped by *plan*.
 
@@ -2286,6 +2307,8 @@ def emit_centered_moments(
     an exact 0/1 integer per row of a declared binary outcome, ``NULL``
     elsewhere, so a group's exact count is the integer sum of its rows.
     """
+    if _sql_stages is not None:
+        _sql_stages.mark("analysis_rows", table)
     group_cols = list(keys)
     window = ibis.window(group_by=group_cols)
     live = [variable for variable in plan.variables if variable in columns]
@@ -2297,6 +2320,8 @@ def emit_centered_moments(
         lower, upper = value.min().over(window), value.max().over(window)
         references[ref_name[variable]] = (lower == upper).ifelse(lower, value.mean().over(window))
     centered = table.mutate(**references)
+    if _sql_stages is not None:
+        _sql_stages.mark("group_references", centered)
     residual = {
         variable: centered[columns[variable]] - centered[ref_name[variable]] for variable in live
     }
@@ -2342,6 +2367,8 @@ def emit_centered_moments(
     for moment in plan.masked_moments():
         aggs[plan.name(moment)] = reduced(moment)
     summary = centered.group_by(group_cols).agg(**aggs)
+    if _sql_stages is not None:
+        _sql_stages.mark("group_moments", summary)
 
     x_var = plan.x_variable()
     if x_var is None:
@@ -2372,6 +2399,7 @@ def group_summary(
     ratio_metrics: Collection[str] | None = None,
     uptake: bool = False,
     binary_metrics: Collection[str] | None = None,
+    _sql_stages: SummarySqlStages | None = None,
 ) -> ir.Table:
     """Per-group centered moments from *unit_totals*.
 
@@ -2417,6 +2445,8 @@ def group_summary(
         count (the sum of those 0/1 values); every other metric's is NULL.
         Ignored under *cluster*: a cluster sum is not binary, so a clustered
         row's ``successes`` is always an explicit NULL.
+    _sql_stages : SummarySqlStages | None
+        Internal semantic boundaries for SQL previews; no execution changes.
 
     Returns
     -------
@@ -2479,10 +2509,16 @@ def group_summary(
                 m=per_cluster.metric.isin(ratio_names).ifelse(per_cluster.m_den, per_cluster.m)
             )
         plan = CLUSTER_UPTAKE_GRAIN if uptake else CLUSTER_SIZE_GRAIN
+        if _sql_stages is not None:
+            _sql_stages.mark("cluster_outcomes", per_cluster)
         x_var = plan.x_variable()
         assert x_var is not None
         summary = emit_centered_moments(
-            per_cluster, plan, keys=group_cols, columns={"y": "g", "den": "m", x_var: "x"}
+            per_cluster,
+            plan,
+            keys=group_cols,
+            columns={"y": "g", "den": "m", x_var: "x"},
+            _sql_stages=_sql_stages,
         )
         # A cluster total is never a binary outcome: keep the declared row shape with an
         # explicit NULL count rather than any sum of cluster outcomes.
@@ -2501,7 +2537,9 @@ def group_summary(
                 totals.y.cast("int64"), ibis.null().cast("int64")
             )
         )
-    return emit_centered_moments(totals, UNIT_GRAIN, keys=group_cols, columns=columns)
+    return emit_centered_moments(
+        totals, UNIT_GRAIN, keys=group_cols, columns=columns, _sql_stages=_sql_stages
+    )
 
 
 def daily_group_summary(

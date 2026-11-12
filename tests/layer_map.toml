@@ -25,6 +25,7 @@ core = [
   "increment._source*",
   "increment.evidence*",
   "increment.query*",
+  "increment.query._summary_sql",
   "increment.sources",
   "increment.frame",
   "increment.readouts*",
