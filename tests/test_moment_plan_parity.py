@@ -235,7 +235,7 @@ def _assert_rows_agree(
             assert abs(f - b) <= 1e-12 * max(1.0, abs(f), abs(b), magnitude), (label, slot, f, b)
 
 
-def test_unit_grain_every_family_agrees():
+def test_unit_grain_every_family_agrees(summary_sql_stages):
     units = _units()
     frame_rows = from_unit_summary(
         _frame(units),
@@ -256,16 +256,14 @@ def test_unit_grain_every_family_agrees():
         uptake="took",
     ).raw_moments
     con = ibis.duckdb.connect()
-    from increment.query._summary_sql import SummarySqlStages
-
-    stages = SummarySqlStages()
+    stages = summary_sql_stages
     summary = group_summary(_totals(con, units), _sql_stages=stages)
     builder_rows = con.sql(stages.to_sql(summary, dialect="duckdb")).to_pyarrow().to_pylist()
     _assert_rows_agree(frame_rows, builder_rows, cross_family=("cden3",))
 
 
 @pytest.mark.parametrize("uptake", [False, True], ids=["cluster_size", "cluster_uptake"])
-def test_cluster_grain_agrees(uptake: bool):
+def test_cluster_grain_agrees(uptake: bool, summary_sql_stages):
     units = _units()
     kwargs = {"uptake": "took", "design": _DESIGN} if uptake else {}
     frame_rows = from_unit_summary(
@@ -279,9 +277,7 @@ def test_cluster_grain_agrees(uptake: bool):
     ).raw_moments
     con = ibis.duckdb.connect()
     totals = _totals(con, units, metric="rev")
-    from increment.query._summary_sql import SummarySqlStages
-
-    stages = SummarySqlStages()
+    stages = summary_sql_stages
     summary = group_summary(totals, cluster="store", uptake=uptake, _sql_stages=stages)
     builder_rows = con.sql(stages.to_sql(summary, dialect="duckdb")).to_pyarrow().to_pylist()
     _assert_rows_agree(frame_rows, builder_rows, cross_family=("cden2", "cden3", "cyden", "cxden"))

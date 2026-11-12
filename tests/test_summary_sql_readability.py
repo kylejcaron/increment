@@ -34,8 +34,7 @@ def test_native_summary_exposes_outcome_and_moment_stages(con, example_definitio
 
 
 @pytest.mark.integration
-def test_staged_binary_moments_keep_exact_counts_and_null_families(con):
-    from increment.query._summary_sql import SummarySqlStages
+def test_staged_binary_moments_keep_exact_counts_and_null_families(con, summary_sql_stages):
     from increment.query.builders import group_summary
 
     totals = con.sql(
@@ -43,7 +42,7 @@ def test_staged_binary_moments_keep_exact_counts_and_null_families(con):
         "value::DOUBLE AS y, NULL::DOUBLE AS x, NULL::DOUBLE AS y_den "
         "FROM (VALUES ('treatment', 1), ('treatment', 0), ('control', 0)) AS t(arm, value)"
     )
-    stages = SummarySqlStages()
+    stages = summary_sql_stages
     summary = group_summary(totals, binary_metrics=["converted"], _sql_stages=stages)
     canonical = con.sql(ibis.to_sql(summary, dialect="duckdb")).to_pyarrow()
     rendered = con.sql(stages.to_sql(summary, dialect="duckdb")).to_pyarrow()
@@ -57,15 +56,14 @@ def test_staged_binary_moments_keep_exact_counts_and_null_families(con):
 
 
 @pytest.mark.integration
-def test_stage_names_do_not_capture_physical_or_nested_source_names(con):
-    from increment.query._summary_sql import SummarySqlStages
+def test_stage_names_do_not_capture_physical_or_nested_source_names(con, summary_sql_stages):
 
     con.create_table("inc_group_moments", ibis.memtable({"value": [2, 3]}))
     source = con.sql(
         'WITH "INC_GROUP_MOMENTS_2" AS (SELECT * FROM inc_group_moments) '
         'SELECT value FROM "INC_GROUP_MOMENTS_2" ORDER BY value DESC LIMIT 1'
     )
-    stages = SummarySqlStages()
+    stages = summary_sql_stages
     maximum = source.aggregate(total=source.value.sum())
     stages.mark("group_moments", maximum)
     physical = con.table("inc_group_moments")
@@ -77,15 +75,14 @@ def test_stage_names_do_not_capture_physical_or_nested_source_names(con):
 
 
 @pytest.mark.integration
-def test_stages_preserve_independent_repeated_sources(con):
-    from increment.query._summary_sql import SummarySqlStages
+def test_stages_preserve_independent_repeated_sources(con, summary_sql_stages):
 
     raw = con.sql("SELECT i, random() AS value FROM range(3) AS r(i)")
     con.raw_sql("SELECT setseed(0.42)")
     repeated = raw.view()
     combined = repeated.union(repeated, distinct=False)
     result = combined.aggregate(n=combined.count(), distinct_values=combined.value.nunique())
-    stages = SummarySqlStages()
+    stages = summary_sql_stages
     stages.mark("source", raw)
     stages.mark("repeated", repeated)
     stages.mark("unit_outcomes", combined)
@@ -96,8 +93,7 @@ def test_stages_preserve_independent_repeated_sources(con):
 
 
 @pytest.mark.integration
-def test_stages_preserve_sharing_after_filter_projection_fusion(con):
-    from increment.query._summary_sql import SummarySqlStages
+def test_stages_preserve_sharing_after_filter_projection_fusion(con, summary_sql_stages):
 
     raw = con.sql("SELECT i, random() AS value FROM range(3) AS r(i)")
     con.raw_sql("SELECT setseed(0.42)")
@@ -107,7 +103,7 @@ def test_stages_preserve_sharing_after_filter_projection_fusion(con):
     right = second.filter(second.i >= 0)
     combined = left.union(right, distinct=False)
     result = combined.aggregate(n=combined.count(), distinct_values=combined.value.nunique())
-    stages = SummarySqlStages()
+    stages = summary_sql_stages
     stages.mark("left_branch", first)
     stages.mark("right_branch", second)
     stages.mark("unit_outcomes", combined)
@@ -117,11 +113,11 @@ def test_stages_preserve_sharing_after_filter_projection_fusion(con):
     assert con.sql(stages.to_sql(result, dialect="duckdb")).to_pyarrow().to_pylist() == canonical
 
 
-def test_rendering_does_not_mutate_graph_or_accumulate_names():
-    from increment.query._summary_sql import SummarySqlStages
+@pytest.mark.integration
+def test_rendering_does_not_mutate_graph_or_accumulate_names(summary_sql_stages):
 
     table = ibis.table({"value": "float64"}, name="observations")
-    stages = SummarySqlStages()
+    stages = summary_sql_stages
     filtered = table.filter(table.value > 0)
     assert stages.mark("unit_outcomes", filtered) is filtered
     result = filtered.aggregate(total=filtered.value.sum())
@@ -168,15 +164,14 @@ def test_sql_computed_summary_keeps_metric_filter_and_named_reduction(con):
 
 
 @pytest.mark.integration
-def test_stages_keep_correlated_scalar_bound_to_its_outer_row(con):
-    from increment.query._summary_sql import SummarySqlStages
+def test_stages_keep_correlated_scalar_bound_to_its_outer_row(con, summary_sql_stages):
 
     table = con.create_table("scope_values", ibis.memtable({"value": [1, 2, 3]}))
     other = table.view()
     inner = other.filter(other.value > table.value)
     next_value = inner.aggregate(next_value=inner.value.min()).as_scalar()
     result = table.select(value=table.value, next_value=next_value)
-    stages = SummarySqlStages()
+    stages = summary_sql_stages
     stages.mark("correlated_input", inner)
     stages.mark("group_moments", result)
     rows = con.sql(stages.to_sql(result, dialect="duckdb")).to_pyarrow().to_pylist()
