@@ -1,12 +1,23 @@
 # Examples
 
 Runnable [marimo](https://marimo.io) notebooks exercising the public API end
-to end. Most of these run against an in-memory DuckDB warehouse -- no
-external services needed -- but `analysis_from_a_dataframe.py` and
+to end. Most of these run against an in-memory DuckDB warehouse; no
+external services are needed. `analysis_from_a_dataframe.py` and
 `observational.py` need no warehouse at all. Each notebook's own intro cell
 explains the scenario in detail; this is just a map of what's here.
 
-- **`analysis_from_a_dataframe.py`** -- a guided dataframe tutorial covering
+Readout tables put estimates and plots first. Expand **Table evidence and
+checks** for labeled assignment checks, source references, multiple-testing
+plans, and per-result qualifications. Unchecked or incomplete evidence stays
+visible above the table.
+
+Tutorials show the executed API calls above their results in run mode:
+loading data, running analyses, requesting views, and planning power. Displayed
+code uses descriptive variable names. Imports, sample-data generation, styling,
+and plotting details stay hidden. Open a notebook with `marimo edit` to inspect
+or change its full source.
+
+- **`analysis_from_a_dataframe.py`**: a guided dataframe tutorial covering
   a baseline readout, CUPED, an informative prior, a ratio metric, and
   dataframe-panel windows and retention. Needs the `tables` extra:
 
@@ -14,7 +25,7 @@ explains the scenario in detail; this is just a map of what's here.
   uv run --extra tables marimo edit examples/analysis_from_a_dataframe.py
   ```
 
-- **`power.py`** -- design-time power analysis: given control-arm
+- **`power.py`**: design-time power analysis: given control-arm
   assumptions, solve for required sample size, achieved power at a fixed
   budget, and minimum detectable effect.
 
@@ -22,7 +33,7 @@ explains the scenario in detail; this is just a map of what's here.
   uv run marimo edit examples/power.py
   ```
 
-- **`ttest_benchmark.py`** -- compares Increment’s simplest fixed-horizon
+- **`ttest_benchmark.py`**: compares Increment’s simplest fixed-horizon
   mean analysis with an explicit log-scale z-test and Welch’s t-test. Needs
   the `tables` extra:
 
@@ -30,7 +41,7 @@ explains the scenario in detail; this is just a map of what's here.
   uv run --extra tables marimo edit examples/ttest_benchmark.py
   ```
 
-- **`cuped.py`** -- runs one experiment's estimates twice, unadjusted and
+- **`cuped.py`**: runs one experiment's estimates twice, unadjusted and
   with CUPED variance reduction, and compares interval widths side by side.
   Needs the `demo` and `tables` extras:
 
@@ -48,14 +59,16 @@ explains the scenario in detail; this is just a map of what's here.
   ```
 
 - **`data_model.py`** — a deeper tour of the normalized warehouse and the
-  query pipeline that reduces event rows to additive moments. Needs the `demo`
-  and `tables` extras:
+  query pipeline that reduces event rows to additive moments. Eight tabs inspect
+  the pipeline outputs: live sessions load bounded previews on demand, while
+  fresh HTML exports include precomputed previews. Needs the `demo` and `tables`
+  extras:
 
   ```bash
   uv run --extra demo --extra tables marimo edit examples/data_model.py
   ```
 
-- **`breakout.py`** -- per-segment lift breakdowns and per-day metric/lift
+- **`breakout.py`**: per-segment lift breakdowns and per-day metric/lift
   trends: the same estimator `analysis_from_a_warehouse.py` uses, sliced by a
   declared breakout dimension (`country`) and by calendar day instead of
   collapsing the experiment into one top-line number. Needs the `demo` and
@@ -82,7 +95,7 @@ explains the scenario in detail; this is just a map of what's here.
   does not, because the notebook's `# /// script` metadata makes uv treat it
   as an isolated script environment.
 
-- **`observational.py`** -- no-warehouse, straight from a dataframe like
+- **`observational.py`**: no-warehouse, straight from a dataframe like
   `analysis_from_a_dataframe.py`: a naive (confounded) comparison side by
   side with an `Observational` + IPTW-adjusted one, against a known synthetic
   truth, so the bias and the correction are visible in the same run. Needs
@@ -92,12 +105,12 @@ explains the scenario in detail; this is just a map of what's here.
   uv run --extra tables marimo edit examples/observational.py
   ```
 
-- **`hte.py`** -- heterogeneous treatment effects: `estimate_cate`,
+- **`hte.py`**: heterogeneous treatment effects: `estimate_cate`,
   `validate_cate` and `targeting_rule` over a simulated cohort whose per-unit
   effect is known, so every estimate is printed beside its truth. The centre
   of the notebook is a second cohort with *no* heterogeneity at all, where
   the in-sample top group reads well above the truth and the held-out
-  re-estimation does not -- which is why the targeting rule refuses to hand
+  re-estimation does not. This is why the targeting rule refuses to hand
   back a threshold unless the honest split earned one. Needs the `tables`
   extra:
 
@@ -118,6 +131,6 @@ receipt is not.
 uv run --extra tables marimo edit examples/encouragement.py
 ```
 
-`_seed.py` is shared infrastructure -- it fills the synthetic
+`_seed.py` is shared infrastructure; it fills the synthetic
 `analytics.event_log` table the other notebooks analyse. It isn't a notebook
 and isn't meant to be run directly.
