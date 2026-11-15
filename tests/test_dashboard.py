@@ -24,6 +24,7 @@ from increment.dashboard import (
     DashboardSnapshot,
     ExploreView,
     readout_csv,
+    render_details,
     render_explore,
     render_header,
     render_health,
@@ -633,8 +634,6 @@ def test_result_caveats_keep_row_identity_in_readout_report_and_inspector(
 ) -> None:
     from html import unescape
 
-    from increment.dashboard._html import render_metric_details
-
     primary_index = next(
         index
         for index, row in enumerate(storefront.readout_rows)
@@ -768,7 +767,6 @@ def test_inspector_keeps_zero_control_inputs_for_a_sensitivity_result(
 def test_provenance_keeps_selected_zero_control_calculation_inputs(
     storefront: DashboardSnapshot,
 ) -> None:
-    from increment.dashboard._html import render_details
 
     snapshot = _with_primary_row(
         storefront,

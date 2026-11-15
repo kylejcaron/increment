@@ -52,8 +52,8 @@ from increment.dashboard import (
     render_metric_details,
     render_results,
 )
-from increment.dashboard._app import DashboardWidget, build_payload, document, health_status
-from increment.dashboard._data import enriched_rows, show_exploratory_metrics
+from increment.dashboard._app import DashboardWidget, build_payload, document
+from increment.dashboard._data import _each_warning_once, enriched_rows, show_exploratory_metrics
 from increment.dashboard._html import overview_notes, overview_rows, overview_table
 from increment.errors import (
     CapabilityError,
@@ -1300,7 +1300,6 @@ def test_preparation_summarizes_statistical_cautions_and_retains_cell_diagnostic
 
 
 def test_preparation_warning_summary_is_per_call_and_keeps_unrelated_warnings():
-    from increment.dashboard._data import _each_warning_once
 
     unrelated = RuntimeWarning("another diagnostic")
     with warnings.catch_warnings(record=True) as caught:
@@ -1332,7 +1331,6 @@ def test_preparation_warning_summary_is_per_call_and_keeps_unrelated_warnings():
 
 @pytest.mark.parametrize("action", ["ignore", "error"])
 def test_preparation_warning_summary_preserves_caller_filters(action):
-    from increment.dashboard._data import _each_warning_once
 
     caution = IncrementRuntimeWarning(
         "sample diagnostic",
@@ -2124,9 +2122,13 @@ def test_an_engine_refusal_is_visible_for_its_own_state_only() -> None:
     assert segmented["cumulative_values"]["pointCount"] > 0
 
 
+@pytest.mark.integration
 def test_health_renders_not_applicable_allocation_as_not_checked() -> None:
-    snapshot = frozen("explore").snapshot
-    assert health_status(snapshot)["kind"] == "not_checked"
+    saved = frozen("explore")
+    snapshot = saved.snapshot
+    widget = render_dashboard(saved.experiment, snapshot=snapshot).widget
+    payload = _page_payload(widget.get_state("document")["document"])
+    assert payload["healthStatus"]["kind"] == "not_checked"
     assert snapshot.allocation is None
     assert snapshot.allocation_refusal is not None
     code, reason = snapshot.allocation_refusal
@@ -2454,10 +2456,12 @@ def test_added_metrics_keep_their_own_absolute_value_series():
 
 @pytest.mark.integration
 def test_the_dashboard_widget_shows_added_metrics_without_reading_again():
+    from typing import cast
+
     saved = frozen("pricing")
     snapshot = saved.snapshot
     added = _PRICING_OFFERED[0]
-    widget = DashboardWidget(saved.experiment, snapshot=snapshot)
+    widget = cast(DashboardWidget, render_dashboard(saved.experiment, snapshot=snapshot).widget)
     offered = _page_payload(widget.document)["exploratory"]
     assert [item["key"] for item in offered["available"]] == list(_PRICING_OFFERED)
     assert offered["selected"] == []

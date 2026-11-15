@@ -19,6 +19,7 @@ from increment import (
 )
 from increment._interpretation import (
     interpret_readout,
+    project_effect,
     readout_evidence_columns,
     render_readout_text,
 )
@@ -206,7 +207,7 @@ def _interpret(results):
 
 @pytest.mark.integration
 def test_directional_binomial_guardrail_projection_uses_its_set_alpha():
-    from increment._interpretation import project_effect
+
     from increment.estimation.results import LiftEstimate
 
     data = pd.DataFrame(
@@ -618,7 +619,6 @@ def test_compliance_date_missing_control_does_not_blame_the_treatment_arm():
 
     from increment._day_axis import _missing_compliance_rows
     from increment._evidence_types import ComplianceArm, ComplianceSummary
-    from increment._interpretation import interpret_readout
 
     summary = ComplianceSummary(
         "s", "clicked", 7, True, None, None, (ComplianceArm("treatment", 20, 10),)
@@ -1295,7 +1295,7 @@ def test_relative_effects_and_their_sets_read_in_percent():
 
 
 def test_point_only_lift_does_not_render_an_interval():
-    from increment._interpretation import project_effect
+
     from increment.estimation.results import Estimate, LiftEstimate
 
     row = LiftEstimate(

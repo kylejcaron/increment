@@ -17,12 +17,18 @@ from typing import Any, TypedDict
 
 import pytest
 
-from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
+from increment.breakout.estimates import (
+    BreakoutEstimate,
+    DailyLiftEstimate,
+    _copy_common_fields,
+)
 from increment.breakout.projection import to_frame
+from increment.estimation.inference import _joint_additive_bounds
 from increment.estimation.results import Estimate, LiftEstimate, RelativeConfidenceSet
 from increment.estimators import AlwaysValid, estimate_sequential
 from increment.semantics.unit_cycle import UnitCycleTApproximation
 from increment.tables import (
+    _result_presentation,
     contrast_results_to_readout,
     estimates_to_readout,
     readout_table,
@@ -960,7 +966,7 @@ def test_estimates_to_readout_preserves_persisted_favorable_probability_at_shift
 
 
 def test_estimates_to_readout_preserves_breakout_and_daily_posterior_probability():
-    from increment.breakout.estimates import _copy_common_fields
+
     from increment.estimation.inference import Normal, infer_lift
 
     lift = infer_lift(
@@ -991,7 +997,6 @@ def test_estimates_to_readout_preserves_breakout_and_daily_posterior_probability
 
 def test_readout_rows_keep_canonical_mixture_components_for_every_result_view():
     from increment._canonical import canonical_json_bytes
-    from increment.breakout.estimates import _copy_common_fields
     from increment.estimation.inference import infer_lift
     from increment.estimation.priors import MixturePrior
 
@@ -2767,7 +2772,6 @@ class TestRoleGroupedDisclosure:
     ],
 )
 def test_result_presentation(row, expected):
-    from increment.tables import _result_presentation
 
     assert _result_presentation(row) == expected
 
@@ -2798,7 +2802,6 @@ def test_result_presentation(row, expected):
 def test_result_direction_respects_scale_threshold_and_confidence_geometry(extra, expected):
     from increment.estimation.inference import relative_confidence_set
     from increment.estimation.results import JointContrastReference
-    from increment.tables import _result_presentation
 
     if extra.get("relative_confidence_set") == "disconnected":
         extra = {
@@ -3093,7 +3096,6 @@ def test_estimates_to_readout_adapts_switchback_contrast_results(
 def test_flat_joint_rows_preserve_disconnected_set_significance(model, control_mean):
     from datetime import date
 
-    from increment.estimation.inference import _joint_additive_bounds
     from increment.estimation.results import JointContrastReference, relative_confidence_set
 
     region = relative_confidence_set(
@@ -3138,7 +3140,7 @@ def test_flat_joint_rows_preserve_disconnected_set_significance(model, control_m
     ],
 )
 def test_directional_fieller_readout_retains_central_display_interval(control_mean, expected):
-    from increment.estimation.inference import _joint_additive_bounds
+
     from increment.estimation.results import JointContrastReference, relative_confidence_set
 
     region = relative_confidence_set(
@@ -3954,7 +3956,6 @@ def test_evidence_qualifications_keep_their_arm_estimand_scale_and_date():
     ],
 )
 def test_bonferroni_result_uses_its_retained_decision(inference, significant, expected):
-    from increment.tables import _result_presentation
 
     row = {
         "inference": inference,

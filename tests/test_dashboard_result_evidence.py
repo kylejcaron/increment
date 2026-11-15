@@ -7,6 +7,7 @@ reads emitted numbers, geometry and outcome classes rather than prose.
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 from typing import Any
 
@@ -15,9 +16,12 @@ import pytest
 pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
 
+from increment._source_operations import DashboardExploreCapture
 from increment.dashboard import (
     DashboardSnapshot,
+    render_dashboard,
     render_details,
+    render_header,
     render_metric_details,
     render_results,
 )
@@ -26,8 +30,8 @@ from increment.dashboard._format import (
     confidence_set_text,
     headline_interval,
     outcome_label,
+    primary_method,
 )
-from increment.dashboard._html import results_notes
 from increment.estimation.inference import _joint_additive_bounds
 from increment.estimation.results import (
     Estimate,
@@ -36,7 +40,7 @@ from increment.estimation.results import (
 )
 from increment.tables import estimates_to_readout
 from tests import test_dashboard as dashboard_tests
-from tests.dashboard_snapshots import binomial_region
+from tests.dashboard_snapshots import binomial_region, experiment_for
 
 storefront = dashboard_tests.storefront
 
@@ -88,8 +92,6 @@ def _fieller(a: float, c: float, *, alternative: str = "two-sided", cov: float =
 
 @pytest.mark.integration
 def test_binomial_qualification_is_in_the_metric_inspector_interval_fold(storefront):
-    from increment.dashboard._html import render_metric_details
-
     storefront = dataclasses.replace(
         storefront,
         readout_rows=tuple(
@@ -109,6 +111,7 @@ def test_binomial_qualification_is_in_the_metric_inspector_interval_fold(storefr
 
 @pytest.mark.parametrize("metric", [PRIMARY, GUARDRAIL])
 @pytest.mark.slow
+@pytest.mark.integration
 def test_point_backed_one_sided_fieller_set_keeps_its_direction_and_own_coverage(
     storefront: DashboardSnapshot, metric: str
 ) -> None:
@@ -136,18 +139,24 @@ def test_point_backed_one_sided_fieller_set_keeps_its_direction_and_own_coverage
     central_lower, central_upper = row["lower"], row["higher"]
     assert row["level"] == pytest.approx(0.9)
 
-    from increment.dashboard._app import _primary
-    from increment.dashboard._format import interval_html, primary_method
-
+    details = render_metric_details(snapshot, metric=metric).text
+    interval = re.search(r"<li><b>Interval</b> (.*?)</li>", details, re.S)
+    assert interval is not None
     assert confidence_set_text(row) is None
     headline = headline_interval(row)
     assert f"{central_lower:+.1%}" in headline
     if metric == GUARDRAIL:
         assert headline.endswith(", ∞)")
         assert f"{central_upper:+.1%}" not in headline
-        assert interval_html(row) == headline
+        assert interval.group(1) == headline
         assert primary_method(row).startswith("95% ")
-        primary = _primary(dataclasses.replace(snapshot, primary_metric=metric))
+        snapshot = dataclasses.replace(snapshot, primary_metric=metric)
+        widget = render_dashboard(experiment_for(snapshot), snapshot=snapshot).widget
+        document = widget.get_state("document")["document"]
+        (embedded,) = re.findall(
+            r"""<script[^>]*id=["']dashboard-data["'][^>]*>(.*?)</script>""", document, re.S
+        )
+        primary = json.loads(embedded)["primary"]
         assert primary["interval"] == headline
         assert primary["levelLabel"] == "95%"
         assert row["level"] == pytest.approx(0.9)
@@ -170,8 +179,6 @@ def test_point_backed_one_sided_fieller_set_keeps_its_direction_and_own_coverage
     [{"inference": "asymptotic_mean"}, {"reference_kind": "unsupported"}],
 )
 def test_guardrail_interval_does_not_relabel_an_unrecognized_construction(construction):
-    from increment.dashboard._format import primary_method
-
     row = {
         "role": "guardrail",
         "alternative": "greater",
@@ -255,19 +262,17 @@ def test_readout_qualifications_distinguish_multiple_methods_for_one_metric(
     storefront: DashboardSnapshot,
 ) -> None:
     from increment.breakout.estimates import LiftEstimates
-    from increment.dashboard._data import readout_interpretation_text
 
     decision = _decision(storefront, PRIMARY)
     sensitivity = decision.model_copy(update={"method": "cuped", "method_role": "sensitivity"})
     snapshot = _rebuilt(storefront, (*storefront.estimates, sensitivity))
     collection = LiftEstimates(list(snapshot.estimates))
 
-    qualifications = readout_interpretation_text(snapshot, collection=collection)
-
-    assert "method unadjusted" in qualifications
-    assert "method role decision" in qualifications
-    assert "method cuped" in qualifications
-    assert "method role sensitivity" in qualifications
+    rendered = render_results(dataclasses.replace(snapshot, readout_collection=collection)).text
+    rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", rendered, re.S)
+    for method, role in (("unadjusted", "decision"), ("cuped", "sensitivity")):
+        attributed = [row for row in rows if PRIMARY in row and f"{method} · {role}" in row]
+        assert len(attributed) == 1
 
 
 @pytest.mark.integration
@@ -301,7 +306,7 @@ def test_interval_levels_keep_two_decimals_in_every_disclosure(
         lift=Estimate(value=0.2, lb=-0.1, ub=0.5, level=level),
     )
     surfaces = (
-        results_notes(snapshot),
+        render_results(snapshot).text,
         render_details(snapshot).text,
         render_metric_details(snapshot, metric=PRIMARY).text,
     )
@@ -338,16 +343,30 @@ def test_additive_zero_decisions_reach_the_dashboard_outcome_and_null(
 ):
     """A nonpositive-mean cell decided on its additive interval is a real test: its
     outcome is its verdict, never 'unavailable', and the tested null is the additive zero."""
-    from increment.dashboard._format import null_text, primary_tone, result_outcome
     from tests.test_tables import _nonpositive_cuped_breakout_segment
 
     cell = _nonpositive_cuped_breakout_segment(mean_shift=mean_shift)
     (row,) = estimates_to_readout([cell])
-    outcome = result_outcome(row)
-    assert outcome.verdict == verdict
-    assert outcome.unavailable_reason is None
-    assert null_text(row) == "+0 absolute"
-    assert primary_tone(row) == ("detected" if verdict == "reject" else "inconclusive")
+    assert row["stat_sig"] is (verdict == "reject")
+    assert row["decision_available"] is True
+    primary = cell.model_copy(update={"metric": PRIMARY})
+    snapshot = _rebuilt(
+        storefront,
+        tuple(
+            primary if estimate.metric == PRIMARY else estimate for estimate in storefront.estimates
+        ),
+    )
+    details = render_metric_details(snapshot, metric=PRIMARY).text
+    outcome = re.search(r"<dt>Test outcome</dt><dd>(.*?)</dd>", details, re.S)
+    assert outcome is not None
+    expected = (
+        "rejects the declared null" if verdict == "reject" else "does not reject the declared null"
+    )
+    assert expected in outcome.group(1)
+    assert "unavailable" not in outcome.group(1)
+    assert "<dt>Test boundary</dt><dd>+0 absolute</dd>" in details
+    tone = "detected" if verdict == "reject" else "inconclusive"
+    assert f"inc-dashboard-primary--{tone}" in render_header(snapshot).text
     if mean_shift == 1.0:
         guardrail = cell.model_copy(
             update={"metric": GUARDRAIL, "role": "guardrail", "alternative": "greater"}
@@ -456,9 +475,11 @@ def test_guardrail_disclosures_distinguish_captured_verdict_and_availability(sto
             for row in storefront.readout_rows
         )
         snapshot = dataclasses.replace(storefront, readout_rows=rows)
+        rendered = render_results(snapshot).text
+        methods = rendered.split("<summary>Methods &amp; assumptions</summary>", 1)[1]
         readout_row = next(
             body
-            for body in re.findall(r"<tr\b[^>]*>(.*?)</tr>", results_notes(snapshot), re.S)
+            for body in re.findall(r"<tr\b[^>]*>(.*?)</tr>", methods, re.S)
             if GUARDRAIL in body
         )
         detail = render_metric_details(snapshot, metric=GUARDRAIL).text
@@ -478,14 +499,12 @@ def test_early_trajectory_caution_keeps_its_date_and_arm_without_flagging_clean_
     from functools import partial
     from html.parser import HTMLParser
 
-    from increment._source_operations import DashboardExploreCapture
     from increment.breakout.estimates import DailyLiftEstimates
     from increment.dashboard import render_header, render_health
-    from increment.dashboard._app import build_payload
     from increment.declarations import CellKey
     from increment.estimation.advisory import ReadoutAdvisory
     from increment.estimation.readout_types import CellRecord, cell_order
-    from tests.dashboard_snapshots import experiment_for, temporal_rows
+    from tests.dashboard_snapshots import temporal_rows
 
     class Rows(HTMLParser):
         def __init__(self, html):
@@ -573,7 +592,12 @@ def test_early_trajectory_caution_keeps_its_date_and_arm_without_flagging_clean_
                     collection=partial(DailyLiftEstimates, metadata=selected.metadata),
                 )
     snapshot = dataclasses.replace(storefront, explore=captures)
-    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    widget = render_dashboard(experiment_for(snapshot), snapshot=snapshot).widget
+    document = widget.get_state("document")["document"]
+    (embedded,) = re.findall(
+        r"""<script[^>]*id=["']dashboard-data["'][^>]*>(.*?)</script>""", document, re.S
+    )
+    payload = json.loads(embedded)
     packet = payload["explore"]["country"][SECONDARY]["cumulative_lift"]
     assert packet["pointCount"] == 4
     rendered = packet["html"]
@@ -787,7 +811,6 @@ def test_precision_caution_replaces_only_its_duplicate_note_in_native_result_tab
 ) -> None:
     from functools import partial
 
-    from increment._source_operations import DashboardExploreCapture
     from increment.breakout.estimates import BreakoutEstimate, BreakoutEstimates
     from increment.dashboard import render_explore, render_header
     from increment.dashboard._data import DashboardOverview, enriched_rows
