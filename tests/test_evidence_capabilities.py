@@ -1529,6 +1529,50 @@ def test_definitions_day_source_declares_only_its_day_axis(seeded_con, seeded_de
     cast(Any, resolver).close()
 
 
+@pytest.mark.integration
+def test_definitions_reject_randomized_value_scale_before_reads(
+    tmp_path, example_definitions
+) -> None:
+    from dataclasses import replace
+
+    import ibis
+
+    from examples._seed import seed_event_log
+    from increment import run, runnable
+    from increment.errors import UnsupportedRequestError
+
+    con = ibis.duckdb.connect(str(tmp_path / "warehouse.duckdb"))
+    resolver = None
+    try:
+        seed_event_log(con)
+        experiment, resolver = from_definitions(
+            example_definitions, con, experiment_name="new_onboarding_v2", store="none"
+        )
+        requested = replace(
+            experiment, request_options={"value_scale": {"purchase_rate": "absolute"}}
+        )
+        capabilities = requested.source_refs[0].capabilities
+        assert capabilities is not None
+        assert capabilities.value_scale_overrides is False
+
+        status = runnable(requested, "purchase_rate")["randomized.unadjusted"]
+        refusal = next(
+            item for item in status.static_refusals if item.code == "readout.randomized.value_scale"
+        )
+        assert isinstance(refusal, UnsupportedRequestError)
+        assert tuple(refusal.context.items()) == ()
+
+        con.drop_table("event_log", database="analytics")
+        with pytest.raises(UnsupportedRequestError) as raised:
+            run(requested, resolver, value_scale={"purchase_rate": "absolute"})
+        assert raised.value.code == refusal.code
+        assert tuple(raised.value.context.items()) == tuple(refusal.context.items())
+    finally:
+        if resolver is not None:
+            resolver.close()
+        con.disconnect()
+
+
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 @pytest.mark.integration
 def test_artifact_count_declarations_follow_retained_extensions(tmp_path) -> None:

@@ -141,7 +141,7 @@ values.
   depend on aggregate order. The numerical reference remains
   `tests/fixtures/parity_baseline.json`; ordinary estimates retain their
   existing tolerances.
-/- Supported whole-window, breakout, daily/as-of, triggered, and registered
+- Supported whole-window, breakout, daily/as-of, triggered, and registered
   analyses retain their existing behavior. Source declarations and provider
   adapters own differences in available evidence; unsupported requests keep
   their existing refusals. Estimator behavior and numeric baselines are
