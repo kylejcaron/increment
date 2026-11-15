@@ -157,6 +157,9 @@ values.
 - Saved experiments retain triggered analyses for legacy custom providers that
   offer triggered moments. Explicitly disabling triggered support still refuses
   before data is read.
+- Unavailable CUPED results contribute their fit identity and structured reason
+  to readout snapshot identity. Changing that evidence no longer reuses an
+  identity; valid comparison-method estimates are unchanged.
 - `View.breakout(segment, *, population="assigned", metrics=())` accepts an
   optional tuple of registered metric definitions. An empty tuple selects the
   experiment's metrics. Save or log a selective breakout alongside the complete

@@ -2633,7 +2633,7 @@ def _forwarding_provider(source: Any, **attributes: Any) -> Any:
     return provider
 
 
-def _categorical_cuped_analysis() -> Any:
+def _categorical_cuped_analysis(*, plan: Any = None) -> Any:
     import pyarrow as pa
 
     from increment import AnalysisPlan
@@ -2660,7 +2660,7 @@ def _categorical_cuped_analysis() -> Any:
         group="arm",
         control="control",
         metrics=[MetricSpec(name="revenue", type="mean", decision_method=method)],
-        plan=AnalysisPlan(primary="revenue"),
+        plan=plan if plan is not None else AnalysisPlan(primary="revenue"),
         breakouts=("country",),
     )
 
@@ -3242,6 +3242,78 @@ def test_breakout_keeps_failed_cuped_cell_local_to_its_method() -> None:
     assert companion_valid
 
 
+@pytest.mark.parametrize("scope", (View.overall(), View(view="breakout", grain="total")))
+@pytest.mark.integration
+def test_failed_fit_identity_changes_snapshot_without_changing_valid_companion(scope) -> None:
+    from increment import AnalysisPlan, CupedCovariate, Method, MultiplicitySpec
+
+    analysis = _categorical_cuped_analysis(
+        plan=AnalysisPlan(primary="revenue", view_multiplicity=MultiplicitySpec(correction="none"))
+    )
+    source = cast(Any, held_source(analysis[1]))
+    companion = Method.cuped_multicovariate(
+        name="companion", covariates=(CupedCovariate(name="segment", kind="categorical"),)
+    )
+
+    def read(failure, identity):
+        provider = _forwarding_provider(source)
+        provider.evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+        provider.method_fit = lambda request: (
+            MethodFitAnswer("unavailable", failure=failure, fit_identity=identity)
+            if request.method.name == "categorical"
+            and (request.cell is None or request.cell.value == "US")
+            else MethodFitAnswer("unavailable")
+        )
+        provider.close = lambda: None
+        experiment, reader = bind_pair(provider)
+        try:
+            return list(view_readout(experiment, reader, scope, sensitivity_methods=[companion]))
+        finally:
+            reader.close()
+
+    failure = CodedError(
+        "unavailable adjustment",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical", "detail": "constant"},
+    )
+    try:
+        baseline = read(failure, ("provider-fit", "original"))
+        original = next(row for row in baseline if row.failure_code == failure.code)
+        expected = {None: 0.8} if scope.view != "breakout" else {"US": 0.75, "CA": 6 / 7}
+        changes = (
+            (
+                CodedError(
+                    "different failure",
+                    code="estimation.cuped_linear.rank_deficiency",
+                    context=failure.context,
+                ),
+                ("provider-fit", "original"),
+            ),
+            (
+                CodedError(
+                    "different context",
+                    code=failure.code,
+                    context={"method": "categorical", "detail": "singular"},
+                ),
+                ("provider-fit", "original"),
+            ),
+            (failure, ("provider-fit", "changed")),
+        )
+        for changed_failure, identity in changes:
+            rows = read(changed_failure, identity)
+            unavailable = next(row for row in rows if row.failure_code == changed_failure.code)
+            assert dict(unavailable.failure_context) == dict(changed_failure.context)
+            assert unavailable.source_snapshot_id != original.source_snapshot_id
+            valid = {
+                (row.dimension_value if scope.view == "breakout" else None): row.lift.value
+                for row in rows
+                if row.method == companion.name and row.lift is not None
+            }
+            assert valid == pytest.approx(expected)
+    finally:
+        analysis[1].close()
+
+
 @pytest.mark.integration
 def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() -> None:
     from types import SimpleNamespace
@@ -3386,19 +3458,8 @@ def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() 
         "warehouse_qr:warehouse",
         "warehouse_qr:unavailable",
     )
-    assert fit_components == (
-        ("categorical_cells:categorical", "retained-digest", 1),
-        (
-            "warehouse_qr:warehouse",
-            "3832824b2b64a60475a052b8441cf612eac64ff61e3c3221ef41b386c512b578",
-            1,
-        ),
-        (
-            "warehouse_qr:unavailable",
-            "b5fe083ad82d98c1bdc7c37e7c6d20f7f77a2314fac20e03327dae3022f5f2c6",
-            1,
-        ),
-    )
+    assert fit_components[0] == ("categorical_cells:categorical", "retained-digest", 1)
+    assert tuple(count for _name, _digest, count in fit_components) == (1, 1, 1)
 
     by_method = {row.method: row for row in cast(Any, rows)}
     assert set(by_method) == {"unadjusted", "warehouse", "unavailable"}

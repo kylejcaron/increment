@@ -558,6 +558,7 @@ def _load_metric_evidence(  # noqa: PLR0915
                 return {
                     "fit_identity": identity,
                     "failure": evidence.code,
+                    "failure_context": dict(evidence.context),
                     "fit": None,
                 }
             fitted = evidence.fit
@@ -699,7 +700,12 @@ def _load_metric_evidence(  # noqa: PLR0915
 
 def _breakout_fit_record(identity: tuple[object, ...], evidence: Any) -> dict[str, Any]:
     if isinstance(evidence, CodedError):
-        return {"fit_identity": identity, "failure": evidence.code, "fit": None}
+        return {
+            "fit_identity": identity,
+            "failure": evidence.code,
+            "failure_context": dict(evidence.context),
+            "fit": None,
+        }
     fitted = getattr(evidence, "fit", evidence)
     withheld = tuple(
         (arm, refusal.code, dict(refusal.context))
@@ -859,8 +865,8 @@ def _load_breakout_metric_rows(
             )
             answer = load_method_fit(src, method_fit_request)
             breakout_fit_answers.append((method_fit_request, answer))
-            if answer.origin == "unavailable":
-                # Kept so the readout can acquire unit rows for this cell's local fit.
+            if answer.origin == "unavailable" and answer.failure is None:
+                # A missing fit without a failure may still use local unit rows.
                 continue
             if answer.origin == "retained_categorical" and answer.failure is None:
                 # Retained categorical cells carry no envelope; their evidence digest is the identity.
