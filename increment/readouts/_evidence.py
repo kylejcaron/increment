@@ -1198,6 +1198,7 @@ def load_breakout_evidence(
     fallback_source: EvidenceSource | None = None,
 ) -> BreakoutSlices | BreakoutUnitRows:
     """Acquire one typed breakout evidence request."""
+    src = _builtin_source(src)
     request, identities = _complete_breakout_request(src, request)
     require_request_evidence(src, request)
     require_breakout_identity(src, identities)
