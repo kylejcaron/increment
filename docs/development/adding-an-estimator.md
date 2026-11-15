@@ -67,15 +67,17 @@ validation still precedes this capability refusal.
 supply quantile and clustered-outcome evidence on daily or as-of axes.
 `dimensioned_daily_metrics` is `"declared"` when dimensioned daily requests
 must use catalog-declared metrics, and `"any"` when they may select other
-metrics. Omitted values keep the legacy defaults: temporal quantiles are
-unavailable for native moments sources; temporal clusters are unavailable for
-artifact and definitions sources; only native moments sources require declared
-metrics on dimensioned daily requests. New providers should declare these
+metrics. Omitted values keep the legacy defaults. A native moments declaration
+is a non-artifact declaration whose `operations` include `moments_source`.
+For these declarations, temporal quantiles are unavailable and dimensioned
+daily requests require catalog-declared metrics. Temporal clusters are
+unavailable for these declarations and for artifact or definitions declarations.
+Explicit values override these defaults; new providers should declare these
 semantic capabilities explicitly.
 
 For scalar multicovariate CUPED, distinguish a missing fit from a failed one.
 An unavailable `MethodFitAnswer` without a failure may be fit from `unit_rows`
-when the provider declares retained or warehouse fit evidence and unit rows.
+when the provider declares local, retained or warehouse fit support and unit rows.
 An answer carrying a coded failure, including an arm withheld by the fit, keeps
 that failure and its context; unit-row availability does not authorize replacing
 it with a local estimate. Other methods with available fit evidence remain
