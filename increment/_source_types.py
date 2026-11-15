@@ -219,11 +219,8 @@ class EvidenceCapabilities:
 def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
     """Resolve legacy declarations to their current semantic capabilities."""
     artifact = value.kind == "artifact" or "artifact_experiment" in value.operations
-    native_moments = (
-        not artifact and value.kind == "moments" and "moments_source" in value.operations
-    )
-    native_temporal_moments = not artifact and "moments_source" in value.operations
-    dimensioned_daily_declared = native_temporal_moments
+    native_moments = not artifact and "moments_source" in value.operations
+    dimensioned_daily_declared = native_moments
     definition_source = value.kind == "definitions"
     return replace(
         value,
@@ -243,9 +240,7 @@ def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
             else not artifact
         ),
         temporal_quantiles=(
-            value.temporal_quantiles
-            if value.temporal_quantiles is not None
-            else not native_temporal_moments
+            value.temporal_quantiles if value.temporal_quantiles is not None else not native_moments
         ),
         temporal_clusters=(
             value.temporal_clusters

@@ -958,7 +958,9 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     for field in ("value_scale_overrides", "fixed_triggered", "windowed_breakout_quantiles"):
         capabilities = offline.source_refs[0].capabilities
         assert capabilities is not None
-        changed_capabilities = replace(capabilities, **{field: False})
+        changed_capabilities = replace(
+            capabilities, **{field: not getattr(effective_capabilities(capabilities), field)}
+        )
         changed_ref = replace(offline.source_refs[0], capabilities=changed_capabilities)
         changed_experiment = replace(offline, source_refs=(changed_ref,))
         restored = Experiment.from_json(changed_experiment.to_json())

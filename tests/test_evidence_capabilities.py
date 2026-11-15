@@ -1533,6 +1533,7 @@ def test_definitions_day_source_declares_only_its_day_axis(seeded_con, seeded_de
 def test_definitions_reject_randomized_value_scale_before_reads(
     tmp_path, example_definitions
 ) -> None:
+    import json
     from dataclasses import replace
 
     import ibis
@@ -1554,6 +1555,8 @@ def test_definitions_reject_randomized_value_scale_before_reads(
         capabilities = requested.source_refs[0].capabilities
         assert capabilities is not None
         assert capabilities.value_scale_overrides is False
+        serialized_capabilities = json.loads(experiment.to_json())["source_refs"][0]["capabilities"]
+        assert "value_scale_overrides" not in serialized_capabilities
 
         status = runnable(requested, "purchase_rate")["randomized.unadjusted"]
         refusal = next(
