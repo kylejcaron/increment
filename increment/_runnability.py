@@ -181,10 +181,10 @@ def _declared_capabilities(experiment: Any) -> tuple[EvidenceCapabilities, ...] 
 def _refuse_trigger(experiment: Any, scope: Any, operation: str) -> None:
     """Refuse a triggered view that no source can read.
 
-    Without a recorded trigger every view refuses. A recorded trigger keeps day-axis
-    and breakout views, a registered replay (which answers a missing triggered state
-    as unavailable rows) and a native or artifact whole-window run; a fixed-horizon
-    whole-window run over moments or a panel still refuses.
+    Without a recorded trigger every view refuses. Declared populations govern
+    day-axis and breakout views. Whole-window reads require effective
+    ``fixed_triggered`` support or registered replay, whose missing triggered
+    state remains an unavailable row.
     """
     if scope.population != "triggered":
         return
