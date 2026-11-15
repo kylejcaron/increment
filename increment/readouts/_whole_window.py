@@ -238,12 +238,13 @@ class WholeWindowReadouts:
                     route=route,
                     supported_sources=("from_definitions", "from_unit_day_artifact"),
                 )
-            populations = (
-                ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
-            )
+            populations = ("assigned", "triggered")
             validate_populations(self._src, populations, operation="run")
             if req.metrics or _design_compliance_only(self._src.context, req.estimands):
-                trigger_counts = (CountsRequest(kind="triggered", population="triggered"),)
+                trigger_counts = (
+                    CountsRequest(kind="assignment", population="assigned"),
+                    CountsRequest(kind="assignment", population="triggered"),
+                )
         return WholeWindowPreparation(trigger_counts)
 
     def prepare_family(
@@ -407,9 +408,7 @@ class WholeWindowReadouts:
             if needs_trigger_acquisition and execution_context is None:
                 design = self._design
                 scope_population = "triggered" if req.population == "triggered" else "assigned"
-                populations = (
-                    ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
-                )
+                populations = ("assigned", "triggered")
                 uptake = getattr(design, "uptake", None)
                 acquisition_request = RunAcquisitionRequest(
                     source=self._src,
@@ -478,9 +477,7 @@ class WholeWindowReadouts:
                 and self._experiment.trigger is not None
             )
             required_populations = (
-                ("assigned", "triggered")
-                if req.population is None and has_trigger
-                else (req.population or "assigned",)
+                ("assigned", "triggered") if has_trigger else (req.population or "assigned",)
             )
             for population in required_populations:
                 execution_context.validate_population(population)

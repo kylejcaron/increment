@@ -574,6 +574,30 @@ def test_whole_window_assigned_and_triggered_reads_share_capture(tmp_path, monke
 
 
 @pytest.mark.integration
+def test_triggered_whole_window_capture_authorizes_integrity_counts(tmp_path):
+    from increment.evidence import EvidenceScope, evidence_provider
+    from increment.kernel.context import EvidenceExecutionContext
+
+    (experiment, resolver), _ = definitions_source(tmp_path, trigger=True, return_binding=True)
+    source = cast(Any, held_source(resolver))
+    provider = evidence_provider(source)
+    scope = EvidenceScope(
+        populations=("assigned", "triggered"),
+        metrics=tuple(source.context.metrics),
+        configs=tuple(source.context.configs),
+        execution=True,
+    )
+    context = EvidenceExecutionContext(provider, scope, run_id="triggered-only")
+    try:
+        context.open()
+        result = run_views(experiment.with_views(_TRIGGERED), resolver, execution_context=context)
+        assert result.readout(_TRIGGERED)
+    finally:
+        context.close()
+        resolver.close()
+
+
+@pytest.mark.integration
 def test_borrowed_context_rejects_a_different_source_before_read(tmp_path):
     from increment.errors import CodedError
     from increment.evidence import EvidenceScope, evidence_provider

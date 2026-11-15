@@ -21,6 +21,7 @@ from increment._canonical import declaration_value
 from increment._evidence_refusals import _DeclaredEvidence
 from increment._evidence_types import SourceContext
 from increment._readout_request import ReadoutRequest, validate_request
+from increment._readout_request import _raise as _raise_readout
 from increment._source_types import EvidenceCapabilities, effective_capabilities
 from increment.decision import (
     CompiledDecisionPlan,
@@ -677,6 +678,9 @@ def readout_refusals(
     if capabilities.kind == "artifact":
         check(_validate_artifact_metrics, declaration)
     _validate_scope_request(declaration, request, scope, operation, capabilities, check, refusals)
+    if not refusals and options.get("value_scale"):
+        if not effective_capabilities(capabilities).value_scale_overrides:
+            _raise_readout("readout.randomized.value_scale")
     from increment.readouts._common import _sequential_inference
 
     inference = _sequential_inference(plan)

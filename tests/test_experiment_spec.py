@@ -438,10 +438,11 @@ def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
         assert getattr(effective_capabilities(restored_capabilities), field) is nonlegacy_value
 
         provider = SimpleNamespace(
-            evidence=changed,
+            evidence=capabilities,
             context=SimpleNamespace(source_digest=None),
         )
-        refusals = BoundResolver(cast(EvidenceProvider, provider)).verify((reference,))
+        restored_reference = restored.source_refs[0]
+        refusals = BoundResolver(cast(EvidenceProvider, provider)).verify((restored_reference,))
         assert [refusal.code for refusal in refusals] == ["kernel.provider.capability_mismatch"]
 
     native_moments = dataclasses.replace(
