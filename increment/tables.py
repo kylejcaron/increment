@@ -1138,7 +1138,10 @@ def _number_readout_caveats(
     return row_markers, source_notes
 
 
-def _result_presentation(row: Mapping[str, Any]) -> tuple[str, str]:
+type _ResultTone = Literal["favorable", "unfavorable", "detected", "inconclusive", "neutral"]
+
+
+def _result_presentation(row: Mapping[str, Any]) -> tuple[_ResultTone, str]:
     """Return the semantic tone and concise headline result for one row."""
 
     family_fields = (
@@ -1195,11 +1198,11 @@ def _result_presentation(row: Mapping[str, Any]) -> tuple[str, str]:
     if (_is_missing(decision_scale) or decision_scale != "absolute") and (
         relative_disconnected or sequential_disconnected
     ):
-        return "neutral", "Difference detected"
+        return "detected", "Difference detected"
 
     preferred = row.get("preferred_direction")
     if _is_missing(preferred) or preferred not in ("increase", "decrease"):
-        return "neutral", "Difference detected"
+        return "detected", "Difference detected"
 
     favorable_alternative = "greater" if preferred == "increase" else "less"
     alternative = row.get("alternative", "two-sided")
@@ -1244,7 +1247,7 @@ def _result_presentation(row: Mapping[str, Any]) -> tuple[str, str]:
         elif not _is_missing(effect) and effect != null:
             is_favorable = (cast(float, effect) > null) == (preferred == "increase")
         else:
-            return "neutral", "Difference detected"
+            return "detected", "Difference detected"
 
     if not _is_missing(decision_margin) and decision_margin != 0.0:
         above = is_favorable == (preferred == "increase")
@@ -1258,6 +1261,17 @@ def _result_presentation(row: Mapping[str, Any]) -> tuple[str, str]:
         if is_favorable
         else ("unfavorable", "Decline detected")
     )
+
+
+def _result_color_role(
+    tone: _ResultTone,
+) -> Literal["favorable", "unfavorable", "inconclusive", "neutral"]:
+    """Map result semantics onto the plot theme's existing color roles."""
+    if tone == "detected":
+        return "neutral"
+    if tone == "neutral":
+        return "inconclusive"
+    return tone
 
 
 def _decision_available(row: Mapping[str, Any]) -> bool:
@@ -1869,7 +1883,7 @@ def _color_result_columns(table: Any, frame: Any) -> None:
                 tone = result_tones[ctx.index]
 
                 def color_rule(*_: Any) -> str:
-                    return tone
+                    return _result_color_role(tone)
 
                 return super().cell(replace(ctx, color_rule=color_rule))
 
@@ -2012,6 +2026,7 @@ def readout_table[V](
     import coeftable as ct
     import narwhals as nw
     import pandas as pd
+    from coeftable.theme import DEFAULT
 
     data = _readout_envelope_rows(data)
 
@@ -2069,9 +2084,9 @@ def readout_table[V](
             )
         )
 
-    coeftable_kwargs: dict[str, Any] = {}
-    if theme is not None:
-        coeftable_kwargs["theme"] = theme
+    coeftable_kwargs: dict[str, Any] = {
+        "theme": theme if theme is not None else replace(DEFAULT, neutral="#386ba8")
+    }
     if group_column is not None:
         coeftable_kwargs["groups"] = "__group_disclosure"
         coeftable_kwargs["collapsible_groups"] = True

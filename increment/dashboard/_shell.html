@@ -95,12 +95,13 @@ code, .number { font-family: var(--inc-dashboard-mono-font); font-variant-numeri
 .health-mark { font-size: 13px; margin-right: 4px; }
 
 .primary-box {
-  border-radius: var(--inc-dashboard-radius); padding: 18px 21px; border: 1px solid var(--line); border-left: 3px solid var(--inconclusive);
-  background: var(--surface); color: var(--inconclusive);
+  border-radius: var(--inc-dashboard-radius); padding: 18px 21px; border: 1px solid var(--line); border-left: 3px solid var(--muted);
+  background: var(--surface); color: var(--muted);
 }
 .primary-box.tone-favorable { color: var(--favorable); border-color: var(--favorable-line); border-left-color: var(--favorable); }
 .primary-box.tone-unfavorable { color: var(--unfavorable); border-color: var(--unfavorable); border-left-color: var(--unfavorable); }
-.primary-box.tone-neutral { color: var(--muted); border-color: var(--line); border-left-color: var(--muted); }
+.primary-box.tone-detected { color: var(--accent); border-color: var(--line); border-left-color: var(--accent); }
+.primary-box.tone-neutral, .primary-box.tone-inconclusive { color: var(--muted); border-color: var(--line); border-left-color: var(--muted); }
 .primary-label { font-size: 10px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; line-height: 1.5; margin: 0 0 8px; overflow-wrap: anywhere; color: var(--muted); }
 .primary-value { font: 38px/1.1 var(--inc-dashboard-heading-font); font-variant-numeric: tabular-nums; margin: 0 0 8px; overflow-wrap: anywhere; }
 .primary-interval, .primary-method { font-size: var(--inc-dashboard-interval-size); line-height: 1.5; font-variant-numeric: tabular-nums; margin: 0; overflow-wrap: anywhere; }
@@ -807,7 +808,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
   /* ---------- Small helpers -------------------------------------------------- */
   const VIEWS = ['readout', 'explore', 'health', 'report'];
-  const TONES = ['favorable', 'unfavorable', 'inconclusive', 'neutral'];
+  const TONES = ['favorable', 'unfavorable', 'detected', 'inconclusive', 'neutral'];
   const $ = (id) => document.getElementById(id);
   const str = (value) => (value === null || value === undefined ? '' : String(value));
   const own = (object, key) =>

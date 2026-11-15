@@ -97,6 +97,7 @@ from increment.tables import (
     _format_confidence_set,
     _format_metadata_stat,
     _markdown_literal,
+    _result_color_role,
     _row_caveats,
     _segment_label,
     estimates_to_readout,
@@ -976,6 +977,7 @@ def _primary_status(tone: str, label: str) -> str:
     title = {
         "favorable": "The result is favorable in the declared direction.",
         "unfavorable": "The result is adverse to the declared direction.",
+        "detected": "A difference was detected; whether it is favorable is not established.",
         "inconclusive": "The result is inconclusive; this does not establish that there is no effect.",
         "neutral": "No directional result is available.",
     }.get(tone, "The result is unavailable.")
@@ -2818,25 +2820,10 @@ def _point_trace(rows: Sequence[Any], *, lift: bool, color: str, label: str) -> 
 
 def _lift_traces(snapshot: DashboardSnapshot, rows: Sequence[Any]) -> list[plots.Trace]:
     theme = coeftable_theme(snapshot.config.theme)
-    last = next((row for row in reversed(rows) if row.lift is not None), None)
-    point = last.lift if last is not None else None
-    model = require_metric(snapshot, rows[0].metric)
-    direction = (
-        "lower_is_better"
-        if model.preferred_direction == "decrease"
-        else "higher_is_better"
-        if model.preferred_direction == "increase"
-        else "neutral"
-    )
-    ref = (rows[-1].null_abs or 0.0) if rows[-1].value_scale == "absolute" else rows[-1].null_lift
-    color = theme.color(
-        ct.role_for(
-            point.lb if point is not None else None,
-            point.ub if point is not None else None,
-            ref,
-            direction,
-        )
-    )
+    reading = estimates_to_readout([rows[-1]])[0]
+    reading["preferred_direction"] = require_metric(snapshot, rows[0].metric).preferred_direction
+    tone, _ = _result_presentation(reading)
+    color = theme.color(_result_color_role(tone))
     return [_point_trace(rows, lift=True, color=color, label="Estimate")]
 
 

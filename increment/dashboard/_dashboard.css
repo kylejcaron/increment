@@ -256,13 +256,23 @@
   white-space: nowrap;
 }
 
+.inc-dashboard-primary--neutral .inc-dashboard-primary-estimate,
 .inc-dashboard-primary--inconclusive .inc-dashboard-primary-estimate {
-  color: var(--inc-dashboard-inconclusive);
+  color: var(--inc-dashboard-muted);
 }
 
 .inc-dashboard-primary--inconclusive .inc-dashboard-primary-status {
-  color: var(--inc-dashboard-inconclusive);
-  background: var(--inc-dashboard-inconclusive-bg);
+  color: var(--inc-dashboard-muted);
+  background: var(--inc-dashboard-column);
+}
+
+.inc-dashboard-primary--detected .inc-dashboard-primary-estimate {
+  color: var(--inc-dashboard-accent);
+}
+
+.inc-dashboard-primary--detected .inc-dashboard-primary-status {
+  color: var(--inc-dashboard-accent);
+  background: var(--inc-dashboard-column);
 }
 
 .inc-dashboard-primary--favorable .inc-dashboard-primary-estimate {

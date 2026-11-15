@@ -24,13 +24,16 @@ HTML readouts use one **Result** column, with matching plot colors. When a
 procedure separately selects comparisons, its recorded selection determines the
 result; otherwise the comparison's own test does. Fixed-horizon Bonferroni
 comparisons use their already-adjusted intervals; they do not require a separate
-selection verdict. A comparison not selected remains **Inconclusive** even if
+selection verdict. A comparison not selected remains gray **Inconclusive** even if
 its own test rejects. Missing evidence is **Unavailable**, not inconclusive.
-Green means a favorable finding, red an adverse finding; a metric without a
-preferred direction stays neutral.
+Green means a favorable finding and red an adverse finding. Blue means
+**Difference detected**: the evidence establishes a difference, but whether it
+is favorable is not established. Gray means **Inconclusive** or **Unavailable**,
+distinguished by the label.
 Breakout and daily rows retain the metric's declared preferred direction,
-including when saved and reloaded. Older saved rows without this metadata stay
-neutral rather than inferring a preference from the effect's sign.
+including when saved and reloaded. Older saved rows without this metadata can
+still show a detected difference in blue, but never infer a preference from
+the effect's sign.
 A one-sided safety guardrail shows **Guardrail passed** when the evidence rules
 out its declared unacceptable loss. This can include a small decline within the
 allowed margin. Failing that safety test is **Inconclusive**, not proof of harm.

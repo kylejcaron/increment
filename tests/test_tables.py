@@ -2704,7 +2704,7 @@ class TestRoleGroupedDisclosure:
         ),
         pytest.param(
             {"stat_sig": True, "decision_available": True, "lift": 0.1},
-            ("neutral", "Difference detected"),
+            ("detected", "Difference detected"),
             id="no-declared-direction",
         ),
         pytest.param(
@@ -2791,7 +2791,7 @@ def test_result_presentation(row, expected):
         ),
         (
             {"decision_scale": "relative", "lift": 9.0, "relative_confidence_set": "disconnected"},
-            ("neutral", "Difference detected"),
+            ("detected", "Difference detected"),
         ),
     ],
 )
@@ -2844,17 +2844,28 @@ def test_readout_table_uses_single_result_column_for_all_rows():
 
 def test_readout_table_forest_color_uses_result_presentation():
     pytest.importorskip("coeftable")
+    from dataclasses import replace
+
     from coeftable.theme import DEFAULT
 
-    row = {
-        **_role_row("m1", "secondary", discovery=False),
-        "stat_sig": True,
-        "decision_available": True,
-        "preferred_direction": "increase",
-    }
-    html = readout_table([row]).gt().as_raw_html()
-    assert DEFAULT.inconclusive in html
-    assert DEFAULT.favorable not in html
+    cases = (
+        ({**_role_row("detected", "primary"), "preferred_direction": None}, "neutral"),
+        ({**_role_row("unselected", "secondary", discovery=False)}, "inconclusive"),
+        ({**_role_row("inconclusive", "primary"), "stat_sig": False}, "inconclusive"),
+        ({**_role_row("unavailable", "primary"), "decision_available": False}, "inconclusive"),
+    )
+    for theme in (None, replace(DEFAULT, neutral="#124da3", inconclusive="#888888")):
+        for row, role in cases:
+            table = readout_table([row], theme=theme)
+            expected = (
+                "#386ba8"
+                if theme is None and role == "neutral"
+                else getattr(theme or DEFAULT, role)
+            )
+            plots = re.findall(r"<svg\b.*?</svg>", table.gt().as_raw_html(), re.DOTALL)
+            bars = [plot for plot in plots if "<rect" in plot]
+            assert any(f'fill="{expected}"' in plot for plot in bars)
+            assert not any(f'fill="{(theme or DEFAULT).favorable}"' in plot for plot in bars)
 
 
 def test_readout_table_family_selection_true_overrides_row_verdict_for_result():

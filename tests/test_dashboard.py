@@ -374,7 +374,7 @@ def test_primary_headline_keeps_directionless_significance_neutral(
 
     html = render_header(snapshot).text
 
-    assert "inc-dashboard-primary--neutral" in html
+    assert "inc-dashboard-primary--detected" in html
     assert ">Difference detected</span>" in html
 
 
@@ -1661,7 +1661,7 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
     "status,discovery",
     [("exploratory_family", True), ("exploratory_family", False), ("exploratory_unadjusted", None)],
 )
-def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
+def test_a_rising_trajectory_honors_selection_and_declared_direction(
     storefront: DashboardSnapshot, status: str, discovery: bool | None
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
@@ -1674,9 +1674,10 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
         row.model_copy(
             update={
                 "lift": Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+                "alternative": "two-sided",
                 "discovery": discovery,
-                "family_q": 0.05,
-                "family_procedure": "bh",
+                "family_q": 0.05 if discovery is not None else None,
+                "family_procedure": "bh" if discovery is not None else None,
                 "multiplicity_status": status,
                 "decision_scope_complete": discovery is True,
                 "null_lift": 0.01,
@@ -1708,7 +1709,9 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
         assert "Posterior P(favorable)" in html and "73.0%" in html
     from increment.dashboard._theme import coeftable_theme
 
-    assert f'stroke="{coeftable_theme(storefront.config.theme).unfavorable}"' in html
+    theme = coeftable_theme(storefront.config.theme)
+    expected = theme.inconclusive if discovery is False else theme.unfavorable
+    assert f'stroke="{expected}"' in html
 
 
 def test_segmented_temporal_rendering_accepts_distinct_decision_methods(

@@ -128,7 +128,8 @@ def test_overview_family_status_keeps_raw_stat_sig_separate(_family_presentation
 
     def colored_plots(markup, color):
         return sum(
-            color in plot for plot in re.findall(r"<svg\b[^>]*>.*?</svg>", markup, re.DOTALL)
+            re.search(r'<rect\b[^>]*\bfill="' + re.escape(color) + '"', plot) is not None
+            for plot in re.findall(r"<svg\b[^>]*>.*?</svg>", markup, re.DOTALL)
         )
 
     assert colored_plots(improvement_html, theme.favorable) == (

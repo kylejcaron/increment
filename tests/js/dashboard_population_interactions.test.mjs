@@ -23,7 +23,14 @@ function holders(dashboard, text) {
 }
 
 test("population switching updates visible readouts and downloads without losing shared selections", async () => {
-  const dashboard = loadDashboardFromFile(process.env.INCREMENT_DASHBOARD_DOCUMENT);
+  const dashboard = loadDashboardFromFile(process.env.INCREMENT_DASHBOARD_DOCUMENT, (payload) => {
+    payload.primary.tone = "inconclusive";
+    payload.primary.result = "Inconclusive";
+    payload.populationViews.triggered.primary.tone = "inconclusive";
+    payload.populationViews.triggered.primary.result = "Inconclusive";
+    payload.populationViews.assigned.primary.tone = "detected";
+    payload.populationViews.assigned.primary.result = "Difference detected";
+  });
   const triggered = population(dashboard, "triggered");
   const assigned = population(dashboard, "assigned");
   const metric = triggered.metrics[0];
@@ -46,6 +53,7 @@ test("population switching updates visible readouts and downloads without losing
   selectPopulation(dashboard, "assigned");
   assertViewSelected(dashboard, "readout");
   assert.equal(dashboard.heroEffect.textContent, assigned.primary.effect);
+  assert.equal(dashboard.document.getElementById("hero-primary").classList.contains("tone-detected"), true);
   assert.equal(dashboard.readoutTable.innerHTML, assigned.results);
   assert.deepEqual(holders(dashboard, assigned.report.qualifications), []);
   assert.equal(dashboard.document.getElementById("inspector-title").textContent, metric.label);
@@ -57,6 +65,8 @@ test("population switching updates visible readouts and downloads without losing
   selectPopulation(dashboard, "triggered");
   assertViewSelected(dashboard, "readout");
   assert.equal(dashboard.heroEffect.textContent, triggered.primary.effect);
+  assert.equal(dashboard.document.getElementById("hero-primary").classList.contains("tone-inconclusive"), true);
+  assert.equal(dashboard.document.getElementById("hero-primary").classList.contains("tone-detected"), false);
   assert.equal(dashboard.readoutTable.innerHTML, triggered.results);
   assert.equal(dashboard.document.getElementById("inspector-title").textContent, metric.label);
 
@@ -80,6 +90,7 @@ test("population switching updates visible readouts and downloads without losing
   const assignedUrl = dashboard.reportDownload.href;
   assert.notEqual(assignedUrl, triggeredUrl);
   assert.equal(await dashboard.objectUrls.get(assignedUrl).text(), assigned.readoutCsv);
+  assert.equal(dashboard.document.getElementById("report-primary-box").classList.contains("tone-detected"), true);
   assert.deepEqual(holders(dashboard, assigned.report.qualifications), ["report-qualifications"]);
   selectPopulation(dashboard, "triggered");
   assertViewSelected(dashboard, "report");

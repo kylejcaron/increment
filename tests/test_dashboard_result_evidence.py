@@ -347,7 +347,7 @@ def test_additive_zero_decisions_reach_the_dashboard_outcome_and_null(
     assert outcome.verdict == verdict
     assert outcome.unavailable_reason is None
     assert null_text(row) == "+0 absolute"
-    assert primary_tone(row) in ("neutral", "inconclusive")
+    assert primary_tone(row) == ("detected" if verdict == "reject" else "inconclusive")
     if mean_shift == 1.0:
         guardrail = cell.model_copy(
             update={"metric": GUARDRAIL, "role": "guardrail", "alternative": "greater"}
