@@ -44,6 +44,7 @@ from increment._evidence_types import (
     ComplianceSummary,
     CountEvidence,
     CountsRequest,
+    DayAxisRequest,
     DayAxisRoute,
     DayAxisRows,
     EvidenceScope,
@@ -87,7 +88,6 @@ from increment.sources import BreakoutMomentsSource, EvidenceSource, require_ope
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
-    from increment._evidence_types import DayAxisRequest
 
 
 def _declared_breakout_property(value: object) -> str | None:
@@ -747,21 +747,21 @@ def load_allocation_history(
 
 def _require_acquisition_operation(src: EvidenceSource, operation: str, message: str) -> Any:
     """Validate a declared diagnostic operation before handing out its adapter."""
-    declaration = declared_evidence(src)
-    if (
-        operation == "allocation_history"
-        and operation not in declaration.operations
-        and declaration.assignment_relation == "reduced"
-    ):
-        from increment._evidence_refusals import refuse_assignment_identity
+    from increment._source_admission import _require_analysis_operation
 
-        refuse_assignment_identity(src, operation=operation)
-    offered = tuple(sorted(declaration.operations))
-    if not isinstance(getattr(src, "context", None), SourceContext) or operation not in offered:
-        from increment._evidence_refusals import refuse_operation
+    if operation == "allocation_history":
+        from increment._source_operations import AllocationHistoryOperation
 
-        refuse_operation(src, operation, offered, route=message)
-    return require_operation(cast(Any, src), cast(Any, operation))
+        protocol = AllocationHistoryOperation
+    elif operation == "triggered_counts":
+        from increment.query.native_contract import NativeCoreSource
+
+        protocol = NativeCoreSource
+    else:
+        protocol = None
+    return _require_analysis_operation(
+        cast(Any, src), cast(Any, operation), protocol, message=message
+    )
 
 
 def load_unit_counts(src: EvidenceSource) -> CountEvidence:
