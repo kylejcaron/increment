@@ -24,7 +24,7 @@ _REFUSALS = refusals(
     InvalidRequestError,
     {
         "breakout.to_frame_model": "to_frame(): model={model} does not match estimates[0]'s actual type {inferred}",
-        "breakout.to_frame_infer": "to_frame(): cannot infer the schema from an empty sequence -- pass model=<the result model class> explicitly, or call <Model>Estimates(estimates).to_frame() instead, which always knows its own model even when empty.",
+        "breakout.to_frame_infer": "to_frame(): cannot infer the schema from an empty sequence; pass model=<the result model class> explicitly, or call <Model>Estimates(estimates).to_frame() instead, which always knows its own model even when empty.",
         "results.frame.unknown_columns": RefusalSpec(
             "results.frame.unknown_columns",
             InvalidRequestError,

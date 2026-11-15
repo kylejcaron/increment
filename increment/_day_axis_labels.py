@@ -15,7 +15,7 @@ _PREFIXED_INTEGER_LABEL = re.compile(r"^(?P<prefix>[^+\-0-9]*)(?P<sign>[+-]?)(?P
 _DAY_AXIS_LABEL_UNORDERABLE = RefusalSpec(
     "frame.asof.day_axis_unorderable",
     CapabilityError,
-    template="cannot order day-axis label(s) {labels!r} chronologically -- string day-axis labels are ordered only when every distinct label is an unambiguous ISO-8601 date ('YYYY-MM-DD', lexicographic order is chronological), every distinct label is an ISO-8601 timestamp at exactly midnight with no time zone and one spelling per calendar day ('YYYY-MM-DDT00:00:00'), or every label shares one consistent '<prefix><signed integer>' shape (e.g. 'd1', 'd-1'), with no two distinct labels parsing to the same integer. Declare an explicit date or numeric day axis instead of a free-form string label.",
+    template="cannot order day-axis label(s) {labels!r} chronologically: string day-axis labels are ordered only when every distinct label is an unambiguous ISO-8601 date ('YYYY-MM-DD', lexicographic order is chronological), every distinct label is an ISO-8601 timestamp at exactly midnight with no time zone and one spelling per calendar day ('YYYY-MM-DDT00:00:00'), or every label shares one consistent '<prefix><signed integer>' shape (e.g. 'd1', 'd-1'), with no two distinct labels parsing to the same integer. Declare an explicit date or numeric day axis instead of a free-form string label.",
 )
 
 

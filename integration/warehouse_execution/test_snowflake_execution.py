@@ -30,6 +30,7 @@ from integration.warehouse_execution._suite import (
     run_artifact_sequential_identity_probe,
     run_materialized_cache_correction_probe,
     run_ratio_metric_probe,
+    run_summary_sql_probe,
 )
 
 pytestmark = pytest.mark.warehouse_snowflake
@@ -37,6 +38,10 @@ pytestmark = pytest.mark.warehouse_snowflake
 
 def test_ratio_metric_lift(snowflake_con):
     run_ratio_metric_probe(snowflake_con, dialect="snowflake")
+
+
+def test_summary_sql_preview(snowflake_con):
+    run_summary_sql_probe(snowflake_con, dialect="snowflake")
 
 
 def test_materialized_cache_reflects_true_correction(snowflake_con, monkeypatch):

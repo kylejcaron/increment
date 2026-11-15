@@ -54,13 +54,13 @@ from increment.sources import WINSORIZATION_MOMENT_FIELDS
 _ASOF_QUANTILE_UNSUPPORTED = RefusalSpec(
     "frame.asof.quantile_unsupported",
     CapabilityError,
-    template="metric {metric!r} is a quantile metric -- quantiles do not decompose into as-of moments",
+    template="metric {metric!r} is a quantile metric; quantiles do not decompose into as-of moments",
 )
 
 _WINSOR_COLLAPSED_BOUND = RefusalSpec(
     "frame.winsorization.collapsed_bound",
     CapabilityError,
-    template="metric {metric!r}: percentile winsorization resolved a collapsed bound (lower={lower!r}, upper={upper!r}) on {date!r} while still clipping {clipped} value(s) -- pooling more data per date or using a fixed-value cap avoids this.",
+    template="metric {metric!r}: percentile winsorization resolved a collapsed bound (lower={lower!r}, upper={upper!r}) on {date!r} while still clipping {clipped} value(s); pooling more data per date or using a fixed-value cap avoids this.",
 )
 
 
@@ -69,7 +69,7 @@ _REFUSALS = refusals(
     {
         "frame.moments.asof_moments_completed": "asof moments: completed_windows_only=True is contradictory for retention metric {metric!r} with unbounded band {band!r}",
         "frame.moments.asof_completed_requires_uptake_window": "asof moments: completed_windows_only=True under an encouragement design requires bounded outcome and uptake windows",
-        "frame.moments.metric_type_conversion": "metric {metric!r}: type='conversion' collapsed to a per-unit value of {value:g} (> 1) -- summing per-day rows yields a day count, not a 0/1 conversion flag. If you want the number of converting days, declare a mean metric with a count aggregation instead; for any-occurrence conversion, set window_days on this metric or pre-reduce the column to one 0/1 row per unit.",
+        "frame.moments.metric_type_conversion": "metric {metric!r}: type='conversion' collapsed to a per-unit value of {value:g} (> 1); summing per-day rows yields a day count, not a 0/1 conversion flag. If you want the number of converting days, declare a mean metric with a count aggregation instead; for any-occurrence conversion, set window_days on this metric or pre-reduce the column to one 0/1 row per unit.",
     },
 )
 _raise = raiser(_REFUSALS)

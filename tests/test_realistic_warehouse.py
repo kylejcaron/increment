@@ -149,7 +149,10 @@ def con():
 
 @pytest.fixture
 def analysis(con):
-    return from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
+    with pytest.warns(IncrementWarning) as record:
+        binding = from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
+    assert set(warning_codes(record)) == {"definition.metric.variable_window_days_none"}
+    return binding
 
 
 def _metric_spec(metric) -> MetricSpec:
@@ -226,14 +229,16 @@ def test_triggered_experiment_reports_each_population(con):
     """The shipped triggered experiment, read up to the generated snapshot's
     cutoff, reports its assigned and its triggered population separately."""
     manifest = json.loads((DEFINITIONS.parent / "warehouse" / "manifest.json").read_text())
-    experiment, reader = from_definitions(
-        DEFINITIONS,
-        con,
-        experiment_name="express_checkout",
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            observation_cutoff_ts=datetime.fromisoformat(manifest["observation_cutoff"])
-        ),
-    )
+    with pytest.warns(IncrementWarning) as record:
+        experiment, reader = from_definitions(
+            DEFINITIONS,
+            con,
+            experiment_name="express_checkout",
+            source_snapshot_evidence=SourceSnapshotEvidence(
+                observation_cutoff_ts=datetime.fromisoformat(manifest["observation_cutoff"])
+            ),
+        )
+    assert set(warning_codes(record)) == {"definition.metric.variable_window_days_none"}
     for population in ("assigned", "triggered"):
         estimates = view_readout(experiment, reader, population=population)
         assert {(e.metric, e.analysis_population) for e in estimates} == {
@@ -507,9 +512,11 @@ def test_export_round_trips_registered_native_actual_state(
     experiment = experiment_definition(*analysis).model_copy(
         update={"plan": AnalysisPlan(secondaries=[metric.name])}
     )
-    definitions = load(DEFINITIONS).model_copy(
-        update={"experiments": (experiment,), "metrics": (metric,)}
-    )
+    with pytest.warns(IncrementWarning) as record:
+        definitions = load(DEFINITIONS).model_copy(
+            update={"experiments": (experiment,), "metrics": (metric,)}
+        )
+    assert set(warning_codes(record)) == {"definition.metric.variable_window_days_none"}
     selected = make_binding(con, definitions, experiment=experiment)
     # A plain-mean metric under a fixed Randomized mechanism: the public
     # scalar_mean law admits this today; it is only

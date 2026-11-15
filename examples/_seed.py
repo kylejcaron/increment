@@ -29,8 +29,8 @@ column                          role in ``examples/definitions/``
 
 Only the enrolling ``page_view`` row carries ``experiment_id``/``group_id``.
 Stamping the same assignment onto every later row of the unit would be harmless
--- ``first_exposures`` would still see a single distinct group and still resolve
-the exposure to ``min(event_at)`` -- but it would be pure redundancy, and it
+; ``first_exposures`` would still see a single distinct group and still resolve
+the exposure to ``min(event_at)``; but it would be pure redundancy, and it
 would blur the exposure semantics: exactly one row per unit is the first page
 view in the window, and that row is the one that carries the assignment.
 """
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from ibis.backends.duckdb import Backend
 
 # ---------------------------------------------------------------------------
-# Experiment geometry -- every constant mirrors examples/definitions/
+# Experiment geometry: every constant mirrors examples/definitions/
 # ---------------------------------------------------------------------------
 
 #: The experiment the seeded population belongs to (experiments.yaml).
@@ -67,7 +67,7 @@ _POST_DAYS = 14
 #: ``avg_session_duration.window_days``.
 _SESSION_WINDOW_DAYS = 7
 
-#: ``d7_retention.threshold_days`` -- a unit only counts as retained if it is
+#: ``d7_retention.threshold_days``: a unit only counts as retained if it is
 #: active on or after this day, so retention page views start here.
 _RETENTION_THRESHOLD_DAYS = 7
 
@@ -81,7 +81,7 @@ _LATE_RETURN_TENURE_HIGH = 16  # exclusive upper bound for rng.integers
 #: return injected when ``with_late_returns=True``.
 _LATE_RETURN_FRACTION = 0.40
 
-#: ``Experiment.n_pre_periods`` -- the CUPED lookback, in days.
+#: ``Experiment.n_pre_periods``: the CUPED lookback, in days.
 _PRE_DAYS = 14
 
 _HOUR = 3600
@@ -136,7 +136,7 @@ def seed_event_log(
     The population is a single ``new_onboarding_v2`` cohort with a baked-in
     treatment effect, so an unadjusted analysis reports a clearly positive lift
     on every metric the experiment declares.  Those effects are deliberately far
-    larger than anything a real onboarding test would produce -- the point is
+    larger than anything a real onboarding test would produce; the point is
     unambiguous demo output, not realism.  A real test at this sample size would
     usually come back inconclusive.
 
@@ -149,13 +149,13 @@ def seed_event_log(
     n_units :
         Number of randomised users.  4000 keeps every metric's interval clear of
         zero across seeds (2000 is knife-edge: roughly one seed in ten leaves
-        ``avg_session_duration`` inconclusive), and it costs nothing -- seeding
+        ``avg_session_duration`` inconclusive), and it costs nothing: seeding
         plus the full analysis still runs in well under a second.
     seed :
         RNG seed.  Fixed by default so the printed numbers are reproducible.
     with_pre_period :
         Also emit activity in the 14 days *before* each unit's exposure.  Off by
-        default -- the end-to-end example does not need it.  ``examples/cuped.py``
+        default; the end-to-end example does not need it. ``examples/cuped.py``
         turns it on: CUPED builds its covariate from pre-exposure events and
         only reduces variance when that covariate correlates with the outcome.
         That correlation is manufactured here, by driving pre- and post-exposure
@@ -170,21 +170,21 @@ def seed_event_log(
 
         How much CUPED can buy here is capped by the metric more than by the
         density of the pre-period.  For a binary outcome the covariate's
-        correlation with the outcome cannot exceed ``sd(p) / sd(y)`` -- about
-        0.33 for ``purchase_rate`` -- so even a perfect covariate would narrow
+        correlation with the outcome cannot exceed ``sd(p) / sd(y)``; about
+        0.33 for ``purchase_rate``; so even a perfect covariate would narrow
         its interval by only ~6 %.  The continuous session metric has more
         predictable variance, and the tuned CUPED example narrows its interval
         by about 41 %.  A CUPED demo should therefore lead with
         ``avg_session_duration``.
     with_late_returns :
         Also emit one extra "page view" at tenure 14-15 for a share of the
-        units that otherwise never return in-band.  Off by default -- the
+        units that otherwise never return in-band. Off by default; the
         end-to-end example does not need it.  Draws come from their own RNG
         stream, so enabling this leaves every other event bit-identical: the
         same isolation guarantee ``with_pre_period`` documents above.
 
         ``d7_retention`` is bounded (``threshold_days: [7, 14]``), and the
-        shipped seed never emits a page view past tenure 13 -- so an
+        shipped seed never emits a page view past tenure 13; so an
         unbounded metric sharing its 7-day threshold (``threshold_days: 7``)
         computes IDENTICAL numbers to the bounded one; there is no seeded
         event past the band close for the two shapes to disagree on.
@@ -193,7 +193,7 @@ def seed_event_log(
         both metrics: those units keep scoring 0 under the bounded metric
         (the return lands after its band has already shut) but flip to 1
         under the unbounded one (its band never closes), so the two metrics'
-        whole-window rates now differ measurably -- enough to build an
+        whole-window rates now differ measurably; enough to build an
         unbounded-vs-bounded retention example against.
     """
     # Independent child streams keep the seed reproducible while preventing a
@@ -225,7 +225,7 @@ def seed_event_log(
     )
     # ``avg_session_duration`` filters ``platform == "web"``, so the population
     # is overwhelmingly web.  The few mobile-only units contribute 0 seconds to
-    # that metric -- realistic, and it keeps the filter honest instead of inert.
+    # that metric; realistic, and it keeps the filter honest instead of inert.
     device_type = rng_population.choice(
         ["web", "ios", "android"], size=n_units, p=[0.94, 0.03, 0.03]
     )

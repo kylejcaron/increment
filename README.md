@@ -82,18 +82,18 @@ result = run(experiment, reader)
 print(result.readout())
 ```
 
-The output starts with one line per metric (shortened here):
+For an HTML table in a notebook, add the `tables` extra to the source install:
 
-<!-- output -->
-```text
-assigned — treatment vs control
-converted: control → treatment; n control=970; n treatment=1030; ...; effect=-4.84426%; interval=[-39.898%, 29.3026%]; estimand=itt; stat_sig=False
-...
-revenue: control → treatment; n control=970; n treatment=1030; ...; effect=10.6507%; interval=[1.45261%, 20.6827%]; estimand=itt; stat_sig=True
-...
-SRM not checked; declare allocation_scheme="independent" on Randomized or Encouragement; it must describe how units were actually assigned.
-...
+```bash
+python -m pip install "increment[tables] @ git+https://github.com/kylejcaron/increment.git@0381d0f5725228a45288125493abc2e1714d65f6"
 ```
+
+```python
+from increment.tables import readout_table
+
+readout_table(result, title="Revenue and conversion")
+```
+
 
 Revenue rose 10.7%, with a 95% confidence interval of 1.5% to 20.7%. The
 conversion result is inconclusive: its interval, −39.9% to +29.3%, includes

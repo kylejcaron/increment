@@ -123,17 +123,17 @@ _REFUSALS = refusals(
         "estimation.encouragement.cluster.ratio": RefusalSpec(
             "estimation.encouragement.cluster.ratio",
             CapabilityError,
-            template="ratio metric(s) {names} are not supported with a declared cluster ('{cluster}') under an encouragement design -- the first stage reads cluster SIZES out of the den family a clustered ratio metric needs for its own denominator, so the two cannot share one row. Analyze the ratio metric without the encouragement design, or without the cluster.",
+            template="ratio metric(s) {names} are not supported with a declared cluster ('{cluster}') under an encouragement design; the first stage reads cluster SIZES out of the den family a clustered ratio metric needs for its own denominator, so the two cannot share one row. Analyze the ratio metric without the encouragement design, or without the cluster.",
         ),
         "estimation.encouragement.late.ratio": RefusalSpec(
             "estimation.encouragement.late.ratio",
             UnsupportedRequestError,
-            template="LATE is not supported for ratio metric '{metric}' -- the Wald numerator is the difference of arm mean_y, which for a ratio metric is the NUMERATOR mean, so the result would be the numerator's LATE silently mislabelled as the ratio's. Request estimands=('itt',) (ratio-aware), or model the numerator and denominator as separate mean metrics",
+            template="LATE is not supported for ratio metric '{metric}'; the Wald numerator is the difference of arm mean_y, which for a ratio metric is the NUMERATOR mean, so the result would be the numerator's LATE silently mislabelled as the ratio's. Request estimands=('itt',) (ratio-aware), or model the numerator and denominator as separate mean metrics",
         ),
         "readout.encouragement.value_scale": RefusalSpec(
             "readout.encouragement.value_scale",
             UnsupportedRequestError,
-            template="value_scale= is an observational-only reporting selector -- an encouragement design's LATE rows already report the additive estimand in the outcome's own units (value_scale='absolute'); select it with estimands= instead.",
+            template="value_scale= is an observational-only reporting selector; an encouragement design's LATE rows already report the additive estimand in the outcome's own units (value_scale='absolute'); select it with estimands= instead.",
         ),
         "readout.encouragement.cluster_ratio": RefusalSpec(
             "readout.encouragement.cluster_ratio",
@@ -148,17 +148,17 @@ _REFUSALS = refusals(
             template="sequential inference is not supported on the segmented {view} view",
         ),
         "estimation.encouragement.control.missing": "control_group '{control_group}' not found in summary",
-        "estimation.encouragement.negative_variance": "{what} computed as {value:.6g}, negative beyond floating-point rounding (~{slack:.3g}) -- this scale of deficit means the upstream moments feeding the Wald ratio's delta-method variance are infeasible or inconsistent (mis-aggregated or corrupted), not merely cancelled.",
-        "estimation.encouragement.cuped_adjusted_late": "CUPED-adjusted LATE needs the covariate x uptake cross-moment cxd, which is None for arm {arm_group}/{arm_metric} although its covariate moments are present -- the moments were aggregated before this estimator existed. Re-aggregate the summary (re-run the query, or rebuild from_unit_summary with a CUPED method declaring covariates and uptake='<column>'), or request the late estimand with variance_reduction='none'.",
+        "estimation.encouragement.negative_variance": "{what} computed as {value:.6g}, negative beyond floating-point rounding (~{slack:.3g}); this scale of deficit means the upstream moments feeding the Wald ratio's delta-method variance are infeasible or inconsistent (mis-aggregated or corrupted), not merely cancelled.",
+        "estimation.encouragement.cuped_adjusted_late": "CUPED-adjusted LATE needs the covariate x uptake cross-moment cxd, which is None for arm {arm_group}/{arm_metric} although its covariate moments are present; the moments were aggregated before this estimator existed. Re-aggregate the summary (re-run the query, or rebuild from_unit_summary with a CUPED method declaring covariates and uptake='<column>'), or request the late estimand with variance_reduction='none'.",
         "estimation.encouragement.needs_uptake_cyd": "needs uptake: cyd is None (uptake fact not materialised)",
         "estimation.encouragement.unknown_estimand_supported": "unknown estimand(s) {unknown}; supported: {estimands}. As-treated / per-protocol comparisons are deliberately not offered.",
         "estimation.encouragement.prior_inference_are": "prior and inference are mutually exclusive: a conjugate posterior has no always-valid guarantee under repeated looks",
-        "estimation.encouragement.one_sided_encouragement": "one_sided encouragement declared but control arm has uptake (uptake_total={control_uptake_total:g}, metric '{metric}') -- control must be structurally unable to take up; this is an instrumentation bug, refusing to estimate",
+        "estimation.encouragement.one_sided_encouragement": "one_sided encouragement declared but control arm has uptake (uptake_total={control_uptake_total:g}, metric '{metric}'); control must be structurally unable to take up; this is an instrumentation bug, refusing to estimate",
         "estimation.encouragement.cluster.arm_needs_two": ARM_NEEDS_TWO,
         "estimation.encouragement.alpha_eff_too": ALPHA_EFF_TOO,
         "estimation.encouragement.dof_positive_reference": DOF_POSITIVE_REFERENCE,
         "estimation.encouragement.prior_cluster_robust": "prior and a cluster-robust t reference are mutually exclusive: a Normal prior has no coherent conjugate update against a t sampling distribution",
-        "estimation.encouragement.sequential_inference_cluster": "sequential inference and a cluster-robust t reference are mutually exclusive -- the sequential boundaries assume independent units at unit grain",
+        "estimation.encouragement.sequential_inference_cluster": "sequential inference and a cluster-robust t reference are mutually exclusive; the sequential boundaries assume independent units at unit grain",
     },
 )
 
@@ -1143,7 +1143,7 @@ def _first_stage_context(
             f"; first-stage z={z_fs:.2f} clears the emission gate "
             f"({design.min_first_stage_z:g}) only narrowly: conditional on "
             "emission, near-gate estimates select on a lucky first stage "
-            "and lean toward the as-treated value under confounding -- "
+            "and lean toward the as-treated value under confounding; "
             "treat the point as interval-only evidence"
         )
     return _EncouragementFirstStageContext(
@@ -1235,7 +1235,7 @@ def _zero_control_compliance_row(
     if not design.one_sided:
         notes.append(
             "control uptake observed at zero although the design "
-            "is declared two-sided -- effectively one-sided"
+            "is declared two-sided; effectively one-sided"
         )
     if context.suppression:
         notes.append(context.suppression)
@@ -1464,7 +1464,7 @@ def _estimate_unadjusted_late_rows(
     if cluster is not None:
         rel: tuple[float, float] | str = (
             "cluster-robust relative (complier-ratio) LATE is not "
-            "built -- it needs the cluster-grain "
+            "built; it needs the cluster-grain "
             "sum(y**2*d)/sum(x*y*d) moment family; drop cluster= "
             "to get the relative row, or read the additive row above"
         )
@@ -1545,8 +1545,8 @@ def _estimate_cuped_late_row(
         f"effect of uptake on {context.pop}",
         context.iv_assumes,
         "CUPED-adjusted ITT numerator over the RAW first stage",
-        "relative form withheld: CUPED adjusts the additive LATE only "
-        "-- the complier-relative form needs the sum(x*y*d) moment "
+        "relative form withheld: CUPED adjusts the additive LATE only"
+        "; the complier-relative form needs the sum(x*y*d) moment "
         "family, so it is never emitted under a cuped label",
     ]
     if se_unadjusted > 0.0 and se > se_unadjusted:
@@ -1554,7 +1554,7 @@ def _estimate_cuped_late_row(
             f"CUPED INFLATED this LATE's variance versus no adjustment "
             f"(SE {se / se_unadjusted:.2f}x the unadjusted SE): the "
             f"covariate drives uptake more than it predicts the outcome "
-            f"net of uptake -- pass variance_reduction='none' for metric "
+            f"net of uptake; pass variance_reduction='none' for metric "
             f"'{t.metric}' to recover the tighter interval"
         )
     return LiftEstimate(

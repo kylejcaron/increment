@@ -100,6 +100,51 @@ categorical, or indicator inputs, or when an intentional fixed-horizon HC2/BM
 regression fit is desired. A backend does not select the procedure, and
 adding covariates does not itself justify a different inference method.
 
+### Measuring variance reduction
+
+Compare methods on the **same absolute treatment-minus-control difference**,
+separately for each metric and treatment arm. The reported `abs_se` is the
+standard error of that difference. Its squared ratio gives the estimated
+variance reduction:
+
+$$
+\text{variance reduction}
+= 1 - \left(\frac{\mathrm{SE}_{\mathrm{CUPED,absolute}}}
+                  {\mathrm{SE}_{\mathrm{unadjusted,absolute}}}\right)^2.
+$$
+
+A positive value means lower estimated variance; a negative value means CUPED
+increased it. A missing standard error or a zero unadjusted standard error makes
+the comparison unavailable, not a zero gain. A genuine zero adjusted standard
+error with a positive unadjusted one gives 100% estimated reduction.
+
+Do not substitute the ratio of relative-lift interval widths. Those widths
+also depend on the confidence level, reference distribution, relative-scale
+transformation, and whether one or both endpoints are finite. In particular,
+an open one-sided guardrail interval has no finite width to compare. An exact
+binomial interval and a CUPED normal or Student-t interval can look quite
+different even when their absolute standard errors are close.
+
+The [CUPED notebook](../examples/cuped.md) reports this variance comparison for
+every metric and treatment arm:
+
+- `avg_session_duration` has a large gain because pre-period activity strongly
+  predicts the continuous outcome.
+- `purchase_rate` has a smaller gain: much of the binary purchase variation
+  remains unpredictable from its pre-period covariate.
+- `d7_retention` has only a modest gain (about 1.7% in the default 4,000-user
+  seed). A change in the appearance of its one-sided interval is not evidence
+  of a large variance reduction.
+
+The notebook deliberately generates pre- and post-exposure activity from a
+shared per-user propensity. That synthetic pre-history signal makes the
+different gains visible; it does not promise similar gains on real data.
+Its readout shows **sampling confidence intervals**, not credible intervals.
+Directional guardrails show the relevant one-sided bound and its confidence
+level; confidence levels come from each row rather than a fixed 95% label
+applied to every metric.
+
+
 ### Comparing scalar and multicovariate procedures
 
 The example below uses a single continuous covariate with three arms. The

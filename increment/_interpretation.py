@@ -7,7 +7,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any
+from typing import Any, Literal
 
 from increment._display import interval_text
 from increment.estimation.readout_types import (
@@ -31,6 +31,17 @@ from increment.estimation.results import (
 LOW_RELIABILITY_CAVEAT = (
     "Caveat: low reliability, an arm has fewer units than the configured reliability threshold."
 )
+
+
+def _assignment_check_warning(
+    status: str | None, population: str | None
+) -> Literal["failed", "unchecked"] | None:
+    """Classify visible assignment warnings, excluding expected post-trigger count gaps."""
+    if status in ("not_rejected", "not_applicable"):
+        return None
+    if population == "triggered" and status == "not_checked_missing_counts":
+        return None
+    return "failed" if status == "failed" else "unchecked"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1060,13 +1071,17 @@ def _decision_line(row, *, control_group: str | None, treatment_group: str | Non
 
 
 def _effect_text(projection: EffectEstimate, *, label: str = "effect") -> str | None:
-    """Format a retained point and interval at six significant digits, relative ones in percent."""
+    """Format a retained point and contiguous interval, relative values in percent."""
     if projection.point is None:
         return None
     percent = projection.value_scale == "relative"
     text = f"{label}={_number_text(projection.point, percent=percent)}"
-    if projection.lower is not None or projection.upper is not None:
-        text += f"; interval={_bounds_text(projection.lower, projection.upper, percent=percent)}"
+    intervals = projection.intervals
+    if len(intervals) == 1:
+        lower, upper = intervals[0]
+        text += f" {_bounds_text(lower, upper, percent=percent)}"
+    elif not intervals and (projection.lower is not None or projection.upper is not None):
+        text += f" {_bounds_text(projection.lower, projection.upper, percent=percent)}"
     return text
 
 

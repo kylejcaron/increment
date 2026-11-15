@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.15"
+__generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 
@@ -14,7 +14,15 @@ def _():
     from increment.results import LiftEstimate
     from increment.tables import estimates_to_readout, readout_table
 
-    return LiftEstimate, estimates_to_readout, ibis, increment, mo, readout_table, seed_event_log
+    return (
+        LiftEstimate,
+        estimates_to_readout,
+        ibis,
+        increment,
+        mo,
+        readout_table,
+        seed_event_log,
+    )
 
 
 @app.cell
@@ -24,8 +32,9 @@ def _(mo):
 
     CUPED uses pre-exposure activity as a covariate to reduce outcome variance.
     This notebook runs the same experiment unadjusted and CUPED-adjusted, then
-    compares the estimates in one coeftable. The gain is clearest for continuous
-    metrics; binary metrics usually have less variance to remove.
+    compares their estimated variance for each metric and treatment arm.
+    The gain depends on how well each metric's pre-period activity predicts
+    its outcome, not on the displayed interval's width.
 
     The method is derived in [`docs/guides/cuped.md`](../docs/guides/cuped.md).
     """)
@@ -33,27 +42,32 @@ def _(mo):
 
 
 @app.cell
-def _(increment):
-    DEFINITIONS = "examples/definitions/"
-    EXPERIMENT = "new_onboarding_v2"
-
+def _(increment, mo):
     UNADJUSTED = increment.Method(name="unadjusted")
     CUPED = increment.Method(name="cuped", variance_reduction="cuped")
+    mo.show_code(position="above")
+    return CUPED, UNADJUSTED
 
+
+@app.cell(hide_code=True)
+def _():
+    DEFINITIONS = "examples/definitions/"
+    EXPERIMENT = "new_onboarding_v2"
     # Put the continuous metric first: it shows the clearest variance reduction.
     METRIC_ORDER = ("avg_session_duration", "purchase_rate", "d7_retention")
-    return CUPED, DEFINITIONS, EXPERIMENT, METRIC_ORDER, UNADJUSTED
+    return DEFINITIONS, EXPERIMENT, METRIC_ORDER
 
 
 @app.cell(hide_code=True)
 def _(LiftEstimate):
-    def interval_width(estimate: LiftEstimate) -> float:
-        """Width of a lift interval.  ``lb``/``ub`` are always populated here."""
-        lift = estimate.lift
-        assert lift.lb is not None and lift.ub is not None, "run() always returns an interval"
-        return lift.ub - lift.lb
+    def variance_gain(plain: LiftEstimate, adjusted: LiftEstimate) -> float | None:
+        """Estimated variance reduction for the absolute treatment-control difference."""
+        plain_se, adjusted_se = plain.abs_se, adjusted.abs_se
+        if plain_se is None or adjusted_se is None or plain_se <= 0 or adjusted_se < 0:
+            return None
+        return 1 - (adjusted_se / plain_se) ** 2
 
-    return (interval_width,)
+    return (variance_gain,)
 
 
 @app.cell
@@ -68,40 +82,54 @@ def _(DEFINITIONS, EXPERIMENT, ibis, increment, seed_event_log):
 
 
 @app.cell
-def _(CUPED, UNADJUSTED, experiment, increment, reader):
+def _(CUPED, UNADJUSTED, experiment, increment, mo, reader):
     # One run computes both methods from the same queried moments.
     estimates = increment.run(
         experiment, reader, decision_method=UNADJUSTED, sensitivity_methods=(CUPED,)
     ).readout()
-
-    by_method = {(est.metric, est.group_id, est.method): est for est in estimates}
-    arms = sorted({est.group_id for est in estimates})
-    return arms, by_method, estimates
+    mo.show_code(position="above")
+    return (estimates,)
 
 
 @app.cell(hide_code=True)
-def _(CUPED, METRIC_ORDER, UNADJUSTED, arms, by_method, interval_width, mo):
-    _metric = METRIC_ORDER[0]
-    _widths = [
+def _(estimates):
+    by_method = {(est.metric, est.group_id, est.method): est for est in estimates}
+    arms = sorted({est.group_id for est in estimates})
+    return arms, by_method
+
+
+@app.cell(hide_code=True)
+def _(CUPED, METRIC_ORDER, UNADJUSTED, arms, by_method, mo, variance_gain):
+    precision_comparisons = [
         (
-            interval_width(by_method[_metric, arm, UNADJUSTED.name]),
-            interval_width(by_method[_metric, arm, CUPED.name]),
+            metric,
+            arm,
+            variance_gain(
+                by_method[metric, arm, UNADJUSTED.name],
+                by_method[metric, arm, CUPED.name],
+            ),
         )
+        for metric in METRIC_ORDER
         for arm in arms
     ]
-    _reductions = [1 - adjusted / plain for plain, adjusted in _widths]
-
-    _width_text = "; ".join(
-        f"treatment: {plain:.2%} → {adjusted:.2%}" for plain, adjusted in _widths
+    comparison_text = "\n".join(
+        f"- `{metric}` / `{arm}`: **{gain:.1%} variance reduction**."
+        if gain is not None
+        else f"- `{metric}` / `{arm}`: variance reduction unavailable."
+        for metric, arm, gain in precision_comparisons
     )
 
-    mo.md(f"""
-    ## Readout
-
-    CUPED reduces the `{_metric}` interval width by
-    **{_reductions[0]:.1%}** ({_width_text}). The coeftable below shows the full
-    unadjusted-versus-CUPED estimate and interval comparison.
-    """)
+    mo.md(
+        "## Readout\n\n"
+        "Compare the same absolute treatment-control difference under both methods:\n"
+        "variance reduction = **1 − (CUPED absolute SE / unadjusted absolute SE)²**.\n\n"
+        f"{comparison_text}\n\n"
+        "A negative gain means CUPED increased the estimated variance. A missing "
+        "absolute SE or a zero unadjusted SE makes this comparison unavailable, "
+        "not a zero gain. Relative-lift interval widths are not this variance "
+        "comparison: they also depend on the inference method, confidence level, "
+        "and whether the interval is one-sided."
+    )
     return
 
 
@@ -110,8 +138,9 @@ def _(estimates, estimates_to_readout, readout_table):
     readout_table(
         estimates_to_readout(estimates),
         title="Unadjusted vs CUPED",
-        subtitle="Relative lift vs control, 95% credible interval",
+        subtitle="Relative lift vs control; sampling confidence intervals, one-sided for guardrails",
         nest_by="method",
+        show_interval_level=True,
     )
     return
 
@@ -121,9 +150,17 @@ def _(mo):
     mo.md(r"""
     ## Takeaway
 
-    CUPED is most useful for continuous outcomes such as duration, revenue, and
-    counts. Binary outcomes such as conversion and retention usually see a smaller
-    reduction because less of their variance is predictable from pre-period data.
+    - **Session duration:** pre-period activity strongly predicts this continuous
+      outcome, so CUPED removes a large share of its estimated variance.
+    - **Purchase rate:** the binary purchase outcome retains more unpredictable
+      variation, so its gain is smaller.
+    - **D7 retention:** pre-period page views predict only a little of this
+      binary outcome's variation; its modest variance gain is not a dramatic
+      narrowing of the one-sided guardrail interval.
+
+    The pre-history signal is synthetic: the seed drives pre- and post-exposure
+    activity with a shared per-user propensity. These gains illustrate
+    metric-specific predictability, not a promise about real experiment data.
     """)
     return
 

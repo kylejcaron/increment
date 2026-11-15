@@ -88,6 +88,7 @@ from increment.query._native_refusals import (
     _refuse_operation,
 )
 from increment.query._native_triggered import TriggeredPopulationSource
+from increment.query._summary_sql import SummarySqlStages
 from increment.query.artifact_contract import ArtifactStore
 from increment.query.artifact_ports import artifact_query_ports
 from increment.query.builders import (
@@ -3384,9 +3385,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         sql_results: dict[str, str] = {}
         for metric in effective:
+            stages = SummarySqlStages()
+            stages.mark("enrolled_units", exposures)
             panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
                 self._build_panel_for_metric(exposures, metric, population, use_cache=False)
             )
+            stages.mark("outcome_events", _events)
+            stages.mark("outcome_day_stats", stats)
             summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
                 metric,
                 exposures,
@@ -3400,8 +3405,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 uptake_events=uptake_events,
                 uptake_window_days=uptake_window_days,
                 warn_on_censoring=False,
+                _sql_stages=stages,
             )
-            sql_results[metric.name] = ibis_to_sql(summary, dialect=self._backend or self._con.name)
+            sql_results[metric.name] = stages.to_sql(
+                summary, dialect=self._backend or self._con.name
+            )
             for breakout, fs, properties_table in breakout_props:
                 summary_by, _pre_stats_by, _den_stats_by, _totals_by = self._build_metric_summary(
                     metric,
@@ -3418,9 +3426,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     warn_on_censoring=False,
                     by=[breakout.property],
                     properties_table=properties_table,
+                    _sql_stages=stages,
                 )
                 key = f"{metric.name}:{breakout.property}:{fs.name}"
-                sql_results[key] = ibis_to_sql(summary_by, dialect=self._backend or self._con.name)
+                sql_results[key] = stages.to_sql(
+                    summary_by, dialect=self._backend or self._con.name
+                )
         return sql_results
 
     def _component_batch_key(self, request: MomentsRequest) -> tuple[Any, ...] | None:

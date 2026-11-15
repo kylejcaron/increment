@@ -148,22 +148,22 @@ _REFUSALS = refusals(
         "estimation.adjust_common.supported_ratio_metric": RefusalSpec(
             "estimation.adjust_common.supported_ratio_metric",
             UnsupportedRequestError,
-            template="{method} is not supported for ratio metric {metric!r} -- {method} reweights or residualizes a single per-unit outcome, and a ratio's two components would need the weights applied jointly with their covariance retained, which is not implemented for this method. Ratio metrics ARE supported under randomized CUPED (Method.cuped(covariates=...)), which adjusts the numerator and the denominator with a slope each and keeps their induced covariance. Otherwise adjust the numerator and denominator as separate mean metrics.",
+            template="{method} is not supported for ratio metric {metric!r}; {method} reweights or residualizes a single per-unit outcome, and a ratio's two components would need the weights applied jointly with their covariance retained, which is not implemented for this method. Ratio metrics ARE supported under randomized CUPED (Method.cuped(covariates=...)), which adjusts the numerator and the denominator with a slope each and keeps their induced covariance. Otherwise adjust the numerator and denominator as separate mean metrics.",
             # Every raise site names the plan role and family; None where unknown.
             keys=frozenset({"role", "family", "correction"}),
         ),
         "estimation.adjust_common.control_group_found": "control_group {control_group!r} not found in {metric!r} groups. Available groups: {available}",
         "estimation.adjust_common.needs_least_folds": "{method} needs at least 2*folds={needed} units to cross-fit for metric {metric!r} ({contrast}); got {n}. Lower `folds` or supply more data.",
-        "estimation.adjust_common.fold_would_train": "{method} fold {j} would train on zero units for metric {metric!r} ({contrast}) -- the unit-id hash collapsed every unit into one fold; lower `folds`.",
-        "estimation.adjust_common.fold_training_split": "{method} fold {j} training split has only one arm for metric {metric!r} ({contrast}) -- cannot fit the propensity/outcome model(s); lower `folds` or supply more data.",
-        "estimation.adjust_common.covariate_dtype": "{method}: adjustment covariate {covariate!r} has dtype {dtype} for metric {metric!r} ({contrast}) -- an adjustment covariate is numeric (int/float/bool) or categorical (string); a date, time, nested or mixed-type column carries no adjustment meaning. Derive a numeric or categorical pre-exposure column upstream.",
+        "estimation.adjust_common.fold_would_train": "{method} fold {j} would train on zero units for metric {metric!r} ({contrast}); the unit-id hash collapsed every unit into one fold; lower `folds`.",
+        "estimation.adjust_common.fold_training_split": "{method} fold {j} training split has only one arm for metric {metric!r} ({contrast}); cannot fit the propensity/outcome model(s); lower `folds` or supply more data.",
+        "estimation.adjust_common.covariate_dtype": "{method}: adjustment covariate {covariate!r} has dtype {dtype} for metric {metric!r} ({contrast}); an adjustment covariate is numeric (int/float/bool) or categorical (string); a date, time, nested or mixed-type column carries no adjustment meaning. Derive a numeric or categorical pre-exposure column upstream.",
         "estimation.adjust_common.statistically_indistinguishable_from": RefusalSpec(
             "estimation.adjust_common.statistically_indistinguishable_from",
             InvalidRequestError,
             lambda *, label, denominator, se, metric, treatment, control, estimator: (
                 f"{label} {denominator:.3g} is statistically indistinguishable from 0 "
                 f"(SE {se:.3g}) for metric {metric!r} (contrast "
-                f"{treatment!r} vs {control!r}) -- relative "
+                f"{treatment!r} vs {control!r}); relative "
                 f"lift {'theta' if estimator == 'DML' else 'tau'} / mu0 is not "
                 "identified on this scale. " + _ABSOLUTE_REMEDY.format(name=metric)
             ),
@@ -608,7 +608,7 @@ def _resolve_adjustment_missingness(
                 f"missing='impute-indicator' (pooled-mean impute plus a "
                 f"missingness indicator in the adjustment set), declare "
                 f"missing='allow' (NaN passed raw to explicitly supplied "
-                f"NaN-native learners -- requires "
+                f"NaN-native learners; requires "
                 f"Method(propensity_learner=..., outcome_learner=...)), or "
                 f"use Method(name='iptw'), where missing='pattern' is "
                 "supported.",
@@ -654,7 +654,7 @@ def _resolve_adjustment_missingness(
             )
             raise IdentificationError(
                 f"missing='complete-case' emptied arm {empty_arm!r} for "
-                f"metric {metric_name!r} ({contrast}) -- only {n_kept} of {n_total} "
+                f"metric {metric_name!r} ({contrast}); only {n_kept} of {n_total} "
                 f"units are fully observed; keep every unit with {suffix}",
                 code="adjust.identification.complete_case_emptied_arm",
                 context={
@@ -1112,7 +1112,7 @@ def _apply_overlap_gate(
             continue
         raise IdentificationError(
             f"trimming to {band} emptied arm {empty_arm!r} for metric {metric_name!r} "
-            f"({_contrast_text(cohort.treatment_groups, cohort.control_group)}) -- only "
+            f"({_contrast_text(cohort.treatment_groups, cohort.control_group)}); only "
             f"{n_kept} of {n_total} units survived{_infeasible_band_note(len(groups), g)}; "
             "widen gate.min_propensity, add covariates that improve overlap, or "
             "use gate.overlap='refuse' to reject the comparison outright",
@@ -1207,9 +1207,9 @@ def _validate_contrast(
         if exceeded:
             named = ", ".join(f"{name} (SMD={smd:.3f})" for name, smd in exceeded)
             detail = {
-                "DML": "under inverse-propensity weighting. This is a propensity-model quality check (DML itself residualizes rather than weights) -- AdjustmentSet.covariates does not achieve balance under the fitted propensity for this comparison",
-                "AIPW": "under inverse-propensity weighting. This is a propensity-model quality check (AIPW's per-arm outcome models are the second line of defense) -- AdjustmentSet.covariates does not achieve balance under the fitted propensity for this comparison",
-                "IPTW": "after weighting -- AdjustmentSet.covariates does not achieve balance for this comparison",
+                "DML": "under inverse-propensity weighting. This is a propensity-model quality check (DML itself residualizes rather than weights); AdjustmentSet.covariates does not achieve balance under the fitted propensity for this comparison",
+                "AIPW": "under inverse-propensity weighting. This is a propensity-model quality check (AIPW's per-arm outcome models are the second line of defense); AdjustmentSet.covariates does not achieve balance under the fitted propensity for this comparison",
+                "IPTW": "after weighting; AdjustmentSet.covariates does not achieve balance for this comparison",
             }[request.method]
             raise IdentificationError(
                 f"{request.method} balance gate refused for metric {request.metric.name!r} "

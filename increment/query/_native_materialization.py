@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 import ibis.expr.types as ir
 from ibis import Table
 
+from increment.query._summary_sql import SummarySqlStages
 from increment.query.builders import (
     declared_binary_metrics,
     group_summary,
@@ -183,6 +184,7 @@ class _NativeMaterializationMixin:
         covariate_rows: Sequence[PrePeriodRows] = (),
         by: Sequence[str] = (),
         properties_table: Table | None = None,
+        _sql_stages: SummarySqlStages | None = None,
     ) -> tuple[Table, Table | None, Table | None, Table]:
         """Build summary, pre-period stats, denominator stats, and unit totals.
 
@@ -216,6 +218,11 @@ class _NativeMaterializationMixin:
             if den_events is not None
             else None
         )
+        if _sql_stages is not None:
+            if pre_stats is not None:
+                _sql_stages.mark("pre_period_stats", pre_stats)
+            if den_stats is not None:
+                _sql_stages.mark("denominator_day_stats", den_stats)
         totals = unit_totals(
             spine,
             stats,
@@ -231,6 +238,7 @@ class _NativeMaterializationMixin:
             explicit_covariate=pre_stats_override is not None,
             covariate_missing=covariate_missing,
             data_as_of=data_as_of,
+            _sql_stages=_sql_stages,
             warn_on_censoring=(
                 self._censoring_bookkeeping(metric, exposures, covariate_rows)
                 if warn_on_censoring
@@ -238,6 +246,8 @@ class _NativeMaterializationMixin:
             ),
         )
         totals = winsorize_unit_totals(totals, metric)
+        if _sql_stages is not None:
+            _sql_stages.mark("unit_outcomes", totals)
         # Clustered ratio rows carry their own per-cluster denominator total.
         summary = group_summary(
             totals,
@@ -246,5 +256,6 @@ class _NativeMaterializationMixin:
             ratio_metrics=[metric.name] if metric.type == "ratio" else None,
             uptake=uptake_events is not None,
             binary_metrics=declared_binary_metrics([metric]),
+            _sql_stages=_sql_stages,
         )
         return summary, pre_stats, den_stats, totals

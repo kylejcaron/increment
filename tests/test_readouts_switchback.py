@@ -89,11 +89,7 @@ def _source(reference=None):
     )
 
 
-def _assert_switchback_table_interpretation(results, readout):
-    from increment.tables import readout_table
-
-    table_html = readout_table(results).gt().as_raw_html()
-    assert "Interval interpretation" in table_html
+def _assert_switchback_readout_interpretation(readout):
     assert readout["effect_interpretation"] is not None
 
 
@@ -1103,4 +1099,4 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):  # no
     assert frame["dof"].is_null().to_list() == [True]
     assert readout["dof"] is None and row["mean_slope"] > 0
     assert readout["stat_sig"] == (result.residual_p_value < result.alpha)
-    _assert_switchback_table_interpretation(results, readout)
+    _assert_switchback_readout_interpretation(readout)

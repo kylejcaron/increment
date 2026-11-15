@@ -41,7 +41,7 @@ _REFUSALS = refusals(
         "estimation.priors.mixture.every_weight": "every mixture weight must be > 0",
         "estimation.priors.mixture.every_sigma": "every mixture sigma must be > 0",
         "estimation.priors.mixture.weights_sum": "mixture weights must sum to 1, got {total}",
-        "estimation.priors.student_t.nu_exceeds_200": "nu={nu} exceeds 200, where the mixture expansion is numerically unstable -- and a t with nu > 200 is within 0.6% of a Normal anyway. Use Normal(mu=0, sigma=scale) instead.",
+        "estimation.priors.student_t.nu_exceeds_200": "nu={nu} exceeds 200, where the mixture expansion is numerically unstable; and a t with nu > 200 is within 0.6% of a Normal anyway. Use Normal(mu=0, sigma=scale) instead.",
         "estimation.priors.mixture_posterior.probability": "probability must be in (0, 1), got {probability}",
         "estimation.priors.mixture_posterior.tail_probability": "tail_probability must be in (0, 1), got {tail_probability}",
         "estimation.priors.mixture_posterior.expected_negative_part_scale": "scale must be 'linear' or 'log', got {scale!r}",

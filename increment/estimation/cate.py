@@ -45,7 +45,7 @@ from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.results import Estimate
 
 _IMPUTE_HINT = (
-    "nulls must be resolved before estimation -- impute them with increment.estimators.impute"
+    "nulls must be resolved before estimation; impute them with increment.estimators.impute"
 )
 _INTERACT = "d:"
 # A row fit exactly by the design has HC2 weight e_i^2 / (1 - h_i) = 0/0.
@@ -465,7 +465,7 @@ _REFUSALS = refusals(
         "estimation.cate.cate.level_contradicts_alpha": "level={level!r} contradicts alpha={alpha!r}: the interval confidence implied by that alpha is {expected!r}",
         "estimation.cate.cate.covariate_missing_from": "covariate {transform!r} is missing from the requested point; every interacted covariate that survived pruning is required: {names}",
         "estimation.cate.covariate_declared_both": "covariate {name!r} is declared both {prior_kind!r} and {kind!r}; pick one",
-        "estimation.cate.covariate_declared_knots": "covariate {name!r} is declared with knots {prior_knots!r} and {knots!r}; pick one -- the adjustment and interaction blocks are built from a single basis per covariate",
+        "estimation.cate.covariate_declared_knots": "covariate {name!r} is declared with knots {prior_knots!r} and {knots!r}; pick one; the adjustment and interaction blocks are built from a single basis per covariate",
         "estimation.cate.covariate_columns_rows": "covariate columns have {rows} rows, expected {n} to match y",
         "estimation.cate.thin_cells.one_hot_level_singleton": "one-hot level {name!r} holds {total} unit(s): a level that identifies a single row is fit exactly and its HC2 weight is 0/0. Pool it into another level or drop the covariate",
         "estimation.cate.thin_cells.one_hot_level_interacted_min": "one-hot level {name!r} holds {n_t} treated and {n_c} control unit(s); an interacted level needs at least 2 per arm. Below that the cell is fit exactly, the HC2 weight is 0/0, and the reported standard error is silently far too small. Pool the level or drop the interaction",

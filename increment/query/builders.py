@@ -43,6 +43,7 @@ from increment.errors import (
     refusals,
 )
 from increment.errors import warn as _warn_spec
+from increment.query._summary_sql import SummarySqlStages
 from increment.query.artifact_contract import _aggregate_sum_within_extrema
 from increment.semantics.models import (
     _DAY_BOUNDARY_RE,
@@ -89,12 +90,12 @@ _REFUSALS = refusals(
             "query.builders.cluster_column_missing",
             CapabilityError,
             template="experiment '{experiment}' declares cluster '{cluster}', but the {table} "
-            "table has no such column -- {remedy} Available columns: {columns}",
+            "table has no such column; {remedy} Available columns: {columns}",
         ),
         "query.builders.cluster_undeclared": RefusalSpec(
             "query.builders.cluster_undeclared",
             CapabilityError,
-            template="experiment '{experiment}' declares no cluster -- {operation} has no "
+            template="experiment '{experiment}' declares no cluster; {operation} has no "
             "grain to count over. Count units off first_exposures directly instead.",
         ),
         "query.builders.cluster_size_imbalance": RefusalSpec(
@@ -106,7 +107,7 @@ _REFUSALS = refusals(
             "{target_mean_size:.1f}), above the {threshold:.0%} whole-site refusal "
             "threshold. Cluster randomization balances clusters, not units, so under this "
             "imbalance the whole-site impact is not identified as the unit-weighted "
-            "average treatment effect -- the differenced ratio-of-sums confounds the "
+            "average treatment effect; the differenced ratio-of-sums confounds the "
             "treatment effect with the cluster-size gap. Read the per-unit lift from "
             "run() instead.",
         ),
@@ -114,13 +115,13 @@ _REFUSALS = refusals(
             "query.builders.site_volume_metric_type",
             CapabilityError,
             template="metric '{metric}': site volume is undefined for a {metric_type} "
-            "metric -- {reason}",
+            "metric; {reason}",
         ),
         "query.builders.cluster_total_grain": RefusalSpec(
             "query.builders.cluster_total_grain",
             CapabilityError,
             template="{caller}: {grain} rows cannot combine with the declared cluster "
-            "'{cluster}' -- cluster-robust inference is total-grain only. Read the "
+            "'{cluster}'; cluster-robust inference is total-grain only. Read the "
             "total-grain result instead.",
         ),
         "query.builders.trigger_population.cutoff_not_aware": RefusalSpec(
@@ -130,7 +131,7 @@ _REFUSALS = refusals(
             keys=frozenset({"field", "value"}),
         ),
         "query.builders.invalid_day_boundary": "invalid day_boundary {day_boundary!r}",
-        "query.builders.check_cluster.experiment_arm_no": "experiment '{experiment_name}': arm '{group}' has no clusters in the exposure counts -- cannot check cross-arm cluster-size balance.",
+        "query.builders.check_cluster.experiment_arm_no": "experiment '{experiment_name}': arm '{group}' has no clusters in the exposure counts; cannot check cross-arm cluster-size balance.",
         "query.builders.unknown_part_ratiometric": "Unknown part '{part}' for RatioMetric",
         "query.builders.part_ratiometric": "part='{part}' is only valid for RatioMetric",
         "query.builders.unknown_aggregation": "unknown aggregation {aggregation!r}",
@@ -141,25 +142,25 @@ _REFUSALS = refusals(
             template="window_bound_stats for {metric_type} not implemented",
         ),
         "query.builders.ratiometric_den_stats": "RatioMetric requires den_stats (denominator sufficient stats)",
-        "query.builders.unit_totals_properties": "unit_totals: `properties_table` given without `by` -- nothing to group by",
+        "query.builders.unit_totals_properties": "unit_totals: `properties_table` given without `by`; nothing to group by",
         "query.builders.unit_totals_by": "unit_totals: `by` requires `properties_table`",
-        "query.builders.group_summary_declared": "group_summary: declared cluster column '{cluster}' is not on the totals table -- build totals with unit_totals under the same cluster-declaring experiment. Available columns: {columns}",
+        "query.builders.group_summary_declared": "group_summary: declared cluster column '{cluster}' is not on the totals table; build totals with unit_totals under the same cluster-declaring experiment. Available columns: {columns}",
         "query.builders.group_summary_ratio": "group_summary: ratio_metrics={ratio_names} names a metric whose denominator must come from a 'y_den' column, which is not on the totals table. Available columns: {columns}",
-        "query.builders.group_summary_uptake": "group_summary: uptake=True declares an encouragement uptake fact in a 'd' column, which is not on the totals table -- build totals with unit_totals(uptake_events=...). Available columns: {columns}",
+        "query.builders.group_summary_uptake": "group_summary: uptake=True declares an encouragement uptake fact in a 'd' column, which is not on the totals table; build totals with unit_totals(uptake_events=...). Available columns: {columns}",
         "query.builders.asof_group_summary_metric_type_not_implemented": RefusalSpec(
             "query.builders.asof_group_summary_metric_type_not_implemented",
             UnsupportedRequestError,
             template="asof_group_summary for {metric_type} not implemented",
         ),
-        "query.builders.asof_group_summary_den_panel_retention": "asof_group_summary: den_panel is meaningless for a RetentionMetric (retention has no denominator events -- its denominator is the gated population, which the band-open/maturity gate already produces)",
+        "query.builders.asof_group_summary_den_panel_retention": "asof_group_summary: den_panel is meaningless for a RetentionMetric (retention has no denominator events; its denominator is the gated population, which the band-open/maturity gate already produces)",
         "query.builders.cohort_group_summary": RefusalSpec(
             "query.builders.cohort_group_summary",
             UnsupportedRequestError,
-            template="cohort_group_summary for {metric_type} not implemented -- the cohort axis exists for retention, whose outcome is not a property of a single activity day; use daily_group_summary for metric types that have an independent per-day reading",
+            template="cohort_group_summary for {metric_type} not implemented; the cohort axis exists for retention, whose outcome is not a property of a single activity day; use daily_group_summary for metric types that have an independent per-day reading",
         ),
         "query.builders.cohort_group_summary_unbounded_band": "cohort_group_summary: retention metric '{name}' declares an unbounded band (threshold_days={threshold_days}), so no cohort's outcome ever completes and no cohort could be reported. Declare threshold_days: [a, b] to bound the band.",
         "query.builders.asof_group_summary_completed_requires_uptake_window": "asof_group_summary: completed_windows_only=True under an encouragement design requires bounded outcome and uptake windows",
-        "query.builders.asof_group_summary": "asof_group_summary: completed_windows_only=True is contradictory for retention metric '{name}' -- its band (threshold_days={threshold_days}) is open on the right, so no unit's window ever completes and the gate would admit nothing. Drop completed_windows_only to get the cumulative monitoring series, or declare threshold_days: [a, b] to bound the band.",
+        "query.builders.asof_group_summary": "asof_group_summary: completed_windows_only=True is contradictory for retention metric '{name}'; its band (threshold_days={threshold_days}) is open on the right, so no unit's window ever completes and the gate would admit nothing. Drop completed_windows_only to get the cumulative monitoring series, or declare threshold_days: [a, b] to bound the band.",
         "query.builders.daily_state_not_implemented": RefusalSpec(
             "query.builders.daily_state_not_implemented",
             UnsupportedRequestError,
@@ -1941,19 +1942,19 @@ def warn_censored_units(
         if as_of_date is not None and as_of_date < horizon_date:
             cause = (
                 f"the underlying data, only loaded through {as_of_date} "
-                f"(data_as_of) -- this will resolve once more data "
+                f"(data_as_of); this will resolve once more data "
                 f"arrives, not by changing observation_end"
             )
         else:
             cause = (
-                "the declared observation horizon -- if this "
+                "the declared observation horizon; if this "
                 "intervention's effect persists once the experiment "
                 "stops, set observation_end to extend data collection; "
                 "if it reverts, this censoring is correct"
             )
     else:
         cause = (
-            "the experiment still running -- no end is declared yet, "
+            "the experiment still running; no end is declared yet, "
             "so these units have not had time to mature; this will "
             "resolve as the experiment continues, not by changing "
             "any experiment field"
@@ -1961,7 +1962,7 @@ def warn_censored_units(
         if isinstance(metric, RatioMetric):
             cause += (
                 f"; note this bound reflects observed event dates, "
-                f"not pipeline freshness -- a denominator fact "
+                f"not pipeline freshness; a denominator fact "
                 f"('{metric.denominator.fact}') lagging behind the "
                 f"numerator ('{metric.numerator.fact}') is another "
                 f"possible cause worth checking"
@@ -1981,6 +1982,8 @@ def _aggregate_unit_outcome(
     spine: ir.Table,
     metric: Metric,
     den_stats: ir.Table | None,
+    *,
+    _sql_stages: SummarySqlStages | None = None,
 ) -> ir.Table:
     """Aggregate a bounded dense relation according to its metric kind."""
     keys = dense.select("unit_id", "experiment_id", "group_id", "metric").distinct()
@@ -2012,6 +2015,9 @@ def _aggregate_unit_outcome(
             den_spine = spine.mutate(_spine_variant=ibis.literal("ratio_denominator"))
             den_dense = _dense_unit_days(den_spine, den_stats)
             den_dense = window_bound_stats(den_dense, metric)
+            if _sql_stages is not None:
+                _sql_stages.mark("denominator_outcome_days", den_dense)
+                _sql_stages.mark("numerator_outcomes", num_totals)
             den_keys = (
                 den_dense.select("unit_id", "experiment_id", "group_id")
                 .mutate(metric=ibis.literal(metric.name))
@@ -2019,6 +2025,8 @@ def _aggregate_unit_outcome(
             )
             den_totals = _measure_totals(den_keys, den_dense, metric.denominator.aggregation)
             den_totals = den_totals.select("unit_id", y_den=den_totals.y)
+            if _sql_stages is not None:
+                _sql_stages.mark("denominator_outcomes", den_totals)
             totals = num_totals.join(den_totals, "unit_id")
             return totals.select("unit_id", "experiment_id", "group_id", "metric", "y", "y_den")
         case _:
@@ -2126,6 +2134,7 @@ def unit_totals(  # noqa: PLR0913
     *,
     explicit_covariate: bool = False,
     covariate_missing: str | None = None,
+    _sql_stages: SummarySqlStages | None = None,
 ) -> ir.Table:
     """Aggregate spine + sparse stats to one row per unit (window aggregate).
 
@@ -2196,6 +2205,8 @@ def unit_totals(  # noqa: PLR0913
     covariate_missing : str | None
         Missing-value policy for an explicitly bound CUPED covariate. ``None``
         preserves legacy zero-fill for implicit outcome-preperiod covariates.
+    _sql_stages : SummarySqlStages | None
+        Internal semantic boundaries for SQL previews; no execution changes.
 
     Returns
     -------
@@ -2233,6 +2244,8 @@ def unit_totals(  # noqa: PLR0913
     dense = _dense_unit_days(spine, stats, cluster=cluster, cluster_alias=cluster_alias).mutate(
         metric=ibis.literal(metric.name)
     )
+    if _sql_stages is not None:
+        _sql_stages.mark("dense_outcome_days", dense)
     dense = _censor_to_observable_window(
         dense,
         metric,
@@ -2243,7 +2256,9 @@ def unit_totals(  # noqa: PLR0913
         execute=warn_on_censoring if callable(warn_on_censoring) else None,
     )
     dense = window_bound_stats(dense, metric)
-    totals = _aggregate_unit_outcome(dense, spine, metric, den_stats)
+    if _sql_stages is not None:
+        _sql_stages.mark("eligible_outcome_days", dense)
+    totals = _aggregate_unit_outcome(dense, spine, metric, den_stats, _sql_stages=_sql_stages)
 
     totals = _attach_covariate(
         totals,
@@ -2259,7 +2274,12 @@ def unit_totals(  # noqa: PLR0913
         uptake_events,
         uptake_window_days,
     )
-    return _project_unit_totals(totals, dense, metric, by, properties_table, cluster, cluster_alias)
+    totals = _project_unit_totals(
+        totals, dense, metric, by, properties_table, cluster, cluster_alias
+    )
+    if _sql_stages is not None:
+        _sql_stages.mark("unit_measurements", totals)
+    return totals
 
 
 def emit_centered_moments(
@@ -2268,6 +2288,7 @@ def emit_centered_moments(
     *,
     keys: Sequence[str],
     columns: Mapping[str, str],
+    _sql_stages: SummarySqlStages | None = None,
 ) -> ir.Table:
     """One centered-moment row per *keys* from *table*, shaped by *plan*.
 
@@ -2286,6 +2307,8 @@ def emit_centered_moments(
     an exact 0/1 integer per row of a declared binary outcome, ``NULL``
     elsewhere, so a group's exact count is the integer sum of its rows.
     """
+    if _sql_stages is not None:
+        _sql_stages.mark("analysis_rows", table)
     group_cols = list(keys)
     window = ibis.window(group_by=group_cols)
     live = [variable for variable in plan.variables if variable in columns]
@@ -2297,6 +2320,8 @@ def emit_centered_moments(
         lower, upper = value.min().over(window), value.max().over(window)
         references[ref_name[variable]] = (lower == upper).ifelse(lower, value.mean().over(window))
     centered = table.mutate(**references)
+    if _sql_stages is not None:
+        _sql_stages.mark("group_references", centered)
     residual = {
         variable: centered[columns[variable]] - centered[ref_name[variable]] for variable in live
     }
@@ -2342,6 +2367,8 @@ def emit_centered_moments(
     for moment in plan.masked_moments():
         aggs[plan.name(moment)] = reduced(moment)
     summary = centered.group_by(group_cols).agg(**aggs)
+    if _sql_stages is not None:
+        _sql_stages.mark("group_moments", summary)
 
     x_var = plan.x_variable()
     if x_var is None:
@@ -2372,6 +2399,7 @@ def group_summary(
     ratio_metrics: Collection[str] | None = None,
     uptake: bool = False,
     binary_metrics: Collection[str] | None = None,
+    _sql_stages: SummarySqlStages | None = None,
 ) -> ir.Table:
     """Per-group centered moments from *unit_totals*.
 
@@ -2417,6 +2445,8 @@ def group_summary(
         count (the sum of those 0/1 values); every other metric's is NULL.
         Ignored under *cluster*: a cluster sum is not binary, so a clustered
         row's ``successes`` is always an explicit NULL.
+    _sql_stages : SummarySqlStages | None
+        Internal semantic boundaries for SQL previews; no execution changes.
 
     Returns
     -------
@@ -2479,10 +2509,16 @@ def group_summary(
                 m=per_cluster.metric.isin(ratio_names).ifelse(per_cluster.m_den, per_cluster.m)
             )
         plan = CLUSTER_UPTAKE_GRAIN if uptake else CLUSTER_SIZE_GRAIN
+        if _sql_stages is not None:
+            _sql_stages.mark("cluster_outcomes", per_cluster)
         x_var = plan.x_variable()
         assert x_var is not None
         summary = emit_centered_moments(
-            per_cluster, plan, keys=group_cols, columns={"y": "g", "den": "m", x_var: "x"}
+            per_cluster,
+            plan,
+            keys=group_cols,
+            columns={"y": "g", "den": "m", x_var: "x"},
+            _sql_stages=_sql_stages,
         )
         # A cluster total is never a binary outcome: keep the declared row shape with an
         # explicit NULL count rather than any sum of cluster outcomes.
@@ -2501,7 +2537,9 @@ def group_summary(
                 totals.y.cast("int64"), ibis.null().cast("int64")
             )
         )
-    return emit_centered_moments(totals, UNIT_GRAIN, keys=group_cols, columns=columns)
+    return emit_centered_moments(
+        totals, UNIT_GRAIN, keys=group_cols, columns=columns, _sql_stages=_sql_stages
+    )
 
 
 def daily_group_summary(

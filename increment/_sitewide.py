@@ -46,7 +46,7 @@ _SITEWIDE_CLUSTER_METRIC_TYPE = RefusalSpec(
     "facade.analysis.sitewide_cluster_metric_type",
     CapabilityError,
     template="metric '{metric}' (type '{metric_type}') cannot be served by sitewide() "
-    "with a declared cluster ('{cluster}') -- it does not decompose over the "
+    "with a declared cluster ('{cluster}'); it does not decompose over the "
     "cluster-grain moments the clustered sitewide collapse reads.",
 )
 _SITEWIDE_CLUSTER_COUNTS_MISSING = RefusalSpec(
@@ -69,14 +69,14 @@ _SITEWIDE_CONTROL_MISSING = RefusalSpec(
 _SITEWIDE_NO_TREATMENT_ARM = RefusalSpec(
     "facade.analysis.sitewide_no_treatment_arm",
     InvalidRequestError,
-    template="no treatment arm is enrolled for metric {metric!r} -- only control_group {control_group!r} has any units",
+    template="no treatment arm is enrolled for metric {metric!r}; only control_group {control_group!r} has any units",
 )
 
 _SITEWIDE_ARM_REQUIRED = RefusalSpec(
     "facade.analysis.sitewide_arm_required",
     InvalidRequestError,
     lambda *, metric, arms: (
-        f"metric {metric!r} has {len(arms)} enrolled non-control arms ({arms!r}) -- "
+        f"metric {metric!r} has {len(arms)} enrolled non-control arms ({arms!r}); "
         f"pass arm='<group_id>' to say which one's ship-to-all impact you want. Every "
         f"other enrolled arm is netted out of the counterfactual baseline either way."
     ),
@@ -270,7 +270,7 @@ class SitewideReadouts:
                 "sitewide_evidence",
                 SitewideEvidenceOperation,
                 message=(
-                    "sitewide() needs an experiment built by from_definitions -- a frame, "
+                    "sitewide() needs an experiment built by from_definitions; a frame, "
                     "warehouse or moments experiment retains no raw event stream to sum "
                     "site-wide over (it starts from a pre-melted unit summary or a "
                     "precomputed moments cube, never a raw fact table)."

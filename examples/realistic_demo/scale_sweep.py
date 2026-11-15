@@ -3,7 +3,7 @@
 Regenerates ``examples/realistic_demo/warehouse`` at a series of partition
 counts and times the full 5-metric experiment run (materialized)
 against the real generator (``examples/realistic_demo/generate.py``) and the
-real Hive-partitioned Parquet layout it writes -- not a simplified fixture.
+real Hive-partitioned Parquet layout it writes; not a simplified fixture.
 
 An earlier investigation on a smaller synthetic single-file-per-table
 fixture found that querying a normalized warehouse (dimension joins pushed
@@ -59,7 +59,7 @@ def _load_generate_module():
     ``examples/`` and ``examples/realistic_demo/`` ship without
     ``__init__.py`` (plain namespace packages), so a plain
     ``import examples.realistic_demo.generate`` only works when the repo
-    root is on ``sys.path`` -- true for the acceptance check and the CLI
+    root is on ``sys.path``; true for the acceptance check and the CLI
     entry point below, but not guaranteed for every caller. Loading by
     explicit file path sidesteps that entirely.
     """
@@ -107,12 +107,12 @@ def sweep(
     """Regenerate the warehouse at each partition count, run the full
     5-metric experiment analysis (materialized) timed, and return a
     DataFrame with columns:
-      partitions        -- int, the partition count for this row
-      events_scanned    -- int, total events + orders rows in the warehouse
-      warehouse_bytes    -- int, total size on disk of all Parquet files
-      wall_clock_secs    -- float, materialize() + run() time
-      moments_rows       -- int, row count of the exported moments cube
-      moments_bytes       -- int, size on disk of the exported moments cube
+      partitions        : int, the partition count for this row
+      events_scanned    : int, total events + orders rows in the warehouse
+      warehouse_bytes   : int, total size on disk of all Parquet files
+      wall_clock_secs   : float, materialize() + run() time
+      moments_rows      : int, row count of the exported moments cube
+      moments_bytes     : int, size on disk of the exported moments cube
     One row per requested partition count, in the order given. Restores the
     warehouse to its original size (re-running generate.py at whatever
     partition/user count it had before this function was called) when done,
@@ -173,7 +173,7 @@ def sweep(
             )
     finally:
         # cwd restore must not be skippable by _restore() raising (it calls
-        # generate() again, a second fallible call) -- reorder so the cwd
+        # generate() again, a second fallible call); reorder so the cwd
         # guarantee is unconditional. generate() only ever writes via the
         # absolute _WAREHOUSE path, so restoring cwd first doesn't affect it.
         os.chdir(original_cwd)
@@ -218,7 +218,7 @@ def _restore(original_manifest: dict | None) -> None:
 
 def _format_finding(df: pd.DataFrame) -> str:
     if len(df) < 2:
-        return "Fewer than two scales were swept -- not enough points to assess a trend."
+        return "Fewer than two scales were swept; not enough points to assess a trend."
 
     per_event = df["wall_clock_secs"] / df["events_scanned"]
     first_per_event, last_per_event = per_event.iloc[0], per_event.iloc[-1]
@@ -234,7 +234,7 @@ def _format_finding(df: pd.DataFrame) -> str:
     else:
         trend = (
             f"per-row wall-clock cost grew {ratio:.2f}x over a {scale_ratio:.1f}x "
-            "growth in scanned rows -- a super-linear trend that CONTRADICTS the "
+            "growth in scanned rows; a super-linear trend that CONTRADICTS the "
             "earlier smaller-fixture finding"
         )
 

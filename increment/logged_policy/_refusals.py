@@ -202,7 +202,7 @@ _REFUSALS = refusals(
                 "sandwich interval is only calibrated under one fixed logging law, and inference for "
                 "adaptively collected data (stabilized or adaptively weighted estimators with a "
                 "martingale variance, as in Hadad et al. 2021 and Zhang, Janson and Murphy 2021) is "
-                "not implemented -- evaluate a trace logged by a single policy version"
+                "not implemented; evaluate a trace logged by a single policy version"
             ),
         ),
         "logged_policy.inference.cluster_floor": RefusalSpec(

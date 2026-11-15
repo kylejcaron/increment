@@ -1518,17 +1518,42 @@ purchase_rate / T: lift=+12.37%
 revenue_per_user / T: lift=+10.64%
 ```
 
-The connection is bound once, by `from_definitions`; every view `run` reads and
-every workflow operation reads it from the reader. To
-see the SQL a readout would execute without running it, call
-`increment.query.panel_sql(experiment, reader)` and
-`increment.query.summary_sql(experiment, reader)`; they return per-metric
-queries as strings. `build_panel_for_metric(experiment, reader, metric)` returns
-one metric's panel, spine and event relations for the assigned population, or
-for the triggered population with `population="triggered"`. SQL previews and
-these relations are live warehouse expressions, not operation-owned TEMP
-table references, so they remain executable after another readout refreshes
-materialization.
+The connection is bound once, by `from_definitions`; every view and workflow
+operation reads it from the reader. To inspect the warehouse calculation, call
+`increment.query.panel_sql(experiment, reader)` or
+`increment.query.summary_sql(experiment, reader)`. They return per-metric SQL
+strings. Preview construction does not execute the returned query, but may read
+fact NULL counts to enforce the declared missing-value policy.
+
+`summary_sql` organizes the existing calculation into named query stages:
+
+- `inc_eligible_outcome_days`: observed days admitted by the metric's window,
+  when this boundary can be named independently.
+- `inc_unit_measurements`: one metric value per eligible unit, including the
+  existing zero-event and denominator rules.
+- `inc_analysis_rows`: outcomes and applicable covariates, uptake or cluster
+  totals prepared for aggregation.
+- `inc_group_references` and `inc_group_moments`: group reference values,
+  followed by counts and centered sums.
+
+Follow these stages to inspect the calculation without tracing the whole query
+from its final projection. Shared input branches can retain generated aliases:
+naming them separately must not change whether a source is evaluated once or
+independently. Stage names and formatting are presentation details, not stable
+identifiers to parse in application code.
+
+The output remains a summary for the estimators, not a table of effect
+estimates. For example, `n * ref_y + cy1` reconstructs the outcome sum;
+`successes` is the exact binary count for conversion and retention metrics.
+Optional moment fields remain NULL when unavailable.
+
+`build_panel_for_metric(experiment, reader, metric)` returns the assigned
+population's panel, spine and event relations; pass `population="triggered"` for
+the triggered population. Native SQL previews use live warehouse expressions,
+not operation-owned TEMP tables, so they remain executable after another
+readout refreshes materialization. They express the same calculation but are
+not a transcript of the runtime's materialized statement sequence. Named query
+stages do not promise materialization or faster execution.
 
 !!! note "Why the feed must load past the window"
     Each metric is bounded by its fact's `data_as_of`: the latest date the

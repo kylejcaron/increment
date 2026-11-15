@@ -79,7 +79,7 @@ _REFUSALS = refusals(
             InvalidRequestError,
             lambda *, dups: (
                 f"AdjustmentSet.covariates contains duplicate column(s): "
-                f"{', '.join(sorted(dups))} -- each covariate may be declared once"
+                f"{', '.join(sorted(dups))}; each covariate may be declared once"
             ),
         ),
         "design.allocation_scheme.incompatible": ALLOCATION_SCHEME_INCOMPATIBLE,

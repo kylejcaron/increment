@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "estimation.adjust_dml.dml_residualized_treatment": "DML residualized treatment has zero variation for metric {metric_name!r} (contrast {contrast!r}) -- the propensity model perfectly predicts treatment assignment on this data; theta is not identified",
+        "estimation.adjust_dml.dml_residualized_treatment": "DML residualized treatment has zero variation for metric {metric_name!r} (contrast {contrast!r}); the propensity model perfectly predicts treatment assignment on this data; theta is not identified",
     },
 )
 _raise = raiser(_REFUSALS)

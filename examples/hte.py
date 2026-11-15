@@ -1,10 +1,10 @@
 import marimo
 
-__generated_with = "0.23.15"
+__generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import coeftable as ct
     import marimo as mo
@@ -19,7 +19,17 @@ def _():
         validate_cate,
     )
 
-    return Covariate, ct, estimate_cate, increment, mo, np, pd, targeting_rule, validate_cate
+    return (
+        Covariate,
+        ct,
+        estimate_cate,
+        increment,
+        mo,
+        np,
+        pd,
+        targeting_rule,
+        validate_cate,
+    )
 
 
 @app.cell
@@ -143,8 +153,8 @@ def _(mo):
 
 
 @app.cell
-def _(hetero_df, increment):
-    _experiment, _reader = increment.from_frame(
+def _(hetero_df, increment, mo):
+    headline_experiment, headline_reader = increment.from_frame(
         hetero_df,
         shape="summary",
         unit="user_id",
@@ -152,7 +162,8 @@ def _(hetero_df, increment):
         control="control",
         metrics={"revenue": "mean"},
     )
-    headline = increment.run(_experiment, _reader).readout()
+    headline = increment.run(headline_experiment, headline_reader).readout()
+    mo.show_code(position="above")
     return (headline,)
 
 
@@ -199,14 +210,19 @@ def _(mo):
 
 
 @app.cell
-def _(Covariate, estimate_cate, hetero_df, increment):
+def _(Covariate, mo):
     INTERACT = [
         "spend",
         Covariate(name="tenure", knots=4),
         Covariate(name="platform", kind="categorical"),
     ]
     ADJUST = []
+    mo.show_code(position="above")
+    return ADJUST, INTERACT
 
+
+@app.cell
+def _(ADJUST, INTERACT, estimate_cate, hetero_df, increment, mo):
     hetero_experiment, hetero_reader = increment.from_frame(
         hetero_df,
         shape="summary",
@@ -223,7 +239,8 @@ def _(Covariate, estimate_cate, hetero_df, increment):
         interact=INTERACT,
         adjust=ADJUST,
     )
-    return ADJUST, INTERACT, fit, hetero_experiment, hetero_reader
+    mo.show_code(position="above")
+    return fit, hetero_experiment, hetero_reader
 
 
 @app.cell(hide_code=True)
@@ -368,7 +385,7 @@ def _(mo):
 
 
 @app.cell
-def _(ADJUST, INTERACT, hetero_experiment, hetero_reader, validate_cate):
+def _(ADJUST, INTERACT, hetero_experiment, hetero_reader, mo, validate_cate):
     validation = validate_cate(
         hetero_experiment,
         hetero_reader,
@@ -378,6 +395,7 @@ def _(ADJUST, INTERACT, hetero_experiment, hetero_reader, validate_cate):
         adjust=ADJUST,
         n_groups=5,
     )
+    mo.show_code(position="above")
     return (validation,)
 
 
@@ -391,7 +409,7 @@ def _():
             return "unavailable"
         point = display_number(estimate.value)
         if estimate.lb is None and estimate.ub is None:
-            return f"{point} (point only; interval unavailable)"
+            return f"{point} (point only; bounds unavailable)"
         return f"{point} [{display_number(estimate.lb)}, {display_number(estimate.ub)}]"
 
     return display_estimate, display_number
@@ -599,7 +617,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(Covariate, np):
     CANDIDATES = [
         Covariate(name="spend", knots=4),
@@ -631,8 +649,15 @@ def _(Covariate, np):
     return CANDIDATES, COVARIATE_COLUMNS, top_group_in_sample
 
 
-@app.cell
-def _(CANDIDATES, estimate_cate, increment, simulate, top_group_in_sample, validate_cate):
+@app.cell(hide_code=True)
+def _(
+    CANDIDATES,
+    estimate_cate,
+    increment,
+    simulate,
+    top_group_in_sample,
+    validate_cate,
+):
     null_df = simulate(1_200, 20260813, heterogeneous=False)
     null_experiment, null_reader = increment.from_frame(
         null_df,
@@ -658,11 +683,25 @@ def _(CANDIDATES, estimate_cate, increment, simulate, top_group_in_sample, valid
         interact=CANDIDATES,
         n_groups=5,
     )
-    return null_experiment, null_fit, null_in_sample, null_reader, null_validation
+    return (
+        null_experiment,
+        null_fit,
+        null_in_sample,
+        null_reader,
+        null_validation,
+    )
 
 
 @app.cell(hide_code=True)
-def _(BASE_TAU, display_estimate, display_number, mo, null_fit, null_in_sample, null_validation):
+def _(
+    BASE_TAU,
+    display_estimate,
+    display_number,
+    mo,
+    null_fit,
+    null_in_sample,
+    null_validation,
+):
     _honest_top = null_validation.groups[-1]
     mo.md(
         "\n".join(
@@ -709,8 +748,16 @@ def _(mo):
     return
 
 
-@app.cell
-def _(CANDIDATES, estimate_cate, increment, np, simulate, top_group_in_sample, validate_cate):
+@app.cell(hide_code=True)
+def _(
+    CANDIDATES,
+    estimate_cate,
+    increment,
+    np,
+    simulate,
+    top_group_in_sample,
+    validate_cate,
+):
     _in_sample, _honest, _fired = [], [], 0
     for _seed in range(800_000, 800_040):
         df_i = simulate(1_200, _seed, heterogeneous=False)
@@ -789,7 +836,7 @@ def _(mo):
 
 
 @app.cell
-def _(ADJUST, INTERACT, hetero_experiment, hetero_reader, targeting_rule):
+def _(ADJUST, INTERACT, hetero_experiment, hetero_reader, mo, targeting_rule):
     rule = targeting_rule(
         hetero_experiment,
         hetero_reader,
@@ -799,6 +846,7 @@ def _(ADJUST, INTERACT, hetero_experiment, hetero_reader, targeting_rule):
         adjust=ADJUST,
         fraction=0.40,
     )
+    mo.show_code(position="above")
     return (rule,)
 
 

@@ -32,16 +32,17 @@ from increment.dashboard._data import (
     load_explore,
     metric_names,
     readout_csv,
-    readout_interpretation_text,
     row_for_metric,
     show_exploratory_metrics,
 )
 from increment.dashboard._format import (
+    _result_presentation,
     allocation_evidence,
     allocation_grain_label,
     complete_confidence_set_text,
     count_text,
     date_label,
+    displayed_coverage,
     effect_html,
     esc,
     has_open_side,
@@ -56,13 +57,13 @@ from increment.dashboard._format import (
     percent_text,
     population_label,
     primary_method,
-    primary_tone,
     retained_coverage_alpha_for_row,
     robust_fence,
     tail_word,
     timestamp_label,
 )
 from increment.dashboard._html import (
+    _qualification_block,
     overview_notes,
     overview_table,
     render_details,
@@ -72,6 +73,7 @@ from increment.dashboard._html import (
     results_table,
     results_warnings,
     temporal_figure,
+    temporal_refusal_table,
     unavailable_point_note,
 )
 from increment.dashboard._theme import theme_css, theme_from_payload
@@ -265,7 +267,7 @@ def _build_payload_for_population(
         ),
         "report": {
             "results": _styled(table),
-            "qualifications": readout_interpretation_text(snapshot),
+            "qualifications": _styled(_qualification_block(snapshot, table_footnotes=True)),
             "notes": _report_notes(snapshot),
             "context": _report_context(snapshot),
         },
@@ -297,6 +299,141 @@ def _build_payload_for_population(
             key: _explore_scope(experiment, snapshot, breakout, correction)
             for key, breakout in breakouts.items()
         },
+        "wholeExperiment": _whole_explore_scope(experiment, snapshot, correction),
+    }
+
+
+def _whole_explore_scope(
+    experiment: Experiment, snapshot: DashboardSnapshot, correction: str | None
+) -> dict[str, dict[str, Any]]:
+    """Render one captured whole-experiment packet per temporal view."""
+    packets: dict[str, dict[str, Any]] = {}
+    declared = metric_names(snapshot)
+    selected = [model.name for model in snapshot.exploratory_metrics]
+    for view_key, (view, complete) in _VIEWS.items():
+        refusals: dict[str, dict[str, str]] = {}
+        metric_rows: dict[str, Any] = {}
+        if view == "cumulative_lift":
+            # Each captured lift family retains its metric-specific declared multiplicity.
+            for metric in (*declared, *selected):
+                label = metric
+                try:
+                    series = load_explore(
+                        experiment,
+                        snapshot=snapshot,
+                        metric=metric,
+                        view=view,
+                        completed_windows_only=complete,
+                        breakout=None,
+                    )
+                except CodedError as exc:
+                    refusals[label] = _whole_refusal_detail(exc)
+                else:
+                    metric_rows[label] = series
+        else:
+            try:
+                batch = load_explore(
+                    experiment,
+                    snapshot=snapshot,
+                    metric=None,
+                    view=view,
+                    completed_windows_only=complete,
+                    breakout=None,
+                )
+            except CodedError:
+                batch = None
+            else:
+                for metric in declared:
+                    metric_rows[metric] = batch.filter(
+                        lambda row, metric=metric: row.metric == metric
+                    )
+            if batch is None:
+                for metric in declared:
+                    try:
+                        series = load_explore(
+                            experiment,
+                            snapshot=snapshot,
+                            metric=metric,
+                            view=view,
+                            completed_windows_only=complete,
+                            breakout=None,
+                        )
+                    except CodedError as exc:
+                        refusals[metric] = _whole_refusal_detail(exc)
+                    else:
+                        metric_rows[metric] = series
+            for metric in selected:
+                label = metric
+                try:
+                    series = load_explore(
+                        experiment,
+                        snapshot=snapshot,
+                        metric=metric,
+                        view=view,
+                        completed_windows_only=complete,
+                        breakout=None,
+                    )
+                except CodedError as exc:
+                    refusals[label] = _whole_refusal_detail(exc)
+                else:
+                    metric_rows[label] = series
+        for metric, series in metric_rows.items():
+            metric_rows[metric] = series.filter(
+                lambda row: getattr(row, "method_role", "decision") == "decision"
+            )
+        for metric in (*declared, *selected):
+            if metric in metric_rows and not metric_rows[metric] and metric not in refusals:
+                refusals[metric] = {
+                    "reason": "The captured view returned no points for this metric.",
+                    "code": "",
+                    "context": "",
+                }
+        parts = [series for series in metric_rows.values() if series]
+        if not parts:
+            packets[view_key] = _whole_refusal_packet(snapshot, view_key, refusals)
+            continue
+        data = parts[0]
+        for part in parts[1:]:
+            data = data.concat(part)
+        packets[view_key] = _render_entry(
+            snapshot,
+            data,
+            metric=None,
+            view=view,
+            complete=complete,
+            breakout=None,
+            correction=correction,
+            whole=True,
+            refusals=refusals,
+        )
+    return packets
+
+
+def _whole_refusal_detail(exc: CodedError) -> dict[str, str]:
+    return {
+        "reason": str(exc),
+        "code": exc.code,
+        "context": repr(dict(exc.context)),
+    }
+
+
+def _whole_refusal_packet(
+    snapshot: DashboardSnapshot,
+    view_key: str,
+    refusals: Mapping[str, Mapping[str, str]],
+) -> dict[str, Any]:
+    title = _VIEW_TITLES[_VIEWS[view_key][0]]
+    notes = [f"{metric}: unavailable" for metric in refusals]
+    body = (
+        temporal_refusal_table(snapshot, refusals)
+        if refusals
+        else f'<p class="inc-dashboard-note">{esc(title)} unavailable.</p>'
+    )
+    return {
+        "html": _styled(body),
+        "caption": f"{title} · no core metric data available",
+        "notes": notes,
+        "pointCount": 0,
     }
 
 
@@ -323,24 +460,22 @@ def _primary(snapshot: DashboardSnapshot) -> dict[str, Any]:
             "effect": "N/A",
             "interval": "",
             "levelLabel": None,
-            "method": f"No decision result for {key}",
             "tone": "neutral",
+            "result": "Unavailable",
         }
-    level = row.get("level")
     coverage_alpha = retained_coverage_alpha_for_row(snapshot, row)
     method_row = {**row, "coverage_alpha": coverage_alpha}
+    coverage = displayed_coverage(method_row)
+    tone, result = _result_presentation(row)
     return {
         "key": key,
         "label": _label(key),
         "effect": _plain(effect_html(row)),
         "interval": _plain(headline_interval(row)),
-        "levelLabel": (
-            None
-            if level is None or is_missing(level)
-            else percent_text(float(level), coverage_alpha)
-        ),
+        "levelLabel": (None if coverage is None else percent_text(*coverage)),
         "method": _plain(primary_method(method_row)),
-        "tone": primary_tone(row),
+        "tone": tone,
+        "result": result,
     }
 
 
@@ -507,12 +642,21 @@ _INFERENCE_STATEMENTS = {
 }
 
 
+def _guardrail_display_note(row: Mapping[str, Any], label: str, alpha: float | None) -> str | None:
+    level = row.get("level")
+    retained = None if level is None or is_missing(level) else (float(level), alpha)
+    shown = displayed_coverage({**row, "coverage_alpha": alpha})
+    if row.get("role") == "guardrail" and shown is not None and shown != retained:
+        return f"Displayed guardrail interval for {label}: {percent_text(*shown)} one-sided."
+    return None
+
+
 def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     """The inference statements a reader needs beside the report table, as plain text.
 
-    Levels, inference kinds and tested directions are read from the captured rows, never derived
-    from policy. Confidence sets not represented by the central interval keep every endpoint,
-    and each unavailability reason is kept as the engine reported it.
+    Captured interval budgets stay distinct from directional guardrail display coverage.
+    Retained confidence sets keep every endpoint, and each unavailability reason is kept
+    as the engine reported it.
     """
     rows: tuple[Mapping[str, Any], ...] = snapshot.readout_rows
     notes: list[str] = []
@@ -548,10 +692,10 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
         return f"{prefix}{kind} intervals, {tail}"
 
     if len(groups) == 1:
-        notes.append(f"All results: {group_label(next(iter(groups)))}.")
+        notes.append(f"Retained intervals for all results: {group_label(next(iter(groups)))}.")
     else:
         notes.append(
-            "Intervals by metric: "
+            "Retained intervals by metric: "
             + "; ".join(f"{group_label(key)} ({', '.join(names)})" for key, names in groups.items())
             + "."
         )
@@ -562,6 +706,12 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     }
     if len(levels) > 1:
         notes.append("Interval levels differ; compare each interval only with its own level.")
+    for row in rows:
+        note = _guardrail_display_note(
+            row, name(row), retained_coverage_alpha_for_row(snapshot, row)
+        )
+        if note is not None:
+            notes.append(note)
     kinds = dict.fromkeys(str(row.get("inference", "fixed")) for row in rows)
     notes.extend(
         _INFERENCE_STATEMENTS.get(kind, f"Inference: {inference_word(kind)}.") for kind in kinds
@@ -680,11 +830,10 @@ def _explore_scope(
                 )
             )
             if batch is not None:
-                grouped: dict[str, list[Any]] = {metric: [] for metric in names}
-                for row in batch:
-                    if row.metric in grouped:
-                        grouped[row.metric].append(row)
-                batch_by_metric = {metric: type(batch)(rows) for metric, rows in grouped.items()}
+                batch_by_metric = {
+                    metric: batch.filter(lambda row, metric=metric: row.metric == metric)
+                    for metric in names
+                }
         for metric in names:
             # The metric=None batch covers declared metrics only; added metrics load their own.
             entries[metric][view_key] = _explore_entry(
@@ -791,13 +940,16 @@ def _render_entry(
     snapshot: DashboardSnapshot,
     data: Any,
     *,
-    metric: str,
+    metric: str | None,
     view: ExploreView,
     complete: bool,
     breakout: tuple[str | None, str] | None,
     correction: str | None,
+    whole: bool = False,
+    refusals: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
-    rows = [row for row in data if getattr(row, "method_role", "decision") == "decision"]
+    data = data.filter(lambda row: getattr(row, "method_role", "decision") == "decision")
+    rows = list(data)
     subject = "Whole experiment" if breakout is None else f"By {breakout[1]}"
     title = _VIEW_TITLES[view] + (" · completed windows only" if complete else "")
     if not rows:
@@ -816,16 +968,19 @@ def _render_entry(
             "notes": [reason],
             "pointCount": 0,
         }
-    data = type(data)(rows)
-    figure = temporal_figure(snapshot, data, metric=metric, view=view)
+    figure = temporal_figure(
+        snapshot, data, metric=metric, view=view, metric_refusals=refusals if whole else None
+    )
     notes = _notes(
         snapshot, rows, metric=metric, view=view, complete=complete, correction=correction
     )
+    if refusals:
+        notes.extend(f"{name}: unavailable" for name in refusals)
     gaps = unavailable_point_note(data.to_frame())
     if gaps is not None:
         notes.append(gaps)
     first, last = min(row.ds for row in rows), max(row.ds for row in rows)
-    series = len({(row.dimension_value, row.group_id) for row in rows})
+    series = len({(row.metric, row.dimension_value, row.group_id) for row in rows})
     caption = (
         f"{subject} · {title} · {_day(first)} → {_day(last)} · "
         f"{series} series · {monitoring_sentence(rows, view=view)}"
@@ -864,7 +1019,7 @@ def _notes(
     snapshot: DashboardSnapshot,
     rows: list[Any],
     *,
-    metric: str,
+    metric: str | None,
     view: str,
     complete: bool,
     correction: str | None,
@@ -906,10 +1061,17 @@ def _notes(
             "freezes at its last in-window value, so a flat tail is not evidence of recent "
             "observations."
         )
-    if rows[0].ds_basis == "cohort":
+    cohorts = list(dict.fromkeys(row.metric for row in rows if row.ds_basis == "cohort"))
+    calendar = list(dict.fromkeys(row.metric for row in rows if row.ds_basis != "cohort"))
+    if cohorts:
+        names = ", ".join(_label(name) for name in cohorts)
         notes.append(
-            "Dates are exposure cohorts: each unit's own exposure date, not the observation date."
+            (f"{names}: " if calendar else "")
+            + "Dates are exposure cohorts: each unit's own exposure date, not the observation date."
         )
+        if calendar:
+            names = ", ".join(_label(name) for name in calendar)
+            notes.append(f"{names}: dates are observation dates.")
     if level_text:
         notes.append(
             (
@@ -925,6 +1087,7 @@ def _notes(
             )
         )
     if segmented:
+        assert metric is not None
         notes.append(
             _segment_note(
                 snapshot,
@@ -937,7 +1100,16 @@ def _notes(
             )
         )
     if lift:
-        notes.extend(_lift_notes(snapshot, rows, metric, segmented=segmented))
+        notes.extend(
+            note
+            for name in dict.fromkeys(row.metric for row in rows)
+            for note in _lift_notes(
+                snapshot,
+                [row for row in rows if row.metric == name],
+                name,
+                segmented=segmented,
+            )
+        )
     return notes
 
 
@@ -963,14 +1135,17 @@ def _segment_note(
             "looks over time."
         )
     headline = row_for_metric(snapshot, metric)
-    level = None if headline is None else headline.get("level")
-    versus = (
-        ""
-        if headline is None or level is None or is_missing(level)
-        else (
-            f" (the headline uses {percent_text(float(level), retained_coverage_alpha_for_row(snapshot, headline))})"
+    coverage = (
+        None
+        if headline is None
+        else displayed_coverage(
+            {
+                **headline,
+                "coverage_alpha": retained_coverage_alpha_for_row(snapshot, headline),
+            }
         )
     )
+    versus = "" if coverage is None else (f" (the headline uses {percent_text(*coverage)})")
     declared = f" ({correction})" if correction else ""
     return (
         f"Segment "
