@@ -30,7 +30,9 @@ from increment._source_types import (
     EvidenceProvider,
     _OwnedLoaderAdapter,
     declared_evidence,
+    is_custom_source,
 )
+from increment.decision import ContrastContext
 
 
 def _validate(provider: Any, request: object) -> None:
@@ -152,3 +154,15 @@ class _BuiltInEvidenceProvider(_OwnedLoaderAdapter):
 def native_scope_provider(source: Any) -> EvidenceProvider:
     """Provide a complete typed adapter for a run-owned built-in loader."""
     return _BuiltInEvidenceProvider(source)
+
+
+def scope_provider(source: Any) -> EvidenceProvider:
+    """Select the evidence scope adapter for custom, built-in, or contrast sources."""
+
+    if isinstance(source.context, ContrastContext):
+        from increment._evidence_scopes import switchback_scope_provider
+
+        return switchback_scope_provider(source)
+    if is_custom_source(source):
+        return source
+    return native_scope_provider(source)

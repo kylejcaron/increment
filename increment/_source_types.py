@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeGuard, runtime_checkable
 
@@ -208,6 +208,29 @@ class EvidenceCapabilities:
     capture: Literal["snapshot", "immutable", "live"] = "live"
     assignment_relation: Literal["none", "ledger", "reduced"] = "none"
     grain_route: str | None = None
+    value_scale_overrides: bool | None = None
+    fixed_triggered: bool | None = None
+
+
+def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
+    """Resolve legacy declarations to their current semantic capabilities."""
+    artifact = value.kind == "artifact" or "artifact_experiment" in value.operations
+    native_moments = (
+        not artifact and value.kind == "moments" and "moments_source" in value.operations
+    )
+    return replace(
+        value,
+        value_scale_overrides=(
+            value.value_scale_overrides
+            if value.value_scale_overrides is not None
+            else not native_moments
+        ),
+        fixed_triggered=(
+            value.fixed_triggered
+            if value.fixed_triggered is not None
+            else artifact or value.kind == "definitions"
+        ),
+    )
 
 
 MOMENTS_BATCH_OWNERS: dict[
@@ -394,7 +417,9 @@ class BoundResolver:
         if not isinstance(declared, EvidenceCapabilities):
             return [provider_refusal("kernel.provider.capabilities_missing")]
         for ref in source_refs:
-            if ref.capabilities is not None and ref.capabilities != declared:
+            if ref.capabilities is not None and effective_capabilities(
+                ref.capabilities
+            ) != effective_capabilities(declared):
                 return [
                     provider_refusal("kernel.provider.capability_mismatch", source_ref=ref.name)
                 ]

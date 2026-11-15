@@ -22,10 +22,7 @@ from increment.estimation.sitewide import (
     sitewide_impact_ratio,
 )
 from increment.evidence import evidence_provider
-from increment.readouts._whole_window import (
-    _UNKNOWN_METRIC,
-    _is_artifact_source,
-)
+from increment.readouts._whole_window import _UNKNOWN_METRIC
 from increment.semantics.models import Metric, RatioMetric
 
 if TYPE_CHECKING:
@@ -253,14 +250,15 @@ class SitewideReadouts:
         ):
             _refuse(_SITEWIDE_REQUIRES_RANDOMIZED)
         source = self._src
-        if _is_artifact_source(source):
-            if "sitewide_evidence" not in declared_evidence(source).operations:
+        capabilities = declared_evidence(source)
+        if "artifact_experiment" in capabilities.operations:
+            if "sitewide_evidence" not in capabilities.operations:
                 from increment._evidence_refusals import refuse_operation
 
                 refuse_operation(
                     source,
                     "sitewide_evidence",
-                    tuple(sorted(declared_evidence(source).operations)),
+                    tuple(sorted(capabilities.operations)),
                     route="sitewide() requires a published site-volume evidence extension",
                 )
             src = cast("SitewideEvidenceOperation", source)

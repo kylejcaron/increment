@@ -398,3 +398,59 @@ def test_specification_identity_distinguishes_request_declarations(question):
     assert restored.execution_identity_hash == changed.execution_identity_hash
     assert changed.analysis_spec_hash != experiment.analysis_spec_hash
     assert changed.execution_identity_hash != experiment.execution_identity_hash
+
+
+def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
+    from types import SimpleNamespace
+
+    from increment._source_types import effective_capabilities
+    from increment.evidence import BoundResolver
+
+    experiment = _recorded_experiment()
+    assert experiment.hash() == "2e2ae2d21857c4ff5b07d3f69fdcf14e6d5866faef4a8169983cbae04dad4278"
+    reference = experiment.source_refs[0]
+    capabilities = reference.capabilities
+    assert capabilities is not None
+
+    for field, legacy_value, nonlegacy_value in (
+        ("value_scale_overrides", True, False),
+        ("fixed_triggered", False, True),
+    ):
+        explicit_legacy = dataclasses.replace(capabilities, **{field: legacy_value})
+        legacy_experiment = dataclasses.replace(
+            experiment,
+            source_refs=(dataclasses.replace(reference, capabilities=explicit_legacy),),
+        )
+        assert legacy_experiment.to_json() == experiment.to_json()
+        assert legacy_experiment.hash() == experiment.hash()
+
+        changed = dataclasses.replace(capabilities, **{field: nonlegacy_value})
+        changed_experiment = dataclasses.replace(
+            experiment,
+            source_refs=(dataclasses.replace(reference, capabilities=changed),),
+        )
+        restored = Experiment.from_json(changed_experiment.to_json())
+        restored_capabilities = restored.source_refs[0].capabilities
+        assert restored_capabilities is not None
+        assert restored.to_json() == changed_experiment.to_json()
+        assert restored.hash() == changed_experiment.hash()
+        assert getattr(restored_capabilities, field) is nonlegacy_value
+        assert getattr(effective_capabilities(restored_capabilities), field) is nonlegacy_value
+
+        provider = SimpleNamespace(
+            evidence=changed,
+            context=SimpleNamespace(source_digest=None),
+        )
+        refusals = BoundResolver(cast(EvidenceProvider, provider)).verify((reference,))
+        assert [refusal.code for refusal in refusals] == ["kernel.provider.capability_mismatch"]
+
+    native_moments = dataclasses.replace(
+        capabilities, kind="moments", operations=frozenset({"moments_source"})
+    )
+    assert effective_capabilities(native_moments).value_scale_overrides is False
+    assert effective_capabilities(native_moments).fixed_triggered is False
+    artifact_moments = dataclasses.replace(
+        native_moments, operations=frozenset({"moments_source", "artifact_experiment"})
+    )
+    assert effective_capabilities(artifact_moments).value_scale_overrides is True
+    assert effective_capabilities(artifact_moments).fixed_triggered is True

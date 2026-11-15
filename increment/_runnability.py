@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -18,9 +18,10 @@ from increment._analysis_config import (
     select_metrics,
 )
 from increment._canonical import declaration_value
+from increment._evidence_refusals import _DeclaredEvidence
 from increment._evidence_types import SourceContext
 from increment._readout_request import ReadoutRequest, validate_request
-from increment._source_types import EvidenceCapabilities
+from increment._source_types import EvidenceCapabilities, effective_capabilities
 from increment.decision import (
     CompiledDecisionPlan,
     margin_less_guardrail_route,
@@ -36,10 +37,14 @@ if TYPE_CHECKING:
 _CONFIGS = TypeAdapter(tuple[ResolvedMetricConfig, ...])
 
 
-@dataclass(frozen=True)
-class _DeclaredSource:
-    context: SourceContext
-    evidence: EvidenceCapabilities
+class _DeclaredSource(_DeclaredEvidence):
+    __slots__ = ("context",)
+
+    def __init__(
+        self, context: SourceContext, evidence: EvidenceCapabilities, constructor: str
+    ) -> None:
+        super().__init__(evidence, constructor)
+        self.context = context
 
 
 def _compliance_only_request(
@@ -190,24 +195,18 @@ def _refuse_trigger(experiment: Any, scope: Any, operation: str) -> None:
         route = "switchback"
     else:
         capabilities = _declared_capabilities(experiment)
-        if (
-            capabilities is None
-            or "trigger_name" not in recorded
-            or any("triggered" in declared.populations for declared in capabilities)
-        ):
+        if capabilities is None or "trigger_name" not in recorded:
             return
-        from increment.readouts._evidence import (
-            ARTIFACT_ROUTE,
-            NATIVE_ROUTE,
-            declared_day_axis_route,
-        )
+        from increment.readouts._evidence import declared_day_axis_route
 
         route = declared_day_axis_route(capabilities[0])
         inference = recorded.get("plan", {}).get("inference") or {}
-        if recorded["trigger_name"] is not None and (
-            operation != "run"
-            or inference.get("registration") is not None
-            or route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
+        registered = inference.get("registration") is not None
+        if operation != "run":
+            if any("triggered" in declared.populations for declared in capabilities):
+                return
+        elif recorded["trigger_name"] is not None and (
+            registered or effective_capabilities(capabilities[0]).fixed_triggered
         ):
             return
     from increment._day_axis import _TRIGGER_UNSUPPORTED
@@ -561,7 +560,7 @@ def _validate_declared_day_axis(
             estimands=request.estimands,
             completed_windows_only=request.completion_policy,
         ),
-        src=_DeclaredSource(request.context, capabilities),
+        src=_DeclaredSource(request.context, capabilities, declaration["source_name"]),
         design=request.design,
         plan=request.plan,
         route=declared_day_axis_route(capabilities),
@@ -578,10 +577,14 @@ def _validate_scope_request(
     check: Any,
     refusals: list[CodedError],
 ) -> None:
-    if scope.view != "asof":
-        check(validate_request, request)
-    if scope.view in {"daily", "asof"}:
+    if scope.view == "daily":
         check(_validate_declared_day_axis, declaration, request, operation, capabilities)
+        if not refusals:
+            check(validate_request, request)
+    elif scope.view == "asof":
+        check(_validate_declared_day_axis, declaration, request, operation, capabilities)
+    else:
+        check(validate_request, request)
     if operation == "run_asof_lift" and not refusals:
         validation_request = request
         if capabilities.kind == "moments" and capabilities.sequential_capture == "replay":
@@ -641,7 +644,7 @@ def readout_refusals(
         scalar_method_evidence=False if scalar is None else scalar.method_evidence,
         scalar_breakout_evidence=False if scalar is None else scalar.breakout_evidence,
         capabilities=capabilities.grains,
-        grain_route=capabilities.grain_route,
+        grain_route=capabilities.grain_route or "use a source with the requested day axis",
         source_breakouts=capabilities.breakouts,
         source_name=declaration["source_name"],
         shape=capabilities.shape,

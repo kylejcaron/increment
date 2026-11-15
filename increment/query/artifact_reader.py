@@ -860,6 +860,8 @@ class ArtifactMomentSource(SequentialSourceMixin):
                     else "none"
                 )
             ),
+            value_scale_overrides=True,
+            fixed_triggered=True,
         )
 
     def identity_assignment_evidence(self, request: Any) -> Any:

@@ -13,8 +13,6 @@ increment/_execute.py custom 1
 increment/_exploratory.py route 1
 increment/_health.py unwrap 1
 increment/_planning_baseline.py custom 1
-increment/_runnability.py route 2
-increment/_sitewide.py route 1
 increment/_source_diagnostics.py custom 2
 increment/_source_diagnostics.py route 1
 increment/kernel/context.py custom 1
@@ -24,7 +22,3 @@ increment/readouts/_line2.py route 2
 increment/readouts/_line3.py custom 1
 increment/readouts/_metric_rows.py custom 2
 increment/readouts/_run.py unwrap 2
-increment/readouts/_run_acquisition.py custom 1
-increment/readouts/_whole_window.py custom 1
-increment/readouts/_whole_window.py route 8
-increment/readouts/_whole_window.py unwrap 2

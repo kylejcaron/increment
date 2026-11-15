@@ -900,6 +900,8 @@ def test_concurrent_definitions_builders_retain_both_catalog_entries(
 def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     tmp_path, seeded_defs, seeded_con
 ):
+    from increment._source_types import effective_capabilities
+
     definitions = tmp_path / "definitions"
     shutil.copytree(seeded_defs, definitions)
 
@@ -938,10 +940,32 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     assert [error.code for error in online_resolver._verify(changed, provider)] == [
         "kernel.provider.digest_mismatch"
     ]
-    assert offline.source_refs[0].capabilities == online.source_refs[0].capabilities
+
+    offline_capabilities = offline.source_refs[0].capabilities
+    online_capabilities = online.source_refs[0].capabilities
+    assert offline_capabilities is not None and online_capabilities is not None
+    assert effective_capabilities(offline_capabilities) == effective_capabilities(
+        online_capabilities
+    )
     assert runnable(offline, "purchase_rate") == runnable(online, "purchase_rate")
     assert Experiment.from_json(online.to_json()).hash() == online.hash()
+    assert (
+        Experiment.from_json(online.to_json()).analysis_context["operation_parameters"]
+        == online.analysis_context["operation_parameters"]
+    )
     assert Experiment.from_json(offline.to_json()).hash() == offline.hash()
+
+    for field in ("value_scale_overrides", "fixed_triggered"):
+        capabilities = offline.source_refs[0].capabilities
+        assert capabilities is not None
+        changed_capabilities = replace(capabilities, **{field: False})
+        changed_ref = replace(offline.source_refs[0], capabilities=changed_capabilities)
+        changed_experiment = replace(offline, source_refs=(changed_ref,))
+        restored = Experiment.from_json(changed_experiment.to_json())
+        assert restored.hash() != offline.hash()
+        assert [
+            error.code for error in online_resolver._verify(restored.source_refs, provider)
+        ] == ["kernel.provider.capability_mismatch"]
 
 
 @pytest.mark.integration

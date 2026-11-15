@@ -67,6 +67,7 @@ from increment._source_types import (
     _BuiltinMomentSource,
     compliance_summary_series,
     declared_evidence,
+    effective_capabilities,
     is_builtin_source,
     is_custom_source,
 )
@@ -184,6 +185,11 @@ def metric_authenticator(src: EvidenceSource) -> Any:
 def prior_exclusions(src: EvidenceSource) -> tuple[str, ...]:
     """Metrics whose global prior the source excludes for legacy replay."""
     return tuple(getattr(src, "_legacy_prior_exclusions", ()))
+
+
+def effective_source_capabilities(src: EvidenceSource) -> EvidenceCapabilities:
+    """Resolve one source's declared capabilities for preflight interpretation."""
+    return effective_capabilities(declared_evidence(src))
 
 
 def source_route(src: EvidenceSource) -> SourceRoute:

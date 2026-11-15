@@ -1635,3 +1635,138 @@ def test_artifact_facade_keeps_warehouse_fit_declaration(tmp_path) -> None:
     assert source.evidence.method_fit == "warehouse"
     assert callable(source.fit_cuped_multicovariate)
     analysis[1].close()
+
+
+def test_whole_window_scale_override_uses_declared_semantic_support() -> None:
+    import dataclasses
+    from types import SimpleNamespace
+
+    from increment._analysis_config import UNSET
+    from increment._source_types import EvidenceCapabilities
+    from increment.errors import UnsupportedRequestError
+    from increment.readouts._whole_window import WholeWindowRequest, validate_whole_window
+
+    capabilities = EvidenceCapabilities(
+        kind="moments",
+        grains=frozenset({"total"}),
+        breakouts=(),
+        shape=None,
+        operations=frozenset({"moments_source"}),
+        unit_rows=False,
+        raw_outcomes=False,
+        method_fit="none",
+        compliance_axis="none",
+        count_grains=frozenset(),
+        populations=frozenset({"assigned"}),
+        sequential_capture="none",
+        scalar=None,
+        available_covariates=None,
+        value_scale_overrides=True,
+    )
+    source: Any = SimpleNamespace(evidence=capabilities, context=SimpleNamespace(trigger_name=None))
+    request = WholeWindowRequest(
+        metrics=(),
+        estimands=None,
+        value_scale=cast(Any, {"metric": "relative"}),
+        population="assigned",
+        coherence="captured",
+        decision_method=UNSET,
+        sensitivity_methods=UNSET,
+        prior=UNSET,
+    )
+    plan: Any = SimpleNamespace(inference=SimpleNamespace(registration=None))
+
+    validate_whole_window(
+        request,
+        src=source,
+        plan=plan,
+        design=None,
+        experiment=None,
+        experiment_id="experiment",
+        route="moments",
+    )
+
+    unsupported: Any = SimpleNamespace(
+        evidence=dataclasses.replace(capabilities, value_scale_overrides=False),
+        context=source.context,
+    )
+    with pytest.raises(UnsupportedRequestError) as refusal:
+        validate_whole_window(
+            request,
+            src=unsupported,
+            plan=plan,
+            design=None,
+            experiment=None,
+            experiment_id="experiment",
+            route="moments",
+        )
+    assert refusal.value.code == "readout.randomized.value_scale"
+
+
+def test_whole_window_trigger_support_uses_declared_semantic_capability() -> None:
+    import dataclasses
+    from types import SimpleNamespace
+
+    from increment._analysis_config import UNSET
+    from increment._source_types import EvidenceCapabilities
+    from increment.errors import CapabilityError
+    from increment.readouts._whole_window import WholeWindowRequest, validate_whole_window
+
+    capabilities = EvidenceCapabilities(
+        kind="moments",
+        grains=frozenset({"total"}),
+        breakouts=(),
+        shape=None,
+        operations=frozenset({"moments_source"}),
+        unit_rows=False,
+        raw_outcomes=False,
+        method_fit="none",
+        compliance_axis="none",
+        count_grains=frozenset({"unit", "triggered"}),
+        populations=frozenset({"assigned", "triggered"}),
+        sequential_capture="none",
+        scalar=None,
+        available_covariates=None,
+        fixed_triggered=True,
+    )
+    source: Any = SimpleNamespace(
+        evidence=capabilities, context=SimpleNamespace(trigger_name="trigger")
+    )
+    request = WholeWindowRequest(
+        metrics=(),
+        estimands=None,
+        value_scale=None,
+        population="triggered",
+        coherence="captured",
+        decision_method=UNSET,
+        sensitivity_methods=UNSET,
+        prior=UNSET,
+    )
+    plan: Any = SimpleNamespace(inference=SimpleNamespace(registration=None))
+    experiment: Any = SimpleNamespace(name="experiment", trigger="trigger")
+
+    validate_whole_window(
+        request,
+        src=source,
+        plan=plan,
+        design=None,
+        experiment=experiment,
+        experiment_id="experiment",
+        route="moments",
+    )
+
+    unsupported: Any = SimpleNamespace(
+        evidence=dataclasses.replace(capabilities, fixed_triggered=False),
+        context=source.context,
+    )
+    with pytest.raises(CapabilityError) as refusal:
+        validate_whole_window(
+            request,
+            src=unsupported,
+            plan=plan,
+            design=None,
+            experiment=experiment,
+            experiment_id="experiment",
+            route="moments",
+        )
+    assert refusal.value.code == "facade.analysis.trigger_unsupported"

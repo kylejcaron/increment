@@ -324,6 +324,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 "ledger" if self._experiment.assignment_ledger is not None else "reduced"
             ),
             sql_grains=frozenset({"total"}),
+            value_scale_overrides=True,
+            fixed_triggered=True,
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:

@@ -1604,6 +1604,10 @@ class MomentsSource(SequentialSourceMixin):
             ),
             available_covariates=None,
             assignment_relation="reduced" if self._assignment_counts is not None else "none",
+            value_scale_overrides=(
+                "artifact_experiment" in self.operations or "moments_source" not in self.operations
+            ),
+            fixed_triggered="artifact_experiment" in self.operations,
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -2498,6 +2502,8 @@ class BreakoutMomentsSource(SequentialSourceMixin):
                 covariate_grains=None,
             ),
             available_covariates=None,
+            value_scale_overrides=True,
+            fixed_triggered=False,
         )
 
     @property

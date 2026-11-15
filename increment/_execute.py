@@ -35,7 +35,6 @@ from increment._runnability import (
 from increment._source_admission import (
     _arm_experiment,
     _require_analysis_operation,
-    _require_arm_binding,
 )
 from increment._source_types import is_custom_source
 from increment.decision import ContrastAnalysisState
@@ -136,18 +135,6 @@ def readout_source(
     return source
 
 
-def _validate_trigger_fires_in_every_arm(
-    binding: SourceBinding, source: object | None = None
-) -> None:
-    from increment.readouts._evidence import validate_trigger_fires_in_every_arm
-
-    _require_arm_binding(binding, "experiment")
-    validate_trigger_fires_in_every_arm(
-        cast(Any, binding.source if source is None else source),
-        binding.experiment.trigger,
-    )
-
-
 def whole_window_readouts(binding: SourceBinding) -> WholeWindowReadouts:
     """The whole-window reader over this binding's source, plan and design."""
     require_arm_state(binding, "run")
@@ -158,7 +145,6 @@ def whole_window_readouts(binding: SourceBinding) -> WholeWindowReadouts:
         experiment=_arm_experiment(binding),
         experiment_id=binding.experiment_name,
         readout_source=partial(readout_source, binding),
-        validate_trigger=partial(_validate_trigger_fires_in_every_arm, binding),
         arm_moments=readouts.arm_moments,
         execution_context_scope=execution_context_scope,
         registered_run=readouts.run,

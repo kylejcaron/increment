@@ -14,7 +14,11 @@ from pydantic import BaseModel
 
 from increment._canonical import canonical_json_bytes
 from increment._evidence_types import EvidenceScope
-from increment._source_types import EvidenceCapabilities, ScalarEvidenceDeclaration
+from increment._source_types import (
+    EvidenceCapabilities,
+    ScalarEvidenceDeclaration,
+    effective_capabilities,
+)
 from increment.errors import CodedError, _thaw
 from increment.kernel.contracts import (
     AnalysisRequest,
@@ -233,8 +237,13 @@ def _capability_payload(value: EvidenceCapabilities | None) -> dict[str, object]
     if value is None:
         return None
     payload = _json_value(value)
-    # Unset, the route field is absent, so declarations recorded before it existed keep
-    # their canonical bytes and hashes.
+    defaults = effective_capabilities(
+        dataclasses.replace(value, value_scale_overrides=None, fixed_triggered=None)
+    )
+    for name in ("value_scale_overrides", "fixed_triggered"):
+        if getattr(value, name) is None or getattr(value, name) == getattr(defaults, name):
+            del payload[name]
+    # Unset route values preserve declarations recorded before the field existed.
     if value.grain_route is None:
         del payload["grain_route"]
     return payload

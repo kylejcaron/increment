@@ -286,6 +286,8 @@ class FrameSwitchbackSource:
             scalar=None,
             available_covariates=None,
             assignment_relation="reduced",
+            value_scale_overrides=True,
+            fixed_triggered=False,
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:

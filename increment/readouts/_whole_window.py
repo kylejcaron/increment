@@ -22,12 +22,10 @@ from increment._readout_request import _raise as _raise_readout
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
 from increment.readouts._evidence import (
-    ARTIFACT_ROUTE,
-    NATIVE_ROUTE,
-    _builtin_source,
     day_axis_route,
-    is_custom_source,
+    effective_source_capabilities,
     validate_populations,
+    validate_trigger_fires_in_every_arm,
     validates_populations,
 )
 from increment.readouts._requests import (
@@ -50,10 +48,6 @@ if TYPE_CHECKING:
     from increment.sources import _BuiltinMomentSource
 
 RouteName = DayAxisRoute
-
-
-def _is_artifact_source(src: _BuiltinMomentSource) -> bool:
-    return day_axis_route(src) == ARTIFACT_ROUTE
 
 
 def _as_lift_estimates(rows: Sequence[LiftEstimate]) -> LiftEstimates:
@@ -150,6 +144,13 @@ class WholeWindowFamilyRequest:
     capture_requested: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class WholeWindowPreparation:
+    """Declaration-validated request and typed whole-window integrity reads."""
+
+    trigger_counts: tuple[CountsRequest, ...]
+
+
 def validate_whole_window(
     req: WholeWindowRequest,
     *,
@@ -160,19 +161,13 @@ def validate_whole_window(
     experiment_id: str,
     route: RouteName,
 ) -> None:
-    """Validate native and empty seam requests before any moments are read."""
-    # A registered plan replays both captured populations wherever the source
-    # context declares the trigger (a moments checkpoint included); a
-    # fixed-horizon triggered read needs the native or artifact trigger evidence.
+    """Validate fixed-horizon triggers and scale overrides before any evidence read."""
+    capabilities = effective_source_capabilities(src)
     registered = getattr(plan.inference, "registration", None) is not None
     triggered_unsupported = (
         src.context.trigger_name is None
         if registered
-        else (
-            route not in (NATIVE_ROUTE, ARTIFACT_ROUTE)
-            or experiment is None
-            or experiment.trigger is None
-        )
+        else (not capabilities.fixed_triggered or experiment is None or experiment.trigger is None)
     )
     if req.population == "triggered" and triggered_unsupported:
         _refuse(
@@ -183,7 +178,7 @@ def validate_whole_window(
             route=route,
             supported_sources=("from_definitions", "from_unit_day_artifact"),
         )
-    if route == NATIVE_ROUTE and req.value_scale:
+    if req.value_scale and not capabilities.value_scale_overrides:
         _raise_readout("readout.randomized.value_scale")
 
 
@@ -199,7 +194,6 @@ class WholeWindowReadouts:
         experiment: Experiment | None,
         experiment_id: str,
         readout_source: Callable[..., _BuiltinMomentSource],
-        validate_trigger: Callable[[object], None],
         arm_moments: Callable[..., list[LiftEstimate]],
         execution_context_scope: Callable[[EvidenceExecutionContext], Any],
         registered_run: Callable[..., Any],
@@ -210,12 +204,11 @@ class WholeWindowReadouts:
         self._experiment = experiment
         self._experiment_id = experiment_id
         self._readout_source = readout_source
-        self._validate_trigger = validate_trigger
         self._arm_moments = arm_moments
         self._execution_context_scope = execution_context_scope
         self._registered_run = registered_run
 
-    def validate(self, req: WholeWindowRequest) -> RouteName:
+    def validate(self, req: WholeWindowRequest) -> WholeWindowPreparation:
         """Validate requests and portable configuration snapshots before capture."""
         route = day_axis_route(self._src)
         validate_whole_window(
@@ -227,8 +220,10 @@ class WholeWindowReadouts:
             experiment_id=self._experiment_id,
             route=route,
         )
+        capabilities = effective_source_capabilities(self._src)
+        trigger_counts: tuple[CountsRequest, ...] = ()
         if (
-            route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
+            capabilities.fixed_triggered
             and getattr(self._plan.inference, "registration", None) is None
             and self._experiment is not None
             and self._experiment.trigger is not None
@@ -247,7 +242,9 @@ class WholeWindowReadouts:
                 ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
             )
             validate_populations(self._src, populations, operation="run")
-        return route
+            if req.metrics or _design_compliance_only(self._src.context, req.estimands):
+                trigger_counts = (CountsRequest(kind="triggered", population="triggered"),)
+        return WholeWindowPreparation(trigger_counts)
 
     def prepare_family(
         self, family: WholeWindowFamilyRequest
@@ -391,8 +388,9 @@ class WholeWindowReadouts:
         default_sequential_compliance = registered and _default_sequential_compliance_requested(
             self._src.context, req.metrics, req.estimands
         )
+        trigger_capable = effective_source_capabilities(self._src).fixed_triggered
         needs_trigger_acquisition = (
-            not is_custom_source(self._src)
+            trigger_capable
             and req.population in (None, "triggered")
             and self._experiment is not None
             and self._experiment.trigger is not None
@@ -443,7 +441,7 @@ class WholeWindowReadouts:
                     design=self._design,
                 )
             prepared = RunAcquisitionOwner.prepare(acquisition_request)
-        route = self.validate(req)
+        preparation = self.validate(req)
         if (
             not req.metrics
             and not design_summary_only
@@ -474,7 +472,11 @@ class WholeWindowReadouts:
             )
             return _select_population(result, req.population)
         if execution_context is not None:
-            has_trigger = self._experiment is not None and self._experiment.trigger is not None
+            has_trigger = (
+                trigger_capable
+                and self._experiment is not None
+                and self._experiment.trigger is not None
+            )
             required_populations = (
                 ("assigned", "triggered")
                 if req.population is None and has_trigger
@@ -482,17 +484,12 @@ class WholeWindowReadouts:
             )
             for population in required_populations:
                 execution_context.validate_population(population)
-            if (
-                route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
-                and self._experiment is not None
-                and self._experiment.trigger is not None
-                and req.population in (None, "triggered")
-            ):
-                execution_context.validate_typed_request(
-                    CountsRequest(kind="triggered", population="triggered")
-                )
+            for count_request in preparation.trigger_counts:
+                execution_context.validate_typed_request(count_request)
+            if preparation.trigger_counts:
+                assert self._experiment is not None
                 with execution_context.borrow() as pinned:
-                    self._validate_trigger(_builtin_source(pinned))
+                    validate_trigger_fires_in_every_arm(pinned, self._experiment.trigger)
             return self._run_seam_family(req, execution_context)
         if needs_trigger_acquisition:
             from uuid import uuid4
@@ -506,8 +503,9 @@ class WholeWindowReadouts:
                 run_id=uuid4().hex,
                 coherence=req.coherence,
             ) as context:
+                assert self._experiment is not None
                 with context.borrow() as scoped:
-                    self._validate_trigger(_builtin_source(scoped))
+                    validate_trigger_fires_in_every_arm(scoped, self._experiment.trigger)
                 return self._run_seam_family(req, context)
         return self._run_seam_family(req)
 
@@ -553,9 +551,13 @@ class WholeWindowReadouts:
         if req.population == "triggered":
             return _read("triggered")
         assigned = _read("assigned")
-        if req.population == "assigned" or self._experiment is None:
-            return assigned
-        if self._experiment.trigger is None:
+        capabilities = effective_source_capabilities(self._src)
+        if (
+            req.population == "assigned"
+            or self._experiment is None
+            or self._experiment.trigger is None
+            or not capabilities.fixed_triggered
+        ):
             return assigned
         return assigned.concat(_read("triggered"))
 

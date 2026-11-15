@@ -158,6 +158,8 @@ class _DaySource:
             sequential_capture="none",
             scalar=None,
             available_covariates=None,
+            value_scale_overrides=True,
+            fixed_triggered=True,
         )
 
     # Keep source callbacks together: construction and cache state form one adapter.

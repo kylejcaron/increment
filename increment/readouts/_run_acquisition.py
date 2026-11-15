@@ -60,18 +60,9 @@ class RunAcquisitionOwner:
     @staticmethod
     def provider_for(source: EvidenceSource) -> object:
         """Select the evidence adapter at the acquisition boundary."""
-        from increment.decision import ContrastContext
-        from increment.readouts._evidence import is_custom_source
+        from increment.readouts._provider import scope_provider
 
-        if isinstance(source.context, ContrastContext):
-            from increment._evidence_scopes import switchback_scope_provider
-
-            return switchback_scope_provider(source)
-        if is_custom_source(source):
-            return source
-        from increment.readouts._provider import native_scope_provider
-
-        return native_scope_provider(source)
+        return scope_provider(source)
 
     @staticmethod
     def prepare(request: RunAcquisitionRequest) -> PreparedRunAcquisition:

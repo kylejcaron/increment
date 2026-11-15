@@ -42,6 +42,16 @@ This required method set is a compatibility contract: never add a required
 `EvidenceProvider` method. New evidence capabilities must remain optional or be
 served through an explicitly versioned contract.
 
+`EvidenceCapabilities.value_scale_overrides` declares whether a source accepts
+a nonempty per-metric `value_scale=` mapping, including an explicit default.
+`fixed_triggered` declares fixed-horizon whole-window triggered evidence; the
+experiment must still declare a trigger and the source must validate the
+requested populations. Registered replay follows its separate capture rule.
+Both fields are optional for saved/custom declarations: omitted values retain
+the legacy meaning derived from the declaration kind and operations. New
+providers should set the semantic values explicitly; recorded declarations
+and runtime provider verification compare their effective capabilities.
+
 For a source that computes moments from rows (dataframes and definitions), a
 total `MomentsRequest` without a method returns outcome moments only. Covariate
 moments require `include_covariate=True`; declaring pre-period data alone does

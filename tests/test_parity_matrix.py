@@ -296,10 +296,14 @@ def test_pr_preflight_keeps_one_cell_per_refusal_hazard():
 def _assert_preflight_refusal(status, expected, scope):
     refusal = next((item for item in status.static_refusals if item.code == expected.code), None)
     assert refusal is not None, tuple(item.code for item in status.static_refusals)
+    expected_context = dict(expected.context)
     if expected.code == "evidence.breakout_unavailable":
-        # Execution reads the implicit run_breakout(); preflight names the authored selection.
-        selection = tuple(identity.property for identity in scope.segment)
-        assert dict(refusal.context) == {**expected.context, "requested": selection}
+        # Execution reads implicit run_breakout(); preflight names the authored selection.
+        expected_context = {
+            **expected_context,
+            "requested": tuple(identity.property for identity in scope.segment),
+        }
+    assert tuple(refusal.context.items()) == tuple(expected_context.items())
 
 
 def _assert_runners_produced_rows(
