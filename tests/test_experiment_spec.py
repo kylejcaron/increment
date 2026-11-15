@@ -831,7 +831,15 @@ def _assert_legacy_temporal_defaults(capabilities):
     from increment._source_types import effective_capabilities
 
     native_moments = dataclasses.replace(
-        capabilities, kind="moments", operations=frozenset({"moments_source"})
+        capabilities,
+        kind="moments",
+        operations=frozenset({"moments_source"}),
+        value_scale_overrides=None,
+        fixed_triggered=None,
+        windowed_breakout_quantiles=None,
+        temporal_quantiles=None,
+        temporal_clusters=None,
+        dimensioned_daily_metrics=None,
     )
     native = effective_capabilities(native_moments)
     assert native.value_scale_overrides is False

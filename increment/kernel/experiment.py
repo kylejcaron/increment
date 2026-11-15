@@ -77,6 +77,8 @@ class SourceReference:
             _refuse("kernel.request.invalid", field="source name, URI, or declaration version")
         if self.schema is not None:
             object.__setattr__(self, "schema", MappingProxyType(dict(sorted(self.schema.items()))))
+        if self.capabilities is not None:
+            object.__setattr__(self, "capabilities", effective_capabilities(self.capabilities))
         if self.capabilities is not None and self.capabilities.scalar is not None:
             scalar = self.capabilities.scalar
             frozen = dataclasses.replace(
