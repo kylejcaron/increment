@@ -3,11 +3,15 @@
 When you test many metrics, chance can produce a false positive. Assign roles in `AnalysisPlan`: primaries share familywise `alpha` across metrics and then treatment arms; guardrails test adverse effects at full `alpha`; secondaries use false-discovery-rate level `q`.
 
 ## Declaring families: primary, guardrails, secondaries
+With the `tables` extra installed, render the result as a table and expand
+**Table evidence and checks** to inspect the declared families.
+
 
 ```python
 import numpy as np
 import polars as pl
 import increment
+from increment.tables import readout_table
 
 rng = np.random.default_rng(9)
 n = 3000
@@ -42,28 +46,7 @@ experiment, reader = increment.from_frame(
     plan=plan,
 )
 results = increment.run(experiment, reader).readout()
-print(results)
-```
-
-<!-- output -->
-```text
-assigned — treatment vs control
-sessions: control → treatment; n control=1494; n treatment=1506; mean control=4.01529; mean treatment=4.53469; effect=12.9354%; interval=[9.12107%, 16.883%]; estimand=itt; stat_sig=True
-sessions (primary, relative lift): 12.9354%, set [9.12107%, 16.883%] at 95% confidence.
-sessions interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
-sessions additive effect: 0.519393, set [0.373532, 0.665254].
-sessions test alternative: two-sided; null (relative lift): 0%.
-sessions result identity: method unadjusted; method role decision; estimand itt.
-signups: control → treatment; n control=1494; n treatment=1506; mean control=0.100916; mean treatment=0.100055; effect=-0.85373%; interval=[-2.24037%, 0.552583%]; estimand=itt; stat_sig=False
-signups (secondary, relative lift): -0.85373%, set [-2.24037%, 0.552583%] at 95% confidence.
-signups interpretation: does not reject; inconclusive, not evidence of no effect.
-signups additive effect: -0.000861552, set [-0.00227681, 0.000553707].
-signups test alternative: two-sided; null (relative lift): 0%.
-signups result identity: method unadjusted; method role decision; estimand itt; not selected.
-signups selection: not selected; separate from interval evidence.
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Multiplicity (primary): declared_plan; family primary.
-Multiplicity (secondary): declared_plan; family secondary.
+readout_table(results, title="Metric families")
 ```
 
 ## Reading multiplicity provenance
@@ -187,28 +170,7 @@ experiment, reader = increment.from_frame(
     exposure_date="enrolled_on",
 )
 av_results = increment.run(experiment, reader).readout()
-print(av_results)
-```
-
-<!-- output -->
-```text
-assigned — treatment vs control
-sessions: control → treatment; effect=12.9354%; interval=[7.06467%, 19.1773%]; estimand=itt; stat_sig=True
-sessions (primary, relative lift): 12.9354%, set [7.06467%, 19.1773%] at 95% confidence.
-sessions interpretation: excludes zero; effect direction supported (increase).
-sessions sequential ratio confidence set bounded: [1.07065, 1.19177].
-sessions test alternative: two-sided; null (relative lift): 0%.
-sessions result identity: method unadjusted; method role decision; estimand itt.
-signups: control → treatment; effect=-0.85373%; interval=[-3.00719%, 1.34716%]; estimand=itt; stat_sig=False
-signups (secondary, relative lift): -0.85373%, set [-3.00719%, 1.34716%] at 95% confidence.
-signups interpretation: does not reject; the retained sequential procedure has not rejected.
-signups sequential ratio confidence set bounded: [0.969928, 1.01347].
-signups test alternative: two-sided; null (relative lift): 0%.
-signups result identity: method unadjusted; method role decision; estimand itt; not selected.
-signups selection: not selected; separate from interval evidence.
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Multiplicity (primary): declared_plan; family primary.
-Multiplicity (secondary): declared_plan; family secondary.
+readout_table(av_results, title="Sequential metric families")
 ```
 
 !!! warning "Sequential dataframe inputs"

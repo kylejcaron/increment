@@ -83,23 +83,23 @@ _REFUSALS = refusals(
     {
         "readout.alwaysvalid_under_encouragement": "{method}: AlwaysValid under an encouragement design requires completed_windows_only=True so repeated looks use finalized observations",
         "readout.completed_encouragement_inference": "{method}: completed encouragement inference requires bounded outcome and uptake windows; unbounded metrics={unbound!r}, uptake_window_days={uptake_window_days!r}",
-        "readout.value_scale_names": "value_scale= names metrics this source does not report on this call: {unknown_value_scale!r} (selected: {metric_names!r}) -- refusing rather than silently dropping the request",
+        "readout.value_scale_names": "value_scale= names metrics this source does not report on this call: {unknown_value_scale!r} (selected: {metric_names!r}); refusing rather than silently dropping the request",
         "readout.sequential_inference_supported": RefusalSpec(
             "readout.sequential_inference_supported",
             UnsupportedRequestError,
-            template="sequential inference is not supported on the whole-window run() entry point under an encouragement design -- for sequential monitoring of an encouragement rollout, use asof_lift() instead, which carries time-uniform intervals on its ITT and compliance rows (binary-uptake LATE has no sequential interval; request estimands=('itt',) or ('compliance',)) -- declare inference=InferenceSpec(kind='always_valid', registration=...) on the source's AnalysisPlan (asof_lift() reads it from there, not a call kwarg)",
+            template="sequential inference is not supported on the whole-window run() entry point under an encouragement design; for sequential monitoring of an encouragement rollout, use asof_lift() instead, which carries time-uniform intervals on its ITT and compliance rows (binary-uptake LATE has no sequential interval; request estimands=('itt',) or ('compliance',)); declare inference=InferenceSpec(kind='always_valid', registration=...) on the source's AnalysisPlan (asof_lift() reads it from there, not a call kwarg)",
         ),
         "readout.value_scale_randomized_absolute": RefusalSpec(
             "readout.value_scale_randomized_absolute",
             UnsupportedRequestError,
-            template="value_scale= is an observational-only reporting selector -- the randomized path already reports the absolute axis (abs_diff/abs_se/abs_lb/abs_ub) on every row, and a row whose relative scale is undefined (a non-positive arm mean) is decided on that additive axis automatically.",
+            template="value_scale= is an observational-only reporting selector; the randomized path already reports the absolute axis (abs_diff/abs_se/abs_lb/abs_ub) on every row, and a row whose relative scale is undefined (a non-positive arm mean) is decided on that additive axis automatically.",
         ),
         "readout.metric_declare_non": RefusalSpec(
             "readout.metric_declare_non",
             UnsupportedRequestError,
-            template="metric(s) {combined} declare a non-inferiority margin (Metric.margin/margin_abs, or a plan-bound ExperimentMetric.margin), but a per-metric shifted null is not built for the as-of encouragement view -- run() applies the margin to the whole-window ITT row, or declare a one-sided plan alternative for a test against null_lift=0.0",
+            template="metric(s) {combined} declare a non-inferiority margin (Metric.margin/margin_abs, or a plan-bound ExperimentMetric.margin), but a per-metric shifted null is not built for the as-of encouragement view; run() applies the margin to the whole-window ITT row, or declare a one-sided plan alternative for a test against null_lift=0.0",
         ),
-        "readout.srm_source_declared": "srm() requires a source with a declared design -- this source was constructed without one (design=None). Pass design= at construction (or control=/control_group= to derive Randomized).",
+        "readout.srm_source_declared": "srm() requires a source with a declared design; this source was constructed without one (design=None). Pass design= at construction (or control=/control_group= to derive Randomized).",
         "integrity.allocation_missing_or_nonconstant": ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
         "integrity.allocation_scheme_missing": ALLOCATION_SCHEME_MISSING_REFUSAL,
         "readout.roster.undeclared_observed_arms": RefusalSpec(
@@ -169,7 +169,7 @@ _register_warning(
     IncrementWarning,
     lambda *, metric_name, group_id, method_name, reason: (
         f"run: metric={metric_name!r} group_id={group_id!r} "
-        f"method={method_name!r} -- {reason} -- cell refused."
+        f"method={method_name!r}; {reason}; cell refused."
     ),
 )
 
@@ -179,7 +179,7 @@ _register_warning(
     IncrementWarning,
     lambda *, dimension, value, control_group: (
         f"breakout: segment {dimension}={value!r} has no "
-        f"'{control_group}' control arm for any metric -- skipped."
+        f"'{control_group}' control arm for any metric; skipped."
     ),
 )
 

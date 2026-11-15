@@ -104,6 +104,11 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment._readout_html"
+layer = "core"
+depends_on = ["increment._display"]
+
+[[modules]]
 path = "increment._unit_cycle"
 layer = "core"
 depends_on = ["increment._literals", "increment.errors", "increment.semantics"]
@@ -1625,7 +1630,7 @@ depends_on = ["increment.errors", "increment.estimation.absorption"]
 path = "increment.tables"
 layer = "core"
 depends_on = [
-  "increment._canonical", "increment._display",
+  "increment._canonical", "increment._display", "increment._readout_html",
   "increment.breakout.estimates", "increment.errors",
   "increment.estimation.sequential_result", "increment.breakout.projection", "increment._interpretation",
   "increment._optional", "increment.estimation.contrast_results", "increment.estimation.results", "increment.estimation.contrast",
@@ -1646,10 +1651,13 @@ depends_on = [
   "increment._exploratory",
   "increment._interpretation",
   "increment._optional",
+  "increment._readout_html",
   "increment._source_diagnostics",
   "increment._source_operations",
   "increment._source_workflows",
   "increment.breakout.estimates",
+  "increment.declarations",
+  "increment.estimation.readout_types",
   "increment.errors",
   "increment.tables", "increment.estimation.health", "increment.estimation.diagnostics", "increment.estimation.exploratory_family",
 ]

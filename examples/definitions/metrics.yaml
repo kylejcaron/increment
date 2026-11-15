@@ -84,7 +84,7 @@ metrics:
   # because the purchase fact's one NULL rule (its `missing`) applies to
   # the revenue sum and the order count alike, but the delta method on
   # per-user (revenue, orders) sums is what prices the clustering into the
-  # SE -- treating orders as independent units would understate the
+  # SE; treating orders as independent units would understate the
   # variance.
   #
   # Never read AOV alone: on the log scale,

@@ -25,3 +25,17 @@
 #App .px-1:has([data-cell-name] marimo-anywidget) {
   padding-inline: 8px;
 }
+
+/* Keep the selector on the dashboard canvas. */
+#App [data-cell-name]:has(marimo-dropdown) {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+/* marimo also adopts this stylesheet inside each widget's shadow root. */
+:host(marimo-dropdown) .marimo {
+  --background: var(--inc-dashboard-notebook-canvas);
+  --foreground: var(--inc-dashboard-notebook-text);
+  color: var(--inc-dashboard-notebook-text);
+}

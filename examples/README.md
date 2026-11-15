@@ -42,7 +42,8 @@ or change its full source.
   ```
 
 - **`cuped.py`**: runs one experiment's estimates twice, unadjusted and
-  with CUPED variance reduction, and compares interval widths side by side.
+  with CUPED, and reports the measured variance reduction. Guardrail bounds
+  use the same one-sided confidence convention for both methods.
   Needs the `demo` and `tables` extras:
 
   ```bash

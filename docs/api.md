@@ -135,6 +135,62 @@ values.
 
 ### Current changes
 
+- Dashboard preparation consolidates repeated ratio cautions into one
+  `dashboard.statistical_cautions` warning. Affected results retain expandable
+  **Diagnostics** with their dates, segments, arms and sample sizes; clean
+  headline rows do not inherit cautions from other views. Denominator-skew
+  advisories retain structured arm diagnostics and use qualified heuristic
+  wording instead of asserting undercoverage. Estimates, intervals, unrelated
+  warnings and Python warnings-as-errors behavior are unchanged.
+
+
+- Dashboard Readout, Explore, and Report tables omit the **Result** column;
+  `readout_table()` and the analysis notebooks keep it by default. Dashboard
+  caveat markers now sit beside the affected relative or absolute lift. Plot
+  colors, detailed outcomes, CSV, and saved evidence are unchanged.
+- Breakout and daily result rows now preserve optional `preferred_direction`
+  metadata through projections and saved-result round trips. Declared favorable
+  findings receive the same green Result label as whole-experiment findings.
+  Older rows without this metadata remain readable and neutral. Existing source
+  IDs are preserved for otherwise identical inputs.
+- Dashboard diagnostic details and time-series cells keep segment labels as
+  literal text instead of interpreting them as links. Diagnostic values, plots
+  and captured evidence are unchanged.
+- Routine numerical assumptions no longer add **Result** markers or table
+  footnotes in native tables, notebooks, Readout, Explore, or Report. The metric
+  inspector keeps each result's recorded numerical assumption and captured
+  counts in a collapsed **Advanced calculation record**, separate from ordinary
+  policy details. Result-specific notes, reliability caveats, errors, and
+  missing-evidence disclosures remain visible. Estimates, verdicts, raw evidence,
+  and saved result formats are unchanged.
+
+- Fixed-horizon Bonferroni breakout tables no longer show **Unavailable** merely
+  because they have no separate discovery verdict. Results use the test of each
+  already-adjusted interval; estimates, confidence levels and test outcomes are
+  unchanged. Caveat footnotes no longer repeat an “Affected” row list: Result
+  markers identify the applicable rows.
+
+- Readout caveats now use numbered **Result** markers and attributed notes
+  beneath the table instead of a **Qualification** column saying “Qualified.”
+  Notes survive native `.gt()` rendering, notebook display, table customization,
+  dashboard column filtering, and Report printing. Shared caveats appear once;
+  metric inspectors retain per-result explanations and technical details.
+  Estimates, verdicts, CSV fields, and saved result formats are unchanged.
+
+- Readout tables and dashboard result colors now follow one **Result** status:
+  recorded family selection when applicable, otherwise the comparison's own
+  test. Separate **Discovery** and **Significant** headline columns are replaced
+  by that status; the original verdicts remain in result data and details.
+  A one-sided safety guardrail shows **Guardrail passed** or **Inconclusive**;
+  failing to establish safety does not produce a red harm verdict. Estimates,
+  intervals, test procedures, and saved result formats are unchanged.
+
+- Dashboard whole-experiment time series show all primary, secondary and
+  guardrail metrics together, with selected added metrics labeled exploratory.
+  Relative lift and daily/cumulative absolute values retain each metric's
+  units, uncertainty and unavailable reasons; absolute values overlay both arms.
+  The example's experiment selector follows the dashboard's light/dark palette.
+
 - Summary SQL previews organize the warehouse calculation into named stages
   for unit measurements, analysis rows, group references and centered moments.
   Public signatures, result columns, eligibility rules and statistical
@@ -196,7 +252,7 @@ values.
   including repeated local clock times. Exported pages still allow previously
   unopened chart selections without a data source.
 - Flat readout rows and dashboard CSVs add nullable `coverage_alpha`, the stored
-  noncoverage budget of the displayed interval. This preserves the interval's
+  noncoverage budget of the retained interval. This preserves the interval's
   own budget through flattening, including when `level` rounds to `1.0`; it does
   not substitute a family or decision allocation. Existing fields retain their meanings.
 - Individual result rows display relative effects in percent and absolute
@@ -204,6 +260,14 @@ values.
   remain unavailable rather than becoming infinite. Large finite effects stay
   finite in the display, and extreme standard-error diagnostics use compact
   formatting. Estimate numeric fields and model serialization are unchanged.
+- HTML readouts and dashboard summaries display supported fixed-horizon,
+  one-sided guardrails as the relevant safety bound, with the corresponding
+  one-sided confidence level. A central 90% interval can therefore display as a
+  95% one-sided bound without changing its finite endpoint. Additive effects
+  retain their own confidence labels where needed. Stored estimates, raw rows,
+  CSV, p-values and decisions are unchanged; dashboard tables still omit Result.
+  The CUPED example compares estimated variance using absolute standard errors,
+  not relative-lift interval widths, and labels sampling confidence correctly.
 
 ### Earlier release notes
 

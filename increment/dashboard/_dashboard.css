@@ -138,6 +138,31 @@
   color: #E17C05;
 }
 
+.inc-dashboard-uncertainty {
+  display: block;
+  margin-top: 6px;
+  padding-left: 6px;
+  border-left: 2px solid #E17C05;
+  color: var(--inc-dashboard-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.inc-dashboard-diagnostic-records {
+  max-height: min(28rem, 65vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.inc-dashboard-temporal-table .inc-dashboard-disclosure,
+.inc-dashboard-table-wrap .inc-dashboard-disclosure,
+.inc-dashboard-primary .inc-dashboard-disclosure {
+  text-align: left;
+  white-space: normal;
+}
+
 /* Summary cards */
 
 .inc-dashboard-cards {

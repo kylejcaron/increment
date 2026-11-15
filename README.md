@@ -48,6 +48,8 @@ dataframes; this example uses Polars.
 ## Quickstart
 
 Start with one row per user: the variant they saw and what they did.
+The HTML readout uses the `tables` extra (`pip install 'increment[tables]'`)
+and displays in a notebook.
 
 ```python
 from random import Random
@@ -55,6 +57,7 @@ from random import Random
 import polars as pl
 
 from increment import from_frame, run
+from increment.tables import readout_table
 
 # Simulated data: treatment raises revenue and conversion by 8%.
 rng = Random(7)
@@ -79,21 +82,9 @@ experiment, reader = from_frame(
     metrics=["revenue", "converted"],
 )
 result = run(experiment, reader)
-print(result.readout())
+readout_table(result, title="Revenue and conversion")
 ```
 
-The output starts with one line per metric (shortened here):
-
-<!-- output -->
-```text
-assigned — treatment vs control
-converted: control → treatment; n control=970; n treatment=1030; ...; effect=-4.84426%; interval=[-39.898%, 29.3026%]; estimand=itt; stat_sig=False
-...
-revenue: control → treatment; n control=970; n treatment=1030; ...; effect=10.6507%; interval=[1.45261%, 20.6827%]; estimand=itt; stat_sig=True
-...
-SRM not checked; declare allocation_scheme="independent" on Randomized or Encouragement; it must describe how units were actually assigned.
-...
-```
 
 Revenue rose 10.7%, with a 95% confidence interval of 1.5% to 20.7%. The
 conversion result is inconclusive: its interval, −39.9% to +29.3%, includes

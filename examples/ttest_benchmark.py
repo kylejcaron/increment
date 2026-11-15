@@ -51,8 +51,45 @@ def effect_selection():
     return format_true_effect, selected_true_effect
 
 
+@app.cell
+def _(increment, mo):
+    def analyze_with_increment(data):
+        experiment, reader = increment.from_frame(
+            data,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"revenue": "mean"},
+        )
+        (estimate,) = increment.run(experiment, reader).readout()
+        return estimate.lift
+
+    mo.show_code(position="above")
+    return (analyze_with_increment,)
+
+
+@app.cell
+def _(mo, ttest_ind):
+    def welch_reference_test(treatment, control):
+        return ttest_ind(treatment, control, equal_var=False)
+
+    mo.show_code(position="above")
+    return (welch_reference_test,)
+
+
 @app.cell(hide_code=True)
-def _(increment, mo, norm, np, pd, sample_sizes, t, true_effects, ttest_ind):
+def _(
+    analyze_with_increment,
+    mo,
+    norm,
+    np,
+    pd,
+    sample_sizes,
+    t,
+    true_effects,
+    welch_reference_test,
+):
     rows = []
     total_calculations = len(sample_sizes) * len(true_effects)
 
@@ -79,16 +116,7 @@ def _(increment, mo, norm, np, pd, sample_sizes, t, true_effects, ttest_ind):
                     }
                 )
 
-                experiment, reader = increment.from_frame(
-                    data,
-                    shape="summary",
-                    unit="user_id",
-                    group="variant",
-                    control="control",
-                    metrics={"revenue": "mean"},
-                )
-                (increment_estimate,) = increment.run(experiment, reader).readout()
-                increment_lift = increment_estimate.lift
+                increment_lift = analyze_with_increment(data)
                 rows.append(
                     {
                         "n_per_arm": _n_per_arm,
@@ -122,7 +150,7 @@ def _(increment, mo, norm, np, pd, sample_sizes, t, true_effects, ttest_ind):
                     }
                 )
 
-                test = ttest_ind(treatment, control, equal_var=False)
+                test = welch_reference_test(treatment, control)
                 difference = treatment_mean - control_mean
                 se_difference = float(
                     np.sqrt(treatment.var(ddof=1) / _n_per_arm + control.var(ddof=1) / _n_per_arm)

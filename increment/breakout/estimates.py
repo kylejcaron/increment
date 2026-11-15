@@ -50,6 +50,7 @@ from increment._literals import (
     Backend,
     Correction,
     MetricType,
+    PreferredDirection,
     Role,
     RowRole,
     ValueScale,
@@ -161,11 +162,11 @@ Renderer = Callable[..., str]
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "breakout.retention.daily": "{fn_name}: RetentionMetric(s) {names!r} have no valid independent-per-day snapshot -- 'returned within the observation band' is not a property of a single day. Use the as-of view (run_asof/run_asof_lift, calendar axis) or the cohort view (run_daily/run_daily_lift on a retention metric, indexed by exposure date), or pass metrics= to exclude it.",
+        "breakout.retention.daily": "{fn_name}: RetentionMetric(s) {names!r} have no valid independent-per-day snapshot; 'returned within the observation band' is not a property of a single day. Use the as-of view (run_asof/run_asof_lift, calendar axis) or the cohort view (run_daily/run_daily_lift on a retention metric, indexed by exposure date), or pass metrics= to exclude it.",
         "breakout.quantile": RefusalSpec(
             "breakout.quantile",
             CapabilityError,
-            template="quantile metric(s) {names!r} have no moments representation, so {method} cannot serve them -- {reason}. {remedy}",
+            template="quantile metric(s) {names!r} have no moments representation, so {method} cannot serve them; {reason}. {remedy}",
         ),
         "breakout.retention.encouragement": RefusalSpec(
             "breakout.retention.encouragement",
@@ -175,7 +176,7 @@ _REFUSALS = refusals(
         "readout.inference.disjoint_slices": RefusalSpec(
             "readout.inference.disjoint_slices",
             UnsupportedRequestError,
-            template="run_daily_lift: per-day/per-cohort slices are disjoint, so a sequential guarantee ({inference}) cannot apply to them -- an always-valid sequence does apply to the cumulative as-of view, so pass view='asof' (View.asof() with run()), or drop inference for per-slice fixed-horizon intervals (each valid for one planned analysis, not repeated looks)",
+            template="run_daily_lift: per-day/per-cohort slices are disjoint, so a sequential guarantee ({inference}) cannot apply to them; an always-valid sequence does apply to the cumulative as-of view, so pass view='asof' (View.asof() with run()), or drop inference for per-slice fixed-horizon intervals (each valid for one planned analysis, not repeated looks)",
             keys=frozenset({"view"}),
         ),
         "breakout.breakout.exactly_one_lift": RefusalSpec(
@@ -187,10 +188,10 @@ _REFUSALS = refusals(
         "breakout.daily_metric.exactly_one_value": "exactly one of value or unavailable must be set",
         "breakout.daily_lift.exactly_one_unavailable": "exactly one of lift or unavailable must be set",
         "breakout.daily_lift.point_unavailable": "a finite point estimate is unavailable for this daily lift row",
-        "breakout.run_breakout_duplicate": "run_breakout: duplicate summary row for segment {dimension}={value!r}, metric={metric!r}, group_id={group_id!r} -- each (segment, metric, arm) cell's moments must arrive as one pre-aggregated row; duplicates would silently discard one row's units (duplicate control: last row wins the control lookup) or double-count the segment downstream (duplicate treatment: two output rows for one cell inflate segment_heterogeneity's k).",
+        "breakout.run_breakout_duplicate": "run_breakout: duplicate summary row for segment {dimension}={value!r}, metric={metric!r}, group_id={group_id!r}; each (segment, metric, arm) cell's moments must arrive as one pre-aggregated row; duplicates would silently discard one row's units (duplicate control: last row wins the control lookup) or double-count the segment downstream (duplicate treatment: two output rows for one cell inflate segment_heterogeneity's k).",
         "breakout.metric_found_group": "Metric(s) {unknown_metrics} found in group_summary but not in the metrics list. Declared metrics: {declared_names}",
         "breakout.run_breakout_correction": "run_breakout: correction must be 'none', 'bonferroni', or 'bh', got {correction!r}",
-        "breakout.run_breakout_methods": "run_breakout: methods=[] requests zero estimation methods -- every declared (metric, arm) pair would then be reported as unestimable with a misleading 'no data' warning, when the real reason is that no method was asked for. Pass methods=None for the default ([Method(name='unadjusted')]) or a non-empty list of Methods.",
+        "breakout.run_breakout_methods": "run_breakout: methods=[] requests zero estimation methods; every declared (metric, arm) pair would then be reported as unestimable with a misleading 'no data' warning, when the real reason is that no method was asked for. Pass methods=None for the default ([Method(name='unadjusted')]) or a non-empty list of Methods.",
         "breakout.run_breakout_dimension": "run_breakout: dimension column {dimension!r} not found in summary. Available columns: {columns}",
         "breakout.run_breakout_group": "run_breakout: group_summary missing required columns: {missing}",
         "breakout.coerce_type_datetime": "cannot coerce {v!r} (type {type_name}) to datetime.date",
@@ -232,7 +233,7 @@ _register_warning(
     IncrementWarning,
     lambda *, label, metric, group_id, n: (
         f"{label} metric={metric!r} group_id={group_id!r} "
-        f"has fewer than 2 units (n={n}) -- a ddof=1 variance is "
+        f"has fewer than 2 units (n={n}); a ddof=1 variance is "
         "undefined, skipped."
     ),
 )
@@ -241,7 +242,7 @@ _register_warning(
     IncrementWarning,
     lambda *, label, metric, group_id, mean: (
         f"{label} metric={metric!r} group_id={group_id!r} "
-        f"has a non-positive mean (mean={mean}) -- log(mean) is "
+        f"has a non-positive mean (mean={mean}); log(mean) is "
         "undefined for a non-positive mean, skipped."
     ),
 )
@@ -250,8 +251,8 @@ _register_warning(
     IncrementWarning,
     lambda *, label, metric, group_id, den_desc: (
         f"{label} metric={metric!r} group_id={group_id!r} "
-        f"has a non-positive denominator mean (denominator mean={den_desc}) "
-        "-- log(mean) is undefined for a non-positive denominator, skipped."
+        f"has a non-positive denominator mean (denominator mean={den_desc})"
+        "; log(mean) is undefined for a non-positive denominator, skipped."
     ),
 )
 _register_warning(
@@ -259,7 +260,7 @@ _register_warning(
     IncrementWarning,
     lambda *, label, metric_name: (
         f"{label} metric={metric_name!r} lost its control arm to the "
-        "per-row estimability gate above -- that metric's cells for this "
+        "per-row estimability gate above; that metric's cells for this "
         "slice come back as unavailable rows excluded for the control's "
         "reason: 'no_control_arm' for fewer than 2 units, "
         "'nonpositive_mean' for a non-positive numerator/denominator mean, "
@@ -272,14 +273,14 @@ _register_warning(
     IncrementWarning,
     lambda *, warning_label, control_group: (
         f"{warning_label} has no usable '{control_group}' control arm remaining for "
-        f"any metric (dropped by the estimability gate above) -- skipped."
+        f"any metric (dropped by the estimability gate above); skipped."
     ),
 )
 _register_warning(
     "breakout.estimates.slice_no_control_arm",
     IncrementWarning,
     lambda *, warning_label, control_group: (
-        f"{warning_label} has no '{control_group}' control arm for any metric -- skipped."
+        f"{warning_label} has no '{control_group}' control arm for any metric; skipped."
     ),
 )
 _register_warning(
@@ -287,7 +288,7 @@ _register_warning(
     IncrementWarning,
     lambda *, dimension, segment_value, metric_name, skip_reason: (
         f"run_breakout: segment {dimension}={segment_value!r} "
-        f"metric={metric_name!r} -- {skip_reason} -- excluded."
+        f"metric={metric_name!r}; {skip_reason}; excluded."
     ),
 )
 _register_warning(
@@ -296,7 +297,7 @@ _register_warning(
     lambda *, dimension, segment_value, metric_name, control_group, group_id: (
         f"run_breakout: segment {dimension}={segment_value!r} "
         f"metric={metric_name!r} has no live '{control_group}' control "
-        f"row in this segment to compare group_id={group_id!r} against -- "
+        f"row in this segment to compare group_id={group_id!r} against; "
         "no comparison possible, excluded."
     ),
 )
@@ -305,7 +306,7 @@ _register_warning(
     IncrementWarning,
     lambda *, dimension, segment_value, group_id, metric_name: (
         f"run_breakout: segment {dimension}={segment_value!r} has no "
-        f"'{group_id}' row for metric={metric_name!r} at all -- no comparison "
+        f"'{group_id}' row for metric={metric_name!r} at all; no comparison "
         "possible, excluded."
     ),
 )
@@ -560,6 +561,7 @@ _FAMILY_VIEW_FIELDS = (
     "method_role",
     "inference",
     "alternative",
+    "preferred_direction",
     "null_lift",
     "null_abs",
     "dof",
@@ -659,6 +661,9 @@ class BreakoutEstimate(_RowIdentity):
     analysis_population: Literal["assigned", "triggered"] = "assigned"
 
     null_lift: float = Field(default=0.0, allow_inf_nan=False)
+    preferred_direction: PreferredDirection | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     dof: float | None = None
     reference_kind: Literal["normal", "t", "sequential", "binomial"] = "normal"
     reference_df: float | None = None
@@ -1026,6 +1031,7 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "method_role": source.method_role,
         "inference": source.inference,
         "alternative": source.alternative,
+        "preferred_direction": source.preferred_direction,
         "null_lift": source.null_lift,
         "dof": source.dof,
         "reference_kind": source.reference_kind,
@@ -1406,6 +1412,9 @@ class DailyLiftEstimate(_RowIdentity):
     # Sufficient counts/method for every exact-binomial-estimated row
     # (point-backed or not); None for every other row.
     estimand: str = "itt"  # "itt" | "compliance" | "late" (mirrors LiftEstimate)
+    preferred_direction: PreferredDirection | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     value_scale: ValueScale = "relative"  # mirrors LiftEstimate.value_scale
     note: str | None = None  # guard fallbacks / suppression reasons / caveats
     ds_basis: Literal["calendar", "cohort"] = "calendar"
@@ -4435,7 +4444,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
         if match is None:
             raise AssertionError(
                 f"run_breakout: selected cell {key!r} has no matching "
-                "FCR re-estimate -- pass-2 estimation diverged from "
+                "FCR re-estimate; pass-2 estimation diverged from "
                 "pass-1 for the same retained moments"
             )
         original = results[idx]

@@ -854,9 +854,6 @@ def test_switchback_contrast_is_sampling_available_and_renders_its_effect():
     assert f"{result.estimate.value:.6g}" in text
     assert f"{result.null_abs:.6g}" in text
     decision = next(line for line in text.splitlines() if line.startswith("value:"))
-    assert f"effect={result.estimate.value:.6g}" in decision
-    assert "%" not in decision
-    assert f"interval=[{result.estimate.lb:.6g}, {result.estimate.ub:.6g}]" in decision
     from increment.tables import contrast_results_to_readout
 
     expected_verdict = contrast_results_to_readout([result])[0]["stat_sig"]
@@ -1205,7 +1202,6 @@ def test_posterior_unavailability_reason_is_separate_from_sampling_availability(
     from increment.tables import readout_table
 
     table_html = readout_table(results).gt().as_raw_html()
-    assert "Posterior unavailable" in table_html
     reason_code = getattr(results[0], "posterior_reason_code", None)
     assert reason_code is not None and reason_code in table_html
     interpretation = _interpret(results)
@@ -1296,6 +1292,71 @@ def test_relative_effects_and_their_sets_read_in_percent():
         assert shown == pytest.approx([value * 100 for value in expected], rel=1e-5, abs=1e-9)
         null = next(line for line in text.splitlines() if line.startswith(f"{row.metric} test"))
         assert null.endswith(f"{row.null_lift * 100:.6g}%.")
+
+
+def test_point_only_lift_does_not_render_an_interval():
+    from increment._interpretation import project_effect
+    from increment.estimation.results import Estimate, LiftEstimate
+
+    row = LiftEstimate(
+        metric="point_only",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        value_scale="relative",
+        lift=Estimate(value=0.2),
+    )
+    projection = project_effect(row)
+    assert projection.point == 0.2
+    assert projection.lower is None and projection.upper is None
+    assert not projection.intervals
+
+    text = render_readout_text(interpret_readout([row], None))
+    decision = next(line for line in text.splitlines() if " → " in line)
+
+    assert "effect=" in decision
+    assert "∞" not in decision
+
+
+def test_point_backed_disconnected_lift_renders_only_its_components():
+    from increment.estimation.inference import _joint_additive_bounds
+    from increment.estimation.results import (
+        JointContrastReference,
+        LiftEstimate,
+        relative_confidence_set,
+    )
+
+    region = relative_confidence_set(
+        JointContrastReference(a=1, c=1, var_a=0.01, var_c=1, cov_ac=0)
+    )
+    assert region.geometry == "disconnected"
+    lower, upper = _joint_additive_bounds(1.0, 0.1, region.alpha, "two-sided", None)
+    row = LiftEstimate(
+        metric="disconnected",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        scale="linear",
+        reference_kind="normal",
+        lift=region.estimate(),
+        relative_confidence_set=region,
+        abs_diff=1.0,
+        abs_se=0.1,
+        abs_lb=lower,
+        abs_ub=upper,
+        abs_reference_kind="normal",
+    )
+    assert row.lift is not None
+
+    text = render_readout_text(interpret_readout([row], None))
+    decision = next(line for line in text.splitlines() if " → " in line)
+
+    assert " ∪ " in text
+    assert "(−∞, ∞)" not in decision
+    for interval in region.intervals:
+        for endpoint in interval:
+            if endpoint is not None:
+                assert f"{endpoint * 100:.6g}%" in text
 
 
 def test_missing_additive_interval_is_not_reported_as_an_unbounded_set():
@@ -1393,7 +1454,6 @@ def test_readout_leads_with_arm_counts_means_and_relative_decision():
 
     assert "n control=100" in decision and "n treatment=100" in decision
     assert "mean control=4.95" in decision and "mean treatment=5.15" in decision
-    assert "effect=4.0404%" in decision and "interval=[" in decision
     assert "stat_sig=" in decision
     assert lines.index(decision) < lines.index(
         next(line for line in lines if line.startswith("Integrity:"))

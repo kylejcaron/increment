@@ -86,8 +86,14 @@ choice share its pinned inputs, including declared breakout property sources.
 The caller's reader is not rebound or closed. Captured sequential decisions retain
 each displayed metric's checkpoint, including earlier frozen secondaries.
 These results form an immutable `DashboardSnapshot`. Preparation computes the
-temporal and breakout views as well as the headline, and shows each distinct
-warning it raises once, however many views estimate the cell it concerns.
+temporal and breakout views as well as the headline. Repeated ratio cautions
+produce one `dashboard.statistical_cautions` summary per successful preparation,
+not a warning for each date, segment or arm. **Diagnostics** retains the affected
+results and their arm-level values; affected rows have an **Uncertainty caution**
+disclosure. A caution on an early date does not qualify an unaffected headline.
+These checks are heuristics, not measured coverage for your experiment.
+Estimates and intervals are unchanged. Unrelated warnings remain visible, and
+Python warning filters still apply, including warnings promoted to errors.
 
 ## Population selection
 
@@ -168,18 +174,42 @@ selected-population default and accept `population="assigned"` or
 `population="triggered"` for an explicit view. Metric group evidence is scoped to
 that population; assignment counts remain separately labeled.
 
-Readout tables keep the core metric and arm identity, lift, and lift plot, with
-failure or prior-advisory columns when those values exist. A row's family
-selection appears in metric details, Report notes, qualifications, and CSV,
-not in a separate **Discovery** column. Explore forest colors still distinguish
-corrected discoveries from non-discoveries. Numerical qualification appears in
-the inspector's interval-reading disclosure rather than the headline interval.
+Dashboard tables keep metric and arm identity, lift, and the effect plot, with
+failure or prior-advisory columns when those values exist. **Readout**, **Explore**,
+and **Report** omit the **Result** column; ordinary `readout_table()` calls and
+the analysis notebooks still include it by default.
+Plot colors use the recorded family selection when it applies, otherwise the
+comparison's own test. A non-selected comparison stays inconclusive; missing
+evidence stays unavailable. Metric inspectors and expanded **Methods &
+assumptions** retain the result and test details, as do the original result data
+and CSV. Routine numerical assumptions remain in technical evidence and the
+inspector's **Advanced calculation record**, not as warnings.
+
+Result-specific caveats appear as numbered markers beside the affected lift,
+with concise notes immediately below the table. Rows sharing the same full
+caveat share its marker; different technical details receive separate numbers.
+The note does not repeat row names or coordinates.
+The metric inspector's collapsed **Advanced calculation record** retains the
+recorded numerical assumptions with each result's identity and captured
+control/treatment success and trial counts, when available. These records are
+separate from result-specific caveats in **Definition and analysis policy**.
+Readout, Explore, and the printed Report retain result-specific notes after
+table-column filtering. Separate unavailability, exclusion, reliability, and
+safety warnings remain visible. CSV and saved result data retain the original
+evidence, not the display markers.
 
 Guardrail rows show their declared limit beneath the metric name, for example
 “Guardrail: no more than a 2% relative decrease.” This describes the threshold,
 not whether the result met it. Absolute margins are identified as absolute
 units; a required improvement is not described as an allowed deterioration.
 The word **Guardrail** uses the same orange as the dashed threshold marker.
+
+Supported fixed-horizon, one-sided guardrails display the bound used for their
+safety test, with its one-sided confidence level, consistently across methods.
+For example, a lower-bound guardrail leaves the upper end open. The displayed
+level can differ from the stored central interval's level; captured evidence and
+CSV keep the original interval. See [Reading results](reading-results.md) for
+the distinction. This does not add a dashboard column or change a verdict.
 
 Explore requests must match the snapshot's experiment and metric
 configuration, including arms, windows, breakouts, and policy. Matching only
@@ -427,13 +457,13 @@ still shown. Unavailable inference is never labeled nonsignificant. **How to
 read these intervals** explains the captured test direction, exact binary
 counts, and confidence-set shape without changing the inference.
 
-!!! warning "A guardrail that did not reject is not safe"
-    `stat_sig=False` on a guardrail means its declared test did not reject;
-    it does not mean "no harm". An interval entirely on the adverse side
-    stays visibly unfavorable even when `stat_sig=False`: Readout and Report
-    call out wholly adverse decision intervals, including one-sided
-    guardrails whose declared null was not rejected; `render_results` makes
-    this explicit rather than relying on someone reading the table correctly.
+!!! warning "An inconclusive guardrail does not establish safety"
+    **Guardrail passed** means the evidence rules out the declared unacceptable
+    loss, not that the metric improved. A small decline can pass if it stays
+    within the allowed margin. A failed one-sided safety test is
+    **Inconclusive**, never a red harm verdict by itself. Readout and Report
+    retain any adverse interval evidence in their explanations; this is separate
+    from the guardrail's pass status.
 
 ??? info "Statistical details: interval display rules"
     An ordinary, non-FCR point-backed Fieller result retains its central
@@ -480,8 +510,8 @@ counts, and confidence-set shape without changing the inference.
 
 Explore opens on **Overview**: one CoefTable of every metric's relative lift.
 With **Compare by** set to a declared breakout, each metric's segments nest
-beneath its whole-experiment row. Selecting a metric opens its **Time
-series**.
+beneath its whole-experiment row. Selecting a metric opens **Time series**
+and keeps that metric's definition and observed data available below the charts.
 
 The experiment's own whole-experiment rows are the Readout's rows, labelled
 "as in Readout", with their declared roles and corrections; they are never
@@ -541,14 +571,18 @@ captured for the experiment's own metrics only.
 
 ### Time series
 
-Time series selects a metric and a declared breakout, then switches between
-**Relative lift** (cumulative) and **Absolute values** (control and treatment
-arms on daily or cumulative scales). **Completed windows only** applies to
-cumulative views, not daily values. The breakout changes both estimates and
-uncertainty, not just labels; each declared `(source, property)` breakout is
-captured separately, so two sources of the same property never mix and a
-refusal from one never hides the other. Unsupported engine requests display
-their refusal instead of substituting whole-experiment results.
+With **Compare by → Whole experiment**, Time series shows every primary,
+secondary and guardrail metric in one CoefTable. Selected added metrics follow
+as exploratory rows. Switch between **Relative lift** (cumulative) and
+**Absolute values** (control and treatment together, cumulative or daily).
+Each metric keeps its own value scale and units. Unavailable metrics keep their
+row; expand **Unavailable** for the captured reason.
+
+Selecting a declared breakout restores the **Focus metric** picker and shows
+that metric's segments. The breakout changes estimates and uncertainty, not
+just labels. Each `(source, property)` is captured separately; one source's
+refusal never substitutes another source or whole-experiment results.
+**Completed windows only** applies to cumulative views, not daily values.
 
 Cumulative views use the calendar date as of which the estimate is computed.
 **Daily values** uses the date basis stated beneath its chart: for retention,
@@ -566,10 +600,11 @@ Metrics with no fixed endpoint do not need this maturity wait; the checkbox
 adds no outcome-window exclusion for them. Their events contribute from the
 selected population's start through the captured observation cutoff.
 
-All time-series views use native CoefTable trajectory tables. Lift has one row
-per comparison and segment; absolute values overlay control and treatment in
-one chart per segment, with shared scales for the selected metric. Observation
-dates remain on the charts, not in a separate column.
+All time-series views use native CoefTable trajectories. Whole-experiment
+rows share a date range, not a value scale; breakout rows share the selected
+metric's scales. Absolute values overlay both arms on the same row. When date
+bases differ, each metric label identifies observation dates or exposure
+cohorts. Dates stay on the charts rather than in a separate column.
 
 Expand **Latest readings and qualifications** for exact values, intervals,
 dates, and retained qualifications. Lift readings also include tested nulls.

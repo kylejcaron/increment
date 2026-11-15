@@ -506,10 +506,10 @@ def _without_snapshot_identity(value: Any, *, clear_content_digest: bool = False
     return value
 
 
-def _post_capture_absolute_contrast_projection(expected: Any, actual: Any) -> Any:
+def _post_capture_row_projection(expected: Any, actual: Any) -> Any:
     if isinstance(expected, Mapping) and isinstance(actual, Mapping):
         projected = {
-            key: _post_capture_absolute_contrast_projection(expected.get(key), value)
+            key: _post_capture_row_projection(expected.get(key), value)
             for key, value in actual.items()
         }
         if (
@@ -528,10 +528,12 @@ def _post_capture_absolute_contrast_projection(expected: Any, actual: Any) -> An
         ):
             assert actual.get("value_scale") == "absolute"
             projected.pop("value_scale")
+        if "lift" in expected and "metric" in expected:
+            projected, _ = _retained_capture_projection(expected, projected)
         return projected
     if isinstance(expected, list) and isinstance(actual, list) and len(expected) == len(actual):
         return [
-            _post_capture_absolute_contrast_projection(left, right)
+            _post_capture_row_projection(left, right)
             for left, right in zip(expected, actual, strict=True)
         ]
     return actual
@@ -729,7 +731,10 @@ def _retained_capture_projection(expected: Mapping[str, Any], actual: Mapping[st
         allowed.add("family_nominal_alpha")
     for field in missing_fields - allowed:
         assert actual.get(field) is None
-    # Selected-cell reissue allocations were added after these captures.
+    if "preferred_direction" in actual and "preferred_direction" not in expected:
+        assert actual["preferred_direction"] in {"increase", "decrease", "neutral"}
+        allowed.add("preferred_direction")
+    # These captures predate selection allocations and direction metadata.
     projected = dict(actual)
     for field in allowed:
         if field in expected:
@@ -996,9 +1001,7 @@ def _assert_outcome_matches(
                 expected_metadata, actual_metadata
             )
         if current_schema:
-            actual_metadata = _post_capture_absolute_contrast_projection(
-                expected_metadata, actual_metadata
-            )
+            actual_metadata = _post_capture_row_projection(expected_metadata, actual_metadata)
         _compare(expected_metadata, actual_metadata)
         for field in (
             "population_identity",
@@ -1033,7 +1036,7 @@ def _assert_outcome_matches(
                 else:
                     _compare(
                         expected_value,
-                        _post_capture_absolute_contrast_projection(expected_value, actual_value)
+                        _post_capture_row_projection(expected_value, actual_value)
                         if current_schema
                         else actual_value,
                     )

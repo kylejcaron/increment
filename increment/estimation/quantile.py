@@ -125,11 +125,11 @@ _REFUSALS = refusals(
             InvalidRequestError,
             lambda *, n_bad: (
                 f"values contain {n_bad} non-finite entr{'y' if n_bad == 1 else 'ies'} "
-                "(NaN or +/-inf) -- drop or impute them before quantile estimation"
+                "(NaN or +/-inf); drop or impute them before quantile estimation"
             ),
         ),
-        "estimation.quantile.too_small_bound": "n={n} is too small to bound the q={q} quantile at level {level:.2f} -- the distribution-free order-statistic bound needs n >= {n_min} per arm; collect more units or target a less extreme quantile",
-        "estimation.quantile.quantile_positive_log": "q={q} quantile must be positive for the log-scale lift transport (point={point:.6g}, lower order stat={lo:.6g}) -- collect more units, target a higher quantile, or narrow the enrolled population until this quantile clears zero",
+        "estimation.quantile.too_small_bound": "n={n} is too small to bound the q={q} quantile at level {level:.2f}; the distribution-free order-statistic bound needs n >= {n_min} per arm; collect more units or target a less extreme quantile",
+        "estimation.quantile.quantile_positive_log": "q={q} quantile must be positive for the log-scale lift transport (point={point:.6g}, lower order stat={lo:.6g}); collect more units, target a higher quantile, or narrow the enrolled population until this quantile clears zero",
         "estimation.quantile.degenerate_spread_order": "degenerate spread at q={q}: order-statistic bounds coincide (all values in the bracket identical)",
         "estimation.quantile.control_group_found": "control_group {control_group!r} not found; groups: {arms}",
         "estimation.quantile.estimate_quantile.metric_arm": "quantile metric {metric!r}, arm {arm!r}: {error}",

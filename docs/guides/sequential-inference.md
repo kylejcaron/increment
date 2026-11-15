@@ -36,6 +36,8 @@ before analysis. This plan-derived route is the ordinary starting point; the
 library constructs the registration from the plan and frame metadata.
 Unit-summary frames contain finalized unit outcomes, and `exposure_date`
 defines their reveal order.
+The readout table uses the `tables` extra.
+
 
 ```python
 from random import Random
@@ -43,6 +45,7 @@ from random import Random
 import polars as pl
 
 import increment
+from increment.tables import readout_table
 
 rng = Random(21)
 n = 2000
@@ -76,27 +79,13 @@ experiment, reader = increment.from_frame(
     exposure_date="enrolled_on",
 )
 results = increment.run(experiment, reader).readout()
-print(results)
+readout_table(results, title="Sequential purchase results")
 ```
 
-<!-- output -->
-
-```text
-assigned — treatment vs control
-purchase: control → treatment; effect=64.6342%; interval=[-31.8461%, 328.175%]; estimand=itt; stat_sig=False
-purchase (primary, relative lift): 64.6342%, set [-31.8461%, 328.175%] at 95% confidence.
-purchase interpretation: does not reject; the retained sequential procedure has not rejected.
-purchase sequential ratio confidence set interval: [0.681539, 4.28175].
-purchase test alternative: two-sided; null (relative lift): 0%.
-purchase result identity: method unadjusted; method role decision; estimand itt.
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Multiplicity (primary): declared_plan; family primary.
-```
-
-The displayed point is a relative lift in percent; the sequential confidence set
-is shown both as that lift and as a ratio (ratio = 1 + lift, so −31.8461% is
-0.681539). The result says this look does
-not reject the null; it does not establish no effect. Assignment integrity
+The table displays relative lift in percent. The authoritative ratio-coordinate
+bounds remain on `results[0].require_sequential_result().bounds`: ratio is
+`1 + lift`, so −31.8461% corresponds to 0.681539. This look does not reject
+the null; it does not establish no effect. Assignment integrity
 was not rejected, not proven. For a finite-sample anytime-valid claim, the
 Bernoulli outcomes, independent fixed-probability assignment, finalized
 outcomes and outcome-independent reveal order must match the declared model.

@@ -2,6 +2,7 @@ core = [
   "increment",
   "increment._*",
   "increment._optional",
+  "increment._readout_html",
   "increment._warehouse_namespace",
   "increment._compile_gaps",
   "increment.semantics*",

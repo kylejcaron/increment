@@ -26,32 +26,32 @@ from increment.estimation.armstats import (
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "estimation.variance.metric_group_log": "metric={metric!r} group={group_id!r}: {what} {mean:.6g} <= 0 -- log-scale relative-lift inference is undefined (zero events, or a signed metric that needs an absolute-scale estimand)",
+        "estimation.variance.metric_group_log": "metric={metric!r} group={group_id!r}: {what} {mean:.6g} <= 0; log-scale relative-lift inference is undefined (zero events, or a signed metric that needs an absolute-scale estimand)",
         "estimation.variance.mean_positive_log": "mean must be positive for log(mean), got {mean}",
         "estimation.variance.positive_se_log": "n must be positive for se_log_mean, got {n}",
         "estimation.variance.var_non_negative": "var must be non-negative, got {var}",
-        "estimation.variance.se_log_mean_out_of_range": "se_log_mean(var={var:.6g}, mean={mean:.6g}, n={n:.6g}): the true standard error is outside the float64 exponent range (log SE = {half:.6g}) -- it is not representable at this scale",
-        "estimation.variance.se_log_mean_not_representable": "se_log_mean(var={var:.6g}, mean={mean:.6g}, n={n:.6g}) is {se!r} for a positive variance -- the true standard error is not representable in float64",
+        "estimation.variance.se_log_mean_out_of_range": "se_log_mean(var={var:.6g}, mean={mean:.6g}, n={n:.6g}): the true standard error is outside the float64 exponent range (log SE = {half:.6g}); it is not representable at this scale",
+        "estimation.variance.se_log_mean_not_representable": "se_log_mean(var={var:.6g}, mean={mean:.6g}, n={n:.6g}) is {se!r} for a positive variance; the true standard error is not representable in float64",
         "estimation.variance.ratio_moments_needs_ref_den": "ratio-family moments require ref_den/cden1/cden2/cyden (not None)",
         "estimation.variance.ratio_moments_least_two_units": "n must be at least 2 to compute ddof=1 ratio moments (metric {metric!r}, arm {group_id!r} has n={n}); drop or merge arm {group_id!r}",
-        "estimation.variance.ratio_moments_nonpositive_denominator_mean": "ratio metric {metric!r} arm {group_id!r}: nonpositive denominator mean ({d_bar!r}) -- the ratio estimand sum(num)/sum(den) is undefined or sign-ambiguous; check the denominator fact/window",
-        "estimation.variance.ratio_variance_term": "{what}: the ratio variance term is not representable in float64 for num_bar={num_bar:.6g}, den_bar={den_bar:.6g}, var_den={var_den:.6g} -- r*sqrt(var_den)={rooted:.6g} squares past the exponent range",
-        "estimation.variance.ratio_residual_variance": "{what}: ratio residual variance is not representable in float64 (residual={residual!r}) for num_bar={num_bar:.6g}, den_bar={den_bar:.6g} -- the quadratic form overflowed at this scale",
+        "estimation.variance.ratio_moments_nonpositive_denominator_mean": "ratio metric {metric!r} arm {group_id!r}: nonpositive denominator mean ({d_bar!r}); the ratio estimand sum(num)/sum(den) is undefined or sign-ambiguous; check the denominator fact/window",
+        "estimation.variance.ratio_variance_term": "{what}: the ratio variance term is not representable in float64 for num_bar={num_bar:.6g}, den_bar={den_bar:.6g}, var_den={var_den:.6g}; r*sqrt(var_den)={rooted:.6g} squares past the exponent range",
+        "estimation.variance.ratio_residual_variance": "{what}: ratio residual variance is not representable in float64 (residual={residual!r}) for num_bar={num_bar:.6g}, den_bar={den_bar:.6g}; the quadratic form overflowed at this scale",
         "estimation.variance.ratio_residual_variance_negative": "{what}: ratio residual variance is {residual:.6g}, negative beyond floating-point rounding -- these moments are corrupt or were not produced together",
-        "estimation.variance.ratio_se_representable": "{what}: ratio SE is not representable in float64 for num_bar={num_bar:.6g}, den_bar={den_bar:.6g} -- a positive residual variance ({clamped:.6g}) underflows to a zero standard error at this scale",
-        "estimation.variance.ratio_se_sqrt_not_representable": "{what}: ratio SE is not representable in float64 for num_bar={num_bar:.6g}, den_bar={den_bar:.6g} -- sqrt(residual/n)={root:.6g} over a denominator this small overflows the exponent range",
-        "estimation.variance.ratio_se_final_not_representable": "{what}: ratio SE is not representable in float64 (R={r!r}, se={se!r}) for num_bar={num_bar:.6g}, den_bar={den_bar:.6g} -- the ratio or its variance has overflowed at this scale",
-        "estimation.variance.cluster_robust_late": "cluster-robust LATE needs a cluster uptake family, but this row declares x_role={x_role!r} (x carries {carries}, not a cluster uptake total) -- the cluster-robust LATE first stage cannot be computed. Rebuild the summary with a declared cluster AND uptake fact on an Encouragement design.",
-        "estimation.variance.cluster_robust_late_needs_cluster_uptake_family": "cluster-robust LATE needs the cluster-grain uptake family (ref_x/cx1/cx2/cxy) -- rebuild the summary with a declared cluster AND uptake fact on an Encouragement design.",
-        "estimation.variance.cluster_robust_late_needs_cxden": "cluster-robust LATE needs cxden (cov of cluster uptake total and cluster size) -- rebuild the summary through group_summary(cluster=...) / from_unit_summary(cluster=...).",
+        "estimation.variance.ratio_se_representable": "{what}: ratio SE is not representable in float64 for num_bar={num_bar:.6g}, den_bar={den_bar:.6g}; a positive residual variance ({clamped:.6g}) underflows to a zero standard error at this scale",
+        "estimation.variance.ratio_se_sqrt_not_representable": "{what}: ratio SE is not representable in float64 for num_bar={num_bar:.6g}, den_bar={den_bar:.6g}; sqrt(residual/n)={root:.6g} over a denominator this small overflows the exponent range",
+        "estimation.variance.ratio_se_final_not_representable": "{what}: ratio SE is not representable in float64 (R={r!r}, se={se!r}) for num_bar={num_bar:.6g}, den_bar={den_bar:.6g}; the ratio or its variance has overflowed at this scale",
+        "estimation.variance.cluster_robust_late": "cluster-robust LATE needs a cluster uptake family, but this row declares x_role={x_role!r} (x carries {carries}, not a cluster uptake total); the cluster-robust LATE first stage cannot be computed. Rebuild the summary with a declared cluster AND uptake fact on an Encouragement design.",
+        "estimation.variance.cluster_robust_late_needs_cluster_uptake_family": "cluster-robust LATE needs the cluster-grain uptake family (ref_x/cx1/cx2/cxy); rebuild the summary with a declared cluster AND uptake fact on an Encouragement design.",
+        "estimation.variance.cluster_robust_late_needs_cxden": "cluster-robust LATE needs cxden (cov of cluster uptake total and cluster size); rebuild the summary through group_summary(cluster=...) / from_unit_summary(cluster=...).",
         "estimation.variance.cluster_outcome_moments_least_two_units": "n must be at least 2 to compute ddof=1 cluster-outcome moments (metric {metric!r}, arm {group_id!r} has n={n})",
-        "estimation.variance.cluster_outcome_moments_nonpositive_size": "cluster metric {metric!r} arm {group_id!r}: nonpositive mean cluster size ({size_bar!r}) -- corrupt cluster moments",
+        "estimation.variance.cluster_outcome_moments_nonpositive_size": "cluster metric {metric!r} arm {group_id!r}: nonpositive mean cluster size ({size_bar!r}); corrupt cluster moments",
         "estimation.variance.cluster_uptake_moments_least_two_units": "n must be at least 2 to compute ddof=1 cluster-uptake moments (metric {metric!r}, arm {group_id!r} has n={n})",
         "estimation.variance.cluster_uptake_moments_needs_ref_den": "ratio-family moments require ref_den/cden1/cden2 (not None)",
-        "estimation.variance.ratio_variance.correlation_not_representable": "var_log_r for metric={metric!r} group={group_id!r}: the implied numerator/denominator correlation has log magnitude {log_rho:.6g}, astronomically beyond the Cauchy-Schwarz bound of 1 -- these moments are corrupt or were not produced together",
-        "estimation.variance.ratio_variance.variance_scale_not_representable": "var_log_r for metric={metric!r} group={group_id!r}: log-ratio variance is {value:.6g} of the terms' own scale (log scale {log_scale:.6g}), negative beyond their floating-point rounding (~{variance_slack:.3g}) -- the numerator and denominator moments are inconsistent (mis-aggregated upstream or not produced together), not merely cancelled.",
-        "estimation.variance.ratio_variance.true_se_out_of_range": "var_log_r for metric={metric!r} group={group_id!r}: the true standard error is outside the float64 exponent range (log SE = {log_se:.6g}) -- it is not representable at this scale",
-        "estimation.variance.ratio_variance.se_not_representable": "var_log_r for metric={metric!r} group={group_id!r} is {se!r} for a positive variance -- the true standard error is not representable in float64",
+        "estimation.variance.ratio_variance.correlation_not_representable": "var_log_r for metric={metric!r} group={group_id!r}: the implied numerator/denominator correlation has log magnitude {log_rho:.6g}, astronomically beyond the Cauchy-Schwarz bound of 1; these moments are corrupt or were not produced together",
+        "estimation.variance.ratio_variance.variance_scale_not_representable": "var_log_r for metric={metric!r} group={group_id!r}: log-ratio variance is {value:.6g} of the terms' own scale (log scale {log_scale:.6g}), negative beyond their floating-point rounding (~{variance_slack:.3g}); the numerator and denominator moments are inconsistent (mis-aggregated upstream or not produced together), not merely cancelled.",
+        "estimation.variance.ratio_variance.true_se_out_of_range": "var_log_r for metric={metric!r} group={group_id!r}: the true standard error is outside the float64 exponent range (log SE = {log_se:.6g}); it is not representable at this scale",
+        "estimation.variance.ratio_variance.se_not_representable": "var_log_r for metric={metric!r} group={group_id!r} is {se!r} for a positive variance; the true standard error is not representable in float64",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -223,9 +223,9 @@ def require_positive_denominator_mean(*, metric: str, group_id: str, d_bar: floa
         )
 
 
-#: Calibrated across sample sizes 20-2000 and lognormal, exponential, and gamma
-#: denominators: cells below 93% coverage at nominal 95% usually exceed this
-#: threshold, while cells at or above 94.5% do not.
+#: Heuristic threshold for the relative standard error of the denominator mean.
+#: Exceeding it flags potential delta-method approximation error, not a
+#: particular ratio interval's coverage.
 RATIO_DENOMINATOR_PRECISION_THRESHOLD = 0.15
 
 
@@ -233,22 +233,21 @@ def ratio_denominator_precision(arm: ArmStats) -> float:
     """Relative standard error of the arm's denominator mean.
 
     ``sqrt(var_d / n) / d_bar``: the denominator's coefficient of variation
-    over ``sqrt(n)``. The delta method linearises ``1 / d_bar``; the larger
-    this quantity, the further a right-skewed denominator pushes the
-    sampling law of ``1 / d_bar`` from that line and the more the interval
-    undercovers. Second-order moments cannot see the skew itself; this is
-    the quantity they do carry that tracks the failure. Shares
-    :func:`ratio_moments`' domain (positive means, ``n >= 2``); float
-    division overflow yields ``inf`` rather than raising.
+    over ``sqrt(n)``. The delta method linearises ``1 / d_bar``; a larger
+    value indicates potential nonlinearity that second-order moments can
+    reveal without measuring skew itself. This is a heuristic, not a
+    coverage guarantee: numerator-denominator dependence also matters.
+    Shares :func:`ratio_moments`' domain (positive means, ``n >= 2``);
+    float division overflow yields ``inf`` rather than raising.
     """
     _, d_bar, _, _, _ = ratio_moments(arm)
     return arm.se_mean_den() / d_bar
 
 
-#: Standardized skewness of a denominator MEAN, ``g1 / sqrt(n)``, from which the
-#: pooled coverage of admitted ratio rows falls below 93.5% at nominal 95%
-#: (``calibration/ratio_skew.py``: lognormal denominators sigma 0.5-2.0, n 50-400;
-#: rows at or above it covered 92.2%, rows below it 94.3%).
+#: Threshold for the denominator-mean skew heuristic, ``g1 / sqrt(n)``.
+#: ``calibration/ratio_skew.py`` studies lognormal denominators with independent
+#: Normal numerators; its coverage measurements do not determine coverage
+#: for other joint numerator-denominator distributions.
 RATIO_DENOMINATOR_SKEW_THRESHOLD = 0.30
 
 
@@ -256,10 +255,10 @@ def ratio_denominator_mean_skewness(arm: ArmStats) -> float:
     """Standardized skewness of the arm's denominator mean, ``g1 / sqrt(n)``.
 
     ``g1`` is the arm's sample skewness ``m3 / m2**1.5`` (:meth:`ArmStats.skew_den`);
-    dividing by ``sqrt(n)`` gives the skewness of ``d_bar``'s sampling law to
-    first order, the leading Edgeworth term of the mean's departure from
-    normality and so of the delta method's failure to see how ``1 / d_bar``
-    is distributed. Refuses when the third moment was not carried.
+    scaling by ``sqrt(n)`` estimates the skewness of ``d_bar`` under independent
+    units. This first-order diagnostic of departure from normality does not
+    determine a ratio interval's coverage. Requires a carried, finite third
+    moment consistent with the second moment.
     """
     return arm.skew_den() / math.sqrt(arm.n)
 
@@ -630,28 +629,25 @@ class RatioVarianceModel:
             - 2 * Cov(Num, Den) / (Num_bar * Den_bar)
         ]
 
-    Asymptotic: undercovers under heavily right-skewed denominators - with
-    a lognormal(sigma=1.5) denominator and an independent numerator,
-    measured 90.2% coverage at nominal 95% with n=50 units/arm, 92.7% at
-    n=100, 93.1% at n=200 and 93.7% at n=400, and worse at sigma=2.0
-    (85.1% at n=50, 91.7% at n=400); lognormal(sigma=0.5) is nominal at
-    every n (``calibration/ratio_skew.py``). The carried third moment of
-    the denominator exposes the regime: the engine emits the coded
-    ``estimation.engine.ratio_denominator_skew`` warning and attaches a
-    ``ratio_denominator_skew`` row note when either arm's
-    :func:`ratio_denominator_mean_skewness` exceeds
+    An asymptotic approximation whose finite-sample accuracy depends on the
+    joint numerator-denominator distribution. ``calibration/ratio_skew.py``
+    studies lognormal denominators with independent Normal numerators; its
+    coverage measurements do not apply to every ratio with denominator skew.
+    The engine emits the coded ``estimation.engine.ratio_denominator_skew``
+    warning and attaches a ``ratio_denominator_skew`` row note when either
+    arm's :func:`ratio_denominator_mean_skewness` exceeds
     ``RATIO_DENOMINATOR_SKEW_THRESHOLD``, and attaches a
     ``ratio_denominator_precision`` note when either arm's
     :func:`ratio_denominator_precision` exceeds
-    ``RATIO_DENOMINATOR_PRECISION_THRESHOLD``. The interval itself is
-    unchanged: a flagged row is still anticonservative. Point estimate
-    carries O(1/n) Jensen bias (+1-4pp at n<=200, vanishing by n=2000).
+    ``RATIO_DENOMINATOR_PRECISION_THRESHOLD``. These are heuristic cautions,
+    not measurements of a particular row's coverage. The estimate and
+    interval are unchanged.
     """
 
     consumes = "moments"
     # Variance is estimated from the arms, so the reference is Welch t. That
-    # corrects the small-sample reference only; the delta-method skew
-    # undercoverage documented above is flagged, not corrected.
+    # does not correct nonlinear approximation error; the denominator checks
+    # only flag potential problems heuristically.
     supports_welch_reference = True
 
     def log_mean_se(self, arm: ArmStats) -> tuple[float, float]:

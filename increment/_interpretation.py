@@ -1060,13 +1060,17 @@ def _decision_line(row, *, control_group: str | None, treatment_group: str | Non
 
 
 def _effect_text(projection: EffectEstimate, *, label: str = "effect") -> str | None:
-    """Format a retained point and interval at six significant digits, relative ones in percent."""
+    """Format a retained point and contiguous interval, relative values in percent."""
     if projection.point is None:
         return None
     percent = projection.value_scale == "relative"
     text = f"{label}={_number_text(projection.point, percent=percent)}"
-    if projection.lower is not None or projection.upper is not None:
-        text += f"; interval={_bounds_text(projection.lower, projection.upper, percent=percent)}"
+    intervals = projection.intervals
+    if len(intervals) == 1:
+        lower, upper = intervals[0]
+        text += f" {_bounds_text(lower, upper, percent=percent)}"
+    elif not intervals and (projection.lower is not None or projection.upper is not None):
+        text += f" {_bounds_text(projection.lower, projection.upper, percent=percent)}"
     return text
 
 

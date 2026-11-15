@@ -128,7 +128,7 @@ def two_sided_critical_value(
             what=what,
             tail_or_alpha=alpha,
             value=(
-                f"critical value at alpha={alpha:.3g} is {crit!r}, not positive -- "
+                f"critical value at alpha={alpha:.3g} is {crit!r}, not positive; "
                 "the tail probability has underflowed the reference distribution's "
                 "resolution"
             ),
@@ -152,7 +152,7 @@ def wald_bounds(point: float, crit: float, se: float, *, what: str) -> tuple[flo
             tail_or_alpha=crit,
             value=(
                 f"interval half-width is not representable in float64 (critical "
-                f"value {crit:.6g} x se {se:.6g}) -- the interval cannot be "
+                f"value {crit:.6g} x se {se:.6g}); the interval cannot be "
                 f"reported at this scale"
             ),
         )

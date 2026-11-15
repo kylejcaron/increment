@@ -1257,8 +1257,8 @@ _SKEWED_RATIO = """
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_preparation_shows_each_distinct_warning_once(tmp_path):
-    """Cells several views estimate warn once per preparation, even when every warning shows."""
+def test_preparation_summarizes_statistical_cautions_and_retains_cell_diagnostics(tmp_path):
+    """Changing arm statistics do not turn one preparation into a warning stream."""
     plan = (
         "    plan:\n      primary: checkout_conversion\n      secondaries: [revenue_per_purchase]\n"
     )
@@ -1271,13 +1271,87 @@ def test_preparation_shows_each_distinct_warning_once(tmp_path):
         warnings.catch_warnings(record=True) as caught,
     ):
         warnings.simplefilter("always")
-        prepare_dashboard(experiment, resolver, config=CONFIG)
-    shown = [
-        (record.category, str(record.message), getattr(record.message, "context", {}).get("metric"))
+        snapshot = prepare_dashboard(experiment, resolver, config=CONFIG)
+    statistical = [
+        record.message
         for record in caught
+        if isinstance(record.message, IncrementRuntimeWarning)
+        and record.message.code.startswith(
+            ("estimation.engine.ratio_denominator_", "dashboard.statistical_cautions")
+        )
     ]
-    assert any(issubclass(category, IncrementRuntimeWarning) for category, _, _ in shown)
-    assert len(shown) == len(set(shown))
+    assert len(statistical) == 1
+    assert statistical[0].code == "dashboard.statistical_cautions"
+    assert statistical[0].context["metrics"] == ("revenue_per_purchase",)
+    codes = statistical[0].context["codes"]
+    assert isinstance(codes, tuple)
+    assert "estimation.engine.ratio_denominator_skew" in codes
+    retained = [
+        (cell.cell, advisory)
+        for capture in snapshot.explore.values()
+        if capture.refusal is None
+        for metadata in (getattr(capture.load(), "metadata", None),)
+        if metadata is not None
+        for cell in metadata.cells
+        for advisory in cell.advisories
+        if advisory.code == "estimation.engine.ratio_denominator_skew"
+    ]
+    assert any(cell.ds is not None and advisory.context["arms"] for cell, advisory in retained)
+
+
+def test_preparation_warning_summary_is_per_call_and_keeps_unrelated_warnings():
+    from increment.dashboard._data import _each_warning_once
+
+    unrelated = RuntimeWarning("another diagnostic")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(2):
+            with _each_warning_once():
+                for metric, n in (("ratio_a", 20), ("ratio_a", 40), ("ratio_b", 30)):
+                    warnings.warn(
+                        IncrementRuntimeWarning(
+                            f"sample size {n}",
+                            code="estimation.engine.ratio_denominator_skew",
+                            context={"metric": metric, "n": n},
+                        ),
+                        stacklevel=1,
+                    )
+                warnings.warn(unrelated, stacklevel=1)
+    summaries = [
+        record.message
+        for record in caught
+        if isinstance(record.message, IncrementRuntimeWarning)
+        and record.message.code == "dashboard.statistical_cautions"
+    ]
+    assert len(summaries) == 2
+    assert all(message.context["metrics"] == ("ratio_a", "ratio_b") for message in summaries)
+    assert sum(record.message is unrelated for record in caught) == 2
+    assert len(caught) == 4
+    assert all(record.filename == __file__ for record in caught)
+
+
+@pytest.mark.parametrize("action", ["ignore", "error"])
+def test_preparation_warning_summary_preserves_caller_filters(action):
+    from increment.dashboard._data import _each_warning_once
+
+    caution = IncrementRuntimeWarning(
+        "sample diagnostic",
+        code="estimation.engine.ratio_denominator_skew",
+        context={"metric": "ratio_a"},
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warnings.filterwarnings(
+            action, message="sample diagnostic", category=IncrementRuntimeWarning
+        )
+        if action == "error":
+            with pytest.raises(IncrementRuntimeWarning) as raised, _each_warning_once():
+                warnings.warn(caution, stacklevel=1)
+            assert raised.value is caution
+        else:
+            with _each_warning_once():
+                warnings.warn(caution, stacklevel=1)
+    assert caught == []
 
 
 @pytest.mark.integration

@@ -53,7 +53,7 @@ def _panel_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) ->
         "panel_sql",
         NativePanelSqlOperation,
         message=(
-            "panel_sql() needs an experiment built by from_definitions -- a frame, "
+            "panel_sql() needs an experiment built by from_definitions; a frame, "
             "warehouse or moments experiment has no SQL substrate to introspect."
         ),
     )
@@ -74,7 +74,7 @@ def _summary_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) 
         "summary_sql",
         SummarySqlOperation,
         message=(
-            "summary_sql() needs an experiment built by from_definitions -- a frame, "
+            "summary_sql() needs an experiment built by from_definitions; a frame, "
             "warehouse or moments experiment has no SQL substrate to introspect."
         ),
     )

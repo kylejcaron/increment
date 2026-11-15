@@ -7,7 +7,7 @@ two A/B tests on disjoint user cohorts: a checkout redesign
 (``experiment_id = "express_checkout"``), whose users are assigned on their
 first visit and triggered only if they later reach checkout.
 The warehouse is meant to be analyzed by ``increment``'s semantic layer via
-YAML fact-source definitions bound to the exact table/column names below --
+YAML fact-source definitions bound to the exact table/column names below;
 do not rename them without a very good reason.
 
 Layout::
@@ -273,7 +273,7 @@ def _gen_fact_exposure(
     trigger_rate: float,
 ) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray]:
     """Returns (exposure_columns, triggered_user_ids, triggered_variant,
-    triggered_base_exposed_at) -- the latter three feed orders/retention/RUM.
+    triggered_base_exposed_at); the latter three feed orders/retention/RUM.
     """
     n = len(user_ids)
     triggered_mask = rng.random(n) < trigger_rate  # arm-independent
@@ -367,10 +367,10 @@ def _gen_events_pre(
     rng: np.random.Generator, user_ids: np.ndarray, signup_date: np.ndarray
 ) -> dict:
     """Every user has activity from BEFORE the experiment: 1-3 page_views
-    plus exactly one page_load timing sample, both 2..60 days prior --
+    plus exactly one page_load timing sample, both 2..60 days prior;
     but NEVER before the user's own signup_date (snap_user_plan.valid_from
     for their initial 'free' row equals signup_date, so an event dated
-    before it would make that user's plan unresolvable -- a pre_exposure
+    before it would make that user's plan unresolvable; a pre_exposure
     property lookup that finds no row at all, landing in the null segment
     instead of 'free'). signup lookback is drawn independently from the
     pre-history lag (30..400 days vs. 2..60 days) and CAN be shorter than
@@ -386,7 +386,7 @@ def _gen_events_pre(
     # it even at datetime64[D]-vs-[us] boundary precision.
     max_lag = np.minimum(_PRE_HISTORY_HIGH_DAYS, lookback_days - 1.0)
     assert np.all(max_lag >= _PRE_HISTORY_LOW_DAYS), (
-        "signup lookback too short relative to _PRE_HISTORY_LOW_DAYS -- "
+        "signup lookback too short relative to _PRE_HISTORY_LOW_DAYS; "
         "_SIGNUP_LOOKBACK_DAYS_LOW must stay well above _PRE_HISTORY_LOW_DAYS + 1"
     )
 
@@ -433,7 +433,7 @@ def _gen_events_rum(
     rng: np.random.Generator, triggered_user_ids: np.ndarray, base_exposed_at: np.ndarray
 ) -> dict:
     """One or more post-exposure page loads (RUM) per triggered user, latency
-    drawn from the SAME distribution regardless of arm -- no guardrail regression."""
+    drawn from the SAME distribution regardless of arm; no guardrail regression."""
     n = len(triggered_user_ids)
     load_counts = rng.integers(1, 5, size=n)
     rum_user_ids = np.repeat(triggered_user_ids, load_counts)
@@ -461,7 +461,7 @@ def _gen_events_retention(
     rng: np.random.Generator, user_ids: np.ndarray, anchor_at: np.ndarray
 ) -> tuple[dict, np.ndarray]:
     """~65% of users return with a page_view in [7, 14) days after their
-    anchor -- arm-independent (the retention rate itself is not conditioned
+    anchor; arm-independent (the retention rate itself is not conditioned
     on variant here; only exposure was)."""
     n = len(user_ids)
     retained_mask = rng.random(n) < _RETENTION_RATE
@@ -485,8 +485,8 @@ def _gen_events_retention(
 
 def _gen_tail(rng: np.random.Generator, partition_user_ids: np.ndarray) -> tuple[dict, dict]:
     """Tail traffic: the first ~200 users in the partition get a page_view,
-    a page_load, AND an order dated ~40 days after the experiment start --
-    well past every metric's analysis window -- so freshness checks on every
+    a page_load, AND an order dated ~40 days after the experiment start;
+    well past every metric's analysis window, so freshness checks on every
     distinct event_name (and on fact_orders) never trip."""
     tail_ids = partition_user_ids[: min(_TAIL_USERS_PER_PARTITION, len(partition_user_ids))]
     n = len(tail_ids)
@@ -724,8 +724,8 @@ def _generate_partition(p: int, users_per_partition: int, seed: int) -> dict[str
     n_orders = len(all_orders["user_id"])
     assert n_orders < _PARTITION_ID_STRIDE, (
         f"partition {p}: {n_orders} orders exceeds _PARTITION_ID_STRIDE="
-        f"{_PARTITION_ID_STRIDE}; order_id ranges would collide across partitions "
-        f"-- raise _PARTITION_ID_STRIDE or shrink users_per_partition"
+        f"{_PARTITION_ID_STRIDE}; order_id ranges would collide across partitions; "
+        "raise _PARTITION_ID_STRIDE or shrink users_per_partition"
     )
     order_offset = p * _PARTITION_ID_STRIDE
     all_orders["order_id"] = order_offset + np.arange(n_orders, dtype=np.int64)
@@ -736,8 +736,8 @@ def _generate_partition(p: int, users_per_partition: int, seed: int) -> dict[str
     n_events = len(all_events["user_id"])
     assert n_events < _PARTITION_ID_STRIDE, (
         f"partition {p}: {n_events} events exceeds _PARTITION_ID_STRIDE="
-        f"{_PARTITION_ID_STRIDE}; event_id ranges would collide across partitions "
-        f"-- raise _PARTITION_ID_STRIDE or shrink users_per_partition"
+        f"{_PARTITION_ID_STRIDE}; event_id ranges would collide across partitions; "
+        "raise _PARTITION_ID_STRIDE or shrink users_per_partition"
     )
     event_offset = p * _PARTITION_ID_STRIDE
     all_events["event_id"] = event_offset + np.arange(n_events, dtype=np.int64)
@@ -793,14 +793,14 @@ def _write_partitioned(out: Path, table_name: str, p: int, table: pa.Table) -> N
 def generate(out: Path, partitions: int, users_per_partition: int, seed: int) -> dict:
     """Generate and write the full warehouse. Returns per-table row counts."""
     assert partitions * users_per_partition < _EXPRESS_USER_ID_OFFSET, (
-        "checkout_redesign's user_id range would reach express_checkout's cohort "
-        "-- raise _EXPRESS_USER_ID_OFFSET or shrink partitions x users_per_partition"
+        "checkout_redesign's user_id range would reach express_checkout's cohort; "
+        "raise _EXPRESS_USER_ID_OFFSET or shrink partitions x users_per_partition"
     )
     row_counts: dict[str, int] = dict.fromkeys(_TABLE_FILENAMES, 0)
 
     # Clear each partitioned table's directory first. Without this, re-running
     # with FEWER partitions than a previous run leaves orphaned part=NNNNN
-    # directories behind -- silently mixing stale and fresh data for any
+    # directories behind, silently mixing stale and fresh data for any
     # downstream consumer that globs partitions (the whole point of this layout).
     partitioned_tables = [name for name in _TABLE_FILENAMES if name != "dim_experiment"]
     for name in partitioned_tables:
@@ -842,7 +842,7 @@ def warehouse_manifest(
 
 
 # ---------------------------------------------------------------------------
-# Post-write verification -- real assertions against the written Parquet,
+# Post-write verification: real assertions against the written Parquet,
 # not just comments. Fails loudly (raises) on any violation.
 # ---------------------------------------------------------------------------
 
@@ -937,7 +937,7 @@ def _check_warehouse(out: Path, partitions: int, users_per_partition: int) -> No
         for arm in (CONTROL_VARIANT, TREATMENT_VARIANT):
             arm_ids = set(assignment_user_id[assignment_variant == arm].tolist())
             assert arm_ids, (
-                f"{experiment_id}: no assigned users in arm {arm!r} -- increase "
+                f"{experiment_id}: no assigned users in arm {arm!r}; increase "
                 f"users_per_partition (50/50 assignment needs enough users for both "
                 f"arms to be non-empty)"
             )
@@ -1020,7 +1020,7 @@ def _check_warehouse(out: Path, partitions: int, users_per_partition: int) -> No
         if np.any((ts_arr >= base + low) & (ts_arr < base + high)):
             retained += 1
     assert base_exposed_at, (
-        "no triggered (exposed) users at all -- increase users_per_partition; "
+        "no triggered (exposed) users at all; increase users_per_partition; "
         "the retention/in-band checks below require at least one triggered user"
     )
     retention_rate = retained / len(base_exposed_at)
@@ -1065,12 +1065,12 @@ def _check_warehouse(out: Path, partitions: int, users_per_partition: int) -> No
         violations = row_ts < floor
         assert not violations.any(), (
             f"{label}: {int(violations.sum())} row(s) have {ts_col} before their "
-            f"user's own snap_user_plan.valid_from (i.e. before signup) -- a "
+            f"user's own snap_user_plan.valid_from (i.e. before signup); a "
             f"pre_exposure plan lookup at that timestamp would find no row"
         )
 
     print(
-        "check: OK -- "
+        "check: OK; "
         f"trigger_rates={trigger_rates!r} retention_rate={retention_rate:.4f} "
         f"freshness_floor={freshness_floor}"
     )

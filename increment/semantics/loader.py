@@ -72,7 +72,7 @@ def _construct_mapping_no_duplicates(
                 raise yaml.constructor.ConstructorError(
                     "while constructing a mapping",
                     node.start_mark,
-                    "found duplicate merge key '<<' -- merge several anchors with "
+                    "found duplicate merge key '<<'; merge several anchors with "
                     "one '<<: [*a, *b]' so their precedence is declared",
                     key_node.start_mark,
                 )
@@ -113,13 +113,13 @@ _MISSING_PATH = RefusalSpec(
 _MIGRATED_METRICS = RefusalSpec(
     "definition.migration.metrics",
     _DefinitionError,
-    template="experiment '{experiment}': 'metrics' moved to plan.secondaries -- declare it as `plan: {{secondaries: [...]}}` instead",
+    template="experiment '{experiment}': 'metrics' moved to plan.secondaries; declare it as `plan: {{secondaries: [...]}}` instead",
     keys=frozenset({"path"}),
 )
 _MIGRATED_GUARDRAILS = RefusalSpec(
     "definition.migration.guardrails",
     _DefinitionError,
-    template="experiment '{experiment}': 'guardrails' moved to plan.guardrails -- declare it as `plan: {{guardrails: [...]}}` instead",
+    template="experiment '{experiment}': 'guardrails' moved to plan.guardrails; declare it as `plan: {{guardrails: [...]}}` instead",
     keys=frozenset({"path"}),
 )
 _DUPLICATES = DEFINITION_REFUSALS["definition.duplicates"]
@@ -183,7 +183,7 @@ _NO_YAML_FILES_WARNING = WarningSpec(
     "definition.directory.no_yaml_files",
     IncrementWarning,
     lambda *, path: (
-        f"definitions directory {path} contains no .yaml/.yml files -- "
+        f"definitions directory {path} contains no .yaml/.yml files; "
         f"loading an empty semantic layer; check the path if this is "
         f"unexpected"
     ),
@@ -710,7 +710,7 @@ _SQL_DIALECT = RefusalSpec(
     "definition.sql.dialect",
     InvalidRequestError,
     template=(
-        "{label}: unknown SQL dialect {dialect!r} -- admission cannot be "
+        "{label}: unknown SQL dialect {dialect!r}; admission cannot be "
         "verified against a parser that does not exist; {route}"
     ),
 )

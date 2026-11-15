@@ -65,7 +65,7 @@ _REFUSALS = refusals(
         "facade.analysis_config.unknown_metric_declared": "{caller}: unknown metric(s) {unknown_names!r}; declared: {declared_names!r}",
         "facade.analysis_config.metric_definition_mismatch": "{caller}: metric object(s) {mismatched_names!r} differ from their declared definitions; select by name or pass a field-equal declared metric",
         "facade.analysis_config.metric_no_resolved": "metric {metric_name!r} has no resolved source configuration",
-        "facade.analysis_config.exploratory_metric_unavailable": "{caller}: exploratory_metrics cannot add {names!r} -- unknown to the loaded definitions: {unknown_names!r}; already declared by the experiment (pass them in metrics= instead): {declared_names!r}. Available to add: {available_names!r}",
+        "facade.analysis_config.exploratory_metric_unavailable": "{caller}: exploratory_metrics cannot add {names!r}; unknown to the loaded definitions: {unknown_names!r}; already declared by the experiment (pass them in metrics= instead): {declared_names!r}. Available to add: {available_names!r}",
         "facade.analysis_config.cuped_linear_moments": RefusalSpec(
             "facade.analysis_config.cuped_linear_moments",
             UnsupportedRequestError,

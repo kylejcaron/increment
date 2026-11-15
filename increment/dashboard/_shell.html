@@ -215,6 +215,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .scope-description { font-size: 11px; color: var(--muted); line-height: 1.6; text-align: right; max-width: 300px; margin: 0; }
 
 .explore-layout { display: grid; grid-template-columns: 205px minmax(0, 1fr); gap: 30px; align-items: start; }
+.explore-layout.whole-experiment { grid-template-columns: minmax(0, 1fr); }
 .metric-list { border-right: 1px solid var(--line); padding-right: 22px; min-width: 0; }
 .metric-list .eyebrow { margin: 4px 0 12px; }
 .metric-filter { display: block; width: 100%; box-sizing: border-box; margin: 0 0 6px; font: inherit; font-size: 12px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: max(0px, calc(var(--inc-dashboard-radius) - 2px)); padding: 7px 9px; }
@@ -717,7 +718,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
             <ul id="plot-notes-list"></ul>
           </details>
           <details class="metric-detail" id="metric-definition">
-            <summary>Metric definition &amp; observed data</summary>
+            <summary id="metric-definition-summary">Metric definition &amp; observed data</summary>
             <div class="metric-detail-body native-output" id="explore-inspector"></div>
             <p class="muted metric-detail-note">Observed group data describes the whole experiment; segment estimates are shown in the plot above.</p>
           </details>
@@ -865,6 +866,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   let scopes = data.scopes && typeof data.scopes === 'object' ? data.scopes : {};
   let scopeKeys = Object.keys(scopes).sort((a, b) => (a === 'overall' ? -1 : b === 'overall' ? 1 : 0));
   let explore = data.explore && typeof data.explore === 'object' ? data.explore : {};
+  let wholeExperiment = data.wholeExperiment && typeof data.wholeExperiment === 'object' ? data.wholeExperiment : {};
   let exploreMetrics = (() => {
     const covered = metrics.filter((metric) => scopeKeys.some((scope) => own(own(explore, scope), metric.key) !== undefined));
     return covered.length ? covered : metrics;
@@ -930,7 +932,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     if (primary) {
       box.hidden = false;
       box.classList.add(toneClass(primary.tone));
-      $('hero-primary-label').textContent = 'Primary · ' + str(primary.label);
+      $('hero-primary-label').textContent = 'Primary · ' + str(primary.label) + ' · ' + str(primary.result);
       $('hero-primary-effect').textContent = str(primary.effect);
       $('hero-primary-interval').textContent = intervalLine(primary);
       $('hero-primary-method').textContent = str(primary.method);
@@ -1115,38 +1117,51 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       renderOverview();
       return;
     }
+    const whole = exploreState.scope === 'overall';
     const metric = metricByKey.get(exploreState.metric);
-    if (!metric) return;
+    if (!whole && !metric) return;
     const scope = scopes[exploreState.scope] || {};
-    const scopeLabel = str(scope.label) || (exploreState.scope === 'overall' ? 'Whole experiment' : str(exploreState.scope));
+    const scopeLabel = str(scope.label) || (whole ? 'Whole experiment' : str(exploreState.scope));
     const absolute = exploreState.mode === 'absolute';
     const daily = absolute && exploreState.cadence === 'daily';
 
-    for (const button of $('metric-options').querySelectorAll('.metric-tab')) button.setAttribute('aria-pressed', String(button.dataset.metric === exploreState.metric));
+    $('explore-layout').classList.toggle('whole-experiment', whole);
+    $('metric-list').hidden = whole;
+    $('metric-definition').hidden = !metric;
+    for (const button of $('metric-options').querySelectorAll('.metric-tab')) button.setAttribute('aria-pressed', String(!whole && button.dataset.metric === exploreState.metric));
     for (const button of $('mode-group').children) button.setAttribute('aria-pressed', String(button.dataset.mode === exploreState.mode));
     for (const button of $('cadence-group').children) button.setAttribute('aria-pressed', String(button.dataset.cadence === exploreState.cadence));
     $('cadence-group').hidden = !absolute;
     $('complete-toggle').hidden = daily;
     $('complete-only').checked = exploreState.complete;
-    $('scope-description').textContent = 'The selected breakout applies to estimates and their entire uncertainty trajectory.' +
+    $('scope-description').textContent = (whole
+      ? (selectedAdded.length
+        ? 'All core metrics and selected added metrics are shown together for the whole experiment.'
+        : 'All core metrics are shown together for the whole experiment.')
+      : 'The selected breakout applies to estimates and their entire uncertainty trajectory.') +
       (scope.source ? ' Source: ' + str(scope.source) + '.' : '');
 
-    const packet = own(own(own(explore, exploreState.scope), exploreState.metric), viewKey());
-    $('explore-metric-name').textContent = metric.label;
+    const packet = whole
+      ? own(wholeExperiment, viewKey())
+      : own(own(own(explore, exploreState.scope), exploreState.metric), viewKey());
+    $('explore-metric-name').textContent = whole ? 'All experiment metrics' : metric.label;
     $('explore-context').textContent = scopeLabel + ' · ' + MODE_TEXT[absolute ? (daily ? 'daily' : 'cumulative') : 'relative'] +
       (!daily && exploreState.complete ? ' · completed windows only' : '');
     const plot = $('explore-plot');
-    plot.setAttribute('aria-label', metric.label + ' · ' + scopeLabel + ' plot');
+    plot.setAttribute('aria-label', (whole ? 'All experiment metrics' : metric.label) + ' · ' + scopeLabel + ' plot');
     let notes = [];
-    if (packet && typeof packet === 'object') {
-      mountNative(plot, packet.html, { metrics: 'label' });
+    if (packet && typeof packet === 'object' && typeof packet.html === 'string' && packet.html !== '') {
+      mountNative(plot, packet.html, whole ? {} : { metrics: 'label' });
       $('trajectory-caption').textContent = str(packet.caption);
       notes = Array.isArray(packet.notes) ? packet.notes.map(str).filter(Boolean) : [];
       const points = Number(packet.pointCount) || 0;
       $('explore-count').textContent = points ? points.toLocaleString() + ' captured time point' + (points === 1 ? '' : 's') : 'No captured time points in this view';
     } else {
-      plot.replaceChildren(el('p', { className: 'inc-dashboard-note', text: 'This view was not captured with the snapshot.' }));
-      $('trajectory-caption').textContent = 'This view was not captured with the snapshot.';
+      const unavailable = whole
+        ? 'Whole-experiment time series were not captured with the snapshot.'
+        : 'This view was not captured with the snapshot.';
+      plot.replaceChildren(el('p', { className: 'inc-dashboard-note', text: unavailable }));
+      $('trajectory-caption').textContent = unavailable;
       $('explore-count').textContent = '';
     }
 
@@ -1156,9 +1171,17 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     $('plot-notes-summary').textContent = 'Plot notes (' + notes.length + ')';
     $('plot-notes-list').replaceChildren(...notes.map((note) => el('li', { text: note })));
 
+    if (!metric) {
+      $('explore-inspector').replaceChildren();
+      groupDownload.set('', '');
+      return;
+    }
+    $('metric-definition-summary').textContent = metric.label + ' · definition & observed data';
     mountNative($('explore-inspector'), metric.detail);
     groupDownload.set(metric.csv, fileBase + '-' + slug(metric.key) + '-groups.csv');
+    $('group-download').textContent = 'Download ' + metric.label + ' group data ↓';
   }
+
 
   $('plot-notes').addEventListener('toggle', () => { notesOpen = $('plot-notes').open; });
   $('panel-explore').addEventListener('click', (event) => {
@@ -1306,7 +1329,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     if (primary && (str(primary.effect) || interval)) {
       box.hidden = false;
       box.classList.add(toneClass(primary.tone));
-      $('report-primary-metric').textContent = str(primary.label);
+      $('report-primary-metric').textContent = str(primary.label) + ' · ' + str(primary.result);
       $('report-primary-effect').textContent = str(primary.effect);
       $('report-primary-interval').textContent = interval;
     }
@@ -1360,6 +1383,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     scopes = data.scopes && typeof data.scopes === 'object' ? data.scopes : {};
     scopeKeys = Object.keys(scopes).sort((a, b) => (a === 'overall' ? -1 : b === 'overall' ? 1 : 0));
     explore = data.explore && typeof data.explore === 'object' ? data.explore : {};
+    wholeExperiment = data.wholeExperiment && typeof data.wholeExperiment === 'object' ? data.wholeExperiment : {};
     const covered = metrics.filter((metric) => scopeKeys.some((scope) => own(own(explore, scope), metric.key) !== undefined));
     exploreMetrics = covered.length ? covered : metrics;
     fileBase = slug(data.title);

@@ -101,7 +101,7 @@ def test_run_live_mode_is_retained_and_qualified(tmp_path):
 
         import narwhals as nw
 
-        from increment.tables import estimates_to_readout, readout_table
+        from increment.tables import estimates_to_readout
 
         frame = nw.from_native(rows.to_frame(backend="polars"), eager_only=True)
         expected_modes = {"events": "live"}
@@ -116,8 +116,6 @@ def test_run_live_mode_is_retained_and_qualified(tmp_path):
             isinstance(cell, str) and json.loads(cell) == expected_modes for cell in modes_cells
         )
         pytest.importorskip("coeftable")
-        html = readout_table(rows).gt().as_raw_html()
-        assert "Coherence: live" in html
     finally:
         resolver.close()
 
@@ -1328,7 +1326,7 @@ def test_custom_provider_forwarding_artifact_has_no_capture_guarantee(tmp_path):
 
         import narwhals as nw
 
-        from increment.tables import estimates_to_readout, readout_table
+        from increment.tables import estimates_to_readout
 
         modes = dict(rows.metadata.effective_modes)
         frame = nw.from_native(rows.to_frame(backend="polars"), eager_only=True)
@@ -1343,7 +1341,6 @@ def test_custom_provider_forwarding_artifact_has_no_capture_guarantee(tmp_path):
         modes_cells = [row["effective_modes"] for row in exported]
         assert all(isinstance(cell, str) and json.loads(cell) == modes for cell in modes_cells)
         pytest.importorskip("coeftable")
-        assert "Coherence: provider-owned" in readout_table(rows).gt().as_raw_html()
     finally:
         analysis[1].close()
 

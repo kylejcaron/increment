@@ -216,7 +216,7 @@ _NATIVE_COVARIATE_RESERVED = RefusalSpec(
     lambda *, covariate, cluster: (
         f"unit_frame: {covariate!r} is a reserved metadata column name"
         + (f" carrying the identity of declared cluster {cluster!r}" if cluster is not None else "")
-        + " -- rename the property to request it as a covariate."
+        + "; rename the property to request it as a covariate."
     ),
 )
 

@@ -60,7 +60,7 @@ _REPORT_RANGE = RefusalSpec(
     CapabilityError,
     lambda *, start, end_edge, span: (
         f"report range {start}..{end_edge} spans {span} days, beyond "
-        f"the {_MAX_REPORT_DAYS}-day spine capacity -- split the "
+        f"the {_MAX_REPORT_DAYS}-day spine capacity; split the "
         f"report or use a coarser date range"
     ),
 )

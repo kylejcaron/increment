@@ -90,12 +90,12 @@ _REFUSALS = refusals(
             "query.builders.cluster_column_missing",
             CapabilityError,
             template="experiment '{experiment}' declares cluster '{cluster}', but the {table} "
-            "table has no such column -- {remedy} Available columns: {columns}",
+            "table has no such column; {remedy} Available columns: {columns}",
         ),
         "query.builders.cluster_undeclared": RefusalSpec(
             "query.builders.cluster_undeclared",
             CapabilityError,
-            template="experiment '{experiment}' declares no cluster -- {operation} has no "
+            template="experiment '{experiment}' declares no cluster; {operation} has no "
             "grain to count over. Count units off first_exposures directly instead.",
         ),
         "query.builders.cluster_size_imbalance": RefusalSpec(
@@ -107,7 +107,7 @@ _REFUSALS = refusals(
             "{target_mean_size:.1f}), above the {threshold:.0%} whole-site refusal "
             "threshold. Cluster randomization balances clusters, not units, so under this "
             "imbalance the whole-site impact is not identified as the unit-weighted "
-            "average treatment effect -- the differenced ratio-of-sums confounds the "
+            "average treatment effect; the differenced ratio-of-sums confounds the "
             "treatment effect with the cluster-size gap. Read the per-unit lift from "
             "run() instead.",
         ),
@@ -115,13 +115,13 @@ _REFUSALS = refusals(
             "query.builders.site_volume_metric_type",
             CapabilityError,
             template="metric '{metric}': site volume is undefined for a {metric_type} "
-            "metric -- {reason}",
+            "metric; {reason}",
         ),
         "query.builders.cluster_total_grain": RefusalSpec(
             "query.builders.cluster_total_grain",
             CapabilityError,
             template="{caller}: {grain} rows cannot combine with the declared cluster "
-            "'{cluster}' -- cluster-robust inference is total-grain only. Read the "
+            "'{cluster}'; cluster-robust inference is total-grain only. Read the "
             "total-grain result instead.",
         ),
         "query.builders.trigger_population.cutoff_not_aware": RefusalSpec(
@@ -131,7 +131,7 @@ _REFUSALS = refusals(
             keys=frozenset({"field", "value"}),
         ),
         "query.builders.invalid_day_boundary": "invalid day_boundary {day_boundary!r}",
-        "query.builders.check_cluster.experiment_arm_no": "experiment '{experiment_name}': arm '{group}' has no clusters in the exposure counts -- cannot check cross-arm cluster-size balance.",
+        "query.builders.check_cluster.experiment_arm_no": "experiment '{experiment_name}': arm '{group}' has no clusters in the exposure counts; cannot check cross-arm cluster-size balance.",
         "query.builders.unknown_part_ratiometric": "Unknown part '{part}' for RatioMetric",
         "query.builders.part_ratiometric": "part='{part}' is only valid for RatioMetric",
         "query.builders.unknown_aggregation": "unknown aggregation {aggregation!r}",
@@ -142,25 +142,25 @@ _REFUSALS = refusals(
             template="window_bound_stats for {metric_type} not implemented",
         ),
         "query.builders.ratiometric_den_stats": "RatioMetric requires den_stats (denominator sufficient stats)",
-        "query.builders.unit_totals_properties": "unit_totals: `properties_table` given without `by` -- nothing to group by",
+        "query.builders.unit_totals_properties": "unit_totals: `properties_table` given without `by`; nothing to group by",
         "query.builders.unit_totals_by": "unit_totals: `by` requires `properties_table`",
-        "query.builders.group_summary_declared": "group_summary: declared cluster column '{cluster}' is not on the totals table -- build totals with unit_totals under the same cluster-declaring experiment. Available columns: {columns}",
+        "query.builders.group_summary_declared": "group_summary: declared cluster column '{cluster}' is not on the totals table; build totals with unit_totals under the same cluster-declaring experiment. Available columns: {columns}",
         "query.builders.group_summary_ratio": "group_summary: ratio_metrics={ratio_names} names a metric whose denominator must come from a 'y_den' column, which is not on the totals table. Available columns: {columns}",
-        "query.builders.group_summary_uptake": "group_summary: uptake=True declares an encouragement uptake fact in a 'd' column, which is not on the totals table -- build totals with unit_totals(uptake_events=...). Available columns: {columns}",
+        "query.builders.group_summary_uptake": "group_summary: uptake=True declares an encouragement uptake fact in a 'd' column, which is not on the totals table; build totals with unit_totals(uptake_events=...). Available columns: {columns}",
         "query.builders.asof_group_summary_metric_type_not_implemented": RefusalSpec(
             "query.builders.asof_group_summary_metric_type_not_implemented",
             UnsupportedRequestError,
             template="asof_group_summary for {metric_type} not implemented",
         ),
-        "query.builders.asof_group_summary_den_panel_retention": "asof_group_summary: den_panel is meaningless for a RetentionMetric (retention has no denominator events -- its denominator is the gated population, which the band-open/maturity gate already produces)",
+        "query.builders.asof_group_summary_den_panel_retention": "asof_group_summary: den_panel is meaningless for a RetentionMetric (retention has no denominator events; its denominator is the gated population, which the band-open/maturity gate already produces)",
         "query.builders.cohort_group_summary": RefusalSpec(
             "query.builders.cohort_group_summary",
             UnsupportedRequestError,
-            template="cohort_group_summary for {metric_type} not implemented -- the cohort axis exists for retention, whose outcome is not a property of a single activity day; use daily_group_summary for metric types that have an independent per-day reading",
+            template="cohort_group_summary for {metric_type} not implemented; the cohort axis exists for retention, whose outcome is not a property of a single activity day; use daily_group_summary for metric types that have an independent per-day reading",
         ),
         "query.builders.cohort_group_summary_unbounded_band": "cohort_group_summary: retention metric '{name}' declares an unbounded band (threshold_days={threshold_days}), so no cohort's outcome ever completes and no cohort could be reported. Declare threshold_days: [a, b] to bound the band.",
         "query.builders.asof_group_summary_completed_requires_uptake_window": "asof_group_summary: completed_windows_only=True under an encouragement design requires bounded outcome and uptake windows",
-        "query.builders.asof_group_summary": "asof_group_summary: completed_windows_only=True is contradictory for retention metric '{name}' -- its band (threshold_days={threshold_days}) is open on the right, so no unit's window ever completes and the gate would admit nothing. Drop completed_windows_only to get the cumulative monitoring series, or declare threshold_days: [a, b] to bound the band.",
+        "query.builders.asof_group_summary": "asof_group_summary: completed_windows_only=True is contradictory for retention metric '{name}'; its band (threshold_days={threshold_days}) is open on the right, so no unit's window ever completes and the gate would admit nothing. Drop completed_windows_only to get the cumulative monitoring series, or declare threshold_days: [a, b] to bound the band.",
         "query.builders.daily_state_not_implemented": RefusalSpec(
             "query.builders.daily_state_not_implemented",
             UnsupportedRequestError,
@@ -1942,19 +1942,19 @@ def warn_censored_units(
         if as_of_date is not None and as_of_date < horizon_date:
             cause = (
                 f"the underlying data, only loaded through {as_of_date} "
-                f"(data_as_of) -- this will resolve once more data "
+                f"(data_as_of); this will resolve once more data "
                 f"arrives, not by changing observation_end"
             )
         else:
             cause = (
-                "the declared observation horizon -- if this "
+                "the declared observation horizon; if this "
                 "intervention's effect persists once the experiment "
                 "stops, set observation_end to extend data collection; "
                 "if it reverts, this censoring is correct"
             )
     else:
         cause = (
-            "the experiment still running -- no end is declared yet, "
+            "the experiment still running; no end is declared yet, "
             "so these units have not had time to mature; this will "
             "resolve as the experiment continues, not by changing "
             "any experiment field"
@@ -1962,7 +1962,7 @@ def warn_censored_units(
         if isinstance(metric, RatioMetric):
             cause += (
                 f"; note this bound reflects observed event dates, "
-                f"not pipeline freshness -- a denominator fact "
+                f"not pipeline freshness; a denominator fact "
                 f"('{metric.denominator.fact}') lagging behind the "
                 f"numerator ('{metric.numerator.fact}') is another "
                 f"possible cause worth checking"
