@@ -21,7 +21,11 @@ import pandas as pd
 from coeftable import plots
 
 from increment._display import _readout_interval
-from increment._interpretation import _coherence_qualifications, interpret_readout
+from increment._interpretation import (
+    _assignment_check_warning,
+    _coherence_qualifications,
+    interpret_readout,
+)
 from increment._readout_html import readout_header
 from increment.dashboard._data import (
     _OVERVIEW_SEGMENTS,
@@ -824,15 +828,14 @@ def _qualification_block(snapshot: DashboardSnapshot, *, table_footnotes: bool =
     if not assignment:
         warnings["Assignment evidence was not captured."] = None
     for group in assignment:
-        if group.integrity_status == "failed":
+        warning = _assignment_check_warning(group.integrity_status, group.population)
+        if warning == "failed":
             warnings["Assignment integrity check failed."] = None
-        elif group.integrity_status not in ("not_rejected", "not_applicable"):
+        elif warning is not None:
             warnings["Assignment integrity was not established; review the evidence."] = None
     for group in interpretation.groups:
-        if group.population == "triggered" and group.integrity_status not in (
-            "not_rejected",
-            "not_applicable",
-            "not_checked_missing_counts",
+        if group.population == "triggered" and _assignment_check_warning(
+            group.integrity_status, group.population
         ):
             warnings[f"Triggered-population integrity: {_integrity_summary(group)}"] = None
         if group.decision_complete is False:

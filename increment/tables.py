@@ -1227,7 +1227,10 @@ def _result_presentation(row: Mapping[str, Any]) -> tuple[_ResultTone, str]:
     ):
         return "favorable", "Guardrail passed"
 
-    if alternative in ("greater", "less"):
+    rejection_side = row.get("residual_side")
+    if not _is_missing(rejection_side) and rejection_side in ("greater", "less"):
+        is_favorable = rejection_side == favorable_alternative
+    elif alternative in ("greater", "less"):
         is_favorable = alternative == favorable_alternative
     else:
         value_scale = row.get("value_scale")

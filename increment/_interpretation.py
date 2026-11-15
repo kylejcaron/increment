@@ -7,7 +7,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any
+from typing import Any, Literal
 
 from increment._display import interval_text
 from increment.estimation.readout_types import (
@@ -31,6 +31,17 @@ from increment.estimation.results import (
 LOW_RELIABILITY_CAVEAT = (
     "Caveat: low reliability, an arm has fewer units than the configured reliability threshold."
 )
+
+
+def _assignment_check_warning(
+    status: str | None, population: str | None
+) -> Literal["failed", "unchecked"] | None:
+    """Classify visible assignment warnings, excluding expected post-trigger count gaps."""
+    if status in ("not_rejected", "not_applicable"):
+        return None
+    if population == "triggered" and status == "not_checked_missing_counts":
+        return None
+    return "failed" if status == "failed" else "unchecked"
 
 
 @dataclass(frozen=True, slots=True)

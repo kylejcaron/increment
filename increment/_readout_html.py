@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from increment._display import _readout_interval, format_coverage
+from increment._interpretation import _assignment_check_warning
 
 MULTIPLICITY_LABELS = {
     "declared_plan": "Declared multiple-testing plan",
@@ -442,11 +443,16 @@ def _status_summary(
     if not rows:
         statuses["unknown_scope"] = "Scope and assignment checks unknown"
     for row in rows:
-        if row.get("decision_scope_complete") is None and row.get("integrity_status") in (
-            None,
-            "unknown",
-        ):
+        integrity = row.get("integrity_status")
+        assignment_warning = _assignment_check_warning(integrity, row.get("analysis_population"))
+        if row.get("decision_scope_complete") is None and integrity in (None, "unknown"):
             statuses["unknown_scope"] = "Scope and assignment checks not retained"
+        elif assignment_warning is not None:
+            statuses[integrity or "unknown"] = (
+                "Assignment check failed"
+                if assignment_warning == "failed"
+                else "Assignment not checked"
+            )
         if row.get("coherence") == "live":
             statuses["live"] = "Live read; no pinned snapshot guaranteed"
         if row.get("provider_owned") is True:
@@ -455,12 +461,6 @@ def _status_summary(
             statuses["independently_captured"] = (
                 "Independent captures; no common snapshot guaranteed"
             )
-        integrity = row.get("integrity_status")
-        if integrity == "failed":
-            statuses[integrity] = "Assignment check failed"
-        elif isinstance(integrity, str) and integrity.startswith("not_checked"):
-            if row.get("analysis_population") != "triggered":
-                statuses[integrity] = "Assignment not checked"
         for key, state, label in (
             ("decision_scope_complete", False, "Incomplete decision scope"),
             ("roster_complete", False, "Incomplete assignment roster"),

@@ -2871,6 +2871,31 @@ def test_readout_table_forest_color_uses_result_presentation():
             assert not any(f'fill="{(theme or DEFAULT).favorable}"' in plot for plot in bars)
 
 
+@pytest.mark.integration
+def test_switchback_result_preserves_rejection_direction_when_bounds_touch_null():
+    from increment.estimation.contrast import estimate_contrast
+    from tests.estimation.test_unit_cycle_envelope import envelope, procedure, stats
+
+    # Exact residual (2 + 2**-54) - 3 * (2/3) is positive, unlike the rounded HT point.
+    result = estimate_contrast(
+        stats(
+            probability_ct=0.75,
+            ct_cycles=4,
+            tc_cycles=0,
+            mean_slope=2 / 3,
+            reference_delta=2.0,
+            exact_delta_total=(8 * 2**52 + 1, 2**52),
+        ),
+        procedure(envelope(p=0.75, variance=0.0), null_abs=3.0, preferred_direction="increase"),
+    ).results[0]
+    (row,) = contrast_results_to_readout([result])
+    table = readout_table([row])
+
+    assert _rendered_column(table, "Result")[0].startswith("Above threshold")
+    assert _result_presentation(row) == ("favorable", "Above threshold")
+    assert "Above threshold" in table.gt().as_raw_html()
+
+
 def test_readout_table_family_selection_true_overrides_row_verdict_for_result():
     pytest.importorskip("coeftable")
     row = {
@@ -3853,6 +3878,7 @@ class _ReadoutChecksParser(HTMLParser):
             {"integrity_status": "not_checked_missing_declaration"},
             "not_checked_missing_declaration",
         ),
+        ({"integrity_status": "unsupported_assignment"}, "unsupported_assignment"),
         ({"decision_scope_complete": False}, "decision_scope_complete"),
         ({"coherence": "live"}, "live"),
         ({"provider_owned": True}, "provider_owned"),

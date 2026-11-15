@@ -242,6 +242,8 @@ table label ends with "(displayed interval rounded outward)". Its direction
 comes from the side its evidence rejects on (`residual_side`): an increase
 when it rejects above a null at or above zero, a decrease when it rejects
 below a null at or below zero, and otherwise as the interval shows.
+The Result label and its color follow that recorded test direction, even when
+the displayed bounds touch the threshold.
 Absolute-native estimates and contrasts use additive intervals; relative rows
 with an absolute margin use their retained additive interval; sequential ratio
 bounds are interpreted after conversion to
@@ -422,6 +424,11 @@ estimated. A partial result is not a complete decision.
 | `not_checked_missing_counts` | Required assignment counts were unavailable. |
 | `unsupported_assignment` | This source or design cannot evaluate the declared assignment law. |
 | `not_applicable` | The check does not apply to this source/design/population; it is not a pass. |
+
+Standalone tables and dashboards keep unsupported or unchecked assignment
+checks visible outside expandable evidence. Missing checks on triggered
+counts alone are not repeated as assignment warnings; use the
+assigned-population check.
 
 Use assignment evidence from the assigned population at its declared
 randomization grain. Triggered counts describe an outcome subset, not
