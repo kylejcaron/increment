@@ -263,7 +263,7 @@ class WholeWindowReadouts:
             registered = getattr(reader._plan.inference, "registration", None) is not None
             populations = (
                 ("assigned", "triggered")
-                if request.population is None and has_trigger
+                if has_trigger and (request.population is None or population == "triggered")
                 else (population,)
             )
             if population == "triggered" and registered:
@@ -476,8 +476,18 @@ class WholeWindowReadouts:
                 and self._experiment is not None
                 and self._experiment.trigger is not None
             )
-            required_populations = (
-                ("assigned", "triggered") if has_trigger else (req.population or "assigned",)
+            result_populations = (
+                ("assigned", "triggered")
+                if has_trigger and req.population is None
+                else (req.population or "assigned",)
+            )
+            required_populations = tuple(
+                dict.fromkeys(
+                    (
+                        *result_populations,
+                        *(request.population for request in preparation.trigger_counts),
+                    )
+                )
             )
             for population in required_populations:
                 execution_context.validate_population(population)

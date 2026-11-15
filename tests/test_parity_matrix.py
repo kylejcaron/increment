@@ -628,25 +628,60 @@ def test_asymptotic_retention_cell(cell: matrix.Cell) -> None:
             assert {state[3] for state in capture.fingerprint[0]} == {"scalar_mean"}, name
 
 
-def test_runnable_refuses_declared_unsupported_value_scale_override():
-    from increment import runnable
-    from increment.semantics.design import AdjustmentSet, Observational
-    from tests.test_kernel_review_regressions import _experiment
+def test_runnable_and_run_refuse_restored_unsupported_value_scale_before_reads():
+    from typing import Any, cast
 
-    experiment, _ = _experiment()
-    reference = experiment.source_refs[0]
-    assert reference.capabilities is not None
-    unsupported = replace(reference.capabilities, value_scale_overrides=False)
+    from increment import Experiment, from_frame, run, runnable
+    from increment.errors import UnsupportedRequestError
+    from tests.analysis_factory import bind_pair
+    from tests.test_evidence_provider import _forwarding_provider
+    from tests.test_readouts_observational import _OBS_X, _near_zero_table
+
+    _, source_reader = from_frame(
+        _near_zero_table(n=200),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=_OBS_X,
+    )
+    source = cast(Any, source_reader._binding.state.source)
+    provider = _forwarding_provider(
+        source,
+        evidence=replace(source.evidence, value_scale_overrides=False),
+    )
+    original_moments = provider.moments
+    reads = 0
+
+    def count_moments(request):
+        nonlocal reads
+        reads += 1
+        return original_moments(request)
+
+    provider.moments = count_moments
+    experiment, resolver = bind_pair(provider)
     requested = replace(
         experiment,
-        design=Observational(
-            control_group="control", adjustment=AdjustmentSet(covariates=("age",))
-        ),
-        source_refs=(replace(reference, capabilities=unsupported),),
-        request_options={"value_scale": {"value": "absolute"}},
+        request_options={"value_scale": {"revenue": "absolute"}},
     )
-    from increment import Experiment
+    restored = Experiment.from_json(requested.to_json())
+    capabilities = restored.source_refs[0].capabilities
+    assert capabilities is not None
+    assert capabilities.value_scale_overrides is False
 
-    requested = Experiment.from_json(requested.to_json())
-    refusals = runnable(requested, "value")["observational.iptw"].static_refusals
-    assert "readout.randomized.value_scale" in {refusal.code for refusal in refusals}
+    status = runnable(restored, "revenue")["observational.iptw"]
+    (refusal,) = (
+        item for item in status.static_refusals if item.code == "readout.randomized.value_scale"
+    )
+    assert isinstance(refusal, UnsupportedRequestError)
+    assert tuple(refusal.context.items()) == ()
+
+    try:
+        with pytest.raises(UnsupportedRequestError) as raised:
+            run(restored, resolver, value_scale={"revenue": "absolute"})
+        assert raised.value.code == refusal.code
+        assert tuple(raised.value.context.items()) == tuple(refusal.context.items())
+        assert reads == 0
+    finally:
+        resolver.close()
+        source_reader.close()
