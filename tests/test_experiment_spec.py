@@ -471,19 +471,24 @@ def _assert_windowed_quantile_consumer(capabilities, legacy_capabilities):
     assert native.validate_request(request) is request
 
 
-def _assert_temporal_capability_consumer(field, capabilities):
+def _assert_temporal_capability_consumer(field, capabilities, context=None, experiment=None):
     from increment._day_axis import validate_day_axis
     from increment._evidence_types import DayAxisRequest
     from increment.errors import CapabilityError, InvalidRequestError
     from increment.semantics.models import MeanMetric, QuantileMetric
 
+    declared_metric = MeanMetric(name="y", entity="unit", fact="y", aggregation="sum")
     source = SimpleNamespace(
         evidence=dataclasses.replace(
             capabilities,
             grains=frozenset({"daily", "asof"}),
             breakouts=("country",),
         ),
-        context=SimpleNamespace(trigger_name=None, metrics=()),
+        context=(
+            context
+            if context is not None
+            else SimpleNamespace(trigger_name=None, metrics=(declared_metric,))
+        ),
     )
     metrics = {
         "temporal_quantiles": QuantileMetric(
@@ -493,7 +498,7 @@ def _assert_temporal_capability_consumer(field, capabilities):
             name="orders", entity="unit", fact="orders", aggregation="sum"
         ),
         "dimensioned_daily_metrics": MeanMetric(
-            name="ad_hoc", entity="unit", fact="orders", aggregation="sum"
+            name="ad_hoc", entity="unit", fact="y", aggregation="sum"
         ),
     }
     request = DayAxisRequest(
@@ -502,11 +507,15 @@ def _assert_temporal_capability_consumer(field, capabilities):
         metrics=(metrics[field],),
         dimension="country" if field == "dimensioned_daily_metrics" else None,
     )
-    experiment = SimpleNamespace(
-        name="recorded",
-        trigger=None,
-        cluster="household" if field == "temporal_clusters" else None,
-        breakouts=(SimpleNamespace(property="country", source=None),),
+    typed_experiment = (
+        experiment
+        if experiment is not None
+        else SimpleNamespace(
+            name="recorded",
+            trigger=None,
+            cluster="household" if field == "temporal_clusters" else None,
+            breakouts=(SimpleNamespace(property="country", source=None),),
+        )
     )
     expected = {
         "temporal_quantiles": (
@@ -538,7 +547,7 @@ def _assert_temporal_capability_consumer(field, capabilities):
             design=None,
             plan=cast(Any, SimpleNamespace(inference=None)),
             route="moments",
-            experiment=cast(Any, experiment),
+            experiment=cast(Any, typed_experiment),
         )
     assert type(raised.value) is error_type
     assert raised.value.code == code
@@ -556,8 +565,115 @@ def _assert_temporal_capability_consumer(field, capabilities):
         design=None,
         plan=cast(Any, SimpleNamespace(inference=None)),
         route="moments",
-        experiment=cast(Any, experiment),
+        experiment=cast(Any, typed_experiment),
     )
+
+
+def _assert_restored_temporal_capability_case(
+    field, metric, value, code, experiment, semantic, segment, reader
+):
+    from increment import run, runnable
+    from increment.errors import CapabilityError, InvalidRequestError
+    from increment.semantics.models import MeanMetric
+
+    capabilities = experiment.source_refs[0].capabilities
+    assert capabilities is not None
+    ad_hoc = MeanMetric(name="ad_hoc", entity="unit", fact="y", aggregation="sum")
+    scope = View(view="daily", grain="daily", values=True, segment=segment)
+    context = {
+        **dict(experiment.analysis_context),
+        "experiment": semantic.model_dump(mode="json"),
+    }
+    declared = dataclasses.replace(
+        capabilities,
+        grains=frozenset({"total", "daily", "asof"}),
+        **{field: value},
+    )
+    options = (
+        {"metrics": [ad_hoc.model_dump(mode="json")]}
+        if field == "dimensioned_daily_metrics"
+        else {}
+    )
+    recorded = dataclasses.replace(
+        experiment,
+        source_refs=(dataclasses.replace(experiment.source_refs[0], capabilities=declared),),
+        views=(scope,),
+        analysis_context=context,
+        request_options=options,
+    )
+    restored = Experiment.from_json(recorded.to_json())
+
+    if field == "dimensioned_daily_metrics":
+        with pytest.raises(InvalidRequestError) as invalid_view:
+            View(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=segment,
+                metrics=(ad_hoc,),
+            )
+        assert invalid_view.value.code == "kernel.scope.invalid"
+        assert invalid_view.value.context == {
+            "field": "view/grain/through_day/segment/metrics/values"
+        }
+
+        expected = (
+            InvalidRequestError,
+            "facade.analysis_config.unknown_metric_declared",
+            {"caller": "run_daily", "unknown_names": ("ad_hoc",), "declared_names": ("y",)},
+        )
+        refusals = tuple(
+            refusal
+            for result in runnable(restored, ad_hoc).values()
+            for refusal in result.static_refusals
+        )
+        assert refusals
+        assert all(type(refusal) is expected[0] for refusal in refusals)
+        assert all(refusal.code == expected[1] for refusal in refusals)
+        assert all(refusal.context == expected[2] for refusal in refusals), [
+            dict(refusal.context) for refusal in refusals
+        ]
+        with pytest.raises(expected[0]) as runtime:
+            run(experiment.with_views(scope), reader, views=(scope,), metrics=[ad_hoc])
+        assert runtime.value.code == expected[1]
+        assert runtime.value.context == expected[2]
+        return
+
+    refusals = tuple(
+        refusal
+        for result in runnable(restored, metric).values()
+        for refusal in result.static_refusals
+    )
+    relevant_codes = {
+        "temporal_quantiles": "breakout.quantile",
+        "temporal_clusters": "facade.analysis.clustered_day_axis",
+    }
+    if code is None:
+        assert not any(refusal.code == relevant_codes[field] for refusal in refusals)
+        return
+
+    matching = [refusal for refusal in refusals if refusal.code == code]
+    assert matching
+    expected_contexts = {
+        "breakout.quantile": (
+            CapabilityError,
+            {
+                "names": ("p50",),
+                "method": "run_daily()",
+                "reason": "quantiles do not decompose into per-day moments",
+                "remedy": "Use run().",
+            },
+        ),
+        "facade.analysis.clustered_day_axis": (
+            CapabilityError,
+            {"method": "run_daily", "experiment": "checkout", "cluster": "cluster"},
+        ),
+    }
+    refusal_type, expected_context = expected_contexts[code]
+    assert all(type(refusal) is refusal_type for refusal in matching)
+    assert all(refusal.context == expected_context for refusal in matching), [
+        dict(refusal.context) for refusal in matching
+    ]
 
 
 def _restored_temporal_case(field, rows):
@@ -648,69 +764,6 @@ def _restored_temporal_case(field, rows):
     return experiment, reader, semantic, segment
 
 
-def _assert_restored_temporal_capability_case(
-    field, metric, value, code, experiment, semantic, segment
-):
-    from increment import runnable
-    from increment.errors import CapabilityError
-
-    capabilities = experiment.source_refs[0].capabilities
-    assert capabilities is not None
-    scope = View(view="daily", grain="daily", values=True, segment=segment)
-    context = {
-        **dict(experiment.analysis_context),
-        "experiment": semantic.model_dump(mode="json"),
-    }
-    declared = dataclasses.replace(
-        capabilities,
-        grains=frozenset({"total", "daily", "asof"}),
-        **{field: value},
-    )
-    recorded = dataclasses.replace(
-        experiment,
-        source_refs=(dataclasses.replace(experiment.source_refs[0], capabilities=declared),),
-        views=(scope,),
-        analysis_context=context,
-    )
-    restored = Experiment.from_json(recorded.to_json())
-    refusals = tuple(
-        refusal
-        for result in runnable(restored, metric).values()
-        for refusal in result.static_refusals
-    )
-    relevant_codes = {
-        "temporal_quantiles": "breakout.quantile",
-        "temporal_clusters": "facade.analysis.clustered_day_axis",
-        "dimensioned_daily_metrics": "facade.analysis.undeclared_metric_for_dimension",
-    }
-    if code is None:
-        assert not any(refusal.code == relevant_codes[field] for refusal in refusals)
-        return
-
-    matching = [refusal for refusal in refusals if refusal.code == code]
-    assert matching
-    expected_contexts = {
-        "breakout.quantile": (
-            CapabilityError,
-            {
-                "names": ("p50",),
-                "method": "run_daily()",
-                "reason": "quantiles do not decompose into per-day moments",
-                "remedy": "Use run().",
-            },
-        ),
-        "facade.analysis.clustered_day_axis": (
-            CapabilityError,
-            {"method": "run_daily", "experiment": "checkout", "cluster": "cluster"},
-        ),
-    }
-    refusal_type, expected_context = expected_contexts[code]
-    assert all(type(refusal) is refusal_type for refusal in matching)
-    assert all(refusal.context == expected_context for refusal in matching), [
-        dict(refusal.context) for refusal in matching
-    ]
-
-
 def _assert_restored_temporal_runnable_consumer():
     rows = [
         {
@@ -742,7 +795,18 @@ def _assert_restored_temporal_runnable_consumer():
                 (refused, refused_codes[field]),
             ):
                 _assert_restored_temporal_capability_case(
-                    field, metric, value, code, experiment, semantic, segment
+                    field, metric, value, code, experiment, semantic, segment, reader
+                )
+            if field == "dimensioned_daily_metrics":
+                runtime_capabilities = dataclasses.replace(
+                    experiment.source_refs[0].capabilities,
+                    dimensioned_daily_metrics="declared",
+                )
+                _assert_temporal_capability_consumer(
+                    field,
+                    runtime_capabilities,
+                    context=reader._binding.context,
+                    experiment=semantic,
                 )
         finally:
             reader.close()
