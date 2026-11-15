@@ -2381,6 +2381,7 @@ def _metric_detail_entries(
         ),
         ("Favorable direction", direction_text),
         ("Tested alternative", f"{esc(row.get('alternative'))} ({tail_word(row)})"),
+        ("Test boundary", esc(null_text(row))),
         ("Result", _result_detail(row)),
         ("Test outcome", esc(outcome_label(row))),
         ("Inference", esc(inference_word(str(row.get("inference", "fixed"))))),

@@ -394,6 +394,40 @@ def test_guardrail_metric_label_states_declared_direction_and_scale(
     assert expected in re.sub(r"<[^>]+>", "", html)
 
 
+@pytest.mark.integration
+def test_standalone_metric_policies_retain_the_tested_boundary_and_units(storefront):
+    for relative, absolute, expected, unit in (
+        (-0.02, None, -2.0, "% relative"),
+        (0.0, 2.0, 2.0, "absolute"),
+    ):
+        rows = tuple(
+            {
+                **row,
+                "null_lift": relative,
+                "null_abs": absolute,
+                "decision_scale": "relative" if absolute is None else "absolute",
+            }
+            if row["metric"] == GUARDRAIL
+            else row
+            for row in storefront.readout_rows
+        )
+        snapshot = dataclasses.replace(storefront, readout_rows=rows)
+        for rendered in (
+            render_metric_details(snapshot, metric=GUARDRAIL).text,
+            render_details(snapshot).text,
+        ):
+            boundaries = re.findall(r"<dt>Test boundary</dt><dd>(.*?)</dd>", rendered, re.S)
+            values = {
+                (float(number), scale)
+                for value in boundaries
+                for number, scale in re.findall(
+                    r"([+-]?\d+(?:\.\d+)?)\s*(% relative|absolute)",
+                    re.sub(r"<[^>]+>", "", value),
+                )
+            }
+            assert (expected, unit) in values
+
+
 @pytest.mark.parametrize("state", ("stat_sig", "decision_available"))
 @pytest.mark.integration
 def test_guardrail_disclosures_distinguish_captured_verdict_and_availability(storefront, state):
