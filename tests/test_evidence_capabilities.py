@@ -1920,3 +1920,66 @@ def test_legacy_native_operations_preserve_clustered_temporal_refusals(tmp_path)
         replace_bound_source(resolver, source)
         resolver.close()
         connection.disconnect()
+
+
+@pytest.mark.integration
+def test_asof_metric_objects_do_not_require_exploratory_sibling_support(tmp_path):
+    from dataclasses import replace
+
+    from increment import Experiment, run
+    from increment.results import DailyMetricValue
+    from tests.analysis_factory import replace_bound_source
+    from tests.source_conformance import definitions_source
+
+    (experiment, resolver), (_breakout, connection) = definitions_source(
+        tmp_path, return_binding=True, return_connection=True
+    )
+    source = cast(Any, held_source(resolver))
+    semantic = workflows.experiment_definition(experiment, resolver)
+
+    class TypedMomentsProvider(_ForwardingProvider):
+        artifact_experiment = semantic
+
+        @property
+        def evidence(self):
+            return replace(
+                self.source.evidence,
+                operations=(
+                    self.source.evidence.operations | frozenset({"moments_source", "day_source"})
+                )
+                - frozenset({"exploratory_source"}),
+            )
+
+        def declaration_identity(self):
+            return self.source.declaration_identity()
+
+        def day_source(self, *args, **kwargs):
+            return self.source.day_source(*args, **kwargs)
+
+        def exploratory_source(self, *args, **kwargs):
+            raise AssertionError("as-of selection must not create an exploratory sibling")
+
+    try:
+        provider = TypedMomentsProvider(source)
+        replace_bound_source(resolver, provider)
+        experiment = replace(
+            experiment,
+            source_refs=(replace(experiment.source_refs[0], capabilities=provider.evidence),),
+        )
+        experiment = Experiment.from_json(experiment.to_json())
+        added = source.context.metrics[0].model_copy(update={"name": "ad_hoc_revenue"})
+        scope = View(view="asof", grain="asof", values=True)
+        rows = run(experiment.with_views(scope), resolver, views=(scope,), metrics=[added]).readout(
+            scope
+        )
+        assert {row.metric for row in rows} == {"ad_hoc_revenue"}
+        values = {
+            row.group_id: row.value.value
+            for row in rows
+            if isinstance(row, DailyMetricValue) and row.value is not None
+        }
+        assert values == pytest.approx({"control": 1.5, "treatment": 4.5})
+    finally:
+        replace_bound_source(resolver, source)
+        resolver.close()
+        connection.disconnect()

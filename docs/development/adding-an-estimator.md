@@ -75,6 +75,11 @@ unavailable for these declarations and for artifact or definitions declarations.
 Explicit values override these defaults; new providers should declare these
 semantic capabilities explicitly.
 
+Native moments declarations accept undeclared metric definitions through
+`metrics=` on day-axis views without creating an exploratory sibling.
+`exploratory_metrics=` still requires separately declared `exploratory_source`
+support. Dimensioned daily selection still follows `dimensioned_daily_metrics`.
+
 For scalar multicovariate CUPED, distinguish a missing fit from a failed one.
 An unavailable `MethodFitAnswer` without a failure may be fit from `unit_rows`
 when the provider declares local, retained or warehouse fit support and unit rows.

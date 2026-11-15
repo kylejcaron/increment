@@ -692,9 +692,10 @@ def day_axis_requires_preflight(
     return _requires_day_axis_preflight(source, request, execution_active=execution_active)
 
 
-def exploratory_source_supported(source: EvidenceSource) -> bool:
-    """Whether the declaration enables an exploratory sibling source."""
-    return "exploratory_source" in declared_evidence(source).operations
+def day_axis_metric_objects_supported(source: EvidenceSource) -> bool:
+    """Whether day-axis requests can select undeclared metric definitions."""
+    operations = declared_evidence(source).operations
+    return "moments_source" in operations and "artifact_experiment" not in operations
 
 
 def load_missing_value_account(src: EvidenceSource, metric: Any) -> MissingValueAccount | None:
