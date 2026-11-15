@@ -900,7 +900,6 @@ def test_concurrent_definitions_builders_retain_both_catalog_entries(
 def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     tmp_path, seeded_defs, seeded_con
 ):
-    from increment._source_types import effective_capabilities
 
     definitions = tmp_path / "definitions"
     shutil.copytree(seeded_defs, definitions)
@@ -944,9 +943,7 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     offline_capabilities = offline.source_refs[0].capabilities
     online_capabilities = online.source_refs[0].capabilities
     assert offline_capabilities is not None and online_capabilities is not None
-    assert effective_capabilities(offline_capabilities) == effective_capabilities(
-        online_capabilities
-    )
+    assert offline_capabilities == online_capabilities
     assert runnable(offline, "purchase_rate") == runnable(online, "purchase_rate")
     assert Experiment.from_json(online.to_json()).hash() == online.hash()
     assert (
@@ -955,12 +952,21 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     )
     assert Experiment.from_json(offline.to_json()).hash() == offline.hash()
 
-    for field in ("value_scale_overrides", "fixed_triggered", "windowed_breakout_quantiles"):
+    for field in (
+        "value_scale_overrides",
+        "fixed_triggered",
+        "windowed_breakout_quantiles",
+        "temporal_quantiles",
+        "temporal_clusters",
+        "dimensioned_daily_metrics",
+    ):
         capabilities = offline.source_refs[0].capabilities
         assert capabilities is not None
-        changed_capabilities = replace(
-            capabilities, **{field: not getattr(effective_capabilities(capabilities), field)}
+        value = getattr(capabilities, field)
+        changed_value = (
+            not value if isinstance(value, bool) else "any" if value == "declared" else "declared"
         )
+        changed_capabilities = replace(capabilities, **{field: changed_value})
         changed_ref = replace(offline.source_refs[0], capabilities=changed_capabilities)
         changed_experiment = replace(offline, source_refs=(changed_ref,))
         restored = Experiment.from_json(changed_experiment.to_json())

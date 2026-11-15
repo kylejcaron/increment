@@ -146,6 +146,11 @@ values.
   adapters own differences in available evidence; unsupported requests keep
   their existing refusals. Estimator behavior and numeric baselines are
   unchanged.
+- `runnable()` honors a saved source's support for quantiles with an outcome
+  window in breakout views. An unsupported window reports
+  `frame.metric.window_days_supported`, matching execution before data is read.
+- Daily views honor a custom provider's declared day-level access even when
+  its aggregate data lists only a total.
 - `View.breakout(segment, *, population="assigned", metrics=())` accepts an
   optional tuple of registered metric definitions. An empty tuple selects the
   experiment's metrics. Save or log a selective breakout alongside the complete

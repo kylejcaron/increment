@@ -972,34 +972,42 @@ def test_health_validates_expected_allocation_before_empty_trigger_counts(tmp_pa
 
 @pytest.mark.integration
 def test_health_propagates_trigger_edge_request_errors_after_allocation_validation(
-    tmp_path, monkeypatch
+    tmp_path,
 ) -> None:
     from increment.errors import InvalidRequestError
-    from increment.query.native_source import DefinitionsMomentSource
+    from tests.analysis_factory import bind_pair, held_source
     from tests.test_analysis_trigger import _analysis, _events
+    from tests.test_evidence_capabilities import _ForwardingProvider
 
     experiment, resolver = _analysis(
         tmp_path, _events(n_per_arm=20, trigger_rate=0.5), allocation_scheme="blocked"
     )
+    source = held_source(resolver)
 
-    def invalid_edge(self: Any, metric: Any) -> tuple[None, None]:
-        raise InvalidRequestError(
-            "invalid edge request",
-            code="test.health.trigger_edges.invalid_request",
-            context={"metric": metric.name},
-        )
+    class Provider(_ForwardingProvider):
+        def triggered_observation_edges(self, metric: Any) -> tuple[None, None]:
+            raise InvalidRequestError(
+                "invalid edge request",
+                code="test.health.trigger_edges.invalid_request",
+                context={"metric": metric.name},
+            )
 
-    monkeypatch.setattr(DefinitionsMomentSource, "triggered_observation_edges", invalid_edge)
+    custom_experiment, custom_resolver = bind_pair(Provider(source))
     try:
         with pytest.raises(InvalidRequestError) as edge_error:
-            health_check(experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5})
+            health_check(
+                custom_experiment, custom_resolver, expected_allocation={"C": 0.5, "T": 0.5}
+            )
         assert edge_error.value.code == "test.health.trigger_edges.invalid_request"
         assert edge_error.value.context == {"metric": "revenue"}
 
         with pytest.raises(InvalidRequestError) as allocation_error:
-            health_check(experiment, resolver, expected_allocation={"C": 0.0, "T": 1.0})
+            health_check(
+                custom_experiment, custom_resolver, expected_allocation={"C": 0.0, "T": 1.0}
+            )
         assert allocation_error.value.code == "estimation.diagnostics.every_expected_share_positive"
     finally:
+        custom_resolver.close()
         resolver.close()
 
 

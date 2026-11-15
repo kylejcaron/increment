@@ -176,21 +176,13 @@ class BreakoutReadouts:
         )
 
     def validate_request(self, req: BreakoutRequest) -> BreakoutRequest:
-        self._require_registered_selection(req.population)
-        if not effective_source_capabilities(self._src).windowed_breakout_quantiles and any(
-            metric.type == "quantile" and metric.window_days is not None for metric in req.metrics
-        ):
-            from increment._metric_specs import MetricSpec
+        from increment._metric_specs import validate_windowed_quantile_support
 
-            for metric in req.metrics:
-                if metric.type == "quantile" and metric.window_days is not None:
-                    MetricSpec(
-                        name=metric.name,
-                        type="quantile",
-                        quantile=metric.quantile,
-                        window_days=metric.window_days,
-                    )
-            return req
+        self._require_registered_selection(req.population)
+        validate_windowed_quantile_support(
+            req.metrics,
+            supported=effective_source_capabilities(self._src).windowed_breakout_quantiles is True,
+        )
         if not req.metrics:
             return req
         identities = self._identities(self._src)

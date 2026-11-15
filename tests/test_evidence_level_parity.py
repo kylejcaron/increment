@@ -16,7 +16,12 @@ import pytest
 
 from increment import Method, MetricSpec, View, from_frame
 from increment._canonical import canonical_digest_bytes, canonical_json_bytes
-from increment._evidence_types import DayAxisRequest, DayAxisRows
+from increment._evidence_types import (
+    ArtifactProvenance,
+    DayAxisRequest,
+    DayAxisRows,
+    MetricEvidence,
+)
 from increment.errors import CodedError, IncrementWarning
 from increment.semantics.models import MeanMetric
 from tests.evidence_fixtures import (
@@ -460,7 +465,6 @@ def test_day_axis_capture_keeps_slice_source_identity():
 def test_method_fit_comparison_ignores_source_provenance_only():
     from typing import Any, cast
 
-    from increment._evidence_types import MetricEvidence
     from increment.evidence import MethodFitAnswer, MethodFitRequest
     from tests.evidence_fixtures.capture import _Capture
 
@@ -4280,7 +4284,6 @@ def _decode_source_context(value: dict[str, Any]):
 def _metric_evidence_inputs(transcript, population, design):
     import pandas as pd
 
-    from increment._evidence_types import MetricEvidence
     from increment.evidence import MethodFitAnswer
     from tests.evidence_fixtures.transcript import _restore
 
@@ -4669,7 +4672,6 @@ def _project_design_results(
 
 
 def _project_fixed_results(transcript):
-    from increment._evidence_types import ArtifactProvenance
     from increment.decision_wire import compiled_plan_from_dict
     from increment.readouts._design_scope import ResolvedRoster
     from increment.readouts._randomized_scope import _scoped_randomized_results
@@ -5297,7 +5299,6 @@ def _breakout_readout_inputs(receipt):
 
 
 def _scope_breakout_inputs(transcript, rows, identity, source, advisories):
-    from increment._evidence_types import ArtifactProvenance
     from increment.breakout.estimates import BreakoutEstimates
     from increment.readouts._multiplicity_scope import scoped_collection
     from tests.evidence_fixtures.transcript import _restore
@@ -5344,7 +5345,6 @@ def _scope_breakout_inputs(transcript, rows, identity, source, advisories):
 @pytest.mark.grid("All captured source-qualified breakout inputs and full compiled options")
 def test_frozen_breakout_consumers_match_complete_ordered_old_rows():
     from increment._analysis_config import effective_methods
-    from increment._evidence_types import MetricEvidence
     from increment.breakout.estimates import run_breakout
     from tests.evidence_fixtures.transcript import _restore
     from tests.test_evidence_identity_parity import _capture

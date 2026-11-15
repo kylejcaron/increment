@@ -18,9 +18,10 @@ from increment._analysis_config import (
     select_metrics,
 )
 from increment._canonical import declaration_value
-from increment._evidence_loaders import source_context_payload
+from increment._evidence_loaders import day_axis_grains, source_context_payload
 from increment._evidence_refusals import _DeclaredEvidence
 from increment._evidence_types import SourceContext
+from increment._metric_specs import validate_windowed_quantile_support
 from increment._readout_request import ReadoutRequest, validate_request
 from increment._readout_request import _raise as _raise_readout
 from increment._source_types import EvidenceCapabilities, effective_capabilities
@@ -577,6 +578,25 @@ def _validate_scope_request(
             check(validate_request, request)
     elif scope.view == "asof":
         check(_validate_declared_day_axis, declaration, request, operation, capabilities)
+    elif scope.view == "breakout":
+        registration = getattr(request.plan.inference, "registration", None)
+        if registration is not None and request.by:
+            from increment.sequential_source import require_registered_breakout_selection
+
+            check(
+                require_registered_breakout_selection,
+                registration,
+                request.by,
+                population=scope.population,
+            )
+        if not refusals:
+            check(
+                validate_windowed_quantile_support,
+                request.metrics,
+                supported=effective_capabilities(capabilities).windowed_breakout_quantiles,
+            )
+        if not refusals:
+            check(validate_request, request)
     else:
         check(validate_request, request)
     if operation == "run_asof_lift" and not refusals:
@@ -637,7 +657,11 @@ def readout_refusals(
         scalar_anonymous_metrics=frozenset() if scalar is None else scalar.anonymous_metrics,
         scalar_method_evidence=False if scalar is None else scalar.method_evidence,
         scalar_breakout_evidence=False if scalar is None else scalar.breakout_evidence,
-        capabilities=capabilities.grains,
+        capabilities=(
+            day_axis_grains(_DeclaredSource(context, capabilities, declaration["source_name"]))
+            if scope.view in {"daily", "asof"}
+            else capabilities.grains
+        ),
         grain_route=capabilities.grain_route or "use a source with the requested day axis",
         source_breakouts=capabilities.breakouts,
         source_name=declaration["source_name"],
@@ -697,15 +721,6 @@ def readout_refusals(
             request=SequentialCaptureRequest(finalized=True),
         )
         capture = options.get("capture")
-        if scope.view == "breakout":
-            from increment.sequential_source import require_registered_breakout_selection
-
-            check(
-                require_registered_breakout_selection,
-                inference.registration,
-                by,
-                population=scope.population,
-            )
         if capture is not None:
             from increment._window import resolve_window_days
             from increment.sequential_source import (

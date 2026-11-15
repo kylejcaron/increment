@@ -33,7 +33,7 @@ from increment.evidence import (
     request_evidence,
 )
 from increment.workflows import export_moments, metrics
-from tests.analysis_factory import held_source, view_readout
+from tests.analysis_factory import bind_pair, declare_views, held_source, lift_rows, view_readout
 from tests.source_conformance import (
     exposed_unit_panel_table,
     switchback_analysis,
@@ -44,13 +44,14 @@ from tests.source_conformance import (
 
 
 class _ForwardingProvider:
-    def __init__(self, source):
+    def __init__(self, source, *, evidence=None):
         self.source = source
+        self._evidence_override = evidence
         self.scope_calls = 0
 
     @property
     def evidence(self):
-        return self.source.evidence
+        return self.source.evidence if self._evidence_override is None else self._evidence_override
 
     @property
     def context(self):
@@ -83,7 +84,7 @@ class _ForwardingProvider:
     @contextmanager
     def _scoped_source(self, request):
         with evidence_provider(self.source).scope(request).source as scoped:
-            yield _ForwardingProvider(scoped)
+            yield type(self)(scoped, evidence=self._evidence_override)
 
     def scope(self, request):
         self.scope_calls += 1
@@ -96,6 +97,23 @@ class _ForwardingProvider:
     @contextmanager
     def readout_snapshot(self, **_kwargs):
         yield self.source
+
+    def close(self):
+        return None
+
+
+class _ReadGuardProvider(_ForwardingProvider):
+    def _fail_read(self, request):
+        raise AssertionError("unsupported request performed an evidence read")
+
+    moments = _fail_read
+    unit_rows = _fail_read
+    method_fit = _fail_read
+    breakout_method_moments = _fail_read
+    compliance = _fail_read
+    compliance_series = _fail_read
+    counts = _fail_read
+    capture_sequential = _fail_read
 
 
 @pytest.mark.parametrize(
@@ -1685,135 +1703,145 @@ def test_artifact_facade_keeps_warehouse_fit_declaration(tmp_path) -> None:
 
 
 def test_whole_window_scale_override_uses_declared_semantic_support() -> None:
-    import dataclasses
-    from types import SimpleNamespace
+    from dataclasses import replace
 
-    from increment._analysis_config import UNSET
-    from increment._source_types import EvidenceCapabilities
+    from increment import AdjustmentSet, Experiment, Observational, run, runnable
     from increment.errors import UnsupportedRequestError
-    from increment.readouts._whole_window import WholeWindowRequest, validate_whole_window
 
-    capabilities = EvidenceCapabilities(
-        kind="moments",
-        grains=frozenset({"total"}),
-        breakouts=(),
-        shape=None,
-        operations=frozenset({"moments_source"}),
-        unit_rows=False,
-        raw_outcomes=False,
-        method_fit="none",
-        compliance_axis="none",
-        count_grains=frozenset(),
-        populations=frozenset({"assigned"}),
-        sequential_capture="none",
-        scalar=None,
-        available_covariates=None,
-        value_scale_overrides=True,
+    values = list(range(12))
+    analysis = from_frame(
+        pa.table(
+            {
+                "user_id": [
+                    f"{arm}-{index}" for arm in ("control", "treatment") for index in values
+                ],
+                "variant": ["control"] * 12 + ["treatment"] * 12,
+                "revenue": [float(value + 1) for value in values]
+                + [float(value + 4) for value in values],
+                "x": values * 2,
+            }
+        ),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=Observational(control_group="control", adjustment=AdjustmentSet(covariates=("x",))),
     )
-    source: Any = SimpleNamespace(evidence=capabilities, context=SimpleNamespace(trigger_name=None))
-    request = WholeWindowRequest(
-        metrics=(),
-        estimands=None,
-        value_scale=cast(Any, {"metric": "relative"}),
-        population="assigned",
-        coherence="captured",
-        decision_method=UNSET,
-        sensitivity_methods=UNSET,
-        prior=UNSET,
-    )
-    plan: Any = SimpleNamespace(inference=SimpleNamespace(registration=None))
+    source = cast(Any, held_source(analysis[1]))
+    try:
+        for supported in (True, False):
+            provider_type = _ForwardingProvider if supported else _ReadGuardProvider
+            experiment, resolver = bind_pair(
+                provider_type(
+                    source,
+                    evidence=replace(source.evidence, value_scale_overrides=supported),
+                )
+            )
+            experiment = replace(
+                experiment,
+                request_options={"value_scale": {"revenue": "absolute"}},
+            )
+            experiment = Experiment.from_json(experiment.to_json())
+            try:
+                refusal = next(
+                    (
+                        item
+                        for status in runnable(experiment, "revenue").values()
+                        for item in status.static_refusals
+                        if item.code == "readout.randomized.value_scale"
+                    ),
+                    None,
+                )
+                if supported:
+                    assert refusal is None
+                    result = run(experiment, resolver, value_scale={"revenue": "absolute"})
+                    (row,) = lift_rows(result.readout(experiment.views[0]))
+                    assert row.require_lift().value == pytest.approx(3.0)
+                    assert row.value_scale == "absolute"
+                else:
+                    assert isinstance(refusal, UnsupportedRequestError)
+                    with pytest.raises(UnsupportedRequestError) as raised:
+                        run(experiment, resolver, value_scale={"revenue": "absolute"})
+                    assert raised.value.code == refusal.code
+                    assert tuple(raised.value.context.items()) == tuple(refusal.context.items())
+            finally:
+                resolver.close()
+    finally:
+        analysis[1].close()
 
-    validate_whole_window(
-        request,
-        src=source,
-        plan=plan,
-        design=None,
-        experiment=None,
-        experiment_id="experiment",
-        route="moments",
-    )
 
-    unsupported: Any = SimpleNamespace(
-        evidence=dataclasses.replace(capabilities, value_scale_overrides=False),
-        context=source.context,
-    )
-    with pytest.raises(UnsupportedRequestError) as refusal:
-        validate_whole_window(
-            request,
-            src=unsupported,
-            plan=plan,
-            design=None,
-            experiment=None,
-            experiment_id="experiment",
-            route="moments",
-        )
-    assert refusal.value.code == "readout.randomized.value_scale"
+@pytest.mark.integration
+def test_whole_window_trigger_support_uses_declared_semantic_capability(tmp_path) -> None:
+    from dataclasses import replace
 
-
-def test_whole_window_trigger_support_uses_declared_semantic_capability() -> None:
-    import dataclasses
-    from types import SimpleNamespace
-
-    from increment._analysis_config import UNSET
-    from increment._source_types import EvidenceCapabilities
+    from increment import Experiment, run, runnable
     from increment.errors import CapabilityError
-    from increment.readouts._whole_window import WholeWindowRequest, validate_whole_window
+    from increment.kernel.contracts import View
+    from tests.analysis_factory import replace_bound_source
+    from tests.test_analysis_trigger import _analysis, _events
 
-    capabilities = EvidenceCapabilities(
-        kind="moments",
-        grains=frozenset({"total"}),
-        breakouts=(),
-        shape=None,
-        operations=frozenset({"moments_source"}),
-        unit_rows=False,
-        raw_outcomes=False,
-        method_fit="none",
-        compliance_axis="none",
-        count_grains=frozenset({"unit", "triggered"}),
-        populations=frozenset({"assigned", "triggered"}),
-        sequential_capture="none",
-        scalar=None,
-        available_covariates=None,
-        fixed_triggered=True,
-    )
-    source: Any = SimpleNamespace(
-        evidence=capabilities, context=SimpleNamespace(trigger_name="trigger")
-    )
-    request = WholeWindowRequest(
-        metrics=(),
-        estimands=None,
-        value_scale=None,
-        population="triggered",
-        coherence="captured",
-        decision_method=UNSET,
-        sensitivity_methods=UNSET,
-        prior=UNSET,
-    )
-    plan: Any = SimpleNamespace(inference=SimpleNamespace(registration=None))
-    experiment: Any = SimpleNamespace(name="experiment", trigger="trigger")
-
-    validate_whole_window(
-        request,
-        src=source,
-        plan=plan,
-        design=None,
-        experiment=experiment,
-        experiment_id="experiment",
-        route="moments",
-    )
-
-    unsupported: Any = SimpleNamespace(
-        evidence=dataclasses.replace(capabilities, fixed_triggered=False),
-        context=source.context,
-    )
-    with pytest.raises(CapabilityError) as refusal:
-        validate_whole_window(
-            request,
-            src=unsupported,
-            plan=plan,
-            design=None,
-            experiment=experiment,
-            experiment_id="experiment",
-            route="moments",
+    events = _events(n_per_arm=20, trigger_rate=0.5)
+    trigger_counts = {
+        arm: sum(
+            row["event"] == "saw_surface" and row["group_id"] == arm for row in events.to_pylist()
         )
-    assert refusal.value.code == "facade.analysis.trigger_unsupported"
+        for arm in ("C", "T")
+    }
+    base_experiment, base_resolver = _analysis(tmp_path, events)
+    source = cast(Any, held_source(base_resolver))
+    triggered = View.overall(population="triggered")
+
+    class NativeProvider(_ForwardingProvider):
+        def declaration_identity(self):
+            return self.source.declaration_identity()
+
+    class GuardedNativeProvider(_ReadGuardProvider, NativeProvider):
+        pass
+
+    try:
+        for supported in (True, False):
+            provider_type = NativeProvider if supported else GuardedNativeProvider
+            provider = provider_type(
+                source, evidence=replace(source.evidence, fixed_triggered=supported)
+            )
+            replace_bound_source(base_resolver, provider)
+            reference = base_experiment.source_refs[0]
+            experiment = replace(
+                declare_views(base_experiment, triggered),
+                source_refs=(replace(reference, capabilities=provider.evidence),),
+            )
+            resolver = base_resolver
+            experiment = Experiment.from_json(experiment.to_json())
+            try:
+                refusal = next(
+                    (
+                        item
+                        for item in runnable(experiment, "revenue")[
+                            "randomized.unadjusted"
+                        ].static_refusals
+                        if item.code == "facade.analysis.trigger_unsupported"
+                    ),
+                    None,
+                )
+                if supported:
+                    assert refusal is None
+                    result = run(experiment, resolver, views=(triggered,))
+                    row = next(
+                        row
+                        for row in lift_rows(result.readout(triggered))
+                        if row.metric == "revenue"
+                    )
+                    assert (row.n_control, row.n_treat) == (
+                        trigger_counts["C"],
+                        trigger_counts["T"],
+                    )
+                else:
+                    assert isinstance(refusal, CapabilityError)
+                    with pytest.raises(CapabilityError) as raised:
+                        run(experiment, resolver, views=(triggered,))
+                    assert raised.value.code == refusal.code
+                    assert tuple(raised.value.context.items()) == tuple(refusal.context.items())
+            finally:
+                replace_bound_source(base_resolver, source)
+    finally:
+        base_resolver.close()

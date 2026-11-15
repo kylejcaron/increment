@@ -255,6 +255,13 @@ def _typed_declaration(record: Mapping[str, Any]) -> list[Any]:
     return [record["request_type"], record["request"]]
 
 
+def _dataclass_payload(value: Any) -> dict[str, Any]:
+    payload = {field.name: _plain(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, DayAxisRequest) and value.declared_dimensions is None:
+        del payload["declared_dimensions"]
+    return payload
+
+
 def _plain(value: Any) -> Any:
     if isinstance(value, Decimal):
         return {_TYPED_DECIMAL: str(value)}
@@ -295,7 +302,7 @@ def _plain(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return _plain(value.model_dump(mode="python"))
     if hasattr(value, "__dataclass_fields__"):
-        return {field.name: _plain(getattr(value, field.name)) for field in fields(value)}
+        return _dataclass_payload(value)
     if isinstance(value, Mapping):
         encoded = [(_plain_key(key), _plain(item)) for key, item in value.items()]
         if all(isinstance(key, str) for key in value):

@@ -476,3 +476,12 @@ def synthesise_metric(spec: MetricSpec) -> Metric:
         ),
         **direction_kwargs,
     )
+
+
+def validate_windowed_quantile_support(metrics: Sequence[Metric], *, supported: bool) -> None:
+    """Apply declared window support before execution or offline admission."""
+    if supported:
+        return
+    for metric in metrics:
+        if metric.type == "quantile" and metric.window_days is not None:
+            _raise("frame.metric.window_days_supported", name=metric.name)

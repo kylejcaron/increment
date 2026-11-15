@@ -1719,7 +1719,7 @@ def _validate_daily_readout(src: EvidenceSource, req: DayAxisRequest, metric: An
         population=req.population,
         daily_lift=req.caller == "run_daily_lift",
     )
-    validate_request(readout_request)
+    validate_request(replace(readout_request, capabilities=_declared_day_axis_grains(src)))
 
 
 def _trigger_edge_source(src: Any) -> Any:

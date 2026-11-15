@@ -432,141 +432,116 @@ def _capability_round_trip(experiment, reference, capabilities, field, legacy, n
     return changed_experiment, restored, restored_capabilities
 
 
-def _assert_windowed_quantile_consumer(capabilities, legacy_capabilities):
-    from increment._analysis_config import UNSET
-    from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
-    from increment.semantics.models import QuantileMetric
+def _assert_restored_fixed_triggered_consumer(capabilities):
+    from increment import runnable
 
-    metric = QuantileMetric(
-        name="p50_orders",
-        entity="unit",
-        fact="orders",
-        quantile=0.5,
-        window_days=7,
-    )
-    request = BreakoutRequest(
-        metrics=(metric,),
-        decision_method=UNSET,
-        sensitivity_methods=UNSET,
-        prior=UNSET,
-        correction=None,
-        q=None,
-        population="assigned",
-    )
-    context = SimpleNamespace(plan=SimpleNamespace(inference=None))
-    artifact = BreakoutReadouts(
-        src=cast(Any, SimpleNamespace(evidence=capabilities, context=context)),
-        experiment=None,
-        breakouts=(),
-    )
-    with pytest.raises(CodedError) as raised:
-        artifact.validate_request(request)
-    assert raised.value.code == "frame.metric.window_days_supported"
-    assert raised.value.context == {"name": "p50_orders"}
-    native = BreakoutReadouts(
-        src=cast(Any, SimpleNamespace(evidence=legacy_capabilities, context=context)),
-        experiment=None,
-        breakouts=(),
-    )
-    assert native.validate_request(request) is request
-
-
-def _assert_temporal_capability_consumer(field, capabilities, context=None, experiment=None):
-    from increment._day_axis import validate_day_axis
-    from increment._evidence_types import DayAxisRequest
-    from increment.errors import CapabilityError, InvalidRequestError
-    from increment.semantics.models import MeanMetric, QuantileMetric
-
-    declared_metric = MeanMetric(name="y", entity="unit", fact="y", aggregation="sum")
-    source = SimpleNamespace(
-        evidence=dataclasses.replace(
-            capabilities,
-            grains=frozenset({"daily", "asof"}),
-            breakouts=("country",),
-        ),
-        context=(
-            context
-            if context is not None
-            else SimpleNamespace(trigger_name=None, metrics=(declared_metric,))
-        ),
-    )
-    metrics = {
-        "temporal_quantiles": QuantileMetric(
-            name="p50", entity="unit", fact="orders", quantile=0.5
-        ),
-        "temporal_clusters": MeanMetric(
-            name="orders", entity="unit", fact="orders", aggregation="sum"
-        ),
-        "dimensioned_daily_metrics": MeanMetric(
-            name="ad_hoc", entity="unit", fact="y", aggregation="sum"
-        ),
-    }
-    request = DayAxisRequest(
-        caller="run_daily",
-        grain="daily",
-        metrics=(metrics[field],),
-        dimension="country" if field == "dimensioned_daily_metrics" else None,
-    )
-    typed_experiment = (
-        experiment
-        if experiment is not None
-        else SimpleNamespace(
-            name="recorded",
-            trigger=None,
-            cluster="household" if field == "temporal_clusters" else None,
-            breakouts=(SimpleNamespace(property="country", source=None),),
-        )
-    )
-    expected = {
-        "temporal_quantiles": (
-            "breakout.quantile",
-            CapabilityError,
+    experiment, reader = from_frame(
+        pd.DataFrame(
             {
-                "names": ("p50",),
-                "method": "run_daily()",
-                "reason": "quantiles do not decompose into per-day moments",
-                "remedy": "Use run().",
-            },
+                "unit": ("a", "b", "c", "d"),
+                "group": ("control", "control", "treat", "treat"),
+                "orders": (1.0, 2.0, 3.0, 4.0),
+            }
         ),
-        "temporal_clusters": (
-            "facade.analysis.clustered_day_axis",
-            CapabilityError,
-            {"method": "run_daily", "experiment": "recorded", "cluster": "household"},
-        ),
-        "dimensioned_daily_metrics": (
-            "facade.analysis.undeclared_metric_for_dimension",
-            InvalidRequestError,
-            {"method": "run_daily", "dimension": "country", "undeclared": ("ad_hoc",)},
-        ),
-    }[field]
-    code, error_type, context = expected
-    with pytest.raises(CodedError) as raised:
-        validate_day_axis(
-            request,
-            src=source,
-            design=None,
-            plan=cast(Any, SimpleNamespace(inference=None)),
-            route="moments",
-            experiment=cast(Any, typed_experiment),
-        )
-    assert type(raised.value) is error_type
-    assert raised.value.code == code
-    assert raised.value.context == context
-
-    supported = {
-        "temporal_quantiles": True,
-        "temporal_clusters": True,
-        "dimensioned_daily_metrics": "any",
-    }[field]
-    source.evidence = dataclasses.replace(source.evidence, **{field: supported})
-    validate_day_axis(
-        request,
-        src=source,
-        design=None,
-        plan=cast(Any, SimpleNamespace(inference=None)),
-        route="moments",
-        experiment=cast(Any, typed_experiment),
+        shape="summary",
+        unit="unit",
+        group="group",
+        control="control",
+        metrics={"orders": "mean"},
     )
+    reader.close()
+    reference = experiment.source_refs[0]
+    assert reference.capabilities is not None
+    for supported in (capabilities.fixed_triggered, False):
+        restored = Experiment.from_json(
+            dataclasses.replace(
+                experiment,
+                source_refs=(
+                    dataclasses.replace(
+                        reference,
+                        capabilities=dataclasses.replace(
+                            reference.capabilities,
+                            fixed_triggered=supported,
+                            populations=frozenset({"assigned", "triggered"}),
+                            count_grains=frozenset({"unit", "triggered"}),
+                        ),
+                    ),
+                ),
+                analysis_context={**experiment.analysis_context, "trigger_name": "checkout"},
+                views=(View(view="run", grain="total", population="triggered"),),
+            ).to_json()
+        )
+        refusals = tuple(
+            refusal
+            for result in runnable(restored, "orders").values()
+            for refusal in result.static_refusals
+            if refusal.code == "facade.analysis.trigger_unsupported"
+        )
+        assert bool(refusals) is not supported
+        assert all(
+            refusal.context
+            == {
+                "method": "run",
+                "experiment": experiment.experiment_id,
+                "trigger": None,
+                "route": "moments",
+                "supported_sources": ("from_definitions", "from_unit_day_artifact"),
+            }
+            for refusal in refusals
+        )
+
+
+def _assert_windowed_quantile_consumer(capabilities, legacy_capabilities):
+    from increment import runnable
+    from increment.evidence import BreakoutIdentity
+
+    rows = pd.DataFrame(
+        {
+            "unit": ("a", "b", "c", "d"),
+            "group": ("control", "control", "treat", "treat"),
+            "ds": ("2025-01-01",) * 4,
+            "p50_orders": (1.0, 2.0, 3.0, 4.0),
+            "country": ("us",) * 4,
+        }
+    )
+    experiment, reader = from_frame(
+        rows,
+        shape="panel",
+        unit="unit",
+        group="group",
+        date="ds",
+        exposure_date="ds",
+        control="control",
+        metrics=[MetricSpec(name="p50_orders", type="quantile", quantile=0.5)],
+        breakouts=["country"],
+    )
+    reader.close()
+    payload = json.loads(experiment.to_json())
+    payload["metrics"]["p50_orders"]["window_days"] = 7
+    payload["analysis_context"]["configs"][0]["metric"]["window_days"] = 7
+    windowed = Experiment.from_json(json.dumps(payload)).with_views(
+        View(view="breakout", segment=(BreakoutIdentity("country", None),))
+    )
+    for declaration, expected in ((capabilities, True), (legacy_capabilities, False)):
+        restored = Experiment.from_json(
+            dataclasses.replace(
+                windowed,
+                source_refs=(
+                    dataclasses.replace(
+                        windowed.source_refs[0],
+                        capabilities=dataclasses.replace(declaration, breakouts=("country",)),
+                    ),
+                ),
+            ).to_json()
+        )
+        refusals = tuple(
+            refusal
+            for result in runnable(restored, "p50_orders").values()
+            for refusal in result.static_refusals
+            if refusal.code == "frame.metric.window_days_supported"
+        )
+        assert bool(refusals) is expected
+        assert all(refusal.context == {"name": "p50_orders"} for refusal in refusals)
 
 
 def _assert_restored_temporal_capability_case(
@@ -682,7 +657,6 @@ def _restored_temporal_case(field, rows):
     import polars as pl
 
     from increment import from_frame
-    from increment._metric_specs import MetricSpec
     from increment.evidence import BreakoutIdentity
     from increment.semantics.models import AnalysisPlan, Breakout
     from increment.semantics.models import Experiment as Definition
@@ -797,38 +771,19 @@ def _assert_restored_temporal_runnable_consumer():
                 _assert_restored_temporal_capability_case(
                     field, metric, value, code, experiment, semantic, segment, reader
                 )
-            if field == "dimensioned_daily_metrics":
-                runtime_capabilities = dataclasses.replace(
-                    experiment.source_refs[0].capabilities,
-                    dimensioned_daily_metrics="declared",
-                )
-                _assert_temporal_capability_consumer(
-                    field,
-                    runtime_capabilities,
-                    context=reader._binding.context,
-                    experiment=semantic,
-                )
         finally:
             reader.close()
 
 
 def _assert_restored_resolver_mismatches(restored, provider):
-    from increment._binding import ExperimentReader
     from increment.evidence import BoundResolver
 
     reference = restored.source_refs[0]
     refusals = BoundResolver(cast(EvidenceProvider, provider)).verify((reference,))
     assert [refusal.code for refusal in refusals] == ["kernel.provider.capability_mismatch"]
-    reader = object.__new__(ExperimentReader)
-    reader._closed = False
-    reader._bound = cast(Any, SimpleNamespace(state=SimpleNamespace(source=provider)))
-    reader._experiment = restored
-    refusals = reader._verify((reference,), provider)
-    assert [refusal.code for refusal in refusals] == ["kernel.provider.capability_mismatch"]
 
 
 def _assert_legacy_temporal_defaults(capabilities):
-    from increment._source_types import effective_capabilities
 
     native_moments = dataclasses.replace(
         capabilities,
@@ -841,7 +796,10 @@ def _assert_legacy_temporal_defaults(capabilities):
         temporal_clusters=None,
         dimensioned_daily_metrics=None,
     )
-    native = effective_capabilities(native_moments)
+    native = SourceReference(
+        name="native", uri="warehouse://native", capabilities=native_moments
+    ).capabilities
+    assert native is not None
     assert native.value_scale_overrides is False
     assert native.fixed_triggered is False
     assert native.windowed_breakout_quantiles is True
@@ -850,7 +808,10 @@ def _assert_legacy_temporal_defaults(capabilities):
     assert native.dimensioned_daily_metrics == "declared"
 
     native_definitions = dataclasses.replace(native_moments, kind="definitions")
-    definitions = effective_capabilities(native_definitions)
+    definitions = SourceReference(
+        name="definitions", uri="warehouse://definitions", capabilities=native_definitions
+    ).capabilities
+    assert definitions is not None
     assert definitions.temporal_quantiles is False
     assert definitions.temporal_clusters is False
     assert definitions.dimensioned_daily_metrics == "declared"
@@ -858,7 +819,10 @@ def _assert_legacy_temporal_defaults(capabilities):
     artifact_moments = dataclasses.replace(
         native_moments, operations=frozenset({"moments_source", "artifact_experiment"})
     )
-    artifact = effective_capabilities(artifact_moments)
+    artifact = SourceReference(
+        name="artifact", uri="warehouse://artifact", capabilities=artifact_moments
+    ).capabilities
+    assert artifact is not None
     assert artifact.temporal_quantiles is True
     assert artifact.temporal_clusters is False
     assert artifact.dimensioned_daily_metrics == "any"
@@ -868,7 +832,6 @@ def _assert_legacy_temporal_defaults(capabilities):
 
 
 def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
-    from increment._source_types import effective_capabilities
 
     experiment = _recorded_experiment()
     assert experiment.hash() == "2e2ae2d21857c4ff5b07d3f69fdcf14e6d5866faef4a8169983cbae04dad4278"
@@ -891,18 +854,96 @@ def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
         _, restored, restored_capabilities = _capability_round_trip(
             experiment, reference, capabilities, field, legacy, nonlegacy
         )
-        assert getattr(effective_capabilities(restored_capabilities), field) == nonlegacy
+        assert getattr(restored_capabilities, field) == nonlegacy
         if field == "windowed_breakout_quantiles":
             _assert_windowed_quantile_consumer(restored_capabilities, capabilities)
-        if field in {"temporal_quantiles", "temporal_clusters", "dimensioned_daily_metrics"}:
-            _assert_temporal_capability_consumer(field, restored_capabilities)
         _assert_restored_resolver_mismatches(restored, provider)
         if field == "fixed_triggered":
-            from increment._runnability import scope_refusals
-
-            assert "facade.analysis.trigger_unsupported" not in {
-                refusal.code for refusal in scope_refusals(restored, restored.views[0])
-            }
+            _assert_restored_fixed_triggered_consumer(restored_capabilities)
 
     _assert_legacy_temporal_defaults(capabilities)
     _assert_restored_temporal_runnable_consumer()
+
+
+def test_registered_selection_precedes_unsupported_quantile_window():
+    from increment import run, runnable
+    from increment.errors import CapabilityError
+    from increment.estimators import AlwaysValid, SequentialCell
+    from increment.evidence import BreakoutIdentity
+    from tests.analysis_factory import bind_pair, held_source
+    from tests.sequential_cases import registration
+    from tests.test_evidence_capabilities import _ReadGuardProvider
+
+    rows = [
+        {
+            "unit": f"u{i}",
+            "group": "control" if i < 4 else "treat",
+            "ds": "2025-01-01",
+            "p50": float(i),
+            "country": "us",
+        }
+        for i in range(8)
+    ]
+    _, original, _, _ = _restored_temporal_case("temporal_quantiles", rows)
+    source = cast(Any, held_source(original))
+    try:
+        metric = source.context.metrics[0].model_copy(update={"window_days": 7})
+        model = registration("gaussian").models[0].model_copy(update={"metric": "p50"})
+        registered = registration(
+            "gaussian",
+            models=(model,),
+            cells=(
+                SequentialCell(
+                    metric="p50",
+                    group_id="treat",
+                    segment=(("registered", "us"),),
+                ),
+            ),
+        )
+        policy = AlwaysValid(registration=registered)
+        plan = source.context.plan.model_copy(
+            update={
+                "inference": policy,
+                "procedures": {
+                    name: procedure.model_copy(update={"inference": policy})
+                    for name, procedure in source.context.plan.procedures.items()
+                },
+            }
+        )
+        context = dataclasses.replace(
+            source.context,
+            metrics=(metric,),
+            configs=tuple(
+                dataclasses.replace(config, metric=metric) for config in source.context.configs
+            ),
+            plan=plan,
+        )
+
+        class Provider(_ReadGuardProvider):
+            @property
+            def context(self):
+                return context
+
+        provider = Provider(
+            source,
+            evidence=dataclasses.replace(source.evidence, windowed_breakout_quantiles=False),
+        )
+        experiment, resolver = bind_pair(provider)
+        scope = View(view="breakout", segment=(BreakoutIdentity("country", None),))
+        restored = Experiment.from_json(dataclasses.replace(experiment, views=(scope,)).to_json())
+        try:
+            expected = {
+                "reason": "registered sequential inference reads only its registered breakout dimension"
+            }
+            with pytest.raises(CapabilityError) as runtime:
+                run(restored, resolver, views=(scope,))
+            assert runtime.value.code == "sequential.route.unsupported"
+            assert runtime.value.context == expected
+            refusals = runnable(restored, "p50")["randomized.unadjusted"].static_refusals
+            assert type(refusals[0]) is CapabilityError
+            assert refusals[0].code == "sequential.route.unsupported"
+            assert refusals[0].context == expected
+        finally:
+            resolver.close()
+    finally:
+        original.close()

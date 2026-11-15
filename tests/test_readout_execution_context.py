@@ -1461,7 +1461,9 @@ def test_custom_provider_preserves_original_snapshot_request_after_update(
     from increment.evidence import EvidenceProvider, EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
 
-    (experiment, resolver), _ = definitions_source(tmp_path, return_binding=True)
+    (experiment, resolver), (_, connection) = definitions_source(
+        tmp_path, return_binding=True, return_connection=True
+    )
     source = cast(Any, held_source(resolver))
     adapter = evidence_provider(source)
 
@@ -1518,7 +1520,7 @@ def test_custom_provider_preserves_original_snapshot_request_after_update(
         provider.requests.clear()
         context.open()
         assert provider.requests[0].snapshot is original_snapshot
-        source._con.raw_sql(
+        connection.raw_sql(
             "UPDATE raw_events SET revenue = revenue + 100 "
             "WHERE event = 'purchase' AND group_id IS NULL"
         )

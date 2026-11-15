@@ -1440,7 +1440,6 @@ def _acquire_breakout_scope_inputs(  # noqa: PLR0915
 
 
 def _day_capture_options(source, case, request, configuration):
-    from increment._analysis_config import UNSET
     from increment._lift_options import LiftOptions
 
     request = replace(request, estimands=case.estimands)

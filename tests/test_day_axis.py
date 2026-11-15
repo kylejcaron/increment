@@ -34,6 +34,7 @@ def _panel(*, metrics=None, breakouts=(), plan=None):
                 "y": float(i % 3) + (2.0 if treatment else 0.0),
                 "w": float(i % 4),
                 "country": "uk" if treatment else "us",
+                "platform": "ios" if treatment else "web",
                 "d7": float(i % 2),
             }
         )
@@ -108,121 +109,57 @@ def test_run_daily_refuses_no_definitions_on_unit_summary_source():
     }
 
 
-def test_day_axis_dimension_declaration_preserves_legacy_route_order():
-    from dataclasses import replace
-    from datetime import UTC, datetime
-    from types import SimpleNamespace
-
-    from increment._day_axis import validate_day_axis
-    from increment._evidence_types import DayAxisRequest
-    from increment.errors import InvalidRequestError
-    from increment.evidence import EvidenceCapabilities
-    from increment.readouts._evidence import (
-        declared_day_axis_dimensions,
-        declared_day_axis_route,
-    )
-    from increment.semantics.models import AnalysisPlan, Breakout
-    from increment.semantics.models import Experiment as Definition
-
-    experiment = Definition(
-        name="checkout",
-        exposure="assignment",
-        unit="unit",
-        start=datetime(2025, 1, 1, tzinfo=UTC),
-        control_group="control",
-        plan=AnalysisPlan(),
-        breakouts=(
-            Breakout(property="platform"),
-            Breakout(property="country"),
-            Breakout(property="platform"),
-        ),
-    )
-    common: dict[str, Any] = {
-        "grains": frozenset({"total", "daily", "asof"}),
-        "shape": None,
-        "unit_rows": False,
-        "raw_outcomes": False,
-        "method_fit": "none",
-        "compliance_axis": "none",
-        "count_grains": frozenset(),
-        "populations": frozenset({"assigned"}),
-        "sequential_capture": "none",
-        "scalar": None,
-        "available_covariates": None,
+def test_day_axis_unknown_dimension_reports_declared_public_breakouts():
+    experiment, resolver = _panel(breakouts=("country",))
+    with pytest.raises(InvalidRequestError) as raised:
+        view_readout(
+            experiment,
+            resolver,
+            View(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=(BreakoutIdentity("unavailable", None),),
+            ),
+        )
+    assert raised.value.code == "facade.analysis.unknown_dimension"
+    assert raised.value.context == {
+        "method": "run_daily",
+        "dimension": "unavailable",
+        "declared": ("country",),
     }
-    native = EvidenceCapabilities(
-        kind="definitions",
-        breakouts=("platform", "country", "platform"),
-        operations=frozenset({"moments_source"}),
-        **common,
-    )
-    moments = EvidenceCapabilities(
-        kind="moments",
-        breakouts=("platform", "country", "platform"),
-        operations=frozenset(),
-        **common,
-    )
-
-    artifact = replace(native, operations=frozenset({"artifact_experiment"}))
-    assert declared_day_axis_dimensions(native, None) == ()
-    assert declared_day_axis_dimensions(artifact, None) == ()
-    for capabilities, expected_dimensions in (
-        (native, ("country", "platform")),
-        (artifact, ("country", "platform")),
-        (moments, ("platform", "country", "platform")),
-    ):
-        source = SimpleNamespace(
-            evidence=capabilities,
-            context=SimpleNamespace(trigger_name=None, metrics=()),
-        )
-        assert declared_day_axis_dimensions(capabilities, experiment) == expected_dimensions
-        request = DayAxisRequest(
-            caller="run_daily",
-            grain="daily",
-            metrics=(),
-            dimension="unavailable",
-            declared_dimensions=declared_day_axis_dimensions(capabilities, experiment),
-        )
-        with pytest.raises(InvalidRequestError) as raised:
-            validate_day_axis(
-                request,
-                src=source,
-                design=None,
-                plan=cast(Any, SimpleNamespace(inference=None)),
-                route=declared_day_axis_route(capabilities),
-                experiment=experiment,
-            )
-        assert raised.value.code == "facade.analysis.unknown_dimension"
-        assert raised.value.context == {
-            "method": "run_daily",
-            "dimension": "unavailable",
-            "declared": tuple(expected_dimensions),
-        }
 
 
-def test_custom_day_source_declares_acquirable_day_grains():
-    from increment._evidence_loaders import day_axis_grains
-    from increment._source_types import EvidenceCapabilities
+@pytest.mark.integration
+def test_native_and_artifact_unknown_dimensions_report_full_context(
+    tmp_path, con, example_definitions
+):
+    from tests.source_conformance import unit_day_artifact_analysis
 
-    class Provider:
-        evidence = EvidenceCapabilities(
-            kind="moments",
-            grains=frozenset({"total"}),
-            breakouts=(),
-            shape=None,
-            operations=frozenset({"moments_source", "day_source"}),
-            unit_rows=False,
-            raw_outcomes=False,
-            method_fit="none",
-            compliance_axis="none",
-            count_grains=frozenset(),
-            populations=frozenset({"assigned"}),
-            sequential_capture="none",
-            scalar=None,
-            available_covariates=None,
-        )
-
-    assert day_axis_grains(Provider()) == frozenset({"total", "daily", "asof"})
+    native = from_definitions(example_definitions, con, experiment_name="new_onboarding_v2")
+    artifact = unit_day_artifact_analysis(tmp_path)
+    try:
+        for experiment, resolver in (native, artifact):
+            with pytest.raises(InvalidRequestError) as raised:
+                view_readout(
+                    experiment,
+                    resolver,
+                    View(
+                        view="daily",
+                        grain="daily",
+                        values=True,
+                        segment=(BreakoutIdentity("unavailable", None),),
+                    ),
+                )
+            assert raised.value.code == "facade.analysis.unknown_dimension"
+            assert raised.value.context == {
+                "method": "run_daily",
+                "dimension": "unavailable",
+                "declared": ("country",),
+            }
+    finally:
+        native[1].close()
+        artifact[1].close()
 
 
 def test_run_daily_values_carry_slice_fields():
@@ -237,6 +174,37 @@ def test_run_daily_values_carry_slice_fields():
     assert by_arm["control"].value.value == pytest.approx(1.0)
     assert by_arm["treat"].value.value == pytest.approx(3.0)
     assert all(row.dimension_value is None for row in results)
+
+
+def test_legacy_grain_metadata_does_not_hide_supported_day_axis():
+    from tests.analysis_factory import held_source
+
+    _, original = _panel()
+    source = cast(Any, held_source(original))
+
+    class LegacyMetadata:
+        capabilities = frozenset({"total"})
+        evidence = source.evidence
+        context = source.context
+
+        def __getattr__(self, name):
+            return getattr(source, name)
+
+    experiment, resolver = bind_pair(LegacyMetadata())
+    try:
+        daily = view_readout(experiment, resolver, View(view="daily", values=True))
+        asof = view_readout(experiment, resolver, View(view="asof", values=True))
+        for results in (daily, asof):
+            by_arm = {row.group_id: row for row in results}
+            assert by_arm.keys() == {"control", "treat"}
+            assert all(row.n == 6 for row in by_arm.values())
+            control, treatment = by_arm["control"], by_arm["treat"]
+            assert control.value is not None and treatment.value is not None
+            assert control.value.value == pytest.approx(1.0)
+            assert treatment.value.value == pytest.approx(3.0)
+    finally:
+        resolver.close()
+        original.close()
 
 
 def test_run_daily_lift_narrows_to_the_requested_metric_and_carries_plan_alpha():
@@ -320,98 +288,12 @@ def test_native_observational_lift_uses_the_day_axis_refusal(
             for metric in workflows.metrics(experiment, resolver)
             if not isinstance(metric, RetentionMetric)
         ]
-        if readout == "run_daily_lift" and metric_count == 1 and not explicit_decision:
-            from increment._evidence_loaders import day_axis_grains
-            from increment._evidence_types import DayAxisRequest
-            from increment.readouts._evidence import load_day_axis_rows
-
-            source = cast(Any, resolver._binding.state.source)
-            original_grains = source.capabilities
-            source.capabilities = frozenset({"total"})
-            try:
-                assert day_axis_grains(source) == frozenset({"total", "daily", "asof"})
-                request = DayAxisRequest(
-                    caller="run_daily_lift",
-                    grain="daily",
-                    metrics=(metrics[0],),
-                    dimension=None,
-                )
-                rows = load_day_axis_rows(source, request)
-                assert next(iter(rows.slices)).rows
-            finally:
-                source.capabilities = original_grains
         observational, observational_resolver = make_binding_like(
             resolver,
             metrics=metrics[:metric_count],
             design=design,
             plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="bh")),
         )
-        if readout == "run_asof_lift":
-            from dataclasses import replace
-            from types import SimpleNamespace
-
-            from increment._day_axis import validate_day_axis
-            from increment._evidence_types import DayAxisRequest
-
-            capabilities = experiment.source_refs[0].capabilities
-            assert capabilities is not None
-            source = SimpleNamespace(
-                evidence=capabilities,
-                context=SimpleNamespace(trigger_name=None, metrics=tuple(metrics)),
-            )
-            request = DayAxisRequest(
-                caller="run_asof_lift",
-                grain="asof",
-                metrics=tuple(metrics[:metric_count]),
-                dimension="unknown_dimension",
-            )
-            trigger_request = replace(request, population="triggered")
-            trigger_experiment = SimpleNamespace(
-                name="recorded",
-                trigger=None,
-                cluster="store_id",
-                breakouts=(SimpleNamespace(property="country", source=None),),
-            )
-            with pytest.raises(CapabilityError) as missing_trigger:
-                validate_day_axis(
-                    trigger_request,
-                    src=source,
-                    design=design,
-                    plan=cast(Any, SimpleNamespace(inference=None)),
-                    route="native",
-                    experiment=cast(Any, trigger_experiment),
-                )
-            assert missing_trigger.value.code == "facade.analysis.trigger_unsupported"
-            assert missing_trigger.value.context == {
-                "method": "run_asof_lift",
-                "experiment": "recorded",
-                "trigger": None,
-                "route": "native",
-                "supported_sources": (
-                    "from_definitions",
-                    "from_unit_day_artifact",
-                    "from_moments",
-                ),
-            }
-            with pytest.raises(UnsupportedRequestError) as direct:
-                validate_day_axis(
-                    request,
-                    src=source,
-                    design=design,
-                    plan=cast(
-                        Any,
-                        SimpleNamespace(
-                            inference=None,
-                            view_policies=SimpleNamespace(
-                                for_view=lambda *_args, **_kwargs: SimpleNamespace(correction="bh")
-                            ),
-                        ),
-                    ),
-                    route="native",
-                    experiment=None,
-                )
-            assert direct.value.context == {"method": "run_asof_lift"}
-            assert direct.value.code == "facade.analysis.observational_day_axis"
         with observational_resolver, pytest.raises(UnsupportedRequestError) as raised:
 
             def fail(*args, **kwargs):
@@ -425,19 +307,63 @@ def test_native_observational_lift_uses_the_day_axis_refusal(
     assert raised.value.code == "facade.analysis.observational_day_axis"
 
 
+@pytest.mark.integration
+def test_missing_trigger_precedes_asof_dimension_and_cluster_refusals(tmp_path):
+    from tests.source_conformance import definitions_source
+
+    (experiment, resolver), (_breakout, connection) = definitions_source(
+        tmp_path,
+        trigger=False,
+        cluster=True,
+        return_binding=True,
+        return_connection=True,
+    )
+    try:
+        scope = View(
+            view="asof",
+            grain="asof",
+            population="triggered",
+            segment=(BreakoutIdentity("unknown_dimension", None),),
+        )
+        with pytest.raises(CapabilityError) as missing_trigger:
+            view_readout(experiment, resolver, scope)
+        assert missing_trigger.value.code == "facade.analysis.trigger_unsupported"
+        assert missing_trigger.value.context == {
+            "method": "run_asof_lift",
+            "experiment": "conformance",
+            "trigger": None,
+            "route": "native",
+            "supported_sources": (
+                "from_definitions",
+                "from_unit_day_artifact",
+            ),
+        }
+    finally:
+        resolver.close()
+        connection.disconnect()
+
+
 def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
     from dataclasses import replace
 
+    from increment import Experiment, runnable
     from increment.evidence import evidence_provider
     from tests.analysis_factory import held_source
 
-    _, original = _panel(breakouts=("country",))
+    _, original = _panel(breakouts=("platform", "country"))
     source = cast(Any, held_source(original))
 
     class Provider:
         def __init__(self) -> None:
             self.context = source.context
-            self.evidence = replace(source.evidence, kind="moments", shape=None)
+            self.evidence = replace(
+                source.evidence,
+                kind="moments",
+                shape=None,
+                grains=frozenset({"total"}),
+                operations=source.evidence.operations | {"day_source"},
+                breakouts=("platform", "country", "platform"),
+            )
             self.operations = source.operations
             self.capabilities = source.capabilities
 
@@ -492,6 +418,34 @@ def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
     assert not hasattr(provider, "shape")
     experiment, resolver = bind_pair(cast(Any, provider))
     try:
+        with pytest.raises(InvalidRequestError) as unknown:
+            view_readout(
+                experiment,
+                resolver,
+                View(
+                    view="daily",
+                    grain="daily",
+                    values=True,
+                    segment=(BreakoutIdentity("unavailable", None),),
+                ),
+            )
+        assert unknown.value.code == "facade.analysis.unknown_dimension"
+        assert unknown.value.context == {
+            "method": "run_daily",
+            "dimension": "unavailable",
+            "declared": ("platform", "country", "platform"),
+        }
+        for scope in (
+            View(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=(BreakoutIdentity("country", None),),
+            ),
+            View(view="asof", grain="asof", values=True),
+        ):
+            restored = Experiment.from_json(replace(experiment, views=(scope,)).to_json())
+            assert runnable(restored, "y")["randomized.unadjusted"].static_refusals == ()
         results = view_readout(
             experiment,
             resolver,
@@ -499,13 +453,24 @@ def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
                 view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
             ),
         )
-        assert results
-        assert {row.dimension_value for row in results} == {"uk", "us"}
+        available = {
+            (row.group_id, row.dimension_value): (row.n, row.value.value)
+            for row in results
+            if row.value is not None
+        }
+        assert available == {
+            ("control", "us"): (6, pytest.approx(1.0)),
+            ("treat", "uk"): (6, pytest.approx(3.0)),
+        }
         asof_results = view_readout(
             experiment, resolver, View(view="asof", grain="asof", values=True)
         )
-        assert asof_results
-        assert {row.metric for row in asof_results} == {"y"}
+        assert {
+            row.group_id: (row.n, row.value.value) for row in asof_results if row.value is not None
+        } == {
+            "control": (6, pytest.approx(1.0)),
+            "treat": (6, pytest.approx(3.0)),
+        }
     finally:
         resolver.close()
         original.close()
