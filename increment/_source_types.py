@@ -245,7 +245,7 @@ def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
         temporal_clusters=(
             value.temporal_clusters
             if value.temporal_clusters is not None
-            else not (artifact or definition_source)
+            else not (artifact or definition_source or native_moments)
         ),
         dimensioned_daily_metrics=(
             value.dimensioned_daily_metrics

@@ -266,17 +266,21 @@ def validate_day_axis(
             supported_sources=("from_definitions", "from_unit_day_artifact", "from_moments"),
         )
     capabilities = effective_capabilities(declared_evidence(src))
-    if (
-        not compliance_only
-        and capabilities.temporal_clusters is False
-        and experiment is not None
-        and experiment.cluster is not None
-    ):
+    cluster = (
+        experiment.cluster
+        if experiment is not None and experiment.cluster is not None
+        else src.context.cluster
+    )
+    if not compliance_only and capabilities.temporal_clusters is False and cluster is not None:
         refuse(
             _CLUSTERED_DAY_AXIS,
             method=req.caller,
-            experiment=experiment.name,
-            cluster=experiment.cluster,
+            experiment=(
+                experiment.name
+                if experiment is not None and experiment.cluster is not None
+                else src.context.study_id
+            ),
+            cluster=cluster,
         )
     checkpoint_asof = (
         req.grain == "asof"

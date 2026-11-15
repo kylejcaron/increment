@@ -343,6 +343,106 @@ def test_missing_trigger_precedes_asof_dimension_and_cluster_refusals(tmp_path):
         connection.disconnect()
 
 
+def test_context_cluster_refuses_daily_and_asof_values_only_when_unsupported():
+    from contextlib import contextmanager
+    from dataclasses import replace
+
+    from increment import Experiment, View, run, runnable
+    from increment.evidence import EvidenceScopeResult, evidence_provider
+    from increment.results import DailyMetricValue
+    from tests.analysis_factory import bind_pair, held_source
+
+    _, original = _panel()
+    source = cast(Any, held_source(original))
+
+    class Provider:
+        def __init__(self, temporal_clusters):
+            self.context = replace(
+                source.context, study_id="context-only-study", cluster="cluster_id"
+            )
+            self.evidence = replace(source.evidence, temporal_clusters=temporal_clusters)
+            self.operations = source.operations
+            self.capabilities = source.capabilities
+            self.reads = 0
+
+        def __getattr__(self, name):
+            return getattr(source, name)
+
+        def moments(self, request):
+            self.reads += 1
+            return evidence_provider(source).moments(request)
+
+        def unit_rows(self, request):
+            return evidence_provider(source).unit_rows(request)
+
+        def method_fit(self, request):
+            return evidence_provider(source).method_fit(request)
+
+        def breakout_method_moments(self, request):
+            return evidence_provider(source).breakout_method_moments(request)
+
+        def compliance(self, request):
+            return evidence_provider(source).compliance(request)
+
+        def compliance_series(self, request):
+            return evidence_provider(source).compliance_series(request)
+
+        def counts(self, request):
+            return evidence_provider(source).counts(request)
+
+        def capture_sequential(self, request):
+            return evidence_provider(source).capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+        def close(self):
+            return None
+
+    provider = Provider(None)
+    experiment, resolver = bind_pair(cast(Any, provider))
+    try:
+        for view_name in ("daily", "asof"):
+            view = View(view=view_name, grain=view_name, values=True)
+            supported = run(experiment.with_views(view), resolver, views=(view,)).readout(view)
+            assert {
+                row.group_id: row.value.value
+                for row in supported
+                if isinstance(row, DailyMetricValue) and row.value is not None
+            } == pytest.approx({"control": 1.0, "treat": 3.0})
+
+        resolver.close()
+        provider = Provider(False)
+        experiment, resolver = bind_pair(cast(Any, provider))
+        experiment = Experiment.from_json(experiment.to_json())
+        for view_name in ("daily", "asof"):
+            view = View(view=view_name, grain=view_name, values=True)
+            declared = experiment.with_views(view)
+            expected_context = {
+                "method": f"run_{view_name}",
+                "experiment": "context-only-study",
+                "cluster": "cluster_id",
+            }
+            refusals = runnable(declared, source.context.metrics[0].name)[
+                "randomized.unadjusted"
+            ].static_refusals
+            assert [(type(error), error.code, dict(error.context)) for error in refusals] == [
+                (CapabilityError, "facade.analysis.clustered_day_axis", expected_context)
+            ]
+            with pytest.raises(CapabilityError) as raised:
+                run(declared, resolver, views=(view,))
+            assert raised.value.code == "facade.analysis.clustered_day_axis"
+            assert raised.value.context == expected_context
+            assert provider.reads == 0
+    finally:
+        resolver.close()
+        original.close()
+
+
 def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
     from dataclasses import replace
 

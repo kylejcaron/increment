@@ -804,7 +804,7 @@ def _assert_legacy_temporal_defaults(capabilities):
     assert native.fixed_triggered is True
     assert native.windowed_breakout_quantiles is True
     assert native.temporal_quantiles is False
-    assert native.temporal_clusters is True
+    assert native.temporal_clusters is False
     assert native.dimensioned_daily_metrics == "declared"
 
     native_definitions = dataclasses.replace(native_moments, kind="definitions")

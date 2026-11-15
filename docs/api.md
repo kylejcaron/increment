@@ -160,6 +160,9 @@ values.
 - Unavailable CUPED results contribute their fit identity and structured reason
   to readout snapshot identity. Changing that evidence no longer reuses an
   identity; valid comparison-method estimates are unchanged.
+- Clustered daily/as-of requests honor custom-provider support declarations
+  even when cluster metadata is supplied without an experiment definition.
+  Older declarations retain their existing early refusals.
 - `View.breakout(segment, *, population="assigned", metrics=())` accepts an
   optional tuple of registered metric definitions. An empty tuple selects the
   experiment's metrics. Save or log a selective breakout alongside the complete

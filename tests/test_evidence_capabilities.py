@@ -1855,3 +1855,68 @@ def test_whole_window_trigger_support_uses_declared_semantic_capability(tmp_path
                 replace_bound_source(base_resolver, source)
     finally:
         base_resolver.close()
+
+
+@pytest.mark.integration
+def test_legacy_native_operations_preserve_clustered_temporal_refusals(tmp_path):
+    from dataclasses import replace
+
+    from increment import Experiment, run, runnable
+    from increment.errors import CapabilityError
+    from tests.analysis_factory import replace_bound_source
+    from tests.source_conformance import definitions_source
+
+    (experiment, resolver), (_breakout, connection) = definitions_source(
+        tmp_path, cluster=True, return_binding=True, return_connection=True
+    )
+    source = held_source(resolver)
+    semantic = workflows.experiment_definition(experiment, resolver)
+
+    class NativeOperationProvider(_ForwardingProvider):
+        artifact_experiment = semantic
+
+        @property
+        def evidence(self):
+            return replace(
+                self.source.evidence,
+                kind="moments",
+                operations=frozenset({"moments_source"}),
+                value_scale_overrides=None,
+                fixed_triggered=None,
+                windowed_breakout_quantiles=None,
+                temporal_quantiles=None,
+                temporal_clusters=None,
+                dimensioned_daily_metrics=None,
+            )
+
+        def declaration_identity(self):
+            return self.source.declaration_identity()
+
+    try:
+        provider = NativeOperationProvider(source)
+        replace_bound_source(resolver, provider)
+        experiment = replace(
+            experiment,
+            source_refs=(replace(experiment.source_refs[0], capabilities=provider.evidence),),
+        )
+        experiment = Experiment.from_json(experiment.to_json())
+        for grain in ("daily", "asof"):
+            view = View(view=grain, grain=grain, values=True)
+            declared = experiment.with_views(view)
+            expected_context = {
+                "method": f"run_{grain}",
+                "experiment": "conformance",
+                "cluster": "store_id",
+            }
+            refusals = runnable(declared, "revenue")["randomized.unadjusted"].static_refusals
+            assert [(type(error), error.code, dict(error.context)) for error in refusals] == [
+                (CapabilityError, "facade.analysis.clustered_day_axis", expected_context)
+            ]
+            with pytest.raises(CapabilityError) as raised:
+                run(declared, resolver, views=(view,))
+            assert raised.value.code == "facade.analysis.clustered_day_axis"
+            assert raised.value.context == expected_context
+    finally:
+        replace_bound_source(resolver, source)
+        resolver.close()
+        connection.disconnect()
