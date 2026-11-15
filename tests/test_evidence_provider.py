@@ -8,7 +8,7 @@ import pytest
 
 from increment import Method, View, from_definitions, from_frame, from_moments, run, workflows
 from increment._evidence_types import BreakoutSlicesRequest, BreakoutUnitRowsRequest, DayAxisRequest
-from increment.errors import CapabilityError, CodedError
+from increment.errors import CapabilityError, CodedError, IncrementWarning
 from increment.evidence import (
     BreakoutIdentity,
     ComplianceRequest,
@@ -3198,7 +3198,7 @@ def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() 
     source = cast(Any, held_source(analysis[1]))
     retained_covariate = CupedCovariate(name="segment", kind="categorical")
     methods = (
-        Method.cuped_multicovariate(name="retained", covariates=(retained_covariate,)),
+        Method.cuped_multicovariate(name="categorical", covariates=(retained_covariate,)),
         Method.cuped_multicovariate(name="warehouse", covariates=(retained_covariate,)),
         Method.cuped_multicovariate(name="unavailable", covariates=(retained_covariate,)),
     )
@@ -3209,7 +3209,7 @@ def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() 
     )
     local_failure = CodedError(
         "fit unavailable",
-        code="estimation.cuped_linear.level_support",
+        code="estimation.cuped.covariate_zero_variance",
         context={"arm": "treatment", "level": "rare"},
     )
     unit_requests: list[UnitRowsRequest] = []
@@ -3226,7 +3226,7 @@ def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() 
             return evidence_provider(source).unit_rows(request)
 
         def method_fit(self, request):
-            if request.method.name == "retained":
+            if request.method.name == "categorical":
                 return MethodFitAnswer(
                     "retained_categorical",
                     cells=cast(
@@ -3273,11 +3273,13 @@ def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() 
 
             return EvidenceScopeResult(scoped(), request)
 
+    provider = Provider()
+    provider_analysis = None
     try:
         evidence = cast(
             Any,
             request_evidence(
-                Provider(),
+                provider,
                 MetricEvidenceRequest(
                     metric=source.context.metrics[0],
                     control_group="control",
@@ -3286,7 +3288,18 @@ def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() 
                 ),
             ),
         )
+        provider_analysis = bind_pair(provider)
+        with pytest.warns(IncrementWarning):
+            rows = list(
+                view_readout(
+                    *provider_analysis,
+                    decision_method=Method(name="unadjusted"),
+                    sensitivity_methods=methods[1:],
+                )
+            )
     finally:
+        if provider_analysis is not None:
+            provider_analysis[1].close()
         analysis[1].close()
 
     answers = tuple(answer for _, answer in evidence.method_fit_answers)
@@ -3295,19 +3308,53 @@ def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() 
         "warehouse",
         "unavailable",
     )
+    assert tuple(answer.fit_identity for answer in answers) == (
+        ("retained-fit",),
+        ("warehouse-fit",),
+        ("unavailable-fit",),
+    )
+    assert tuple(answer.evidence_sha256 for answer in answers) == (
+        "retained-digest",
+        "warehouse-digest",
+        None,
+    )
     assert answers[1].envelope.withheld == (("treatment", withheld),)
     assert answers[2].failure is local_failure
     assert unit_requests == []
     fit_components = tuple(
-        name
-        for name, _, _ in evidence.evidence_components
-        if name.startswith(("categorical_cells:", "warehouse_qr:"))
+        component
+        for component in evidence.evidence_components
+        if component[0].startswith(("categorical_cells:", "warehouse_qr:"))
     )
-    assert fit_components == (
-        "categorical_cells:retained",
+    assert tuple(component[0] for component in fit_components) == (
+        "categorical_cells:categorical",
         "warehouse_qr:warehouse",
         "warehouse_qr:unavailable",
     )
+    assert fit_components == (
+        ("categorical_cells:categorical", "retained-digest", 1),
+        (
+            "warehouse_qr:warehouse",
+            "3832824b2b64a60475a052b8441cf612eac64ff61e3c3221ef41b386c512b578",
+            1,
+        ),
+        (
+            "warehouse_qr:unavailable",
+            "b5fe083ad82d98c1bdc7c37e7c6d20f7f77a2314fac20e03327dae3022f5f2c6",
+            1,
+        ),
+    )
+
+    by_method = {row.method: row for row in cast(Any, rows)}
+    assert set(by_method) == {"unadjusted", "warehouse", "unavailable"}
+    assert by_method["unadjusted"].metric == "revenue"
+    assert by_method["unadjusted"].analysis_population == "assigned"
+    assert by_method["unadjusted"].group_id == "treatment"
+    assert by_method["unadjusted"].lift.value == pytest.approx(0.8)
+    assert by_method["warehouse"].failure_code == withheld.code
+    assert by_method["warehouse"].failure_context == withheld.context
+    assert by_method["unavailable"].failure_code == local_failure.code
+    assert by_method["unavailable"].failure_context == local_failure.context
 
 
 def test_failed_warehouse_fit_emits_unavailable_row_instead_of_local_fit() -> None:
