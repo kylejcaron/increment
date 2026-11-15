@@ -658,11 +658,11 @@ pointwise 95% Wilson interval around its observed share.
   guardrail evidence are rendered as separate things.
 - Fill in unavailable values. They render as `N/A` with the reason supplied
   by the result, never as a zero-filled number or an implied passing check.
-- Colour by sign alone. The primary headline is amber when the estimate is
-  not statistically significant; significant estimates are green or red only
-  after comparing the observed side with the metric's declared preferred
-  direction. Unavailable or directionless estimates stay neutral; a
-  significant directionless result still receives a significance badge.
+- Colour by sign alone. Green and red require an established favorable or
+  adverse result. Blue marks a detected difference when favorability is not
+  established. Inconclusive and unavailable results are gray. A comparison
+  that fails a required discovery selection stays gray even if its own test
+  rejects.
 - Call fixed-horizon monitoring "safe for repeated decisions". A cumulative
   monitoring view is labeled descriptive monitoring. Registered Bernoulli
   inference retains its sequential guarantee; asymptotic-mean monitoring is
