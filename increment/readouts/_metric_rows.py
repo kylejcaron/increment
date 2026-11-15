@@ -16,7 +16,7 @@ from increment._evidence_types import (
     UnitRowsRequest,
 )
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
-from increment._source_types import MOMENTS_BATCH_OWNERS, declared_evidence
+from increment._source_types import MOMENTS_BATCH_OWNERS, declared_evidence, source_class_name
 from increment.errors import CodedError
 from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._evidence import (
@@ -111,7 +111,7 @@ def _scalar_method_rows(src, metric, methods, decision, *, by, population):
     if scalar is None or not scalar.method_evidence:
         validate_scalar_route(
             overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
-            route=type(src).__name__,
+            route=source_class_name(src),
             representation="implicit",
             design=src.context.design,
         )
@@ -785,7 +785,7 @@ def _load_breakout_metric_rows(
     ):
         validate_scalar_route(
             overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
-            route=f"{type(src).__name__}.breakout",
+            route=f"{source_class_name(src)}.breakout",
             representation="implicit",
             design=src.context.design,
         )

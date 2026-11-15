@@ -72,7 +72,9 @@ from increment._evidence_types import (
 )
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._source_admission import _require_analysis_operation
-from increment._source_operations import AllocationHistoryOperation
+from increment._source_operations import (
+    AllocationHistoryOperation,
+)
 from increment._source_types import (
     EvidenceCapabilities,
     EvidenceProvider,

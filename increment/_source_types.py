@@ -345,6 +345,11 @@ def declared_evidence(source: object) -> EvidenceCapabilities:
     return declaration
 
 
+def source_class_name(source: object) -> str:
+    """Return the concrete source label used in existing refusal provenance."""
+    return type(source).__name__
+
+
 PROVIDER_UNAVAILABLE = RefusalSpec(
     "evidence.provider_unavailable",
     CapabilityError,

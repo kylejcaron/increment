@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from increment._canonical import declaration_value
 from increment._evidence_refusals import refuse_grain, refuse_operation, require_evidence
 from increment._evidence_types import (
     BreakoutMethodMomentsRequest,
@@ -21,14 +22,21 @@ from increment._evidence_types import (
     UnitRows,
     UnitRowsRequest,
 )
-from increment._source_operations import NativeCoreSource
+from increment._source_operations import (
+    DashboardGroupDataOperation,
+    ExploratorySourceOperation,
+    NativeCoreSource,
+)
 from increment._source_types import (
     MOMENTS_BATCH_OWNERS,
+    EvidenceProvider,
     _BuiltinMomentSource,
     declared_evidence,
     is_builtin_source,
     is_custom_source,
+    source_class_name,
 )
+from increment.decision import ContrastContext
 from increment.errors import CapabilityError, _ArtifactContractErrorMarker
 
 if TYPE_CHECKING:
@@ -234,3 +242,83 @@ def load_unit_rows(src: EvidenceSource, request: UnitRowsRequest) -> UnitRows:
     if request.outcome_stage == "raw":
         kwargs["outcome_stage"] = "raw"
     return cast(Any, source).unit_frame(request.metric, **kwargs)
+
+
+def load_exploratory_source(
+    operation: ExploratorySourceOperation, metrics: Sequence[Any]
+) -> EvidenceSource:
+    """Acquire a sibling source for declared exploratory metrics."""
+    return operation.exploratory_source(metrics=metrics)
+
+
+def load_dashboard_group_data(
+    operation: DashboardGroupDataOperation,
+    *,
+    metrics: Sequence[Any],
+    checkpoints: Mapping[str, Any] | None,
+    population: Literal["assigned", "triggered"],
+) -> tuple[Any, ...]:
+    """Acquire dashboard group evidence through its declared source operation."""
+    return tuple(
+        operation.dashboard_group_data(
+            metrics=metrics, checkpoints=checkpoints, population=population
+        )
+    )
+
+
+def build_triggered_srm_provider(
+    source: EvidenceSource, provider_factory: Callable[[object], EvidenceProvider]
+) -> EvidenceProvider:
+    """Build the adapter consumed by triggered SRM after caller authorization."""
+    return provider_factory(source)
+
+
+def load_sitewide_evidence(
+    operation: Any,
+    metric: Any,
+    *,
+    include_ratio: bool,
+    population: Literal["assigned", "triggered"],
+) -> Any:
+    """Acquire whole-site evidence after request validation."""
+    return operation.sitewide_evidence(metric, include_ratio=include_ratio, population=population)
+
+
+def load_triggered_sitewide_counts(
+    source: EvidenceSource, provider_factory: Callable[[object], EvidenceProvider]
+) -> Any:
+    """Acquire typed triggered counts for whole-site allocation diagnostics."""
+    return provider_factory(source).counts(CountsRequest(kind="triggered"))
+
+
+def load_assignment_diagnostic(source: Any) -> Any:
+    """Acquire source-owned switchback assignment-integrity diagnostics."""
+    return source.diagnostics
+
+
+def breakout_readout_source(source: EvidenceSource) -> Any:
+    """Select the panel's restricted summary reducer for whole-window breakouts."""
+    summary = getattr(source, "summary_breakout_source", None)
+    return source if summary is None else summary
+
+
+def source_context_payload(source: Any) -> dict[str, Any]:
+    """Acquire source-owned declaration metadata for static request validation."""
+
+    context = source.context
+    if isinstance(context, ContrastContext):
+        return {"family": "contrast", "context": context.model_dump(mode="json")}
+    experiment = getattr(source, "_experiment", None) or getattr(
+        source, "artifact_experiment", None
+    )
+    identity = getattr(source, "declaration_identity", None)
+    return {
+        "source_declaration": declaration_value(identity()) if callable(identity) else None,
+        "study_id": context.study_id,
+        "plan": context.plan,
+        "configs": context.configs,
+        "cluster": context.cluster,
+        "trigger_name": context.trigger_name,
+        "source_name": source_class_name(source),
+        "experiment": None if experiment is None else experiment.model_dump(mode="json"),
+    }

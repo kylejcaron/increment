@@ -141,6 +141,11 @@ values.
   depend on aggregate order. The numerical reference remains
   `tests/fixtures/parity_baseline.json`; ordinary estimates retain their
   existing tolerances.
+/- Supported whole-window, breakout, daily/as-of, triggered, and registered
+  analyses retain their existing behavior. Source declarations and provider
+  adapters own differences in available evidence; unsupported requests keep
+  their existing refusals. Estimator behavior and numeric baselines are
+  unchanged.
 - `View.breakout(segment, *, population="assigned", metrics=())` accepts an
   optional tuple of registered metric definitions. An empty tuple selects the
   experiment's metrics. Save or log a selective breakout alongside the complete

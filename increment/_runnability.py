@@ -18,6 +18,7 @@ from increment._analysis_config import (
     select_metrics,
 )
 from increment._canonical import declaration_value
+from increment._evidence_loaders import source_context_payload
 from increment._evidence_refusals import _DeclaredEvidence
 from increment._evidence_types import SourceContext
 from increment._readout_request import ReadoutRequest, validate_request
@@ -365,26 +366,9 @@ def operation_options(
 
 
 def context_payload(source: Any) -> dict[str, Any]:
-    """Record only construction state required by static request validation."""
-    context = source.context
-    from increment.decision import ContrastContext
+    """Resolve source-owned declaration metadata through evidence acquisition."""
 
-    if isinstance(context, ContrastContext):
-        return {"family": "contrast", "context": context.model_dump(mode="json")}
-    experiment = getattr(source, "_experiment", None) or getattr(
-        source, "artifact_experiment", None
-    )
-    identity = getattr(source, "declaration_identity", None)
-    return {
-        "source_declaration": declaration_value(identity()) if callable(identity) else None,
-        "study_id": context.study_id,
-        "plan": context.plan,
-        "configs": context.configs,
-        "cluster": context.cluster,
-        "trigger_name": context.trigger_name,
-        "source_name": type(source).__name__,
-        "experiment": None if experiment is None else experiment.model_dump(mode="json"),
-    }
+    return source_context_payload(source)
 
 
 def refuse_recorded_margin_less_guardrail(

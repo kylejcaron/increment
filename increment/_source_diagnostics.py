@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from increment._analysis_config import select_metrics
 from increment._binding import SourceBinding, binding_for
+from increment._evidence_loaders import build_triggered_srm_provider, load_assignment_diagnostic
 from increment._evidence_refusals import INVALID_POPULATION
 from increment._health import SrmObservations, check_health, srm_observation_key
 from increment._optional import require_warehouse
@@ -131,7 +132,7 @@ def _srm_binding(
                 ),
             )
             result = triggered_srm(
-                evidence_provider(source),
+                build_triggered_srm_provider(source, evidence_provider),
                 design=binding.design,
                 expected=expected,
                 alpha=alpha,
@@ -259,7 +260,7 @@ def assignment_diagnostic(
 def _assignment_diagnostic_binding(binding: SourceBinding) -> SwitchbackAssignmentDiagnostic:
     if binding.state.family != "contrast":
         refuse(_SWITCHBACK_ONLY, method="assignment_diagnostic")
-    return binding.source.diagnostics
+    return load_assignment_diagnostic(binding.source)
 
 
 def planning_baseline(

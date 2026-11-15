@@ -42,6 +42,12 @@ This required method set is a compatibility contract: never add a required
 `EvidenceProvider` method. New evidence capabilities must remain optional or be
 served through an explicitly versioned contract.
 
+Source declarations and provider adapters own differences in available evidence.
+The same analyst request keeps the same interpretation across sources; when a
+source cannot provide required evidence, the existing refusal remains the
+result. Do not move source-specific selection into the estimator or change
+analysis behavior to accommodate an adapter.
+
 `EvidenceCapabilities.value_scale_overrides` declares whether a source accepts
 a nonempty per-metric `value_scale=` mapping, including an explicit default.
 `fixed_triggered` declares fixed-horizon whole-window triggered evidence; the

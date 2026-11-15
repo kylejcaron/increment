@@ -14,6 +14,7 @@ from increment._analysis_config import select_metrics
 from increment._binding import _UNDECLARED_BREAKOUT, SourceBinding
 from increment._breakout_readouts import run_breakout, run_breakout_rows
 from increment._day_axis import require_arm_state, run_asof, run_asof_lift, run_daily
+from increment._evidence_loaders import load_dashboard_group_data
 from increment._evidence_types import EvidenceScope
 from increment._source_admission import _require_analysis_operation
 from increment._source_operations import DashboardGroupData, DashboardGroupDataOperation
@@ -220,7 +221,7 @@ def dashboard_group_data(
         caller="dashboard_group_data",
         require_declared_definitions=True,
     )
-    source = _require_analysis_operation(
+    operation = _require_analysis_operation(
         binding.source,
         "dashboard_group_data",
         DashboardGroupDataOperation,
@@ -229,8 +230,9 @@ def dashboard_group_data(
             "with a warehouse connection."
         ),
     )
-    return tuple(
-        source.dashboard_group_data(
-            metrics=selected, checkpoints=checkpoints, population=population
-        )
+    return load_dashboard_group_data(
+        operation,
+        metrics=selected,
+        checkpoints=checkpoints,
+        population=population,
     )

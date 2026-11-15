@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from increment._analysis_config import select_exploratory_metrics, select_metrics
+from increment._evidence_loaders import load_exploratory_source
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import ExploratorySourceOperation
 from increment.decision import DefinitionsArmAnalysisState
@@ -76,13 +77,14 @@ def exploratory_sibling(
 ) -> SourceBinding:
     """The binding reading from a sibling source that also carries *added*."""
     _require_arm_binding(binding, caller)
-    source = _require_analysis_operation(
+    operation = _require_analysis_operation(
         binding.source,
         "exploratory_source",
         ExploratorySourceOperation,
         message=f"{caller}(exploratory_metrics=...) needs an experiment built by from_definitions.",
     )
-    derived = binding.with_source(source.exploratory_source(metrics=added))
+    source = load_exploratory_source(operation, added)
+    derived = binding.with_source(source)
     context = current_execution_context()
     if context is not None:
         context.declare_source_alias(derived.source, parent=binding.source)

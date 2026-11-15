@@ -15,6 +15,7 @@ from increment._analysis_config import (
     select_metrics,
 )
 from increment._day_axis import require_arm_state
+from increment._evidence_loaders import breakout_readout_source
 from increment._evidence_refusals import _TRIGGER_UNSUPPORTED
 from increment._evidence_types import (
     BreakoutIdentity,
@@ -636,9 +637,8 @@ def _breakout_rows(
         population=population,
     )
     source = binding.source
-    summary_source = getattr(source, "summary_breakout_source", None)
     reader = BreakoutReadouts(
-        src=summary_source if summary_source is not None else source,
+        src=breakout_readout_source(source),
         experiment=_arm_experiment(binding),
         execution_context=execution_context,
         scope_source=source if scope_source is None else scope_source,

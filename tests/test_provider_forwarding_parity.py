@@ -35,6 +35,8 @@ from tests.parity_harness.comparison import nested_close
 from tests.parity_harness.views import read
 from tests.warning_codes import warning_codes
 
+# Different provider bindings have distinct source snapshot IDs; family IDs hash that
+# snapshot provenance. Same-source identity tests assert both fields without projection.
 IDENTITY_FIELDS = {"source_snapshot_id", "family_id"}
 
 
@@ -151,7 +153,7 @@ def _outcome(bound: Bound, cell: matrix.Cell, method: str) -> tuple[str, Any]:
     except TypeError as exc:
         pytest.fail(f"{cell.id}/{method}: harness TypeError: {exc}", pytrace=True)
     except CodedError as exc:
-        return "refusal", exc.code
+        return "refusal", (type(exc), exc.code, tuple(exc.context.items()))
     except Exception as exc:  # compared on both sides; unexpected paths are divergences
         return "exception", (type(exc).__qualname__, str(exc))
 
@@ -248,8 +250,9 @@ def test_forwarding_provider_matches_matrix_cell(cell: matrix.Cell) -> None:
         matrix.Cell("mean", "run", "cuped", "utc", "error"),
         matrix.Cell("mean", "run", "winsor_percentile", "utc", "error"),
         matrix.Cell("mean", "run", "cluster", "utc", "error"),
+        matrix.Cell("mean", "run", "sequential", "utc", "error"),
     ],
-    ids=["run", "breakout", "daily", "asof", "cuped", "winsor", "cluster"],
+    ids=["run", "breakout", "daily", "asof", "cuped", "winsor", "cluster", "sequential-refusal"],
 )
 def test_forwarding_provider_boundary_cell(cell: matrix.Cell) -> None:
     for mode in ("self", "adapter"):
@@ -334,7 +337,7 @@ def test_forwarding_provider_triggered_population_boundary(case) -> None:
                     except TypeError as exc:
                         pytest.fail(f"{case.id}: harness TypeError: {exc}", pytrace=True)
                     except CodedError as exc:
-                        return "refusal", exc.code
+                        return "refusal", (type(exc), exc.code, tuple(exc.context.items()))
                     except Exception as exc:
                         return "exception", (type(exc).__qualname__, str(exc))
 
