@@ -678,9 +678,16 @@ def readout_refusals(
     if capabilities.kind == "artifact":
         check(_validate_artifact_metrics, declaration)
     _validate_scope_request(declaration, request, scope, operation, capabilities, check, refusals)
-    if not refusals and options.get("value_scale"):
-        if not effective_capabilities(capabilities).value_scale_overrides:
+    if (
+        not refusals
+        and options.get("value_scale")
+        and not effective_capabilities(capabilities).value_scale_overrides
+    ):
+        try:
             _raise_readout("readout.randomized.value_scale")
+        except CodedError as error:
+            refusals.append(error)
+
     from increment.readouts._common import _sequential_inference
 
     inference = _sequential_inference(plan)

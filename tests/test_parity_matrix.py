@@ -626,3 +626,24 @@ def test_asymptotic_retention_cell(cell: matrix.Cell) -> None:
         _switchback(cell, method, disposition)
         for name, capture in merged.sequential_state.items():
             assert {state[3] for state in capture.fingerprint[0]} == {"scalar_mean"}, name
+
+
+def test_runnable_refuses_declared_unsupported_value_scale_override():
+    from increment import runnable
+    from increment.semantics.design import AdjustmentSet, Observational
+    from tests.test_kernel_review_regressions import _experiment
+
+    experiment, _ = _experiment()
+    reference = experiment.source_refs[0]
+    assert reference.capabilities is not None
+    unsupported = replace(reference.capabilities, value_scale_overrides=False)
+    requested = replace(
+        experiment,
+        design=Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("age",))
+        ),
+        source_refs=(replace(reference, capabilities=unsupported),),
+        request_options={"value_scale": {"value": "absolute"}},
+    )
+    refusals = runnable(requested, "value")["observational.iptw"].static_refusals
+    assert "readout.randomized.value_scale" in {refusal.code for refusal in refusals}

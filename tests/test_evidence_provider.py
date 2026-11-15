@@ -2770,6 +2770,52 @@ def test_custom_provider_triggered_analysis_uses_declared_population(tmp_path) -
     assert "moments" in operations_seen
 
 
+@pytest.mark.integration
+def test_custom_triggered_whole_window_scope_authorizes_both_integrity_counts(tmp_path) -> None:
+
+    native, _ = definitions_source(
+        tmp_path, trigger=True, partial_trigger=False, return_binding=True
+    )
+    experiment, native_resolver = native
+    source = cast(Any, held_source(native_resolver))
+    allowed_by_scope: list[frozenset[str]] = []
+
+    provider = _forwarding_provider(
+        source,
+        artifact_experiment=experiment_definition(*native),
+        close=lambda: None,
+    )
+    provider.source = source
+    original_counts = provider.counts
+
+    def scoped_counts(request):
+        allowed = allowed_by_scope[-1]
+        if request.population not in allowed:
+            raise AssertionError(f"count population {request.population!r} outside scope")
+        return original_counts(request)
+
+    provider.counts = scoped_counts
+
+    def scoped(request):
+        allowed_by_scope.append(frozenset(request.populations))
+
+        @contextmanager
+        def hold():
+            yield provider
+
+        return EvidenceScopeResult(hold(), request)
+
+    provider.scope = scoped
+    bound = bind_pair(provider, experiment=experiment_definition(*native))
+    try:
+        rows = list(view_readout(*bound, population="triggered"))
+        assert rows
+        assert {row.analysis_population for row in rows} == {"triggered"}
+    finally:
+        bound[1].close()
+        native_resolver.close()
+
+
 def test_warehouse_fit_keeps_unit_rows_for_uncovered_cuped_method() -> None:
     from types import SimpleNamespace
 
