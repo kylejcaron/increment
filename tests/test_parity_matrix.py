@@ -645,5 +645,8 @@ def test_runnable_refuses_declared_unsupported_value_scale_override():
         source_refs=(replace(reference, capabilities=unsupported),),
         request_options={"value_scale": {"value": "absolute"}},
     )
+    from increment import Experiment
+
+    requested = Experiment.from_json(requested.to_json())
     refusals = runnable(requested, "value")["observational.iptw"].static_refusals
     assert "readout.randomized.value_scale" in {refusal.code for refusal in refusals}

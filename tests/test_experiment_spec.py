@@ -429,6 +429,12 @@ def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
             experiment,
             source_refs=(dataclasses.replace(reference, capabilities=changed),),
         )
+        if field == "fixed_triggered":
+            changed_experiment = dataclasses.replace(
+                changed_experiment,
+                analysis_context={**experiment.analysis_context, "trigger_name": "checkout"},
+                views=(View(view="run", grain="total", population="triggered"),),
+            )
         restored = Experiment.from_json(changed_experiment.to_json())
         restored_capabilities = restored.source_refs[0].capabilities
         assert restored_capabilities is not None
@@ -444,6 +450,12 @@ def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
         restored_reference = restored.source_refs[0]
         refusals = BoundResolver(cast(EvidenceProvider, provider)).verify((restored_reference,))
         assert [refusal.code for refusal in refusals] == ["kernel.provider.capability_mismatch"]
+        if field == "fixed_triggered":
+            from increment._runnability import scope_refusals
+
+            assert "facade.analysis.trigger_unsupported" not in {
+                refusal.code for refusal in scope_refusals(restored, restored.views[0])
+            }
 
     native_moments = dataclasses.replace(
         capabilities, kind="moments", operations=frozenset({"moments_source"})
