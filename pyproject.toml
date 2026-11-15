@@ -23,7 +23,7 @@ license = "Apache-2.0"
 authors = [{ name = "Kyle Caron", email = "kyle.j.caron@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic>=2.14.1",
+    "pydantic>=2.14.2",
     # Ibis's compiler registry imports packaging even without backend extras.
     "packaging>=24.0",
     # PyYAML gained CPython 3.13 support in 6.0.2 and 3.14 in 6.0.3, so a
@@ -34,7 +34,7 @@ dependencies = [
     "pyyaml>=6.0.3; python_version >= '3.14'",
     "numpy>=2.5.4",
     "scipy>=1.18.1",
-    "narwhals>=2.27.1",
+    "narwhals>=2.28.0",
     # Arrow 23.0.1 is the security floor; 25.0.0 crashes after its loading thread exits.
     # Exclude the broken release rather than changing process-wide allocators.
     "pyarrow!=25.0.0,>=26.0.0; python_version < '3.13'",
@@ -92,7 +92,7 @@ dashboard = [
 ]
 
 [build-system]
-requires = ["hatchling>=1.32.4", "hatch-vcs>=0.5"]
+requires = ["hatchling>=1.33.0", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
 
 [project.entry-points."increment.artifact_ports"]
@@ -100,8 +100,8 @@ builtin = "increment.artifacts._query:artifact_query_ports"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.17.2",
-    "prek>=0.5.7",
+    "ruff>=0.17.3",
+    "prek>=0.5.9",
     "marimo>=0.25.2",
     "altair>=6.3.0",
     "pytest==9.2.0",
@@ -113,29 +113,29 @@ dev = [
     "pytest-xdist @ git+https://github.com/pytest-dev/pytest-xdist.git@9844b0e1c309780e23103424dc0b5635a3aa5259",
     "psutil>=7.2.2",
     "nox>=2026.10.20",
-    "virtualenv>=21.14.13",
-    "polars>=2.0.0",
+    "virtualenv>=21.15.2",
+    "polars>=2.1.0",
     "sybil>=10.1.0",
     "tach>=0.35.3",
     "vulture>=2.14",
-    "hypothesis>=6.170.9",
+    "hypothesis>=6.170.14",
     "pytest-timeout>=2.4",
-    "filelock>=4.2.4",
+    "filelock>=4.2.5",
     "pytest-split>=0.11.0",
     # The mutation runner intentionally depends on mutmut's internal 3.8.0 API.
     "mutmut==3.8.0",
-    "pydoclint>=0.11.1",
-    "complexipy==8.1.0",
+    "pydoclint>=0.12.0",
+    "complexipy==8.3.0",
     "pytest-benchmark>=5.3.0",
 ]
 core-test = [
     "pytest>=9.2.0",
     "pytest-xdist @ git+https://github.com/pytest-dev/pytest-xdist.git@9844b0e1c309780e23103424dc0b5635a3aa5259",
     "pytest-timeout>=2.4",
-    "hypothesis>=6.170.9",
+    "hypothesis>=6.170.14",
     "sybil>=10.1.0",
     "tach>=0.35.3",
-    "polars>=2.0.0",
+    "polars>=2.1.0",
     "pandas>=3.0.5,<3.1",
 ]
 warehouse-backends = [
