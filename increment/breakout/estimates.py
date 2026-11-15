@@ -2519,7 +2519,10 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
     ]
     if linear_methods:
         from increment.estimation.cuped import prepare_multicovariate_fit
-        from increment.estimation.engine import estimate_cuped_linear, estimate_cuped_linear_fit
+        from increment.estimation.engine import (
+            estimate_cuped_linear,
+            estimate_cuped_linear_fit,
+        )
 
         if unit_frame is not None:
             admitted = [
@@ -2539,11 +2542,14 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
             role = (method_roles or {}).get(method.name, "decision")
             cache_key = method.model_dump_json(exclude={"name"})
             try:
+                prepared = prepare_multicovariate_fit(
+                    method, method_fit_answers, cell=breakout_cell
+                )
+                if prepared.failure is not None:
+                    raise prepared.failure
                 cached = cache.get(cache_key)
-                if cached is not None:
-                    bundle, error = cached
-                    if error is not None:
-                        raise error
+                if cached is not None and cached[1] is None:
+                    bundle, _ = cached
                     assert bundle is not None
                     bundle = DecisionComputation(
                         results=tuple(
@@ -2570,11 +2576,6 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                         advisories=bundle.advisories,
                     )
                 else:
-                    prepared = prepare_multicovariate_fit(
-                        method, method_fit_answers, cell=breakout_cell
-                    )
-                    if prepared.failure is not None:
-                        raise prepared.failure
                     if prepared.origin in {"warehouse", "retained_fitted"}:
                         warehouse_fit = prepared.envelope
                         assert warehouse_fit is not None
@@ -2625,11 +2626,8 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                 collect_advisories(advisories, bundle.advisories, (method.name,))
                 failures.update(bundle.failures)
             except CodedError as exc:
-                if not exc.code.startswith("estimation.cuped_linear.") or exc.code == (
-                    "estimation.cuped_linear.covariate_input"
-                ):
+                if exc.code not in CELL_ESTIMATION_GUARD_CODES:
                     raise
-                cache.setdefault(cache_key, (None, exc))
                 groups = (
                     {
                         str(row["group_id"])

@@ -3094,6 +3094,222 @@ def test_failed_retained_categorical_fit_emits_unavailable_row() -> None:
 
 
 @pytest.mark.integration
+def test_failed_cuped_method_does_not_hide_valid_same_settings_companion() -> None:
+    from increment import CupedCovariate, Method
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    failure = CodedError(
+        "first method failed",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical"},
+    )
+    provider = _forwarding_provider(source)
+    provider.evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+
+    def method_fit(request: MethodFitRequest) -> MethodFitAnswer:
+        if request.method.name == "categorical":
+            return MethodFitAnswer("unavailable", failure=failure)
+        return MethodFitAnswer("unavailable")
+
+    provider.method_fit = method_fit
+    provider.close = lambda: None
+    provider_analysis = None
+    covariate = CupedCovariate(name="segment", kind="categorical")
+    companion = Method.cuped_multicovariate(name="companion", covariates=(covariate,))
+    try:
+        provider_analysis = bind_pair(provider)
+        rows = list(view_readout(*provider_analysis, sensitivity_methods=[companion]))
+    finally:
+        if provider_analysis is not None:
+            provider_analysis[1].close()
+        analysis[1].close()
+
+    primary_rows = [row for row in cast(Any, rows) if row.method == "categorical"]
+    companion_rows = [row for row in cast(Any, rows) if row.method == "companion"]
+    assert primary_rows
+    assert all(row.failure_code == failure.code for row in primary_rows)
+    assert companion_rows
+    assert all(row.lift is not None for row in companion_rows)
+
+
+@pytest.mark.integration
+def test_breakout_keeps_failed_cuped_cell_local_to_its_method() -> None:
+    from increment import CupedCovariate, Method
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    builtin = evidence_provider(source)
+    covariate = CupedCovariate(name="segment", kind="categorical")
+    primary = Method.cuped_multicovariate(name="categorical", covariates=(covariate,))
+    companion = Method.cuped_multicovariate(name="companion", covariates=(covariate,))
+    failure = CodedError(
+        "first method failed",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical", "cell": "US"},
+    )
+    provider = _forwarding_provider(source)
+    provider.evidence = replace(
+        source.evidence, method_fit="warehouse", unit_rows=True, breakouts=("country",)
+    )
+
+    def method_fit(request: MethodFitRequest) -> MethodFitAnswer:
+        if request.method.name == "categorical" and request.cell is not None:
+            if request.cell.value == "US":
+                return MethodFitAnswer("unavailable", failure=failure)
+            return MethodFitAnswer("unavailable")
+        if request.method.name == "companion":
+            return MethodFitAnswer("unavailable")
+        return builtin.method_fit(request)
+
+    provider.method_fit = method_fit
+    provider.close = lambda: None
+    from increment.readouts import breakout
+
+    try:
+        rows = breakout(
+            provider,
+            "country",
+            metrics=("revenue",),
+            correction="none",
+            sensitivity_methods=(companion,),
+        )
+    finally:
+        analysis[1].close()
+
+    primary_failed = [
+        row for row in rows if row.method == primary.name and row.dimension_value == "US"
+    ]
+    companion_valid = [row for row in rows if row.method == companion.name and row.lift is not None]
+    assert primary_failed
+    assert all(row.failure_code == failure.code for row in primary_failed)
+    assert all(row.failure_context == failure.context for row in primary_failed)
+    assert companion_valid
+
+
+@pytest.mark.integration
+def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() -> None:
+    from types import SimpleNamespace
+
+    from increment import CupedCovariate, Method
+    from increment._evidence_types import MetricEvidenceRequest
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    retained_covariate = CupedCovariate(name="segment", kind="categorical")
+    methods = (
+        Method.cuped_multicovariate(name="retained", covariates=(retained_covariate,)),
+        Method.cuped_multicovariate(name="warehouse", covariates=(retained_covariate,)),
+        Method.cuped_multicovariate(name="unavailable", covariates=(retained_covariate,)),
+    )
+    withheld = CodedError(
+        "treatment arm withheld",
+        code="estimation.cuped_linear.missing_refused",
+        context={"arm": "treatment"},
+    )
+    local_failure = CodedError(
+        "fit unavailable",
+        code="estimation.cuped_linear.level_support",
+        context={"arm": "treatment", "level": "rare"},
+    )
+    unit_requests: list[UnitRowsRequest] = []
+
+    class Provider:
+        context = source.context
+        evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+
+        def moments(self, request):
+            return evidence_provider(source).moments(request)
+
+        def unit_rows(self, request):
+            unit_requests.append(request)
+            return evidence_provider(source).unit_rows(request)
+
+        def method_fit(self, request):
+            if request.method.name == "retained":
+                return MethodFitAnswer(
+                    "retained_categorical",
+                    cells=cast(
+                        "CategoricalCells",
+                        SimpleNamespace(arms=("control", "treatment"), counts=((4, 4), (4, 4))),
+                    ),
+                    evidence_sha256="retained-digest",
+                    fit_identity=("retained-fit",),
+                )
+            if request.method.name == "warehouse":
+                return MethodFitAnswer(
+                    "warehouse",
+                    envelope=SimpleNamespace(
+                        fit=None,
+                        arm_order=("control", "treatment"),
+                        withheld=(("treatment", withheld),),
+                    ),
+                    fit_identity=("warehouse-fit",),
+                    evidence_sha256="warehouse-digest",
+                )
+            return MethodFitAnswer(
+                "unavailable", failure=local_failure, fit_identity=("unavailable-fit",)
+            )
+
+        def breakout_method_moments(self, request):
+            return evidence_provider(source).breakout_method_moments(request)
+
+        def compliance(self, request):
+            return evidence_provider(source).compliance(request)
+
+        def compliance_series(self, request):
+            return evidence_provider(source).compliance_series(request)
+
+        def counts(self, request):
+            return evidence_provider(source).counts(request)
+
+        def capture_sequential(self, request):
+            return evidence_provider(source).capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        evidence = cast(
+            Any,
+            request_evidence(
+                Provider(),
+                MetricEvidenceRequest(
+                    metric=source.context.metrics[0],
+                    control_group="control",
+                    methods=methods,
+                    covariates=(retained_covariate,),
+                ),
+            ),
+        )
+    finally:
+        analysis[1].close()
+
+    answers = tuple(answer for _, answer in evidence.method_fit_answers)
+    assert tuple(answer.origin for answer in answers) == (
+        "retained_categorical",
+        "warehouse",
+        "unavailable",
+    )
+    assert answers[1].envelope.withheld == (("treatment", withheld),)
+    assert answers[2].failure is local_failure
+    assert unit_requests == []
+    fit_components = tuple(
+        name
+        for name, _, _ in evidence.evidence_components
+        if name.startswith(("categorical_cells:", "warehouse_qr:"))
+    )
+    assert fit_components == (
+        "categorical_cells:retained",
+        "warehouse_qr:warehouse",
+        "warehouse_qr:unavailable",
+    )
+
+
 def test_failed_warehouse_fit_emits_unavailable_row_instead_of_local_fit() -> None:
     analysis = _categorical_cuped_analysis()
     source = cast(Any, held_source(analysis[1]))
