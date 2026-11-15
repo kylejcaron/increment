@@ -48,9 +48,9 @@ _REFUSALS = refusals(
             template="candidate {index} on fold {fold} returned {n_bad} non-finite contribution(s) out of {n_total}. {route}",
         ),
         "estimation.crossfit.cluster_ids_shape_expected": "cluster_ids has shape {cluster_ids}, expected {unit_ids} to match unit_ids",
-        "estimation.crossfit.insufficient_clusters": "only {n_clusters} atomic group(s) available in a stratum for n_folds={n_folds} -- cross-fitting needs at least one group per stratum per fold; groups are distinct cluster_ids when supplied, otherwise distinct unit_ids; lower n_folds or supply more groups",
+        "estimation.crossfit.insufficient_clusters": "only {n_clusters} atomic group(s) available in a stratum for n_folds={n_folds}; cross-fitting needs at least one group per stratum per fold; groups are distinct cluster_ids when supplied, otherwise distinct unit_ids; lower n_folds or supply more groups",
         "estimation.crossfit.cluster_atomic_shape": "cluster_ids has shape {cluster_ids}, expected {assignment} to match the supplied assignment",
-        "estimation.crossfit.cluster_split": "cluster {cluster!r} is split across the supplied assignment (values {values[0]!r} and {values[1]!r} both appear among its members) -- a cluster must land entirely on one side of a split, or entirely in one fold",
+        "estimation.crossfit.cluster_split": "cluster {cluster!r} is split across the supplied assignment (values {values[0]!r} and {values[1]!r} both appear among its members); a cluster must land entirely on one side of a split, or entirely in one fold",
     },
 )
 N_FOLDS_LEAST = _REFUSALS["estimation.crossfit.n_folds_least"]

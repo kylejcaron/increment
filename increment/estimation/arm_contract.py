@@ -68,13 +68,13 @@ _REFUSALS = refusals(
         "decision.arm_planning.scalar_power_unsupported_family": "scalar power does not support BH/e-BH family planning",
         "decision.arm_planning.uncorrected_family_size": "uncorrected planning requires family_size=1",
         "arm_planning.inference_spec_registration_unplannable": "planning derives its own registration-free boundary; pass InferenceSpec(kind='asymptotic_mean') without registration=",
-        "arm_planning.inference_spec_expected_n_unplannable": "expected_decision_sample_size is solved for, not declared -- read it from PowerResult.inference_to_declare after sizing",
+        "arm_planning.inference_spec_expected_n_unplannable": "expected_decision_sample_size is solved for, not declared; read it from PowerResult.inference_to_declare after sizing",
         "arm_planning.inference_spec_adjustments_unplannable": "predeclared CUPED adjustments are a runtime-only declaration; planning admits CUPED by passing a Baseline with cuped_rho set to the solver call",
         "arm_planning.inference_spec_segments_unplannable": (
             "standard() fixes view='total' and segmented=False, so it cannot represent "
             "declared segments {rejected_segments!r} without dropping them; use the full "
             "ArmPlanningProcedure constructor with view='breakout' and segmented=True "
-            "for an explicitly segmented fixed-horizon plan -- standard() provides no "
+            "for an explicitly segmented fixed-horizon plan; standard() provides no "
             "segmented asymptotic planning construction (route={route!r})",
             ("view", "segmented"),
         ),

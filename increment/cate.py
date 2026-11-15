@@ -77,7 +77,7 @@ if TYPE_CHECKING:
 _RANDOMIZED_ONLY = RefusalSpec(
     "cate.identification.randomized_only",
     InvalidRequestError,
-    template="{caller} requires a randomized MomentSource (source.context.design.mechanism == 'randomized'), got {mechanism!r} -- estimate_cate's per-unit predictions do not have a doubly robust observational implementation",
+    template="{caller} requires a randomized MomentSource (source.context.design.mechanism == 'randomized'), got {mechanism!r}; estimate_cate's per-unit predictions do not have a doubly robust observational implementation",
 )
 
 
@@ -96,15 +96,15 @@ _REFUSALS = refusals(
         "cate.cate_supported_quantile": RefusalSpec(
             "cate.cate_supported_quantile",
             UnsupportedRequestError,
-            template="CATE is not supported for quantile metric {metric!r} -- the per-unit outcome is the unit's total, so the fitted effect would be a conditional MEAN effect reported under a quantile metric's name. Declare the column as a mean metric instead",
+            template="CATE is not supported for quantile metric {metric!r}; the per-unit outcome is the unit's total, so the fitted effect would be a conditional MEAN effect reported under a quantile metric's name. Declare the column as a mean metric instead",
         ),
         "cate.control_arm_present": "control arm {control!r} is not present in {metric!r}; arms are {arms}",
         "cate.contrasts_exactly_two": "{caller} contrasts exactly two arms, but {metric!r} has {n_arms}: {arms}. Against control {control!r} the treatment indicator would pool {others} into a single arm, which estimates a different quantity. Restrict the source to two arms and call once per contrast",
-        "cate.cluster.covariate_conflict": "{caller}: {column!r} is this source's declared cluster identity (source.context.cluster) and cannot also be requested as an interact/adjust covariate or observational adjustment column, even though it may look numeric -- cluster identity is metadata, never a model feature.",
+        "cate.cluster.covariate_conflict": "{caller}: {column!r} is this source's declared cluster identity (source.context.cluster) and cannot also be requested as an interact/adjust covariate or observational adjustment column, even though it may look numeric; cluster identity is metadata, never a model feature.",
         "cate.covariate.is_outcome": "{caller}: covariate {covariate!r} is the outcome of metric {metric!r}. Covariates must be measured before exposure; remove the outcome from interact, adjust and the design's adjustment set.",
-        "cate.cluster.randomization_arm_purity": "{caller}: cluster {cluster!r} contains both treatment arms ({values}) under a declared cluster-randomized source (source.context.design.mechanism == 'randomized' with a declared cluster) -- randomization at the cluster grain requires every cluster to be a pure arm. An observational design (declaring the dependence honestly) preserves mixed-treatment clusters instead.",
-        "cate.cluster.identity_unavailable": "{caller}: source.context.cluster == {column!r} declares a cluster identity, but unit_frame served no aligned cluster_id column -- a nonconformant MomentSource implementation. Refusing rather than silently treating this population as unclustered.",
-        "cate.cluster.intervention_grain_unavailable": "{caller}: source.context.intervention_grain == 'cluster' declares a whole-cluster policy deployment, but this source resolved no cluster identity (source.context.cluster is None) -- there is no cluster grain to intervene on.",
+        "cate.cluster.randomization_arm_purity": "{caller}: cluster {cluster!r} contains both treatment arms ({values}) under a declared cluster-randomized source (source.context.design.mechanism == 'randomized' with a declared cluster); randomization at the cluster grain requires every cluster to be a pure arm. An observational design (declaring the dependence honestly) preserves mixed-treatment clusters instead.",
+        "cate.cluster.identity_unavailable": "{caller}: source.context.cluster == {column!r} declares a cluster identity, but unit_frame served no aligned cluster_id column; a nonconformant MomentSource implementation. Refusing rather than silently treating this population as unclustered.",
+        "cate.cluster.intervention_grain_unavailable": "{caller}: source.context.intervention_grain == 'cluster' declares a whole-cluster policy deployment, but this source resolved no cluster identity (source.context.cluster is None); there is no cluster grain to intervene on.",
     },
 )
 _raise = raiser(_REFUSALS)

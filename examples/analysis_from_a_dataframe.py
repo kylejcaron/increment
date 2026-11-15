@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.15"
+__generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 
@@ -16,7 +16,17 @@ def _():
     from increment.tables import estimates_to_readout, readout_table
     from increment.workflows import srm
 
-    return LiftEstimate, Normal, estimates_to_readout, increment, mo, np, pd, readout_table, srm
+    return (
+        LiftEstimate,
+        Normal,
+        estimates_to_readout,
+        increment,
+        mo,
+        np,
+        pd,
+        readout_table,
+        srm,
+    )
 
 
 @app.cell
@@ -136,7 +146,7 @@ def _(mo):
 
 
 @app.cell
-def _(checkout_df, estimates_to_readout, increment, readout_table):
+def _(checkout_df, estimates_to_readout, increment, mo, readout_table):
     # pass in your experiment
     experiment, reader = increment.from_frame(
         checkout_df,
@@ -149,7 +159,10 @@ def _(checkout_df, estimates_to_readout, increment, readout_table):
     baseline_results = increment.run(experiment, reader).readout()
 
     # visualize the readout
-    readout_table(estimates_to_readout(baseline_results), title="Checkout experiment")
+    baseline_table = readout_table(
+        estimates_to_readout(baseline_results), title="Checkout experiment"
+    )
+    mo.show_code(baseline_table, position="above")
     return experiment, reader
 
 
@@ -169,13 +182,13 @@ def _(mo):
 
 
 @app.cell
-def _(checkout_df, estimates_to_readout, increment, readout_table):
+def _(checkout_df, estimates_to_readout, increment, mo, readout_table):
     UNADJUSTED = increment.Method(name="unadjusted")
     CUPED = increment.Method.cuped(
         covariates=increment.CupedCovariate(name="pre_revenue", kind="continuous")
     )
 
-    _experiment, _reader = increment.from_frame(
+    cuped_experiment, cuped_reader = increment.from_frame(
         checkout_df,
         shape="summary",
         unit="user_id",
@@ -190,9 +203,12 @@ def _(checkout_df, estimates_to_readout, increment, readout_table):
         ],
     )
     cuped_estimates = increment.run(
-        _experiment, _reader, decision_method=UNADJUSTED, sensitivity_methods=(CUPED,)
+        cuped_experiment, cuped_reader, decision_method=UNADJUSTED, sensitivity_methods=(CUPED,)
     ).readout()
-    readout_table(estimates_to_readout(cuped_estimates), title="CUPED Comparison", nest_by="method")
+    cuped_table = readout_table(
+        estimates_to_readout(cuped_estimates), title="CUPED Comparison", nest_by="method"
+    )
+    mo.show_code(cuped_table, position="above")
     return (cuped_estimates,)
 
 
@@ -238,12 +254,21 @@ def _(mo):
 
 
 @app.cell
-def _(Normal, estimates_to_readout, experiment, increment, reader, readout_table):
+def _(
+    Normal,
+    estimates_to_readout,
+    experiment,
+    increment,
+    mo,
+    reader,
+    readout_table,
+):
     prior_results = increment.run(experiment, reader, prior=Normal(mu=0.0, sigma=0.05)).readout()
-    readout_table(
+    prior_table = readout_table(
         estimates_to_readout(prior_results),
         title="Checkout experiment — informative prior",
     )
+    mo.show_code(prior_table, position="above")
     return
 
 
@@ -266,8 +291,8 @@ def _(mo):
 
 
 @app.cell
-def _(checkout_df, estimates_to_readout, increment, readout_table):
-    _experiment, _reader = increment.from_frame(
+def _(checkout_df, estimates_to_readout, increment, mo, readout_table):
+    ratio_experiment, ratio_reader = increment.from_frame(
         checkout_df,
         shape="summary",
         unit="user_id",
@@ -292,13 +317,14 @@ def _(checkout_df, estimates_to_readout, increment, readout_table):
             ),
         ],
     )
-    ratio_result = increment.run(_experiment, _reader).readout()
+    ratio_result = increment.run(ratio_experiment, ratio_reader).readout()
 
-    readout_table(
+    ratio_table = readout_table(
         estimates_to_readout(ratio_result),
         title="Analyzing a Ratio Metric",
         # nest_by='method'
     )
+    mo.show_code(ratio_table, position="above")
     return (ratio_result,)
 
 
@@ -333,14 +359,94 @@ def _(mo):
 
 
 @app.cell
-def _(experiment, reader, srm):
-    from rich.pretty import pprint
-
+def _(experiment, mo, reader, srm):
     # Request one fixed-look check on the simulated population.
     srm_result = srm(
-        experiment, reader, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+        experiment,
+        reader,
+        expected={"control": 0.5, "treatment": 0.5},
+        inference="fixed",
     )
-    pprint(srm_result, expand_all=True)
+
+    mo.show_code(position="above")
+    return (srm_result,)
+
+
+@app.cell(hide_code=True)
+def _(mo, pd, srm_result):
+    _total = sum(srm_result.observed.values())
+    _counts = pd.DataFrame(
+        [
+            {
+                "Arm": _arm,
+                "Observed count": _count,
+                "Expected share": f"{srm_result.expected[_arm]:.0%}",
+                "Expected count": _total * srm_result.expected[_arm],
+            }
+            for _arm, _count in srm_result.observed.items()
+        ]
+    )
+    _status = (
+        "Allocation mismatch detected" if srm_result.is_srm else "No allocation mismatch detected"
+    )
+    _details = pd.DataFrame(
+        [
+            {"Check": _label, "Value": _value}
+            for _label, _value in (
+                ("Method", "Fixed-look chi-square"),
+                ("P-value", str(srm_result.fixed_p_value)),
+                ("Decision threshold", f"{srm_result.alpha:.3%}"),
+                ("Chi-square statistic", str(srm_result.chi2_stat)),
+                ("Degrees of freedom", str(srm_result.df)),
+                ("Measurement grain", srm_result.grain),
+                ("Smallest expected arm count", str(srm_result.min_expected_count)),
+                (
+                    "Small expected counts",
+                    "Yes" if srm_result.low_expected_count else "No",
+                ),
+                ("Units with no assignment", str(srm_result.unassigned_units)),
+                (
+                    "Units assigned to multiple arms",
+                    str(srm_result.mixed_assignment_units),
+                ),
+                (
+                    "Log evidence (not used for this fixed check)",
+                    str(srm_result.log_e_value),
+                ),
+            )
+        ]
+    )
+    mo.vstack(
+        [
+            mo.md(f"### Assignment balance\n{_status}; p = {srm_result.fixed_p_value:.3f}."),
+            mo.md("Small expected counts: interpret this check with caution.")
+            if srm_result.low_expected_count
+            else mo.md(""),
+            mo.ui.table(_counts, selection=None),
+            mo.accordion(
+                {
+                    "Check details": mo.vstack(
+                        [
+                            mo.md(
+                                "A check that detects no mismatch is not proof of valid randomization."
+                            ),
+                            mo.ui.table(_details, selection=None),
+                        ]
+                        + (
+                            [
+                                mo.ui.table(
+                                    pd.DataFrame([dict(srm_result.unit_counts)]),
+                                    selection=None,
+                                )
+                            ]
+                            if srm_result.unit_counts
+                            else []
+                        )
+                    )
+                }
+            ),
+        ]
+    )
     return
 
 
@@ -365,12 +471,12 @@ def _(panel_df):
 
 
 @app.cell
-def _(estimates_to_readout, increment, mo, panel_df, readout_table):
+def _(increment, mo, panel_df):
     # Every unit in this synthetic panel enrolled on the same day; a real
     # dataset would carry its own per-unit exposure_date column instead.
     panel_df_exposed = panel_df.assign(exposure_date="2026-02-01")
 
-    _experiment, _reader = increment.from_frame(
+    panel_experiment, panel_reader = increment.from_frame(
         panel_df_exposed,
         shape="panel",
         unit="user_id",
@@ -381,11 +487,18 @@ def _(estimates_to_readout, increment, mo, panel_df, readout_table):
         exposure_date="exposure_date",
     )
     # One run reads the whole-window readout and the per-day values together.
-    _whole_window = increment.View.overall()
-    _daily = increment.View.daily(values=True)
-    _panel_run = increment.run(_experiment.with_views(_daily), _reader)
-    daily_values = _panel_run.readout(_daily)
-    panel_results = _panel_run.readout(_whole_window)
+    whole_experiment_view = increment.View.overall()
+    daily_values_view = increment.View.daily(values=True)
+    panel_run = increment.run(panel_experiment.with_views(daily_values_view), panel_reader)
+    daily_values = panel_run.readout(daily_values_view)
+    panel_results = panel_run.readout(whole_experiment_view)
+
+    mo.show_code(position="above")
+    return daily_values, panel_df_exposed, panel_results
+
+
+@app.cell(hide_code=True)
+def _(daily_values, estimates_to_readout, mo, panel_results, readout_table):
     panel_readout = readout_table(
         estimates_to_readout(panel_results),
         title="Analyzing Panel Data",
@@ -396,7 +509,7 @@ def _(estimates_to_readout, increment, mo, panel_df, readout_table):
             mo.md(f"`daily_values` produced **{len(daily_values)}** per-day metric values."),
         ]
     )
-    return (panel_df_exposed,)
+    return
 
 
 @app.cell
@@ -419,8 +532,8 @@ def _(mo):
 
 
 @app.cell
-def _(estimates_to_readout, increment, panel_df_exposed, readout_table):
-    _experiment, _reader = increment.from_frame(
+def _(estimates_to_readout, increment, mo, panel_df_exposed, readout_table):
+    windowed_experiment, windowed_reader = increment.from_frame(
         panel_df_exposed,
         shape="panel",
         unit="user_id",
@@ -435,19 +548,20 @@ def _(estimates_to_readout, increment, panel_df_exposed, readout_table):
         ],
         exposure_date="exposure_date",
     )
-    windowed_lift_breakout = increment.run(_experiment, _reader).readout()
+    windowed_lift_breakout = increment.run(windowed_experiment, windowed_reader).readout()
 
-    readout_table(
+    windowed_table = readout_table(
         estimates_to_readout(windowed_lift_breakout),
         title="Windowed Lift",
         # nest_by='method'
     )
+    mo.show_code(windowed_table, position="above")
     return
 
 
 @app.cell
-def _(estimates_to_readout, increment, panel_df_exposed, readout_table):
-    _experiment, _reader = increment.from_frame(
+def _(estimates_to_readout, increment, mo, panel_df_exposed, readout_table):
+    retention_experiment, retention_reader = increment.from_frame(
         panel_df_exposed,
         shape="panel",
         unit="user_id",
@@ -464,31 +578,26 @@ def _(estimates_to_readout, increment, panel_df_exposed, readout_table):
         ],
         exposure_date="exposure_date",
     )
-    retention_lift = increment.run(_experiment, _reader).readout()
+    retention_lift = increment.run(retention_experiment, retention_reader).readout()
 
-    readout_table(
+    retention_table = readout_table(
         estimates_to_readout(retention_lift),
         title="Retention Lift",
     )
+    mo.show_code(retention_table, position="above")
     return
 
 
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## What's still not here
+    ## Supported inputs and limits
 
-    Panel-frame covariates (CUPED) remain unsupported - collapsing a
-    pre-period value from per-day rows is ambiguous; aggregate to one row
-    per unit yourself and use `from_frame(..., shape="summary")` instead (see
-    [`docs/guides/cuped.md`](../docs/guides/cuped.md)).
+    **Panel-frame CUPED** supports mean, ratio and conversion metrics under fixed-horizon inference when each covariate has one fixed value per unit, repeated across that unit’s daily rows. Covariates that change within a unit are rejected.
 
-    `from_definitions` remains the richer retention home: a
-    bounded `RetentionMetric` supports all five readout views there.
-    Panel-frame retention supports the whole-window readout and the as-of
-    value and lift views, but raises `CapabilityError` from the daily value
-    and daily lift views - the frame-backed panel has no per-day
-    cohort reduction, bounded band or not.
+    Panel CUPED does not support windowed metrics, retention metrics or sequential inference. For a windowed non-retention metric, calculate each unit’s outcome and pre-period covariate first, then use `from_frame(..., shape="summary")`.
+
+    **Panel-frame retention** supports whole-window lift, as-of values and as-of lift. Daily values and daily lift are not supported and raise `CapabilityError`. For those views, use `from_definitions`, which supports all five views for bounded retention metrics.
     """)
     return
 

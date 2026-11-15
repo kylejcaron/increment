@@ -23,10 +23,16 @@ function dashboardWith(count) {
     title: "Many metrics",
     results: "",
     metrics,
-    scopes: { overall: { label: "Whole experiment", dimension: null, source: null } },
+    scopes: {
+      overall: { label: "Whole experiment", dimension: null, source: null },
+      country: { label: "Country", dimension: "country", source: null },
+    },
     overview: {},
     explore: {
       overall: Object.fromEntries(
+        metrics.map((metric) => [metric.key, { cumulative_lift: { html: "", caption: "", notes: [], pointCount: 1 } }])
+      ),
+      country: Object.fromEntries(
         metrics.map((metric) => [metric.key, { cumulative_lift: { html: "", caption: "", notes: [], pointCount: 1 } }])
       ),
     },
@@ -38,6 +44,9 @@ function dashboardWith(count) {
   const series = new FakeElement("button");
   series.dataset.exploreView = "series";
   dashboard.panels.explore.dispatch("click", { target: series });
+  const country = new FakeElement("button");
+  country.dataset.scope = "country";
+  dashboard.panels.explore.dispatch("click", { target: country });
   return dashboard;
 }
 

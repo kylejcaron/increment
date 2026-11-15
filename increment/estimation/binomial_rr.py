@@ -182,7 +182,7 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template='Unknown alternative={alternative!r}: must be one of "two-sided", "greater", "less"',
         ),
-        "estimation.binomial.finite_sample_arm_ceiling_exceeded": "n_c={n_c!r}/n_t={n_t!r} exceed the {max_arm_size!r} units per arm the finite-sample conversion route is validated to: this is a compute-resource boundary, not a scientific one -- per-call cost keeps growing with arm size, and this route refuses rather than spend unbounded compute on one estimate. A dense cell runs at any size with conversion_inference='auto' (the default), which takes the delta-method interval; a sparse cell above this ceiling has no supported route",
+        "estimation.binomial.finite_sample_arm_ceiling_exceeded": "n_c={n_c!r}/n_t={n_t!r} exceed the {max_arm_size!r} units per arm the finite-sample conversion route is validated to: this is a compute-resource boundary, not a scientific one; per-call cost keeps growing with arm size, and this route refuses rather than spend unbounded compute on one estimate. A dense cell runs at any size with conversion_inference='auto' (the default), which takes the delta-method interval; a sparse cell above this ceiling has no supported route",
     },
 )
 _raise = raiser(_REFUSALS)

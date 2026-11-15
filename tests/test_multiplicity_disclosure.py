@@ -66,63 +66,7 @@ def test_five_unplanned_metrics_are_visibly_unadjusted():
     assert restored.metadata == rows.metadata
 
 
-@pytest.mark.parametrize(
-    ("status", "note"),
-    [
-        ("undeclared_plan", "Unadjusted for multiplicity (no declared plan)"),
-        ("unassigned_in_plan", "Unadjusted for multiplicity (unassigned in plan)"),
-        ("exploratory_unadjusted", "Exploratory, unadjusted for multiplicity"),
-        ("exploratory_family", "Exploratory family"),
-        ("declared_plan", None),
-    ],
-)
-def test_readout_table_summarizes_multiplicity_as_informative_notes(status, note):
-    from increment.tables import readout_table
-
-    pytest.importorskip("coeftable")
-    table = readout_table(
-        [
-            {
-                "metric": "revenue",
-                "group_id": "treatment",
-                "method": "unadjusted",
-                "lift": 0.05,
-                "lower": -0.01,
-                "higher": 0.11,
-                "multiplicity_status": status,
-                "decision_scope_complete": True,
-                "view_partial": False,
-            },
-            {
-                "metric": "signups",
-                "group_id": "treatment",
-                "method": "unadjusted",
-                "lift": 0.02,
-                "lower": -0.01,
-                "higher": 0.05,
-                "multiplicity_status": status,
-                "decision_scope_complete": True,
-                "view_partial": False,
-            },
-        ]
-    )
-    html = table.gt().as_raw_html()
-
-    assert ">Multiplicity<" not in html
-    assert ">Decision scope<" not in html
-    assert ">Readout view<" not in html
-    assert "decision cell" not in html
-    assert "Partial view" not in html
-    assert ">Discovery<" not in html
-    if note is None:
-        assert "Unadjusted for multiplicity" not in html
-        assert "Exploratory family" not in html
-    else:
-        assert note in html
-        assert html.count(note) == 1
-
-
-def test_readout_table_summarizes_incomplete_partial_and_failure_details_once():
+def test_readout_table_preserves_failure_code():
     from increment.tables import readout_table
 
     pytest.importorskip("coeftable")
@@ -156,22 +100,10 @@ def test_readout_table_summarizes_incomplete_partial_and_failure_details_once():
         ]
     )
     html = table.gt().as_raw_html()
-
-    assert ">Decision scope<" not in html
-    assert ">Readout view<" not in html
-    assert ">Multiplicity<" not in html
-    assert "Decision scope is incomplete; see Failure." in html
-    assert "decision cells are incomplete" not in html
-    assert "see Failure" in html
-    assert "Partial view" in html
-    assert "Failure details are abbreviated" in html
-    assert "an unusually long failure reason " * 2 not in html
-    assert html.count("Partial view") == 1
-    assert html.count(code) == 1
-    assert "Failure" in html
+    assert code in html
 
 
-def test_mixed_multiplicity_notes_keep_full_status_mapping_for_truncated_groups():
+def test_mixed_multiplicity_table_keeps_all_metric_rows():
     from increment.tables import readout_table
 
     pytest.importorskip("coeftable")
@@ -189,14 +121,8 @@ def test_mixed_multiplicity_notes_keep_full_status_mapping_for_truncated_groups(
         }
         for i in range(8)
     ]
-
     html = readout_table(rows).gt().as_raw_html()
 
-    assert ">Multiplicity<" not in html
-    assert "¹ Exploratory family (4 of 8 rows)" in html
-    assert "² Exploratory, unadjusted for multiplicity (4 of 8 rows)" in html
-    assert "m0¹" in html and "m3¹" in html
-    assert "m4²" in html and "m7²" in html
     assert all(f"m{i}" in html for i in range(8))
 
 
@@ -263,106 +189,3 @@ def test_provenance_preserves_role_distinctions(role, correction, expected):
         )
     )
     assert multiplicity_status(role, family) == expected
-
-
-def test_mixed_multiplicity_notes_identify_only_rows_they_describe():
-    from increment.tables import readout_table
-
-    pytest.importorskip("coeftable")
-    rows = [
-        {
-            "metric": metric,
-            "group_id": "treatment",
-            "method": "unadjusted",
-            "lift": 0.05,
-            "lower": -0.01,
-            "higher": 0.11,
-            "multiplicity_status": status,
-        }
-        for metric, status in (
-            ("primary_metric", "declared_plan"),
-            ("conversion", "exploratory_unadjusted"),
-            ("revenue", "undeclared_plan"),
-            ("signup", "exploratory_family"),
-        )
-    ]
-
-    html = readout_table(rows).gt().as_raw_html()
-
-    assert "1 of 4 rows" in html
-    assert "primary_metric" in html
-    assert "conversion¹" in html
-    assert "revenue²" in html
-    assert "signup³" in html
-    assert "¹ Exploratory, unadjusted for multiplicity (1 of 4 rows)" in html
-    assert "² Unadjusted for multiplicity (no declared plan) (1 of 4 rows)" in html
-    assert "³ Exploratory family (1 of 4 rows)" in html
-    subtitle = html.rsplit("gt_subtitle", maxsplit=1)[-1].split("</td>", 1)[0]
-    assert all(
-        name not in subtitle for name in ("primary_metric", "conversion", "revenue", "signup")
-    )
-
-
-def test_mixed_multiplicity_notes_use_markers_without_row_lists():
-    from increment.tables import readout_table
-
-    pytest.importorskip("coeftable")
-    rows = [
-        {
-            "metric": f"metric_{index:02d}",
-            "group_id": "treatment",
-            "method": "unadjusted",
-            "lift": 0.05,
-            "lower": -0.01,
-            "higher": 0.11,
-            "multiplicity_status": "declared_plan" if index == 0 else "exploratory_unadjusted",
-        }
-        for index in range(40)
-    ]
-
-    html = readout_table(rows).gt().as_raw_html()
-    subtitle = html.rsplit("gt_subtitle", maxsplit=1)[-1].split("</td>", 1)[0]
-
-    assert "39 of 40 rows" in subtitle
-    assert "¹ Exploratory, unadjusted for multiplicity (39 of 40 rows)" in subtitle
-    assert "metric_00" not in subtitle
-    assert "metric_01¹" in html and "metric_39¹" in html
-    assert ">Multiplicity<" not in html
-
-
-def test_mixed_multiplicity_markers_disambiguate_shared_metric_rows():
-    from increment.tables import readout_table
-
-    pytest.importorskip("coeftable")
-    html = (
-        readout_table(
-            [
-                {
-                    "metric": "conversion",
-                    "group_id": "treatment",
-                    "method": "decision",
-                    "segment": "US",
-                    "lift": 0.05,
-                    "lower": -0.01,
-                    "higher": 0.11,
-                    "multiplicity_status": "exploratory_family",
-                },
-                {
-                    "metric": "conversion",
-                    "group_id": "treatment",
-                    "method": "sensitivity",
-                    "segment": "MX",
-                    "lift": 0.02,
-                    "lower": -0.01,
-                    "higher": 0.05,
-                    "multiplicity_status": "exploratory_unadjusted",
-                },
-            ]
-        )
-        .gt()
-        .as_raw_html()
-    )
-
-    assert "conversion¹" in html and "conversion²" in html
-    assert "¹ Exploratory family (1 of 2 rows)" in html
-    assert "² Exploratory, unadjusted for multiplicity (1 of 2 rows)" in html

@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.15"
+__generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 
@@ -56,8 +56,10 @@ def _(ibis, seed_event_log):
 
 
 @app.cell
-def _(DEFINITIONS, EXPERIMENT, con, increment):
+def _(DEFINITIONS, EXPERIMENT, con, increment, mo):
     experiment, reader = increment.from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
+
+    mo.show_code(position="above")
     return experiment, reader
 
 
@@ -79,7 +81,7 @@ def _(mo):
 
 
 @app.cell
-def _(BreakoutIdentity, estimates_to_readout, experiment, increment, reader, readout_table):
+def _(BreakoutIdentity, experiment, increment, mo, reader):
     # new_onboarding_v2 declares Bonferroni segmented views in
     # examples/definitions/experiments.yaml; its plan stays fixed-horizon because the
     # retention guardrail carries a prior. A breakout cannot test that guardrail's
@@ -93,6 +95,19 @@ def _(BreakoutIdentity, estimates_to_readout, experiment, increment, reader, rea
         metrics=["purchase_rate", "avg_session_duration"],
         decision_method=increment.Method(name="unadjusted"),
     )
+
+    mo.show_code(position="above")
+    return asof_lift_by_country, by_country, segment_result
+
+
+@app.cell(hide_code=True)
+def _(
+    asof_lift_by_country,
+    by_country,
+    estimates_to_readout,
+    readout_table,
+    segment_result,
+):
     breakout_table = readout_table(
         estimates_to_readout(segment_result.readout(by_country)),
         title="new_onboarding_v2 readout, by country",
@@ -118,13 +133,19 @@ def _(mo):
 
 
 @app.cell
-def _(ct, experiment, increment, reader):
+def _(experiment, increment, mo, reader):
     daily_scope = increment.View.daily(values=True)
     daily_values = increment.run(
         experiment.with_views(daily_scope), reader, views=(daily_scope,)
     ).readout(daily_scope)
     daily_frame = daily_values.to_frame(backend="pandas")
 
+    mo.show_code(position="above")
+    return (daily_frame,)
+
+
+@app.cell(hide_code=True)
+def _(ct, daily_frame):
     value_table = (
         ct.CoefTable(daily_frame[["metric"]].drop_duplicates(), rows="metric")
         .sparkline(
@@ -157,13 +178,20 @@ def _(mo):
 
 
 @app.cell
-def _(BreakoutIdentity, ct, experiment, experiment_definition, increment, reader):
+def _(BreakoutIdentity, experiment, increment, mo, reader):
     segment_daily_scope = increment.View.daily(
         values=True, segment=(BreakoutIdentity("country", None),)
     )
     segment_daily_values = increment.run(
         experiment.with_views(segment_daily_scope), reader, views=(segment_daily_scope,)
     ).readout(segment_daily_scope)
+
+    mo.show_code(position="above")
+    return (segment_daily_values,)
+
+
+@app.cell(hide_code=True)
+def _(ct, experiment, experiment_definition, reader, segment_daily_values):
     segment_daily_frame = segment_daily_values.to_frame(backend="pandas")
     control_group = experiment_definition(experiment, reader).control_group
     segment_daily_frame = segment_daily_frame[segment_daily_frame["group_id"] != control_group]
@@ -203,12 +231,19 @@ def _(mo):
 
 
 @app.cell
-def _(ct, experiment, increment, reader):
+def _(experiment, increment, mo, reader):
     # its series starts late, absent until the first cohort matures.
     asof_scope = increment.View.asof(values=True)
     asof_values = increment.run(
         experiment.with_views(asof_scope), reader, views=(asof_scope,)
     ).readout(asof_scope)
+
+    mo.show_code(position="above")
+    return (asof_values,)
+
+
+@app.cell(hide_code=True)
+def _(asof_values, ct):
     asof_frame = asof_values.to_frame(backend="pandas")
 
     asof_table = (
@@ -241,7 +276,7 @@ def _(mo):
 
 
 @app.cell
-def _(estimates_to_readout, experiment, increment, reader, readout_table):
+def _(experiment, increment, mo, reader):
     whole_window = increment.View.overall()
     daily_lift_scope = increment.View.daily()
     lift_result = increment.run(
@@ -249,6 +284,19 @@ def _(estimates_to_readout, experiment, increment, reader, readout_table):
         reader,
         decision_method=increment.Method(name="unadjusted"),
     )
+
+    mo.show_code(position="above")
+    return daily_lift_scope, lift_result, whole_window
+
+
+@app.cell(hide_code=True)
+def _(
+    daily_lift_scope,
+    estimates_to_readout,
+    lift_result,
+    readout_table,
+    whole_window,
+):
     calendar_daily_lift = [
         e for e in lift_result.readout(daily_lift_scope) if e.ds_basis == "calendar"
     ]
@@ -261,7 +309,7 @@ def _(estimates_to_readout, experiment, increment, reader, readout_table):
         trend_label="Daily lift",
     )
     lift_table
-    return estimates
+    return (estimates,)
 
 
 @app.cell
@@ -277,18 +325,25 @@ def _(mo):
 
 
 @app.cell
-def _(estimates, estimates_to_readout, experiment, increment, reader, readout_table):
+def _(experiment, increment, mo, reader):
     asof_lift_scope = increment.View.asof()
+    asof_lift_estimates = increment.run(
+        experiment.with_views(asof_lift_scope),
+        reader,
+        views=(asof_lift_scope,),
+        decision_method=increment.Method(name="unadjusted"),
+    ).readout(asof_lift_scope)
+    mo.show_code(position="above")
+    return (asof_lift_estimates,)
+
+
+@app.cell(hide_code=True)
+def _(asof_lift_estimates, estimates, estimates_to_readout, readout_table):
     readout_table(
         estimates_to_readout(estimates),
         title="new_onboarding_v2 readout, as-of trend",
         subtitle="Relative lift vs control, 95 % credible interval",
-        trend=increment.run(
-            experiment.with_views(asof_lift_scope),
-            reader,
-            views=(asof_lift_scope,),
-            decision_method=increment.Method(name="unadjusted"),
-        ).readout(asof_lift_scope),
+        trend=asof_lift_estimates,
         trend_label="As-of lift trend",
     )
     return

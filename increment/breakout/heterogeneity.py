@@ -96,7 +96,7 @@ _register_warning(
         f"dimension={dimension!r} source={source!r} estimand={estimand!r} "
         f"value_scale={value_scale!r} scale={scale!r} has a "
         "degenerate HKSJ pooled variance (segment estimates are identical "
-        "or numerically indistinguishable given their weights) -- falling "
+        "or numerically indistinguishable given their weights); falling "
         "back to the plug-in pooled interval for this group."
     ),
 )
@@ -133,7 +133,7 @@ _REFUSALS = refusals(
                     if inference != "fixed"
                     else "a t sampling reference (cluster-robust or Welch) cuts its "
                     "endpoints at t quantiles, so recovering the variance from lb/ub "
-                    "would inflate it by the t/z ratio -- this contrast reads "
+                    "would inflate it by the t/z ratio; this contrast reads "
                     "lift.log_mean/lift.log_se instead, and this row carries neither a "
                     "log_mean nor a positive log_se. Re-run run_breakout so they are "
                     "persisted, or exclude this segment."
@@ -143,7 +143,7 @@ _REFUSALS = refusals(
         "breakout.segment_contrast_estimate": "segment_contrast requires an estimate on both segments; unavailable rows cannot be contrasted",
         "breakout.segment.lift_none_excluded": "lift=None requires excluded to explain the unavailable row",
         "breakout.segment.point_unavailable": "a finite point estimate is unavailable for this excluded segment row",
-        "breakout.segment_heterogeneity_rebuild": "segment_heterogeneity: cannot rebuild {metric!r}/{dimension_value!r}'s relative-scale interval at alpha={alpha} -- the row is alternative={alternative!r}, dof={dof!r}, inference={inference!r}, reference_kind={reference_kind!r}, reference_df={reference_df!r}, and a rebuild from its stored statistics would be wrong or unresolved: a symmetric two-sided Normal interval would silently misrepresent its shape or reference (including a t sampling reference from clustering or Welch), and an exact binomial inversion at this alpha whose endpoint search did not reach its resolution is not reported. Pass an alpha matching this row's own level, or exclude it before correcting.",
+        "breakout.segment_heterogeneity_rebuild": "segment_heterogeneity: cannot rebuild {metric!r}/{dimension_value!r}'s relative-scale interval at alpha={alpha}; the row is alternative={alternative!r}, dof={dof!r}, inference={inference!r}, reference_kind={reference_kind!r}, reference_df={reference_df!r}, and a rebuild from its stored statistics would be wrong or unresolved: a symmetric two-sided Normal interval would silently misrepresent its shape or reference (including a t sampling reference from clustering or Welch), and an exact binomial inversion at this alpha whose endpoint search did not reach its resolution is not reported. Pass an alpha matching this row's own level, or exclude it before correcting.",
         "breakout.tau_prior_scale": "tau_prior_scale must be > 0, got {tau_prior_scale}",
     },
 )

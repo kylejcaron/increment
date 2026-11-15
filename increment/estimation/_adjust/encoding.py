@@ -424,7 +424,7 @@ def unseen_levels_text(summary: Sequence[tuple[str, str, int, int]], n: int) -> 
     )
     return (
         "categorical level(s) absent from a nuisance fit's training rows were "
-        f"scored as that fit's reference level: {named} -- deterministic, but "
+        f"scored as that fit's reference level: {named}; deterministic, but "
         "not evidence of overlap or ignorability for those rows"
     )
 

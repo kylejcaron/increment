@@ -1,10 +1,10 @@
 import marimo
 
-__generated_with = "0.23.15"
+__generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def imports():
     import datetime as dt
     from pathlib import Path
@@ -73,9 +73,9 @@ def _(mo):
 
 
 @app.cell
-def _(ibis):
-    # local warehouse connection
+def _(ibis, mo):
     con = ibis.duckdb.connect()
+    mo.show_code(position="above")
     return (con,)
 
 
@@ -89,6 +89,7 @@ def _(WAREHOUSE):
     _spec = importlib.util.spec_from_file_location(
         "_demo_generate", "examples/realistic_demo/generate.py"
     )
+    assert _spec is not None and _spec.loader is not None
     _generate_mod = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_generate_mod)
 
@@ -120,7 +121,15 @@ def _(WAREHOUSE):
 
 
 @app.cell
-def _(DEFINITIONS, EXPERIMENT, con, experiment_definition, increment, warehouse_ready):
+def _(
+    DEFINITIONS,
+    EXPERIMENT,
+    con,
+    experiment_definition,
+    increment,
+    mo,
+    warehouse_ready,
+):
     assert (warehouse_ready / "manifest.json").exists(), (
         "warehouse missing - run the generation cell above first"
     )
@@ -128,6 +137,7 @@ def _(DEFINITIONS, EXPERIMENT, con, experiment_definition, increment, warehouse_
         DEFINITIONS, con, experiment_name=EXPERIMENT, store="always"
     )
     definition = experiment_definition(experiment, reader)
+    mo.show_code(position="above")
     return definition, experiment, reader
 
 
@@ -279,18 +289,22 @@ def _(mo):
     mo.md(r"""
     ## Headline readout
 
-    Let's start at the output and work our way backwards.
+    The table covers all five declared metrics for the assigned population,
+    using fixed-horizon inference.
 
-    The table below shows an experiment result: all 5 declared metrics, each with a fixed-horizon interval.
+    Each `run()` reads from a consistent captured source snapshot. The stage
+    previews below are separate live queries, not the run's physical execution plan.
 
-    `store="always"` builds fresh materialized tables for each readout. All 5 metrics reuse those tables within that call; later calls rebuild them so warehouse corrections are visible.
+    `store="always"` controls direct source workflows. A snapshot-backed `run()`
+    does not materialize the spine/stats pair illustrated below.
     """)
     return
 
 
 @app.cell
-def _(experiment, increment, reader):
+def _(experiment, increment, mo, reader):
     estimates = increment.run(experiment, reader).readout()
+    mo.show_code(position="above")
     return (estimates,)
 
 
@@ -299,7 +313,7 @@ def _(estimates, estimates_to_readout, readout_table):
     headline_table = readout_table(
         estimates_to_readout(estimates),
         title="Checkout Redesign: Headline Readout",
-        subtitle="All 5 declared metrics, triggered population, fixed-horizon intervals",
+        subtitle="All 5 declared metrics, assigned population, fixed-horizon intervals",
     )
     headline_table
     return
@@ -310,10 +324,11 @@ def _(mo):
     mo.md(r"""
     ---
 
-    # Pipeline: raw warehouse tables to an experiment readout
+    # Logical pipeline: warehouse data to conversion estimates
 
-    `run(experiment, reader)` above could feel like a black box. The process below breaks down what actually happens to go from
-    warehouse tables to a polished output.
+    The diagram follows the conversion metric's data shapes, not physical TEMP
+    tables. The spine comes from enrollment; sparse event statistics are built
+    separately and then joined to it. Later sections inspect these live relations.
     """)
     return
 
@@ -410,15 +425,12 @@ def _(dt, mo, pd):
           {body}
         </div>"""
 
-    def stage_row(n, title, tbl, cols, note="", accent=False, badge=""):
+    def stage_row(n, title, tbl, cols, note="", accent=False):
         """One pipeline stage as a strip: number, name, live count, live preview."""
         ink = "rgb(99,102,241)" if accent else "currentColor"
         bg = "rgba(99,102,241,.07)" if accent else "transparent"
         ring = "rgba(99,102,241,.35)" if accent else "rgba(128,128,128,.16)"
-        if badge:
-            ring, bg = "rgba(217,119,6,.45)", "rgba(217,119,6,.06)"
         n_rows, preview = _shape(tbl)
-        badge_html = _pill(badge, "rgb(180,100,10)") if badge else ""
         return f"""
         <div style="display:grid;grid-template-columns:150px 96px 1fr;
                     align-items:center;gap:10px;padding:4px 10px;
@@ -429,7 +441,6 @@ def _(dt, mo, pd):
                          border:1.5px solid {ink};color:{ink};opacity:.85;
                          font:600 10px/14px system-ui;text-align:center;">{n}</span>
             <span style="font:600 12px/1.25 system-ui;color:{ink};">{title}</span>
-            {badge_html}
           </div>
           <div style="text-align:right;">
             <div style="font:700 15px/1 system-ui;
@@ -486,7 +497,16 @@ def _(dt, mo, pd):
 
 
 @app.cell(hide_code=True)
-def _(breakout_summaries, data_as_of, definition, experiment, ibis, metric, panel, reader):
+def _(
+    breakout_summaries,
+    data_as_of,
+    definition,
+    experiment,
+    ibis,
+    metric,
+    panel,
+    reader,
+):
     # Match unit_totals' conversion semantics from the public dense panel:
     # bound each event to the metric window, discard immature units, then
     # reduce each unit to a binary any-event outcome.
@@ -543,7 +563,7 @@ def _(
                 [
                     (
                         "experiments.yaml",
-                        f"1 experiment &middot; unit={definition.unit} &middot; "
+                        f"selected: {definition.name} &middot; unit={definition.unit} &middot; "
                         f"{len(definition.breakouts)} breakouts",
                     ),
                     (
@@ -575,7 +595,7 @@ def _(
                 "exposures",
                 exposures,
                 ["unit_id", "group_id"],
-                "one row per unit, first exposure only",
+                "one row per enrolled unit; first qualifying exposure",
             ),
             flow_step("declared metric &rarr; its fact source SQL"),
             stage_row(
@@ -593,27 +613,27 @@ def _(
                 ["unit_id", "metric", "value"],
                 "conversion is occurrence-only, so value = 1.0",
             ),
-            flow_step("panel_spine &mdash; dense unit &times; day grid"),
+            flow_step("from enrollment &mdash; dense unit &times; day grid"),
             stage_row(
-                4,
+                "4a",
                 "spine",
                 spine,
                 ["unit_id", "day_offset", "ds"],
-                "widest point in the pipeline",
-                badge="materialized",
+                "through the observation horizon; metric windows apply later",
             ),
-            flow_step("unit_day_stats &mdash; sparse per-day aggregates"),
+            flow_step("from post-exposure events &mdash; sparse per-day aggregates"),
             stage_row(
-                5,
+                "4b",
                 "stats",
                 stats,
                 ["unit_id", "ds", "n_events"],
-                "left-joined onto the spine",
-                badge="materialized",
+                "one row per unit and observed event day",
             ),
-            flow_step("Each readout builds fresh spine/stats tables — its reductions reuse them"),
+            flow_step(
+                "join sparse stats to the spine, zero-fill, then apply window and maturity rules"
+            ),
             stage_row(
-                6,
+                5,
                 "unit totals",
                 unit_totals_tbl,
                 ["unit_id", "group_id", "y"],
@@ -626,22 +646,23 @@ def _(
                         "summary",
                         summary,
                         "group_summary(unit_totals)",
-                        "per arm &mdash; what run() reads",
+                        "selected conversion metric &times; arm",
                     ),
                     moment_card(
                         "segment breakout",
                         breakout_moments_tbl,
-                        'group_summary(unit_totals, by=["country"])',
-                        "per segment &times; arm",
+                        'group_summary(..., by=["country"])',
+                        "per country &times; arm",
                     ),
                     moment_card(
                         "daily breakout",
                         daily_moments_tbl,
                         "daily_group_summary(panel, metric=metric)",
-                        "per day &times; arm &mdash; reduces the dense panel leg",
+                        "per day &times; country &times; arm",
                     ),
                 ]
             ),
+            flow_step("centered moments &rarr; conversion lift in Python"),
         ]
     )
     return
@@ -658,10 +679,11 @@ def _(mo):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## Stage 1: Grab exposures and assignments, dedup to first exposure
+    ## Stage 1: enrolled units and their first exposure
 
-    `first_exposures` collapses every raw exposure event down to each unit's *first*
-    exposure timestamp and arm, dropping any unit that shows up in more than one arm.
+    `first_exposures` restricts enrollment to the experiment's dates and keeps
+    each unit's first qualifying exposure and arm. Missing unit IDs or timestamps,
+    missing arm assignments, and conflicting assignments are excluded.
     """)
     return
 
@@ -690,13 +712,6 @@ def _(mo):
 
     We wanted to analyze `conversion_rate` for the experiment - but how do we calculate it? We start with a yaml definition for the metric
     """)
-    return
-
-
-@app.cell
-def _(metric):
-    # a look at the metric
-    metric
     return
 
 
@@ -785,25 +800,121 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    The public `increment.query.build_panel_for_metric()` introspection hook returns
-    live warehouse expressions for the fact table, metric events, panel, spine, and stats.
-    These queries stay valid when later readouts refresh their own TEMP tables.
+    The public `increment.query.build_panel_for_metric()` hook returns live
+    warehouse expressions for the fact table, metric events, panel, spine and
+    stats. These logical relations are independent of source-owned TEMP tables
+    that other workflow calls may refresh.
+
+    Use the tabs below to inspect each returned value. Relation previews show at
+    most 20 rows, with column types; they are not the complete warehouse relations.
     """)
     return
 
 
 @app.cell
-def _(build_panel_for_metric, experiment, metric, reader):
-    # Inspect the logical relations without retaining a readout's TEMP tables.
+def _(build_panel_for_metric, experiment, metric, mo, reader):
     panel, spine, stats, metric_events, den_events, fact_tbl, value_col, data_as_of = (
         build_panel_for_metric(experiment, reader, metric)
     )
-    return data_as_of, den_events, fact_tbl, metric_events, panel, spine, stats, value_col
+    mo.show_code(position="above")
+    return (
+        data_as_of,
+        den_events,
+        fact_tbl,
+        metric_events,
+        panel,
+        spine,
+        stats,
+        value_col,
+    )
 
 
 @app.cell(hide_code=True)
-def _(fact_tbl):
-    fact_tbl.execute().head()
+def _(mo):
+    def preview_pipeline_relation(relation, description):
+        """Inspect at most twenty rows without counting the full relation."""
+        if relation is None:
+            content = mo.md("**Not applicable for this metric.**")
+        else:
+            content = mo.ui.table(
+                relation.limit(20).to_pyarrow(),
+                selection=None,
+                pagination=False,
+                show_column_summaries=False,
+                show_data_types=True,
+                label="Preview: up to 20 rows",
+            )
+        return mo.vstack([mo.md(description), content])
+
+    def preview_pipeline_value(value, description, missing_message):
+        """Show a resolved scalar rather than its warehouse expression."""
+        content = mo.md(missing_message) if value is None else mo.as_html(value)
+        return mo.vstack([mo.md(description), content])
+
+    return preview_pipeline_relation, preview_pipeline_value
+
+
+@app.cell(hide_code=True)
+def _(
+    data_as_of,
+    den_events,
+    fact_tbl,
+    metric_events,
+    mo,
+    panel,
+    preview_pipeline_relation,
+    preview_pipeline_value,
+    spine,
+    stats,
+    value_col,
+):
+    _previews = {
+        "panel": lambda: preview_pipeline_relation(
+            panel,
+            "Dense unit-day relation: enrolled units joined to daily event statistics.",
+        ),
+        "spine": lambda: preview_pipeline_relation(
+            spine,
+            "Enrollment and calendar days, before joining any event values.",
+        ),
+        "stats": lambda: preview_pipeline_relation(
+            stats,
+            "Sparse post-exposure event counts and values, grouped by unit and day.",
+        ),
+        "metric_events": lambda: preview_pipeline_relation(
+            metric_events,
+            "Events selected for this metric, with their resolved outcome values.",
+        ),
+        "den_events": lambda: preview_pipeline_relation(
+            den_events,
+            "Denominator events are used by ratio metrics; this conversion metric has none.",
+        ),
+        "fact_tbl": lambda: preview_pipeline_relation(
+            fact_tbl,
+            "The resolved fact source, including its declared dimension joins.",
+        ),
+        "value_col": lambda: preview_pipeline_value(
+            value_col,
+            "Resolved value column on the fact source. Conversion events contribute 1.0 instead.",
+            "**Not applicable.** No fact value column is required for this metric.",
+        ),
+        "data_as_of": lambda: preview_pipeline_value(
+            data_as_of.execute(),
+            "Latest observed event date for this source. The observation horizon can still cap the analysis.",
+            "**Unavailable.** No observed event date was returned.",
+        ),
+    }
+    # A live HTTP request can service lazy callbacks; fresh exports have no request.
+    _interactive = mo.app_meta().request is not None
+    pipeline_tabs = mo.ui.tabs(
+        {
+            name: mo.lazy(preview, show_loading_indicator=True) if _interactive else preview()
+            for name, preview in _previews.items()
+        },
+        value="panel",
+        label="Inspect pipeline outputs",
+    )
+    pipeline_tabs
     return
 
 
@@ -818,18 +929,14 @@ def _(mo):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## Stage 3: filter to this metric's fact, resolve its value
+    ## Stage 3: select this metric's events and resolve their values
 
-    `metric_events` filters the fact table down to rows tagged with this
-    metric's fact (`order`) and resolves its value column. A conversion
-    metric's value is pure occurrence, so every row becomes `value = 1.0`.
+    `metric_events` selects the declared `order` fact and applies the metric's
+    filters. For this occurrence-only conversion metric, each selected event
+    contributes `value = 1.0`.
+
+    Exposure timing and the metric's observation window are enforced later.
     """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(metric_events):
-    metric_events.execute().head()
     return
 
 
@@ -844,45 +951,17 @@ def _(mo):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## Stage 4: panel + spine + stats
+    ## Stage 4: spine, sparse statistics and the dense panel
 
-    This step starts bringing everything together.
+    The **spine** has one row per enrolled unit and calendar day, through the
+    observation horizon. It does not stop at the selected metric's window.
 
-    First, we assemble a spine, looking at a metric value per unit per day.
+    **Stats** aggregates strictly post-exposure events per unit and day: count,
+    sum, minimum and maximum. Joining these sparse statistics onto the spine
+    retains eventless days and fills them with zeros.
 
-    Then we take that spine and join it to get daily metric values running from
-    each unit's first exposure out to the metric's window, and `stats` is
-    the sparse per-(unit_id, day) aggregate of stage 3's events (count,
-    sum, min, max) that gets left-joined onto it.
+    Later reductions apply the metric's observation window and maturity rules.
     """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    **Spine**
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(spine):
-    spine.execute().head()
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    **Stats**
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(stats):
-    stats.execute().head()
     return
 
 
@@ -897,29 +976,26 @@ def _(mo):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## Stage 5: the moments cube
+    ## Stage 5: unit outcomes and centered moments
 
-    1. `unit_totals` zero-fills `spine` against `stats` and reduces each
-    unit down to one row (`y` = did this unit convert).
+    1. `unit_totals` combines the spine and event statistics, applies the metric
+       window and maturity rules, and reduces each eligible unit to one outcome.
+       For conversion, `y` records whether the unit had any qualifying event.
+    2. `group_summary` aggregates those outcomes per arm into centered moments:
+       `n`, `ref_y`, `cy1`, `cy2`, and related fields.
 
-    2. `group_summary`
-    then aggregates `unit_totals` **per arm** into centered moments
-    (`n`, `ref_y`, `cy1`, `cy2`, ...). This row, not the unit-level
-    table above it, is the only thing that ever leaves DuckDB for Python.
-
-
-    These `moments` are used as the base for all statistical estimation.
+    The basic conversion readout fetches these aggregates for inference instead
+    of the whole unit-day panel. This notebook also fetches rows to display stage
+    previews; other statistical procedures can request different evidence.
     """)
     return
 
 
 @app.cell
-def _(con, definition, experiment, metric, reader, summary_sql):
-    # The public SQL preview returns the exact group-summary relation consumed
-    # by run(experiment, reader); execute it only so the tour can display its rows.
+def _(con, experiment, metric, mo, reader, summary_sql):
     summary = con.sql(summary_sql(experiment, reader)[metric.name])
-    cluster = definition.cluster
-    return cluster, summary
+    mo.show_code(position="above")
+    return (summary,)
 
 
 @app.cell(hide_code=True)
@@ -935,10 +1011,10 @@ def _(mo):
 
     | column | meaning |
     |--|--|
-    | `n` | units in this arm |
-    | `ref_y` | this arm's mean of `y` - its conversion rate |
-    | `cy1` | sum of `(y - ref_y)` - ~0 by construction, a sanity check, not information |
-    | `cy2` | sum of `(y - ref_y)^2` - the centered sum of squares variance/CI is built from |
+    | `n` | eligible units in this arm |
+    | `ref_y` | centering reference; here, the arm's mean conversion outcome |
+    | `cy1` | sum of `(y - ref_y)`; near zero here, but retained for accurate moment merging |
+    | `cy2` | sum of `(y - ref_y)^2`; used with `cy1` to recover variance |
     """)
     return
 
@@ -954,36 +1030,67 @@ def _(mo):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## Stage 6: Going from a moments cube to a LiftEstimate
+    ## Stage 6: export moments and replay one metric
 
-    `workflows.export_moments()` writes the same centered-moment cube represented by
-    the `summary` relation. `from_moments()` rehydrates that public
-    wire format, and `run()` applies the experiment's compiled plan -
-    this experiment uses fixed-horizon inference, including its quantile guardrail.
+    **Export:** `workflows.export_moments()` writes portable moment rows for all
+    five declared metrics, together with their stored decision plan, source
+    identity and assignment metadata. The `summary` relation above previews only
+    `conversion_rate`, not the entire exported payload.
+
+    **Replay:** the code below supplies only the conversion metric to
+    `from_moments()`. `run()` uses the stored plan for that selected metric.
+
+    **Check:** the comparison verifies its lift and bounds against the original
+    readout. It does not demonstrate replay of all five metrics or the guardrails.
+
     Registered raw sequential monitoring uses a separate finalized checkpoint;
     see the sequential-inference guide.
     """)
     return
 
 
-@app.cell
-def _(Path, definition, estimates, experiment, export_moments, increment, metric, reader):
+@app.cell(hide_code=True)
+def _():
     import tempfile
 
+    # Keep the export available when downstream cells are rerun.
+    moments_dir = tempfile.TemporaryDirectory()
+    return (moments_dir,)
+
+
+@app.cell
+def _(Path, experiment, export_moments, mo, moments_dir, reader):
+    moments_path = Path(moments_dir.name) / "moments.parquet"
+    export_moments(experiment, reader, moments_path)
+    mo.show_code(position="above")
+    return (moments_path,)
+
+
+@app.cell(hide_code=True)
+def _(increment, metric, moments_path):
     import pyarrow.parquet as pq
 
-    with tempfile.TemporaryDirectory() as _tmp:
-        moments_path = Path(_tmp) / "moments.parquet"
-        export_moments(experiment, reader, moments_path)
-        exported_moments = pq.read_table(moments_path).to_pylist()
-
+    exported_moments = pq.read_table(moments_path).to_pylist()
     moments_metric = increment.MetricSpec(
         name=metric.name,
         type="conversion",
         window_days=metric.window_days,
         preferred_direction=metric.preferred_direction,
     )
-    _experiment, _reader = increment.from_moments(
+    return exported_moments, moments_metric
+
+
+@app.cell
+def _(
+    definition,
+    estimates,
+    exported_moments,
+    increment,
+    metric,
+    mo,
+    moments_metric,
+):
+    moments_experiment, moments_reader = increment.from_moments(
         exported_moments,
         metrics=[moments_metric],
         control=definition.control_group,
@@ -991,12 +1098,13 @@ def _(Path, definition, estimates, experiment, export_moments, increment, metric
     )
     moments_estimate = next(
         e
-        for e in increment.run(_experiment, _reader, metrics=[moments_metric]).readout()
+        for e in increment.run(
+            moments_experiment, moments_reader, metrics=[moments_metric]
+        ).readout()
         if e.metric == metric.name
     )
     original_estimates = next(e for e in estimates if e.metric == metric.name)
-
-    moments_estimate
+    mo.show_code(position="above")
     return moments_estimate, original_estimates
 
 
@@ -1022,29 +1130,48 @@ def _(mo):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## Breakouts: the same pipeline, one more join
+    ## Breakouts: estimates within each segment
 
-    We can also break out our analysis by segments to investigate more
-    deeply (though we advise caution - deep dives can become susceptible
-    to reading into noise).
+    A breakout estimates the effect separately within each segment. It is useful
+    for investigating differences, but exploratory comparisons can reflect noise.
 
-    `workflows.breakout_summaries()` materializes the same arm-level and
-    day-level moment relations that the breakout view estimates from, keyed
-    by metric, breakout, and resolved fact source. Below we inspect `country`
-    to make the extra dimension join concrete.
+    `workflows.breakout_summaries()` returns arm-level and day-level moment
+    relations for each metric and declared breakout. Below, `country` makes the
+    additional grouping concrete.
     """)
     return
 
 
 @app.cell
-def _(breakout_summaries, experiment, metric, reader):
+def _(breakout_summaries, experiment, metric, mo, reader):
     breakout_tables = breakout_summaries(experiment, reader, metrics=[metric])
+    mo.show_code(position="above")
+    return (breakout_tables,)
+
+
+@app.cell(hide_code=True)
+def _(breakout_tables, pd):
+    rows = []
     for key, tables in breakout_tables.items():
         _, property_name, source_name = key.split(":", 2)
-        print(f"{property_name} (resolved through fact source {source_name}):")
-        print(tables["group_summary"].to_pandas().groupby(property_name, dropna=False)["n"].sum())
-        print()
-    return (breakout_tables,)
+        grouped = (
+            tables["group_summary"]
+            .to_pandas()
+            .groupby(property_name, dropna=False)["n"]
+            .sum()
+            .reset_index()
+        )
+        rows.extend(
+            {
+                "source": source_name,
+                "property": property_name,
+                "group": group,
+                "count": count,
+            }
+            for group, count in grouped.itertuples(index=False, name=None)
+        )
+    pd.DataFrame(rows, columns=["source", "property", "group", "count"])
+    return
 
 
 @app.cell
@@ -1075,16 +1202,15 @@ def _(breakout_tables, metric):
 @app.cell
 def _(mo):
     mo.md(r"""
-    That table above is the moments, the mechanics - here's the polished
-    coeftable the breakout view (`View.breakout(())`) actually produces from it: the same lift
-    estimates as the headline table, nested by segment instead of by arm.
+    Each country's conversion lift is estimated from that country's units. The
+    table below is a per-segment readout, not the pooled headline estimate
+    rearranged for display.
     """)
     return
 
 
 @app.cell
-def _(estimates_to_readout, experiment, increment, reader, readout_table):
-    # A breakout cannot test a guardrail's margin, so the view reads the metric it shows.
+def _(experiment, increment, mo, reader):
     breakout_scope = increment.View.breakout(())
     breakout_estimates = increment.run(
         experiment.with_views(breakout_scope),
@@ -1092,10 +1218,15 @@ def _(estimates_to_readout, experiment, increment, reader, readout_table):
         views=(breakout_scope,),
         metrics=["conversion_rate"],
     ).readout(breakout_scope)
+    mo.show_code(position="above")
+    return (breakout_estimates,)
+
+
+@app.cell(hide_code=True)
+def _(breakout_estimates, estimates_to_readout, readout_table):
     country_breakout_estimates = [
         e for e in breakout_estimates if e.metric == "conversion_rate" and e.dimension == "country"
     ]
-
     breakout_table = readout_table(
         estimates_to_readout(country_breakout_estimates),
         title="Checkout Redesign: Breakouts",
@@ -1117,53 +1248,57 @@ def _(mo):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## The time view: daily lift instead of one point estimate
+    ## Cumulative lift over time
 
-    Everything above collapses the whole window into one point estimate
-    per arm. The as-of lift view (`View.asof()`) runs the same
-    `unit_totals` -> `group_summary` -> `estimate_lift` pipeline once PER
-    DAY instead
+    `View.asof()` estimates lift from observations available by each calendar-date
+    cutoff. The warehouse computes cumulative day-level summaries; Python then
+    estimates lift for each retained date. It does not rerun the whole-window
+    SQL pipeline from scratch for every day.
+
+    Per-unit windows still apply, and monitoring can include incomplete follow-up.
+    This differs from `View.daily()`, which reports separate daily or cohort outcomes.
     """)
     return
 
 
 @app.cell
-def _(estimates_to_readout, experiment, increment, metric, pd, reader):
+def _(experiment, increment, metric, mo, reader):
     asof_lift_scope = increment.View.asof()
-    daily_estimates = increment.run(
+    asof_estimates = increment.run(
         experiment.with_views(asof_lift_scope),
         reader,
         views=(asof_lift_scope,),
         metrics=[metric],
     ).readout(asof_lift_scope)
-    pd.DataFrame(estimates_to_readout(list(daily_estimates)))[
+    mo.show_code(position="above")
+    return (asof_estimates,)
+
+
+@app.cell(hide_code=True)
+def _(asof_estimates, estimates_to_readout, pd):
+    pd.DataFrame(estimates_to_readout(list(asof_estimates)))[
         ["ds", "group_id", "lift", "lower", "higher", "stat_sig"]
     ].sort_values(["group_id", "ds"]).head(8)
-    return (daily_estimates,)
+    return
 
 
 @app.cell
 def _(mo):
     mo.md(r"""
-    The same conversion_rate headline row from Stage 6, now with that daily
-    series folded in as a trend sparkline instead of standing alone as a
-    single point estimate.
+    The sparkline pairs the whole-window conversion estimate with its cumulative
+    as-of series. The series describes how the evidence evolves by calendar date;
+    it is not a set of independent daily effects.
     """)
     return
 
 
 @app.cell
-def _(
-    daily_estimates,
-    estimates_to_readout,
-    original_estimates,
-    readout_table,
-):
+def _(asof_estimates, estimates_to_readout, original_estimates, readout_table):
     trend_table = readout_table(
         estimates_to_readout([original_estimates]),
         title="Checkout Redesign: conversion_rate over time",
-        subtitle="Daily lift trajectory",
-        trend=list(daily_estimates),
+        subtitle="Cumulative lift by as-of date",
+        trend=list(asof_estimates),
     )
     trend_table
     return

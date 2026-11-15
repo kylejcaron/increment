@@ -23,7 +23,7 @@ _REFUSALS = refusals(
     {
         "conversion_inference.finite_sample.metric_type": (
             "conversion_inference='finite_sample' applies only to conversion and retention "
-            "metrics, and this metric has type {metric_type!r} -- drop it or use "
+            "metrics, and this metric has type {metric_type!r}; drop it or use "
             "conversion_inference='auto'"
         ),
         "conversion_inference.finite_sample.cuped": (

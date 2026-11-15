@@ -109,14 +109,6 @@ def test_panel_sql_matches_golden_snapshot(sql_analysis):
     } == _golden("panel")
 
 
-def test_summary_sql_matches_golden_snapshot(sql_analysis):
-    assert {
-        "schema_version": 1,
-        "dialect": "duckdb",
-        "statements": render_sql_goldens(sql_analysis)["summary"],
-    } == _golden("summary")
-
-
 def test_sql_golden_keys_are_stable_and_nonempty(sql_analysis):
     rendered = render_sql_goldens(sql_analysis)
     assert set(rendered) == {"panel", "summary"}

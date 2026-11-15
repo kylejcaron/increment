@@ -67,8 +67,8 @@ class _CompilationState:
 _REFUSALS = refusals(
     UnsupportedRequestError,
     {
-        "plan.observational.relative_margin": "relative shifted nulls are not built for the observational path: metric(s) {metrics} declare a relative margin (Metric.margin, or a plan-bound ExperimentMetric.margin) -- an absolute-unit margin (Metric.margin_abs) is supported",
-        "plan.encouragement.margin": "metric {metric!r}: margins are not supported for sequential encouragement -- the sequential encouragement estimator builds no shifted null; a fixed-horizon plan applies the margin to the ITT row (valid for one planned analysis, not repeated looks)",
+        "plan.observational.relative_margin": "relative shifted nulls are not built for the observational path: metric(s) {metrics} declare a relative margin (Metric.margin, or a plan-bound ExperimentMetric.margin); an absolute-unit margin (Metric.margin_abs) is supported",
+        "plan.encouragement.margin": "metric {metric!r}: margins are not supported for sequential encouragement; the sequential encouragement estimator builds no shifted null; a fixed-horizon plan applies the margin to the ITT row (valid for one planned analysis, not repeated looks)",
         "plan.encouragement.sequential_cuped": "metric {metric!r}: CUPED methods are not supported with {inference} inference for encouragement except compliance-only requests",
         "plan.configs_keys_match": RefusalSpec(
             "plan.configs_keys_match",

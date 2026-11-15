@@ -85,7 +85,7 @@ _REFUSALS = refusals(
         "power.alpha_finite": "alpha must be finite and in (0, 1) (got {alpha!r})",
         "power.se_full_finite": "se_full must be finite and > 0 (got {se_full!r})",
         "power.boundary_crossing_quadrature": "boundary-crossing quadrature did not converge: {reason}",
-        "power.sequential_mde.design_search_minimum": "sequential design cannot search for a minimum detectable effect when target_power={target} is at or below this boundary's own null-crossing probability ({estimate:.6g}) -- the zero-distance effect already meets it, so no positive relative lift is more detectable than the null itself",
+        "power.sequential_mde.design_search_minimum": "sequential design cannot search for a minimum detectable effect when target_power={target} is at or below this boundary's own null-crossing probability ({estimate:.6g}); the zero-distance effect already meets it, so no positive relative lift is more detectable than the null itself",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -838,17 +838,17 @@ def sequential_expected_information_fraction(
 _SEQUENTIAL_MDE_UNREPRESENTABLE = RefusalSpec(
     "power.sequential_mde.unrepresentable",
     InvalidRequestError,
-    template="sequential design at power={target_power}, se={se:.6g}: the minimum detectable log-effect ({mde_theta:.6g}) is too large to express as a relative lift in float64 -- the standard error is too large for a relative-scale minimum detectable effect",
+    template="sequential design at power={target_power}, se={se:.6g}: the minimum detectable log-effect ({mde_theta:.6g}) is too large to express as a relative lift in float64; the standard error is too large for a relative-scale minimum detectable effect",
 )
 _SEQUENTIAL_MDE_COMPLIANCE_UNREPRESENTABLE = RefusalSpec(
     "power.sequential_mde.compliance_unrepresentable",
     InvalidRequestError,
-    template="sequential design at power={target_power}: the raw minimum detectable relative lift ({mde_relative:.6g}) adjusted onto the complier scale by compliance {compliance:.6g} overflows float64 -- the compliance is too small for a representable complier-scale effect",
+    template="sequential design at power={target_power}: the raw minimum detectable relative lift ({mde_relative:.6g}) adjusted onto the complier scale by compliance {compliance:.6g} overflows float64; the compliance is too small for a representable complier-scale effect",
 )
 _SEQUENTIAL_MDE_DECREASE_UNREPRESENTABLE = RefusalSpec(
     "power.sequential_mde.decrease_unrepresentable",
     InvalidRequestError,
-    template="sequential design at power={target_power}: the raw minimum detectable relative lift ({mde_relative:.6g}) adjusted onto the complier scale by compliance {compliance:.6g} reaches or exceeds a 100% decrease, which is not a representable relative effect -- the detectable decrease is too large to resolve at this standard error",
+    template="sequential design at power={target_power}: the raw minimum detectable relative lift ({mde_relative:.6g}) adjusted onto the complier scale by compliance {compliance:.6g} reaches or exceeds a 100% decrease, which is not a representable relative effect; the detectable decrease is too large to resolve at this standard error",
 )
 
 RESOLUTION_MULTIPLE = 4.0

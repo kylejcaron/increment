@@ -235,9 +235,9 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template="power planning does not construct the requested multicovariate CUPED estimator; plan without variance reduction, or use scalar CUPED on one continuous covariate as an approximation that is not a multicovariate CUPED power claim",
         ),
-        "power.minimum_detectable_effect.design_search_minimum": "fixed-horizon design cannot search for a minimum detectable effect when target_power={target} is at or below the null's own crossing probability ({estimate:.6g}) -- zero distance already qualifies, so no strictly nonzero minimum detectable effect exists",
+        "power.minimum_detectable_effect.design_search_minimum": "fixed-horizon design cannot search for a minimum detectable effect when target_power={target} is at or below the null's own crossing probability ({estimate:.6g}); zero distance already qualifies, so no strictly nonzero minimum detectable effect exists",
         "power.baseline.mean": "mean must be > 0",
-        "power.baseline.var_zero_variance": "var must be > 0 -- a zero-variance (deterministic) metric has no power question to answer (every solver divides by the log-ratio variance); from_proportion(p) requires 0 < p < 1",
+        "power.baseline.var_zero_variance": "var must be > 0; a zero-variance (deterministic) metric has no power question to answer (every solver divides by the log-ratio variance); from_proportion(p) requires 0 < p < 1",
         "power.baseline.cuped_rho": "cuped_rho must be in (-1, 1)",
         "power.baseline.compliance": "compliance must be in (0, 1]",
         "power.baseline.trigger_rate": "trigger_rate must be in (0, 1]",
@@ -262,7 +262,7 @@ _REFUSALS = refusals(
         "power.baseline.cluster_analyzed_mean": RefusalSpec(
             "power.baseline.cluster_analyzed_mean",
             InvalidRequestError,
-            template="assigned mean {avg_cluster_size}, trigger fraction {trigger_rate}, and cluster participation {cluster_participation} imply analyzed mean {analyzed_mean}; it must be finite and at least one -- recount assigned units and contributing pilot clusters",
+            template="assigned mean {avg_cluster_size}, trigger fraction {trigger_rate}, and cluster participation {cluster_participation} imply analyzed mean {analyzed_mean}; it must be finite and at least one; recount assigned units and contributing pilot clusters",
             keys=frozenset({"route"}),
         ),
         "power.baseline.icc": "icc must be in [0, 1)",
@@ -272,15 +272,15 @@ _REFUSALS = refusals(
         "power.baseline.cluster_icc_avg": RefusalSpec(
             "power.baseline.cluster_icc_avg",
             InvalidRequestError,
-            template="cluster_icc={cluster_icc} > 0 requires analyzed mean cluster size > 1 (got {analyzed_mean}); a one-unit contributing cluster does not identify within-cluster correlation -- use a pilot with repeated observations within contributing clusters, or leave cluster_icc at 0",
+            template="cluster_icc={cluster_icc} > 0 requires analyzed mean cluster size > 1 (got {analyzed_mean}); a one-unit contributing cluster does not identify within-cluster correlation; use a pilot with repeated observations within contributing clusters, or leave cluster_icc at 0",
             keys=frozenset({"route"}),
         ),
         "power.baseline.summarystats_bound_pilot": "SummaryStats.n must be >= 2 to bound the pilot variance's own sampling uncertainty (got n={n}); a single unit has no degrees of freedom for a variance estimate",
         "power.baseline.confidence": "confidence must be in (0, 1)",
         "power.baseline.confidence_produces_non": "confidence produces a non-finite variance inflation",
         "power.baseline.mean_den": "mean_den must be > 0, got {mean_den}",
-        "power.quantile_baseline.cuped_unsupported": "cuped_rho={cuped_rho} was declared, but a quantile metric has no runtime CUPED route to credit -- QuantileBaseline always plans without variance reduction",
-        "power.quantile_baseline.metric_not_quantile": "a QuantileBaseline plans a quantile metric, but {metric!r} is declared as {metric_type!r} -- plan a quantile metric with ArmPlanningProcedure.standard('quantile'), and any other metric with workflows.planning_baseline(experiment, reader, metric) or a Baseline constructor",
+        "power.quantile_baseline.cuped_unsupported": "cuped_rho={cuped_rho} was declared, but a quantile metric has no runtime CUPED route to credit; QuantileBaseline always plans without variance reduction",
+        "power.quantile_baseline.metric_not_quantile": "a QuantileBaseline plans a quantile metric, but {metric!r} is declared as {metric_type!r}; plan a quantile metric with ArmPlanningProcedure.standard('quantile'), and any other metric with workflows.planning_baseline(experiment, reader, metric) or a Baseline constructor",
         "power.quantile_baseline.pilot_values_missing": RefusalSpec(
             "power.quantile_baseline.pilot_values_missing",
             InvalidRequestError,
@@ -288,7 +288,7 @@ _REFUSALS = refusals(
                 "a quantile baseline"
                 + ("" if metric_name is None else f" for metric {metric_name!r}")
                 + f" carries {n_values} pilot values, but quantile planning needs at least 2 of"
-                f" the pilot's per-unit control values -- {route}"
+                f" the pilot's per-unit control values; {route}"
             ),
         ),
         "power.quantile_size_search_unreachable": RefusalSpec(
@@ -298,11 +298,11 @@ _REFUSALS = refusals(
                 f"target power {power} is not reachable for this quantile metric: "
                 + (
                     "the pilot's recording grid keeps the quantile's standard error above "
-                    f"a floor, so no sample size exceeds power {maximum_power:.6g} -- lower "
+                    f"a floor, so no sample size exceeds power {maximum_power:.6g}; lower "
                     "the target power, plan a larger relative_lift, or record the metric at "
                     "a finer resolution"
                     if limiting_condition == "recording_grid"
-                    else "it needs more than 2**40 (about 1.1e12) units per arm -- plan a "
+                    else "it needs more than 2**40 (about 1.1e12) units per arm; plan a "
                     "larger relative_lift"
                 )
             ),
@@ -310,7 +310,7 @@ _REFUSALS = refusals(
         "power.quantile_size_search_delta_method_unreliable": RefusalSpec(
             "power.quantile_size_search_delta_method_unreliable",
             InvalidRequestError,
-            template="no sample size gives this quantile metric a lift the readout can report: wherever power reaches {power}, the pilot's recording grid keeps the planned combined log-scale standard error at about {log_se:.4g} or more, and the readout refuses a relative lift whose log-scale standard error is {log_se_limit} or more (delta_method_unreliable) -- record the metric at a finer resolution",
+            template="no sample size gives this quantile metric a lift the readout can report: wherever power reaches {power}, the pilot's recording grid keeps the planned combined log-scale standard error at about {log_se:.4g} or more, and the readout refuses a relative lift whose log-scale standard error is {log_se_limit} or more (delta_method_unreliable); record the metric at a finer resolution",
         ),
         "power.power.check": "power must be in [0, 1], got {power}",
         "power.power.effective_var": "effective_var must be > 0, got {effective_var}",
@@ -321,16 +321,16 @@ _REFUSALS = refusals(
         "power.log_exp_needs": "log(1 - exp(x)) needs x <= 0, got {x}",
         "power.procedure_armplanningprocedure": "procedure must be ArmPlanningProcedure, got {procedure_type}",
         "power.power_solvers_relative": POWER_SOLVERS_RELATIVE,
-        "power.binomial_enclosure_requires_counts": "a binomial planning enclosure requires an unadjusted fixed-horizon conversion or retention count decision, not this {metric_type!r} plan -- use achieved_power for model-based point power",
+        "power.binomial_enclosure_requires_counts": "a binomial planning enclosure requires an unadjusted fixed-horizon conversion or retention count decision, not this {metric_type!r} plan; use achieved_power for model-based point power",
         "power.core.n_per_arm_int": "n_per_arm must be an integer (got {n_per_arm!r})",
         "power.core.n_per_arm_min": "n_per_arm must be >= {minimum} for metric {metric_type!r} (got {n_per_arm})",
         "power.sequential_sample_size": "sequential sample-size power could not meet its numerical tolerance at n_per_arm={n_per_arm}: {reason}",
         "power.sequential_sample_size_target_inside_enclosure": "sequential sample-size target lies inside the certified power enclosure at n_per_arm={n_per_arm}: ({lower}, {upper})",
-        "power.relative_lift_lies": "relative_lift={relative_lift} lies below the null boundary (null_lift={null_lift}) but alternative='greater' -- no sample size gives this design more than alpha power; flip the alternative or the sign of relative_lift",
-        "power.relative_lift_lies_above_null": "relative_lift={relative_lift} lies above the null boundary (null_lift={null_lift}) but alternative='less' -- no sample size gives this design more than alpha power; flip the alternative or the sign of relative_lift",
-        "power.size_design_relative": "cannot size a design for a relative_lift exactly at the null boundary (relative_lift={relative_lift}, null_lift={null_lift}): the distance to detect is zero, so no finite sample size reaches any power above alpha -- pass a lift away from the null (the same refusal segment_pairwise_required_sample_size makes for theta=0)",
+        "power.relative_lift_lies": "relative_lift={relative_lift} lies below the null boundary (null_lift={null_lift}) but alternative='greater'; no sample size gives this design more than alpha power; flip the alternative or the sign of relative_lift",
+        "power.relative_lift_lies_above_null": "relative_lift={relative_lift} lies above the null boundary (null_lift={null_lift}) but alternative='less'; no sample size gives this design more than alpha power; flip the alternative or the sign of relative_lift",
+        "power.size_design_relative": "cannot size a design for a relative_lift exactly at the null boundary (relative_lift={relative_lift}, null_lift={null_lift}): the distance to detect is zero, so no finite sample size reaches any power above alpha; pass a lift away from the null (the same refusal segment_pairwise_required_sample_size makes for theta=0)",
         "power.sample_size_detecting": "the sample size detecting relative_lift={relative_lift} against null_lift={null_lift} at this baseline exceeds the float64 range: the log-scale distance is too small for the planning variance",
-        "power.sequential_design_more": "sequential design requires more than 1024x the fixed-horizon sample size to reach power={power} -- check the InferenceSpec(kind='asymptotic_mean') declared on ArmPlanningProcedure.standard() for a mismatch with the target relative_lift",
+        "power.sequential_design_more": "sequential design requires more than 1024x the fixed-horizon sample size to reach power={power}; check the InferenceSpec(kind='asymptotic_mean') declared on ArmPlanningProcedure.standard() for a mismatch with the target relative_lift",
         "power.tau_b": "tau_b must be >= 0, got {tau_b}",
         "power.theta_var_one": "theta and var must be 1-D (one value per segment), got shapes {theta_shape} and {var_shape}",
         "power.theta_var_same": "theta and var must have the same shape, got {theta_shape} vs {var_shape}",
@@ -1474,7 +1474,7 @@ _BOUNDED_METRIC_BASELINE = RefusalSpec(
 _BOUNDED_METRIC_RATE_ABOVE_ONE = RefusalSpec(
     "power.bounded_metric.rate_above_one",
     InvalidRequestError,
-    template="{metric_type} planning at baseline rate {mean:.6g}: the {role} lift implies a rate of {implied_rate!r}, which exceeds one -- an alternative that cannot occur is not a conservative approximation; lower the lift or the baseline rate",
+    template="{metric_type} planning at baseline rate {mean:.6g}: the {role} lift implies a rate of {implied_rate!r}, which exceeds one; an alternative that cannot occur is not a conservative approximation; lower the lift or the baseline rate",
 )
 
 
@@ -2036,20 +2036,20 @@ _MDE_UNATTAINABLE = RefusalSpec(
                 else f" (power_basis={power_basis!r}: the runtime's decision, enumerated)"
             )
         )
-        + " -- raise n_per_arm, lower the target power, or revisit the null and compliance"
+        + "; raise n_per_arm, lower the target power, or revisit the null and compliance"
     ),
 )
 _MDE_UNREPRESENTABLE = RefusalSpec(
     "power.minimum_detectable_effect.unrepresentable",
     InvalidRequestError,
-    template="the minimum detectable effect at power={target_power} in the {direction} direction exists but has no float64 representation as a relative lift ({limiting_condition}) -- the standard error or compliance is too extreme for a relative-scale answer",
+    template="the minimum detectable effect at power={target_power} in the {direction} direction exists but has no float64 representation as a relative lift ({limiting_condition}); the standard error or compliance is too extreme for a relative-scale answer",
 )
 # Context: target_power, direction, log_se (the smallest planned combined log-scale SE among
 # the effects reaching the target) and log_se_limit (the runtime's refusal threshold).
 _MDE_DELTA_METHOD_UNRELIABLE = RefusalSpec(
     "power.minimum_detectable_effect.delta_method_unreliable",
     InvalidRequestError,
-    template="no effect that reaches power={target_power} in the {direction} direction is one the runtime can estimate: each has a planned combined log-scale standard error of at least {log_se:.4g}, and the runtime refuses a relative lift whose log-scale standard error is {log_se_limit} or more (delta_method_unreliable) -- raise n_per_arm",
+    template="no effect that reaches power={target_power} in the {direction} direction is one the runtime can estimate: each has a planned combined log-scale standard error of at least {log_se:.4g}, and the runtime refuses a relative lift whose log-scale standard error is {log_se_limit} or more (delta_method_unreliable); raise n_per_arm",
 )
 # Context: n_per_arm (the planned treatment size), log_se (its planned combined
 # log-scale SE) and log_se_limit (the readout's refusal threshold).
@@ -2062,7 +2062,7 @@ _QUANTILE_SIZE_AT_GUARD = WarningSpec(
         f"standard error, {log_se:.4g}, is just below {log_se_limit}, where the readout "
         "reports no relative lift (delta_method_unreliable). At sizes this small the "
         "readout's own standard error is often larger than planned, so many readouts at "
-        "this size can still report no lift -- check the size against the pilot as in "
+        "this size can still report no lift; check the size against the pilot as in "
         "'Checking a quantile plan against the readout' in the power analysis guide"
     ),
 )
@@ -2877,13 +2877,13 @@ def _render_replay_bound(
     if power is None:
         return (
             f"planning the runtime's finite-sample binomial decision at {where} is not "
-            f"supported: its replay spans {replay}. {scope} -- plan fewer analyzed units per "
+            f"supported: its replay spans {replay}. {scope}; plan fewer analyzed units per "
             f"arm (a larger relative_lift needs fewer){route}"
         )
     return (
         f"target power {power} is not reached by the runtime's finite-sample binomial decision "
         f"within the planning replay bound (power {power_reached:.6g} at {where}, whose replay "
-        f"spans {replay}). {scope} -- plan a larger relative_lift or a lower target power{route}"
+        f"spans {replay}). {scope}; plan a larger relative_lift or a lower target power{route}"
     )
 
 
@@ -3488,7 +3488,7 @@ def _render_size_limit(
     return (
         f"target power {power} is not reached by the runtime's finite-sample binomial decision "
         f"within its arm ceiling of {max_arm_size} analyzed units per arm (power "
-        f"{maximum_power:.6g} at n_per_arm={n_per_arm}) -- plan a larger relative_lift "
+        f"{maximum_power:.6g} at n_per_arm={n_per_arm}); plan a larger relative_lift "
         "or a lower target power"
         + (_AUTO_ROUTE_HINT if conversion_inference == "finite_sample" else "")
     )
@@ -3532,9 +3532,9 @@ def _render_tail_level(
         )
     if decided_from is None:
         way = (
-            "so no arm size has power -- plan a larger alpha"
+            "so no arm size has power; plan a larger alpha"
             if cause == "solver_floor" or scope == "smallest"
-            else "so this size has no power to plan -- plan fewer analyzed units per arm or a "
+            else "so this size has no power to plan; plan fewer analyzed units per arm or a "
             "larger alpha"
         )
         return (
@@ -3548,20 +3548,20 @@ def _render_tail_level(
     )
     if scope == "smallest":
         way = (
-            "whatever the treatment arm shows, so no size can be sized for an effect -- plan a "
+            "whatever the treatment arm shows, so no size can be sized for an effect; plan a "
             "larger alpha"
         )
     elif conversion_inference == "finite_sample":
         way = (
             f"and the plan's control window at a {p_c:.6g} control rate holds smaller counts, "
-            "so this size has no power to plan -- plan fewer analyzed units per arm or a larger "
+            "so this size has no power to plan; plan fewer analyzed units per arm or a larger "
             "alpha"
         )
     else:
         way = (
             f"and at a {p_c:.6g} control rate the counts the count rule keeps on the "
             "finite-sample route below it carry more than the planning resolution, so this size "
-            "has no power to plan -- plan fewer analyzed units per arm or a larger alpha"
+            "has no power to plan; plan fewer analyzed units per arm or a larger alpha"
         )
     return (
         f"the runtime's finite-sample binomial decision at alpha={alpha} decides a count pair on "
@@ -3586,7 +3586,7 @@ def _render_arm_at_floor(
     return (
         f"the smallest plannable design (n_t={n_t}, n_c={n_c} analyzed units at allocation "
         f"{allocation}) already has an arm above the finite-sample runtime's ceiling of "
-        f"{max_arm_size} analyzed units, so no size can be planned -- use a less lopsided "
+        f"{max_arm_size} analyzed units, so no size can be planned; use a less lopsided "
         "allocation" + (_AUTO_ROUTE_HINT if conversion_inference == "finite_sample" else "")
     )
 
@@ -3601,7 +3601,7 @@ _BINOMIAL_ARM_CEILING = RefusalSpec(
     template=(
         "n_c={n_c}/n_t={n_t} analyzed units has an arm above the runtime's ceiling of "
         "{max_arm_size} analyzed units, where it refuses every count pair, so no power can be "
-        "planned -- plan fewer units per arm"
+        "planned; plan fewer units per arm"
     ),
 )
 

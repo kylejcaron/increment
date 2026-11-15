@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
     "facade.analysis.exploratory_metrics_source_limited",
     CapabilityError,
-    template="{method}: exploratory_metrics adds metrics from the saved definitions, which this source does not carry -- build the experiment with from_definitions.",
+    template="{method}: exploratory_metrics adds metrics from the saved definitions, which this source does not carry; build the experiment with from_definitions.",
 )
 _EXPLORATORY_SEQUENTIAL = RefusalSpec(
     "facade.analysis.exploratory_metrics_sequential",

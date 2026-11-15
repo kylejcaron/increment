@@ -61,11 +61,11 @@ if TYPE_CHECKING:
 _REFUSED_TYPES: dict[str, str] = {
     "retention": (
         "not supported in reports: retention needs a cohort anchor, "
-        "which reports do not have -- use the experiment path"
+        "which reports do not have; use the experiment path"
     ),
     "quantile": (
         "quantile metrics have no moments representation and the report "
-        "path carries no per-unit rows -- not supported in reports; use the experiment path"
+        "path carries no per-unit rows; not supported in reports; use the experiment path"
     ),
 }
 
@@ -340,7 +340,7 @@ class MetricTrends:
                 if m.type == "ratio":
                     errors.append(
                         f"'{name}': by= is not supported for ratio metrics in "
-                        f"v1 -- a segmented ratio needs the as-of dimension "
+                        f"v1; a segmented ratio needs the as-of dimension "
                         f"joined through both parts"
                     )
                     continue
@@ -364,20 +364,20 @@ class MetricTrends:
                 elif m.type not in ("total", "active"):
                     errors.append(
                         f"'{name}': rolling window= applies to total/active "
-                        f"metrics only -- {m.type} metrics have no overlapping-window "
+                        f"metrics only; {m.type} metrics have no overlapping-window "
                         f"denominator in a report"
                     )
             if population is not None and m.type in ("total", "active"):
                 errors.append(
                     f"'{name}': population= has no unit denominator to scope on a "
-                    f"{m.type} metric -- drop it, or use an entity-scoped metric"
+                    f"{m.type} metric; drop it, or use an entity-scoped metric"
                 )
             if isinstance(m, ConversionMetric) and not m.filters and population is None:
                 fs = _find_fact_source(self._defs, m.fact)[0]
                 if len(fs.facts) == 1:
                     errors.append(
                         f"'{name}': the default denominator (units active on "
-                        f"fact source '{fs.name}') is degenerate -- "
+                        f"fact source '{fs.name}') is degenerate; "
                         f"'{m.fact}' is the source's only fact and the metric "
                         f"is filterless, so every active unit trivially "
                         f"qualifies (rate == 100%). Supply population=."

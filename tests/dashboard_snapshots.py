@@ -7,6 +7,7 @@ import datetime as dt
 import enum
 import functools
 import io
+import json
 import lzma
 import math
 import pickle
@@ -24,6 +25,7 @@ from increment._source_operations import DashboardExploreCapture, DashboardGroup
 from increment.dashboard import DashboardConfig, DashboardSnapshot
 from increment.dashboard._data import DashboardOverview, _binding_fingerprint, enriched_rows
 from increment.errors import CodedError
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.readout_types import (
     CellKey,
     CellRecord,
@@ -527,19 +529,55 @@ def frozen(name: str) -> FrozenDashboard:
     )
 
 
+def _captured_advisories(value):
+    if not isinstance(value, str):
+        return value
+    return (
+        "encoded-advisories",
+        type(value).__qualname__,
+        tuple(ReadoutAdvisory.model_validate(item) for item in json.loads(value)),
+    )
+
+
+def _capture_field_value(name, value, owner):
+    if owner is not DashboardSnapshot or name != "readout_rows":
+        return value
+    return tuple(
+        {
+            key: _captured_advisories(item) if key == "advisories" else item
+            for key, item in row.items()
+        }
+        for row in value
+    )
+
+
+def _capture_field_by_type(name, value, owner, by_type):
+    return name in by_type or (
+        isinstance(value, str)
+        and (owner, name)
+        in {
+            (LiftEstimate, "note"),
+            (BreakoutEstimate, "note"),
+            (ReadoutAdvisory, "message"),
+        }
+    )
+
+
 def captured_form(
     value: Any, *, without: frozenset[str] = frozenset(), by_type: frozenset[str] = frozenset()
 ) -> Any:
-    """A comparable tree of everything ``value`` holds; ``without`` names fields to leave out.
+    """Capture structure, excluding prose only on known estimator result records.
 
-    Refusals keep their type, code and context; collections keep their rows and every
-    attribute they carry; callables keep their qualified name. Fields named in ``by_type`` keep
-    only their value's type. A pinned read's random capture identity is runtime-only and is
-    left out. An unknown type is refused rather than skipped.
+    Refusal codes/contexts, advisory codes/contexts/severity and arbitrary strings remain exact.
     """
 
-    def entry(name: Any, value: Any) -> Any:
-        return ("type", type(value).__qualname__) if name in by_type else walk(value)
+    def entry(name: Any, value: Any, *, owner: type | None = None) -> Any:
+        value = _capture_field_value(name, value, owner)
+        return (
+            ("type", type(value).__qualname__)
+            if _capture_field_by_type(name, value, owner, by_type)
+            else walk(value)
+        )
 
     def walk(item: Any) -> Any:
         if isinstance(item, CodedError):
@@ -550,13 +588,17 @@ def captured_form(
                 names.remove("snapshot_id")
             return (
                 type(item).__qualname__,
-                {name: entry(name, getattr(item, name)) for name in names},
+                {name: entry(name, getattr(item, name), owner=type(item)) for name in names},
             )
         if dataclasses.is_dataclass(item) and not isinstance(item, type):
             fields = [field.name for field in dataclasses.fields(item)]
             return (
                 type(item).__qualname__,
-                {name: entry(name, getattr(item, name)) for name in fields if name not in without},
+                {
+                    name: entry(name, getattr(item, name), owner=type(item))
+                    for name in fields
+                    if name not in without
+                },
             )
         if isinstance(item, functools.partial):
             return ("partial", walk(item.func), walk(item.args), walk(item.keywords))

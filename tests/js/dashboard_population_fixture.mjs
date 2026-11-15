@@ -14,12 +14,13 @@ function shellSource(html) {
   return scripts.at(-1)[1];
 }
 
-export function loadDashboardFromFile(path) {
-  return loadDashboard(fs.readFileSync(path, "utf8"));
+export function loadDashboardFromFile(path, configure) {
+  return loadDashboard(fs.readFileSync(path, "utf8"), configure);
 }
 
-export function loadDashboard(html) {
+export function loadDashboard(html, configure) {
   const payload = embeddedPayload(html);
+  if (configure) configure(payload);
   const document = createDocument();
   const body = new FakeElement("body");
   const shell = new FakeElement("div", { id: "shell" });
