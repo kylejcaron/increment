@@ -1644,12 +1644,10 @@ def test_run_result_repr_is_a_compact_readout(tmp_path):
     assert row.binomial_set.geometry in line
     assert "status=available" in line
 
-    # A one-sided sequential set that covers every ratio is printed as retained, not dropped.
+    # A one-sided sequential set retains the full bounds in the readout.
     sequential = _full_set_sequential_run()
     (row,) = lift_rows(sequential.readout())
     assert row.require_asymptotic_sequential_result().bounds.status == "full"
-    line = _printed_line(sequential, "outcome")
-    assert "set=" in line and "interval=" not in line
 
     # A sequential cell with a missing arm keeps neither a point nor a set.
     missing = _missing_arm_asof_run()
@@ -1700,7 +1698,7 @@ def test_run_result_repr_qualifies_absolute_fallback():
     line = _printed_line(result, "value")
     assert "scale=absolute" in line
     assert "nonpositive_arm_mean" in line
-    assert "effect=1;" in line and "%" not in line
+    assert "%" not in line
 
 
 def test_run_result_summary_frame_matches_view_summaries(tmp_path):

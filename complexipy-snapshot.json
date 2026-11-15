@@ -450,16 +450,16 @@
         "complexity": 50
       },
       {
+        "name": "_assert_input_value",
+        "complexity": 54
+      },
+      {
         "name": "_breakout_readout_inputs",
         "complexity": 54
       },
       {
         "name": "test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows",
         "complexity": 54
-      },
-      {
-        "name": "_assert_input_value",
-        "complexity": 55
       },
       {
         "name": "_fixed_coordinate_results",

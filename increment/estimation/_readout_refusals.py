@@ -34,7 +34,7 @@ def _with_route(message: str, route: str | None) -> str:
 _REFUSALS: dict[str, RefusalSpec] = refusals(
     InvalidRequestError,
     {
-        "readout.design.required": "{view}() requires a source with a declared design -- this source was constructed without one (design=None). Pass design= at construction (or control=/control_group= to derive Randomized).",
+        "readout.design.required": "{view}() requires a source with a declared design; this source was constructed without one (design=None). Pass design= at construction (or control=/control_group= to derive Randomized).",
         "readout.metric.percentile_winsorization": RefusalSpec(
             "readout.metric.percentile_winsorization",
             CapabilityError,
@@ -48,20 +48,20 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
         "breakout.retention.unbounded": RefusalSpec(
             "breakout.retention.unbounded",
             InvalidRequestError,
-            template="{fn_name}: retention metric(s) {names!r} declare an unbounded band, so their outcome never completes -- on this view every value would be a lower bound on itself, biased hardest for the least-observed units. {remedy}",
+            template="{fn_name}: retention metric(s) {names!r} declare an unbounded band, so their outcome never completes; on this view every value would be a lower bound on itself, biased hardest for the least-observed units. {remedy}",
             keys=frozenset({"supported_view"}),
         ),
         "breakout.retention.completion": RefusalSpec(
             "breakout.retention.completion",
             InvalidRequestError,
-            template="{fn_name}: completed_windows_only=True is contradictory for retention metric(s) {names!r} -- their bands are open on the right, so no unit's window ever completes and the gate would admit nothing. Drop completed_windows_only to get the cumulative monitoring series, or declare threshold_days: [a, b] to bound the band.",
+            template="{fn_name}: completed_windows_only=True is contradictory for retention metric(s) {names!r}; their bands are open on the right, so no unit's window ever completes and the gate would admit nothing. Drop completed_windows_only to get the cumulative monitoring series, or declare threshold_days: [a, b] to bound the band.",
         ),
         "readout.assignment.estimands": RefusalSpec(
             "readout.assignment.estimands",
             InvalidRequestError,
             lambda *, estimands, mechanism: (
                 f"estimands={list(estimands)} requires an encouragement design; "
-                f"this design ({mechanism}) identifies only itt -- declare "
+                f"this design ({mechanism}) identifies only itt; declare "
                 "design: {mechanism: encouragement, uptake: {fact: ...}} on the "
                 "experiment to unlock compliance; LATE additionally requires an "
                 "exclusion_restriction declaration (see docs/guides/encouragement.md)"
@@ -78,7 +78,7 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
         "readout.randomized.value_scale": RefusalSpec(
             "readout.randomized.value_scale",
             UnsupportedRequestError,
-            template="value_scale= is an observational-only reporting selector -- the randomized path already reports the absolute axis on every row, and a row whose relative scale is undefined (a non-positive arm mean) is decided on that additive axis automatically.",
+            template="value_scale= is an observational-only reporting selector; the randomized path already reports the absolute axis on every row, and a row whose relative scale is undefined (a non-positive arm mean) is decided on that additive axis automatically.",
         ),
         "readout.margin.breakout": RefusalSpec(
             "readout.margin.breakout",
@@ -90,7 +90,7 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
             InvalidRequestError,
             lambda *, unknown, selected: (
                 "value_scale= names metrics this source does not report on this call: "
-                f"{sorted(unknown)!r} (selected: {sorted(selected)!r}) -- refusing rather "
+                f"{sorted(unknown)!r} (selected: {sorted(selected)!r}); refusing rather "
                 "than silently dropping the request"
             ),
         ),
@@ -98,7 +98,7 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
             "readout.metric.quantile_breakout",
             CapabilityError,
             lambda *, metric, route=None, **_: _with_route(
-                f"{_quantile_subject(metric)}: breakout dimensions are not supported -- "
+                f"{_quantile_subject(metric)}: breakout dimensions are not supported; "
                 "quantiles do not decompose over segment moments",
                 route,
             ),
@@ -124,12 +124,12 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
         "readout.encouragement.margin": RefusalSpec(
             "readout.encouragement.margin",
             UnsupportedRequestError,
-            template="metric(s) {names} declare a non-inferiority margin (Metric.margin/margin_abs, or a plan-bound ExperimentMetric.margin), which applies to the ITT row under an encouragement design -- this request excludes 'itt', so nothing would apply it; add 'itt' to estimands",
+            template="metric(s) {names} declare a non-inferiority margin (Metric.margin/margin_abs, or a plan-bound ExperimentMetric.margin), which applies to the ITT row under an encouragement design; this request excludes 'itt', so nothing would apply it; add 'itt' to estimands",
         ),
         "readout.run.segment_unsupported": RefusalSpec(
             "readout.run.segment_unsupported",
             UnsupportedRequestError,
-            template="metric {metric!r}: run(by=...) is not supported -- the whole-window lift-cell estimator indexes rows by (metric, arm) only, so multiple segments would silently overwrite one another and the result type carries no segment identity -- use breakout() or a View.breakout(...) view of run() for a per-segment split instead",
+            template="metric {metric!r}: run(by=...) is not supported; the whole-window lift-cell estimator indexes rows by (metric, arm) only, so multiple segments would silently overwrite one another and the result type carries no segment identity; use breakout() or a View.breakout(...) view of run() for a per-segment split instead",
         ),
         "readout.arms.no_treatment": RefusalSpec(
             "readout.arms.no_treatment",
@@ -155,10 +155,10 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
             "readout.asof.segment_unsupported",
             UnsupportedRequestError,
             lambda *, by: (
-                f"asof_lift(by={list(by)}) is not supported -- the as-of series result "
+                f"asof_lift(by={list(by)}) is not supported; the as-of series result "
                 "type (LiftEstimate) carries no segment identity, so every segment's rows "
                 "for a date collapse into one bucket and are estimated against the wrong "
-                "segment's control -- use a View.asof("
+                "segment's control; use a View.asof("
                 "segment=BreakoutIdentity(property, None)) view of run() for a "
                 "per-segment as-of split instead"
             ),

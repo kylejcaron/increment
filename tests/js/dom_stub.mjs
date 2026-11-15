@@ -56,7 +56,14 @@ class FakeElement {
   }
 
   append(...nodes) {
-    for (const node of nodes) {
+    for (let node of nodes) {
+      if (typeof node === "string") {
+        const text = new FakeElement("#text");
+        text.nodeType = 3;
+        text.nodeValue = node;
+        text._text = node;
+        node = text;
+      }
       if (node.parentElement) {
         node.parentElement.children = node.parentElement.children.filter((child) => child !== node);
       }
@@ -68,6 +75,8 @@ class FakeElement {
   replaceChildren(...nodes) {
     for (const child of this.children) child.parentElement = null;
     this.children = [];
+    this._text = "";
+    this._html = "";
     this.append(...nodes);
   }
 

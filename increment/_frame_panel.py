@@ -663,11 +663,11 @@ def _censoring_warning(
     if not enrolled or dropped / enrolled <= CENSOR_WARN_FRACTION:
         return
     cause = (
-        "the declared observation_end -- extend it if this intervention's "
+        "the declared observation_end; extend it if this intervention's "
         "effect persists past the experiment; if it reverts, this censoring "
         "is correct"
         if observation_end is not None
-        else "no observation_end declared -- these units have not had time "
+        else "no observation_end declared; these units have not had time "
         "to mature within the observed dates; this resolves as more data "
         "arrives, not by changing any argument"
     )

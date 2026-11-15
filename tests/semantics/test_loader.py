@@ -1507,7 +1507,9 @@ def test_realistic_demo_example_loads():
         Path(__file__).parent.parent.parent / "examples" / "realistic_demo" / "definitions"
     )
     assert example_dir.is_dir(), f"missing checked-in example directory: {example_dir}"
-    defs = load(example_dir)
+    with pytest.warns(IncrementWarning) as record:
+        defs = load(example_dir)
+    assert set(warning_codes(record)) == {"definition.metric.variable_window_days_none"}
     assert isinstance(defs, Definitions)
     assert {s.name for s in defs.fact_sources} == {
         "orders",
@@ -1530,10 +1532,8 @@ def test_realistic_demo_example_loads():
     assert isinstance(latency, RatioMetric)
     assert latency.numerator.fact == "page_load"
     assert latency.numerator.aggregation == "sum"
-    assert latency.numerator.window_days == 14
     assert latency.denominator.fact == "page_load"
     assert latency.denominator.aggregation == "count"
-    assert latency.denominator.window_days == 14
     assert latency.numerator.filters == latency.denominator.filters
     experiments = {experiment.name: experiment for experiment in defs.experiments}
     assert set(experiments) == {"checkout_redesign", "express_checkout"}

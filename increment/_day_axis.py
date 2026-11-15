@@ -121,7 +121,7 @@ class _DayAxisSource(Protocol):
 _CLUSTERED_DAY_AXIS = RefusalSpec(
     "facade.analysis.clustered_day_axis",
     CapabilityError,
-    template="{method}() is not supported on a clustered experiment -- experiment {experiment!r} declares cluster {cluster!r}, and cluster-robust inference is total-grain only (run()/srm()).",
+    template="{method}() is not supported on a clustered experiment; experiment {experiment!r} declares cluster {cluster!r}, and cluster-robust inference is total-grain only (run()/srm()).",
 )
 _TRIGGER_UNSUPPORTED = RefusalSpec(
     "facade.analysis.trigger_unsupported",
@@ -141,12 +141,12 @@ _TRIGGER_UNSUPPORTED = RefusalSpec(
 _UNKNOWN_DIMENSION = RefusalSpec(
     "facade.analysis.unknown_dimension",
     InvalidRequestError,
-    template="{method}: dimension {dimension!r} is not a declared breakout -- declared breakout properties: {declared!r}",
+    template="{method}: dimension {dimension!r} is not a declared breakout; declared breakout properties: {declared!r}",
 )
 _UNDECLARED_METRIC_FOR_DIMENSION = RefusalSpec(
     "facade.analysis.undeclared_metric_for_dimension",
     InvalidRequestError,
-    template="{method}: dimension={dimension!r} only supports metrics already declared on this experiment -- metrics= may exclude declared metrics but not add new ones for the dimensioned path. Not declared: {undeclared!r}",
+    template="{method}: dimension={dimension!r} only supports metrics already declared on this experiment; metrics= may exclude declared metrics but not add new ones for the dimensioned path. Not declared: {undeclared!r}",
 )
 _ENCOURAGEMENT_DAILY_LATE = RefusalSpec(
     "facade.analysis.encouragement_daily_late",

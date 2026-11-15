@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.15"
+__generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 
@@ -15,7 +15,16 @@ def _():
     import increment
     from increment.tables import estimates_to_readout, readout_table
 
-    return ct, estimates_to_readout, expit, increment, mo, np, pd, readout_table
+    return (
+        ct,
+        estimates_to_readout,
+        expit,
+        increment,
+        mo,
+        np,
+        pd,
+        readout_table,
+    )
 
 
 @app.cell
@@ -69,9 +78,17 @@ def _(mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 1. Naive comparison
+    """)
+    return
+
+
 @app.cell
-def _(df, increment):
-    _experiment, _reader = increment.from_frame(
+def _(df, increment, mo):
+    naive_experiment, naive_reader = increment.from_frame(
         df,
         shape="summary",
         unit="user_id",
@@ -79,16 +96,9 @@ def _(df, increment):
         control="control",
         metrics={"revenue": "mean"},
     )
-    naive_results = increment.run(_experiment, _reader).readout()
+    naive_results = increment.run(naive_experiment, naive_reader).readout()
+    mo.show_code(position="above")
     return (naive_results,)
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 1. Naive comparison
-    """)
-    return
 
 
 @app.cell
@@ -121,7 +131,7 @@ def _(mo):
 
 
 @app.cell
-def _(df, increment):
+def _(df, increment, mo):
     iptw_experiment, iptw_reader = increment.from_frame(
         df,
         shape="summary",
@@ -135,6 +145,7 @@ def _(df, increment):
         ),
     )
     iptw_results = increment.run(iptw_experiment, iptw_reader).readout()
+    mo.show_code(position="above")
     return iptw_experiment, iptw_reader, iptw_results
 
 
@@ -157,10 +168,11 @@ def _(mo):
 
 
 @app.cell
-def _(increment, iptw_experiment, iptw_reader):
+def _(increment, iptw_experiment, iptw_reader, mo):
     dml_results = increment.run(
         iptw_experiment, iptw_reader, decision_method=increment.Method(name="dml")
     ).readout()
+    mo.show_code(position="above")
     return (dml_results,)
 
 

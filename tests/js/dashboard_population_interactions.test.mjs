@@ -14,16 +14,23 @@ function assertViewSelected(dashboard, view) {
   assert.equal(dashboard.panels[view].hidden, false);
 }
 
-// Ids of every element whose text is exactly `text`.
+// Ids of every element holding exactly this population's text or native evidence.
 function holders(dashboard, text) {
   return dashboard.document
     .querySelectorAll("[id]")
-    .filter((node) => node.textContent === text)
+    .filter((node) => node.textContent === text || node.innerHTML === text)
     .map((node) => node.id);
 }
 
 test("population switching updates visible readouts and downloads without losing shared selections", async () => {
-  const dashboard = loadDashboardFromFile(process.env.INCREMENT_DASHBOARD_DOCUMENT);
+  const dashboard = loadDashboardFromFile(process.env.INCREMENT_DASHBOARD_DOCUMENT, (payload) => {
+    payload.primary.tone = "inconclusive";
+    payload.primary.result = "Inconclusive";
+    payload.populationViews.triggered.primary.tone = "inconclusive";
+    payload.populationViews.triggered.primary.result = "Inconclusive";
+    payload.populationViews.assigned.primary.tone = "detected";
+    payload.populationViews.assigned.primary.result = "Difference detected";
+  });
   const triggered = population(dashboard, "triggered");
   const assigned = population(dashboard, "assigned");
   const metric = triggered.metrics[0];
@@ -46,6 +53,7 @@ test("population switching updates visible readouts and downloads without losing
   selectPopulation(dashboard, "assigned");
   assertViewSelected(dashboard, "readout");
   assert.equal(dashboard.heroEffect.textContent, assigned.primary.effect);
+  assert.equal(dashboard.document.getElementById("hero-primary").classList.contains("tone-detected"), true);
   assert.equal(dashboard.readoutTable.innerHTML, assigned.results);
   assert.deepEqual(holders(dashboard, assigned.report.qualifications), []);
   assert.equal(dashboard.document.getElementById("inspector-title").textContent, metric.label);
@@ -57,6 +65,8 @@ test("population switching updates visible readouts and downloads without losing
   selectPopulation(dashboard, "triggered");
   assertViewSelected(dashboard, "readout");
   assert.equal(dashboard.heroEffect.textContent, triggered.primary.effect);
+  assert.equal(dashboard.document.getElementById("hero-primary").classList.contains("tone-inconclusive"), true);
+  assert.equal(dashboard.document.getElementById("hero-primary").classList.contains("tone-detected"), false);
   assert.equal(dashboard.readoutTable.innerHTML, triggered.results);
   assert.equal(dashboard.document.getElementById("inspector-title").textContent, metric.label);
 
@@ -74,17 +84,18 @@ test("population switching updates visible readouts and downloads without losing
   assertViewSelected(dashboard, "report");
   const triggeredUrl = dashboard.reportDownload.href;
   assert.equal(await dashboard.objectUrls.get(triggeredUrl).text(), triggered.readoutCsv);
-  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications-text"]);
+  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications"]);
   selectPopulation(dashboard, "assigned");
   assertViewSelected(dashboard, "report");
   const assignedUrl = dashboard.reportDownload.href;
   assert.notEqual(assignedUrl, triggeredUrl);
   assert.equal(await dashboard.objectUrls.get(assignedUrl).text(), assigned.readoutCsv);
-  assert.deepEqual(holders(dashboard, assigned.report.qualifications), ["report-qualifications-text"]);
+  assert.equal(dashboard.document.getElementById("report-primary-box").classList.contains("tone-detected"), true);
+  assert.deepEqual(holders(dashboard, assigned.report.qualifications), ["report-qualifications"]);
   selectPopulation(dashboard, "triggered");
   assertViewSelected(dashboard, "report");
   assert.equal(await dashboard.objectUrls.get(dashboard.reportDownload.href).text(), triggered.readoutCsv);
-  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications-text"]);
+  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications"]);
 });
 
 test("population selection survives a host refresh restore", () => {

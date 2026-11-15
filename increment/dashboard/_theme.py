@@ -283,7 +283,7 @@ def coeftable_theme(theme: DashboardTheme) -> Theme:
     return Theme(
         favorable=color("favorable"),
         unfavorable=color("unfavorable"),
-        inconclusive=color("weak"),
+        inconclusive=color("muted"),
         neutral=color("accent"),
         header_bg=color("panel"),
         header_fg=color("header_text"),

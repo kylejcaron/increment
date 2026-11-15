@@ -1,10 +1,10 @@
 import marimo
 
-__generated_with = "0.23.15"
+__generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import marimo as mo
     import numpy as np
@@ -121,8 +121,8 @@ def _(mo):
     return
 
 
-@app.cell
-def _(np, pd):
+@app.cell(hide_code=True)
+def _(pd):
     def simulate_encouragement(
         rng,
         n_per_arm,
@@ -147,6 +147,11 @@ def _(np, pd):
             )
         return pd.DataFrame(rows, columns=["user_id", "variant", "revenue", "clicked"])
 
+    return (simulate_encouragement,)
+
+
+@app.cell(hide_code=True)
+def _(np, simulate_encouragement):
     encouragement_df = simulate_encouragement(
         np.random.default_rng(42),
         n_per_arm=1500,
@@ -155,11 +160,11 @@ def _(np, pd):
         tau=18.0,
     )
     encouragement_df.head()
-    return encouragement_df, simulate_encouragement
+    return (encouragement_df,)
 
 
 @app.cell
-def _(encouragement_df, increment):
+def _(increment, mo):
     encouragement_design = increment.Encouragement(
         control_group="control",
         uptake=increment.UptakeSpec(fact="clicked"),
@@ -168,7 +173,13 @@ def _(encouragement_df, increment):
         ),
         one_sided=False,
     )
-    _experiment, _reader = increment.from_frame(
+    mo.show_code(position="above")
+    return (encouragement_design,)
+
+
+@app.cell
+def _(encouragement_design, encouragement_df, increment, mo):
+    encouragement_experiment, encouragement_reader = increment.from_frame(
         encouragement_df,
         shape="summary",
         unit="user_id",
@@ -176,8 +187,9 @@ def _(encouragement_df, increment):
         metrics={"revenue": "mean"},
         design=encouragement_design,
     )
-    encouragement_results = increment.run(_experiment, _reader).readout()
-    return encouragement_design, encouragement_results
+    encouragement_results = increment.run(encouragement_experiment, encouragement_reader).readout()
+    mo.show_code(position="above")
+    return (encouragement_results,)
 
 
 @app.cell(hide_code=True)
@@ -255,7 +267,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(encouragement_design, increment, np, simulate_encouragement):
     weak_df = simulate_encouragement(
         np.random.default_rng(7),
@@ -321,7 +333,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(increment, np, pd, simulate_encouragement):
     window_days = 7
     _rng = np.random.default_rng(3)
@@ -412,13 +424,20 @@ def _(mo):
 
 @app.cell
 def _(InvalidRequestError, increment, mo, monitor_experiment, monitor_reader):
-    _daily = increment.View.daily()
-    _refusal = None
+    daily_view = increment.View.daily()
+    daily_view_refusal = None
     try:
-        increment.run(monitor_experiment.with_views(_daily), monitor_reader, views=(_daily,))
-    except InvalidRequestError as _error:
-        _refusal = _error
-    mo.md(f"Daily view refused: `{_refusal.code}`" if _refusal else "Daily view ran.")
+        increment.run(
+            monitor_experiment.with_views(daily_view), monitor_reader, views=(daily_view,)
+        )
+    except InvalidRequestError as daily_view_error:
+        daily_view_refusal = daily_view_error
+    daily_view_message = mo.md(
+        f"Daily view refused: `{daily_view_refusal.code}`"
+        if daily_view_refusal
+        else "Daily view ran."
+    )
+    mo.show_code(daily_view_message, position="above")
     return
 
 
@@ -437,7 +456,7 @@ def _(mo):
     Gaussian likelihood. The certified series further down instead monitors
     relative uptake with an Always valid Bernoulli/Beta model, declared as
     `InferenceSpec(kind="always_valid", registration=...)` on the source's
-    `AnalysisPlan` before the simulation runs -- `always_valid` inference is
+    `AnalysisPlan` before the simulation runs; `always_valid` inference is
     read from that declaration, never passed at call time. Both series read
     the completed-window view, so every displayed date admits a unit only once
     its finalized outcome and uptake windows have closed.
@@ -446,7 +465,7 @@ def _(mo):
 
 
 @app.cell
-def _(increment, monitor_experiment, monitor_reader, pd):
+def _(increment, mo, monitor_experiment, monitor_reader):
     completed_windows = increment.View.asof(completion_policy=True)
     fixed_late_trend = [
         row
@@ -457,6 +476,12 @@ def _(increment, monitor_experiment, monitor_reader, pd):
         ).readout(completed_windows)
         if row.estimand == "late" and row.value_scale == "relative"
     ]
+    mo.show_code(position="above")
+    return completed_windows, fixed_late_trend
+
+
+@app.cell(hide_code=True)
+def _(fixed_late_trend, pd):
     pd.DataFrame(
         {
             "ds": row.ds,
@@ -467,20 +492,11 @@ def _(increment, monitor_experiment, monitor_reader, pd):
         }
         for row in fixed_late_trend
     )
-    return completed_windows, fixed_late_trend
+    return
 
 
 @app.cell(hide_code=True)
-def _(
-    capture_sequential,
-    completed_windows,
-    completion_days,
-    increment,
-    monitor_design,
-    monitor_metrics,
-    monitor_panel,
-    window_days,
-):
+def _(increment, monitor_design, monitor_metrics, window_days):
     from increment.estimators import (
         JointReveal,
         PredictivePrior,
@@ -530,11 +546,23 @@ def _(
         ),
         roster=(SequentialCell(metric="uptake", group_id="encouraged", estimand="compliance"),),
     )
-    _registered_plan = increment.AnalysisPlan(
+    registered_plan = increment.AnalysisPlan(
         inference=increment.InferenceSpec(kind="always_valid", registration=_registration),
         compliance=SequentialCompliancePolicy(alpha=_registration.roster[0].alpha),
     )
-    _av_experiment, _av_reader = increment.from_frame(
+    return (registered_plan,)
+
+
+@app.cell
+def _(
+    increment,
+    mo,
+    monitor_design,
+    monitor_metrics,
+    monitor_panel,
+    registered_plan,
+):
+    registered_experiment, registered_reader = increment.from_frame(
         monitor_panel,
         shape="panel",
         unit="user_id",
@@ -542,49 +570,99 @@ def _(
         date="ds",
         metrics=monitor_metrics,
         design=monitor_design,
-        plan=_registered_plan,
+        plan=registered_plan,
         exposure_date="exposed_on",
         experiment_id="help_button_prompt",
     )
+    mo.show_code(position="above")
+    return registered_experiment, registered_reader
+
+
+@app.cell
+def _(
+    capture_sequential,
+    completed_windows,
+    completion_days,
+    increment,
+    mo,
+    registered_experiment,
+    registered_reader,
+):
     uptake_trend = []
-    for _day in completion_days:
-        capture_sequential(_av_experiment, _av_reader, finalized=True, as_of=_day)
+    for capture_date in completion_days:
+        capture_sequential(
+            registered_experiment, registered_reader, finalized=True, as_of=capture_date
+        )
         uptake_trend.extend(
             increment.run(
-                _av_experiment.with_views(completed_windows),
-                _av_reader,
+                registered_experiment.with_views(completed_windows),
+                registered_reader,
                 views=(completed_windows,),
                 estimands=("compliance",),
             ).readout(completed_windows)
         )
+    mo.show_code(position="above")
     return (uptake_trend,)
 
 
 @app.cell(hide_code=True)
-def _(uptake_trend, pd):
+def _(pd, uptake_trend):
+    def format_ratio_set(bounds):
+        if bounds.empty:
+            return "∅"
+
+        def endpoint(value, certificate, *, lower):
+            if certificate.status in ("unresolved", "abstained"):
+                return certificate.status
+            if value is None:
+                return "−∞" if lower else "∞"
+            return f"{value:.6g}"
+
+        lower = endpoint(bounds.lower, bounds.lower_certificate, lower=True)
+        upper = endpoint(bounds.upper, bounds.upper_certificate, lower=False)
+        if bounds.status in ("unresolved", "abstained"):
+            return f"Lower: {lower}; upper: {upper}"
+        return (
+            f"{'(' if bounds.lower is None else '['}{lower}, "
+            f"{upper}{')' if bounds.upper is None else ']'}"
+        )
+
     uptake_table = pd.DataFrame(
         {
             "ds": r.ds,
             "uptake_lift": None if r.lift is None else f"{r.lift.value:.4g}",
-            "ratio_interval": str(r.sequential_result.bounds),
+            "ratio_set_rounded": format_ratio_set(r.sequential_result.bounds),
             "status": r.sequential_result.bounds.status,
+            "confidence": f"{1 - r.sequential_result.bounds.alpha:.3%}",
+            "alpha": str(r.sequential_result.bounds.alpha),
             "inference": r.inference,
+            "reason": "; ".join(
+                dict.fromkeys(
+                    certificate.reason
+                    for certificate in (
+                        r.sequential_result.bounds.lower_certificate,
+                        r.sequential_result.bounds.upper_certificate,
+                    )
+                    if certificate.status in ("unresolved", "abstained") and certificate.reason
+                )
+            ),
         }
         for r in uptake_trend
     )
     uptake_table
-    return (uptake_table,)
+    return (format_ratio_set,)
 
 
 @app.cell(hide_code=True)
-def _(uptake_trend, fixed_late_trend, mo):
+def _(fixed_late_trend, format_ratio_set, mo, uptake_trend):
     _fixed_first = fixed_late_trend[0]
     _fixed_last = fixed_late_trend[-1]
     _av_last = uptake_trend[-1]
+    _av_bounds = _av_last.sequential_result.bounds
 
     mo.md(f"""
     - **Fixed alpha, {len(fixed_late_trend)} dates:** [{_fixed_first.lift.lb:+.1%}, {_fixed_first.lift.ub:+.1%}] on {_fixed_first.ds}, [{_fixed_last.lift.lb:+.1%}, {_fixed_last.lift.ub:+.1%}] on {_fixed_last.ds} — repeated-look warning
-    - **Registered uptake:** {_av_last.sequential_result.bounds} — ratio-coordinate confidence sequence
+    - **Registered uptake:** {format_ratio_set(_av_bounds)} — rounded ratio-coordinate confidence sequence as of {_av_last.ds} ({1 - _av_bounds.alpha:.3%} confidence; α={_av_bounds.alpha}; {_av_bounds.status}; {_av_last.inference})
 
     The rows answer different questions: the causal effect among compliers and the randomized uptake contrast.
     """)

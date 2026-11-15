@@ -1,12 +1,12 @@
-"""Ratio denominator-skew coverage warning.
+"""Ratio denominator-skew heuristic.
 
-A fixed-horizon unit-grain ratio row whose denominator mean is skewed beyond
-the measured under-covering region in either arm raises the coded
+A fixed-horizon unit-grain ratio row whose denominator-mean skew exceeds
+the diagnostic threshold in either arm raises the coded
 ``estimation.engine.ratio_denominator_skew`` warning per flagged arm and
-carries a ``ratio_denominator_skew`` note naming each; a row whose moments
-lack the denominator's third moment says the check was unavailable instead
-of passing silently. The decision is the same through every ingress path
-that carries unit-level data, and the interval is unchanged by it.
+carries a structured advisory and ``ratio_denominator_skew`` note naming
+each. Unavailable checks retain their reasons. The decision is the same
+through every ingress path that carries unit-level data, and the interval
+is unchanged by it.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from increment import from_definitions, from_frame, from_moments, from_unit_day_
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import IncrementWarning, WireFormatError
 from increment.estimation.armstats import ArmStats
+from increment.estimation.decision_types import ArmHypothesisKey, MethodHypothesisKey
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.variance import (
     RATIO_DENOMINATOR_SKEW_THRESHOLD,
@@ -115,7 +116,29 @@ def test_missing_arm_does_not_suppress_warning_for_the_other_arm():
         "treatment", n=50, y_bar=2.2, var_y=1.0, d_bar=4.0, var_d=4.0, skew_d=4.0
     )
 
-    (row,), record = _estimate(control, treatment)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        computation = estimate_lift(
+            metrics=[_METRIC],
+            summary=summary(control, treatment),
+            control_group="control",
+        )
+    assert computation.failures == {}, computation.failures
+    (row,) = computation.results
+    (advisory,) = computation.advisories[
+        MethodHypothesisKey(ArmHypothesisKey("rpo", "treatment", "itt"), "unadjusted")
+    ]
+    assert advisory.code == _CODE
+    assert advisory.context["metric_name"] == "rpo"
+    assert advisory.context["threshold"] == RATIO_DENOMINATOR_SKEW_THRESHOLD
+    assert advisory.context["arms"] == {
+        "treatment": {
+            "n": 50,
+            "skewness": pytest.approx(4.0, rel=1e-12),
+            "statistic": pytest.approx(4.0 / math.sqrt(50), rel=1e-12),
+        }
+    }
+    assert advisory.context["unavailable_arms"] == {"control": "missing"}
 
     assert set(_flagged(record)) == {"treatment"}
     assert row.note is not None

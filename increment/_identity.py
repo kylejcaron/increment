@@ -12,7 +12,7 @@ _REFUSALS = refusals(
     InvalidRequestError,
     {
         "estimation.crossfit.identity_missing": "{what}[{index}] is missing (null/NaN); every row needs an identity",
-        "estimation.crossfit.identity_collision": "{what} contains distinct native identities {first} and {second} that both render as {canonical!r} -- canonicalize to one representation before calling rather than let them silently merge into one group",
+        "estimation.crossfit.identity_collision": "{what} contains distinct native identities {first} and {second} that both render as {canonical!r}; canonicalize to one representation before calling rather than let them silently merge into one group",
     },
 )
 _raise = raiser(_REFUSALS)

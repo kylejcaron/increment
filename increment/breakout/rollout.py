@@ -44,9 +44,9 @@ from increment.semantics.models import Metric, MetricBase
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "breakout.rollout_cost_names": "rollout_cost= names metrics these estimates do not carry: {unknown} (known: {known}) -- refusing rather than silently pricing a rollout at the wrong threshold",
+        "breakout.rollout_cost_names": "rollout_cost= names metrics these estimates do not carry: {unknown} (known: {known}); refusing rather than silently pricing a rollout at the wrong threshold",
         "breakout.rollout_cost_rollout": "rollout_cost={{{name!r}: {value}}}: a rollout cost is a relative lift and must be finite and > -1",
-        "breakout.price_rollout_metrics": "cannot price a rollout for metrics whose preferred_direction is not 'increase': {misdirected} -- the selection rule keeps segments whose lift EXCEEDS the cost, which presumes larger is better, so pricing a decrease-preferred metric would recommend the segments that moved worst. Drop it from metrics=, and from the estimates too if they carry it: pricing follows the estimates, while the declaration this refusal reads comes from metrics=, so removing it from only one of the two either leaves it priced at 0.0 or re-raises this same error",
+        "breakout.price_rollout_metrics": "cannot price a rollout for metrics whose preferred_direction is not 'increase': {misdirected}; the selection rule keeps segments whose lift EXCEEDS the cost, which presumes larger is better, so pricing a decrease-preferred metric would recommend the segments that moved worst. Drop it from metrics=, and from the estimates too if they carry it: pricing follows the estimates, while the declaration this refusal reads comes from metrics=, so removing it from only one of the two either leaves it priced at 0.0 or re-raises this same error",
     },
 )
 _raise = raiser(_REFUSALS)

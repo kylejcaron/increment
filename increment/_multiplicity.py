@@ -17,7 +17,7 @@ _REFUSALS = refusals(
     {
         "decision.multiplicity.validate_policy": "{correction} multiplicity requires q",
         "decision.multiplicity.bh": "q is only valid for BH multiplicity, got {correction!r}",
-        "decision.multiplicity.guarantee_mismatch": "multiplicity guarantee {guarantee!r} does not match correction {correction!r} -- the exact matrix is none->none, bonferroni->fwer, bh/e_bh->fdr",
+        "decision.multiplicity.guarantee_mismatch": "multiplicity guarantee {guarantee!r} does not match correction {correction!r}; the exact matrix is none->none, bonferroni->fwer, bh/e_bh->fdr",
     },
 )
 _raise = raiser(_REFUSALS)

@@ -74,7 +74,7 @@ _register_warning(
         f"{what}: centered sum of squares ({value:.6g}) is negative but "
         "within floating-point noise of zero; treating it as 0. The raw "
         "sums have cancelled (spread/|mean| near or below sqrt(eps) ~ "
-        "1e-8) and retain no variance information at this scale -- "
+        "1e-8) and retain no variance information at this scale; "
         "centre the values (subtract a constant offset) before "
         "aggregation to recover it."
     ),
@@ -87,7 +87,7 @@ _register_warning(
         f"{what}: centered sum of squares ({value:.6g}) is below its "
         f"floating-point noise floor (~{noise:.3g}); the variance is "
         "unreliable at this scale (spread/|mean| near sqrt(eps) ~ 1e-8) "
-        "-- centre the values (subtract a constant offset) before "
+        "; centre the values (subtract a constant offset) before "
         "aggregation."
     ),
 )
@@ -98,7 +98,7 @@ _register_warning(
     lambda *, what, value, noise: (
         f"{what}: centered cross sum ({value:.6g}) is below its "
         f"floating-point noise floor (~{noise:.3g}); the covariance is "
-        "unreliable at this scale (|mean| >> spread) -- centre the "
+        "unreliable at this scale (|mean| >> spread); centre the "
         "values (subtract a constant offset) before aggregation."
     ),
 )
@@ -1745,8 +1745,8 @@ def _opt_float(v: Any) -> float | None:
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "estimation.armstats.centered_sum_squares": "{what}: centered sum of squares is {value:.6g}, negative beyond floating-point rounding (~{variance_slack:.3g}). Raw float64 sums lose the variance signal once spread/|mean| (the coefficient of variation) drops toward sqrt(eps) ~ 1e-8 -- but a deficit this large means the moment sums are inconsistent (mis-aggregated or corrupted upstream), not merely cancelled.",
-        "estimation.armstats.cross_moment_materially": "{what}: cross moment {cross:.6g} is materially nonzero against a zero variance (var_a={var_a:.6g}, var_b={var_b:.6g}), which no real sample can produce -- the exact Cauchy-Schwarz bound is 0 and rounding at this scale is ~{floor:.3g}; these moments are corrupt, mis-aggregated, or drawn from mismatched partitions.",
+        "estimation.armstats.centered_sum_squares": "{what}: centered sum of squares is {value:.6g}, negative beyond floating-point rounding (~{variance_slack:.3g}). Raw float64 sums lose the variance signal once spread/|mean| (the coefficient of variation) drops toward sqrt(eps) ~ 1e-8; but a deficit this large means the moment sums are inconsistent (mis-aggregated or corrupted upstream), not merely cancelled.",
+        "estimation.armstats.cross_moment_materially": "{what}: cross moment {cross:.6g} is materially nonzero against a zero variance (var_a={var_a:.6g}, var_b={var_b:.6g}), which no real sample can produce; the exact Cauchy-Schwarz bound is 0 and rounding at this scale is ~{floor:.3g}; these moments are corrupt, mis-aggregated, or drawn from mismatched partitions.",
         "estimation.armstats.cross_moment_violates": RefusalSpec(
             "estimation.armstats.cross_moment_violates",
             InvalidRequestError,
@@ -1754,12 +1754,12 @@ _REFUSALS = refusals(
                 f"{what}: cross moment {cross:.6g} violates the Cauchy-Schwarz bound against "
                 f"variances {var_a:.6g} and {var_b:.6g} (|cross|={abs(cross):.6g} exceeds "
                 f"sqrt(var_a)*sqrt(var_b)={bound:.6g} by {excess:.6g}, beyond floating-point "
-                f"rounding ~{variance_slack:.3g}) -- these moments cannot come from a real "
+                f"rounding ~{variance_slack:.3g}); these moments cannot come from a real "
                 "sample; they are corrupt, mis-aggregated, or drawn from mismatched partitions."
             ),
         ),
         "estimation.armstats.summary_stats.mean_finite": "mean must be finite, got {mean}",
-        "estimation.armstats.arm_stats.skew_den_inconsistent": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: the carried third moment cden3={cden3!r} is non-finite or exceeds the largest skewness any sample of n={n} values attains -- it overflowed or was mis-aggregated upstream; the second moments remain usable",
+        "estimation.armstats.arm_stats.skew_den_inconsistent": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: the carried third moment cden3={cden3!r} is non-finite or exceeds the largest skewness any sample of n={n} values attains; it overflowed or was mis-aggregated upstream; the second moments remain usable",
         "estimation.armstats.summary_stats.var_finite": "var must be finite, got {var}",
         "estimation.armstats.arm_stats.skew_den_underflow": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: cden3 is zero while the centered second moment ({cden2!r}) is so small that cubed residuals underflow; rescale the denominator to check skew",
         "estimation.armstats.arm_stats.obsolete_armstats_fields": "obsolete ArmStats fields are not supported: {obsolete}; weighted estimands must use ScoreStats",
@@ -1772,8 +1772,8 @@ _REFUSALS = refusals(
         "estimation.armstats.arm_stats.cxden_complete_denominator": "cxden requires complete x and denominator prerequisite families",
         "estimation.armstats.arm_stats.cden3_complete_denominator": "cden3 requires the complete denominator prerequisite family",
         "estimation.armstats.arm_stats.cxd_complete_uptake": "cxd requires complete x and uptake prerequisite families",
-        "estimation.armstats.arm_stats.sum_d_outside": "sum_d={sum_d!r} is outside [0, n={n}] for metric={metric!r} group={group_id!r} -- an uptake count cannot be negative or exceed the arm's own unit count",
-        "estimation.armstats.arm_stats.sum_d_zero_but_masked_nonzero": "sum_d=0 for metric={metric!r} group={group_id!r} but {nonzero} nonzero -- no unit took up, so every uptake-masked moment must be exactly zero; these moments were not produced from the same mask",
+        "estimation.armstats.arm_stats.sum_d_outside": "sum_d={sum_d!r} is outside [0, n={n}] for metric={metric!r} group={group_id!r}; an uptake count cannot be negative or exceed the arm's own unit count",
+        "estimation.armstats.arm_stats.sum_d_zero_but_masked_nonzero": "sum_d=0 for metric={metric!r} group={group_id!r} but {nonzero} nonzero; no unit took up, so every uptake-masked moment must be exactly zero; these moments were not produced from the same mask",
         "estimation.armstats.arm_stats.winsorization_metadata_winsor": "winsorization metadata requires winsor_n and both cap counts",
         "estimation.armstats.arm_stats.winsorization_cap_counts": "winsorization cap counts cannot exceed winsor_n",
         "estimation.armstats.arm_stats.winsorization_metadata_finite": "winsorization metadata {name} must be finite",
@@ -1790,7 +1790,7 @@ _REFUSALS = refusals(
         "estimation.armstats.arm_stats.needs_covariate_ref": "needs covariate: ref_x/cx1 is None (CUPED not materialised)",
         "estimation.armstats.arm_stats.mean_den_needs_ref_den": "ratio-family moments require ref_den/cden1 (not None)",
         "estimation.armstats.arm_stats.mean_d_needs_uptake_sum": "needs uptake: sum_d is None (uptake fact not materialised)",
-        "estimation.armstats.arm_stats.centered_sum_squares": "{what}: centered sum of squares is {c2:.6g}, but it is a sum of squares and cannot be negative -- these moments are corrupt or were not produced by a moments builder.",
+        "estimation.armstats.arm_stats.centered_sum_squares": "{what}: centered sum of squares is {c2:.6g}, but it is a sum of squares and cannot be negative; these moments are corrupt or were not produced by a moments builder.",
         "estimation.armstats.arm_stats.needs_covariate_cx2": "needs covariate: cx2/cx1 is None (CUPED not materialised)",
         "estimation.armstats.arm_stats.var_den_needs_cden2": "ratio-family moments require cden2/cden1 (not None)",
         "estimation.armstats.arm_stats.skew_den_needs_cden3": "denominator skewness requires cden3/cden2/cden1 (not None); this row's producer did not carry the denominator's third moment",
@@ -1802,13 +1802,13 @@ _REFUSALS = refusals(
         "estimation.armstats.arm_stats.cov_yd_needs_uptake_sum_cyd": "needs uptake: sum_d/cyd is None (uptake fact not materialised)",
         "estimation.armstats.arm_stats.needs_covariate_uptake": "needs covariate x uptake: cxd is None. Both a CUPED covariate and an uptake fact must be materialised on the same arm: from a definitions path, set n_pre_periods > 0 on the experiment; from from_unit_summary, declare the column with Method.cuped(covariates=...) alongside uptake='<column>'.",
         "estimation.armstats.centered_raw_row": "centered/raw row carries unsupported weighted ArmStats fields: {unsupported}; weighted estimands must use ScoreStats.",
-        "estimation.armstats.score_stats.cluster_variance": "cluster_variance and n_clusters must be set together -- a clustered second moment without its K has no coherent SE.",
-        "estimation.armstats.score_stats.n_clusters_clustered": "n_clusters must be >= 1, got {n_clusters} -- a clustered SE with no clusters has no coherent reference.",
+        "estimation.armstats.score_stats.cluster_variance": "cluster_variance and n_clusters must be set together; a clustered second moment without its K has no coherent SE.",
+        "estimation.armstats.score_stats.n_clusters_clustered": "n_clusters must be >= 1, got {n_clusters}; a clustered SE with no clusters has no coherent reference.",
         "estimation.armstats.score_stats.score_scale": "{field} must be finite and positive, got {value!r}",
-        "estimation.armstats.score_stats.cluster_score_scale": "cluster_score_scale requires cluster_variance and n_clusters -- a cluster scale without clustered moments has no meaning.",
+        "estimation.armstats.score_stats.cluster_score_scale": "cluster_score_scale requires cluster_variance and n_clusters; a cluster scale without clustered moments has no meaning.",
         "estimation.armstats.score_stats.se_needs_positive": "se() needs a positive normalizer, got {normalizer}",
         "estimation.binomial.binary_provenance_required": "binary_counts requires a declared conversion/retention metric type (a structural 0/1-per-unit fact), got metric_type={metric_type!r}: matching moments alone never proves a metric is genuinely Bernoulli",
-        "estimation.binomial.independent_units_required": "binary_counts(metric={metric!r}, group_id={group_id!r}): the arm carries a CUPED covariate, ratio denominator, or uptake-mask family -- clustered, weighted, adjusted, or otherwise non-unit-grain observations are not independent Bernoulli units this method admits",
+        "estimation.binomial.independent_units_required": "binary_counts(metric={metric!r}, group_id={group_id!r}): the arm carries a CUPED covariate, ratio denominator, or uptake-mask family; clustered, weighted, adjusted, or otherwise non-unit-grain observations are not independent Bernoulli units this method admits",
         "estimation.binomial.exact_counts_required": RefusalSpec(
             "estimation.binomial.exact_counts_required",
             CapabilityError,
@@ -1822,7 +1822,7 @@ _REFUSALS = refusals(
         "estimation.binomial.inconsistent_bernoulli_variance": RefusalSpec(
             "estimation.binomial.inconsistent_bernoulli_variance",
             BinomialDataError,
-            template="binary_counts(metric={metric!r}, group_id={group_id!r}): centered sum of squares cy2={cy2!r} does not match the Bernoulli-consistent value {expected_cy2!r} for n={n!r} within tolerance {tolerance!r} -- this arm's y values are not genuinely independent 0/1 draws (matching moments alone do not prove Bernoulli provenance; this is a corruption guard on top of the declared metric type)",
+            template="binary_counts(metric={metric!r}, group_id={group_id!r}): centered sum of squares cy2={cy2!r} does not match the Bernoulli-consistent value {expected_cy2!r} for n={n!r} within tolerance {tolerance!r}; this arm's y values are not genuinely independent 0/1 draws (matching moments alone do not prove Bernoulli provenance; this is a corruption guard on top of the declared metric type)",
         ),
         "estimation.armstats.independent_mean_contract": RefusalSpec(
             "estimation.armstats.independent_mean_contract",

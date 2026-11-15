@@ -87,7 +87,7 @@ _REFUSALS = refusals(
     {
         "estimation.engine.method.name_without_variance": "Method(name={self!r}) without its matching variance_reduction would label an unadjusted estimate as CUPED-adjusted.",
         "estimation.engine.method_covariates": "method {method!r} has an invalid CUPED covariate declaration for its variance-reduction procedure",
-        "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
+        "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds; IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
         "estimation.variance.registry.no_registered_available": _VARIANCE_REGISTRY_REFUSAL,
         "readout.cell.key_invalid": _CELL_KEY_INVALID_REFUSAL,
         "estimation.estimator.ref.invalid_id": "Estimator id {estimator_id!r} must be a qualified identifier.",

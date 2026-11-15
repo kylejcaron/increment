@@ -66,7 +66,7 @@ _REFUSALS = refusals(
         "estimation.absorption.contains_non_finite": "{name} contains non-finite values",
         "estimation.absorption.non_negative": "{name} must be non-negative, got {arr}",
         "estimation.absorption.contain_exact_integer": "{name} must contain exact integer unit counts, got {arr}",
-        "estimation.absorption.absorption_interval_half": "absorption interval half-width is not representable in float64 (critical value {crit:.6g} x se {se:.6g}) -- the effect is not estimable at this scale",
+        "estimation.absorption.absorption_interval_half": "absorption interval half-width is not representable in float64 (critical value {crit:.6g} x se {se:.6g}); the effect is not estimable at this scale",
         "estimation.absorption.pooling_one": "pooling must be one of {pooling_options}, got {pooling!r}",
         "estimation.absorption.all_moment_arrays": "all moment arrays must have the same length, got sizes {lengths}",
         "estimation.absorption.need_least_levels": "need at least {min_levels} levels with >= {min_cell_n} units in both arms; got {n_usable}",
@@ -96,7 +96,7 @@ _register_warning(
         f"treatment share varies across factor levels (min {share_min:.3f}, "
         f"max {share_max:.3f}) and the within (pooling='hard') estimate "
         f"{tau_fe:.6g} disagrees with the unpooled (pooling='none') estimate "
-        f"{tau_none:.6g} beyond noise -- the factor is confounded with "
+        f"{tau_none:.6g} beyond noise; the factor is confounded with "
         "assignment, and partial pooling removes only part of that "
         "confounding; use pooling='hard' for this comparison"
     ),

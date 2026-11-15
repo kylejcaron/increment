@@ -13,6 +13,65 @@ keep one format:
 | Portable cells to exchange or archive | `result.envelope.to_payload()` or `.to_arrow()` | Versioned result cells and run metadata; no raw outcomes. |
 | A saved run to decide again | `results_store=` on `run`, then `RunResult.from_handle` | The stored run's cells and decision plan. |
 
+In HTML readout tables, **Additive effect** shows the estimate above smaller,
+muted bounds, like **Lift %**, but in the metric's original units. Both the
+estimate and its bounds use three significant digits. Small nonzero effects
+stay nonzero; large magnitudes may use scientific notation. Unavailable bounds
+are labeled, not shown as unbounded. This changes display only: result fields,
+dataframes and exported results keep their original values and precision.
+
+HTML readouts use one **Result** column, with matching plot colors. When a
+procedure separately selects comparisons, its recorded selection determines the
+result; otherwise the comparison's own test does. Fixed-horizon Bonferroni
+comparisons use their already-adjusted intervals; they do not require a separate
+selection verdict. A comparison not selected remains gray **Inconclusive** even if
+its own test rejects. Missing evidence is **Unavailable**, not inconclusive.
+Green means a favorable finding and red an adverse finding. Blue means
+**Difference detected**: the evidence establishes a difference, but whether it
+is favorable is not established. Gray means **Inconclusive** or **Unavailable**,
+distinguished by the label.
+Breakout and daily rows retain the metric's declared preferred direction,
+including when saved and reloaded. Older saved rows without this metadata can
+still show a detected difference in blue, but never infer a preference from
+the effect's sign.
+A one-sided safety guardrail shows **Guardrail passed** when the evidence rules
+out its declared unacceptable loss. This can include a small decline within the
+allowed margin. Failing that safety test is **Inconclusive**, not proof of harm.
+The original test and family verdicts, intervals and qualifications are unchanged.
+Tests against a nonzero target use **Above threshold** or **Below threshold**
+instead of implying a gain or loss versus control. A confidence set that
+establishes a difference but not its direction stays neutral.
+
+For supported fixed-horizon, one-sided guardrails, HTML tables show only the
+bound relevant to the safety test. A lower-bound test leaves the upper end open;
+an upper-bound test leaves the lower end open. The confidence label describes
+that one-sided bound: a stored 90% central interval can supply a 95% one-sided
+bound with the same finite endpoint. Already one-sided bounds retain their own
+confidence level. When an additive effect has a different confidence level, its
+cell states that level separately. Saved estimates and CSV retain the original
+intervals; this presentation does not change the test or its result.
+
+The dashboard deliberately omits the **Result** column from its Readout,
+Explore, and Report tables. It retains the same plot colors, with result and
+test details in the metric inspector and expanded method notes. Its
+result-specific caveat markers sit beside the lift instead. Ordinary
+`readout_table()` calls retain the column by default.
+
+When a result needs a caveat, its **Result** label carries a numbered marker,
+such as **Inconclusive¹**. The corresponding note appears beneath the table;
+there is no separate **Qualification** column. Identical full caveats share a
+note; different technical details get separate numbers. The markers identify the
+applicable rows without repeating their names beneath the table. Each table
+numbers its own notes without reusing its multiple-testing markers. Filtering
+the input rebuilds both markers and notes for the retained rows.
+These notes also survive native `.gt()` rendering, notebook display, and table
+header or theme customization. Routine numerical assumptions about the
+calculation method do not add a **Result** marker or table footnote. They remain
+in the recorded technical evidence. In the dashboard metric inspector, expand
+**Advanced calculation record** to see the captured assumption and each
+result's identity and input counts, when available. Result-specific caveats,
+missing evidence, and calculation failures remain visible.
+
 `readout()` without a scope is valid only when the run executed one view. With
 several views, pass one of the experiment's scopes; omitting it refuses with
 `results.readout.scope_required`, and a scope the run did not execute refuses
@@ -183,6 +242,8 @@ table label ends with "(displayed interval rounded outward)". Its direction
 comes from the side its evidence rejects on (`residual_side`): an increase
 when it rejects above a null at or above zero, a decrease when it rejects
 below a null at or below zero, and otherwise as the interval shows.
+The Result label and its color follow that recorded test direction, even when
+the displayed bounds touch the threshold.
 Absolute-native estimates and contrasts use additive intervals; relative rows
 with an absolute margin use their retained additive interval; sequential ratio
 bounds are interpreted after conversion to
@@ -364,6 +425,11 @@ estimated. A partial result is not a complete decision.
 | `unsupported_assignment` | This source or design cannot evaluate the declared assignment law. |
 | `not_applicable` | The check does not apply to this source/design/population; it is not a pass. |
 
+Standalone tables and dashboards keep unsupported or unchecked assignment
+checks visible outside expandable evidence. Missing checks on triggered
+counts alone are not repeated as assignment warnings; use the
+assigned-population check.
+
 Use assignment evidence from the assigned population at its declared
 randomization grain. Triggered counts describe an outcome subset, not
 assignment-law evidence.
@@ -442,10 +508,10 @@ rejecting primary; run the experiment again to record the sides.
 
 ## Fixed horizon: guard the missing point
 
-The collection summary leads with the metric results. It shows integrity and
-scope qualifications only when they affect how to read those results. This
-example includes an exact conversion row with zero control conversions, so its
-relative point is unavailable even though the confidence set remains informative.
+A readout table keeps the metric estimates first and puts source checks and
+qualifications in expandable sections. This example has zero control conversions:
+the relative point is unavailable, but its confidence set still informs the result.
+Render it with the `tables` extra installed.
 
 ```python
 from random import Random
@@ -453,6 +519,7 @@ from random import Random
 import polars as pl
 
 import increment
+from increment.tables import readout_table
 
 rng = Random(13)
 n = 200
@@ -478,18 +545,8 @@ experiment, reader = increment.from_frame(
     metrics={"revenue": "mean", "converted": "conversion"},
 )
 results = increment.run(experiment, reader).readout()
-print(results)
 
-for r in results:
-    if r.lift is None or r.lift.lb is None or r.lift.ub is None:
-        # no point, or a withheld or open bound; str shows the row's set or reason
-        print(str(r))
-        continue
-    print(
-        f"{r.metric} / {r.group_id}: "
-        f"lift={r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}] "
-        f"significant={r.stat_sig()}"
-    )
+readout_table(results, title="Revenue and conversion")
 
 # The default frame retains qualified evidence; selected views retain requested
 # projection columns and view_partial.
@@ -525,26 +582,6 @@ string, such as `columns="lift"`, raises `results.frame.columns_string`; pass
     unknown names raise `results.frame.unknown_columns`.
 
 
-<!-- output -->
-```text
-assigned — treatment vs control
-converted: control → treatment; n control=89; n treatment=111; mean control=0; mean treatment=0.36036; estimand=itt; stat_sig=True
-converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
-converted additive effect: 0.36036, set [0.276908, 0.4532].
-converted binomial set central: [161.559%, ∞) at 95% confidence.
-converted test alternative: two-sided; null (relative lift): 0%.
-converted result identity: method unadjusted; method role decision; estimand itt.
-revenue: control → treatment; n control=89; n treatment=111; mean control=14.764; mean treatment=16.1622; effect=9.46974%; interval=[3.27365%, 16.0376%]; estimand=itt; stat_sig=True
-revenue (outcome, relative lift): 9.46974%, set [3.27365%, 16.0376%] at 95% confidence.
-revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
-revenue additive effect: 1.39812, set [0.504942, 2.29129].
-revenue test alternative: two-sided; null (relative lift): 0%.
-revenue result identity: method unadjusted; method role decision; estimand itt.
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Multiplicity (outcome): undeclared_plan; family retained scope.
-revenue / treatment: lift=+9.47% [+3.27%, +16.04%] significant=True
-LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=[161.6%, ∞), route='finite_sample', discovery=None)
-```
 
 ## Read the row's scale
 

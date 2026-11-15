@@ -6,6 +6,7 @@ warehouse query, owns no connection, and computes no statistics itself.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import csv
 import datetime as dt
@@ -15,7 +16,6 @@ import json
 import math
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
 from types import MappingProxyType
@@ -64,12 +64,16 @@ from increment.breakout.estimates import (
 from increment.dashboard._format import allocation_evidence, allocation_verdict
 from increment.dashboard._theme import MIDNIGHT, DashboardTheme, require_theme
 from increment.errors import (
+    PACKAGE_FRAMES,
     CapabilityError,
     CodedError,
+    IncrementRuntimeWarning,
     InvalidRequestError,
     RefusalSpec,
+    WarningSpec,
     _freeze,
     refuse,
+    warn,
 )
 from increment.estimation.diagnostics import SRMResult
 from increment.estimation.exploratory_family import (
@@ -77,6 +81,7 @@ from increment.estimation.exploratory_family import (
     select_exploratory_family,
 )
 from increment.estimation.health import ExperimentHealth
+from increment.estimation.readout_types import partial_metadata
 from increment.tables import _retained_coverage_alpha, estimates_to_readout
 
 if TYPE_CHECKING:
@@ -615,14 +620,34 @@ def _binding_fingerprint(definition: Mapping[str, object], metrics: Mapping[str,
     return hashlib.sha256(canonical_json_bytes(declaration_value(payload))).hexdigest()
 
 
-@contextmanager
-def _each_warning_once() -> Iterator[None]:
-    """Show each distinct warning raised inside once, by category, message and metric.
+_STATISTICAL_CAUTION_CODES = frozenset(
+    {
+        "estimation.engine.ratio_denominator_skew",
+        "estimation.engine.ratio_denominator_precision",
+    }
+)
+_STATISTICAL_CAUTIONS = WarningSpec(
+    "dashboard.statistical_cautions",
+    IncrementRuntimeWarning,
+    lambda *, metrics, codes: (
+        "Some dashboard results have statistical cautions for "
+        f"{', '.join(metric.replace('_', ' ') for metric in metrics)}. "
+        "See Diagnostics for affected dates, segments and arms."
+    ),
+)
 
-    The caller's filters still decide, where each warning is raised, whether it is ignored,
-    shown or raised; each distinct warning they would show is shown once, when the block ends.
+
+@contextlib.contextmanager
+def _each_warning_once() -> Iterator[None]:
+    """Summarize ratio cautions; show each unrelated warning once.
+
+    The caller's filters apply at the original warning. A successful preparation emits
+    one summary for the cautions that were shown; ignored warnings stay ignored and
+    warnings promoted to errors still abort immediately.
     """
     caught: list[warnings.WarningMessage] = []
+    metrics: set[str] = set()
+    codes: set[str] = set()
     try:
         with warnings.catch_warnings(record=True) as caught:
             yield
@@ -631,6 +656,11 @@ def _each_warning_once() -> Iterator[None]:
         for record in caught:
             context = getattr(record.message, "context", None)
             metric = context.get("metric") if isinstance(context, Mapping) else None
+            code = getattr(record.message, "code", None)
+            if code in _STATISTICAL_CAUTION_CODES and metric is not None:
+                metrics.add(str(metric))
+                codes.add(code)
+                continue
             key = (record.category, str(record.message), None if metric is None else str(metric))
             if key not in shown:
                 shown.add(key)
@@ -642,6 +672,16 @@ def _each_warning_once() -> Iterator[None]:
                     record.file,
                     record.line,
                 )
+    if metrics:
+        # Python 3.12 skips strict prefixes, not a complete filename.
+        warn(
+            _STATISTICAL_CAUTIONS,
+            context={"metrics": tuple(sorted(metrics)), "codes": tuple(sorted(codes))},
+            skip_file_prefixes=(
+                *PACKAGE_FRAMES,
+                contextlib.__file__.removesuffix(".py"),
+            ),
+        )
 
 
 def prepare_dashboard(
@@ -655,8 +695,8 @@ def prepare_dashboard(
     never touches the warehouse and a later source change cannot make the views disagree
     with the headline; reexecuting the source cell is an intentional new snapshot. The caller
     keeps ownership of ``reader`` and its connection: nothing here closes or replaces them,
-    and the snapshot retains neither. Each distinct warning the preparation raises is shown
-    once.
+    and the snapshot retains neither. Repeated ratio cautions become one summary;
+    each distinct unrelated warning is shown once. Details remain on affected results.
     """
     with _each_warning_once():
         return _prepare_dashboard(experiment, reader, config=config)
@@ -1447,8 +1487,21 @@ def _cell_place(cell: Any) -> str:
     return f"{dimension} = {cell.dimension_value}"
 
 
-def _collection_with_metadata(collection, metadata, rows):
-    return cast(Any, collection)(rows, metadata=metadata)
+def _collection_with_metadata(collection, metadata, rows, **scope):
+    rows = tuple(rows)
+    return cast(Any, collection)(rows, metadata=partial_metadata(metadata, rows, "filter"), **scope)
+
+
+def _captured_collection(data):
+    scope = (
+        {
+            "envelope_view": data._envelope_view,
+            "completion_policy": data._envelope_completion_policy,
+        }
+        if isinstance(data, (DailyMetricValues, DailyLiftEstimates))
+        else {}
+    )
+    return partial(_collection_with_metadata, type(data), data.metadata, **scope)
 
 
 def _capture_explore(
@@ -1505,7 +1558,7 @@ def _capture_overview(
                 captures[one] = DashboardExploreCapture.answered(
                     one,
                     part,
-                    collection=partial(_collection_with_metadata, type(part), part.metadata),
+                    collection=_captured_collection(part),
                 )
                 parts.append(part)
         if parts:
@@ -1572,7 +1625,11 @@ def _capture_explore_population(
         except CodedError as exc:
             captures[key] = DashboardExploreCapture.refused(key, exc)
         else:
-            captures[key] = DashboardExploreCapture.answered(key, data, collection=type(data))
+            captures[key] = DashboardExploreCapture.answered(
+                key,
+                data,
+                collection=_captured_collection(data),
+            )
         return captures[key]
 
     def ask_together_and_alone(
@@ -1595,7 +1652,11 @@ def _capture_explore_population(
             return False
         for metric, data in zip((None, *names), answered, strict=True):
             key = (population, "cumulative_lift", metric, complete, breakout)
-            captures[key] = DashboardExploreCapture.answered(key, data, collection=type(data))
+            captures[key] = DashboardExploreCapture.answered(
+                key,
+                data,
+                collection=_captured_collection(data),
+            )
         return True
 
     whole: tuple[tuple[BreakoutChoice | None, SourceBinding | DashboardBreakoutReads], ...] = (
@@ -1645,7 +1706,9 @@ def _capture_explore_population(
                 else:
                     key = (population, view, name, complete, breakout)
                     captures[key] = DashboardExploreCapture.answered(
-                        key, rows, collection=type(batch)
+                        key,
+                        rows,
+                        collection=_captured_collection(batch),
                     )
 
     if added:
