@@ -1453,7 +1453,11 @@ def test_triggered_native_wrapper_preserves_physical_stream_inventory(tmp_path):
 
 
 @pytest.mark.integration
-def test_custom_provider_preserves_snapshot_after_update(tmp_path):
+@pytest.mark.parametrize("original_snapshot", (False, True))
+@pytest.mark.parametrize("coherence", ("captured", "live"))
+def test_custom_provider_preserves_original_snapshot_request_after_update(
+    tmp_path, original_snapshot, coherence
+):
     from increment.evidence import EvidenceProvider, EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
 
@@ -1503,20 +1507,28 @@ def test_custom_provider_preserves_snapshot_after_update(tmp_path):
         EvidenceScope(
             metrics=tuple(source.context.metrics),
             configs=tuple(source.context.configs),
-            snapshot=True,
+            snapshot=original_snapshot,
         ),
         run_id="custom-snapshot",
+        coherence=coherence,
     )
     try:
+        before = run(provider, coherence=coherence)
+        before_value = before[0].require_lift().value
+        provider.requests.clear()
         context.open()
-        assert provider.requests[0].snapshot is True
+        assert provider.requests[0].snapshot is original_snapshot
         source._con.raw_sql(
             "UPDATE raw_events SET revenue = revenue + 100 "
             "WHERE event = 'purchase' AND group_id IS NULL"
         )
-        rows = run(provider, execution_context=context)
+        rows = run(provider, coherence=coherence, execution_context=context)
         assert rows
-        assert rows[0].require_lift().value == pytest.approx(2.0)
+        value = rows[0].require_lift().value
+        if original_snapshot:
+            assert value == pytest.approx(before_value)
+        else:
+            assert value != pytest.approx(before_value)
     finally:
         context.close()
         resolver.close()

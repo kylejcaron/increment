@@ -135,6 +135,14 @@ to its identity and the same snapshot. Breakout rows name the source the
 experiment declares for each breakout; when the experiment leaves a breakout's
 source unnamed, a provider's rows leave it unnamed too.
 
+Execution owns the lifetime of a selected scope, not its ingress policy. Built-in
+providers derive `snapshot` from the run's requested coherence; custom providers
+receive the original scope's `snapshot` value unchanged. A custom provider that
+forwards artifact reads remains provider-owned and does not inherit the artifact's
+capture guarantee. Keep provider selection, ownership classification and stream
+inventory acquisition below the execution-context boundary; the context validates
+authorized source identities and closes only the scope it entered.
+
 Triggered daily and as-of readouts need two separate kinds of evidence:
 trigger observation edges for each metric, and the experiment reconstruction
 metadata used to build the complete day axis (including zero-population early

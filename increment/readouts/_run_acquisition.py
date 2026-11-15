@@ -20,6 +20,7 @@ from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._source_types import _BuiltinMomentSource
     from increment.kernel.context import EvidenceExecutionContext
     from increment.semantics.models import Metric
 
@@ -63,6 +64,12 @@ class RunAcquisitionOwner:
         from increment.readouts._provider import scope_provider
 
         return scope_provider(source)
+
+    @staticmethod
+    def loader_for(source: EvidenceSource) -> _BuiltinMomentSource:
+        from increment._evidence_scopes import loader_source
+
+        return loader_source(source)
 
     @staticmethod
     def prepare(request: RunAcquisitionRequest) -> PreparedRunAcquisition:

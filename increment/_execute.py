@@ -32,16 +32,12 @@ from increment._runnability import (
     scope_operation,
     validate_breakout_identities,
 )
-from increment._source_admission import (
-    _arm_experiment,
-    _require_analysis_operation,
-)
-from increment._source_types import is_custom_source
+from increment._source_admission import _arm_experiment
 from increment.decision import ContrastAnalysisState
 from increment.errors import CodedError, refuse
 from increment.estimation.engine import Method
 from increment.estimation.readout_types import ScopedReadout
-from increment.readouts._evidence import retained_sequential_capture
+from increment.readouts._evidence import retained_sequential_capture, validate_execution_population
 from increment.readouts._execution_context import (
     current_execution_context,
     execution_context_scope,
@@ -118,20 +114,7 @@ def readout_source(
 ) -> _BuiltinMomentSource:
     """Validate a requested population; the evidence request selects it."""
     source = binding.source
-    if population == "triggered":
-        if is_custom_source(source):
-            from increment._evidence_refusals import require_population
-
-            require_population(source, population)
-        else:
-            _require_analysis_operation(
-                source,
-                "triggered_source",
-                message=(
-                    "A triggered readout requires a source retaining the raw event stream "
-                    "and its declared trigger."
-                ),
-            )
+    validate_execution_population(source, population)
     return source
 
 

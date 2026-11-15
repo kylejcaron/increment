@@ -1436,7 +1436,6 @@ depends_on = [
   "increment._run_spines",
   "increment._runnability",
   "increment._source_admission",
-  "increment._source_types",
   "increment.breakout.estimates",
   "increment.decision",
   "increment.errors",
@@ -1947,8 +1946,8 @@ depends_on = ["increment.errors"]
 path = "increment.kernel.context"
 layer = "core"
 depends_on = [
-  "increment._evidence_types", "increment._source_types", "increment.kernel.contracts",
-  "increment.errors",
+  "increment._evidence_types", "increment._source_types", "increment._evidence_scopes",
+  "increment.kernel.contracts", "increment.errors",
 ]
 
 [[modules]]

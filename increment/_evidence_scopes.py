@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
@@ -33,6 +33,69 @@ from increment._source_types import (
     is_custom_source,
 )
 from increment.errors import InvalidRequestError
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedProviderScope:
+    request: EvidenceScope
+    provider_owned: bool
+    result: EvidenceScopeResult
+
+
+def scope_owner(source: object) -> object:
+    """Resolve only adapters that explicitly own an underlying loader."""
+    return _loader_owner(source)
+
+
+def scope_source_identity(source: object) -> int:
+    """Return the stable identity authorized across an owned adapter boundary."""
+    return id(scope_owner(source))
+
+
+def prepare_provider_scope(
+    provider: EvidenceProvider,
+    original_scope: EvidenceScope,
+    *,
+    requested_coherence: Literal["captured", "live"],
+) -> _PreparedProviderScope:
+    """Classify scope ownership, derive its request, and acquire the unopened scope."""
+    owner = scope_owner(provider)
+    provider_owned = is_custom_source(owner) or bool(getattr(provider, "provider_owned", False))
+    request = replace(
+        original_scope,
+        snapshot=(original_scope.snapshot if provider_owned else requested_coherence == "captured"),
+        execution=True,
+    )
+    result = provider.scope(request)
+    return _PreparedProviderScope(request, provider_owned, result)
+
+
+def scope_stream_inventory(
+    prepared: _PreparedProviderScope, scoped: EvidenceSource
+) -> tuple[EvidenceStream, ...]:
+    """Acquire the stream inventory for an already opened provider scope."""
+    result = prepared.result
+    streams = result.streams or (
+        result.stream_resolver(scoped) if result.stream_resolver is not None else ()
+    )
+    if streams:
+        return streams
+    if prepared.provider_owned:
+        return (EvidenceStream("provider", "provider"),)
+    return evidence_streams_for_scope(scope_owner(scoped), prepared.request)
+
+
+def revalidate_scope_inventory(
+    stream_resolver: Callable[[EvidenceSource], tuple[EvidenceStream, ...]] | None,
+    scoped: EvidenceSource,
+    pinned: Mapping[str, str],
+) -> Mapping[str, str]:
+    """Read the current stream inventory for captured-scope borrow validation."""
+    if stream_resolver is None:
+        return pinned
+    return MappingProxyType(
+        {stream.identity: stream.physical for stream in stream_resolver(scoped)}
+    )
 
 
 def day_axis_capture_supported(source: EvidenceSource, request: Any) -> bool:

@@ -163,6 +163,15 @@ def test_custom_provider_without_stream_inventory_has_provider_mode():
 
         def capture_sequential(self, *_args: Any, **_kwargs: Any) -> None: ...
 
+        def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
+            result = super().scope(request)
+            return EvidenceScopeResult(
+                result.source,
+                request,
+                stream_resolver=lambda _scoped: (),
+                capture_status=result.capture_status,
+            )
+
     provider = Provider()
     context = EvidenceExecutionContext(
         cast(Any, provider), EvidenceScope(), run_id="provider-inventory"

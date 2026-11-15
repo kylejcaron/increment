@@ -650,6 +650,23 @@ def load_health_feed_diagnostics(
     )
 
 
+def validate_execution_population(source: EvidenceSource, population: str) -> None:
+    """Validate triggered-population support at the evidence acquisition boundary."""
+    if population != "triggered":
+        return
+    if is_custom_source(source):
+        require_population(source, population)
+        return
+    _require_analysis_operation(
+        cast(Any, source),
+        "triggered_source",
+        message=(
+            "A triggered readout requires a source retaining the raw event stream "
+            "and its declared trigger."
+        ),
+    )
+
+
 def _builtin_source(src: EvidenceSource) -> _BuiltinMomentSource:
     """Bridge typed scoped providers to the loader-shaped acquisition seam."""
     return loader_source(src)
