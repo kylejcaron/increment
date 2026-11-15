@@ -48,8 +48,6 @@ dataframes; this example uses Polars.
 ## Quickstart
 
 Start with one row per user: the variant they saw and what they did.
-The HTML readout uses the `tables` extra (`pip install 'increment[tables]'`)
-and displays in a notebook.
 
 ```python
 from random import Random
@@ -57,7 +55,6 @@ from random import Random
 import polars as pl
 
 from increment import from_frame, run
-from increment.tables import readout_table
 
 # Simulated data: treatment raises revenue and conversion by 8%.
 rng = Random(7)
@@ -82,6 +79,18 @@ experiment, reader = from_frame(
     metrics=["revenue", "converted"],
 )
 result = run(experiment, reader)
+print(result.readout())
+```
+
+For an HTML table in a notebook, add the `tables` extra to the source install:
+
+```bash
+python -m pip install "increment[tables] @ git+https://github.com/kylejcaron/increment.git@0381d0f5725228a45288125493abc2e1714d65f6"
+```
+
+```python
+from increment.tables import readout_table
+
 readout_table(result, title="Revenue and conversion")
 ```
 

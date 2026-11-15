@@ -673,10 +673,14 @@ def _each_warning_once() -> Iterator[None]:
                     record.line,
                 )
     if metrics:
+        # Python 3.12 skips strict prefixes, not a complete filename.
         warn(
             _STATISTICAL_CAUTIONS,
             context={"metrics": tuple(sorted(metrics)), "codes": tuple(sorted(codes))},
-            skip_file_prefixes=(*PACKAGE_FRAMES, contextlib.__file__),
+            skip_file_prefixes=(
+                *PACKAGE_FRAMES,
+                contextlib.__file__.removesuffix(".py"),
+            ),
         )
 
 
