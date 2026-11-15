@@ -673,9 +673,14 @@ def _require_evidence(
         if operation != "sql" and "day_source" in evidence.operations:
             from increment._source_types import is_builtin_source
 
-            if not is_builtin_source(src):
-                # A provider forwarding to a loader with a day source answers daily and
-                # as-of requests through it; built-in loaders keep their own refusals.
+            if is_builtin_source(src):
+                from increment._evidence_types import DayAxisRequest
+
+                if isinstance(request, DayAxisRequest):
+                    offered = offered | {"daily", "asof"}
+            else:
+                # A custom provider forwarding to a loader with a day source answers
+                # daily and as-of requests through it.
                 offered = offered | {"daily", "asof"}
         if grain not in offered:
             refuse_grain(

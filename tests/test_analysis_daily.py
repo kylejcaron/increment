@@ -1468,7 +1468,11 @@ def test_run_daily_unknown_dimension_raises_naming_declared_properties(con, monk
             ),
         )
     assert raised.value.code == "facade.analysis.unknown_dimension"
-    assert raised.value.context["declared"] == ("country",)
+    assert raised.value.context == {
+        "method": "run_daily",
+        "dimension": "platform",
+        "declared": ("country",),
+    }
 
 
 def test_run_daily_dimension_raises_for_metric_not_declared_on_experiment(con):
@@ -1499,7 +1503,11 @@ def test_run_daily_dimension_raises_for_metric_not_declared_on_experiment(con):
             metrics=[undeclared_metric],
         )
     assert raised.value.code == "facade.analysis.undeclared_metric_for_dimension"
-    assert raised.value.context["undeclared"] == ("not_declared_on_this_experiment",)
+    assert raised.value.context == {
+        "method": "run_daily",
+        "dimension": "country",
+        "undeclared": ("not_declared_on_this_experiment",),
+    }
 
 
 def test_run_daily_unknown_dimension_raises_when_no_breakouts_declared(con, monkeypatch):
@@ -1519,7 +1527,11 @@ def test_run_daily_unknown_dimension_raises_when_no_breakouts_declared(con, monk
             ),
         )
     assert raised.value.code == "facade.analysis.unknown_dimension"
-    assert raised.value.context["declared"] == ()
+    assert raised.value.context == {
+        "method": "run_daily",
+        "dimension": "country",
+        "declared": (),
+    }
 
 
 def test_run_daily_dimension_accepts_bounded_retention_metric(con, example_definitions):

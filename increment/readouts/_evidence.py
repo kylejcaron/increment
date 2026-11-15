@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+from increment._evidence_loaders import day_axis_grains as _declared_day_axis_grains
 from increment._evidence_loaders import (
     load_moments,
     load_moments_batch,
@@ -22,6 +23,7 @@ from increment._evidence_refusals import (
     require_population,
 )
 from increment._evidence_scopes import SCOPE_OWNERS, loader_source
+from increment._evidence_scopes import day_axis_requires_preflight as _requires_day_axis_preflight
 from increment._evidence_types import (
     ArtifactProvenance,
     AssignmentEvidence,
@@ -489,6 +491,28 @@ def acquire_evidence_scope(
 def _builtin_source(src: EvidenceSource) -> _BuiltinMomentSource:
     """Bridge typed scoped providers to the loader-shaped acquisition seam."""
     return loader_source(src)
+
+
+def day_axis_scoped_source(provider: EvidenceSource) -> _BuiltinMomentSource:
+    """Resolve a scoped day-axis provider to its built-in loader at acquisition."""
+    return _builtin_source(provider)
+
+
+def day_axis_grains(src: object) -> frozenset[str]:
+    """Return directly declared and source-acquirable day-axis grains."""
+    return _declared_day_axis_grains(src)
+
+
+def day_axis_requires_preflight(
+    source: EvidenceSource, request: Any, *, execution_active: bool
+) -> bool:
+    """Decide whether day-axis declaration checks must run before a scope opens."""
+    return _requires_day_axis_preflight(source, request, execution_active=execution_active)
+
+
+def exploratory_source_supported(source: EvidenceSource) -> bool:
+    """Whether the declaration enables an exploratory sibling source."""
+    return "exploratory_source" in declared_evidence(source).operations
 
 
 def load_missing_value_account(src: EvidenceSource, metric: Any) -> MissingValueAccount | None:

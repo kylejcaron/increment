@@ -100,6 +100,12 @@ def test_run_daily_refuses_no_definitions_on_unit_summary_source():
     with pytest.raises(CapabilityError) as raised:
         view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
     assert raised.value.code == "evidence.grain_unavailable"
+    assert raised.value.context == {
+        "constructor": "FrameTotalsSource",
+        "requested": "daily",
+        "offered": ("total",),
+        "route": "use a source with the requested day axis",
+    }
 
 
 def test_run_daily_values_carry_slice_fields():
@@ -171,18 +177,20 @@ def test_run_daily_lift_refuses_a_config_bound_observational_method():
 @pytest.mark.parametrize("readout", ["run_daily_lift", "run_asof_lift"])
 @pytest.mark.parametrize("metric_count, explicit_decision", [(1, False), (2, False), (1, True)])
 def test_native_observational_lift_uses_the_day_axis_refusal(
-    con, example_definitions, readout, metric_count, explicit_decision
+    con, example_definitions, readout, metric_count, explicit_decision, monkeypatch
 ):
     from increment.errors import UnsupportedRequestError
     from increment.semantics.design import AdjustmentSet, Observational
-    from increment.semantics.models import Metric, RetentionMetric
+    from increment.semantics.models import Metric, MultiplicitySpec, RetentionMetric
 
     design = Observational(
         control_group="control", adjustment=AdjustmentSet(covariates=("country",))
     )
     scope = {
         "run_daily_lift": View(view="daily", grain="daily"),
-        "run_asof_lift": View(view="asof", grain="asof"),
+        "run_asof_lift": View(
+            view="asof", grain="asof", segment=BreakoutIdentity("unknown_dimension", None)
+        ),
     }[readout]
     options = {"decision_method": Method(name="unadjusted")} if explicit_decision else {}
     experiment, resolver = from_definitions(
@@ -195,13 +203,109 @@ def test_native_observational_lift_uses_the_day_axis_refusal(
             for metric in workflows.metrics(experiment, resolver)
             if not isinstance(metric, RetentionMetric)
         ]
+        if readout == "run_daily_lift" and metric_count == 1 and not explicit_decision:
+            from increment._evidence_loaders import day_axis_grains
+            from increment._evidence_types import DayAxisRequest
+            from increment.readouts._evidence import load_day_axis_rows
+
+            source = cast(Any, resolver._binding.state.source)
+            original_grains = source.capabilities
+            source.capabilities = frozenset({"total"})
+            try:
+                assert day_axis_grains(source) == frozenset({"total", "daily", "asof"})
+                request = DayAxisRequest(
+                    caller="run_daily_lift",
+                    grain="daily",
+                    metrics=(metrics[0],),
+                    dimension=None,
+                )
+                rows = load_day_axis_rows(source, request)
+                assert next(iter(rows.slices)).rows
+            finally:
+                source.capabilities = original_grains
         observational, observational_resolver = make_binding_like(
-            resolver, metrics=metrics[:metric_count], design=design, plan=AnalysisPlan()
+            resolver,
+            metrics=metrics[:metric_count],
+            design=design,
+            plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="bh")),
         )
+        if readout == "run_asof_lift":
+            from dataclasses import replace
+            from types import SimpleNamespace
+
+            from increment._day_axis import validate_day_axis
+            from increment._evidence_types import DayAxisRequest
+
+            capabilities = experiment.source_refs[0].capabilities
+            assert capabilities is not None
+            source = SimpleNamespace(
+                evidence=capabilities,
+                context=SimpleNamespace(trigger_name=None, metrics=tuple(metrics)),
+            )
+            request = DayAxisRequest(
+                caller="run_asof_lift",
+                grain="asof",
+                metrics=tuple(metrics[:metric_count]),
+                dimension="unknown_dimension",
+            )
+            trigger_request = replace(request, population="triggered")
+            trigger_experiment = SimpleNamespace(
+                name="recorded",
+                trigger=None,
+                cluster="store_id",
+                breakouts=(SimpleNamespace(property="country", source=None),),
+            )
+            with pytest.raises(CapabilityError) as missing_trigger:
+                validate_day_axis(
+                    trigger_request,
+                    src=source,
+                    design=design,
+                    plan=cast(Any, SimpleNamespace(inference=None)),
+                    route="native",
+                    experiment=cast(Any, trigger_experiment),
+                )
+            assert missing_trigger.value.code == "facade.analysis.trigger_unsupported"
+            assert missing_trigger.value.context == {
+                "method": "run_asof_lift",
+                "experiment": "recorded",
+                "trigger": None,
+                "route": "native",
+                "supported_sources": (
+                    "from_definitions",
+                    "from_unit_day_artifact",
+                    "from_moments",
+                ),
+            }
+            with pytest.raises(UnsupportedRequestError) as direct:
+                validate_day_axis(
+                    request,
+                    src=source,
+                    design=design,
+                    plan=cast(
+                        Any,
+                        SimpleNamespace(
+                            inference=None,
+                            view_policies=SimpleNamespace(
+                                for_view=lambda *_args, **_kwargs: SimpleNamespace(correction="bh")
+                            ),
+                        ),
+                    ),
+                    route="native",
+                    experiment=None,
+                )
+            assert direct.value.context == {"method": "run_asof_lift"}
+            assert direct.value.code == "facade.analysis.observational_day_axis"
         with observational_resolver, pytest.raises(UnsupportedRequestError) as raised:
+
+            def fail(*args, **kwargs):
+                raise AssertionError("static day-axis refusal performed a warehouse read")
+
+            monkeypatch.setattr(con, "raw_sql", fail)
+            monkeypatch.setattr(con, "execute", fail)
+            monkeypatch.setattr(con, "to_pyarrow", fail)
             view_readout(observational, observational_resolver, scope, **options)
+    assert raised.value.context == {"method": readout}
     assert raised.value.code == "facade.analysis.observational_day_axis"
-    assert raised.value.context["method"] == readout
 
 
 def test_custom_provider_day_axis_uses_declared_breakouts() -> None:

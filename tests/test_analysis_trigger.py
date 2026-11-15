@@ -3134,7 +3134,7 @@ def _clustered_trigger_events(
     "method_name",
     ("run_daily", "run_daily_lift", "run_asof", "run_asof_lift"),
 )
-def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_name):
+def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_name, monkeypatch):
     from tests.capability_consumers_auxiliary import assert_refusal
 
     con = ibis.duckdb.connect()
@@ -3158,9 +3158,21 @@ def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_na
         ),
     )
     try:
+
+        def fail(*args, **kwargs):
+            raise AssertionError("cluster refusal performed a warehouse read")
+
+        monkeypatch.setattr(con, "raw_sql", fail)
+        monkeypatch.setattr(con, "execute", fail)
+        monkeypatch.setattr(con, "to_pyarrow", fail)
         with pytest.raises(CapabilityError) as raised:
             view_readout(experiment, resolver, _day_axis_scope(method_name, population="triggered"))
         assert raised.value.code == "facade.analysis.clustered_day_axis"
+        assert raised.value.context == {
+            "method": method_name,
+            "experiment": "exp",
+            "cluster": "store_id",
+        }
         assert_refusal(
             "triggered_clustered_day_axis",
             "clustered_outcome_history_refused",

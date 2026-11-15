@@ -211,6 +211,9 @@ class EvidenceCapabilities:
     value_scale_overrides: bool | None = None
     fixed_triggered: bool | None = None
     windowed_breakout_quantiles: bool | None = None
+    temporal_quantiles: bool | None = None
+    temporal_clusters: bool | None = None
+    dimensioned_daily_metrics: Literal["declared", "any"] | None = None
 
 
 def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
@@ -219,6 +222,9 @@ def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
     native_moments = (
         not artifact and value.kind == "moments" and "moments_source" in value.operations
     )
+    native_temporal_moments = not artifact and "moments_source" in value.operations
+    dimensioned_daily_declared = native_temporal_moments
+    definition_source = value.kind == "definitions"
     return replace(
         value,
         value_scale_overrides=(
@@ -229,12 +235,29 @@ def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
         fixed_triggered=(
             value.fixed_triggered
             if value.fixed_triggered is not None
-            else artifact or value.kind == "definitions"
+            else artifact or definition_source
         ),
         windowed_breakout_quantiles=(
             value.windowed_breakout_quantiles
             if value.windowed_breakout_quantiles is not None
             else not artifact
+        ),
+        temporal_quantiles=(
+            value.temporal_quantiles
+            if value.temporal_quantiles is not None
+            else not native_temporal_moments
+        ),
+        temporal_clusters=(
+            value.temporal_clusters
+            if value.temporal_clusters is not None
+            else not (artifact or definition_source)
+        ),
+        dimensioned_daily_metrics=(
+            value.dimensioned_daily_metrics
+            if value.dimensioned_daily_metrics is not None
+            else "declared"
+            if dimensioned_daily_declared
+            else "any"
         ),
     )
 

@@ -237,6 +237,9 @@ class SqlPanelSource:
             value_scale_overrides=True,
             fixed_triggered=False,
             windowed_breakout_quantiles=True,
+            temporal_quantiles=True,
+            temporal_clusters=True,
+            dimensioned_daily_metrics="any",
         )
 
     def __init__(
@@ -937,6 +940,9 @@ class _ArtifactFacadeSource(_ArtifactBase):
                 )
                 else "reduced"
             ),
+            temporal_quantiles=True,
+            temporal_clusters=False,
+            dimensioned_daily_metrics="any",
         )
 
     def allocation_history(

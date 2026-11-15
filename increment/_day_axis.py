@@ -34,7 +34,7 @@ from increment._lift_options import LiftOptions
 from increment._readout_request import ReadoutRequest
 from increment._readout_request import _raise as _raise_readout
 from increment._source_admission import _arm_experiment, _require_arm_binding
-from increment._source_types import declared_evidence, is_custom_source
+from increment._source_types import declared_evidence, effective_capabilities
 from increment.breakout.estimates import (
     DailyLiftEstimate,
     DailyLiftEstimates,
@@ -79,12 +79,11 @@ from increment.readouts._common import (
 )
 from increment.readouts._daily import _validate_daily_inference
 from increment.readouts._evidence import (
-    ARTIFACT_ROUTE,
-    MOMENTS_ROUTE,
-    NATIVE_ROUTE,
     DayAxisSlice,
     artifact_provenance,
     assigned_breakout_values,
+    day_axis_grains,
+    day_axis_requires_preflight,
     day_axis_route,
     design_allocation,
     load_compliance_series,
@@ -242,10 +241,9 @@ def validate_day_axis(
     route: DayAxisRoute,
     experiment: Experiment | None,
 ) -> None:
-    """Validate one day-axis request across native, moments, and artifact routes.
+    """Validate one day-axis request while preserving its refusal precedence.
 
-    Branches apply only where routes genuinely differ. If multiple conditions
-    fail, callers must not depend on the order in which those refusals surface.
+    The source route is carried only for the legacy trigger-refusal context.
     """
     compliance_only = (
         isinstance(design, Encouragement)
@@ -266,9 +264,10 @@ def validate_day_axis(
             route=route,
             supported_sources=("from_definitions", "from_unit_day_artifact", "from_moments"),
         )
+    capabilities = effective_capabilities(declared_evidence(src))
     if (
         not compliance_only
-        and route in (ARTIFACT_ROUTE, NATIVE_ROUTE)
+        and capabilities.temporal_clusters is False
         and experiment is not None
         and experiment.cluster is not None
     ):
@@ -279,7 +278,9 @@ def validate_day_axis(
             cluster=experiment.cluster,
         )
     checkpoint_asof = (
-        req.grain == "asof" and getattr(plan.inference, "registration", None) is not None
+        req.grain == "asof"
+        and getattr(plan.inference, "registration", None) is not None
+        and capabilities.sequential_capture in {"asof", "replay"}
     )
     if req.caller == "run_asof_lift" and checkpoint_asof and req.dimension is not None:
         from increment.sequential_state import sequential_refuse
@@ -290,31 +291,17 @@ def validate_day_axis(
         )
     if compliance_only:
         return
-    if (
-        route in (MOMENTS_ROUTE, ARTIFACT_ROUTE)
-        and req.grain not in declared_evidence(src).grains
-        and not checkpoint_asof
-    ):
+    if req.grain not in day_axis_grains(src) and not checkpoint_asof:
         from increment._evidence_refusals import refuse_grain
 
         refuse_grain(
             src,
             req.grain,
-            tuple(sorted(declared_evidence(src).grains)),
-            route=declared_evidence(src).grain_route or "use a source with the requested day axis",
-        )
-    if route == NATIVE_ROUTE and "day_source" not in declared_evidence(src).operations:
-        from increment._evidence_refusals import refuse_grain
-
-        refuse_grain(
-            src,
-            req.grain,
-            tuple(sorted(declared_evidence(src).grains)),
-            route=declared_evidence(src).grain_route or "use a source with the requested day axis",
+            tuple(sorted(capabilities.grains)),
+            route=capabilities.grain_route or "use a source with the requested day axis",
         )
     reject_winsorized_day_axis(list(req.metrics), req.caller, grain=req.grain)
-    if route == NATIVE_ROUTE:
-        # Native routes reject quantiles; moments/artifacts retain the broader metric set.
+    if capabilities.temporal_quantiles is False:
         moments_reason = "per-day moments" if req.grain == "daily" else "as-of moments"
         reject_quantile_metrics(
             list(req.metrics),
@@ -371,32 +358,21 @@ def validate_day_axis(
         refuse(_DAILY_COMPLIANCE_DIMENSION, method=req.caller)
     if req.dimension is None:
         return
-    if route == MOMENTS_ROUTE:
-        declared_breakouts = declared_evidence(src).breakouts
-        if req.dimension not in declared_breakouts:
-            refuse(
-                _UNKNOWN_DIMENSION,
-                method=req.caller,
-                dimension=req.dimension,
-                declared=list(declared_breakouts),
-            )
-        return
-    declared_breakouts = list(experiment.breakouts) if experiment is not None else []
-    matching = [b for b in declared_breakouts if b.property == req.dimension]
-    if not matching:
+    declared_breakouts = capabilities.breakouts
+    if req.dimension not in declared_breakouts:
         refuse(
             _UNKNOWN_DIMENSION,
             method=req.caller,
             dimension=req.dimension,
-            declared=sorted({b.property for b in declared_breakouts}),
+            declared=list(declared_breakouts),
         )
     if (
-        route == NATIVE_ROUTE
+        capabilities.dimensioned_daily_metrics == "declared"
         and req.caller in ("run_daily", "run_daily_lift")
         and experiment is not None
     ):
-        declared_names = {m.name for m in src.context.metrics}
-        undeclared = [m.name for m in req.metrics if m.name not in declared_names]
+        declared_names = {metric.name for metric in src.context.metrics}
+        undeclared = [metric.name for metric in req.metrics if metric.name not in declared_names]
         if undeclared:
             refuse(
                 _UNDECLARED_METRIC_FOR_DIMENSION,
@@ -1607,11 +1583,11 @@ class DayAxisReadouts:
                     None,
                 )
                 context.validate_breakouts((BreakoutIdentity(req.dimension, source_name),))
-            from increment.readouts._evidence import _builtin_source
+            from increment.readouts._evidence import day_axis_scoped_source
 
             with context.borrow(source=self._src, metrics=req.metrics) as provider:
                 return DayAxisReadouts(
-                    src=_builtin_source(provider),
+                    src=day_axis_scoped_source(provider),
                     plan=self._plan,
                     design=self._design,
                     experiment=self._experiment,
@@ -1783,13 +1759,13 @@ class DayAxisReadouts:
                     None,
                 )
                 context.validate_breakouts((BreakoutIdentity(req.dimension, source_name),))
-            from increment.readouts._evidence import _builtin_source
+            from increment.readouts._evidence import day_axis_scoped_source
 
             with context.borrow(
                 source=self._src, metrics=req.metrics, configs=opts.configs
             ) as provider:
                 return DayAxisReadouts(
-                    src=_builtin_source(provider),
+                    src=day_axis_scoped_source(provider),
                     plan=self._plan,
                     design=self._design,
                     experiment=self._experiment,
@@ -2121,9 +2097,8 @@ def _validate_day_axis_before_context(
     binding: SourceBinding, req: DayAxisRequest, execution_context=None
 ) -> None:
     source = binding.source
-    if req.population == "triggered" or (
-        execution_context is None and (req.dimension is not None or not is_custom_source(source))
-    ):
+
+    if day_axis_requires_preflight(source, req, execution_active=execution_context is not None):
         validate_day_axis(
             req,
             src=source,

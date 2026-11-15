@@ -10,7 +10,7 @@ from increment._source_admission import _require_analysis_operation, _require_ar
 from increment._source_operations import ExploratorySourceOperation
 from increment.decision import DefinitionsArmAnalysisState
 from increment.errors import CapabilityError, RefusalSpec, UnsupportedRequestError, refuse
-from increment.readouts._evidence import NATIVE_ROUTE, day_axis_route
+from increment.readouts._evidence import exploratory_source_supported
 from increment.readouts._execution_context import current_execution_context
 
 if TYPE_CHECKING:
@@ -96,10 +96,10 @@ def select_day_axis_metrics(
     caller: str,
     added: Sequence[Metric] = (),
 ) -> list[Metric]:
-    """Select day-axis metrics; only the native route accepts undeclared Metric objects."""
-    native = day_axis_route(binding.source) == NATIVE_ROUTE
+    """Select day-axis metrics using the declared exploratory-source capability."""
+    allow_undeclared = exploratory_source_supported(binding.source)
     selected = select_metrics(
-        binding.metrics, metrics, caller=caller, allow_undeclared_objects=native
+        binding.metrics, metrics, caller=caller, allow_undeclared_objects=allow_undeclared
     )
     if not added:
         return selected

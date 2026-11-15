@@ -243,9 +243,19 @@ def _capability_payload(value: EvidenceCapabilities | None) -> dict[str, object]
             value_scale_overrides=None,
             fixed_triggered=None,
             windowed_breakout_quantiles=None,
+            temporal_quantiles=None,
+            temporal_clusters=None,
+            dimensioned_daily_metrics=None,
         )
     )
-    for name in ("value_scale_overrides", "fixed_triggered", "windowed_breakout_quantiles"):
+    for name in (
+        "value_scale_overrides",
+        "fixed_triggered",
+        "windowed_breakout_quantiles",
+        "temporal_quantiles",
+        "temporal_clusters",
+        "dimensioned_daily_metrics",
+    ):
         if getattr(value, name) is None or getattr(value, name) == getattr(defaults, name):
             del payload[name]
     # Unset route values preserve declarations recorded before the field existed.

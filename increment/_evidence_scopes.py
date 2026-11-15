@@ -5,9 +5,13 @@ from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-from increment._evidence_loaders import acquire_contrast_stats, require_request_evidence
+from increment._evidence_loaders import (
+    acquire_contrast_stats,
+    day_axis_grains,
+    require_request_evidence,
+)
 from increment._evidence_types import (
     BreakoutIdentity,
     ContrastStatsRequest,
@@ -24,10 +28,51 @@ from increment._source_types import (
     _loader_owner,
     _OwnedLoaderAdapter,
     declared_evidence,
+    effective_capabilities,
     is_builtin_source,
     is_custom_source,
 )
 from increment.errors import InvalidRequestError
+
+
+def day_axis_capture_supported(source: EvidenceSource, request: Any) -> bool:
+    """Whether the day-axis request can own a built-in, coherent capture."""
+
+    if is_custom_source(source):
+        return False
+    evidence = effective_capabilities(declared_evidence(source))
+    if request.population == "triggered":
+        experiment = (
+            request.experiment
+            or getattr(loader_source(source), "_experiment", None)
+            or getattr(loader_source(source), "artifact_experiment", None)
+        )
+        trigger = getattr(experiment, "trigger", None)
+        return trigger is not None and (
+            evidence.fixed_triggered is True
+            or evidence.sequential_capture in {"asof", "replay"}
+            or "day_source" in evidence.operations
+        )
+    return request.grain in day_axis_grains(source)
+
+
+def sequential_populations(
+    source: EvidenceSource, *, has_trigger: bool
+) -> tuple[Literal["assigned", "triggered"], ...]:
+    """Declare the populations needed by a registered scope."""
+    if has_trigger:
+        return ("assigned", "triggered")
+    declared = declared_evidence(source).populations
+    return tuple(population for population in ("assigned", "triggered") if population in declared)
+
+
+def day_axis_requires_preflight(
+    source: EvidenceSource, request: Any, *, execution_active: bool
+) -> bool:
+    """Keep static custom-provider validation limited to requests it can answer offline."""
+    return request.population == "triggered" or (
+        not execution_active and (request.dimension is not None or not is_custom_source(source))
+    )
 
 
 def _scope_streams(source: EvidenceSource, scope: EvidenceScope) -> tuple[EvidenceStream, ...]:

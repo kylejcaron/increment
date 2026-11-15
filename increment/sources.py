@@ -1609,6 +1609,19 @@ class MomentsSource(SequentialSourceMixin):
             ),
             fixed_triggered="artifact_experiment" in self.operations,
             windowed_breakout_quantiles="artifact_experiment" not in self.operations,
+            temporal_quantiles=(
+                "artifact_experiment" not in self.operations
+                and "moments_source" not in self.operations
+            ),
+            temporal_clusters="artifact_experiment" not in self.operations,
+            dimensioned_daily_metrics=(
+                "declared"
+                if (
+                    "artifact_experiment" not in self.operations
+                    and "moments_source" in self.operations
+                )
+                else "any"
+            ),
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -2511,6 +2524,11 @@ class BreakoutMomentsSource(SequentialSourceMixin):
             fixed_triggered=False,
             windowed_breakout_quantiles=(
                 backing.windowed_breakout_quantiles if backing is not None else True
+            ),
+            temporal_quantiles=backing.temporal_quantiles if backing is not None else True,
+            temporal_clusters=backing.temporal_clusters if backing is not None else False,
+            dimensioned_daily_metrics=(
+                backing.dimensioned_daily_metrics if backing is not None else "any"
             ),
         )
 

@@ -161,6 +161,9 @@ class _DaySource:
             value_scale_overrides=True,
             fixed_triggered=True,
             windowed_breakout_quantiles=True,
+            temporal_quantiles=False,
+            temporal_clusters=False,
+            dimensioned_daily_metrics="declared",
         )
 
     # Keep source callbacks together: construction and cache state form one adapter.

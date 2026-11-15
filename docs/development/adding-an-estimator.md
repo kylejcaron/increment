@@ -57,6 +57,16 @@ windowed quantile metric. Omitted values retain the legacy default: false for
 artifact declarations and true for other source declarations. Metric
 validation still precedes this capability refusal.
 
+`temporal_quantiles` and `temporal_clusters` declare whether the provider can
+supply quantile and clustered-outcome evidence on daily or as-of axes.
+`dimensioned_daily_metrics` is `"declared"` when dimensioned daily requests
+must use catalog-declared metrics, and `"any"` when they may select other
+metrics. Omitted values keep the legacy defaults: temporal quantiles are
+unavailable for native moments sources; temporal clusters are unavailable for
+artifact and definitions sources; only native moments sources require declared
+metrics on dimensioned daily requests. New providers should declare these
+semantic capabilities explicitly.
+
 For scalar multicovariate CUPED, distinguish a missing fit from a failed one.
 An unavailable `MethodFitAnswer` without a failure may be fit from `unit_rows`
 when the provider declares retained or warehouse fit evidence and unit rows.

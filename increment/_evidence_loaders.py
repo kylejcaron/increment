@@ -109,6 +109,14 @@ def source_for_population(src: _BuiltinMomentSource, population: str) -> _Builti
     return src
 
 
+def day_axis_grains(src: object) -> frozenset[str]:
+    """Return declared day grains plus those the native day-source operation can acquire."""
+    evidence = declared_evidence(src)
+    if "day_source" not in evidence.operations or not is_builtin_source(src):
+        return frozenset(evidence.grains)
+    return frozenset((*evidence.grains, "daily", "asof"))
+
+
 def _validate_moments_request(src: EvidenceSource, request: MomentsRequest) -> None:
     """Keep scalar and batch declaration/option refusals on the same boundary."""
     require_request_evidence(src, request)

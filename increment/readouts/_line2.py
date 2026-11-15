@@ -11,7 +11,7 @@ from increment._analysis_config import UNSET
 from increment._evidence_types import BreakoutIdentity, EvidenceScope
 from increment._exploratory import exploratory_sibling, select_exploratory
 from increment._source_admission import _arm_experiment
-from increment._source_types import declared_evidence, is_custom_source
+from increment._source_types import declared_evidence
 from increment.kernel.context import ExecutionMode
 from increment.semantics.models import Metric
 
@@ -319,12 +319,10 @@ def operation_scope(
     return capture_requirements(source, requests)
 
 
-def _triggered_day_axis_capture_supported(binding: SourceBinding, req) -> bool:
-    if req.population != "triggered" or getattr(_arm_experiment(binding), "trigger", None) is None:
-        return False
-    from increment.readouts._evidence import ARTIFACT_ROUTE, NATIVE_ROUTE, day_axis_route
+def _day_axis_capture_supported(binding: SourceBinding, req) -> bool:
+    from increment._evidence_scopes import day_axis_capture_supported
 
-    return day_axis_route(binding.source) in (ARTIFACT_ROUTE, NATIVE_ROUTE)
+    return day_axis_capture_supported(binding.source, req)
 
 
 def run_standalone_day_axis_values(
@@ -342,11 +340,8 @@ def run_standalone_day_axis_values(
     if execution_context is not None:
         return day_axis(execution_context).values(req)
     source = binding.source
-    triggered_capture = _triggered_day_axis_capture_supported(binding, req)
-    if is_custom_source(source) or (
-        not triggered_capture
-        and (req.population == "triggered" or req.grain not in declared_evidence(source).grains)
-    ):
+    capture_supported = _day_axis_capture_supported(binding, req)
+    if not capture_supported:
         return day_axis().values(req)
 
     from increment._evidence_scopes import capture_requirements
@@ -409,11 +404,7 @@ def run_standalone_day_axis_lift(
     source = binding.source
     plan = binding.plan
     design = binding.design
-    triggered_capture = _triggered_day_axis_capture_supported(binding, req)
-    unsupported_capture = is_custom_source(source) or (
-        not triggered_capture
-        and (req.population == "triggered" or req.grain not in declared_evidence(source).grains)
-    )
+    unsupported_capture = not _day_axis_capture_supported(binding, req)
     if validate_only and unsupported_capture:
         return None
     if unsupported_capture:
