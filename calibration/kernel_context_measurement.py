@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -481,18 +481,30 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
 
             return replace(result, source=timed_source())
 
+        breakout_scope_name = next(
+            (
+                name
+                for name in ("breakout_readout_scope", "evidence_scope")
+                if callable(getattr(_breakout, name, None))
+            ),
+            None,
+        )
+        if breakout_scope_name is None:
+            raise RuntimeError("loaded breakout module has no supported scope hook")
+        original_breakout_scope = getattr(_breakout, breakout_scope_name)
         setattr(provider_type, "scope", counted_provider_scope)  # noqa: B010
         provider = evidence_provider(source)
-        original_breakout_scope = _breakout.breakout_readout_scope
 
         @contextmanager
         def counted_breakout_scope(*args: Any, **kwargs: Any) -> Iterator[Any]:
             nonlocal scope_opens
-            scope_opens += 1
-            with original_breakout_scope(*args, **kwargs) as pinned:
+            scope_context = original_breakout_scope(*args, **kwargs)
+            if not isinstance(scope_context, nullcontext):
+                scope_opens += 1
+            with scope_context as pinned:
                 yield pinned
 
-        setattr(_breakout, "breakout_readout_scope", counted_breakout_scope)  # noqa: B010
+        setattr(_breakout, breakout_scope_name, counted_breakout_scope)
         original_snapshot = getattr(source, "readout_snapshot", None)
         session = getattr(source, "_session", None)
         session_type = type(session) if session is not None else None
@@ -536,18 +548,20 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
         outputs: tuple[str, ...]
         temp_sampler = _TempPeak(source, before_temp_bytes)
         started = time.perf_counter()
-        with temp_sampler:
-            outputs = execute_workload(temp_sampler)
-        temp_bytes = temp_sampler.peak
-        setattr(provider_type, "scope", original_provider_scope)  # noqa: B010
-        setattr(_breakout, "evidence_scope", original_breakout_scope)  # noqa: B010
-        if callable(original_materialize):
-            assert session_type is not None
-            setattr(session_type, "materialize_table", original_materialize)  # noqa: B010
-        if callable(original_pinned_source):
-            source._pinned_source = original_pinned_source
-        elif callable(original_snapshot):
-            source.readout_snapshot = original_snapshot
+        try:
+            with temp_sampler:
+                outputs = execute_workload(temp_sampler)
+            temp_bytes = temp_sampler.peak
+        finally:
+            setattr(provider_type, "scope", original_provider_scope)  # noqa: B010
+            setattr(_breakout, breakout_scope_name, original_breakout_scope)
+            if callable(original_materialize):
+                assert session_type is not None
+                setattr(session_type, "materialize_table", original_materialize)  # noqa: B010
+            if callable(original_pinned_source):
+                source._pinned_source = original_pinned_source
+            elif callable(original_snapshot):
+                source.readout_snapshot = original_snapshot
         wall = time.perf_counter() - started
         temp_bytes_after_scope = _temp_bytes(source)
         resolver.close()

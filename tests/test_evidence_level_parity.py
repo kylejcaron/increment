@@ -879,6 +879,118 @@ def test_transcript_decoder_rejects_roster_and_answer_schema_drift():
         Transcript.from_payload(unknown_field, expected_requests=(request,))
 
 
+def test_materialized_breakout_transcript_preserves_legacy_wire_identity():
+    import gzip
+
+    from increment.semantics.models import MeanMetric
+    from tests.evidence_fixtures.transcript import _validate_answer_payload
+
+    legacy_answer = {
+        "scope": {
+            "population": "assigned",
+            "breakouts": ["country"],
+            "metrics": ["orders"],
+            "configs": [],
+        },
+        "route": "panel",
+        "slices": [],
+    }
+    _validate_answer_payload("MaterializedBreakoutSlices", legacy_answer)
+    with pytest.raises(ValueError):
+        _validate_answer_payload("MaterializedBreakoutSlices", {**legacy_answer, "route": 3})
+    with pytest.raises(ValueError):
+        _validate_answer_payload("MaterializedBreakoutSlices", {**legacy_answer, "discarded": True})
+    legacy_unit_rows = {
+        "identity": {"property": "country", "source": "events"},
+        "frame": {"columns": [], "schema": {}, "rows": []},
+        "unit_frame_has_dimension": True,
+        "route": "native",
+    }
+    _validate_answer_payload("BreakoutUnitRows", legacy_unit_rows)
+    with pytest.raises(ValueError):
+        _validate_answer_payload("BreakoutUnitRows", {**legacy_unit_rows, "route": None})
+    with pytest.raises(ValueError):
+        _validate_answer_payload("BreakoutUnitRows", {**legacy_unit_rows, "discarded": True})
+    from increment._evidence_types import BreakoutIdentity, BreakoutUnitRowsRequest
+    from tests.evidence_fixtures.transcript import Transcript, _plain
+
+    unit_request = BreakoutUnitRowsRequest(
+        metric=MeanMetric(name="orders", entity="unit", fact="orders"),
+        breakout=BreakoutIdentity("country", "events"),
+    )
+    unit_record = {
+        "request_type": "BreakoutUnitRowsRequest",
+        "request": _plain(unit_request),
+        "answer_type": "BreakoutUnitRows",
+        "answer": legacy_unit_rows,
+    }
+    unit_transcript = Transcript(
+        baseline_revision="",
+        scenario_id="",
+        ingress="",
+        runtime={},
+        provenance={},
+        records=(unit_record,),
+    )
+    assert unit_transcript.answer_for(unit_request) == {
+        key: value for key, value in legacy_unit_rows.items() if key != "route"
+    }
+    assert unit_transcript.records[0]["answer"]["route"] == "native"
+
+    identity = {"property": "country", "source": "events"}
+    legacy_unsupported = {
+        "request": {"breakouts": [identity]},
+        "answer": {"route": "unsupported", "slices": []},
+    }
+    assert _breakout_source_partitions(legacy_unsupported) == ((identity, "events"),)
+    route_free = {
+        "request": {"breakouts": [identity]},
+        "answer": {
+            "slices": [
+                {
+                    "identity": identity,
+                    "stamp_source": "events",
+                }
+            ]
+        },
+    }
+    assert _breakout_source_partitions(route_free) == ((identity, "events"),)
+    with pytest.raises(AssertionError):
+        _breakout_source_partitions(
+            {"request": {"breakouts": [identity]}, "answer": {"slices": []}}
+        )
+
+    assert _breakout_source_partitions(
+        {"request": {"breakouts": [identity]}, "answer": {"slices": []}},
+        unsupported_identities=frozenset({json.dumps(identity, sort_keys=True)}),
+    ) == ((identity, "events"),)
+    fixture_path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "evidence_identity"
+        / "consumer-inputs"
+        / "breakout_store_dimension--from_definitions.json.gz"
+    )
+    payload = json.loads(gzip.decompress(fixture_path.read_bytes()))
+    requests = tuple(_decode_transcript_request(record) for record in payload["records"])
+    transcript = Transcript.from_payload(payload, expected_requests=requests)
+    slices = next(
+        record
+        for record in transcript.records
+        if record["answer_type"] == "MaterializedBreakoutSlices"
+    )
+    assert slices["answer"]["route"] == "native"
+    request = next(
+        request
+        for request, record in zip(requests, payload["records"], strict=True)
+        if record["answer_type"] == "MaterializedBreakoutSlices"
+    )
+    assert "route" not in transcript.answer_for(request)
+    replayed = transcript.to_payload()
+    assert replayed["input_sha256"] == payload["input_sha256"]
+    assert replayed["records"] == payload["records"]
+
+
 @pytest.mark.integration
 def test_recorded_revision_must_be_a_full_commit_in_this_history():
     root = Path(__file__).parent / "fixtures" / "evidence_identity"
@@ -1207,6 +1319,11 @@ def test_declared_coordinate_acquires_exact_evidence_or_disposition(entry):
         [[record["request_type"], record["request"]] for record in live.records]
     )
     assert live.input_sha256 == _digest([record["answer"] for record in live.records])
+    assert all(
+        "route" not in record["answer"]
+        for record in live.records
+        if record["answer_type"] == "MaterializedBreakoutSlices"
+    )
     modes = live.provenance["coherence"]
     assert modes["coherence"] == "captured"
     assert modes["effective_modes"]
@@ -1372,12 +1489,20 @@ def _normalize_scope_identity_metadata(value, source_identity):
             _normalize_scope_identity_metadata(item, source_identity)
 
 
+def _normalize_breakout_route_records(records):
+    """Normalize comparison copies; raw transcript records retain wire provenance."""
+    for record in records:
+        if record["answer_type"] == "MaterializedBreakoutSlices":
+            record["answer"].pop("route", None)
+
+
 def _comparison_records(coordinate):
     import hashlib
 
     from tests.evidence_fixtures.transcript import _plain, _restore
 
     records = deepcopy(coordinate.records)
+    _normalize_breakout_route_records(records)
     inputs = coordinate.provenance["source_inputs"]
     source_identities = [
         item["configuration"]["source_identity"]
@@ -2971,14 +3096,17 @@ def _assert_breakout_slice_association(receipt, coordinate):
     ]
     assert len(roots) == 1
     root = roots[0]
+    answer = root["answer"]
     if receipt["input_kind"] == "materialized_breakout_slice":
-        matches = [item for item in root["answer"]["slices"] if item["identity"] == identity]
+        matches = [item for item in answer["slices"] if item["identity"] == identity]
         assert len(matches) == 1
         assert matches[0]["stamp_source"] == receipt["stamp_source"]
         assert matches[0]["source_name"] == receipt["source_name"]
     else:
         assert receipt["input_kind"] == "summary_breakout_source_slice"
-        assert root["answer"]["route"] == "unsupported" and root["answer"]["slices"] == []
+        assert answer["slices"] == []
+        if "route" in answer:
+            assert answer["route"] == "unsupported"
     assert receipt["route"] in {"native", "moments", "artifact"}
 
 
@@ -3008,7 +3136,14 @@ def _audit_breakout_scope_inputs(coordinate):
         (identity["property"], identity["source"], source)
         for record in coordinate.records
         if record["request_type"] == "BreakoutSlicesRequest"
-        for identity, source in _breakout_source_partitions(record)
+        for identity, source in _breakout_source_partitions(
+            record,
+            unsupported_identities=frozenset(
+                json.dumps(receipt["identity"], sort_keys=True)
+                for receipt in receipts
+                if receipt["input_kind"] == "summary_breakout_source_slice"
+            ),
+        )
     ]
     ordered_scopes = []
     validated = []
@@ -4977,10 +5112,17 @@ def _assert_winsor_unavailable(computed, old_cells):
         )
 
 
-def _breakout_source_partitions(record):
+def _breakout_source_partitions(record, *, unsupported_identities=frozenset()):
     declared = record["request"]["breakouts"]
     observed = record["answer"]["slices"]
-    if record["answer"]["route"] == "unsupported":
+    explicitly_unsupported = record["answer"].get("route") == "unsupported" or (
+        "route" not in record["answer"]
+        and not observed
+        and all(
+            json.dumps(identity, sort_keys=True) in unsupported_identities for identity in declared
+        )
+    )
+    if explicitly_unsupported:
         assert observed == []
         return tuple((identity, identity["source"]) for identity in declared)
     assert {json.dumps(item["identity"], sort_keys=True) for item in observed} == {

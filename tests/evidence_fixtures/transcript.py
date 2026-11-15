@@ -410,7 +410,7 @@ def _validate_answer_payload(answer_type: str, answer: Any) -> None:
         raise ValueError("answer contains malformed typed transcript data") from exc
     answer_fields = _ANSWER_FIELDS[answer_type]
     legacy_route = (
-        answer_type == "BreakoutUnitRows"
+        answer_type in {"BreakoutUnitRows", "MaterializedBreakoutSlices"}
         and isinstance(answer, dict)
         and answer_fields is not None
         and answer.keys() == answer_fields | {"route"}
@@ -954,7 +954,11 @@ class Transcript:
         ]
         if len(matches) != 1:
             raise ValueError("request is missing or duplicated in transcript")
-        return _restore(matches[0]["answer"])
+        record = matches[0]
+        answer = _restore(record["answer"])
+        if record["answer_type"] in {"BreakoutUnitRows", "MaterializedBreakoutSlices"}:
+            answer.pop("route", None)
+        return answer
 
     @classmethod
     def from_payload(

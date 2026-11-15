@@ -5,7 +5,7 @@ import dataclasses
 import json
 import pickle
 from fractions import Fraction
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -439,11 +439,48 @@ def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
         restored = Experiment.from_json(changed_experiment.to_json())
         restored_capabilities = restored.source_refs[0].capabilities
         assert restored_capabilities is not None
+        if field == "windowed_breakout_quantiles":
+            from increment._analysis_config import UNSET
+            from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
+            from increment.semantics.models import QuantileMetric
+
+            metric = QuantileMetric(
+                name="p50_orders",
+                entity="unit",
+                fact="orders",
+                quantile=0.5,
+                window_days=7,
+            )
+            request = BreakoutRequest(
+                metrics=(metric,),
+                decision_method=UNSET,
+                sensitivity_methods=UNSET,
+                prior=UNSET,
+                correction=None,
+                q=None,
+                population="assigned",
+            )
+            source = SimpleNamespace(
+                evidence=restored_capabilities,
+                context=SimpleNamespace(plan=SimpleNamespace(inference=None)),
+            )
+            artifact_readouts = BreakoutReadouts(
+                src=cast(Any, source), experiment=None, breakouts=()
+            )
+            with pytest.raises(CodedError) as raised:
+                artifact_readouts.validate_request(request)
+            assert raised.value.code == "frame.metric.window_days_supported"
+            assert raised.value.context == {"name": "p50_orders"}
+            native_readouts = BreakoutReadouts(
+                src=cast(Any, SimpleNamespace(evidence=capabilities, context=source.context)),
+                experiment=None,
+                breakouts=(),
+            )
+            assert native_readouts.validate_request(request) is request
         assert restored.to_json() == changed_experiment.to_json()
         assert restored.hash() == changed_experiment.hash()
         assert getattr(restored_capabilities, field) is nonlegacy_value
         assert getattr(effective_capabilities(restored_capabilities), field) is nonlegacy_value
-
         provider = SimpleNamespace(
             evidence=capabilities,
             context=SimpleNamespace(source_digest=None),
