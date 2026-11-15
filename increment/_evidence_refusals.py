@@ -106,6 +106,23 @@ INVALID_POPULATION = RefusalSpec(
 )
 
 
+_TRIGGER_UNSUPPORTED = RefusalSpec(
+    "facade.analysis.trigger_unsupported",
+    CapabilityError,
+    lambda *, method, experiment, trigger, **_: (
+        (
+            f"{method}: experiment {experiment!r} declares no trigger on this source, "
+            "so it has no triggered population."
+            if trigger is None
+            else f"{method}: experiment {experiment!r} declares trigger {trigger!r}, "
+            "which this readout does not apply."
+        )
+        + " To analyze triggered populations, build the experiment with from_definitions, "
+        "or with from_unit_day_artifact from an artifact carrying trigger-population evidence."
+    ),
+)
+
+
 GRAIN_UNAVAILABLE = _spec("evidence.grain_unavailable", "grain")
 BREAKOUT_UNAVAILABLE = _spec("evidence.breakout_unavailable", "breakout")
 UNIT_ROWS_UNAVAILABLE = _spec("evidence.unit_rows_unavailable", "unit rows")
@@ -159,6 +176,7 @@ UNSUPPORTED_REQUEST = RefusalSpec(
 EVIDENCE_REFUSALS = {
     spec.code: spec
     for spec in (
+        _TRIGGER_UNSUPPORTED,
         GRAIN_UNAVAILABLE,
         BREAKOUT_UNAVAILABLE,
         UNIT_ROWS_UNAVAILABLE,

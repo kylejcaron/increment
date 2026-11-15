@@ -236,6 +236,7 @@ class SqlPanelSource:
             sql_grains=frozenset({"total"}),
             value_scale_overrides=True,
             fixed_triggered=False,
+            windowed_breakout_quantiles=True,
         )
 
     def __init__(

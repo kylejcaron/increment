@@ -160,6 +160,7 @@ class _DaySource:
             available_covariates=None,
             value_scale_overrides=True,
             fixed_triggered=True,
+            windowed_breakout_quantiles=True,
         )
 
     # Keep source callbacks together: construction and cache state form one adapter.

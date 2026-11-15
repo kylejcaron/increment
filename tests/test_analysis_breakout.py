@@ -787,6 +787,13 @@ def test_unit_panel_breakout_refuses_triggered_population_before_relabeling():
             experiment, resolver, View(view="breakout", grain="total", population="triggered")
         )
     assert refused.value.code == "facade.analysis.trigger_unsupported"
+    assert refused.value.context == {
+        "method": "run_breakout",
+        "experiment": experiment.experiment_id,
+        "trigger": None,
+        "route": "moments",
+        "supported_sources": ("from_definitions", "from_unit_day_artifact"),
+    }
 
 
 def test_run_breakout_bh_family_keeps_a_tiny_segment_additive_row():
@@ -1619,7 +1626,15 @@ def test_run_breakout_refuses_when_no_breakouts_declared(con, example_definition
     with pytest.raises(CapabilityError) as refused:
         view_readout(experiment, resolver, _BREAKOUT)
     assert refused.value.code == "evidence.breakout_unavailable"
-    assert refused.value.context["constructor"] == "from_definitions"
+    assert refused.value.context == {
+        "constructor": "from_definitions",
+        "requested": (),
+        "offered": (),
+        "route": (
+            "a breakout view needs an experiment built by from_definitions or "
+            'from_frame(shape="panel") with declared breakouts'
+        ),
+    }
 
 
 def test_panel_sql_and_summary_sql_with_breakouts_include_segment_sql(con):

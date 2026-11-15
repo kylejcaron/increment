@@ -14,7 +14,6 @@ from increment._analysis_config import UNSET, _Unset, overlay_configs, select_me
 from increment._breakout_readouts import plan_breakout_request, run_breakout
 from increment._canonical import declaration_value
 from increment._day_axis import (
-    _TRIGGER_UNSUPPORTED,
     day_axis_readouts,
     require_arm_state,
     run_asof,
@@ -23,6 +22,7 @@ from increment._day_axis import (
     run_daily_lift,
 )
 from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastReadoutRequest
+from increment._evidence_refusals import _TRIGGER_UNSUPPORTED
 from increment._evidence_types import SequentialCaptureRequest
 from increment._exploratory import exploratory_sibling, select_exploratory
 from increment._run_spines import run_spines

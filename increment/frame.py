@@ -332,6 +332,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             assignment_relation="reduced",
             value_scale_overrides=True,
             fixed_triggered=False,
+            windowed_breakout_quantiles=True,
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -1568,6 +1569,7 @@ class FramePanelSource(SequentialSourceMixin):
             grain_route=None if clocked else _PANEL_EXPOSURE_DATE_ROUTE,
             value_scale_overrides=True,
             fixed_triggered=False,
+            windowed_breakout_quantiles=True,
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:

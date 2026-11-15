@@ -161,11 +161,11 @@ class BreakoutSlice:
     source: Any
     source_name: str | None
     stamp_source: str | None
+    metrics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class BreakoutSlices:
-    route: BreakoutRoute
     slices: tuple[BreakoutSlice, ...]
 
 
@@ -182,7 +182,6 @@ class BreakoutUnitRowsRequest:
 @dataclass(frozen=True, slots=True)
 class BreakoutUnitRows:
     identity: BreakoutIdentity
-    route: BreakoutRoute
     frame: Any
     unit_frame_has_dimension: bool
 

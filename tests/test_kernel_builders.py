@@ -955,7 +955,7 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     )
     assert Experiment.from_json(offline.to_json()).hash() == offline.hash()
 
-    for field in ("value_scale_overrides", "fixed_triggered"):
+    for field in ("value_scale_overrides", "fixed_triggered", "windowed_breakout_quantiles"):
         capabilities = offline.source_refs[0].capabilities
         assert capabilities is not None
         changed_capabilities = replace(capabilities, **{field: False})

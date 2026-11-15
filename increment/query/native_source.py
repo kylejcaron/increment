@@ -326,6 +326,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             sql_grains=frozenset({"total"}),
             value_scale_overrides=True,
             fixed_triggered=True,
+            windowed_breakout_quantiles=True,
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:

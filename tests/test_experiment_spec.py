@@ -415,6 +415,7 @@ def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
     for field, legacy_value, nonlegacy_value in (
         ("value_scale_overrides", True, False),
         ("fixed_triggered", False, True),
+        ("windowed_breakout_quantiles", True, False),
     ):
         explicit_legacy = dataclasses.replace(capabilities, **{field: legacy_value})
         legacy_experiment = dataclasses.replace(
@@ -462,8 +463,10 @@ def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
     )
     assert effective_capabilities(native_moments).value_scale_overrides is False
     assert effective_capabilities(native_moments).fixed_triggered is False
+    assert effective_capabilities(native_moments).windowed_breakout_quantiles is True
     artifact_moments = dataclasses.replace(
         native_moments, operations=frozenset({"moments_source", "artifact_experiment"})
     )
     assert effective_capabilities(artifact_moments).value_scale_overrides is True
     assert effective_capabilities(artifact_moments).fixed_triggered is True
+    assert effective_capabilities(artifact_moments).windowed_breakout_quantiles is False

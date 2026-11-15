@@ -862,6 +862,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             ),
             value_scale_overrides=True,
             fixed_triggered=True,
+            windowed_breakout_quantiles=False,
         )
 
     def identity_assignment_evidence(self, request: Any) -> Any:

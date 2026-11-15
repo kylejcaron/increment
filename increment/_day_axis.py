@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset, normalize_display_correction
 from increment._day_axis_labels import _DAY_AXIS_LABEL_UNORDERABLE
-from increment._evidence_refusals import check_method_covariates
+from increment._evidence_refusals import _TRIGGER_UNSUPPORTED, check_method_covariates
 from increment._evidence_types import (
     ComplianceSeriesRequest,
     ComplianceSummary,
@@ -122,21 +122,6 @@ _CLUSTERED_DAY_AXIS = RefusalSpec(
     "facade.analysis.clustered_day_axis",
     CapabilityError,
     template="{method}() is not supported on a clustered experiment -- experiment {experiment!r} declares cluster {cluster!r}, and cluster-robust inference is total-grain only (run()/srm()).",
-)
-_TRIGGER_UNSUPPORTED = RefusalSpec(
-    "facade.analysis.trigger_unsupported",
-    CapabilityError,
-    lambda *, method, experiment, trigger, **_: (
-        (
-            f"{method}: experiment {experiment!r} declares no trigger on this source, "
-            "so it has no triggered population."
-            if trigger is None
-            else f"{method}: experiment {experiment!r} declares trigger {trigger!r}, "
-            "which this readout does not apply."
-        )
-        + " To analyze triggered populations, build the experiment with from_definitions, "
-        "or with from_unit_day_artifact from an artifact carrying trigger-population evidence."
-    ),
 )
 _UNKNOWN_DIMENSION = RefusalSpec(
     "facade.analysis.unknown_dimension",

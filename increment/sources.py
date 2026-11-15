@@ -1608,6 +1608,7 @@ class MomentsSource(SequentialSourceMixin):
                 "artifact_experiment" in self.operations or "moments_source" not in self.operations
             ),
             fixed_triggered="artifact_experiment" in self.operations,
+            windowed_breakout_quantiles="artifact_experiment" not in self.operations,
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -2471,9 +2472,13 @@ class BreakoutMomentsSource(SequentialSourceMixin):
 
     @property
     def evidence(self) -> EvidenceCapabilities:
-        from increment._source_types import declared_evidence
+        from increment._source_types import declared_evidence, effective_capabilities
 
-        backing = declared_evidence(self._source) if self._source is not None else None
+        backing = (
+            effective_capabilities(declared_evidence(self._source))
+            if self._source is not None
+            else None
+        )
         return EvidenceCapabilities(
             kind="breakout",
             grains=self.capabilities,
@@ -2504,6 +2509,9 @@ class BreakoutMomentsSource(SequentialSourceMixin):
             available_covariates=None,
             value_scale_overrides=True,
             fixed_triggered=False,
+            windowed_breakout_quantiles=(
+                backing.windowed_breakout_quantiles if backing is not None else True
+            ),
         )
 
     @property

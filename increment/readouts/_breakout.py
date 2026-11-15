@@ -13,7 +13,6 @@ from increment._evidence_types import BreakoutIdentity, BreakoutUnitRowsRequest,
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import Correction
 from increment._readout_request import ReadoutRequest, validate_request
-from increment._source_types import is_custom_source
 from increment.breakout.estimates import (
     BreakoutEstimate,
     BreakoutEstimates,
@@ -49,8 +48,8 @@ from increment.readouts._encouragement import _encouragement_cell_identities
 from increment.readouts._evidence import (
     allows_local_metric_fit,
     artifact_provenance,
+    breakout_readout_scope,
     day_axis_route,
-    evidence_scope,
     load_breakout_evidence,
     retains_cuped_relation,
 )
@@ -802,22 +801,7 @@ def breakout(
     estimands: Sequence[str] | None = None,
     analysis_population: Literal["assigned", "triggered"] = "assigned",
 ) -> BreakoutEstimates:
-    """Run breakout on one pinned custom-provider snapshot."""
-    if not is_custom_source(src):
-        return _breakout_impl(
-            src,
-            dimension,
-            source_name=source_name,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
-            metrics=metrics,
-            correction=correction,
-            q=q,
-            estimands=estimands,
-            analysis_population=analysis_population,
-        )
-
+    """Run breakout through the shared interpreter on a scoped source."""
     validated, _, _ = _validated_breakout_request(
         src,
         dimension,
@@ -829,7 +813,7 @@ def breakout(
         q=q,
         estimands=estimands,
     )
-    request = EvidenceScope(
+    scope = EvidenceScope(
         metrics=validated.metrics,
         population=analysis_population,
         breakouts=(BreakoutIdentity(dimension, source_name),),
@@ -837,7 +821,7 @@ def breakout(
         snapshot=True,
         include_breakouts=True,
     )
-    with evidence_scope(src, request) as pinned:
+    with breakout_readout_scope(src, scope) as pinned:
         return _breakout_impl(
             pinned,
             dimension,

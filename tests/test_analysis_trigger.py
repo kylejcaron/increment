@@ -1572,9 +1572,20 @@ def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_p
     adopted = None
     try:
         adopted = _publish_and_adopt(con, native, kinds=("breakout_dimension", "assignment_counts"))
-        with pytest.raises(InvalidRequestError) as raised:
+        with pytest.raises(CapabilityError) as triggered:
             view_readout(*adopted, View(view="breakout", grain="total", population="triggered"))
-        assert raised.value.code == "frame.metric.window_days_supported"
+        assert triggered.value.code == "facade.analysis.trigger_unsupported"
+        assert triggered.value.context == {
+            "method": "run_breakout",
+            "experiment": "exp",
+            "trigger": None,
+            "route": "artifact",
+            "supported_sources": ("from_definitions", "from_unit_day_artifact"),
+        }
+
+        with pytest.raises(InvalidRequestError) as assigned:
+            view_readout(*adopted, View(view="breakout", grain="total", population="assigned"))
+        assert assigned.value.code == "frame.metric.window_days_supported"
     finally:
         if adopted is None:
             native[1].close()

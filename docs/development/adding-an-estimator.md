@@ -52,6 +52,11 @@ the legacy meaning derived from the declaration kind and operations. New
 providers should set the semantic values explicitly; recorded declarations
 and runtime provider verification compare their effective capabilities.
 
+`windowed_breakout_quantiles` declares whether breakout requests may use a
+windowed quantile metric. Omitted values retain the legacy default: false for
+artifact declarations and true for other source declarations. Metric
+validation still precedes this capability refusal.
+
 For scalar multicovariate CUPED, distinguish a missing fit from a failed one.
 An unavailable `MethodFitAnswer` without a failure may be fit from `unit_rows`
 when the provider declares retained or warehouse fit evidence and unit rows.

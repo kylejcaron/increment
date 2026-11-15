@@ -483,7 +483,7 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
 
         setattr(provider_type, "scope", counted_provider_scope)  # noqa: B010
         provider = evidence_provider(source)
-        original_breakout_scope = _breakout.evidence_scope
+        original_breakout_scope = _breakout.breakout_readout_scope
 
         @contextmanager
         def counted_breakout_scope(*args: Any, **kwargs: Any) -> Iterator[Any]:
@@ -492,7 +492,7 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
             with original_breakout_scope(*args, **kwargs) as pinned:
                 yield pinned
 
-        setattr(_breakout, "evidence_scope", counted_breakout_scope)  # noqa: B010
+        setattr(_breakout, "breakout_readout_scope", counted_breakout_scope)  # noqa: B010
         original_snapshot = getattr(source, "readout_snapshot", None)
         session = getattr(source, "_session", None)
         session_type = type(session) if session is not None else None

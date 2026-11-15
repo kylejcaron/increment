@@ -210,6 +210,7 @@ class EvidenceCapabilities:
     grain_route: str | None = None
     value_scale_overrides: bool | None = None
     fixed_triggered: bool | None = None
+    windowed_breakout_quantiles: bool | None = None
 
 
 def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
@@ -229,6 +230,11 @@ def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
             value.fixed_triggered
             if value.fixed_triggered is not None
             else artifact or value.kind == "definitions"
+        ),
+        windowed_breakout_quantiles=(
+            value.windowed_breakout_quantiles
+            if value.windowed_breakout_quantiles is not None
+            else not artifact
         ),
     )
 

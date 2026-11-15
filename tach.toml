@@ -1373,7 +1373,7 @@ depends_on = [
   "increment.sequential_state",
   "increment.sequential_source",
   "increment.readouts._execution_context",
-  "increment.decision", "increment._evidence_scopes",
+  "increment.decision",
   "increment.kernel.context", "increment.estimation.multiplicity",
 ]
 

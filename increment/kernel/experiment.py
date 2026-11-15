@@ -238,9 +238,14 @@ def _capability_payload(value: EvidenceCapabilities | None) -> dict[str, object]
         return None
     payload = _json_value(value)
     defaults = effective_capabilities(
-        dataclasses.replace(value, value_scale_overrides=None, fixed_triggered=None)
+        dataclasses.replace(
+            value,
+            value_scale_overrides=None,
+            fixed_triggered=None,
+            windowed_breakout_quantiles=None,
+        )
     )
-    for name in ("value_scale_overrides", "fixed_triggered"):
+    for name in ("value_scale_overrides", "fixed_triggered", "windowed_breakout_quantiles"):
         if getattr(value, name) is None or getattr(value, name) == getattr(defaults, name):
             del payload[name]
     # Unset route values preserve declarations recorded before the field existed.

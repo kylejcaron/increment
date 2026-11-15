@@ -210,7 +210,7 @@ def _refuse_trigger(experiment: Any, scope: Any, operation: str) -> None:
             registered or effective_capabilities(capabilities[0]).fixed_triggered
         ):
             return
-    from increment._day_axis import _TRIGGER_UNSUPPORTED
+    from increment._evidence_refusals import _TRIGGER_UNSUPPORTED
 
     refuse(
         _TRIGGER_UNSUPPORTED,
@@ -247,7 +247,10 @@ def _refuse_undeclared_breakouts(experiment: Any, scope: Any) -> None:
         constructor=_BUILDERS.get(capabilities[0].kind, capabilities[0].kind),
         requested=_requested_breakouts(experiment, scope),
         offered=(),
-        route="declare breakouts=[...] on from_frame, or on the experiment in the definitions",
+        route=(
+            "a breakout view needs an experiment built by from_definitions or "
+            'from_frame(shape="panel") with declared breakouts'
+        ),
     )
 
 

@@ -74,7 +74,7 @@ from increment._source_types import (
 from increment._trigger_integrity import (
     validate_trigger_fires_in_every_arm as _validate_trigger,
 )
-from increment.errors import CodedError
+from increment.errors import CodedError, refuse
 from increment.semantics.models import Breakout
 from increment.sources import BreakoutMomentsSource, EvidenceSource, require_operation
 
@@ -284,6 +284,69 @@ def breakout_route(src: EvidenceSource) -> BreakoutRoute:
     return UNSUPPORTED_ROUTE if route == MOMENTS_ROUTE else route
 
 
+def require_breakout_source_support(
+    src: EvidenceSource,
+    experiment: Any | None,
+    breakouts: Sequence[BreakoutIdentity] | None,
+) -> None:
+    """Refuse a breakout request when the selected source has no breakout route."""
+    if breakout_route(src) != UNSUPPORTED_ROUTE:
+        return
+    declaration = declared_evidence(src)
+    requested = (
+        tuple(identity.property for identity in breakouts)
+        if breakouts is not None
+        else tuple(item.property for item in experiment.breakouts)
+        if experiment is not None
+        else tuple(declaration.breakouts)
+    )
+    from increment._evidence_refusals import refuse_breakout
+
+    refuse_breakout(
+        src,
+        requested,
+        declaration.breakouts,
+        route="use a source with the requested breakout dimensions",
+    )
+
+
+def validate_breakout_populations(
+    src: EvidenceSource,
+    experiment: Any | None,
+    populations: Sequence[Literal["assigned", "triggered"]],
+) -> None:
+    """Validate breakout population support using the selected source declaration."""
+    if "triggered" not in populations:
+        return
+    route = breakout_route(src)
+    if not serves_custom_breakouts(src) and (
+        route not in (ARTIFACT_ROUTE, NATIVE_ROUTE)
+        or experiment is None
+        or experiment.trigger is None
+    ):
+        from increment._evidence_refusals import _TRIGGER_UNSUPPORTED
+
+        refuse(
+            _TRIGGER_UNSUPPORTED,
+            method="run_breakout",
+            experiment="<unknown>" if experiment is None else experiment.name,
+            trigger=None if experiment is None else experiment.trigger,
+            route=route,
+            supported_sources=("from_definitions", "from_unit_day_artifact"),
+        )
+    validate_populations(src, populations, operation="run_breakout")
+
+
+def breakout_uses_scoped_execution(src: EvidenceSource) -> bool:
+    """Whether breakout acquisition binds its slices to one source scope."""
+    return breakout_route(src) == NATIVE_ROUTE or serves_custom_breakouts(src)
+
+
+def breakout_uses_owned_execution_context(src: EvidenceSource, population: str) -> bool:
+    """Whether this breakout should open the normal run-owned execution context."""
+    return not serves_custom_breakouts(src) and population != "triggered"
+
+
 def require_breakout_identity(src: EvidenceSource, identities: Sequence[BreakoutIdentity]) -> None:
     """Validate breakout identities against the already-selected source declaration."""
     if isinstance(src, BreakoutMomentsSource):
@@ -350,6 +413,15 @@ def evidence_scope(
 ) -> AbstractContextManager[EvidenceSource]:
     """Pin the requested source view and reduction lifetime for one readout."""
     return acquire_evidence_scope(src, scope, lambda scoped: scoped).source
+
+
+def breakout_readout_scope(
+    src: EvidenceSource, scope: EvidenceScope
+) -> AbstractContextManager[EvidenceSource]:
+    """Pin custom breakout reads; built-in sources already own their read scope."""
+    if is_custom_source(src):
+        return evidence_scope(src, scope)
+    return nullcontext(src)
 
 
 def has_verified_sequential_checkpoint(src: EvidenceSource) -> bool:
@@ -1040,21 +1112,31 @@ def _complete_breakout_request(
     experiment = getattr(source, "_experiment", None) or getattr(
         source, "artifact_experiment", None
     )
+    if not definitions and experiment is not None:
+        definitions = tuple(experiment.breakouts)
     if request.breakouts:
         from increment.semantics.models import Breakout
 
         declared = {BreakoutIdentity(item.property, item.source): item for item in definitions}
-        definitions = tuple(
-            declared.get(
-                identity,
-                Breakout(property=identity.property, source=identity.source),
+        selected: list[Any] = []
+        for identity in request.breakouts:
+            definition = declared.get(identity)
+            if definition is None and identity.source is None:
+                matches = [
+                    item
+                    for candidate, item in declared.items()
+                    if candidate.property == identity.property
+                ]
+                if len(matches) == 1:
+                    definition = matches[0]
+            selected.append(
+                definition
+                if definition is not None
+                else Breakout(property=identity.property, source=identity.source)
             )
-            for identity in request.breakouts
-        )
+        definitions = tuple(selected)
         identities = request.breakouts
     else:
-        if not definitions and experiment is not None:
-            definitions = tuple(experiment.breakouts)
         identities = (
             tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
             if definitions
@@ -1126,10 +1208,9 @@ def load_breakout_evidence(
                         population=request.population,
                     ),
                 )
-            return BreakoutUnitRows(request.breakout, PANEL_ROUTE, frame, True)
+            return BreakoutUnitRows(request.breakout, frame, True)
         definitions = request.breakout_definitions
         return BreakoutSlices(
-            PANEL_ROUTE,
             tuple(
                 BreakoutSlice(
                     identity,
@@ -1138,6 +1219,7 @@ def load_breakout_evidence(
                     identity.source
                     if identity.source is not None or index >= len(definitions)
                     else definitions[index].source,
+                    tuple(metric.name for metric in request.metrics),
                 )
                 for index, identity in enumerate(request.breakouts)
             ),
@@ -1152,7 +1234,7 @@ def load_breakout_evidence(
             covariates = tuple(dict.fromkeys((request.breakout.property, *request.covariates)))
             frame = source.unit_frame(request.metric, covariates=covariates)
             dimension_in_frame = True
-        return BreakoutUnitRows(request.breakout, breakout_route(src), frame, dimension_in_frame)
+        return BreakoutUnitRows(request.breakout, frame, dimension_in_frame)
 
     route = breakout_route(src)
     if route == ARTIFACT_ROUTE:
@@ -1171,11 +1253,26 @@ def load_breakout_evidence(
             configs=request.configs,
         )
         slices = tuple(
-            BreakoutSlice(identity, scoped, None, scoped.source_name)
+            BreakoutSlice(
+                identity,
+                scoped,
+                None,
+                scoped.source_name,
+                tuple(metric.name for metric in request.metrics),
+            )
             for identity, scoped in zip(request.breakouts, sources, strict=True)
         )
     elif route == PANEL_ROUTE:
-        slices = tuple(BreakoutSlice(identity, src, None, None) for identity in request.breakouts)
+        slices = tuple(
+            BreakoutSlice(
+                identity,
+                src,
+                None,
+                None,
+                tuple(metric.name for metric in request.metrics),
+            )
+            for identity in request.breakouts
+        )
     elif route == NATIVE_ROUTE:
         declaration = declared_evidence(src)
         if "breakout_sources" not in declaration.operations:
@@ -1222,12 +1319,13 @@ def load_breakout_evidence(
                 if sum(item.property == identity.property for item in request.breakouts) > 1
                 else None,
                 scoped.source_name,
+                tuple(metric.name for metric in request.metrics),
             )
             for identity, scoped in zip(request.breakouts, sources, strict=True)
         )
     else:
         slices = ()
-    return BreakoutSlices(route, slices)
+    return BreakoutSlices(slices)
 
 
 def _groups(req: DayAxisRequest) -> list[tuple[Any, tuple[Any, ...]]]:
