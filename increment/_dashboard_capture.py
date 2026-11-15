@@ -20,7 +20,7 @@ from increment._source_operations import DashboardGroupData, DashboardGroupDataO
 from increment._source_types import declared_evidence
 from increment.decision import DefinitionsArmAnalysisState
 from increment.errors import refuse
-from increment.evidence import evidence_provider
+from increment.readouts._evidence import acquire_dashboard_scope
 
 if TYPE_CHECKING:
     from increment._health import SrmObservations
@@ -75,13 +75,12 @@ def capture_dashboard[T](
             "with a warehouse connection."
         ),
     )
-    scoped = evidence_provider(binding.source).scope(
-        EvidenceScope(metrics=tuple(metrics), snapshot=True, include_breakouts=True)
+    scoped = acquire_dashboard_scope(
+        binding.source,
+        EvidenceScope(metrics=tuple(metrics), snapshot=True, include_breakouts=True),
     )
-    with scoped.source as pinned:
-        from increment.readouts._evidence import _builtin_source
-
-        return operation(DashboardCapture(binding.with_source(_builtin_source(pinned))))
+    with scoped as pinned:
+        return operation(DashboardCapture(binding.with_source(pinned)))
 
 
 @dataclass(frozen=True, slots=True)

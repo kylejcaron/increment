@@ -342,9 +342,22 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
         return pinned
 
     monkeypatch.setattr(source, "_pinned_source", pin_then_append)
+
+    original_health_evidence = type(source).triggered_health_evidence
+    health_evidence_reads = 0
+
+    def count_health_evidence_reads(owner):
+        nonlocal health_evidence_reads
+        health_evidence_reads += 1
+        return original_health_evidence(owner)
+
+    monkeypatch.setattr(type(source), "triggered_health_evidence", count_health_evidence_reads)
     try:
         first = health_check(experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5})
+        assert health_evidence_reads == 1
+        health_evidence_reads = 0
         second = health_check(experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5})
+        assert health_evidence_reads == 1
     finally:
         cast(Any, resolver).close()
     first_assigned = next(check for check in first.checks if check.check == "assigned_allocation")
@@ -366,15 +379,11 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
     assert second_rate_values["C"] == pytest.approx((first_rate_values["C"] * 100 + 1) / 101)
     assert first.source_snapshot_id and second.source_snapshot_id
     assert first.source_snapshot_id != second.source_snapshot_id
-    assert first.source_cutoff == second.source_cutoff == cutoff.isoformat()
+    expected_cutoff = cutoff.isoformat()
+    assert first.source_cutoff == second.source_cutoff == expected_cutoff
     restored = ExperimentHealth.model_validate_json(first.model_dump_json())
     assert restored.source_snapshot_id == first.source_snapshot_id
     assert restored.source_cutoff == first.source_cutoff
-
-
-@pytest.mark.integration
-def test_health_checks_share_one_snapshot(tmp_path, monkeypatch) -> None:
-    _health_snapshot_scenario(tmp_path, monkeypatch)
 
 
 @pytest.mark.integration

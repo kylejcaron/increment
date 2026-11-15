@@ -501,6 +501,40 @@ class CountEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class TriggeredHealthFeedEvidence:
+    """One feed's completeness evidence acquired for a health report."""
+
+    evidence_kind: str
+    feed: str | None
+    metric: str | None
+    complete_through: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthObservationEdgeAnswer:
+    """A metric edge or its explicit source refusal."""
+
+    observed: date | None = None
+    finalized: date | None = None
+    failure: CodedError | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthDiagnosticEvidence:
+    """Optional cutoff, feed, and metric-edge answers from one source view."""
+
+    feed_operation_available: bool
+    observation_cutoff: datetime | None
+    feeds: tuple[TriggeredHealthFeedEvidence, ...]
+    edge_operation_available: bool
+    edges: Mapping[str, HealthObservationEdgeAnswer]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "feeds", tuple(self.feeds))
+        object.__setattr__(self, "edges", _FrozenMapping(self.edges))
+
+
+@dataclass(frozen=True, slots=True)
 class MissingValueAccount:
     """Enrolled and observed unit counts per arm for a ``missing="skip"`` metric.
 

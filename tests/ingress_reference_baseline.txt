@@ -2,11 +2,6 @@
 # route: source-route constants, route predicates, and route values spelled as string literals
 # in a comparison with a route; custom: custom-versus-built-in predicates; unwrap: loader
 # unwrapping through _builtin_source.
-increment/_dashboard_capture.py unwrap 1
 increment/_execute.py custom 1
-increment/_health.py unwrap 1
-increment/_planning_baseline.py custom 1
-increment/_source_diagnostics.py custom 2
-increment/_source_diagnostics.py route 1
 increment/kernel/context.py custom 1
 increment/readouts/_run.py unwrap 2

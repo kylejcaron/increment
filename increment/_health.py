@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
-from increment._evidence_types import EvidenceScope
-from increment._source_operations import TriggeredHealthEvidenceOperation
+from increment._evidence_types import EvidenceScope, HealthDiagnosticEvidence
 from increment.decision import ContrastAnalysisState, DefinitionsArmAnalysisState
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.health import ExperimentHealth, HealthCheck
-from increment.evidence import evidence_provider
+from increment.readouts._evidence import (
+    acquire_health_scope,
+    health_population,
+    load_health_diagnostics,
+)
 from increment.sources import _health_snapshot_id
 
 if TYPE_CHECKING:
@@ -97,25 +100,16 @@ def check_health(
             trigger_rates=trigger_rates,
             observations=observations,
         )
-    provider = evidence_provider(binding.source)
-    population = (
-        "triggered"
-        if "triggered" in provider.evidence.populations
-        and "assigned" not in provider.evidence.populations
-        else "assigned"
-    )
-    scoped = provider.scope(
+    population = health_population(binding.source)
+    with acquire_health_scope(
+        binding.source,
         EvidenceScope(
             metrics=tuple(binding.metrics),
             population=population,
             snapshot=True,
             include_breakouts=True,
-        )
-    )
-    with scoped.source as pinned:
-        from increment.readouts._evidence import _builtin_source
-
-        source = _builtin_source(pinned)
+        ),
+    ) as source:
         return _collect(
             binding if source is binding.source else binding.with_source(source),
             expected_allocation,
@@ -137,6 +131,11 @@ def _collect(
     trigger_name = getattr(experiment, "trigger", None) or getattr(
         binding.context, "trigger_name", None
     )
+    diagnostics = load_health_diagnostics(
+        binding.source,
+        binding.metrics,
+        include_trigger_checks=trigger_name is not None,
+    )
     allocation: dict[str, SrmObservation] | None = None
     if observations is not None:
         allocation = {
@@ -149,8 +148,8 @@ def _collect(
     if trigger_name is not None:
         checks.append(_allocation_check(binding, "triggered", expected_allocation, srm, allocation))
         checks.append(_trigger_rates_check(binding, trigger_rates))
-        checks.extend(_trigger_maturity(binding))
-        checks.extend(_feed_completeness(binding))
+        checks.extend(_trigger_maturity(binding.metrics, diagnostics))
+        checks.extend(_feed_completeness(diagnostics))
         checks.append(_trigger_assumptions(binding))
     else:
         checks.extend(
@@ -170,7 +169,7 @@ def _collect(
             check.feed or "",
         )
     )
-    cutoff = _health_cutoff(binding)
+    cutoff = _health_cutoff(binding, diagnostics)
     return ExperimentHealth(
         checks=tuple(checks),
         source_snapshot_id=_health_snapshot_id(
@@ -347,33 +346,14 @@ def _trigger_rates_check(
     )
 
 
-def _trigger_maturity(binding: SourceBinding) -> list[HealthCheck]:
-    from increment.query.artifact_contract import ArtifactContractError
-
-    source = binding.source
-    edges = getattr(source, "triggered_observation_edges", None)
+def _trigger_maturity(
+    metrics: Sequence[Any], evidence: HealthDiagnosticEvidence
+) -> list[HealthCheck]:
     checks: list[HealthCheck] = []
-    for metric in sorted(binding.metrics, key=lambda item: item.name):
-        if not callable(edges):
-            checks.append(
-                HealthCheck(
-                    check="trigger_maturity",
-                    analysis_population="triggered",
-                    metric=metric.name,
-                    availability="unavailable",
-                    code="evidence.operation_unavailable",
-                    context={
-                        "constructor": type(source).__name__,
-                        "requested": "triggered_observation_edges",
-                        "offered": tuple(sorted(getattr(source, "operations", ()))),
-                        "route": "This source does not retain trigger maturity evidence.",
-                    },
-                )
-            )
-            continue
-        try:
-            observed, finalized = edges(metric)
-        except (CapabilityError, ArtifactContractError) as refusal:
+    for metric in sorted(metrics, key=lambda item: item.name):
+        answer = evidence.edges[metric.name]
+        if answer.failure is not None:
+            refusal = answer.failure
             checks.append(
                 HealthCheck(
                     check="trigger_maturity",
@@ -385,6 +365,9 @@ def _trigger_maturity(binding: SourceBinding) -> list[HealthCheck]:
                 )
             )
             continue
+        observed = answer.observed
+        finalized = answer.finalized
+        assert observed is not None
         checks.append(
             HealthCheck(
                 check="trigger_maturity",
@@ -416,11 +399,9 @@ def _feed_reason(evidence_kind: str, watermark: object | None) -> str:
     return "Certified completeness watermark at the source cutoff."
 
 
-def _feed_completeness(binding: SourceBinding) -> list[HealthCheck]:
-    source = binding.source
-    if isinstance(source, TriggeredHealthEvidenceOperation):
-        evidence = source.triggered_health_evidence()
-        checks = []
+def _feed_completeness(evidence: HealthDiagnosticEvidence) -> list[HealthCheck]:
+    checks = []
+    if evidence.feed_operation_available:
         for item in evidence.feeds:
             feed = item.feed or item.evidence_kind
             if item.metric is not None:
@@ -498,10 +479,9 @@ def _trigger_assumptions(binding: SourceBinding) -> HealthCheck:
     )
 
 
-def _health_cutoff(binding: SourceBinding) -> str | None:
-    source = binding.source
-    if isinstance(source, TriggeredHealthEvidenceOperation):
-        cutoff = source.triggered_health_evidence().observation_cutoff
+def _health_cutoff(binding: SourceBinding, diagnostics: HealthDiagnosticEvidence) -> str | None:
+    if diagnostics.feed_operation_available:
+        cutoff = diagnostics.observation_cutoff
         return None if cutoff is None else cutoff.isoformat()
     session = binding.session
     evidence = session.source_snapshot_evidence if session is not None else None

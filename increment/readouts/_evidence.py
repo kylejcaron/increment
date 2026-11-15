@@ -16,6 +16,9 @@ from increment._evidence_loaders import (
     source_for_population,
 )
 from increment._evidence_loaders import route_provider_request as _route_provider_request
+from increment._evidence_loaders import (
+    view_population as _view_population,
+)
 from increment._evidence_refusals import (
     refuse_assignment_invalid,
     refuse_joint_grouping,
@@ -41,11 +44,12 @@ from increment._evidence_types import (
     ComplianceSummary,
     CountEvidence,
     CountsRequest,
-    DayAxisRequest,
     DayAxisRoute,
     DayAxisRows,
     EvidenceScope,
     EvidenceScopeResult,
+    HealthDiagnosticEvidence,
+    HealthObservationEdgeAnswer,
     MethodFitAnswer,
     MethodFitRequest,
     MissingValueAccount,
@@ -56,6 +60,7 @@ from increment._evidence_types import (
     SequentialCaptureRequest,
     SequentialSnapshotRequest,
     SourceContext,
+    TriggeredHealthFeedEvidence,
     UnitRows,
     UnitRowsRequest,
     day_axis_source_partitions,
@@ -76,12 +81,13 @@ from increment._source_types import (
 from increment._trigger_integrity import (
     validate_trigger_fires_in_every_arm as _validate_trigger,
 )
-from increment.errors import CodedError, refuse
+from increment.errors import CapabilityError, CodedError, InvalidRequestError, refuse
 from increment.semantics.models import Breakout
 from increment.sources import BreakoutMomentsSource, EvidenceSource, require_operation
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._evidence_types import DayAxisRequest
 
 
 def _declared_breakout_property(value: object) -> str | None:
@@ -512,6 +518,89 @@ def acquire_evidence_scope(
     return load_evidence_scope(src, scope, provider_factory)
 
 
+def acquire_dashboard_scope(
+    src: EvidenceSource, scope: EvidenceScope
+) -> AbstractContextManager[_BuiltinMomentSource]:
+    """Pin dashboard evidence and expose its loader view inside that scope."""
+    return cast(
+        AbstractContextManager[_BuiltinMomentSource],
+        acquire_evidence_scope(src, scope, _builtin_source).source,
+    )
+
+
+def acquire_health_scope(
+    src: EvidenceSource, scope: EvidenceScope
+) -> AbstractContextManager[_BuiltinMomentSource]:
+    """Pin health diagnostics to one source snapshot."""
+    return cast(
+        AbstractContextManager[_BuiltinMomentSource],
+        acquire_evidence_scope(src, scope, _builtin_source).source,
+    )
+
+
+def health_population(src: EvidenceSource) -> Literal["assigned", "triggered"]:
+    """Select the health report's capture population from its declaration."""
+    return _view_population(src)
+
+
+def load_health_diagnostics(
+    src: EvidenceSource,
+    metrics: Sequence[Any],
+    *,
+    include_trigger_checks: bool,
+) -> HealthDiagnosticEvidence:
+    """Acquire optional cutoff, feed, and metric-edge data for one health report."""
+    health_operation = getattr(src, "triggered_health_evidence", None)
+    feed_available = callable(health_operation)
+    observation_cutoff = None
+    feeds: tuple[TriggeredHealthFeedEvidence, ...] = ()
+    if feed_available:
+        evidence = health_operation()
+        observation_cutoff = evidence.observation_cutoff
+        feeds = tuple(
+            TriggeredHealthFeedEvidence(
+                item.evidence_kind,
+                item.feed,
+                item.metric,
+                item.complete_through,
+            )
+            for item in evidence.feeds
+        )
+
+    edge_operation = getattr(src, "triggered_observation_edges", None)
+    edge_available = include_trigger_checks and callable(edge_operation)
+    edges: dict[str, HealthObservationEdgeAnswer] = {}
+    if include_trigger_checks:
+        if edge_available:
+            for metric in sorted(metrics, key=lambda item: item.name):
+                try:
+                    observed, finalized = edge_operation(metric)
+                except (CapabilityError, InvalidRequestError) as refusal:
+                    edges[metric.name] = HealthObservationEdgeAnswer(failure=refusal)
+                else:
+                    edges[metric.name] = HealthObservationEdgeAnswer(observed, finalized)
+        else:
+            from increment._evidence_refusals import refuse_operation
+
+            for metric in sorted(metrics, key=lambda item: item.name):
+                try:
+                    refuse_operation(
+                        src,
+                        "triggered_observation_edges",
+                        tuple(sorted(declared_evidence(src).operations)),
+                        route="This source does not retain trigger maturity evidence.",
+                    )
+                except CapabilityError as refusal:
+                    edges[metric.name] = HealthObservationEdgeAnswer(failure=refusal)
+    return HealthDiagnosticEvidence(
+        feed_available,
+        observation_cutoff,
+        feeds,
+        edge_available,
+        edges,
+    )
+
+
 def _builtin_source(src: EvidenceSource) -> _BuiltinMomentSource:
     """Bridge typed scoped providers to the loader-shaped acquisition seam."""
     return loader_source(src)
@@ -615,6 +704,105 @@ def load_counts(src: EvidenceSource, request: CountsRequest) -> CountEvidence:
         return CountEvidence(request.population, "unit", source.unit_counts())
     grain, counts, units = cast(Any, source).triggered_counts()
     return CountEvidence("triggered", grain, counts, units)
+
+
+def load_trigger_rates(src: EvidenceSource) -> Mapping[str, float]:
+    """Acquire trigger-rate evidence using the source's declared route."""
+    if is_artifact_route(src):
+        operations = declared_evidence(src).operations
+        if "triggered_counts" not in operations:
+            from increment._evidence_refusals import refuse_operation
+
+            refuse_operation(
+                src,
+                "triggered_counts",
+                tuple(sorted(operations)),
+                route="trigger_rates() requires complete trigger evidence",
+            )
+        return cast(Any, src).trigger_rates()
+
+    native = _require_acquisition_operation(
+        src,
+        "triggered_counts",
+        "trigger_rates() needs an experiment built by from_definitions with a warehouse connection",
+    )
+    return native.trigger_rates()
+
+
+def load_allocation_history(
+    src: EvidenceSource, *, population: Literal["assigned", "triggered"]
+) -> Any:
+    """Acquire the declared unit-grain enrollment history."""
+    source = _require_acquisition_operation(
+        src,
+        "allocation_history",
+        (
+            "allocation_history() needs an experiment built by from_definitions; "
+            "a frame, warehouse or moments experiment retains no raw event stream "
+            "to build a daily enrollment timeline from."
+        ),
+    )
+    return source.allocation_history(population=population)
+
+
+def _require_acquisition_operation(src: EvidenceSource, operation: str, message: str) -> Any:
+    """Validate a declared diagnostic operation before handing out its adapter."""
+    declaration = declared_evidence(src)
+    if (
+        operation == "allocation_history"
+        and operation not in declaration.operations
+        and declaration.assignment_relation == "reduced"
+    ):
+        from increment._evidence_refusals import refuse_assignment_identity
+
+        refuse_assignment_identity(src, operation=operation)
+    offered = tuple(sorted(declaration.operations))
+    if not isinstance(getattr(src, "context", None), SourceContext) or operation not in offered:
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(src, operation, offered, route=message)
+    return require_operation(cast(Any, src), cast(Any, operation))
+
+
+def load_unit_counts(src: EvidenceSource) -> CountEvidence:
+    """Acquire enrolled-unit counts through the source's existing count path."""
+    if not is_custom_source(src):
+        src = _require_acquisition_operation(
+            src,
+            "unit_counts",
+            "unit_counts() requires a source with enrolled total-grain counts.",
+        )
+    request = CountsRequest(kind="unit", population=getattr(src, "population", "assigned"))
+    return load_counts(src, request)
+
+
+def acquire_custom_triggered_population(
+    src: EvidenceSource, *, trigger: str, control_group: str, metric: Any
+) -> tuple[AbstractContextManager[_BuiltinMomentSource], float] | None:
+    """Acquire a custom provider's scoped triggered population and control rate."""
+    if not is_custom_source(src):
+        return None
+    assigned = load_counts(src, CountsRequest(kind="unit"))
+    triggered = load_counts(src, CountsRequest(kind="triggered"))
+
+    observed = triggered.unit_counts if triggered.grain == "cluster" else triggered.counts
+    rates = {
+        group: float(observed.get(group, 0)) / count
+        for group, count in assigned.counts.items()
+        if count > 0 and group not in {MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL}
+    }
+    _validate_trigger(rates, trigger)
+    scoped = evidence_scope(src, EvidenceScope(metrics=(metric,), population="triggered"))
+    return cast(AbstractContextManager[_BuiltinMomentSource], scoped), rates[control_group]
+
+
+def baseline_trigger(
+    src: EvidenceSource, declared_trigger: str | None, context_trigger: str | None
+) -> str | None:
+    """Resolve a legacy provider-only trigger name outside statistical assembly."""
+    return (
+        context_trigger if declared_trigger is None and is_custom_source(src) else declared_trigger
+    )
 
 
 def load_assignment(src: EvidenceSource, request: AssignmentRequest) -> AssignmentEvidence:
