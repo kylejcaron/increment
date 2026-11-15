@@ -21,7 +21,11 @@ from increment._canonical import canonical_json_bytes
 from increment._exploratory import available_metrics as _available_metrics
 from increment._optional import require_warehouse
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
-from increment._source_operations import ExportMomentsOperation, MaterializeOperation
+from increment._source_operations import (
+    ExportMomentsOperation,
+    MaterializeOperation,
+    NativeCoreSource,
+)
 from increment._source_types import declared_evidence
 from increment.decision import DefinitionsArmAnalysisState
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
@@ -117,8 +121,6 @@ def _publish_unit_day_artifact_binding(
     refresh_of: UnitDayArtifactRef | None = None,
 ) -> UnitDayArtifactRef:
     binding = _require_arm_binding(binding, "publish_unit_day_artifact")
-    from increment.query.native_contract import NativeCoreSource
-
     if not isinstance(binding.state, DefinitionsArmAnalysisState):
         from increment._evidence_refusals import refuse_operation
 

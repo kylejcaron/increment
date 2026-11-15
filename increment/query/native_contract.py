@@ -13,7 +13,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from increment._source_operations import NativeCoreSource as NativeCoreSource
 from increment.errors import CapabilityError, RefusalSpec
 from increment.estimation.armstats import ArmStats
 from increment.semantics.models import Breakout, Metric
