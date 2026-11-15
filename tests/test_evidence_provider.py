@@ -3094,6 +3094,45 @@ def test_failed_retained_categorical_fit_emits_unavailable_row() -> None:
 
 
 @pytest.mark.integration
+def test_failed_warehouse_fit_emits_unavailable_row_instead_of_local_fit() -> None:
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    failure = CodedError(
+        "warehouse fit withheld the treatment arm",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical", "arm": "treatment", "weighted_var_x": 0.0},
+    )
+    provider = _forwarding_provider(source)
+    load_unit_rows = provider.unit_rows
+    provider.evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+    unit_row_requests: list[UnitRowsRequest] = []
+
+    def record_unit_rows(request: UnitRowsRequest):
+        unit_row_requests.append(request)
+        return load_unit_rows(request)
+
+    provider.unit_rows = record_unit_rows
+    provider.method_fit = lambda request: MethodFitAnswer("unavailable", failure=failure)
+    provider.close = lambda: None
+    provider_analysis = None
+    try:
+        provider_analysis = bind_pair(provider)
+        rows = list(
+            view_readout(*provider_analysis, sensitivity_methods=[Method(name="unadjusted")])
+        )
+    finally:
+        if provider_analysis is not None:
+            provider_analysis[1].close()
+        analysis[1].close()
+
+    unavailable = [row for row in cast(Any, rows) if row.method == "categorical"]
+    assert unavailable
+    assert all(row.failure_code == failure.code for row in unavailable)
+    assert all(row.failure_context == failure.context for row in unavailable)
+    assert not unit_row_requests
+
+
+@pytest.mark.integration
 def test_provider_checkpoint_wins_when_its_scope_yields_a_builtin_loader(con) -> None:
     from datetime import date
 

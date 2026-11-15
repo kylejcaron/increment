@@ -52,6 +52,14 @@ the legacy meaning derived from the declaration kind and operations. New
 providers should set the semantic values explicitly; recorded declarations
 and runtime provider verification compare their effective capabilities.
 
+For scalar multicovariate CUPED, distinguish a missing fit from a failed one.
+An unavailable `MethodFitAnswer` without a failure may be fit from `unit_rows`
+when the provider declares retained or warehouse fit evidence and unit rows.
+An answer carrying a coded failure, including an arm withheld by the fit, keeps
+that failure and its context; unit-row availability does not authorize replacing
+it with a local estimate. Other methods with available fit evidence remain
+unchanged.
+
 For a source that computes moments from rows (dataframes and definitions), a
 total `MomentsRequest` without a method returns outcome moments only. Covariate
 moments require `include_covariate=True`; declaring pre-period data alone does

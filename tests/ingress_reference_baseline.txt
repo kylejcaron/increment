@@ -20,5 +20,4 @@ increment/readouts/_breakout.py custom 1
 increment/readouts/_line2.py custom 2
 increment/readouts/_line2.py route 2
 increment/readouts/_line3.py custom 1
-increment/readouts/_metric_rows.py custom 2
 increment/readouts/_run.py unwrap 2

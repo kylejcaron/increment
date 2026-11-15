@@ -16,16 +16,18 @@ from increment._evidence_types import (
     UnitRowsRequest,
 )
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
-from increment._source_types import MOMENTS_BATCH_OWNERS, declared_evidence, is_custom_source
+from increment._source_types import MOMENTS_BATCH_OWNERS, declared_evidence
 from increment.errors import CodedError
 from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._evidence import (
+    allows_local_metric_fit,
     evidence_scope,
     fits_cuped_in_warehouse,
     load_breakout_method_moments,
     load_method_fit,
     load_moments,
     load_unit_rows,
+    local_metric_fit_components,
     method_fit_input_digest,
     metric_authenticator,
     retains_cuped_relation,
@@ -547,11 +549,7 @@ def _load_metric_evidence(  # noqa: PLR0915
         for _method_fit_request, answer in method_fit_answers
         if answer.origin in {"warehouse", "retained_fitted"} or answer.failure is not None
     ]
-    needs_local_units = (
-        is_custom_source(src)
-        and declared_evidence(src).unit_rows
-        and any(answer.origin == "unavailable" for _fit_request, answer in method_fit_answers)
-    )
+    needs_local_units = allows_local_metric_fit(src, method_fit_answers)
     fit_components = ()
     if warehouse_fits:
 
@@ -651,13 +649,13 @@ def _load_metric_evidence(  # noqa: PLR0915
     )
     frame = nw.from_native(native, eager_only=True)
     unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)
-    local_fit_components = (
-        (*categorical_components, *fit_components) if is_custom_source(src) else ()
-    )
+    local_fit_components = local_metric_fit_components(src, categorical_components, fit_components)
     decision_fitted_locally = bool(
         methods
         and any(
-            fit_request.method.name == methods[0].name and answer.origin == "unavailable"
+            fit_request.method.name == methods[0].name
+            and answer.origin == "unavailable"
+            and answer.failure is None
             for fit_request, answer in method_fit_answers
         )
     )

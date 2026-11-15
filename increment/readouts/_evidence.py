@@ -150,6 +150,25 @@ def fits_uncovered_cells_locally(src: EvidenceSource) -> bool:
     )
 
 
+def allows_local_metric_fit(
+    src: EvidenceSource,
+    answers: Sequence[tuple[MethodFitRequest, MethodFitAnswer]],
+) -> bool:
+    """Whether an unavailable custom fit answer permits fitting metric rows locally."""
+    return fits_uncovered_cells_locally(src) and any(
+        answer.origin == "unavailable" and answer.failure is None for _, answer in answers
+    )
+
+
+def local_metric_fit_components(
+    src: EvidenceSource,
+    categorical_components: tuple[tuple[str, str, int], ...],
+    fit_components: tuple[tuple[str, str, int], ...],
+) -> tuple[tuple[str, str, int], ...]:
+    """Return retained-fit identity components when local custom fits combine with them."""
+    return (*categorical_components, *fit_components) if is_custom_source(src) else ()
+
+
 def validates_populations(src: EvidenceSource) -> bool:
     """Whether the source can validate requested analysis populations."""
     return is_custom_source(src) or callable(getattr(src, "validate_populations", None))
