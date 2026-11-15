@@ -521,13 +521,16 @@ class HealthObservationEdgeAnswer:
 
 @dataclass(frozen=True, slots=True)
 class HealthDiagnosticEvidence:
-    """Optional cutoff, feed, and metric-edge answers from one source view."""
+    """Optional cutoff, feed, metric-edge, and trigger declaration answers."""
 
     feed_operation_available: bool
     observation_cutoff: datetime | None
     feeds: tuple[TriggeredHealthFeedEvidence, ...]
     edge_operation_available: bool
     edges: Mapping[str, HealthObservationEdgeAnswer]
+    trigger_name: str | None
+    triggered_registration: Any
+    health_cutoff: str | None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "feeds", tuple(self.feeds))

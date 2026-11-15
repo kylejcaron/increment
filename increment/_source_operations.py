@@ -169,6 +169,11 @@ class AllocationHistoryOperation(Protocol):
 
 
 @runtime_checkable
+class TriggerRatesOperation(Protocol):
+    def trigger_rates(self) -> dict[str, float]: ...
+
+
+@runtime_checkable
 class MaterializeOperation(Protocol):
     def materialize(self) -> None: ...
 

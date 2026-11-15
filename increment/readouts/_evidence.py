@@ -69,6 +69,8 @@ from increment._evidence_types import (
     validate_compliance_source_match,
 )
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
+from increment._source_admission import _require_analysis_operation
+from increment._source_operations import AllocationHistoryOperation, TriggerRatesOperation
 from increment._source_types import (
     EvidenceCapabilities,
     EvidenceProvider,
@@ -82,6 +84,7 @@ from increment._source_types import (
 from increment._trigger_integrity import (
     validate_trigger_fires_in_every_arm as _validate_trigger,
 )
+from increment.decision import DefinitionsArmAnalysisState
 from increment.errors import CapabilityError, CodedError, InvalidRequestError, refuse
 from increment.semantics.models import Breakout
 from increment.sources import BreakoutMomentsSource, EvidenceSource, require_operation
@@ -547,9 +550,12 @@ def load_health_diagnostics(
     src: EvidenceSource,
     metrics: Sequence[Any],
     *,
-    include_trigger_checks: bool,
+    context: Any,
+    state: Any,
+    runtime_inference: Any,
+    session: Any,
 ) -> HealthDiagnosticEvidence:
-    """Acquire optional cutoff, feed, and metric-edge data for one health report."""
+    """Acquire optional diagnostics and declaration facts for one health report."""
     health_operation = getattr(src, "triggered_health_evidence", None)
     feed_available = callable(health_operation)
     observation_cutoff = None
@@ -567,10 +573,27 @@ def load_health_diagnostics(
             for item in evidence.feeds
         )
 
+    experiment = getattr(src, "artifact_experiment", None)
+    trigger_name = getattr(experiment, "trigger", None) or getattr(context, "trigger_name", None)
+    declared_plan = getattr(experiment, "plan", None)
+    if declared_plan is None and isinstance(state, DefinitionsArmAnalysisState):
+        declared_plan = state.experiment.plan
+    inference = getattr(declared_plan, "inference", runtime_inference)
+    registration = getattr(inference, "triggered_registration", None)
+    snapshot_evidence = session.source_snapshot_evidence if session is not None else None
+    if feed_available:
+        health_cutoff = None if observation_cutoff is None else observation_cutoff.isoformat()
+    else:
+        health_cutoff = (
+            None
+            if snapshot_evidence is None
+            else snapshot_evidence.observation_cutoff_ts.isoformat()
+        )
+
     edge_operation = getattr(src, "triggered_observation_edges", None)
-    edge_available = include_trigger_checks and callable(edge_operation)
+    edge_available = trigger_name is not None and callable(edge_operation)
     edges: dict[str, HealthObservationEdgeAnswer] = {}
-    if include_trigger_checks:
+    if trigger_name is not None:
         if edge_available:
             for metric in sorted(metrics, key=lambda item: item.name):
                 try:
@@ -598,6 +621,9 @@ def load_health_diagnostics(
         feeds,
         edge_available,
         edges,
+        trigger_name,
+        registration,
+        health_cutoff,
     )
 
 
@@ -747,16 +773,10 @@ def load_allocation_history(
 
 def _require_acquisition_operation(src: EvidenceSource, operation: str, message: str) -> Any:
     """Validate a declared diagnostic operation before handing out its adapter."""
-    from increment._source_admission import _require_analysis_operation
-
     if operation == "allocation_history":
-        from increment._source_operations import AllocationHistoryOperation
-
         protocol = AllocationHistoryOperation
     elif operation == "triggered_counts":
-        from increment.query.native_contract import NativeCoreSource
-
-        protocol = NativeCoreSource
+        protocol = TriggerRatesOperation
     else:
         protocol = None
     return _require_analysis_operation(

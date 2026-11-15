@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment._evidence_types import EvidenceScope, HealthDiagnosticEvidence
-from increment.decision import ContrastAnalysisState, DefinitionsArmAnalysisState
+from increment.decision import ContrastAnalysisState
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.health import ExperimentHealth, HealthCheck
 from increment.readouts._evidence import (
@@ -127,15 +127,15 @@ def _collect(
     trigger_rates: Callable[[SourceBinding], dict[str, float]],
     observations: SrmObservations | None,
 ) -> ExperimentHealth:
-    experiment = getattr(binding.source, "artifact_experiment", None)
-    trigger_name = getattr(experiment, "trigger", None) or getattr(
-        binding.context, "trigger_name", None
-    )
     diagnostics = load_health_diagnostics(
         binding.source,
         binding.metrics,
-        include_trigger_checks=trigger_name is not None,
+        context=binding.context,
+        state=binding.state,
+        runtime_inference=getattr(getattr(binding.context, "plan", None), "inference", None),
+        session=binding.session,
     )
+    trigger_name = diagnostics.trigger_name
     allocation: dict[str, SrmObservation] | None = None
     if observations is not None:
         allocation = {
@@ -150,7 +150,7 @@ def _collect(
         checks.append(_trigger_rates_check(binding, trigger_rates))
         checks.extend(_trigger_maturity(binding.metrics, diagnostics))
         checks.extend(_feed_completeness(diagnostics))
-        checks.append(_trigger_assumptions(binding))
+        checks.append(_trigger_assumptions(diagnostics.triggered_registration))
     else:
         checks.extend(
             HealthCheck(
@@ -169,7 +169,7 @@ def _collect(
             check.feed or "",
         )
     )
-    cutoff = _health_cutoff(binding, diagnostics)
+    cutoff = _health_cutoff(diagnostics)
     return ExperimentHealth(
         checks=tuple(checks),
         source_snapshot_id=_health_snapshot_id(
@@ -437,15 +437,9 @@ def _feed_completeness(evidence: HealthDiagnosticEvidence) -> list[HealthCheck]:
     ]
 
 
-def _trigger_assumptions(binding: SourceBinding) -> HealthCheck:
+def _trigger_assumptions(registration: Any) -> HealthCheck:
     from increment.estimation.family import sequential_family_guarantee
 
-    runtime_inference = binding.plan.inference
-    declared_plan = getattr(getattr(binding.source, "artifact_experiment", None), "plan", None)
-    if declared_plan is None and isinstance(binding.state, DefinitionsArmAnalysisState):
-        declared_plan = binding.state.experiment.plan
-    inference = getattr(declared_plan, "inference", runtime_inference)
-    registration = getattr(inference, "triggered_registration", None)
     family_guarantee = (
         sequential_family_guarantee(registration) if registration is not None else None
     )
@@ -479,13 +473,8 @@ def _trigger_assumptions(binding: SourceBinding) -> HealthCheck:
     )
 
 
-def _health_cutoff(binding: SourceBinding, diagnostics: HealthDiagnosticEvidence) -> str | None:
-    if diagnostics.feed_operation_available:
-        cutoff = diagnostics.observation_cutoff
-        return None if cutoff is None else cutoff.isoformat()
-    session = binding.session
-    evidence = session.source_snapshot_evidence if session is not None else None
-    return None if evidence is None else evidence.observation_cutoff_ts.isoformat()
+def _health_cutoff(diagnostics: HealthDiagnosticEvidence) -> str | None:
+    return diagnostics.health_cutoff
 
 
 __all__ = ["SrmObservations", "check_health", "srm_observation_key"]

@@ -834,6 +834,34 @@ def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
     resolver.close()
 
 
+@pytest.mark.integration
+def test_declared_allocation_history_without_operation_method_refuses_before_reads(
+    tmp_path,
+) -> None:
+    from increment.readouts._evidence import load_allocation_history
+
+    source, _ = definitions_source(tmp_path, trigger=True)
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+
+    provider = Provider()
+
+    with pytest.raises(CapabilityError) as raised:
+        load_allocation_history(cast(Any, provider), population="assigned")
+
+    assert raised.value.code == "evidence.operation_unavailable"
+    assert dict(raised.value.context) == {
+        "constructor": "Provider",
+        "requested": "allocation_history",
+        "offered": tuple(sorted(provider.evidence.operations)),
+        "route": "use a source that implements the requested operation",
+    }
+    with pytest.raises(TypeError):
+        cast(Any, raised.value.context)["requested"] = "other"
+
+
 def test_temporal_compliance_requests_refuse_total_only_provider_before_reads() -> None:
     from contextlib import nullcontext
     from datetime import date
