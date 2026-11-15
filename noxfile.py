@@ -44,10 +44,10 @@ CORE_PYTHON_VERSIONS = [*PYTHON_VERSIONS, "3.15"]
 # Direct dependency floors declared in pyproject.toml. Keyed companions retain
 # interpreter-specific package combinations where wheel availability differs.
 COMMON_FLOORS = (
-    "pydantic==2.14.1",
+    "pydantic==2.14.2",
     "packaging==24.0",
     "sqlglot==30.14.0",
-    "narwhals==2.27.1",
+    "narwhals==2.28.0",
 )
 IBIS_FLOORS: dict[str, str] = {
     "3.12": "ibis-framework==10.1.0",
