@@ -47,10 +47,10 @@ from increment.readouts._common import (
 )
 from increment.readouts._encouragement import _encouragement_cell_identities
 from increment.readouts._evidence import (
+    allows_local_metric_fit,
     artifact_provenance,
     day_axis_route,
     evidence_scope,
-    fits_uncovered_cells_locally,
     load_breakout_evidence,
     retains_cuped_relation,
 )
@@ -694,25 +694,23 @@ def _breakout_impl(
         )
         for metric in selected
     }
-    if fits_uncovered_cells_locally(src):
-        # Cells without a retained or warehouse fit fall back to a local fit from unit rows.
-        local_fit_metrics = frozenset(
-            name
-            for name, evidence in method_evidence.items()
-            if any(answer.origin == "unavailable" for _, answer in evidence.method_fit_answers)
+    local_fit_metrics = frozenset(
+        name
+        for name, evidence in method_evidence.items()
+        if allows_local_metric_fit(src, evidence.method_fit_answers)
+    )
+    if local_fit_metrics:
+        local_frames, _, _, local_evidence = _load_cuped_breakout_frames(
+            src,
+            resolved_configs,
+            methods_by_metric,
+            dimension,
+            population=analysis_population,
+            source_name=source_name,
+            local_fit_metrics=local_fit_metrics,
         )
-        if local_fit_metrics:
-            local_frames, _, _, local_evidence = _load_cuped_breakout_frames(
-                src,
-                resolved_configs,
-                methods_by_metric,
-                dimension,
-                population=analysis_population,
-                source_name=source_name,
-                local_fit_metrics=local_fit_metrics,
-            )
-            unit_frames_by_metric.update(local_frames)
-            unit_evidence.extend(local_evidence)
+        unit_frames_by_metric.update(local_frames)
+        unit_evidence.extend(local_evidence)
     from increment.readouts._source_digest import component
 
     for metric_name, evidence in method_evidence.items():

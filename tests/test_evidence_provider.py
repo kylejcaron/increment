@@ -3347,14 +3347,84 @@ def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() 
 
     by_method = {row.method: row for row in cast(Any, rows)}
     assert set(by_method) == {"unadjusted", "warehouse", "unavailable"}
-    assert by_method["unadjusted"].metric == "revenue"
-    assert by_method["unadjusted"].analysis_population == "assigned"
-    assert by_method["unadjusted"].group_id == "treatment"
+    assert {
+        method: (
+            row.metric,
+            row.method,
+            row.analysis_population,
+            row.group_id,
+        )
+        for method, row in by_method.items()
+    } == {
+        "unadjusted": ("revenue", "unadjusted", "assigned", "treatment"),
+        "warehouse": ("revenue", "warehouse", "assigned", "treatment"),
+        "unavailable": ("revenue", "unavailable", "assigned", "treatment"),
+    }
     assert by_method["unadjusted"].lift.value == pytest.approx(0.8)
     assert by_method["warehouse"].failure_code == withheld.code
     assert by_method["warehouse"].failure_context == withheld.context
     assert by_method["unavailable"].failure_code == local_failure.code
     assert by_method["unavailable"].failure_context == local_failure.context
+
+
+@pytest.mark.integration
+def test_breakout_does_not_fetch_unit_rows_for_failed_fit_with_valid_sibling() -> None:
+    from increment.readouts import breakout
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    failure = CodedError(
+        "warehouse fit withheld the treatment arm",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical", "arm": "treatment", "weighted_var_x": 0.0},
+    )
+    provider = _forwarding_provider(source)
+    provider.evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+    provider.method_fit = lambda request: MethodFitAnswer("unavailable", failure=failure)
+    unit_row_requests: list[UnitRowsRequest] = []
+
+    def fail_unit_rows(request: UnitRowsRequest) -> None:
+        unit_row_requests.append(request)
+        raise AssertionError("failed fits must not trigger local unit-row reads")
+
+    provider.unit_rows = fail_unit_rows
+    try:
+        with pytest.warns(IncrementWarning):
+            rows = breakout(
+                provider,
+                "country",
+                metrics=("revenue",),
+                sensitivity_methods=(Method.unadjusted(),),
+                correction="none",
+            )
+    finally:
+        analysis[1].close()
+
+    sibling_method = Method.unadjusted().name
+    by_cell = {(row.dimension_value, row.method): row for row in rows}
+    assert set(by_cell) == {
+        (dimension_value, method)
+        for dimension_value in ("CA", "US")
+        for method in ("categorical", sibling_method)
+    }
+    for dimension_value in ("CA", "US"):
+        failed = by_cell[dimension_value, "categorical"]
+        assert (
+            failed.metric,
+            failed.method,
+            failed.analysis_population,
+            failed.dimension,
+            failed.dimension_value,
+            failed.group_id,
+        ) == ("revenue", "categorical", "assigned", "country", dimension_value, "treatment")
+        assert failed.failure_code == failure.code
+        assert failed.failure_context == failure.context
+        sibling = by_cell[dimension_value, sibling_method]
+        assert sibling.metric == "revenue"
+        assert sibling.analysis_population == "assigned"
+        assert sibling.group_id == "treatment"
+        assert sibling.lift is not None
+    assert unit_row_requests == []
 
 
 def test_failed_warehouse_fit_emits_unavailable_row_instead_of_local_fit() -> None:
