@@ -862,6 +862,32 @@ def test_declared_allocation_history_without_operation_method_refuses_before_rea
         cast(Any, raised.value.context)["requested"] = "other"
 
 
+@pytest.mark.integration
+def test_trigger_rates_refuse_provider_missing_native_core_contract(tmp_path) -> None:
+    from increment.readouts._evidence import load_trigger_rates
+
+    source, _ = definitions_source(tmp_path, trigger=True)
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+
+        def trigger_rates(self) -> dict[str, float]:
+            return {"C": 0.5, "T": 0.5}
+
+    provider = Provider()
+    with pytest.raises(CapabilityError) as raised:
+        load_trigger_rates(cast(Any, provider))
+
+    assert raised.value.code == "evidence.operation_unavailable"
+    assert dict(raised.value.context) == {
+        "constructor": "Provider",
+        "requested": "triggered_counts",
+        "offered": tuple(sorted(provider.evidence.operations)),
+        "route": "use a source that implements the requested operation",
+    }
+
+
 def test_temporal_compliance_requests_refuse_total_only_provider_before_reads() -> None:
     from contextlib import nullcontext
     from datetime import date

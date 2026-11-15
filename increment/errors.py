@@ -155,6 +155,10 @@ class InvalidRequestError(CodedError):
     """Raised when a public request is invalid."""
 
 
+class _ArtifactContractErrorMarker(CodedError):
+    """Identify artifact refusals without making acquisition import query code."""
+
+
 class WireFormatError(CodedError):
     """Raised when serialized source data has an invalid wire format."""
 

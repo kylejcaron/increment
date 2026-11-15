@@ -12,13 +12,16 @@ from increment._evidence_types import (
     CountsRequest,
     EvidenceScope,
     EvidenceSource,
+    HealthObservationEdgeAnswer,
     MethodFitRequest,
     MomentRows,
     MomentsRequest,
     SequentialCaptureRequest,
+    SourceContext,
     UnitRows,
     UnitRowsRequest,
 )
+from increment._source_operations import NativeCoreSource
 from increment._source_types import (
     MOMENTS_BATCH_OWNERS,
     _BuiltinMomentSource,
@@ -26,6 +29,7 @@ from increment._source_types import (
     is_builtin_source,
     is_custom_source,
 )
+from increment.errors import CapabilityError, _ArtifactContractErrorMarker
 
 if TYPE_CHECKING:
     from increment.kernel.context import EvidenceExecutionContext
@@ -51,6 +55,38 @@ def view_population(src: EvidenceSource) -> Literal["assigned", "triggered"]:
     return (
         "triggered" if "triggered" in populations and "assigned" not in populations else "assigned"
     )
+
+
+def load_native_trigger_rates(src: EvidenceSource) -> dict[str, float]:
+    """Acquire rates only from sources satisfying the legacy native core contract."""
+    declaration = declared_evidence(src)
+    offered = tuple(sorted(declaration.operations))
+    route = (
+        "trigger_rates() needs an experiment built by from_definitions with a warehouse connection"
+    )
+    if not isinstance(getattr(src, "context", None), SourceContext):
+        refuse_operation(src, "triggered_counts", offered, route=route)
+    if "triggered_counts" not in offered:
+        refuse_operation(src, "triggered_counts", offered, route=route)
+    if not isinstance(src, NativeCoreSource):
+        refuse_operation(
+            src,
+            "triggered_counts",
+            offered,
+            route="use a source that implements the requested operation",
+        )
+    return src.trigger_rates()
+
+
+def load_triggered_observation_edge(
+    src: EvidenceSource, metric: Any
+) -> HealthObservationEdgeAnswer:
+    """Acquire one maturity edge, retaining only established unavailable failures."""
+    try:
+        observed, finalized = cast(Any, src).triggered_observation_edges(metric)
+    except (CapabilityError, _ArtifactContractErrorMarker) as failure:
+        return HealthObservationEdgeAnswer(failure=failure)
+    return HealthObservationEdgeAnswer(observed, finalized)
 
 
 def require_request_evidence(

@@ -39,6 +39,7 @@ from increment.errors import (
     CodedError,
     InvalidRequestError,
     RefusalSpec,
+    _ArtifactContractErrorMarker,
     raiser,
     refusals,
 )
@@ -281,7 +282,7 @@ _EXTENSION_KIND_RANK: Mapping[str, int] = MappingProxyType(
 )
 
 
-class ArtifactContractError(InvalidRequestError):
+class ArtifactContractError(InvalidRequestError, _ArtifactContractErrorMarker):
     """Backward-compatible name for a shared coded artifact refusal."""
 
     def __init__(

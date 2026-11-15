@@ -15,10 +15,12 @@ from increment._evidence_loaders import (
     require_request_evidence,
     source_for_population,
 )
-from increment._evidence_loaders import route_provider_request as _route_provider_request
+from increment._evidence_loaders import load_native_trigger_rates as _load_native_trigger_rates
 from increment._evidence_loaders import (
-    view_population as _view_population,
+    load_triggered_observation_edge as _load_triggered_observation_edge,
 )
+from increment._evidence_loaders import route_provider_request as _route_provider_request
+from increment._evidence_loaders import view_population as _view_population
 from increment._evidence_refusals import (
     refuse_assignment_invalid,
     refuse_joint_grouping,
@@ -70,7 +72,7 @@ from increment._evidence_types import (
 )
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._source_admission import _require_analysis_operation
-from increment._source_operations import AllocationHistoryOperation, TriggerRatesOperation
+from increment._source_operations import AllocationHistoryOperation
 from increment._source_types import (
     EvidenceCapabilities,
     EvidenceProvider,
@@ -85,7 +87,7 @@ from increment._trigger_integrity import (
     validate_trigger_fires_in_every_arm as _validate_trigger,
 )
 from increment.decision import DefinitionsArmAnalysisState
-from increment.errors import CapabilityError, CodedError, InvalidRequestError, refuse
+from increment.errors import CapabilityError, CodedError, refuse
 from increment.semantics.models import Breakout
 from increment.sources import BreakoutMomentsSource, EvidenceSource, require_operation
 
@@ -548,31 +550,13 @@ def health_population(src: EvidenceSource) -> Literal["assigned", "triggered"]:
 
 def load_health_diagnostics(
     src: EvidenceSource,
-    metrics: Sequence[Any],
     *,
     context: Any,
     state: Any,
     runtime_inference: Any,
     session: Any,
 ) -> HealthDiagnosticEvidence:
-    """Acquire optional diagnostics and declaration facts for one health report."""
-    health_operation = getattr(src, "triggered_health_evidence", None)
-    feed_available = callable(health_operation)
-    observation_cutoff = None
-    feeds: tuple[TriggeredHealthFeedEvidence, ...] = ()
-    if feed_available:
-        evidence = health_operation()
-        observation_cutoff = evidence.observation_cutoff
-        feeds = tuple(
-            TriggeredHealthFeedEvidence(
-                item.evidence_kind,
-                item.feed,
-                item.metric,
-                item.complete_through,
-            )
-            for item in evidence.feeds
-        )
-
+    """Resolve health declarations and cutoff fallback without reading diagnostics."""
     experiment = getattr(src, "artifact_experiment", None)
     trigger_name = getattr(experiment, "trigger", None) or getattr(context, "trigger_name", None)
     declared_plan = getattr(experiment, "plan", None)
@@ -581,49 +565,88 @@ def load_health_diagnostics(
     inference = getattr(declared_plan, "inference", runtime_inference)
     registration = getattr(inference, "triggered_registration", None)
     snapshot_evidence = session.source_snapshot_evidence if session is not None else None
-    if feed_available:
-        health_cutoff = None if observation_cutoff is None else observation_cutoff.isoformat()
+    health_cutoff = (
+        None if snapshot_evidence is None else snapshot_evidence.observation_cutoff_ts.isoformat()
+    )
+    return HealthDiagnosticEvidence(
+        False,
+        None,
+        (),
+        False,
+        {},
+        trigger_name,
+        registration,
+        health_cutoff,
+    )
+
+
+def load_health_observation_edges(
+    src: EvidenceSource,
+    metrics: Sequence[Any],
+    evidence: HealthDiagnosticEvidence,
+) -> HealthDiagnosticEvidence:
+    """Acquire maturity edges for the health check that consumes them."""
+    if evidence.trigger_name is None:
+        return evidence
+    edge_operation = getattr(src, "triggered_observation_edges", None)
+    edge_available = callable(edge_operation)
+    edges: dict[str, HealthObservationEdgeAnswer] = {}
+    if edge_available:
+        for metric in sorted(metrics, key=lambda item: item.name):
+            edges[metric.name] = _load_triggered_observation_edge(src, metric)
     else:
+        from increment._evidence_refusals import refuse_operation
+
+        for metric in sorted(metrics, key=lambda item: item.name):
+            try:
+                refuse_operation(
+                    src,
+                    "triggered_observation_edges",
+                    tuple(sorted(declared_evidence(src).operations)),
+                    route="This source does not retain trigger maturity evidence.",
+                )
+            except CapabilityError as refusal:
+                edges[metric.name] = HealthObservationEdgeAnswer(failure=refusal)
+    return replace(evidence, edge_operation_available=edge_available, edges=edges)
+
+
+def load_health_feed_diagnostics(
+    src: EvidenceSource,
+    evidence: HealthDiagnosticEvidence,
+    *,
+    session: Any,
+) -> HealthDiagnosticEvidence:
+    """Acquire feed completeness and apply its source-cutoff precedence."""
+    health_operation = getattr(src, "triggered_health_evidence", None)
+    if not callable(health_operation):
+        snapshot_evidence = session.source_snapshot_evidence if session is not None else None
         health_cutoff = (
             None
             if snapshot_evidence is None
             else snapshot_evidence.observation_cutoff_ts.isoformat()
         )
-
-    edge_operation = getattr(src, "triggered_observation_edges", None)
-    edge_available = trigger_name is not None and callable(edge_operation)
-    edges: dict[str, HealthObservationEdgeAnswer] = {}
-    if trigger_name is not None:
-        if edge_available:
-            for metric in sorted(metrics, key=lambda item: item.name):
-                try:
-                    observed, finalized = edge_operation(metric)
-                except (CapabilityError, InvalidRequestError) as refusal:
-                    edges[metric.name] = HealthObservationEdgeAnswer(failure=refusal)
-                else:
-                    edges[metric.name] = HealthObservationEdgeAnswer(observed, finalized)
-        else:
-            from increment._evidence_refusals import refuse_operation
-
-            for metric in sorted(metrics, key=lambda item: item.name):
-                try:
-                    refuse_operation(
-                        src,
-                        "triggered_observation_edges",
-                        tuple(sorted(declared_evidence(src).operations)),
-                        route="This source does not retain trigger maturity evidence.",
-                    )
-                except CapabilityError as refusal:
-                    edges[metric.name] = HealthObservationEdgeAnswer(failure=refusal)
-    return HealthDiagnosticEvidence(
-        feed_available,
-        observation_cutoff,
-        feeds,
-        edge_available,
-        edges,
-        trigger_name,
-        registration,
-        health_cutoff,
+        return replace(evidence, health_cutoff=health_cutoff)
+    feed_evidence = health_operation()
+    feeds = tuple(
+        TriggeredHealthFeedEvidence(
+            item.evidence_kind,
+            item.feed,
+            item.metric,
+            item.complete_through,
+        )
+        for item in feed_evidence.feeds
+    )
+    health_cutoff = (
+        None
+        if feed_evidence.observation_cutoff is None
+        else feed_evidence.observation_cutoff.isoformat()
+    )
+    return replace(
+        evidence,
+        feed_operation_available=True,
+        observation_cutoff=feed_evidence.observation_cutoff,
+        feeds=feeds,
+        health_cutoff=health_cutoff,
     )
 
 
@@ -747,12 +770,7 @@ def load_trigger_rates(src: EvidenceSource) -> Mapping[str, float]:
             )
         return cast(Any, src).trigger_rates()
 
-    native = _require_acquisition_operation(
-        src,
-        "triggered_counts",
-        "trigger_rates() needs an experiment built by from_definitions with a warehouse connection",
-    )
-    return native.trigger_rates()
+    return _load_native_trigger_rates(src)
 
 
 def load_allocation_history(
@@ -775,8 +793,6 @@ def _require_acquisition_operation(src: EvidenceSource, operation: str, message:
     """Validate a declared diagnostic operation before handing out its adapter."""
     if operation == "allocation_history":
         protocol = AllocationHistoryOperation
-    elif operation == "triggered_counts":
-        protocol = TriggerRatesOperation
     else:
         protocol = None
     return _require_analysis_operation(

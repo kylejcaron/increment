@@ -13,6 +13,8 @@ from increment.readouts._evidence import (
     acquire_health_scope,
     health_population,
     load_health_diagnostics,
+    load_health_feed_diagnostics,
+    load_health_observation_edges,
 )
 from increment.sources import _health_snapshot_id
 
@@ -129,7 +131,6 @@ def _collect(
 ) -> ExperimentHealth:
     diagnostics = load_health_diagnostics(
         binding.source,
-        binding.metrics,
         context=binding.context,
         state=binding.state,
         runtime_inference=getattr(getattr(binding.context, "plan", None), "inference", None),
@@ -148,9 +149,8 @@ def _collect(
     if trigger_name is not None:
         checks.append(_allocation_check(binding, "triggered", expected_allocation, srm, allocation))
         checks.append(_trigger_rates_check(binding, trigger_rates))
+        diagnostics = load_health_observation_edges(binding.source, binding.metrics, diagnostics)
         checks.extend(_trigger_maturity(binding.metrics, diagnostics))
-        checks.extend(_feed_completeness(diagnostics))
-        checks.append(_trigger_assumptions(diagnostics.triggered_registration))
     else:
         checks.extend(
             HealthCheck(
@@ -161,6 +161,14 @@ def _collect(
             )
             for check_name in _CHECK_ORDER[1:]
         )
+    diagnostics = load_health_feed_diagnostics(
+        binding.source,
+        diagnostics,
+        session=binding.session,
+    )
+    if trigger_name is not None:
+        checks.extend(_feed_completeness(diagnostics))
+        checks.append(_trigger_assumptions(diagnostics.triggered_registration))
     checks.sort(
         key=lambda check: (
             _CHECK_ORDER.index(check.check),

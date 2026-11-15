@@ -11,9 +11,9 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from increment._source_operations import NativeCoreSource as NativeCoreSource
 from increment.errors import CapabilityError, RefusalSpec
 from increment.estimation.armstats import ArmStats
 from increment.semantics.models import Breakout, Metric
@@ -26,8 +26,6 @@ from increment.sources import (
 
 if TYPE_CHECKING:
     import pyarrow as pa
-    from ibis import Table
-    from ibis.expr.types import Scalar
 
     from increment.sources import Grain
 
@@ -106,45 +104,6 @@ class DayEvidenceSource(_BuiltinMomentSource, Protocol):
     ) -> DimensionedDayEvidence: ...
 
     def close(self) -> None: ...
-
-
-@runtime_checkable
-class NativeCoreSource(_BuiltinMomentSource, Protocol):
-    """Source-owned native core workflows."""
-
-    operations: frozenset[SourceOperation]
-
-    def materialize(self) -> None: ...
-
-    def triggered_counts(
-        self,
-    ) -> tuple[Literal["unit", "cluster"], dict[str, int], dict[str, int]]: ...
-
-    def triggered_source(self) -> _BuiltinMomentSource: ...
-
-    def trigger_rates(self) -> dict[str, float]: ...
-
-    def export_moments(self, path: str | Path) -> None: ...
-
-    def moments_source(
-        self,
-        *,
-        metrics: Sequence[Metric],
-        methods: list[Any] | None = None,
-        prior: Any | None = None,
-        population: Literal["assigned", "triggered"] = "assigned",
-        narrow_cuped: bool = False,
-    ) -> _BuiltinMomentSource: ...
-
-    def panel_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
-
-    def summary_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
-    def build_panel_for_metric(
-        self,
-        metric: Metric,
-        *,
-        population: Literal["assigned", "triggered"] = "assigned",
-    ) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, Scalar]: ...
 
 
 @runtime_checkable

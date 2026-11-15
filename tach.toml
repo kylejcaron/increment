@@ -126,7 +126,7 @@ depends_on = ["increment.compatibility"]
 [[modules]]
 path = "increment._source_operations"
 layer = "core"
-depends_on = ["increment.errors"]
+depends_on = ["increment._source_types", "increment.errors"]
 
 
 [[modules]]
@@ -219,6 +219,8 @@ depends_on = [
   "increment._evidence_types",
   "increment._evidence_refusals",
   "increment._source_types",
+  "increment._source_operations",
+  "increment.errors",
 ]
 
 
@@ -1740,6 +1742,7 @@ expose = [
   "IncrementRuntimeWarning",
   "IncrementWarning",
   "InvalidRequestError",
+  "_ArtifactContractErrorMarker",
   "MissingExtraError",
   "RefusalSpec",
   "PACKAGE_FRAMES",
