@@ -14,11 +14,12 @@ from html import escape
 from math import inf
 from typing import TYPE_CHECKING, Any, Literal
 
-from increment._display import interval_text
+from increment._display import _readout_interval, format_coverage, interval_text
 from increment.tables import (
     _decision_available,
+    _display_confidence_set,
     _format_confidence_set,
-    _format_coverage,
+    _result_presentation,
     _retained_coverage_alpha,
 )
 
@@ -152,11 +153,8 @@ def inference_label(snapshot: DashboardSnapshot) -> str:
 
 def interval_endpoints(row: Mapping[str, Any]) -> tuple[Any, Any] | None:
     """Return finite/open endpoints, or None for malformed/unavailable rows."""
-    lower, higher, open_side = row.get("lower"), row.get("higher"), row.get("open_side")
-    if is_missing(lower):
-        lower = None
-    if is_missing(higher):
-        higher = None
+    interval = _readout_interval(row)
+    lower, higher, open_side = interval.lower, interval.upper, interval.open_side
     if open_side == "lower" and higher is not None:
         return -inf, higher
     if open_side == "upper" and lower is not None:
@@ -195,7 +193,7 @@ def complete_confidence_set_text(row: Mapping[str, Any]) -> str | None:
 
 
 def confidence_set_text(row: Mapping[str, Any]) -> str | None:
-    """Headline set text: concise, deferring to the central interval when a point backs it."""
+    """Headline set text, using the tested ray for a supported directional guardrail."""
     relative = row.get("relative_confidence_set")
     if (
         relative is not None
@@ -205,7 +203,8 @@ def confidence_set_text(row: Mapping[str, Any]) -> str | None:
         and interval_endpoints(row) is not None
     ):
         return None
-    return complete_confidence_set_text(row)
+    text = _display_confidence_set(row)
+    return esc(text) if text else None
 
 
 def headline_interval(row: Mapping[str, Any]) -> str:
@@ -220,35 +219,19 @@ def headline_interval(row: Mapping[str, Any]) -> str:
 
 
 def primary_tone(row: Mapping[str, Any]) -> str:
-    """Semantic headline tone from the row's tested verdict and declared direction."""
-    if not row.get("stat_sig"):
-        return "inconclusive" if _decision_available(row) else "neutral"
-    direction = row.get("preferred_direction")
-    if direction not in ("increase", "decrease"):
-        return "neutral"
+    """Semantic headline tone shared with readout and standalone tables."""
+    return _result_presentation(row)[0]
 
-    null_abs = row.get("null_abs")
-    if not is_missing(null_abs):
-        null, lower, higher = null_abs, row.get("abs_lb"), row.get("abs_ub")
-    elif decision_scale(row) == "absolute" and row.get("value_scale") != "absolute":
-        # The automatic additive-zero decision reads the additive sidecar.
-        null, lower, higher = 0.0, row.get("abs_lb"), row.get("abs_ub")
-    else:
-        null = row.get("null_lift")
-        null = 0.0 if null is None else null
-        lower, higher = row.get("lower"), row.get("higher")
-    if lower is not None and lower > null:
-        observed = "increase"
-    elif higher is not None and higher < null:
-        observed = "decrease"
-    else:
-        return "neutral"
-    return "favorable" if observed == direction else "unfavorable"
+
+def displayed_coverage(row: Mapping[str, Any]) -> tuple[float, float | None] | None:
+    """Coverage of the displayed bounds, separate from the captured interval's budget."""
+    interval = _readout_interval(row)
+    return None if interval.level is None else (interval.level, interval.alpha)
 
 
 def percent_text(level: float, alpha: float | None = None) -> str:
     """A compact coverage percentage, retaining precision near zero and one."""
-    return _format_coverage(level, alpha)
+    return format_coverage(level, alpha)
 
 
 def retained_coverage_alpha(estimate: Any) -> float | None:
@@ -273,13 +256,8 @@ def retained_coverage_alpha_for_row(
 
 def primary_method(row: Mapping[str, Any]) -> str:
     """Describe the displayed interval using its retained coverage budget."""
-    level = row.get("level")
-    alpha = row.get("coverage_alpha", row.get("alpha"))
-    level_label = (
-        ""
-        if level is None
-        else f"{percent_text(float(level), alpha if isinstance(alpha, float) else None)} "
-    )
+    coverage = displayed_coverage(row)
+    level_label = "" if coverage is None else f"{percent_text(*coverage)} "
     inference = inference_word(str(row.get("inference", "fixed")))
     return f"{level_label}{esc(inference)} interval · {esc(tail_word(row))}"
 
@@ -320,22 +298,53 @@ def decision_scale(row: Mapping[str, Any]) -> str:
     return "relative" if is_missing(row.get("null_abs")) else "absolute"
 
 
+def _absolute_null(row: Mapping[str, Any]) -> Any:
+    null = row.get("null_abs")
+    if not is_missing(null):
+        return null
+    if row.get("value_scale") == "absolute":
+        return row.get("null_lift") or 0.0
+    return 0.0
+
+
 def null_text(row: Mapping[str, Any]) -> str:
     """The tested null on the row's own decision scale."""
     if decision_scale(row) == "absolute":
-        null_abs = row.get("null_abs")
-        if not is_missing(null_abs):
-            null = null_abs
-        elif row.get("value_scale") == "absolute":
-            # A native absolute row's null_lift is already in the metric's units.
-            null = row.get("null_lift") or 0.0
-        else:
-            null = 0.0
-        return f"{null:+,.4g} absolute"
+        return f"{_absolute_null(row):+,.4g} absolute"
     null_lift = row.get("null_lift")
     if null_lift is None:
         return missing_html("no null boundary reported")
     return f"{float(null_lift):+.1%} relative"
+
+
+def guardrail_text(row: Mapping[str, Any]) -> str:
+    """Describe the declared guardrail boundary, not the observed outcome."""
+    if row.get("role") != "guardrail":
+        return ""
+    absolute = decision_scale(row) == "absolute"
+    boundary = _absolute_null(row) if absolute else row.get("null_lift")
+    if boundary is None or is_missing(boundary):
+        return "Guardrail: threshold unavailable"
+    boundary = float(boundary)
+    amount = (
+        f"{abs(boundary):.4g} absolute units of"
+        if absolute
+        else f"a {abs(boundary) * 100:.4g}% relative"
+    )
+    alternative = row.get("alternative")
+    if alternative == "greater":
+        return (
+            f"Guardrail: no more than {amount} decrease"
+            if boundary <= 0
+            else f"Guardrail: at least {amount} increase"
+        )
+    if alternative == "less":
+        return (
+            f"Guardrail: no more than {amount} increase"
+            if boundary >= 0
+            else f"Guardrail: at least {amount} decrease"
+        )
+    return f"Guardrail threshold: {null_text(row)}"
 
 
 @dataclass(frozen=True)
@@ -359,14 +368,11 @@ def result_outcome(row: Mapping[str, Any]) -> ResultOutcome:
 
 def outcome_label(row: Mapping[str, Any]) -> str:
     """Format emitted decision and family fields; do not infer either from effect geometry."""
-    significant = row.get("stat_sig")
-    availability = row.get("sampling_available")
-    if significant is True:
-        verdict = "rejects the declared null"
-    elif significant is False and availability is not False:
-        verdict = "does not reject the declared null"
-    else:
-        verdict = "inference unavailable"
+    verdict = {
+        "reject": "rejects the declared null",
+        "not_reject": "does not reject the declared null",
+        "unavailable": "inference unavailable",
+    }[result_outcome(row).verdict]
     discovery = row.get("discovery")
     selection = (
         "selected by the family procedure"
@@ -421,20 +427,44 @@ def monitoring_sentence(rows: Sequence[Any], *, view: str) -> str:
     return "Descriptive monitoring of per-arm values."
 
 
+def without_advisory_notes(row: Mapping[str, Any], messages: Iterable[str]) -> dict[str, Any]:
+    """Remove only exact copies of advisories displayed as structured diagnostics."""
+    result = dict(row)
+    note = result.get("note")
+    if isinstance(note, str):
+        for message in messages:
+            note = note.replace(f"{message}; ", "").replace(f"; {message}", "")
+            note = note.replace(message, "")
+        result["note"] = note or None
+    return result
+
+
 def result_caveats(rows: Iterable[Mapping[str, Any]]) -> list[str]:
     """Keep row caveats and unavailable evidence visible without hiding usable sets."""
+    return _result_caveats(rows, omit_table_footnotes=False)
+
+
+def _result_table_caveats(rows: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Keep non-table warnings visible when note/reliability text is already in table footnotes."""
+    return _result_caveats(rows, omit_table_footnotes=True)
+
+
+def _result_caveats(rows: Iterable[Mapping[str, Any]], *, omit_table_footnotes: bool) -> list[str]:
     caveats: list[str] = []
     for row in rows:
         metric = esc(row.get("metric", "unknown metric"))
+        if not omit_table_footnotes:
+            note = row.get("note")
+            if note:
+                caveats.append(f"<strong>{metric}</strong>: note: {esc(note)}")
+            if row.get("low_reliability"):
+                caveats.append(f"<strong>{metric}</strong>: flagged low reliability.")
         for label, value in (
-            ("note", row.get("note")),
             ("excluded", row.get("excluded")),
             ("unavailable", row.get("unavailable")),
         ):
             if value:
                 caveats.append(f"<strong>{metric}</strong>: {label}: {esc(value)}")
-        if row.get("low_reliability"):
-            caveats.append(f"<strong>{metric}</strong>: flagged low reliability.")
         relative = row.get("relative_confidence_set")
         winsor = row.get("confidence_set")
         unavailable = row.get("relative_unavailable_reason")

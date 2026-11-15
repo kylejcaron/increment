@@ -12,24 +12,26 @@ import re
 import warnings
 from datetime import date
 from fractions import Fraction
+from html.parser import HTMLParser
 from typing import Any, TypedDict
 
 import pytest
 
-from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
+from increment.breakout.estimates import (
+    BreakoutEstimate,
+    DailyLiftEstimate,
+    _copy_common_fields,
+)
 from increment.breakout.projection import to_frame
+from increment.estimation.inference import _joint_additive_bounds
 from increment.estimation.results import Estimate, LiftEstimate, RelativeConfidenceSet
 from increment.estimators import AlwaysValid, estimate_sequential
 from increment.semantics.unit_cycle import UnitCycleTApproximation
 from increment.tables import (
+    _result_presentation,
     contrast_results_to_readout,
     estimates_to_readout,
     readout_table,
-)
-from tests.estimation.test_unit_cycle_envelope import (
-    ZERO_NULL_REJECTIONS,
-    rejection_at_zero,
-    rounded_rejection_at_margin,
 )
 from tests.sequential_cases import capture, records, registration
 
@@ -508,22 +510,60 @@ class TestLiftEstimateToRowBinomialSetOnly:
         assert row["higher"] == est.binomial_set.upper
         assert row["level"] == pytest.approx(est.binomial_set.level)
 
-    def test_zero_control_count_table_discloses_binomial_set_coverage(self):
+    @pytest.mark.parametrize(
+        ("alternative", "role", "coverage"),
+        [("two-sided", None, "95% "), ("greater", "guardrail", "95% one-sided")],
+    )
+    def test_zero_control_count_table_discloses_binomial_set_coverage(
+        self, alternative, role, coverage
+    ):
+        pytest.importorskip("coeftable")
+        from increment.tables import _format_confidence_set
+
+        est = _binomial_lift_estimate(
+            x_c=0, n_c=200, x_t=100, n_t=200, alternative=alternative
+        ).model_copy(update={"role": role})
+        rows = estimates_to_readout([est])
+        before = dict(rows[0])
+
+        table = readout_table(rows)
+        html = table.gt().as_raw_html()
+
+        assert coverage in html
+        complete = _format_confidence_set(
+            None,
+            relative=None,
+            binomial=est.binomial_set,
+            unavailable=None,
+            scale="relative",
+            lift=est.lift,
+        )
+        assert complete.startswith("95% ")
+        if role == "guardrail":
+            shown = _rendered_column(table, "Confidence set")[0].replace("\\", "")
+            assert shown.startswith("95% one-sided:")
+            assert shown.endswith(", ∞)")
+            assert est.abs_reference_kind == "score"
+            assert est.abs_lb is not None
+            assert f"[{est.abs_lb:.3g}, ∞)" in html
+        assert rows[0] == before
+        assert rows[0]["level"] == pytest.approx(0.9 if role == "guardrail" else 0.95)
+
+    def test_routine_numerical_assumption_stays_in_evidence_without_a_result_marker(self):
         pytest.importorskip("coeftable")
         est = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200)
 
-        html = readout_table(estimates_to_readout([est])).gt().as_raw_html()
+        table = readout_table(estimates_to_readout([est]))
+        html = table.gt().as_raw_html()
 
-        assert "95% " in html
-
-    def test_readout_table_discloses_binomial_numerical_qualification(self):
-        pytest.importorskip("coeftable")
-        est = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200)
-
-        html = readout_table(estimates_to_readout([est])).gt().as_raw_html()
-
-        assert "Numerical qualification" in html
         assert "conditional on deployed SciPy/Boost special-function error model" in html
+        assert "¹" not in _rendered_column(table, "Result")[0]
+        assert "<tfoot>" not in html
+        assert isinstance(table, __import__("coeftable").CoefTable)
+        assert any(getattr(column, "label", None) == "Result" for column in table.columns)
+        assert not any(
+            getattr(column, "label", None) == "Qualification" for column in table.columns
+        )
 
     def test_zero_control_count_confident_separation_is_stat_sig(self):
         """Control never converted (0/200); treatment converted at 50%
@@ -712,8 +752,6 @@ class TestAdditiveZeroDecisionsThroughTheAdapter:
         assert row["stat_sig"] is True
         assert row["decision_scale"] == "absolute"
         assert row["decision_available"] is True
-        pytest.importorskip("coeftable")
-        assert _rendered_column(readout_table([row]), "Significant") == ["Yes"]
 
     def test_non_rejecting_cuped_segment_is_an_available_non_rejection(self):
         cell = _nonpositive_cuped_breakout_segment(mean_shift=0.05)
@@ -722,8 +760,6 @@ class TestAdditiveZeroDecisionsThroughTheAdapter:
         assert row["stat_sig"] is False
         assert row["decision_scale"] == "absolute"
         assert row["decision_available"] is True
-        pytest.importorskip("coeftable")
-        assert _rendered_column(readout_table([row]), "Significant") == ["No"]
 
     def test_unavailable_verdict_renders_as_unavailable(self):
         est = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200).model_copy(
@@ -732,8 +768,6 @@ class TestAdditiveZeroDecisionsThroughTheAdapter:
         assert est.stat_sig() is None
         (row,) = estimates_to_readout([est])
         assert row["stat_sig"] is None and row["decision_available"] is False
-        pytest.importorskip("coeftable")
-        assert _rendered_column(readout_table([row]), "Significant") == ["Unavailable"]
 
 
 def test_estimates_to_readout_preserves_order_and_count():
@@ -932,7 +966,7 @@ def test_estimates_to_readout_preserves_persisted_favorable_probability_at_shift
 
 
 def test_estimates_to_readout_preserves_breakout_and_daily_posterior_probability():
-    from increment.breakout.estimates import _copy_common_fields
+
     from increment.estimation.inference import Normal, infer_lift
 
     lift = infer_lift(
@@ -963,7 +997,6 @@ def test_estimates_to_readout_preserves_breakout_and_daily_posterior_probability
 
 def test_readout_rows_keep_canonical_mixture_components_for_every_result_view():
     from increment._canonical import canonical_json_bytes
-    from increment.breakout.estimates import _copy_common_fields
     from increment.estimation.inference import infer_lift
     from increment.estimation.priors import MixturePrior
 
@@ -1035,7 +1068,6 @@ def test_readout_table_marks_known_multiplicity_when_other_status_is_missing():
     html = readout_table([known, missing]).gt().as_raw_html()
 
     assert "m¹" in html
-    assert "¹ Exploratory, unadjusted for multiplicity (1 of 2 rows)" in html
     assert "other¹" not in html
 
 
@@ -1059,43 +1091,6 @@ def test_readout_table_treats_pandas_na_as_missing_multiplicity_status():
 
     assert "m¹" in html
     assert "other¹" not in html
-    assert "(1 of 2 rows)" in html
-
-
-def test_readout_table_shows_disclosures_without_a_title():
-    pytest.importorskip("coeftable")
-    from increment.estimation.multiplicity import stamp_multiplicity_status
-
-    estimates = [
-        _estimate("exploratory", "T", "unadjusted", 0.12, lb=0.02, ub=0.22).model_copy(
-            update={"role": "exploratory"}
-        ),
-        _estimate("planned", "T", "unadjusted", 0.12, lb=0.02, ub=0.22).model_copy(
-            update={"role": "primary"}
-        ),
-    ]
-    stamped = stamp_multiplicity_status(estimates)
-    rows = estimates_to_readout(stamped)
-    rows[0]["decision_scope_complete"] = False
-    rows.append(
-        {
-            key: value
-            for key, value in estimates_to_readout(
-                [_estimate("legacy", "T", "unadjusted", 0.12, lb=0.02, ub=0.22)]
-            )[0].items()
-            if key != "multiplicity_status"
-        }
-    )
-
-    html = readout_table(rows, title="").gt().as_raw_html()
-
-    assert "Decision scope is incomplete" in html
-    assert "exploratory¹" in html
-    assert "¹ Exploratory, unadjusted for multiplicity (1 of 3 rows)" in html
-    assert "planned" in html and "Declared plan" not in html
-    assert "legacy" in html
-    declared_html = readout_table(estimates_to_readout([stamped[1]]), title="").gt().as_raw_html()
-    assert "Declared plan" in declared_html
 
 
 def test_readout_table_disambiguates_metric_colliding_with_status_marker():
@@ -1129,7 +1124,6 @@ def test_readout_table_marks_declared_plan_when_other_status_is_missing():
     html = readout_table([declared, missing]).gt().as_raw_html()
 
     assert "planned¹" in html
-    assert "¹ Declared plan (1 of 2 rows)" in html
     assert "unknown¹" not in html
 
 
@@ -2057,8 +2051,12 @@ def test_liftestimate_to_row_estimand_defaults_for_breakout_estimate():
 def test_readout_table_absolute_row_not_rendered_as_percent():
     """A $2.50 LATE must render as an absolute quantity, never '+250.0%'."""
     pytest.importorskip("coeftable")
-    rows = estimates_to_readout([_late_estimate()])
-    html = readout_table(rows).gt().as_raw_html()
+    rows = estimates_to_readout(
+        [_late_estimate().model_copy(update={"preferred_direction": "increase"})]
+    )
+    table = readout_table(rows)
+    html = table.gt().as_raw_html()
+    assert _rendered_column(table, "Result") == ["Improvement detected"]
     assert "+250.0%" not in html
     assert "+120.0%" not in html
     assert "2.50" in html
@@ -2155,17 +2153,6 @@ def test_readout_table_disambiguates_same_estimand_on_both_scales():
 # Forest coloring follows the metric's declared preferred_direction.
 
 
-def test_readout_table_direction_follows_preferred_direction():
-    """A decrease-preferred metric resolves lower_is_better; an
-    increase-preferred one keeps the default higher_is_better."""
-    pytest.importorskip("coeftable")
-    latency = _latency_estimate()
-    revenue = _valid_estimate().model_copy(update={"preferred_direction": "increase"})
-    table = readout_table(estimates_to_readout([latency, revenue]))
-    assert table.direction_for("latency_p50") == "lower_is_better"
-    assert table.direction_for("revenue") == "higher_is_better"
-
-
 def test_readout_table_decrease_preferred_improvement_colored_favorable():
     """A significant latency drop must render in the favorable color, not
     the unfavorable one."""
@@ -2231,6 +2218,52 @@ def _inferred_estimate(
         inference=inference,
         ds=ds,
     )
+
+
+@pytest.mark.parametrize(
+    ("scale", "alternative", "upper", "open_side", "alpha", "interval", "coverage"),
+    [
+        ("relative", "greater", 0.22, None, 0.1, "[+2.0%, ∞)", "95% one-sided"),
+        ("absolute", "less", 0.22, None, 0.1, "(−∞, +0.22]", "95% one-sided"),
+        ("relative", "greater", None, "upper", 0.02, "[+2.0%, ∞)", "98% one-sided"),
+    ],
+)
+def test_guardrail_table_displays_only_the_tested_bound_without_changing_rows(
+    scale, alternative, upper, open_side, alpha, interval, coverage
+):
+    pytest.importorskip("coeftable")
+    estimate = LiftEstimate(
+        metric="retention",
+        group_id="T",
+        method="unadjusted",
+        method_role="decision",
+        role="guardrail",
+        alternative=alternative,
+        value_scale=scale,
+        scale="linear",
+        lift=Estimate(
+            value=0.12, lb=0.02, ub=upper, open_side=open_side, alpha=alpha, level=1 - alpha
+        ),
+        abs_diff=0.12,
+        abs_lb=0.02,
+        abs_ub=0.22,
+        abs_alpha=alpha,
+        abs_reference_kind="normal",
+    )
+    rows = estimates_to_readout([estimate])
+    before = dict(rows[0])
+
+    table = readout_table(rows)
+    html = table.gt().as_raw_html()
+
+    assert interval in html
+    assert coverage in html
+    if open_side is not None:
+        assert "99% one-sided" in html
+        assert "all intervals 98% one-sided" not in html
+    assert rows[0] == before
+    assert rows[0]["level"] == pytest.approx(1 - alpha)
+    assert "Result" in {getattr(column, "label", None) for column in table.columns}
 
 
 class TestAdapterCarriesLevelNoteInference:
@@ -2635,16 +2668,380 @@ class TestRoleGroupedDisclosure:
         assert headers == ["Primary", "Design-level"]
 
 
-def test_readout_table_discovery_renders_as_its_own_column_not_stat_sig():
-    """`discovery` is a distinct family-verdict column, never conflated
-    with `stat_sig` - both True/False values must render distinctly."""
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        pytest.param(
+            {"discovery": False, "family_axes": ("metric",), "stat_sig": True},
+            ("inconclusive", "Inconclusive"),
+            id="family-false-precedes-stat-sig",
+        ),
+        pytest.param(
+            {
+                "discovery": True,
+                "family_axes": ("metric",),
+                "stat_sig": False,
+                "decision_available": True,
+                "alternative": "two-sided",
+                "preferred_direction": "increase",
+                "lift": 0.01,
+            },
+            ("favorable", "Improvement detected"),
+            id="family-true-with-false-row-verdict",
+        ),
+        pytest.param(
+            {"family_axes": ("metric",), "stat_sig": True},
+            ("neutral", "Unavailable"),
+            id="missing-family-verdict",
+        ),
+        pytest.param(
+            {
+                "discovery": True,
+                "family_axes": ("metric",),
+                "stat_sig": False,
+                "decision_available": True,
+                "alternative": "less",
+                "preferred_direction": "increase",
+                "lift": -0.01,
+            },
+            ("unfavorable", "Decline detected"),
+            id="family-true-supported-adverse-direction",
+        ),
+        pytest.param(
+            {"stat_sig": True, "decision_available": True, "lift": 0.1},
+            ("detected", "Difference detected"),
+            id="no-declared-direction",
+        ),
+        pytest.param(
+            {
+                "stat_sig": True,
+                "decision_available": True,
+                "alternative": "greater",
+                "preferred_direction": "increase",
+                "null_lift": -0.01,
+                "lift": -0.005,
+            },
+            ("favorable", "Guardrail passed"),
+            id="guardrail-pass-small-supported-loss",
+        ),
+        pytest.param(
+            {
+                "role": "guardrail",
+                "stat_sig": True,
+                "decision_available": True,
+                "alternative": "less",
+                "preferred_direction": "decrease",
+                "null_lift": 0.0,
+                "lift": -0.05,
+            },
+            ("favorable", "Guardrail passed"),
+            id="guardrail-zero-margin",
+        ),
+        pytest.param(
+            {
+                "role": "guardrail",
+                "discovery": True,
+                "family_procedure": "bh",
+                "stat_sig": False,
+                "decision_available": True,
+                "alternative": "greater",
+                "preferred_direction": "increase",
+                "null_lift": -0.02,
+                "lift": -0.005,
+            },
+            ("favorable", "Guardrail passed"),
+            id="guardrail-family-selected",
+        ),
+        pytest.param(
+            {
+                "stat_sig": False,
+                "decision_available": True,
+                "alternative": "greater",
+                "preferred_direction": "increase",
+                "null_lift": -0.01,
+                "lift": -0.02,
+            },
+            ("inconclusive", "Inconclusive"),
+            id="guardrail-failure-not-red",
+        ),
+        pytest.param(
+            {"stat_sig": None, "decision_available": False},
+            ("neutral", "Unavailable"),
+            id="unavailable",
+        ),
+    ],
+)
+def test_result_presentation(row, expected):
+
+    assert _result_presentation(row) == expected
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        (
+            {
+                "value_scale": "absolute",
+                "decision_scale": "absolute",
+                "lift": 2.5,
+                "lower": 1.2,
+                "higher": 3.8,
+            },
+            ("favorable", "Improvement detected"),
+        ),
+        (
+            {"null_lift": 0.10, "lift": 0.04, "lower": 0.02, "higher": 0.06},
+            ("unfavorable", "Below threshold"),
+        ),
+        (
+            {"decision_scale": "relative", "lift": 9.0, "relative_confidence_set": "disconnected"},
+            ("detected", "Difference detected"),
+        ),
+    ],
+)
+def test_result_direction_respects_scale_threshold_and_confidence_geometry(extra, expected):
+    from increment.estimation.inference import relative_confidence_set
+    from increment.estimation.results import JointContrastReference
+
+    if extra.get("relative_confidence_set") == "disconnected":
+        extra = {
+            **extra,
+            "relative_confidence_set": relative_confidence_set(
+                JointContrastReference(a=10, c=1, var_a=1, var_c=1, cov_ac=0)
+            ),
+        }
+    row = {
+        "stat_sig": True,
+        "decision_available": True,
+        "alternative": "two-sided",
+        "preferred_direction": "increase",
+        **extra,
+    }
+    assert _result_presentation(row) == expected
+
+
+def test_readout_table_uses_single_result_column_for_all_rows():
     pytest.importorskip("coeftable")
     rows = [
-        _role_row("m1", "secondary", discovery=True),
-        _role_row("m2", "secondary", discovery=False),
+        {**_role_row("m1", "secondary", discovery=True), "preferred_direction": "increase"},
+        {**_role_row("m2", "secondary", discovery=False), "preferred_direction": "increase"},
+        {
+            **_role_row("m3", "primary"),
+            "discovery": None,
+            "family_axes": None,
+            "stat_sig": False,
+            "decision_available": True,
+            "preferred_direction": "increase",
+        },
     ]
-    html = readout_table(rows).gt().as_raw_html()
-    assert "Discovery" in html
+    table = readout_table(rows)
+    assert _rendered_column(table, "Result") == [
+        "Improvement detected",
+        "Inconclusive",
+        "Inconclusive",
+    ]
+    assert not any(
+        getattr(column, "label", None) in {"Discovery", "Significant"} for column in table.columns
+    )
+
+
+def test_readout_table_forest_color_uses_result_presentation():
+    pytest.importorskip("coeftable")
+    from dataclasses import replace
+
+    from coeftable.theme import DEFAULT
+
+    cases = (
+        ({**_role_row("detected", "primary"), "preferred_direction": None}, "neutral"),
+        ({**_role_row("unselected", "secondary", discovery=False)}, "inconclusive"),
+        ({**_role_row("inconclusive", "primary"), "stat_sig": False}, "inconclusive"),
+        ({**_role_row("unavailable", "primary"), "decision_available": False}, "inconclusive"),
+    )
+    for theme in (None, replace(DEFAULT, neutral="#124da3", inconclusive="#888888")):
+        for row, role in cases:
+            table = readout_table([row], theme=theme)
+            expected = (
+                "#386ba8"
+                if theme is None and role == "neutral"
+                else getattr(theme or DEFAULT, role)
+            )
+            plots = re.findall(r"<svg\b.*?</svg>", table.gt().as_raw_html(), re.DOTALL)
+            bars = [plot for plot in plots if "<rect" in plot]
+            assert any(f'fill="{expected}"' in plot for plot in bars)
+            assert not any(f'fill="{(theme or DEFAULT).favorable}"' in plot for plot in bars)
+
+
+@pytest.mark.integration
+def test_switchback_result_preserves_rejection_direction_when_bounds_touch_null():
+    from increment.estimation.contrast import estimate_contrast
+    from tests.estimation.test_unit_cycle_envelope import envelope, procedure, stats
+
+    # Exact residual (2 + 2**-54) - 3 * (2/3) is positive, unlike the rounded HT point.
+    result = estimate_contrast(
+        stats(
+            probability_ct=0.75,
+            ct_cycles=4,
+            tc_cycles=0,
+            mean_slope=2 / 3,
+            reference_delta=2.0,
+            exact_delta_total=(8 * 2**52 + 1, 2**52),
+        ),
+        procedure(envelope(p=0.75, variance=0.0), null_abs=3.0, preferred_direction="increase"),
+    ).results[0]
+    (row,) = contrast_results_to_readout([result])
+    table = readout_table([row])
+
+    assert _rendered_column(table, "Result")[0].startswith("Above threshold")
+    assert _result_presentation(row) == ("favorable", "Above threshold")
+    assert "Above threshold" in table.gt().as_raw_html()
+
+
+def test_readout_table_family_selection_true_overrides_row_verdict_for_result():
+    pytest.importorskip("coeftable")
+    row = {
+        **_role_row("m1", "secondary", discovery=True),
+        "stat_sig": False,
+        "decision_available": True,
+        "preferred_direction": "increase",
+        "alternative": "two-sided",
+        "lift": 0.1,
+    }
+    assert _rendered_column(readout_table([row]), "Result") == ["Improvement detected"]
+
+
+def test_readout_table_renders_result_without_confidence_set():
+    pytest.importorskip("coeftable")
+    row = {
+        **_role_row("m", "primary"),
+        "stat_sig": True,
+        "decision_available": True,
+    }
+    assert _rendered_column(readout_table([row]), "Result") == ["Difference detected"]
+
+
+def test_readout_table_keeps_disconnected_sequential_set_neutral():
+    pytest.importorskip("coeftable")
+    from increment.estimators import AsymptoticMean, SequentialCell
+    from tests.asymptotic_cases import mean_capture, mean_model, mean_records, mean_registration
+
+    registration = mean_registration(
+        models=(mean_model(start_count=2),),
+        cells=(
+            SequentialCell(
+                metric="outcome",
+                group_id="treatment",
+                alpha=Fraction(1, 20),
+                alternative="greater",
+                null_lift=Fraction(0),
+            ),
+        ),
+    )
+    snapshot = mean_capture(
+        registration,
+        mean_records([-2, 1, 2] * 40, [10, 12] * 40),
+    )
+    estimate = estimate_sequential(snapshot, AsymptoticMean(registration=registration)).results[0]
+
+    assert estimate.stat_sig()
+    assert estimate.sequential_result is not None
+    assert estimate.sequential_result.bounds.status == "disconnected"
+
+    (row,) = estimates_to_readout([estimate])
+    row["preferred_direction"] = "increase"
+    components = row["sequential_components"]
+    assert isinstance(components, list) and len(components) == 2
+    negative, positive = components
+    assert isinstance(negative, dict) and isinstance(positive, dict)
+    negative_upper, positive_lower = negative["upper"], positive["lower"]
+    assert isinstance(negative_upper, str) and isinstance(positive_lower, str)
+    assert negative["lower"] is None and Fraction(negative_upper) < 0
+    assert Fraction(positive_lower) > 0 and positive["upper"] is None
+    assert row["preferred_direction"] == "increase"
+    assert row["decision_scale"] == "relative"
+    table = readout_table([row])
+    assert _rendered_column(table, "Result") == ["Difference detected"]
+    assert _Dom(table.gt().as_raw_html()).tags["rect"] == 0
+
+
+def test_readout_table_handles_nullable_pandas_decision_metadata():
+    pytest.importorskip("coeftable")
+    pd = pytest.importorskip("pandas")
+
+    rows = [
+        {
+            **_role_row("missing_metadata", "primary"),
+            "family_procedure": pd.NA,
+            "preferred_direction": pd.NA,
+            "decision_scale": pd.NA,
+            "inference": pd.NA,
+            "role": pd.NA,
+            "alternative": pd.NA,
+        },
+        {
+            **_role_row("missing_decision", "primary"),
+            "stat_sig": pd.NA,
+            "decision_available": pd.NA,
+            "family_procedure": pd.NA,
+            "preferred_direction": pd.NA,
+            "decision_scale": pd.NA,
+            "inference": pd.NA,
+            "role": pd.NA,
+            "alternative": pd.NA,
+        },
+        {
+            **_role_row("false_decision", "primary"),
+            "stat_sig": False,
+            "decision_available": True,
+            "family_procedure": pd.NA,
+            "preferred_direction": pd.NA,
+            "decision_scale": pd.NA,
+            "inference": pd.NA,
+            "role": pd.NA,
+            "alternative": pd.NA,
+        },
+        {
+            **_role_row("missing_alternative", "primary"),
+            "family_procedure": pd.NA,
+            "preferred_direction": "increase",
+            "decision_scale": pd.NA,
+            "inference": pd.NA,
+            "role": pd.NA,
+            "alternative": pd.NA,
+        },
+    ]
+    frame = pd.DataFrame(rows)
+    for column in (
+        "family_procedure",
+        "preferred_direction",
+        "decision_scale",
+        "inference",
+        "role",
+        "alternative",
+    ):
+        frame[column] = pd.array(frame[column], dtype="string")
+    frame["stat_sig"] = pd.array(frame["stat_sig"], dtype="boolean")
+    frame["decision_available"] = pd.array(frame["decision_available"], dtype="boolean")
+
+    table = readout_table(frame)
+    table.gt().as_raw_html()
+
+    assert _rendered_column(table, "Result") == [
+        "Difference detected",
+        "Unavailable",
+        "Inconclusive",
+        "Improvement detected",
+    ]
+
+
+def test_readout_table_does_not_render_a_separate_discovery_column():
+    pytest.importorskip("coeftable")
+    rows = [
+        {**_role_row("m1", "secondary", discovery=True), "preferred_direction": "increase"},
+        {**_role_row("m2", "secondary", discovery=False), "preferred_direction": "increase"},
+    ]
+    table = readout_table(rows)
+    assert _rendered_column(table, "Result") == ["Improvement detected", "Inconclusive"]
+    assert not any(getattr(column, "label", None) == "Discovery" for column in table.columns)
 
 
 @pytest.mark.parametrize("adapter", [contrast_results_to_readout, estimates_to_readout])
@@ -2719,38 +3116,11 @@ def test_estimates_to_readout_adapts_switchback_contrast_results(
     assert type(rows[0]["n_blocks"]) is type(n_blocks)
 
 
-@pytest.mark.parametrize(("alternative", "numerator", "side", "direction"), ZERO_NULL_REJECTIONS)
-def test_readout_table_labels_an_envelope_rejection_at_zero_as_a_rejection(
-    alternative, numerator, side, direction
-):
-    """A rejection whose rounded interval still includes zero is never labelled an exclusion."""
-    pytest.importorskip("coeftable")
-    from increment.estimation.contrast_results import ContrastResults
-
-    result = rejection_at_zero(alternative, numerator)
-    html = readout_table(ContrastResults([result])).gt().as_raw_html()
-    assert f"Rejects zero — {direction} established (displayed interval rounded outward)" in html
-    assert "Excludes zero" not in html
-
-
-def test_readout_table_labels_an_envelope_rejection_at_a_margin_as_a_rejection():
-    pytest.importorskip("coeftable")
-    from increment.estimation.contrast_results import ContrastResults
-
-    html = readout_table(ContrastResults([rounded_rejection_at_margin()])).gt().as_raw_html()
-    assert (
-        "Rejects null — margin met; increase established (displayed interval rounded outward)"
-        in html
-    )
-    assert "Contains tested null" not in html
-
-
 @pytest.mark.parametrize("model", [BreakoutEstimate, DailyLiftEstimate])
 @pytest.mark.parametrize("control_mean", [0.0, 1.0])
 def test_flat_joint_rows_preserve_disconnected_set_significance(model, control_mean):
     from datetime import date
 
-    from increment.estimation.inference import _joint_additive_bounds
     from increment.estimation.results import JointContrastReference, relative_confidence_set
 
     region = relative_confidence_set(
@@ -2795,7 +3165,7 @@ def test_flat_joint_rows_preserve_disconnected_set_significance(model, control_m
     ],
 )
 def test_directional_fieller_readout_retains_central_display_interval(control_mean, expected):
-    from increment.estimation.inference import _joint_additive_bounds
+
     from increment.estimation.results import JointContrastReference, relative_confidence_set
 
     region = relative_confidence_set(
@@ -3477,3 +3847,295 @@ def test_readout_table_discloses_point_free_sequential_budget_when_level_rounds_
     assert row["coverage_alpha"] == pytest.approx(1e-17)
     html = readout_table([row]).gt().as_raw_html()
     assert "all intervals 100% (α=1e-17)" in html
+
+
+class _ReadoutChecksParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.details_depth = 0
+        self.statuses = []
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag == "details":
+            self.details_depth += 1
+        if "data-inc-status" in values:
+            self.statuses.append((values["data-inc-status"], self.details_depth))
+        if tag == "a":
+            self.links.append(values.get("href", ""))
+
+    def handle_endtag(self, tag):
+        if tag == "details":
+            self.details_depth -= 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("metadata", "status"),
+    [
+        (
+            {"integrity_status": "not_checked_missing_declaration"},
+            "not_checked_missing_declaration",
+        ),
+        ({"integrity_status": "unsupported_assignment"}, "unsupported_assignment"),
+        ({"decision_scope_complete": False}, "decision_scope_complete"),
+        ({"coherence": "live"}, "live"),
+        ({"provider_owned": True}, "provider_owned"),
+        ({"independently_captured": True}, "independently_captured"),
+        ({}, "unknown_scope"),
+    ],
+)
+def test_readout_keeps_weakened_checks_visible_outside_closed_evidence(metadata, status):
+    rows = estimates_to_readout([_estimate("revenue", "T", "unadjusted", 0.12)])
+    rows[0].update(metadata)
+    parser = _ReadoutChecksParser()
+    parser.feed(readout_table(rows).gt().as_raw_html())
+
+    assert (status, 0) in parser.statuses
+
+
+@pytest.mark.integration
+def test_readout_metadata_keeps_literal_context_and_cannot_create_executable_links():
+    from html import unescape
+
+    rows = estimates_to_readout([_estimate("revenue", "T", "unadjusted", 0.12)])
+    payload = "{{[leak](javascript:alert(1))}}"
+    rows[0].update(
+        integrity_status="not_checked_missing_declaration",
+        integrity_code="integrity.allocation_scheme_missing",
+        integrity_context=('{"literal": "false", "reason": "{{[leak](javascript:alert(1))}}"}'),
+        source_snapshot_id="sha256:exact-source-reference",
+    )
+    markup = readout_table(rows).gt().as_raw_html()
+    parser = _ReadoutChecksParser()
+    parser.feed(markup)
+
+    assert not any(link.lower().startswith("javascript:") for link in parser.links)
+    assert payload in unescape(markup)
+    assert "<dd>false</dd>" in markup
+    assert "sha256:exact-source-reference" in markup
+
+
+@pytest.mark.integration
+def test_filtered_readout_retains_checks_for_an_entirely_hidden_arm():
+    import pandas as pd
+
+    from increment import from_frame, run
+
+    frame = pd.DataFrame(
+        {
+            "unit": range(12),
+            "arm": ["control"] * 4 + ["north"] * 4 + ["south"] * 4,
+            "value": [1, 3, 2, 4, 2, 4, 3, 5, 3, 5, 4, 6],
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    results = run(experiment, reader).readout()
+    filtered = results.filter(lambda row: row.group_id == "north")
+    markup = readout_table(filtered).gt().as_raw_html()
+
+    assert "south vs control" in markup
+    assert "<dt>hidden_by_filter</dt><dd>yes</dd>" in markup
+    source_id = results[0].source_snapshot_id
+    assert source_id is not None
+    assert source_id in markup
+
+
+@pytest.mark.integration
+def test_evidence_qualifications_keep_their_arm_estimand_scale_and_date():
+    first = _inferred_estimate("revenue", 0.1, 0.03, note="first_precision", ds=date(2025, 1, 1))
+    second = first.model_copy(
+        update={
+            "group_id": "other_arm",
+            "estimand": "tot",
+            "note": "second_precision",
+            "ds": date(2025, 1, 2),
+        }
+    )
+    rows = estimates_to_readout([first, second])
+    markup = readout_table(rows).gt().as_raw_html()
+    readings = re.findall(
+        r'<section\b[^>]*class="[^"]*\binc-readout-cell-evidence\b[^"]*"[^>]*>(.*?)</section>',
+        markup,
+        re.S,
+    )
+    for row in rows:
+        (reading,) = [item for item in readings if row["note"] in item]
+        for coordinate in ("group_id", "estimand", "value_scale", "ds"):
+            assert str(row[coordinate]) in reading
+
+
+@pytest.mark.parametrize(
+    ("inference", "significant", "expected"),
+    [
+        ("fixed", True, ("favorable", "Improvement detected")),
+        ("fixed", False, ("inconclusive", "Inconclusive")),
+        ("asymptotic_mean", True, ("neutral", "Unavailable")),
+    ],
+)
+def test_bonferroni_result_uses_its_retained_decision(inference, significant, expected):
+
+    row = {
+        "inference": inference,
+        "stat_sig": significant,
+        "decision_available": True,
+        "sampling_available": True,
+        "discovery": None,
+        "family_axes": ("segment",),
+        "family_procedure": "bonferroni",
+        "preferred_direction": "increase",
+        "lower": 0.07 if significant else -0.4,
+        "higher": 0.8,
+    }
+    assert _result_presentation(row) == expected
+
+
+@pytest.mark.integration
+def test_readout_caveats_are_attributed_deduplicated_and_literal():
+    pytest.importorskip("coeftable")
+    note = "<img src=x onerror=alert(1)> {{[literal](javascript:alert(1))}}"
+    first = {**_role_row("revenue", "primary"), "note": note, "low_reliability": True}
+    second = {
+        **_role_row("signups", "primary"),
+        "numerical_qualification": "scipy_special_function_error_model_conditional_v1",
+        "value_scale": "absolute",
+        "ds_basis": "cohort",
+        "source_snapshot_id": "sha256:source-snapshot",
+    }
+    table = readout_table([first, second])
+    html = table.as_raw_html()
+    footer_markup = re.search(r"<tfoot>(.*?)</tfoot>", html, re.DOTALL)
+    assert footer_markup is not None
+    footer = _Dom(footer_markup.group(1))
+    assert not footer.executable_destinations()
+    assert not footer.handlers
+    assert note in footer.text
+
+    assert _rendered_column(table, "Result") == [
+        "Difference detected¹, ²",
+        "Difference detected",
+    ]
+    assert "Affected:" not in footer.text
+
+
+@pytest.mark.integration
+def test_readout_caveat_markers_are_shared_local_and_preserve_themes():
+    pytest.importorskip("coeftable")
+    import coeftable as ct
+    from coeftable.theme import DEFAULT
+
+    rows = [
+        {
+            **_role_row("revenue", "primary"),
+            "note": "same captured note",
+            "multiplicity_status": "declared_plan",
+        },
+        {**_role_row("signups", "primary"), "note": "same captured note"},
+    ]
+    table = readout_table(rows)
+    transformed = (
+        table.header("Custom title")
+        .with_theme(DEFAULT)
+        .estimate("Copy", "lift", fmt=ct.Percent(scale=100.0, decimals=1))
+    )
+    html = transformed.gt().as_raw_html()
+
+    assert isinstance(transformed, ct.CoefTable)
+    assert _rendered_column(transformed, "Result") == [
+        "Difference detected²",
+        "Difference detected²",
+    ]
+    assert "revenue¹" in html
+    footer_markup = re.search(r"<tfoot>(.*?)</tfoot>", html, re.DOTALL)
+    assert footer_markup is not None
+    footer = _Dom(footer_markup.group(1)).text
+    assert footer.count("same captured note") == 1
+    assert "revenue" not in footer and "signups" not in footer
+    assert "Affected:" not in footer
+    assert "Custom title" in html
+
+
+@pytest.mark.integration
+def test_readout_caveat_numbering_restarts_for_filtered_and_empty_tables():
+    pytest.importorskip("coeftable")
+    import pandas as pd
+
+    rows = [
+        {**_role_row("revenue", "primary"), "note": "first"},
+        {**_role_row("signups", "primary"), "note": "second"},
+    ]
+    full = readout_table(rows)
+    filtered = readout_table(pd.DataFrame([rows[1]]))
+    empty = readout_table(
+        pd.DataFrame(
+            columns=["metric", "group_id", "method", "lift", "lower", "higher", "stat_sig"]
+        )
+    )
+
+    assert "¹" in _rendered_column(full, "Result")[0]
+    assert "²" in _rendered_column(full, "Result")[1]
+    assert "¹" in _rendered_column(filtered, "Result")[0]
+    many = readout_table(
+        [
+            {**_role_row(f"metric_{index}", "primary"), "note": f"note {index}"}
+            for index in range(10)
+        ]
+    )
+    assert _rendered_column(many, "Result")[9] == "Difference detected¹⁰"
+    combined = readout_table(
+        [{**_role_row("combined", "primary"), "note": "note", "low_reliability": True}]
+    )
+    assert _rendered_column(combined, "Result")[0] == "Difference detected¹, ²"
+    plain = readout_table([_role_row("plain", "primary")])
+    assert not any("¹" in result for result in _rendered_column(plain, "Result"))
+    assert "Result" in {getattr(column, "label", None) for column in empty.columns}
+    assert "¹" not in empty.gt().as_raw_html()
+
+
+@pytest.mark.integration
+def test_numerical_readout_caveats_are_grouped_by_full_detail_in_native_gt():
+    pytest.importorskip("coeftable")
+
+    rows = [
+        {
+            **_role_row("revenue", "primary"),
+            "numerical_qualification": 'qualification A <a href="javascript:alert(1)">unsafe</a>',
+            "binomial_set": _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200).binomial_set,
+        },
+        {
+            **_role_row("signups", "primary"),
+            "numerical_qualification": 'qualification A <a href="javascript:alert(1)">unsafe</a>',
+        },
+        {
+            **_role_row("orders", "primary"),
+            "numerical_qualification": "qualification B",
+        },
+    ]
+
+    table = readout_table(rows)
+    html = table.gt().as_raw_html()
+    evidence = _Dom(html.split("<tfoot>", 1)[0])
+    assert evidence.text.count('qualification A <a href="javascript:alert(1)">unsafe</a>') == 2
+    footer_markup = re.search(r"<tfoot>(.*?)</tfoot>", html, re.DOTALL)
+    assert footer_markup is not None
+    footer = _Dom(footer_markup.group(1))
+
+    assert footer_markup.group(1).count("<details") == 2
+    assert footer_markup.group(1).count("<summary>") == 2
+    assert footer.text.count('qualification A <a href="javascript:alert(1)">unsafe</a>') == 1
+    assert "qualification B" in footer.text
+    assert not footer.executable_destinations()
+    assert not footer.handlers
+    assert _rendered_column(table, "Result") == [
+        "Difference detected¹",
+        "Difference detected¹",
+        "Difference detected²",
+    ]

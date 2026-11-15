@@ -597,7 +597,7 @@ _REFUSALS = refusals(
         "estimation.results.estimate.open_side_bound_must_be_none": "open_side is set; {field} must be None (never a numeric sentinel), got a finite value",
         "estimation.results.lift.open_side_alternative_mismatch": "open_side={open_side!r} does not match alternative={alternative!r}",
         "estimation.results.lift.open_interval_unrecoverable": "The selected interval endpoint cannot be recovered from its persisted sampling reference; recompute the analysis from source data.",
-        "estimation.results.lift.posterior_decision_stats_sequential": "LiftEstimate for {metric!r}/{group_id!r}: decision stats are undefined for inference={inference!r} -- a sequential confidence sequence's radius is not a posterior standard deviation, so recovering (mu, sigma) from it would give a silently wrong probability. Only inference='fixed' (single-look) estimates support chance_to_beat/prob_beyond/prob_within/risk_if_shipped/p_value.",
+        "estimation.results.lift.posterior_decision_stats_sequential": "LiftEstimate for {metric!r}/{group_id!r}: decision stats are undefined for inference={inference!r}; a sequential confidence sequence's radius is not a posterior standard deviation, so recovering (mu, sigma) from it would give a silently wrong probability. Only inference='fixed' (single-look) estimates support chance_to_beat/prob_beyond/prob_within/risk_if_shipped/p_value.",
         "estimation.results.lift.posterior_decision_stats_cluster_robust": RefusalSpec(
             "estimation.results.lift.posterior_decision_stats_cluster_robust",
             InvalidRequestError,
@@ -606,25 +606,25 @@ _REFUSALS = refusals(
                 "unavailable for an asymptotic cluster sandwich; read the interval directly."
                 if reference_df is None
                 else f"LiftEstimate for {metric!r}/{group_id!r}: decision stats are "
-                f"undefined for a cluster-robust t_{{{reference_df:g}}} reference -- the "
+                f"undefined for a cluster-robust t_{{{reference_df:g}}} reference; the "
                 "sandwich's relative evidence is a joint Fieller set, not a scalar "
                 "(mu, sigma) pair to recover. Read relative_confidence_set directly, or "
                 "decide with stat_sig()/p_value(), which honour this reference."
             ),
         ),
-        "estimation.results.lift.t_posterior_sufficient_statistics": "LiftEstimate for {metric!r}/{group_id!r}: the posterior behind a t_{{{reference_df:g}}}-reference estimate is read from the working-scale moments its interval was cut from, and this row is missing {missing}. Its endpoints are t quantiles, so inverting them with a Normal z would report sigma inflated by the t/z ratio instead -- there is no fallback.",
+        "estimation.results.lift.t_posterior_sufficient_statistics": "LiftEstimate for {metric!r}/{group_id!r}: the posterior behind a t_{{{reference_df:g}}}-reference estimate is read from the working-scale moments its interval was cut from, and this row is missing {missing}. Its endpoints are t quantiles, so inverting them with a Normal z would report sigma inflated by the t/z ratio instead; there is no fallback.",
         "estimation.results.lift.liftestimate_level_contradicts": "LiftEstimate for {metric!r}/{group_id!r}: level={e_level} contradicts effective alpha={e_alpha}; expected level={expected_level}",
-        "estimation.results.lift.liftestimate_prior_spec": "LiftEstimate for {metric!r}/{group_id!r}: prior_spec is set but the raw log-scale sufficient statistics are missing -- not a genuine infer_lift output",
-        "estimation.results.lift.liftestimate_carries_no": "LiftEstimate for {metric!r}/{group_id!r} carries no interval -- decision stats need lb/ub/level (run inference with an alpha, which is the default)",
-        "estimation.results.lift.liftestimate_value_lb": "LiftEstimate for {metric!r}/{group_id!r}: value/lb <= -1 is not representable on the log scale (value={e_value}, lb={e_lb}) -- not a genuine infer_lift output",
-        "estimation.results.lift.liftestimate_interval_symmetric": "LiftEstimate for {metric!r}/{group_id!r}: interval is not a symmetric Normal quantile interval on the {scale} scale -- decision stats are only defined for fixed-horizon estimates produced by infer_lift/infer_ate",
+        "estimation.results.lift.liftestimate_prior_spec": "LiftEstimate for {metric!r}/{group_id!r}: prior_spec is set but the raw log-scale sufficient statistics are missing; not a genuine infer_lift output",
+        "estimation.results.lift.liftestimate_carries_no": "LiftEstimate for {metric!r}/{group_id!r} carries no interval; decision stats need lb/ub/level (run inference with an alpha, which is the default)",
+        "estimation.results.lift.liftestimate_value_lb": "LiftEstimate for {metric!r}/{group_id!r}: value/lb <= -1 is not representable on the log scale (value={e_value}, lb={e_lb}); not a genuine infer_lift output",
+        "estimation.results.lift.liftestimate_interval_symmetric": "LiftEstimate for {metric!r}/{group_id!r}: interval is not a symmetric Normal quantile interval on the {scale} scale; decision stats are only defined for fixed-horizon estimates produced by infer_lift/infer_ate",
         "estimation.results.lift.fcr_prior_unsupported": "This legacy prior-bound interval has no proven prior-free sampling state for FCR conversion; recompute the analysis from source data.",
         "estimation.results.lift.threshold_representable_log": "threshold <= -1 is not representable on the log scale, got {threshold}",
-        "estimation.results.lift.liftestimate_prob_favorable": "LiftEstimate for {metric!r}/{group_id!r}: prob_favorable() requires preferred_direction to be set -- it was not resolved from a Metric declaration for this estimate",
+        "estimation.results.lift.liftestimate_prob_favorable": "LiftEstimate for {metric!r}/{group_id!r}: prob_favorable() requires preferred_direction to be set; it was not resolved from a Metric declaration for this estimate",
         "estimation.results.lift.prob_within_threshold_positive": "threshold must be > 0, got {threshold}",
         "estimation.results.lift.prob_within_threshold_unit_interval": "threshold must be in (0, 1), got {threshold}",
-        "estimation.results.lift.liftestimate_chance_to": "LiftEstimate for {metric!r}/{group_id!r}: chance_to_beat_favorable() requires preferred_direction to be set -- it was not resolved from a Metric declaration for this estimate",
-        "estimation.results.lift.liftestimate_risk_if": "LiftEstimate for {metric!r}/{group_id!r}: risk_if_shipped_favorable() requires preferred_direction to be set -- it was not resolved from a Metric declaration for this estimate",
+        "estimation.results.lift.liftestimate_chance_to": "LiftEstimate for {metric!r}/{group_id!r}: chance_to_beat_favorable() requires preferred_direction to be set; it was not resolved from a Metric declaration for this estimate",
+        "estimation.results.lift.liftestimate_risk_if": "LiftEstimate for {metric!r}/{group_id!r}: risk_if_shipped_favorable() requires preferred_direction to be set; it was not resolved from a Metric declaration for this estimate",
         "estimation.results.lift.p_value_cluster_robust_null_abs": RefusalSpec(
             "estimation.results.lift.p_value_cluster_robust_null_abs",
             InvalidRequestError,
@@ -638,14 +638,14 @@ _REFUSALS = refusals(
                 "read an available additive interval directly or decide on the relative scale."
             ),
         ),
-        "estimation.results.lift.p_value_null_abs_missing_abs_se": "LiftEstimate for {metric!r}/{group_id!r}: null_abs is set but abs_se is unavailable (degenerate arm) -- the additive decision is undefined and there is no silent fallback to the relative interval",
-        "estimation.results.lift.liftestimate_dof_set": "LiftEstimate for {metric!r}/{group_id!r}: reference_kind='t' but this row carries no log-scale sufficient statistics (log_mean/log_se) -- p_value() via the t-reference formula is undefined for linear/absolute-scale estimates (e.g. infer_ate or clustered encouragement rows)",
+        "estimation.results.lift.p_value_null_abs_missing_abs_se": "LiftEstimate for {metric!r}/{group_id!r}: null_abs is set but abs_se is unavailable (degenerate arm); the additive decision is undefined and there is no silent fallback to the relative interval",
+        "estimation.results.lift.liftestimate_dof_set": "LiftEstimate for {metric!r}/{group_id!r}: reference_kind='t' but this row carries no log-scale sufficient statistics (log_mean/log_se); p_value() via the t-reference formula is undefined for linear/absolute-scale estimates (e.g. infer_ate or clustered encouragement rows)",
         "estimation.results.lift.p_value_missing_log_mean_or_se": "LiftEstimate for {metric!r}/{group_id!r}: the sampling reference is unavailable because log_mean or log_se is missing; recompute the analysis from sufficient source data.",
         "estimation.results.lift.liftestimate_log_se": "LiftEstimate for {metric!r}/{group_id!r}: log_se must be positive to compute a t-reference p-value, got log_se={e_log_se}",
         "estimation.results.lift.p_value_null_lift_not_representable_dof": "LiftEstimate for {metric!r}/{group_id!r}: null_lift <= -1 is not representable on the log scale, got {null_lift}",
         "estimation.results.lift.reference_df_required_for_t": "estimate row for {metric!r}/{group_id!r}: reference_kind='t' requires a finite reference_df > 0, got {reference_df!r}",
         "estimation.results.lift.reference_df_set_for_normal": "estimate row for {metric!r}/{group_id!r}: reference_kind={reference_kind!r} requires reference_df=None, got {reference_df!r}",
-        "estimation.results.lift.dof_reference_df_mismatch": "estimate row for {metric!r}/{group_id!r}: dof={dof!r} does not match reference_df={reference_df!r} -- a t-reference row's legacy dof column must agree with the reference it was actually cut from",
+        "estimation.results.lift.dof_reference_df_mismatch": "estimate row for {metric!r}/{group_id!r}: dof={dof!r} does not match reference_df={reference_df!r}; a t-reference row's legacy dof column must agree with the reference it was actually cut from",
         "estimation.results.lift.inference_reference_kind_mismatch": "estimate row for {metric!r}/{group_id!r}: inference={inference!r} and reference_kind={reference_kind!r} disagree; a sequential interval has a sequential reference and a fixed-horizon interval a normal or t one",
         "estimation.results.lift.posterior_components_invalid": "LiftEstimate for {metric!r}/{group_id!r}: stored posterior components are invalid: {reason}",
         "estimation.results.joint.invalid_reference": "Invalid joint relative reference: {reason}",
@@ -655,7 +655,7 @@ _REFUSALS = refusals(
         "estimation.results.binomial.counts_out_of_range": "binomial confidence set counts out of range: x_c={x_c}, n_c={n_c}, x_t={x_t}, n_t={n_t}",
         "estimation.results.binomial.decision_metadata": "binomial confidence set has inconsistent decision metadata: {reason}",
         "estimation.results.binomial.obsolete_construction": "binomial confidence set records method {method!r} (None: none recorded); this version reads only {supported!r}. A set naming an incompatible construction, or persisted without naming one, may use different envelopes, thresholds or numerical rules, so its stored interval and a recomputed verdict could disagree. Re-run the analysis to cut the set again.",
-        "estimation.results.binomial.posterior_unavailable": "metric={metric!r} group_id={group_id!r}: no Normal/lognormal posterior exists for a reference_kind='binomial' row -- the exact binomial method is a frequentist test-inversion, not a posterior; chance_to_beat/prob_beyond/prob_within/risk_if_shipped and their favorable variants are unavailable here. Use stat_sig()/p_value() (both binomial-set-aware) or the persisted lift/binomial_set bounds directly.",
+        "estimation.results.binomial.posterior_unavailable": "metric={metric!r} group_id={group_id!r}: no Normal/lognormal posterior exists for a reference_kind='binomial' row; the exact binomial method is a frequentist test-inversion, not a posterior; chance_to_beat/prob_beyond/prob_within/risk_if_shipped and their favorable variants are unavailable here. Use stat_sig()/p_value() (both binomial-set-aware) or the persisted lift/binomial_set bounds directly.",
         "estimation.results.lift.binomial_lift_availability": "metric={metric!r} group_id={group_id!r}: {reason}",
         "estimation.results.lift.absolute_reference_mismatch": "absolute reference {kind!r} with df {df!r} does not fit this row: a t reference carries its df, and a score reference belongs only to an exact binomial row",
         "estimation.results.lift.absolute_alpha_without_interval": "abs_alpha={abs_alpha!r} is the alpha an additive interval was cut at, but this row carries no additive interval (abs_lb/abs_ub)",

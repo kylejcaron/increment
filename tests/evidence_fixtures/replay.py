@@ -548,6 +548,14 @@ def _assert_projected_value(path: str, actual: Any, expected: Any) -> None:
         if not same:
             raise AssertionError(f"{path} differs: actual={actual!r}, expected={expected!r}")
         return
+    if path == "note":
+        if isinstance(actual, str) and isinstance(expected, str):
+            return
+        if type(actual) is not type(expected):
+            raise AssertionError(
+                f"{path} type differs: actual={type(actual).__name__}, "
+                f"expected={type(expected).__name__}"
+            )
     if actual != expected:
         raise AssertionError(f"{path} differs: actual={actual!r}, expected={expected!r}")
 

@@ -185,21 +185,21 @@ from increment.estimation.variance import cluster_outcome_moments, ratio_moments
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "estimation.sitewide.control_carries_metric": "control carries metric {control!r} but target carries {target!r} -- a contrast is one metric, never two",
-        "estimation.sitewide.control_carries_study": "control carries study_id {control!r} but target carries {target!r} -- a contrast is one experiment, never two",
-        "estimation.sitewide.control_target_are": "control and target are both group {control!r} -- a contrast needs two distinct arms",
-        "estimation.sitewide.other_arms_entry_metric_mismatch": "other_arms entry {arm!r} carries metric {metric!r} but the contrast is on {target!r} -- netting another metric's lift out of the site total would corrupt the counterfactual baseline",
-        "estimation.sitewide.other_arms_entry_study_mismatch": "other_arms entry {arm!r} carries study_id {study_id!r} but the contrast is on study_id {target_study_id!r} -- co-enrolling an arm from a different experiment would corrupt the counterfactual baseline",
-        "estimation.sitewide.other_arms_repeats": "other_arms repeats group {arm!r} (already the control, the target arm, or an earlier other_arms entry) -- its lift would leave the counterfactual baseline twice",
-        "estimation.sitewide.from_iid.metric_arm_carries_ref_den": "metric {target!r}: {label} arm {arm!r} carries a populated ref_den, which looks like a clustered row (per-cluster size rides the den family for a sum metric) -- build this contrast with SitewideContrast.from_clusters, not from_iid.",
-        "estimation.sitewide.sitewide_ratio.metric_arm_missing": "metric {metric!r}: arm {arm!r} is missing the denominator moments a ratio contrast requires -- build it through SitewideRatioContrast.from_iid/from_clusters, never from a sum-family arm.",
-        "estimation.sitewide.sitewide_ratio.metric_arm_declares": "metric {target!r}: {label} arm {arm!r} declares x_role={x_role!r}, which is a cluster-grain row -- {remedy}.",
+        "estimation.sitewide.control_carries_metric": "control carries metric {control!r} but target carries {target!r}; a contrast is one metric, never two",
+        "estimation.sitewide.control_carries_study": "control carries study_id {control!r} but target carries {target!r}; a contrast is one experiment, never two",
+        "estimation.sitewide.control_target_are": "control and target are both group {control!r}; a contrast needs two distinct arms",
+        "estimation.sitewide.other_arms_entry_metric_mismatch": "other_arms entry {arm!r} carries metric {metric!r} but the contrast is on {target!r}; netting another metric's lift out of the site total would corrupt the counterfactual baseline",
+        "estimation.sitewide.other_arms_entry_study_mismatch": "other_arms entry {arm!r} carries study_id {study_id!r} but the contrast is on study_id {target_study_id!r}; co-enrolling an arm from a different experiment would corrupt the counterfactual baseline",
+        "estimation.sitewide.other_arms_repeats": "other_arms repeats group {arm!r} (already the control, the target arm, or an earlier other_arms entry); its lift would leave the counterfactual baseline twice",
+        "estimation.sitewide.from_iid.metric_arm_carries_ref_den": "metric {target!r}: {label} arm {arm!r} carries a populated ref_den, which looks like a clustered row (per-cluster size rides the den family for a sum metric); build this contrast with SitewideContrast.from_clusters, not from_iid.",
+        "estimation.sitewide.sitewide_ratio.metric_arm_missing": "metric {metric!r}: arm {arm!r} is missing the denominator moments a ratio contrast requires; build it through SitewideRatioContrast.from_iid/from_clusters, never from a sum-family arm.",
+        "estimation.sitewide.sitewide_ratio.metric_arm_declares": "metric {target!r}: {label} arm {arm!r} declares x_role={x_role!r}, which is a cluster-grain row; {remedy}.",
         "estimation.sitewide.alpha": "alpha must be in (0, 1), got {alpha!r}",
-        "estimation.sitewide.counterfactual_baseline_volume": "counterfactual baseline volume must be positive, got {baseline_volume!r} (site_total_volume={site_total_volume!r}, delta={delta!r}, target.n_units={n_units!r}, other arms {other_arms!r} contributing {other_contribution!r}) -- relative impact is undefined against a non-positive baseline",
-        "estimation.sitewide.counterfactual_baseline_denominator": "counterfactual baseline denominator must be positive, got {baseline_denominator!r} (site_total_denominator={site_total_denominator!r}, delta_den={delta_den!r}, target.n_units={n_units!r}, other arms {other_arms!r}, total enrolled denominator lift {den_contribution!r}) -- the ratio metric is undefined against a non-positive denominator",
-        "estimation.sitewide.ship_all_denominator": "ship-to-all denominator must be positive, got {shipped_denominator!r} (baseline_denominator={baseline_denominator!r}, delta_den={delta_den!r}, n_exp={n_exp!r}) -- the ratio metric is undefined against a non-positive denominator",
-        "estimation.sitewide.cluster_arm_needs_two": "metric '{metric}': cluster contrast ('{cluster}') needs at least 2 clusters in EVERY enrolled arm to estimate a between-cluster variance for that arm, got {arm_counts!r} -- a single cluster carries no between-cluster variance contribution to estimate its own arm's Welch-Satterthwaite component from.",
-        "estimation.sitewide.counterfactual_baseline_ratio": "counterfactual baseline ratio must be positive, got numerator {baseline_numerator!r} over denominator {baseline_denominator!r} (site_total_numerator={site_total_numerator!r}, delta_num={delta_num!r}, target.n_units={n_units!r}, other arms {other_arms!r}, total enrolled numerator lift {num_contribution!r}) -- relative impact is undefined against a non-positive baseline",
+        "estimation.sitewide.counterfactual_baseline_volume": "counterfactual baseline volume must be positive, got {baseline_volume!r} (site_total_volume={site_total_volume!r}, delta={delta!r}, target.n_units={n_units!r}, other arms {other_arms!r} contributing {other_contribution!r}); relative impact is undefined against a non-positive baseline",
+        "estimation.sitewide.counterfactual_baseline_denominator": "counterfactual baseline denominator must be positive, got {baseline_denominator!r} (site_total_denominator={site_total_denominator!r}, delta_den={delta_den!r}, target.n_units={n_units!r}, other arms {other_arms!r}, total enrolled denominator lift {den_contribution!r}); the ratio metric is undefined against a non-positive denominator",
+        "estimation.sitewide.ship_all_denominator": "ship-to-all denominator must be positive, got {shipped_denominator!r} (baseline_denominator={baseline_denominator!r}, delta_den={delta_den!r}, n_exp={n_exp!r}); the ratio metric is undefined against a non-positive denominator",
+        "estimation.sitewide.cluster_arm_needs_two": "metric '{metric}': cluster contrast ('{cluster}') needs at least 2 clusters in EVERY enrolled arm to estimate a between-cluster variance for that arm, got {arm_counts!r}; a single cluster carries no between-cluster variance contribution to estimate its own arm's Welch-Satterthwaite component from.",
+        "estimation.sitewide.counterfactual_baseline_ratio": "counterfactual baseline ratio must be positive, got numerator {baseline_numerator!r} over denominator {baseline_denominator!r} (site_total_numerator={site_total_numerator!r}, delta_num={delta_num!r}, target.n_units={n_units!r}, other arms {other_arms!r}, total enrolled numerator lift {num_contribution!r}); relative impact is undefined against a non-positive baseline",
     },
 )
 
@@ -234,7 +234,7 @@ _CLUSTER_BASELINE_CAVEAT = (
     "sitewide under a declared cluster: the whole-site baseline assumes the "
     "enrolled units exhaust the treated population. Under cluster "
     "randomization a unit inside a treated cluster that produced no exposure "
-    "row is still treated -- its volume is in the observed site total but not "
+    "row is still treated; its volume is in the observed site total but not "
     "the enrolled count. For a positive lift the counterfactual baseline is "
     "biased upward and relative impact downward; in general the reported "
     "relative impact is a lower bound on the true value. The point estimate of "
@@ -824,7 +824,7 @@ class SitewideRatioContrast(CodedModel, BaseModel):
                     if arm.x_role == X_SLOT_ROLES["size"]
                     else "sitewide impact is not supported for an encouragement "
                     "uptake row: its x family carries uptake totals, not the cluster "
-                    "size from_clusters requires -- rebuild the arm with cluster "
+                    "size from_clusters requires; rebuild the arm with cluster "
                     "sizes in x, or report this metric through the encouragement path"
                 )
                 _raise(

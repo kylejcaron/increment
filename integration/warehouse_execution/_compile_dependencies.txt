@@ -1,4 +1,4 @@
-# Traced on commit: ac6d266621e880e2c86262e9a1edee72600f1183
+# Traced on commit: e42282e58a5b15d1b6721223662013a5552615a6
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -151,6 +151,7 @@ increment.query._native_materialization
 increment.query._native_refusals
 increment.query._native_triggered
 increment.query._nonfinite
+increment.query._summary_sql
 increment.query._workflows
 increment.query.artifact_contract
 increment.query.artifact_digest

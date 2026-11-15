@@ -42,8 +42,8 @@ _REFUSALS = refusals(
     {
         "impute.impute_name_least": "impute.{helper}: name at least one column to repair",
         "impute.impute_column_found": "impute.{helper}: column(s) {missing!r} not found in frame; available columns: {present}",
-        "impute.impute_pooled_mean": "impute.pooled_mean: column {col!r} has no observed values to compute a mean from -- every row is null/NaN. Repair the column upstream or drop it.",
-        "impute.impute_pooled_mean_not_finite": "impute.pooled_mean: column {col!r} has {observed} observed value(s) whose mean is {mean!r}, not a finite number -- the values are non-finite or large enough to overflow when averaged, so there is no usable fill value. Repair the column upstream.",
+        "impute.impute_pooled_mean": "impute.pooled_mean: column {col!r} has no observed values to compute a mean from; every row is null/NaN. Repair the column upstream or drop it.",
+        "impute.impute_pooled_mean_not_finite": "impute.pooled_mean: column {col!r} has {observed} observed value(s) whose mean is {mean!r}, not a finite number; the values are non-finite or large enough to overflow when averaged, so there is no usable fill value. Repair the column upstream.",
         "impute.impute_roles_columns": "impute.pooled_mean: roles name column(s) {columns!r} that are not among the columns to repair {requested!r}; declare a role only for a column you pass.",
         "impute.impute_roles_value": "impute.pooled_mean: roles for column(s) {columns!r} must be 'covariate' or 'outcome'.",
         "impute.pooled_mean_outcome": "impute.pooled_mean: column(s) {columns!r} are declared outcomes, and filling an outcome with its pooled mean shrinks variance and can bias the estimate. Route: {route}",

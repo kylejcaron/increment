@@ -248,3 +248,22 @@ def example_definitions(tmp_path: Path) -> Path:
 def seeded_defs(example_definitions: Path) -> str:
     """Definitions path for seeded-constructor tests."""
     return str(example_definitions)
+
+
+@pytest.fixture
+def summary_sql_stages(con):
+    """Inject the renderer selected by a real SQL-computed source."""
+    import polars as pl
+
+    from increment.frame import MetricSpec
+    from increment.query.source import SqlPanelSource
+
+    source = SqlPanelSource.from_frame_via_memtable(
+        con,
+        pl.DataFrame({"unit": ["a", "b"], "arm": ["C", "T"], "value": [1.0, 2.0]}),
+        unit="unit",
+        group="arm",
+        metrics=[MetricSpec(name="value")],
+        study_id="renderer_fixture",
+    )
+    return source._summary_sql_stages

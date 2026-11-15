@@ -204,7 +204,7 @@ _FRAME_COMPLIANCE_DESIGN_MISMATCH = RefusalSpec(
 _FRAME_INTERVENTION_GRAIN = RefusalSpec(
     "source.frame.intervention_grain_without_cluster",
     InvalidRequestError,
-    template="intervention_grain={intervention_grain!r} declares a whole-cluster policy deployment, but no cluster= column was declared -- there is no cluster grain to intervene on.",
+    template="intervention_grain={intervention_grain!r} declares a whole-cluster policy deployment, but no cluster= column was declared; there is no cluster grain to intervene on.",
 )
 _FRAME_SEQUENTIAL_EXPOSURE = RefusalSpec(
     "source.frame.sequential_exposure_date",
@@ -222,7 +222,7 @@ _REFUSALS = refusals(
         "frame.frame_totals.unit_covariate_column": "unit_frame: covariate column(s) {missing!r} not found in the retained frame; available columns: {columns}",
         "frame.frame_totals.unit_covariate_reserved": "unit_frame: {column!r} is reserved for declared cluster metadata; the declared cluster is {cluster!r}",
         "frame.frame_panel.unit_covariate_column": "unit_frame: covariate {missing!r} is not a column in this panel frame; available columns: {columns}",
-        "frame.frame_panel.unit_covariate_varies": "unit_frame: covariate {covariate!r} varies within at least one unit's own rows ({units}) -- not a per-unit covariate; aggregate it to one value per unit first (e.g. take its pre-exposure value) before declaring it as an adjustment covariate.",
+        "frame.frame_panel.unit_covariate_varies": "unit_frame: covariate {covariate!r} varies within at least one unit's own rows ({units}); not a per-unit covariate; aggregate it to one value per unit first (e.g. take its pre-exposure value) before declaring it as an adjustment covariate.",
         "frame.frame_totals.moments_metric_undeclared": RefusalSpec(
             "frame.frame_totals.moments_metric_undeclared",
             InvalidRequestError,

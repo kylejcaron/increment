@@ -126,7 +126,7 @@ def _render_compatibility_refusal(
     if code == "arm.inference.cluster":
         return (
             f"sequential inference is not supported with a declared cluster "
-            f"('{context.get('cluster')}') -- use fixed-horizon inference (valid for one "
+            f"('{context.get('cluster')}'); use fixed-horizon inference (valid for one "
             "planned analysis, not repeated looks)."
         )
     if code == "arm.adjustment.cluster_cuped":
@@ -135,7 +135,7 @@ def _render_compatibility_refusal(
             f"CUPED is not supported with a declared cluster "
             f"('{context.get('cluster')}')"
             + (" under an encouragement design" if encouragement else "")
-            + " -- clustered moments carry no per-unit covariate evidence. Keep a "
+            + "; clustered moments carry no per-unit covariate evidence. Keep a "
             "decision method that does not use CUPED (variance_reduction='none') and "
             "remove or replace every method that requests CUPED: an observational "
             "decision such as iptw stays as it is, keeping its adjustment covariates, "
@@ -146,13 +146,13 @@ def _render_compatibility_refusal(
     if code == "arm.adjustment.cluster_prior":
         return (
             f"an informative prior is not supported with a declared cluster "
-            f"('{context.get('cluster')}') -- clustered inference uses a t reference."
+            f"('{context.get('cluster')}'); clustered inference uses a t reference."
         )
     if code == "arm.metric.quantile_cluster":
         metric_type = context.get("metric_type", "quantile")
         return (
             f"metric {context.get('metric')!r} (type {metric_type!r}) cannot be estimated "
-            f"with a declared cluster ({context.get('cluster')!r}) -- it does not decompose "
+            f"with a declared cluster ({context.get('cluster')!r}); it does not decompose "
             "over the cluster-grain moments the clustered wire format carries."
         )
     if code == "arm.adjustment.sequential_prior":
@@ -160,16 +160,16 @@ def _render_compatibility_refusal(
         named = f" (metric(s) {list(metrics)!r})" if isinstance(metrics, (list, tuple)) else ""
         return (
             f"prior and sequential inference are mutually exclusive{named}: each "
-            "sequential route's error control is frequentist and route-specific -- "
+            "sequential route's error control is frequentist and route-specific; "
             "exact for the always-valid e-process, asymptotic for the scalar-mean "
-            "route -- and a prior-shifted posterior center would void it. Drop "
+            "route; and a prior-shifted posterior center would void it. Drop "
             "prior= for these metrics, or use fixed-horizon inference (valid for one "
             "planned analysis, not repeated looks) instead of a sequential kind."
         )
     if code == "arm.metric.quantile_cuped":
         return (
             f"CUPED/variance reduction is not supported for quantile metric "
-            f"{context.get('metric')!r} -- a quantile has no mean to adjust; use "
+            f"{context.get('metric')!r}; a quantile has no mean to adjust; use "
             "variance_reduction='none'"
         )
     if code == "arm.metric.quantile_sequential":

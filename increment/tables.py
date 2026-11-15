@@ -13,22 +13,28 @@ function directly instead.
 
 from __future__ import annotations
 
-import json
 import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, fields, replace
+from functools import cache
 from html import escape as escape_html
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from increment._display import interval_text
+from increment._display import (
+    _readout_interval,
+    format_coverage,
+    format_effect,
+    format_interval,
+    interval_text,
+)
 from increment._interpretation import (
-    LOW_RELIABILITY_CAVEAT,
     interpret_readout,
     readout_evidence_columns,
     render_effect_interpretation,
-    render_readout_qualifications,
 )
 from increment._optional import require_tables
+from increment._readout_html import readout_header
 from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, DailyMetricValue
 from increment.breakout.projection import to_frame
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
@@ -49,7 +55,6 @@ if TYPE_CHECKING:
     from datetime import date, datetime
 
     from coeftable import CoefTable, Theme
-    from coeftable.theme import Direction
     from narwhals.typing import IntoDataFrame
 
     from increment._run import RunResult
@@ -86,8 +91,8 @@ family axes or sequential components, or a retained confidence set or count evid
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "tables.readout_table_trend": "readout_table(trend=...) is missing the 'ds' column needed for the sparkline's x-axis -- got columns {columns}.",
-        "tables.readout_table_trend_ds_all_null": "readout_table(trend=...): every row's 'ds' is null -- these estimates carry no per-date axis (a whole-window run() result?). Build the trend from readouts.asof_lift or run_daily_lift output, whose rows each carry their own day.",
+        "tables.readout_table_trend": "readout_table(trend=...) is missing the 'ds' column needed for the sparkline's x-axis; got columns {columns}.",
+        "tables.readout_table_trend_ds_all_null": "readout_table(trend=...): every row's 'ds' is null; these estimates carry no per-date axis (a whole-window run() result?). Build the trend from readouts.asof_lift or run_daily_lift output, whose rows each carry their own day.",
         "tables.readout_table_trend_mixed_ds_basis": "readout_table(trend=...) mixes ds_basis values {bases}{affected}: a cohort-indexed series (ds is each unit's own exposure date) cannot share an x-axis with a calendar-indexed series. Plot the cohort view separately, or use the metric's as-of view (run_asof/run_asof_lift), which is calendar-indexed.",
         "tables.readout_table_trend_missing_key_columns": "readout_table(trend=...) is missing column(s) {missing} required by nest_by={nest_by!r} to align each trend row with the main table's metric/nest/split keys ({key_columns}).",
         "tables.readout_table_trend_duplicate_rows": RefusalSpec(
@@ -95,18 +100,16 @@ _REFUSALS = refusals(
             InvalidRequestError,
             lambda *, rows, key, varying, key_columns: (
                 f"readout_table(trend=...) has {rows} rows for "
-                f"{key} -- expected exactly one. Column(s) {varying} vary "
-                "within that group. Narrow `trend` (e.g. filter to one segment "
-                "or method) so each (metric, "
+                f"{key}; expected one. Filter by the varying columns {varying} "
+                "so each (metric, "
                 + ", ".join(key_columns[1:])
-                + ", ds) combination resolves to a single row before passing "
-                "it to readout_table."
+                + ", ds) identifies one row before passing it to readout_table."
             ),
         ),
-        "tables.readout_table_nest": "readout_table(nest_by='segment') needs a single method in `data` -- the 'method' column has more than one distinct value. coeftable's CoefTable is 2-axis (metric rows x nest x split); segment and arm already occupy both slots, so there is no axis left for method. Filter `data` to one method before calling readout_table(nest_by='segment').",
+        "tables.readout_table_nest": "readout_table(nest_by='segment') needs a single method in data; filter the 'method' column to one value so segment and arm can each use a table axis.",
         "tables.readout_table_ambiguous": "readout_table has ambiguous duplicate row keys {key}; {route}.",
         "tables.readout_table_duplicate": "readout_table has duplicate visible row keys after disambiguation; include distinct metric, estimand, value_scale, nest, split, or analysis_population values.",
-        "tables.trend_table_missing": "trend_table is missing required column(s) {missing} -- pass MetricTrend.to_frame() output",
+        "tables.trend_table_missing": "trend_table is missing required column(s) {missing}; pass MetricTrend.to_frame() output",
         "tables.trend_table_supports": "trend_table supports at most one dimension column; got {dims}",
     },
 )
@@ -115,6 +118,14 @@ _SEGMENT_ROUTE = 'pass nest_by="segment", on rows of one method, so each segment
 _POPULATION_ROUTE = (
     "provide distinct analysis_population values (for example 'assigned' and 'triggered')"
 )
+
+
+@dataclass(frozen=True)
+class _ReadoutCaveat:
+    kind: Literal["note", "reliability", "numerical"]
+    summary: str
+    detail: str | None = None
+
 
 # LiftEstimate -> readout DataFrame adapter
 
@@ -164,6 +175,7 @@ def _base_liftestimate_to_row(
         "stat_sig": verdict,
         "decision_scale": row_decision_scale(est),
         "decision_available": row_decision_available(est, verdict=verdict),
+        "alternative": getattr(est, "alternative", "two-sided"),
         "null_lift": getattr(est, "null_lift", 0.0),
         "null_abs": getattr(est, "null_abs", None),
         "abs_diff": getattr(est, "abs_diff", None),
@@ -581,7 +593,7 @@ def _resolve_trend_frame(
                     f"{sorted(frame.filter(nw.col('ds_basis') == basis)['metric'].unique().to_list())}"
                     for basis in bases
                 )
-                affected = f" (metrics by basis -- {per_basis})"
+                affected = f" (metrics by basis; {per_basis})"
             else:
                 affected = ""
             _raise("tables.readout_table_trend_mixed_ds_basis", bases=bases, affected=affected)
@@ -693,7 +705,7 @@ def _column_values(frame: Any, column: str) -> list[Any] | None:
 
 def _format_level(level: float, alpha: float | None = None) -> str:
     """Format a coverage label with the shared compact precision and retained budget."""
-    return _format_coverage(level, alpha)
+    return format_coverage(level, alpha)
 
 
 def _format_coverage_levels(levels: list[float], alphas: list[float | None]) -> list[str]:
@@ -706,7 +718,7 @@ def _format_coverage_levels(levels: list[float], alphas: list[float | None]) -> 
         if len(identities_by_label[label]) > 1:
             exact = f"{level * 100:.15g}%"
             if 0 < level < 1 and exact in ("0%", "100%"):
-                exact = _format_coverage(level)
+                exact = format_coverage(level)
             labels[index] = exact if alpha is None else f"{exact} (α={alpha!r})"
     return labels
 
@@ -754,22 +766,31 @@ def _interval_level_note(
     """Header disclosure when every row shares one non-default retained coverage."""
     if not show_interval_level:
         return None
-    levels = _column_values(frame, "level")
+    levels = _column_values(frame, "__interval_level") or _column_values(frame, "level")
     if levels is None:
         return None
-    alpha_values = _column_values(frame, "coverage_alpha") or [None] * len(levels)
+    alpha_values = (
+        _column_values(frame, "__interval_alpha")
+        or _column_values(frame, "coverage_alpha")
+        or [None] * len(levels)
+    )
+    sides = _column_values(frame, "__interval_one_sided") or [False] * len(levels)
     coverages = {
-        (float(level), None if _is_missing(alpha) else cast(float, alpha))
-        for level, alpha in zip(levels, alpha_values, strict=True)
+        (float(level), None if _is_missing(alpha) else cast(float, alpha), one_sided)
+        for level, alpha, one_sided in zip(levels, alpha_values, sides, strict=True)
         if not _is_missing(level)
     }
     if len(coverages) != 1:
         return None
-    level, alpha = next(iter(coverages))
-    if math.isclose(level, 0.95) and (alpha is None or math.isclose(alpha, 0.05)):
+    level, alpha, one_sided = next(iter(coverages))
+    if not one_sided and math.isclose(level, 0.95) and (alpha is None or math.isclose(alpha, 0.05)):
         return None
     scope = "display intervals" if has_confidence_sets else "all intervals"
+    if any(_column_values(frame, "__abs_interval_one_sided") or []):
+        scope = "lift intervals"
     label = _format_coverage_levels([level], [alpha])[0]
+    if one_sided:
+        label += " one-sided"
     return f"{scope} {label}"
 
 
@@ -806,333 +827,26 @@ def _multiplicity_markers(statuses: Sequence[Any]) -> dict[str, str]:
     return dict(zip(marked, _MULTIPLICITY_MARKERS, strict=False))
 
 
-def _readout_metadata_notes(frame: Any) -> list[str]:
-    """Summarize repeated row metadata once in the table header."""
-    notes: list[str] = []
-    scopes = _column_values(frame, "decision_scope_complete")
-    if scopes is not None and any(not _is_missing(value) and not bool(value) for value in scopes):
-        note = "Decision scope is incomplete"
-        failure_codes = _column_values(frame, "failure_code")
-        if failure_codes is not None and any(not _is_missing(value) for value in failure_codes):
-            note += "; see Failure"
-        notes.append(note + ".")
-
-    statuses = _column_values(frame, "multiplicity_status")
-    if statuses is not None:
-        markers = _multiplicity_markers(statuses)
-        if markers:
-            for status, marker in markers.items():
-                count = sum(not _is_missing(value) and value == status for value in statuses)
-                label = _MULTIPLICITY_STATUS_LABELS[status]
-                notes.append(f"{marker} {label} ({count} of {len(statuses)} rows)")
-        else:
-            distinct = tuple(dict.fromkeys(value for value in statuses if not _is_missing(value)))
-            if len(distinct) == 1 and distinct[0] in _MULTIPLICITY_STATUS_LABELS:
-                notes.append(_MULTIPLICITY_STATUS_LABELS[distinct[0]])
-
-    partial = _column_values(frame, "view_partial")
-    if partial is not None and any(not _is_missing(value) and bool(value) for value in partial):
-        notes.append("Partial view.")
-
-    failure_codes = _column_values(frame, "failure_code")
-    if failure_codes is not None:
-        contexts = _column_values(frame, "failure_context") or [None] * len(frame)
-        if any(
-            len(_failure_disclosure(code, context, limit=None)) > _FAILURE_DISPLAY_LIMIT
-            for code, context in zip(failure_codes, contexts, strict=True)
-        ):
-            notes.append(
-                "Failure details are abbreviated; full context remains on the result rows."
-            )
-    return notes
-
-
-def _display_source_snapshot(source: Any) -> Any:
-    if not isinstance(source, str):
-        return source
-    prefix, separator, digest = source.partition(":")
-    return f"{prefix}:{digest[:12]}" if separator else source[:12]
-
-
-def _readout_evidence_notes(frame: Any) -> list[str]:
-    """Summarize portable collection qualifications once, retaining attribution."""
-    populations = _column_values(frame, "analysis_population")
-    sources = _column_values(frame, "source_snapshot_id")
-    return (
-        _integrity_notes(frame, populations, sources)
-        + _roster_notes(frame, populations, sources)
-        + _family_notes(frame, populations, sources)
-        + _advisory_notes(frame, populations, sources)
-        + _cell_evidence_notes(frame, populations, sources)
-        + _row_qualification_notes(frame, populations, sources)
-    )
-
-
-def _row_attribution(populations, sources, index):
-    return tuple(values[index] if values is not None else None for values in (populations, sources))
-
-
-def _display_attribution(populations, sources, index):
-    population, source = _row_attribution(populations, sources, index)
-    return population, _display_source_snapshot(source)
-
-
-def _attribution_suffix(values) -> str:
-    label = ", ".join(str(value) for value in values if not _is_missing(value))
-    return f" [{label}]" if label else ""
-
-
-def _integrity_notes(frame, populations, sources) -> list[str]:
-    statuses = _column_values(frame, "integrity_status")
-    if statuses is None or all(_is_missing(status) for status in statuses):
-        # Rows without retained collection evidence cannot vouch for scope or integrity.
-        return ["Scope and integrity unknown."]
-    contexts = _column_values(frame, "integrity_code")
-    required = _column_values(frame, "required_cell_count")
-    available = _column_values(frame, "available_cell_count")
-    comparisons = _column_values(frame, "comparison")
-    notes = []
-    seen = set()
-    for index, status in enumerate(statuses):
-        if _is_missing(status):
-            continue
-        comparison = None if comparisons is None else comparisons[index]
-        identity = (status, *_row_attribution(populations, sources, index), comparison)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        detail = "" if contexts is None or _is_missing(contexts[index]) else f" ({contexts[index]})"
-        display = (*_display_attribution(populations, sources, index), comparison)
-        note = f"Integrity {status}{detail}{_attribution_suffix(display)}"
-        if required is not None and available is not None:
-            note += f"; required cells {required[index]}, available {available[index]}"
-        notes.append(note + ".")
-    return notes
-
-
-def _row_qualification_notes(frame, populations, sources) -> list[str]:
-    notes = []
-    seen = set()
-    row_notes = _column_values(frame, "note")
-    advisory_values = _column_values(frame, "advisories")
+def _row_availability_columns(frame: Any) -> dict[str, list[str]]:
     posterior = _column_values(frame, "posterior_available")
-    posterior_codes = _column_values(frame, "posterior_reason_code")
-    posterior_contexts = _column_values(frame, "posterior_reason_context")
-    for index in range(len(frame)):
-        attribution = _row_attribution(populations, sources, index)
-        suffix = _attribution_suffix(_display_attribution(populations, sources, index))
-        note = None if row_notes is None else row_notes[index]
-
-        if (
-            posterior is not None
-            and not _is_missing(posterior[index])
-            and not bool(posterior[index])
-        ):
-            code = None if posterior_codes is None else posterior_codes[index]
-            context = None if posterior_contexts is None else posterior_contexts[index]
-            if isinstance(context, str):
-                try:
-                    context = json.loads(context)
-                except json.JSONDecodeError:
-                    pass
-            reason = _failure_disclosure(code, context, limit=None)
-            text = f"Posterior unavailable: {reason}{suffix}."
-            if (text, attribution) not in seen:
-                seen.add((text, attribution))
-                notes.append(text)
-        advisory_codes: set[str] = set()
-        if advisory_values is not None and not _is_missing(advisory_values[index]):
-            for item in json.loads(advisory_values[index]):
-                code = item.get("code")
-                if isinstance(code, str):
-                    advisory_codes.add(code)
-        if isinstance(note, str) and not any(code in note for code in advisory_codes):
-            text = f"Qualification: {note}{suffix}"
-            if (text, attribution) not in seen:
-                seen.add((text, attribution))
-                notes.append(text)
-    return notes
-
-
-def _roster_notes(frame, populations, sources) -> list[str]:
-    complete_values = _column_values(frame, "roster_complete")
-    if complete_values is None:
-        return []
-    roster_sources = _column_values(frame, "roster_source")
-    notes = []
-    seen = set()
-    for index, complete in enumerate(complete_values):
-        roster_source = None if roster_sources is None else roster_sources[index]
-        identity = (complete, *_row_attribution(populations, sources, index), roster_source)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        state = "unknown" if _is_missing(complete) else "complete" if complete else "incomplete"
-        source_note = "" if _is_missing(roster_source) else f" ({roster_source})"
-        suffix = _attribution_suffix(_display_attribution(populations, sources, index))
-        notes.append(f"Roster completeness {state}{source_note}{suffix}.")
-    return notes
-
-
-def _family_notes(frame, populations, sources) -> list[str]:
-    values = _column_values(frame, "retained_family")
-    if values is None:
-        return []
-    notes = []
-    seen = set()
-    for index, value in enumerate(values):
-        if _is_missing(value):
-            continue
-        attribution = _row_attribution(populations, sources, index)
-        for family in json.loads(value):
-            identity = (family.get("family_id"), attribution)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            family_model = family.get("family") or {}
-            name = family_model.get("name") or family.get("name") or "unknown"
-            state = "complete" if family.get("complete") else "incomplete"
-            display = _display_attribution(populations, sources, index)
-            notes.append(f"Multiplicity family {name} {state}{_attribution_suffix(display)}.")
-    return notes
-
-
-def _advisory_notes(frame, populations, sources) -> list[str]:
-    values = _column_values(frame, "advisories")
-    if values is None:
-        return []
-    notes = []
-    seen = set()
-    for index, value in enumerate(values):
-        if _is_missing(value):
-            continue
-        attribution = _row_attribution(populations, sources, index)
-        suffix = _attribution_suffix(_display_attribution(populations, sources, index))
-        for advisory in json.loads(value):
-            identity = (
-                advisory.get("code"),
-                json.dumps(advisory.get("context"), sort_keys=True),
-                attribution,
-            )
-            if identity in seen:
-                continue
-            seen.add(identity)
-            notes.append(f"Advisory {advisory.get('code')}{suffix}: {advisory.get('message')}")
-    return notes
-
-
-def _cell_evidence_notes(frame, populations, sources) -> list[str]:
-    notes = []
-    for column, label in (
-        ("unavailable_cells", "Unavailable"),
-        ("hidden_cells", "Hidden by filter"),
-    ):
-        values = _column_values(frame, column)
-        if values is None:
-            continue
-        seen = set()
-        for index, value in enumerate(values):
-            if _is_missing(value):
-                continue
-            attribution = _row_attribution(populations, sources, index)
-            for cell in json.loads(value):
-                identity = (json.dumps(cell, sort_keys=True), attribution)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                message = cell.get("message") or cell.get("code") or "reason unavailable"
-                metric = cell.get("cell", {}).get("metric")
-                display = (*_display_attribution(populations, sources, index), metric)
-                notes.append(f"{label}{_attribution_suffix(display)}: {message}")
-    return notes
-
-
-def _compact_interval_interpretation(value: Any) -> str:
-    verdict, caveat, _ = str(value).partition(LOW_RELIABILITY_CAVEAT)
-    compact = _compact_interval_verdict(verdict.rstrip())
-    return f"{compact} {caveat}" if caveat else compact
-
-
-def _compact_interval_verdict(text: str) -> str:
-    compact = _compact_interval_outcome(text)
-    # A rejection whose outward-rounded interval still includes the null it rejects.
-    if "the displayed interval is rounded outward" in text:
-        return f"{compact} (displayed interval rounded outward)"
-    return compact
-
-
-def _compact_interval_outcome(text: str) -> str:
-    if "does not reject; inconclusive" in text:
-        return "Contains tested null — inconclusive"
-    if "excludes zero" in text:
-        if "effect direction supported (increase)" in text:
-            return "Excludes zero — increase established"
-        if "effect direction supported (decrease)" in text:
-            return "Excludes zero — decrease established"
-        return "Excludes zero — direction not established"
-    if "rejects zero" in text:
-        if "effect direction supported (increase)" in text:
-            return "Rejects zero — increase established"
-        if "effect direction supported (decrease)" in text:
-            return "Rejects zero — decrease established"
-        return "Rejects zero — direction not established"
-    if "rejects the null" in text:
-        if "effect direction supported (increase)" in text:
-            return "Rejects null — margin met; increase established"
-        if "effect direction supported (decrease)" in text:
-            return "Rejects null — margin met; decrease established"
-        return "Rejects null — margin met; direction not established"
-    if "does not meet the declared alternative" in text:
-        return "Does not meet declared alternative"
-    return text
-
-
-def _row_qualification_columns(frame: Any, n: int) -> dict[str, list[str]]:
-    columns = {}
-    notes = _column_values(frame, "note")
-    if notes is not None and any(not _is_missing(value) for value in notes):
-        columns["Qualification"] = ["" if _is_missing(value) else str(value) for value in notes]
-    posterior = _column_values(frame, "posterior_available")
-    codes = _column_values(frame, "posterior_reason_code") or [None] * n
-    contexts = _column_values(frame, "posterior_reason_context") or [None] * n
-    if posterior is not None and any(
+    if posterior is None or not any(
         not _is_missing(value) and not bool(value) for value in posterior
     ):
-        columns["Posterior availability"] = [
-            ""
-            if _is_missing(available) or bool(available)
-            else _failure_disclosure(code, context, limit=None)
-            for available, code, context in zip(posterior, codes, contexts, strict=True)
+        return {}
+    return {
+        "Posterior availability": [
+            "" if _is_missing(available) or bool(available) else "Unavailable"
+            for available in posterior
         ]
-    additive = _column_values(frame, "abs_diff")
-    if additive is not None and any(not _is_missing(value) for value in additive):
-        lower = _column_values(frame, "abs_lb") or [None] * n
-        upper = _column_values(frame, "abs_ub") or [None] * n
-        interval_available = _column_values(frame, "abs_interval_available") or [False] * n
-        columns["Additive effect"] = [
-            ""
-            if _is_missing(point)
-            else f"{point:.6g}"
-            + (
-                "; interval "
-                + interval_text(
-                    None if _is_missing(low) else f"{low:.6g}",
-                    None if _is_missing(high) else f"{high:.6g}",
-                )
-                if not _is_missing(low)
-                or not _is_missing(high)
-                or (not _is_missing(available) and bool(available))
-                else "; interval unavailable"
-            )
-            for point, low, high, available in zip(
-                additive, lower, upper, interval_available, strict=True
-            )
-        ]
-    return columns
+    }
 
 
 def _rendered_metadata_columns(
-    frame: Any, *, advisory: bool, show_interval_level: bool
+    frame: Any,
+    *,
+    advisory: bool,
+    show_interval_level: bool,
+    result_markers: Sequence[str] | None = None,
 ) -> dict[str, list[str]]:
     """Pre-render the decision-layer and row-metadata display strings
     ``readout_table`` attaches as coeftable passthrough columns.
@@ -1142,12 +856,11 @@ def _rendered_metadata_columns(
     minimal hand-built frame renders unchanged.
     ``Posterior chance to beat``, ``Posterior risk if shipped``, and
     ``Posterior P(favorable)`` are explicit model-qualified values and render
-    only when ``advisory`` is set. ``Discovery`` renders a row's family verdict
-    ("Yes"/"No"/blank) as its own column - a family-level BH/e-BH selection
-    outcome, never conflated with ``stat_sig`` (a single row's own
-    verdict). ``Interval`` renders per-row confidence
-    levels only when they differ across rows; one shared level is a header
-    note instead. No column renders a ship/no-ship verdict.
+    only when ``advisory`` is set. ``Result`` combines the applicable family
+    selection or row-level inference into one concise status; raw verdicts,
+    qualifications, and confidence geometry remain available in other details.
+    ``Interval`` renders per-row confidence levels only when they differ across
+    rows; one shared level is a header note instead.
     """
     n = len(frame)
     columns: dict[str, list[str]] = {}
@@ -1189,27 +902,26 @@ def _rendered_metadata_columns(
                 "" if _is_missing(v) else f"{v * 100:.1f}%" for v in prob
             ]
 
-    discovery = _column_values(frame, "discovery")
-    if discovery is not None and any(not _is_missing(v) for v in discovery):
-        columns["Discovery"] = ["" if _is_missing(v) else ("Yes" if v else "No") for v in discovery]
-    qualifications = _column_values(frame, "selection_qualification")
-    if qualifications is not None and any(not _is_missing(value) for value in qualifications):
-        columns["Selection qualification"] = [
-            "" if _is_missing(value) else str(value) for value in qualifications
+    results = _column_values(frame, "__result_label") or [
+        _result_presentation(row)[1] for row in frame.iter_rows(named=True)
+    ]
+    if result_markers is not None:
+        results = [
+            f"{result}{marker}" for result, marker in zip(results, result_markers, strict=True)
         ]
-    interpretations = _column_values(frame, "effect_interpretation")
-    if interpretations is not None and any(not _is_missing(value) for value in interpretations):
-        columns["Interval interpretation"] = [
-            "" if _is_missing(value) else _compact_interval_interpretation(value)
-            for value in interpretations
-        ]
-    columns.update(_row_qualification_columns(frame, n))
-    levels = _column_values(frame, "level")
+    columns["Result"] = results
+    columns.update(_row_availability_columns(frame))
+    levels = _column_values(frame, "__interval_level") or _column_values(frame, "level")
     if show_interval_level and levels is not None:
-        alpha_values = _column_values(frame, "coverage_alpha") or [None] * n
+        alpha_values = (
+            _column_values(frame, "__interval_alpha")
+            or _column_values(frame, "coverage_alpha")
+            or [None] * n
+        )
+        sides = _column_values(frame, "__interval_one_sided") or [False] * n
         identities = [
-            (float(level), None if _is_missing(alpha) else cast(float, alpha))
-            for level, alpha in zip(levels, alpha_values, strict=True)
+            (float(level), None if _is_missing(alpha) else cast(float, alpha), one_sided)
+            for level, alpha, one_sided in zip(levels, alpha_values, sides, strict=True)
             if not _is_missing(level)
         ]
         if len(set(identities)) > 1:
@@ -1223,58 +935,24 @@ def _rendered_metadata_columns(
             )
             iterator = iter(labels)
             columns["Interval"] = [
-                "" if _is_missing(level) else f"{next(iterator)} CI" for level in levels
+                ""
+                if _is_missing(level)
+                else f"{next(iterator)}{' one-sided' if one_sided else ''} CI"
+                for level, one_sided in zip(levels, sides, strict=True)
             ]
 
-    evidence_columns = [
-        _column_values(frame, name)
+    if any(
+        name in frame.columns
         for name in (
             "confidence_set",
             "relative_confidence_set",
             "binomial_set",
             "relative_unavailable_reason",
         )
-    ]
-    if any(values is not None for values in evidence_columns):
-        missing = [None] * n
-        set_text = [
-            _format_confidence_set(
-                value,
-                relative=relative,
-                binomial=binomial,
-                unavailable=unavailable,
-                scale=scale,
-                lift=lift,
-            )
-            for value, relative, binomial, unavailable, scale, lift in zip(
-                *(values if values is not None else missing for values in evidence_columns),
-                _column_values(frame, "value_scale") or ["relative"] * n,
-                _column_values(frame, "lift") or missing,
-                strict=True,
-            )
-        ]
+    ):
+        set_text = [_display_confidence_set(row) for row in frame.iter_rows(named=True)]
         if any(set_text):
             columns["Confidence set"] = set_text
-            significance = _column_values(frame, "stat_sig") or missing
-            verdicts = []
-            for text, sig, row in zip(
-                set_text, significance, frame.iter_rows(named=True), strict=True
-            ):
-                if not text:
-                    verdict = ""
-                elif _is_missing(sig):
-                    verdict = "Unavailable"
-                elif sig:
-                    verdict = "Yes"
-                else:
-                    verdict = "No" if _decision_available(row) else "Unavailable"
-                verdicts.append(verdict)
-            columns["Significant"] = verdicts
-    binomial_sets = _column_values(frame, "binomial_set")
-    if binomial_sets is not None:
-        qualifications = [_binomial_qualification_disclosure(value) for value in binomial_sets]
-        if any(qualifications):
-            columns["Numerical qualification"] = qualifications
     return {
         label: [escape_html(_markdown_literal(value), quote=True) for value in values]
         for label, values in columns.items()
@@ -1348,6 +1026,257 @@ def _binomial_qualification_disclosure(value: Any) -> str:
     return "No numerical qualification claim"
 
 
+def _row_caveats(
+    row: Mapping[str, Any], *, include_method_assumptions: bool = True
+) -> tuple[_ReadoutCaveat, ...]:
+    caveats: list[_ReadoutCaveat] = []
+    note = row.get("note")
+    if not _is_missing(note) and str(note):
+        caveats.append(_ReadoutCaveat("note", str(note)))
+    low_reliability = row.get("low_reliability")
+    if not _is_missing(low_reliability) and bool(low_reliability):
+        caveats.append(
+            _ReadoutCaveat("reliability", "Small sample; interpret this estimate cautiously.")
+        )
+
+    qualification = row.get("numerical_qualification")
+    binomial_set = row.get("binomial_set")
+    typed_qualification = (
+        binomial_set.get("numerical_qualification")
+        if isinstance(binomial_set, Mapping)
+        else getattr(binomial_set, "numerical_qualification", None)
+    )
+    if _is_missing(qualification) or (isinstance(qualification, str) and not qualification):
+        if _is_missing(typed_qualification):
+            return tuple(caveats)
+        qualification_code = typed_qualification
+        detail = (
+            _binomial_qualification_disclosure(binomial_set)
+            if isinstance(qualification_code, str)
+            and qualification_code
+            in {
+                "scipy_special_function_error_model_conditional_v1",
+                "legacy_unrecorded_v1",
+            }
+            else str(qualification_code)
+        )
+    else:
+        qualification_code = (
+            qualification
+            if isinstance(qualification, str)
+            and qualification
+            in {
+                "scipy_special_function_error_model_conditional_v1",
+                "legacy_unrecorded_v1",
+            }
+            else None
+        )
+        detail = (
+            _binomial_qualification_disclosure({"numerical_qualification": qualification})
+            if isinstance(qualification, str)
+            and qualification
+            in {
+                "scipy_special_function_error_model_conditional_v1",
+                "legacy_unrecorded_v1",
+            }
+            else str(qualification)
+        )
+
+    if qualification_code == "scipy_special_function_error_model_conditional_v1":
+        if not include_method_assumptions:
+            return tuple(caveats)
+        summary = "Numerical accuracy assumptions"
+    elif qualification_code == "legacy_unrecorded_v1":
+        summary = "Numerical qualification not recorded"
+    else:
+        summary = "This result carries a numerical qualification."
+    caveats.append(_ReadoutCaveat("numerical", summary, detail))
+    return tuple(dict.fromkeys(caveats))
+
+
+_SUPERSCRIPT_DIGITS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _superscript_number(number: int) -> str:
+    return str(number).translate(_SUPERSCRIPT_DIGITS)
+
+
+def _number_readout_caveats(
+    rows: Sequence[Mapping[str, Any]], reserved_markers: Sequence[str]
+) -> tuple[list[str], list[str]]:
+    row_caveats = [_row_caveats(row, include_method_assumptions=False) for row in rows]
+    unique_caveats = dict.fromkeys(caveat for caveats in row_caveats for caveat in caveats)
+
+    used = set(reserved_markers)
+    markers: dict[_ReadoutCaveat, str] = {}
+    candidate = 1
+    for caveat in unique_caveats:
+        marker = _superscript_number(candidate)
+        while marker in used:
+            candidate += 1
+            marker = _superscript_number(candidate)
+        markers[caveat] = marker
+        used.add(marker)
+        candidate += 1
+
+    row_markers = [", ".join(markers[caveat] for caveat in caveats) for caveats in row_caveats]
+    source_notes = []
+    for caveat in unique_caveats:
+        marker = markers[caveat]
+        summary = (
+            f"<sup>{marker}</sup> "
+            f'<span style="overflow-wrap:anywhere;white-space:normal">{escape_html(caveat.summary)}</span>'
+        )
+        if caveat.kind == "numerical":
+            expanded = ""
+            if caveat.detail:
+                expanded += f"<p>Technical detail: {escape_html(caveat.detail)}</p>"
+            summary = f"<details><summary>{summary}</summary>{expanded}</details>"
+        else:
+            summary += " "
+        source_notes.append(summary)
+    return row_markers, source_notes
+
+
+type _ResultTone = Literal["favorable", "unfavorable", "detected", "inconclusive", "neutral"]
+
+
+def _result_presentation(row: Mapping[str, Any]) -> tuple[_ResultTone, str]:
+    """Return the semantic tone and concise headline result for one row."""
+
+    family_fields = (
+        "family_axes",
+        "family_q",
+        "family_threshold",
+        "family_procedure",
+        "family_guarantee",
+        "family_nominal_alpha",
+        "family_size",
+    )
+    # Fixed-horizon Bonferroni corrects each interval without a separate selection verdict.
+    family_procedure = row.get("family_procedure")
+    inference = row.get("inference", "fixed")
+    interval_correction = (
+        not _is_missing(family_procedure)
+        and family_procedure == "bonferroni"
+        and not _is_missing(inference)
+        and inference == "fixed"
+    )
+    family_applies = not _is_missing(row.get("discovery")) or (
+        not interval_correction and any(not _is_missing(row.get(field)) for field in family_fields)
+    )
+    sampling_available = row.get("sampling_available")
+    if (
+        (not _is_missing(sampling_available) and not bool(sampling_available))
+        or not _is_missing(row.get("failure_code"))
+        or not _decision_available(row)
+    ):
+        return "neutral", "Unavailable"
+
+    if family_applies:
+        selected = row.get("discovery")
+        if _is_missing(selected):
+            return "neutral", "Unavailable"
+        if not selected:
+            return "inconclusive", "Inconclusive"
+    elif _is_missing(row.get("stat_sig")):
+        return "neutral", "Unavailable"
+    elif not bool(row.get("stat_sig")):
+        return "inconclusive", "Inconclusive"
+
+    decision_scale = row.get("decision_scale")
+    relative_set = row.get("relative_confidence_set")
+    sequential_status = row.get("sequential_status")
+    relative_disconnected = (
+        relative_set is not None
+        and not _is_missing(relative_set)
+        and relative_set.geometry == "disconnected"
+    )
+    sequential_disconnected = (
+        not _is_missing(sequential_status) and sequential_status == "disconnected"
+    )
+    if (_is_missing(decision_scale) or decision_scale != "absolute") and (
+        relative_disconnected or sequential_disconnected
+    ):
+        return "detected", "Difference detected"
+
+    preferred = row.get("preferred_direction")
+    if _is_missing(preferred) or preferred not in ("increase", "decrease"):
+        return "detected", "Difference detected"
+
+    favorable_alternative = "greater" if preferred == "increase" else "less"
+    alternative = row.get("alternative", "two-sided")
+    if _is_missing(alternative):
+        alternative = "two-sided"
+
+    decision_margin = row.get("null_abs")
+    if _is_missing(decision_margin):
+        decision_margin = row.get("null_lift", 0.0)
+    role = row.get("role")
+    is_guardrail = not _is_missing(role) and role == "guardrail"
+    if alternative == favorable_alternative and (
+        is_guardrail
+        or (
+            not _is_missing(decision_margin)
+            and (
+                cast(float, decision_margin) < 0.0
+                if preferred == "increase"
+                else cast(float, decision_margin) > 0.0
+            )
+        )
+    ):
+        return "favorable", "Guardrail passed"
+
+    rejection_side = row.get("residual_side")
+    if not _is_missing(rejection_side) and rejection_side in ("greater", "less"):
+        is_favorable = rejection_side == favorable_alternative
+    elif alternative in ("greater", "less"):
+        is_favorable = alternative == favorable_alternative
+    else:
+        value_scale = row.get("value_scale")
+        sidecar = (_is_missing(value_scale) or value_scale != "absolute") and (
+            (not _is_missing(decision_scale) and decision_scale == "absolute")
+            or not _is_missing(row.get("null_abs"))
+        )
+        null = decision_margin
+        effect = row.get("abs_diff") if sidecar else row.get("lift")
+        lower = row.get("abs_lb") if sidecar else row.get("lower")
+        higher = row.get("abs_ub") if sidecar else row.get("higher")
+        null = 0.0 if _is_missing(null) else cast(float, null)
+        if not _is_missing(lower) and cast(float, lower) > null:
+            is_favorable = preferred == "increase"
+        elif not _is_missing(higher) and cast(float, higher) < null:
+            is_favorable = preferred == "decrease"
+        elif not _is_missing(effect) and effect != null:
+            is_favorable = (cast(float, effect) > null) == (preferred == "increase")
+        else:
+            return "detected", "Difference detected"
+
+    if not _is_missing(decision_margin) and decision_margin != 0.0:
+        above = is_favorable == (preferred == "increase")
+        return (
+            "favorable" if is_favorable else "unfavorable",
+            "Above threshold" if above else "Below threshold",
+        )
+
+    return (
+        ("favorable", "Improvement detected")
+        if is_favorable
+        else ("unfavorable", "Decline detected")
+    )
+
+
+def _result_color_role(
+    tone: _ResultTone,
+) -> Literal["favorable", "unfavorable", "inconclusive", "neutral"]:
+    """Map result semantics onto the plot theme's existing color roles."""
+    if tone == "detected":
+        return "neutral"
+    if tone == "neutral":
+        return "inconclusive"
+    return tone
+
+
 def _decision_available(row: Mapping[str, Any]) -> bool:
     """Distinguish a non-rejecting confidence procedure from unavailable inference.
 
@@ -1361,22 +1290,27 @@ def _decision_available(row: Mapping[str, Any]) -> bool:
     status = row.get("sequential_status")
     if not _is_missing(status):
         return status in DECIDABLE_SEQUENTIAL_STATUSES
-    if row.get("stat_sig"):
+    stat_sig = row.get("stat_sig")
+    if not _is_missing(stat_sig) and bool(stat_sig):
         return True
     absolute = not _is_missing(row.get("null_abs"))
     region = row.get("confidence_set")
+    value_scale = row.get("value_scale")
     if region is not None and not _is_missing(region):
         interval = (
-            region.additive if absolute or row.get("value_scale") == "absolute" else region.relative
+            region.additive
+            if absolute or (not _is_missing(value_scale) and value_scale == "absolute")
+            else region.relative
         )
         return all(endpoint.status != "undefined" for endpoint in (interval.lower, interval.upper))
     if absolute:
         lower = not _is_missing(row.get("abs_lb"))
         higher = not _is_missing(row.get("abs_ub"))
+        alternative = row.get("alternative")
         return (
             (lower and higher)
-            or (lower and row.get("alternative") == "greater")
-            or (higher and row.get("alternative") == "less")
+            or (lower and not _is_missing(alternative) and alternative == "greater")
+            or (higher and not _is_missing(alternative) and alternative == "less")
         )
     relative = row.get("relative_confidence_set")
     if relative is not None and not _is_missing(relative):
@@ -1385,24 +1319,12 @@ def _decision_available(row: Mapping[str, Any]) -> bool:
         return True
     lower = not _is_missing(row.get("lower"))
     higher = not _is_missing(row.get("higher"))
+    open_side = row.get("open_side")
     return (
         (lower and higher)
-        or (lower and row.get("open_side") == "upper")
-        or (higher and row.get("open_side") == "lower")
+        or (lower and not _is_missing(open_side) and open_side == "upper")
+        or (higher and not _is_missing(open_side) and open_side == "lower")
     )
-
-
-def _format_coverage(level: float, alpha: float | None = None) -> str:
-    """Format a retained coverage level without hiding a rounded-away error budget."""
-    percent = level * 100
-    text = f"{percent:.2f}".rstrip("0").rstrip(".") + "%"
-    if 0 < level < 1 and text in ("0%", "100%"):
-        text = f"{percent:.15g}%"
-        if text in ("0%", "100%"):
-            text = f"{float(percent)!r}%"
-    if level == 1 and alpha is not None and alpha > 0:
-        text += f" (α={alpha!r})"
-    return text
 
 
 def _retained_coverage_alpha(estimate: Any) -> float | None:
@@ -1478,13 +1400,42 @@ def _format_confidence_set(
     text = " ∪ ".join(interval_text(number(lower), number(upper)) for lower, upper in intervals)
     rendered = text if geometry == "bounded" else f"{geometry.replace('_', '-')}: {text}"
     if not _is_missing(relative):
-        coverage = _format_coverage(math.fsum((1.0, -relative.alpha)), relative.alpha)
+        coverage = format_coverage(math.fsum((1.0, -relative.alpha)), relative.alpha)
         return f"{coverage} {rendered}"
     if not _is_missing(binomial):
-        return f"{_format_coverage(binomial.level, binomial.alpha)} {rendered}"
+        level, alpha = binomial.level, binomial.alpha
+        if geometry in ("lower_bound", "upper_bound"):
+            alpha = binomial.decision_alpha
+            level = math.fsum((1.0, -alpha))
+        return f"{format_coverage(level, alpha)} {rendered}"
     if not _is_missing(value):
-        return f"{_format_coverage(value.level, value.alpha)} {rendered}"
+        return f"{format_coverage(value.level, value.alpha)} {rendered}"
     return rendered
+
+
+def _display_confidence_set(row: Mapping[str, Any]) -> str:
+    """Describe a displayable guardrail ray while retaining other confidence geometries."""
+    scale = str(row.get("value_scale", "relative"))
+    retained = _format_confidence_set(
+        row.get("confidence_set"),
+        relative=row.get("relative_confidence_set"),
+        binomial=row.get("binomial_set"),
+        unavailable=row.get("relative_unavailable_reason"),
+        scale=scale,
+        lift=row.get("lift"),
+    )
+    interval = _readout_interval(row)
+    if not retained or not interval.one_sided or interval.level is None:
+        return retained
+
+    def number(endpoint: float | None) -> str | None:
+        if endpoint is None:
+            return None
+        return f"{endpoint:+.1%}" if scale == "relative" else f"{endpoint:+,.4g}"
+
+    coverage = format_coverage(interval.level, interval.alpha)
+    bounds = interval_text(number(interval.lower), number(interval.upper))
+    return f"{coverage} one-sided: {bounds}"
 
 
 # Role-based group disclosure - concise section labels keyed by declared-plan
@@ -1644,18 +1595,61 @@ def _prepare_readout_frame(
     """Apply plot labels and route intervals/values to renderable columns."""
     import narwhals as nw
 
+    outcomes = [_result_presentation(row) for row in frame.iter_rows(named=True)]
+    frame = frame.with_columns(
+        *(
+            nw.new_series(
+                name,
+                [outcome[index] for outcome in outcomes],
+                dtype=nw.String,
+                backend=nw.get_native_namespace(frame),
+            )
+            for index, name in enumerate(("__result_tone", "__result_label"))
+        )
+    )
+    intervals = [_readout_interval(row) for row in frame.iter_rows(named=True)]
+    additive = [_readout_interval(row, absolute=True) for row in frame.iter_rows(named=True)]
+    backend = nw.get_native_namespace(frame)
+    frame = frame.with_columns(
+        *(
+            nw.new_series(
+                name,
+                [getattr(interval, attribute) for interval in values],
+                dtype=dtype,
+                backend=backend,
+            )
+            for name, attribute, values, dtype in (
+                ("__interval_lower", "lower", intervals, nw.Float64),
+                ("__interval_higher", "upper", intervals, nw.Float64),
+                ("__interval_level", "level", intervals, nw.Float64),
+                ("__interval_alpha", "alpha", intervals, nw.Float64),
+                ("__interval_one_sided", "one_sided", intervals, nw.Boolean),
+                ("__abs_interval_lower", "lower", additive, nw.Float64),
+                ("__abs_interval_higher", "upper", additive, nw.Float64),
+                ("__abs_interval_level", "level", additive, nw.Float64),
+                ("__abs_interval_alpha", "alpha", additive, nw.Float64),
+                ("__abs_interval_one_sided", "one_sided", additive, nw.Boolean),
+            )
+        )
+    )
     frame = frame.with_columns(
         nw.new_series("metric", labels, backend=nw.get_native_namespace(frame))
     )
     unplottable_intervals = frozenset(
         index
-        for index, (region, relative, scale) in enumerate(
+        for index, (region, relative, sequential_status, decision_scale, scale) in enumerate(
             zip(
                 frame["confidence_set"].to_list()
                 if "confidence_set" in frame.columns
                 else [None] * len(frame),
                 frame["relative_confidence_set"].to_list()
                 if "relative_confidence_set" in frame.columns
+                else [None] * len(frame),
+                frame["sequential_status"].to_list()
+                if "sequential_status" in frame.columns
+                else [None] * len(frame),
+                frame["decision_scale"].to_list()
+                if "decision_scale" in frame.columns
                 else [None] * len(frame),
                 scales,
                 strict=True,
@@ -1665,6 +1659,11 @@ def _prepare_readout_frame(
             relative is not None
             and not _is_missing(relative)
             and relative.geometry == "disconnected"
+        )
+        or (
+            (_is_missing(decision_scale) or decision_scale != "absolute")
+            and not _is_missing(sequential_status)
+            and sequential_status == "disconnected"
         )
         or (
             region is not None
@@ -1690,7 +1689,7 @@ def _prepare_readout_frame(
                     ],
                     backend=nw.get_native_namespace(frame),
                 )
-                for column in ("lower", "higher")
+                for column in ("__interval_lower", "__interval_higher")
             )
         )
 
@@ -1700,7 +1699,7 @@ def _prepare_readout_frame(
         is_absolute = [scale == "absolute" for scale in scales]
         backend = nw.get_native_namespace(frame)
         routed = []
-        for column in ("lift", "lower", "higher"):
+        for column in ("lift", "__interval_lower", "__interval_higher"):
             values = frame[column].to_list()
             routed.append(
                 nw.new_series(
@@ -1732,6 +1731,7 @@ def _prepare_readout_metadata(
     *,
     advisory: bool,
     show_interval_level: bool,
+    result_markers: Sequence[str],
 ) -> tuple[Any, dict[str, list[str]], str, list[str] | None]:
     """Add display-only metadata columns and return their render selectors."""
     import narwhals as nw
@@ -1740,14 +1740,16 @@ def _prepare_readout_metadata(
         frame,
         advisory=advisory,
         show_interval_level=show_interval_level,
+        result_markers=result_markers,
     )
     if display_columns:
         display_backend = nw.get_native_namespace(frame)
         frame = frame.with_columns(
+            nw.new_series("__result_markers", list(result_markers), backend=display_backend),
             *(
                 nw.new_series(f"__display_{index}", values, backend=display_backend)
                 for index, values in enumerate(display_columns.values())
-            )
+            ),
         )
 
     shifted_null_lift = "__shifted_null_lift"
@@ -1786,47 +1788,75 @@ class _EnvelopeReadoutRows(list):
         self.cells = tuple(cells)
 
 
-def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, ...]]:
-    """Convert row, frame, or scoped collection input to the render frame."""
+def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, list[dict[str, Any]]]:
+    """Keep source-qualified evidence separate from the plot's display labels."""
     metadata = getattr(data, "metadata", None)
-    scope_notes = ()
+    interpretation = None
     if isinstance(data, _EnvelopeReadoutRows):
         if metadata is not None:
             interpretation = interpret_readout(data, metadata)
-            scope_notes = render_readout_qualifications(interpretation)
         row_data = estimates_to_readout(list(data))
         for projected, estimate in zip(row_data, data, strict=True):
-            if metadata is not None:
-                projected["view_partial"] = metadata.partial
+            if interpretation is not None:
+                projected["view_partial"] = interpretation.partial
                 projected.update(
                     readout_evidence_columns(
                         interpretation, estimate, source_snapshot_id=estimate.source_snapshot_id
                     )
                 )
         data = row_data
-    else:
-        is_result_collection = hasattr(data, "metadata") and callable(
-            getattr(data, "to_frame", None)
-        )
-        if is_result_collection:
-            if metadata is not None:
-                scope_notes = render_readout_qualifications(interpret_readout(data, metadata))
-            estimates = data
-            data = estimates_to_readout(estimates)
+    elif hasattr(data, "metadata") and callable(getattr(data, "to_frame", None)):
+        if metadata is not None:
+            interpretation = interpret_readout(data, metadata)
+        data = estimates_to_readout(data)
     frame = (
         nw.from_native(pd.DataFrame(data), eager_only=True)
         if isinstance(data, list)
         else nw.from_native(data, eager_only=True)
     )
+    evidence_rows = [
+        {key: None if _is_missing(value) else value for key, value in row.items()}
+        for row in frame.iter_rows(named=True)
+    ]
+    for row in evidence_rows:
+        qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
+        recorded = row.get("numerical_qualification")
+        if qualification and (_is_missing(recorded) or recorded == ""):
+            row["numerical_qualification"] = qualification
+    if interpretation is not None:
+        visible_groups = {
+            (
+                row.get("source_snapshot_id"),
+                row.get("analysis_population"),
+                row.get("control_group"),
+                row.get("treatment_group"),
+            )
+            for row in evidence_rows
+        }
+        for group in interpretation.groups:
+            identity = (
+                group.source_snapshot_id,
+                group.population,
+                group.control_group,
+                group.treatment_group,
+            )
+            if identity not in visible_groups and group.source_cells:
+                evidence_rows.append(
+                    readout_evidence_columns(
+                        interpretation,
+                        group.source_cells[0].key,
+                        source_snapshot_id=group.source_snapshot_id,
+                    )
+                )
+        for row in evidence_rows:
+            row["independently_captured"] = interpretation.independently_captured
     if not len(frame):
         for name in ("metric", "method", "lift", "lower", "higher", "stat_sig", "group_id"):
             if name not in frame.columns:
                 frame = frame.with_columns(
                     nw.new_series(name, [], dtype=nw.String, backend=nw.get_native_namespace(frame))
                 )
-        if not scope_notes:
-            scope_notes = ("Scope and integrity unknown.",)
-    return frame, scope_notes
+    return frame, evidence_rows
 
 
 def _readout_envelope_rows(data: Any) -> Any:
@@ -1840,6 +1870,77 @@ def _readout_envelope_rows(data: Any) -> Any:
     if not isinstance(data, envelope_module.AnalysisEnvelope):
         return data
     return _EnvelopeReadoutRows(envelope_module.result_rows(data.cells), data.metadata, data.cells)
+
+
+def _color_result_columns(table: Any, frame: Any) -> None:
+    """Keep forest and trend colors aligned with each row's displayed result."""
+    import coeftable as ct
+
+    result_tones = frame["__result_tone"].to_list()
+
+    def colored(column: Any) -> Any:
+        base = type(column)
+
+        class ResultColoredColumn(base):
+            def cell(self, ctx: Any) -> str:
+                tone = result_tones[ctx.index]
+
+                def color_rule(*_: Any) -> str:
+                    return _result_color_role(tone)
+
+                return super().cell(replace(ctx, color_rule=color_rule))
+
+        return ResultColoredColumn(
+            **{field.name: getattr(column, field.name) for field in fields(column)}
+        )
+
+    table.columns = tuple(
+        colored(column) if isinstance(column, (ct.Forest, ct.Sparkline)) else column
+        for column in table.columns
+    )
+
+
+@cache
+def _readout_coef_table_type(base_type: type[Any]) -> type[Any]:
+    class ReadoutCoefTable(base_type):
+        def __init__(self, data: Any, *, source_notes: Sequence[str] = (), **settings: Any):
+            self._source_notes = tuple(source_notes)
+            super().__init__(data, **settings)
+
+        def _with(self, **changes: Any) -> Any:
+            base = super()._with(**changes)
+            return ReadoutCoefTable(
+                base.data,
+                rows=base.rows,
+                nest=base.nest,
+                groups=base.groups,
+                split_columns=base.split_columns,
+                columns=base.columns,
+                direction=base.direction,
+                color_rule=base.color_rule,
+                theme=base.theme,
+                title=base.title,
+                subtitle=base.subtitle,
+                sort_rows=base.sort_rows,
+                collapsible_groups=base.collapsible_groups,
+                source_notes=self._source_notes,
+            )
+
+        def gt(self) -> Any:
+            from great_tables import html as gt_html
+            from great_tables import loc, style
+
+            rendered = super().gt()
+            for source_note in self._source_notes:
+                literal_note = source_note.replace("{", "&#123;").replace("}", "&#125;")
+                rendered = rendered.tab_source_note(gt_html(literal_note))
+            if self._source_notes:
+                rendered = rendered.tab_options(
+                    source_notes_background_color="transparent"
+                ).tab_style(style.text(color=self.theme.text), locations=loc.source_notes())
+            return rendered
+
+    return ReadoutCoefTable
 
 
 # Keep trend labels aligned with ``_resolve_trend_frame``. Row dicts may hold any cell type
@@ -1878,16 +1979,12 @@ def readout_table[V](
     declared favorability. ``estimates_to_readout`` emits explicitly
     posterior-qualified values which are rendered only when
     ``advisory=True``; a shifted ``null_lift`` also draws a dashed forest
-    reference line. Row ``note`` values and posterior refusal reasons are
-    rendered as qualifications; ``excluded``, ``low_reliability``, and
-    ``inference`` remain available in the input frame. A ``run()`` result or a
-    saved result envelope renders its cells with the run's scope and integrity
-    qualifications; a live confidence-set row renders as ``render`` shows it.
-
-    For ``binomial_set`` rows, the table adds a ``Numerical qualification``
-    column. Its values identify ``scipy_special_function_error_model_conditional_v1``
-    (an enclosure conditional on the deployed SciPy/Boost error model) or
-    ``legacy_unrecorded_v1`` (no arithmetic qualification claim in an older result).
+    reference line. Row notes and reliability/numerical caveats are shown
+    as attributed source notes, with matching markers in ``Result``; their
+    exact source content remains available in the existing evidence details.
+    A ``run()`` result or saved result envelope renders its cells with the run's
+    scope and integrity qualifications; a live confidence-set row renders as
+    ``render`` shows it.
 
     A ``role`` column with at least one non-``None`` value sections the
     table by concise role labels (coeftable's ``groups=`` +
@@ -1932,10 +2029,18 @@ def readout_table[V](
     import coeftable as ct
     import narwhals as nw
     import pandas as pd
+    from coeftable.theme import DEFAULT
 
     data = _readout_envelope_rows(data)
 
-    frame, scope_header = _readout_input_frame(data, nw, pd)
+    frame, evidence_rows = _readout_input_frame(data, nw, pd)
+    multiplicity_markers = _multiplicity_markers(
+        [row.get("multiplicity_status") for row in evidence_rows]
+    )
+    caveat_rows = frame.iter_rows(named=True)
+    result_markers, caveat_source_notes = _number_readout_caveats(
+        caveat_rows, tuple(multiplicity_markers.values())
+    )
     nest_by = _default_nest_by(frame) if nest_by is None else nest_by
     if nest_by == "segment" and not len(frame) and "segment" not in frame.columns:
         frame = frame.with_columns(
@@ -1963,32 +2068,50 @@ def readout_table[V](
         scales,
         advisory=advisory,
         show_interval_level=show_interval_level,
+        result_markers=result_markers,
     )
 
-    coeftable_kwargs: dict[str, Any] = {}
-    if theme is not None:
-        coeftable_kwargs["theme"] = theme
+    additive_values = _column_values(frame, "abs_diff") or []
+    has_additive = any(not _is_missing(value) for value in additive_values)
+    if has_additive and ("abs_lb" not in frame.columns or "abs_ub" not in frame.columns):
+        frame = frame.with_columns(
+            *(
+                nw.new_series(
+                    column,
+                    [None] * len(frame),
+                    dtype=nw.Float64,
+                    backend=nw.get_native_namespace(frame),
+                )
+                for column in ("abs_lb", "abs_ub")
+                if column not in frame.columns
+            )
+        )
+
+    coeftable_kwargs: dict[str, Any] = {
+        "theme": theme if theme is not None else replace(DEFAULT, neutral="#386ba8")
+    }
     if group_column is not None:
         coeftable_kwargs["groups"] = "__group_disclosure"
         coeftable_kwargs["collapsible_groups"] = True
 
-    table = ct.CoefTable(
+    table = _readout_coef_table_type(ct.CoefTable)(
         frame.to_native(),
         rows="metric",
         nest=nest_column,
         split_columns=split_columns,
+        source_notes=caveat_source_notes,
         **coeftable_kwargs,
     ).estimate(
         "Lift %",
         "lift",
-        ci=("lower", "higher"),
+        ci=("__interval_lower", "__interval_higher"),
         fmt=ct.Percent(scale=100.0, decimals=1),
     )
     if has_absolute_rows:
         table = table.estimate(
             "Lift (absolute)",
             "lift_absolute",
-            ci=("lower_absolute", "higher_absolute"),
+            ci=("__interval_lower_absolute", "__interval_higher_absolute"),
             fmt=ct.Number(decimals=2, signed=True),
         )
     forest_type = ct.Forest
@@ -2020,23 +2143,51 @@ def readout_table[V](
     for index, label in enumerate(display_columns):
         table = table.passthrough(label, f"__display_{index}")
 
-    # Colors rows by the metric's declared favorability (e.g. a latency drop
-    # is a win); keys are the final row labels, so relabeled estimand rows resolve too.
-    if "preferred_direction" in frame.columns:
-        direction_for_declaration: dict[str, Direction] = {
-            "increase": "higher_is_better",
-            "decrease": "lower_is_better",
-            "neutral": "neutral",
-        }
-        directions: dict[str, Direction] = {
-            str(label): direction_for_declaration[declared]
-            for label, declared in zip(
-                frame["metric"].to_list(), frame["preferred_direction"].to_list(), strict=True
-            )
-            if isinstance(declared, str) and declared in direction_for_declaration
-        }
-        if directions:
-            table = table.with_direction(directions)
+    if has_additive:
+        additive_lower = frame["__abs_interval_lower"].to_list()
+        additive_upper = frame["__abs_interval_higher"].to_list()
+        additive_level, additive_alpha, additive_one_sided = (
+            frame["__abs_interval_level"].to_list(),
+            frame["__abs_interval_alpha"].to_list(),
+            frame["__abs_interval_one_sided"].to_list(),
+        )
+        additive_available = _column_values(frame, "abs_interval_available") or [False] * len(frame)
+
+        class AdditiveEffect(ct.Estimate):
+            def cell(self, ctx: Any) -> str:
+                if _is_missing(additive_values[ctx.index]):
+                    return ""
+                rendered = super().cell(ctx)
+                if additive_one_sided[ctx.index]:
+                    coverage = format_coverage(additive_level[ctx.index], additive_alpha[ctx.index])
+                    rendered += (
+                        f'<br><span style="font-size:{ctx.theme.ci_size};'
+                        f'color:{ctx.theme.muted}">{coverage} one-sided</span>'
+                    )
+                if _is_missing(additive_lower[ctx.index]) and _is_missing(
+                    additive_upper[ctx.index]
+                ):
+                    available = additive_available[ctx.index]
+                    detail = (
+                        format_interval(None, None)
+                        if not _is_missing(available) and bool(available)
+                        else "Bounds unavailable"
+                    )
+                    return (
+                        f'{rendered}<br><span style="font-size:{ctx.theme.ci_size};'
+                        f'color:{ctx.theme.muted}">{detail}</span>'
+                    )
+                return rendered
+
+        table.columns = (
+            *table.columns,
+            AdditiveEffect(
+                "Additive effect",
+                "abs_diff",
+                ci=("__abs_interval_lower", "__abs_interval_higher"),
+                fmt=lambda value: format_effect(value, relative=False, digits=3),
+            ),
+        )
 
     if trend is not None:
         trend_frame = _resolve_trend_frame(
@@ -2058,40 +2209,25 @@ def readout_table[V](
             max_ylim=trend_max_ylim,
             axis_fmt=ct.DateAxis(),
         )
+    _color_result_columns(table, frame)
 
-    notes = (
-        _readout_metadata_notes(frame) + _readout_evidence_notes(frame) if not scope_header else []
-    )
-    notes.extend(scope_header)
     level_note = _interval_level_note(
         frame,
         show_interval_level=show_interval_level,
         has_confidence_sets="Confidence set" in display_columns,
     )
-    if level_note is not None:
-        notes.append(level_note)
-    if title and notes:
-        from great_tables import html as gt_html
 
-        items = ([subtitle] if subtitle else []) + notes
-        body = "".join(f"<li>{escape_html(str(item))}</li>" for item in items)
-        width_style = (
-            '<style>th[id="Interval-interpretation"]{width:18em;min-width:18em}</style>'
-            if "Interval interpretation" in display_columns
-            else ""
-        )
-        subtitle = cast(
-            Any,
-            gt_html(
-                width_style
-                + '<ul style="margin:0;padding-left:1.25em;text-align:left;line-height:1.35">'
-                + f"{body}</ul>"
-            ),
-        )
-    elif not title and (notes or subtitle):
-        title = " • ".join(([subtitle] if subtitle else []) + notes)
-        subtitle = ""
-    return table.header(title, subtitle)
+    from great_tables import html as gt_html
+
+    evidence = readout_header(
+        evidence_rows,
+        subtitle=subtitle,
+        level_note=level_note,
+        empty=not len(frame),
+        markers=multiplicity_markers,
+    )
+    disclosure = cast(Any, gt_html(evidence))
+    return table.header(title or disclosure, disclosure if title else "")
 
 
 def trend_table[V](

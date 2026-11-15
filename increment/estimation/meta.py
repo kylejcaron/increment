@@ -42,7 +42,7 @@ _REFUSALS = refusals(
         "estimation.meta.est_contains_non": "est contains non-finite values",
         "estimation.meta.var_finite_strictly": "var must be finite and strictly positive for every segment",
         "estimation.meta.tau_prior_scale": "tau_prior_scale must be finite and > 0, got {tau_prior_scale}",
-        "estimation.meta.posterior_integration_unresolved": "the tau posterior (k={k}, tau_prior_scale={tau_prior_scale:.6g}) could not be integrated to the required accuracy (support tau in [{support[0]:.6g}, {support[1]:.6g}], estimated error {integration_error:.3g} times the tolerance, budget {node_budget} log-density evaluations) -- refusing rather than reporting an unconverged posterior",
+        "estimation.meta.posterior_integration_unresolved": "the tau posterior (k={k}, tau_prior_scale={tau_prior_scale:.6g}) could not be integrated to the required accuracy (support tau in [{support[0]:.6g}, {support[1]:.6g}], estimated error {integration_error:.3g} times the tolerance, budget {node_budget} log-density evaluations); refusing rather than reporting an unconverged posterior",
         "estimation.meta.alpha_strictly_between": "alpha must be strictly between 0 and 1, got {alpha}",
         "estimation.meta.alpha_too_small": "alpha is too small: alpha / 2 underflows floating-point precision",
         "estimation.meta.var_a_finite": "var_a must be finite and > 0, got {var_a}",
@@ -53,7 +53,7 @@ _REFUSALS = refusals(
         "estimation.meta.marginalized_segment.finite": "{name} must be finite, got {arr!r}",
         "estimation.meta.marginalized_segment.lb_exceed_ub": "lb must not exceed ub for every segment, got lb={lb!r} ub={ub!r}",
         "estimation.meta.tau2_finite": "tau2 must be finite and >= 0, got {tau2}",
-        "estimation.meta.hksj_pooled_variance": "HKSJ pooled variance is degenerate (segment estimates are identical or numerically indistinguishable given their weights): the resulting interval would have zero width and is not meaningful -- check for duplicated segments",
+        "estimation.meta.hksj_pooled_variance": "HKSJ pooled variance is degenerate (segment estimates are identical or numerically indistinguishable given their weights): the resulting interval would have zero width and is not meaningful; check for duplicated segments",
     },
 )
 _raise = raiser(_REFUSALS)

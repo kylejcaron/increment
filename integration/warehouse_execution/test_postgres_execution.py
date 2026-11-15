@@ -26,6 +26,7 @@ from integration.warehouse_execution._suite import (
     run_artifact_sequential_identity_probe,
     run_materialized_cache_correction_probe,
     run_ratio_metric_probe,
+    run_summary_sql_probe,
 )
 from tests._override_warnings import allow_declared_overrides
 
@@ -34,6 +35,10 @@ pytestmark = pytest.mark.warehouse_postgres
 
 def test_ratio_metric_lift(postgres_con):
     run_ratio_metric_probe(postgres_con, dialect="postgres")
+
+
+def test_summary_sql_preview(postgres_con):
+    run_summary_sql_probe(postgres_con, dialect="postgres")
 
 
 @pytest.fixture

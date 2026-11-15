@@ -633,7 +633,7 @@ def _require_nonblank_source_sql(kind: str, name: str, sql: str) -> None:
     if not sql.strip():
         _definition_refusal(
             "definition.source.sql_empty",
-            f"{kind} source '{name}' has empty SQL -- declare a real query",
+            f"{kind} source '{name}' has empty SQL; declare a real query",
             source_kind=kind,
             source_name=name,
             route="supply a read-only SELECT or WITH query",
@@ -926,7 +926,7 @@ class FactSource(AliasMixin, _Base):
             _definition_refusal(
                 "definition.fact.source_declares_propert",
                 f"fact source '{self.name}' declares propert{'y' if len(bad_reserved) == 1 else 'ies'} "
-                f"named {bad_reserved}, which the builders reserve -- rename the "
+                f"named {bad_reserved}, which the builders reserve; rename the "
                 f"propert{'y' if len(bad_reserved) == 1 else 'ies'}",
                 name=self.name,
                 bad_reserved=bad_reserved,
@@ -940,7 +940,7 @@ class FactSource(AliasMixin, _Base):
             _definition_refusal(
                 "definition.fact.source_renames_propert",
                 f"fact source '{self.name}' renames propert{'y' if len(clobbered_dst) == 1 else 'ies'} "
-                f"onto its own fact value column(s) {clobbered_dst} -- the fact's value "
+                f"onto its own fact value column(s) {clobbered_dst}; the fact's value "
                 f"would be overwritten",
                 name=self.name,
                 clobbered_dst=clobbered_dst,
@@ -950,7 +950,7 @@ class FactSource(AliasMixin, _Base):
             _definition_refusal(
                 "definition.fact.source_renames_its",
                 f"fact source '{self.name}' renames its own fact value column(s) "
-                f"{renamed_away} away to a property name -- the fact's value would be lost",
+                f"{renamed_away} away to a property name; the fact's value would be lost",
                 name=self.name,
                 renamed_away=renamed_away,
             )
@@ -965,7 +965,7 @@ class FactSource(AliasMixin, _Base):
             _definition_refusal(
                 "definition.fact.source_points_propert",
                 f"fact source '{self.name}' points propert{'y' if len(stolen) == 1 else 'ies'} "
-                f"at column(s) {stolen}, which the builders rename onto ts -- the "
+                f"at column(s) {stolen}, which the builders rename onto ts; the "
                 f"timestamp would be renamed away and the property would be "
                 f"unavailable; expose a copy under a different name in the source SQL",
                 name=self.name,
@@ -1079,7 +1079,7 @@ class Exposure(AliasMixin, _Base):
         if self.sql is not None and not self.sql.strip():
             _definition_refusal(
                 "definition.exposure.sql_set_but",
-                "Exposure.sql is set but empty -- declare a real query, or "
+                "Exposure.sql is set but empty; declare a real query, or "
                 "use `fact` for a fact-based exposure",
             )
         if self.sql is not None and self.filters:
@@ -1156,7 +1156,7 @@ def resolve_margin(
         _definition_refusal(
             "definition.metric_margin_requires_direction",
             f"metric '{metric_name}': margin={margin} requires preferred_direction "
-            f"to be explicitly set (increase|decrease) -- a defaulted direction must "
+            f"to be explicitly set (increase|decrease); a defaulted direction must "
             f"never silently pick a guardrail's adverse side",
             metric_name=metric_name,
             margin=margin,
@@ -1165,7 +1165,7 @@ def resolve_margin(
         _definition_refusal(
             "definition.metric_margin_non",
             f"metric '{metric_name}': margin={margin} requires a non-neutral "
-            f"preferred_direction (increase|decrease) -- 'neutral' has no adverse side",
+            f"preferred_direction (increase|decrease); 'neutral' has no adverse side",
             metric_name=metric_name,
             margin=margin,
         )
@@ -1177,7 +1177,7 @@ def resolve_margin(
                 "definition.metric_margin_implies_unrepresentable_null_lift",
                 f"metric '{metric_name}': margin={margin} with "
                 f"preferred_direction='increase' implies null_lift={-margin} "
-                "<= -1 -- a >=100% relative loss has no log-scale "
+                "<= -1; a >=100% relative loss has no log-scale "
                 "representation",
                 metric_name=metric_name,
                 margin=margin,
@@ -1204,7 +1204,7 @@ def resolve_margin_abs(
         _definition_refusal(
             "definition.metric_margin_abs_requires_direction",
             f"metric '{metric_name}': margin_abs={margin_abs} requires preferred_direction "
-            f"to be explicitly set (increase|decrease) -- a defaulted direction must "
+            f"to be explicitly set (increase|decrease); a defaulted direction must "
             f"never silently pick a guardrail's adverse side",
             metric_name=metric_name,
             margin_abs=margin_abs,
@@ -1213,7 +1213,7 @@ def resolve_margin_abs(
         _definition_refusal(
             "definition.metric_margin_abs_requires_non_neutral_direction",
             f"metric '{metric_name}': margin_abs={margin_abs} requires a non-neutral "
-            f"preferred_direction (increase|decrease) -- 'neutral' has no adverse side",
+            f"preferred_direction (increase|decrease); 'neutral' has no adverse side",
             metric_name=metric_name,
             margin_abs=margin_abs,
         )
@@ -1271,7 +1271,7 @@ class MetricBase(MetricIdentity):
             _definition_refusal(
                 "definition.metric_base.margin_margin_abs",
                 f"metric {self.name!r}: margin and margin_abs are mutually "
-                "exclusive -- one guardrail, one scale",
+                "exclusive; one guardrail, one scale",
                 name=self.name,
             )
         return self
@@ -1311,7 +1311,7 @@ class MetricBase(MetricIdentity):
             _definition_refusal(
                 "definition.metric_base.rollout_cost_preferred",
                 f"metric {self.name!r}: rollout_cost requires preferred_direction="
-                "'increase' to be explicitly declared -- the rollout selection rule "
+                "'increase' to be explicitly declared; the rollout selection rule "
                 "keeps segments whose lift EXCEEDS the cost, which presumes larger "
                 "is better; a decrease-preferred rollout is not supported",
                 name=self.name,
@@ -1436,7 +1436,7 @@ def _validate_retention_declaration(
         _definition_refusal(
             "definition.retention.metric_window_days",
             f"retention metric '{name}': window_days is not a retention "
-            f"field -- the observation band, both edges, lives in threshold_days. "
+            f"field; the observation band, both edges, lives in threshold_days. "
             f"Declare threshold_days: [a, b] instead of threshold_days: a + "
             f"window_days: b.",
             name=name,
@@ -1447,7 +1447,7 @@ def _validate_retention_declaration(
             _definition_refusal(
                 "definition.retention.threshold_days_non_negative",
                 f"retention metric '{name}': threshold_days={band} must be "
-                f">= 0 -- days are counted from exposure (day 0)",
+                f">= 0; days are counted from exposure (day 0)",
                 name=name,
                 band=band,
             )
@@ -1457,7 +1457,7 @@ def _validate_retention_declaration(
         _definition_refusal(
             "definition.retention.threshold_days_lower_bound_non_negative",
             f"retention metric '{name}': threshold_days=[{a}, {b}] must have "
-            f"a >= 0 -- days are counted from exposure (day 0)",
+            f"a >= 0; days are counted from exposure (day 0)",
             name=name,
             a=a,
             b=b,
@@ -1466,7 +1466,7 @@ def _validate_retention_declaration(
         _definition_refusal(
             "definition.retention.threshold_days_upper_exceeds_lower",
             f"retention metric '{name}': threshold_days=[{a}, {b}] must have "
-            f"b > a -- the half-open observation band [a, b) would otherwise be "
+            f"b > a; the half-open observation band [a, b) would otherwise be "
             f"empty and every unit would score 0",
             name=name,
             a=a,
@@ -1547,7 +1547,7 @@ class RatioMetric(MetricBase):
             _definition_refusal(
                 "definition.ratio.metric_numerator_denominator",
                 f"ratio metric '{self.name}': numerator and denominator must "
-                "differ -- an identical measure always resolves to a ratio of 1",
+                "differ; an identical measure always resolves to a ratio of 1",
                 name=self.name,
             )
         return self
@@ -1568,7 +1568,7 @@ class TotalMetric(MetricIdentity, Measure):
             _definition_refusal(
                 "definition.total.metric_window_days",
                 f"total metric '{self.name}': window_days is meaningless for "
-                f"report-only metrics -- the calendar period is the window",
+                f"report-only metrics; the calendar period is the window",
                 name=self.name,
             )
         return self
@@ -1600,7 +1600,7 @@ class ActiveMetric(MetricBase, FactRef):
             _definition_refusal(
                 "definition.active.metric_window_days",
                 f"active metric '{self.name}': window_days is meaningless for "
-                f"report-only metrics -- the calendar period is the window",
+                f"report-only metrics; the calendar period is the window",
                 name=self.name,
             )
         return self
@@ -1657,7 +1657,7 @@ def resolve_null_and_alternative(
     if alternative not in ALTERNATIVE_VALUES:
         _definition_refusal(
             "definition.metric_unknown_alternative",
-            f"metric '{metric.name}': unknown alternative={alternative!r} -- must be "
+            f"metric '{metric.name}': unknown alternative={alternative!r}; must be "
             f'"two-sided", "greater", or "less". A typo here would silently discard '
             f"any margin-implied tail and forward the bogus string downstream.",
             name=metric.name,
@@ -1676,7 +1676,7 @@ def resolve_null_and_alternative(
             "definition.metric_both_relative",
             f"metric '{metric.name}': both a relative and an absolute null source "
             "resolve for this metric (null_lifts/margins/declared margin vs "
-            "margins_abs/declared margin_abs) -- one guardrail, one scale",
+            "margins_abs/declared margin_abs); one guardrail, one scale",
             name=metric.name,
         )
 
@@ -1745,7 +1745,7 @@ def _refuse_design_tuning_keys(mechanism: str, data: object, known: frozenset[st
         _definition_refusal(
             "definition.experiment.design_tuning_key_not_yaml",
             f"design: {{mechanism: {mechanism}, ...}} does not accept "
-            f"{present} from YAML -- statistical tuning keeps its "
+            f"{present} from YAML; statistical tuning keeps its "
             f"library default here; pass a full "
             f"Encouragement/Observational object as design= to "
             f"from_frame to override it",
@@ -2012,7 +2012,7 @@ class ExperimentMetric(_Base):
             _definition_refusal(
                 "definition.experiment.binding_margin_margin",
                 f"experiment binding for {self.metric!r}: margin and margin_abs are "
-                "mutually exclusive -- one guardrail, one scale",
+                "mutually exclusive; one guardrail, one scale",
                 metric=self.metric,
             )
         return self
@@ -2368,7 +2368,7 @@ class AnalysisPlan(_ExplicitOnlyFields, _Base):
                 joined = " and ".join(f"{f!r}" for f in distinct)
                 _definition_refusal(
                     "definition.analysis.appears_both_metric",
-                    f"{name!r} appears in both {joined} -- a metric may hold only "
+                    f"{name!r} appears in both {joined}; a metric may hold only "
                     "one role in the analysis plan",
                     name=name,
                     joined=joined,
@@ -2376,7 +2376,7 @@ class AnalysisPlan(_ExplicitOnlyFields, _Base):
             if len(fields) > 1:
                 _definition_refusal(
                     "definition.analysis.appears_more_once",
-                    f"{name!r} appears more than once in {distinct[0]!r} -- a metric "
+                    f"{name!r} appears more than once in {distinct[0]!r}; a metric "
                     "may hold only one role in the analysis plan",
                     name=name,
                     distinct=distinct[0],
@@ -2725,7 +2725,7 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
                     "definition.experiment.intervention_grain_without_cluster",
                     f"experiment '{self.name}': intervention_grain='cluster' declares a "
                     f"whole-cluster policy deployment, but no cluster= column is "
-                    f"declared -- there is no cluster grain to intervene on.",
+                    f"declared; there is no cluster grain to intervene on.",
                     name=self.name,
                 )
             return self
@@ -2733,7 +2733,7 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
             _definition_refusal(
                 "definition.experiment.cluster_names_same",
                 f"experiment '{self.name}': cluster '{self.cluster}' names the same "
-                f"column as unit -- when the randomization grain IS the analysis "
+                f"column as unit; when the randomization grain IS the analysis "
                 f"grain, declare unit alone; cluster= exists for a coarser "
                 f"randomization grain.",
                 name=self.name,
@@ -2743,7 +2743,7 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
             _definition_refusal(
                 "definition.experiment.cluster_combined_n",
                 f"experiment '{self.name}': cluster '{self.cluster}' cannot be "
-                f"combined with n_pre_periods={self.n_pre_periods} (CUPED) -- the "
+                f"combined with n_pre_periods={self.n_pre_periods} (CUPED); the "
                 f"clustered collapse carries no per-unit covariate moments, so the "
                 f"adjustment would be silently wrong. Drop cluster= or set "
                 f"n_pre_periods: 0.",
@@ -2774,7 +2774,7 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
                 "definition.experiment.timezone_aware_but",
                 f"experiment '{self.name}': {', '.join(aware)} "
                 f"{'is' if len(aware) == 1 else 'are'} timezone-aware but "
-                f"{', '.join(naive)} {'is' if len(naive) == 1 else 'are'} naive -- "
+                f"{', '.join(naive)} {'is' if len(naive) == 1 else 'are'} naive; "
                 f"mixed datetimes fail downstream date arithmetic. Declare "
                 f"start/end/observation_end all naive or all timezone-aware.",
                 name=self.name,
@@ -2785,7 +2785,7 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
             _definition_refusal(
                 "definition.experiment.end_before_start",
                 f"experiment '{self.name}': end={self.end} is before "
-                f"start={self.start} -- an inverted enrollment window "
+                f"start={self.start}; an inverted enrollment window "
                 f"enrolls no units; swap or correct the dates.",
                 name=self.name,
                 end=self.end,
@@ -2806,7 +2806,7 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
                 "definition.experiment.observation_end_before_end",
                 f"experiment '{self.name}': observation_end={self.observation_end} "
                 f"is before end={self.end}. Observation cannot stop before enrollment "
-                f"does -- that would discard units enrolled in between.",
+                f"does; that would discard units enrolled in between.",
                 experiment=self.name,
             )
         return self
@@ -3096,7 +3096,7 @@ class Definitions(_Base):
                             (
                                 "definition.index_sources.dim_source_property",
                                 f"dim source '{dim_name}' property '{prop.name}' uses the "
-                                f"reserved column name '{prop.name}' -- reserved: "
+                                f"reserved column name '{prop.name}'; reserved: "
                                 f"{sorted(_DIM_RESERVED_COLUMNS)}",
                             )
                         )
@@ -3315,7 +3315,7 @@ class Definitions(_Base):
                     (
                         "definition.validate_experiment.metric_report_type",
                         f"experiment '{experiment.name}': metric '{metric_name}' is report-only "
-                        f"(type '{index.report_only[metric_name]}') -- it has no per-unit "
+                        f"(type '{index.report_only[metric_name]}'); it has no per-unit "
                         f"variance, so the estimation engine cannot serve it; use it via "
                         f"increment.estimators.MetricTrends instead",
                     )
@@ -3358,7 +3358,7 @@ class Definitions(_Base):
                 (
                     "definition.validate_experiment.trigger_also_exposure",
                     f"experiment '{experiment.name}': trigger '{experiment.trigger}' is also the "
-                    "exposure -- that narrows the population to itself and "
+                    "exposure; that narrows the population to itself and "
                     "reports the assigned effect twice. Declare a separate "
                     "eligibility fact, or drop the trigger.",
                 )
@@ -3593,7 +3593,7 @@ class Definitions(_Base):
                 (
                     "definition.validate_experiment.declares_cluster_alongside",
                     f"experiment '{experiment.name}' declares cluster '{experiment.cluster}' "
-                    f"alongside breakouts/factors -- cluster-robust inference "
+                    f"alongside breakouts/factors; cluster-robust inference "
                     f"is total-grain only, so these could never be served; "
                     f"drop them or drop cluster",
                 )
@@ -3736,7 +3736,7 @@ class Definitions(_Base):
                     (
                         "definition.check_breakouts.experiment_breakout_property",
                         f"experiment '{e.name}' breakout property '{b.property}' "
-                        f"(source '{source_name}') has as_of='event_time' -- "
+                        f"(source '{source_name}') has as_of='event_time'; "
                         f"conditioning a segment on a value measured at/after "
                         f"exposure biases the result (collider / differential "
                         f"composition). Declare as_of='pre_exposure' to scope the "
@@ -3805,7 +3805,7 @@ class Definitions(_Base):
                     (
                         "definition.check_factors.experiment_factor_property",
                         f"experiment '{e.name}' factor property '{f.property}' "
-                        f"(source '{source_name}') has as_of='event_time' -- "
+                        f"(source '{source_name}') has as_of='event_time'; "
                         "absorbing a value that can change during the experiment "
                         "biases the overall effect. Declare as_of='pre_exposure' "
                         "or as_of='static'.",
@@ -3849,7 +3849,7 @@ class Definitions(_Base):
                     (
                         "definition.check_observational.covariate_as_of",
                         f"experiment '{e.name}' observational covariate '{name}' "
-                        f"(source '{source_name}') has as_of='event_time' -- "
+                        f"(source '{source_name}') has as_of='event_time'; "
                         f"conditioning on a value measured at/after exposure biases "
                         f"the adjustment. Declare as_of='pre_exposure' or 'static'",
                     )
@@ -3861,7 +3861,7 @@ class Definitions(_Base):
                         f"experiment '{e.name}' observational covariate '{name}' "
                         f"(source '{source_name}') has dtype '{prop.dtype}'; "
                         f"IPTW/AIPW/DML adjust on a numeric (int/float/bool) or "
-                        f"categorical (string) column -- a date carries no "
+                        f"categorical (string) column; a date carries no "
                         f"adjustment meaning. Derive a numeric or categorical "
                         f"pre-exposure property",
                     )
@@ -3883,7 +3883,7 @@ def _check_shared_lookup_names(
                 (
                     "definition.index_sources.fact_owned_by",
                     f"fact '{fact_name}' (owned by source '{owner}') shares its "
-                    f"name with a different fact source -- fact and source names "
+                    f"name with a different fact source; fact and source names "
                     f"share one lookup namespace (fact_source_for); rename one",
                 )
             )
@@ -3895,7 +3895,7 @@ def _check_shared_lookup_names(
                     (
                         "definition.index_sources.property_source_shares",
                         f"property '{prop_name}' (in source '{source_name}') shares its "
-                        f"name with a different fact source -- property and source "
+                        f"name with a different fact source; property and source "
                         f"names share one lookup namespace (fact_source_for); rename one",
                     )
                 )
@@ -4098,7 +4098,7 @@ def _resolve_property_source(
             codes.ambiguous,
             f"experiment '{e.name}' {label} property '{property_name}' matches "
             f"{len(candidates)} fact sources ({', '.join(sorted(candidates))}) with "
-            f"unit '{e.unit}' as an entity -- declare 'source: <name>' on the "
+            f"unit '{e.unit}' as an entity; declare 'source: <name>' on the "
             f"{label} to disambiguate",
             experiment=e.name,
             property=property_name,

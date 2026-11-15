@@ -57,11 +57,11 @@ if TYPE_CHECKING:
 
 CAPABILITY_TABLE: dict[str, str] = {
     "window_days": (
-        "window_days is not supported on from_unit_summary -- a one-row-per-unit "
+        "window_days is not supported on from_unit_summary; a one-row-per-unit "
         "summary carries no dates to window against."
     ),
     "type=retention": (
-        "type='retention' is not supported on from_unit_summary -- a retention "
+        "type='retention' is not supported on from_unit_summary; a retention "
         "metric needs threshold_days and a date to compute the observation band "
         "against, and a one-row-per-unit summary has neither."
     ),
@@ -85,7 +85,7 @@ _CLUSTER_CAPABILITY = RefusalSpec(
 _PANEL_MISSING_SKIP = RefusalSpec(
     "frame.missing_policy.panel_skip",
     UnsupportedRequestError,
-    template="missing={missing!r} is not supported on the panel shape -- the panel is densified to a unit x day spine with zero-filled cells, so a skipped (unit, day) row silently means zero, not an observed-only population. Declare missing='zero' if null means \"no events\", or collapse to one row per unit and use shape='summary' with missing='skip'.",
+    template="missing={missing!r} is not supported on the panel shape; the panel is densified to a unit x day spine with zero-filled cells, so a skipped (unit, day) row silently means zero, not an observed-only population. Declare missing='zero' if null means \"no events\", or collapse to one row per unit and use shape='summary' with missing='skip'.",
 )
 _SOURCE_FRAME_COLUMN_DTYPE = RefusalSpec(
     "source.frame.column_dtype",
@@ -213,7 +213,7 @@ _MULTI_GROUP_UNIT = RefusalSpec(
 _RATIO_SAME_COLUMN = RefusalSpec(
     "source.frame.ratio_same_column",
     InvalidRequestError,
-    template="metric {metric!r} reads column {column!r} for both numerator and denominator -- that ratio is identically 1, so there is nothing to estimate; point the two sides at different columns",
+    template="metric {metric!r} reads column {column!r} for both numerator and denominator; that ratio is identically 1, so there is nothing to estimate; point the two sides at different columns",
 )
 _ON_UNASSIGNED_INVALID = RefusalSpec(
     "source.frame.on_unassigned_invalid",
@@ -224,7 +224,7 @@ _ON_UNASSIGNED_INVALID = RefusalSpec(
 _METRIC_COVARIATE_IMPUTE_ALL_NULL = RefusalSpec(
     "frame.validation.metric_covariate_impute_all_null",
     InvalidRequestError,
-    template="metric {metric!r}: covariate column {covariate!r} has no observed values to impute a pooled mean from -- every row is null/NaN. Drop the covariate method or repair the column upstream.",
+    template="metric {metric!r}: covariate column {covariate!r} has no observed values to impute a pooled mean from; every row is null/NaN. Drop the covariate method or repair the column upstream.",
 )
 _COVARIATE_NOT_NUMERIC = RefusalSpec(
     "frame.validation.covariate_not_numeric",
@@ -358,8 +358,8 @@ _REFUSALS = refusals(
         "source.frame.input_type": _UNSUPPORTED_FRAME_INPUT,
         "frame.validation.metric_covariate_column": _METRIC_COVARIATE_MISSING,
         "frame.validation.covariate_not_numeric": _COVARIATE_NOT_NUMERIC,
-        "frame.validation.design_control_group": "design.control_group={control_group!r} disagrees with control={control!r} -- one control, declared once",
-        "frame.validation.dtype_disagree_day": "{ds_name!r} (dtype {ds_dtype}) and {anchor_name!r} (dtype {anchor_dtype}) disagree on day-axis kind -- one is an explicit numeric day index and the other is a calendar date/datetime. Declare both the same kind.",
+        "frame.validation.design_control_group": "design.control_group={control_group!r} disagrees with control={control!r}; one control, declared once",
+        "frame.validation.dtype_disagree_day": "{ds_name!r} (dtype {ds_dtype}) and {anchor_name!r} (dtype {anchor_dtype}) disagree on day-axis kind; one is an explicit numeric day index and the other is a calendar date/datetime. Declare both the same kind.",
         "frame.validation.metric_value_missing": "metric {metric!r}: column {column!r} has {n_missing} null/NaN value(s). If null means \"no events\", declare MetricSpec(missing='zero') or run df, n = increment.estimators.impute.zeros(df, {column!r}). If the value is undefined for some units (an average order value for a unit without orders), declare a ratio metric, MetricSpec(type='ratio', numerator=..., denominator=...), over every unit. If the value exists but was not observed, declare missing='skip': the metric then uses only units with a value, which is unbiased only when missingness is unrelated to the values.",
         "frame.validation.from_unit_panel": RefusalSpec(
             "frame.validation.from_unit_panel",

@@ -2271,7 +2271,7 @@ class TestDecisionAvailability:
 
         assert result_outcome(readout).verdict == "reject"
         assert null_text(readout) == "+0 absolute"
-        assert primary_tone(readout) == "neutral"
+        assert primary_tone(readout) == "detected"
 
     def test_relative_margin_evidence_is_labelled(self):
         from increment.estimation.decision_types import ArmHypothesisKey

@@ -36,7 +36,7 @@ _REFUSALS = refusals(
         "absorption.summary_missing_columns": "summary is missing required columns: {missing}",
         "absorption.control_group_present": "control group {control_group!r} not present; arms are {arms}",
         "absorption.absorb_factor_needs": "absorb_factor needs exactly two arms; got {arms}. Filter the table to one treated arm before calling.",
-        "absorption.summary_duplicate_rows": "summary has duplicate rows for {named} -- absorb_factor needs exactly one row per (factor level, arm); a duplicate would silently overwrite the earlier row's moments and bias the effect. Aggregate to one row per cell upstream (GROUP BY {factor!r}, group_id).",
+        "absorption.summary_duplicate_rows": "summary has duplicate rows for {named}; absorb_factor needs exactly one row per (factor level, arm); a duplicate would silently overwrite the earlier row's moments and bias the effect. Aggregate to one row per cell upstream (GROUP BY {factor!r}, group_id).",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -61,7 +61,7 @@ _register_warning(
     IncrementRuntimeWarning,
     lambda *, factor, n_levels, floor: (
         f"factor {factor!r}: {n_levels} levels survived absorption, "
-        f"below {floor} -- the level-clustered "
+        f"below {floor}; the level-clustered "
         "sandwich variance is itself noisy at this K and the t_(K-2) "
         "interval over-rejects; treat borderline significance as fragile."
     ),

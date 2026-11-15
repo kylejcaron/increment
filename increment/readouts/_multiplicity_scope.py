@@ -611,6 +611,8 @@ def scoped_collection(  # noqa: PLR0913
 
     identity_rows = rows if identity_rows is None else identity_rows
     identity_request = _identity_request(identity_rows, request)
+    # Direction stays declared in the request; the row field is only a display copy.
+    excluded_row_metadata = {"source_snapshot_id", "preferred_direction"}
     payload: dict[str, Any] = {
         "kind": "increment.readout.snapshot",
         "version": 2,
@@ -639,7 +641,7 @@ def scoped_collection(  # noqa: PLR0913
                     sorted(
                         (
                             input_evidence(
-                                row.model_dump(mode="json", exclude={"source_snapshot_id"})
+                                row.model_dump(mode="json", exclude=excluded_row_metadata)
                             )
                             for row in identity_rows
                         ),

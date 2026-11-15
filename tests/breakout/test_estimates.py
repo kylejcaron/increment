@@ -832,25 +832,33 @@ def test_conversion_segment_absolute_margin_uses_restricted_score_tail():
 
 
 class TestPreferredDirectionReachesTheLiftEstimate:
-    def test_declared_preferred_direction_reaches_the_lift_estimate(self):
-        """A metric declaring preferred_direction="decrease" must reach its
-        LiftEstimate row, not just the plumbing that leaves it None -
-        `prob_favorable()` raises without it."""
+    def test_declared_preferred_direction_reaches_lift_estimate_and_breakout_readout(self):
+        """Declared direction survives both family and segment result projections."""
         from increment import readouts
         from increment.decision_wire import compiled_plan_to_json
         from increment.plan import compile_decision_plan
         from increment.semantics.design import Randomized
         from increment.sources import MomentsSource
+        from increment.tables import estimates_to_readout
 
         control = _make_arm_row(n=500, mean=10.0, var=4.0, country="US", group_id="control")
         treatment = _make_arm_row(n=500, mean=8.0, var=4.0, country="US", group_id="treatment")
         declared = MeanMetric(name="rev", entity="user", fact="rev", preferred_direction="decrease")
         undeclared = _mean_metric("orders")
+        neutral = MeanMetric(
+            name="neutral", entity="user", fact="neutral", preferred_direction="neutral"
+        )
         control2 = _make_arm_row(
             n=500, mean=10.0, var=4.0, country="US", metric="orders", group_id="control"
         )
         treatment2 = _make_arm_row(
             n=500, mean=8.0, var=4.0, country="US", metric="orders", group_id="treatment"
+        )
+        control3 = _make_arm_row(
+            n=500, mean=10.0, var=4.0, country="US", metric="neutral", group_id="control"
+        )
+        treatment3 = _make_arm_row(
+            n=500, mean=8.0, var=4.0, country="US", metric="neutral", group_id="treatment"
         )
         # A moments cube needs its format stamp and the plan it was reduced under.
         stamp = {
@@ -866,11 +874,21 @@ class TestPreferredDirectionReachesTheLiftEstimate:
                 compile_decision_plan(None, [declared, undeclared])
             ),
         }
-        rows = [{**row, **stamp} for row in (control, treatment, control2, treatment2)]
+        rows = [
+            {**row, **stamp}
+            for row in (
+                control,
+                treatment,
+                control2,
+                treatment2,
+                control3,
+                treatment3,
+            )
+        ]
 
         estimates = readouts.run(
             MomentsSource(
-                rows,
+                rows[:4],
                 metrics=[declared, undeclared],
                 study_id="exp1",
                 design=Randomized(control_group="control"),
@@ -879,6 +897,22 @@ class TestPreferredDirectionReachesTheLiftEstimate:
         by_metric = {e.metric: e for e in estimates}
         assert by_metric["rev"].preferred_direction == "decrease"
         assert by_metric["orders"].preferred_direction is None
+
+        breakout = run_breakout(
+            [control, treatment, control2, treatment2, control3, treatment3],
+            [declared, undeclared, neutral],
+            control_group="control",
+            dimension="country",
+        )
+        by_metric = {estimate.metric: estimate for estimate in breakout}
+        restored = BreakoutEstimate.model_validate_json(by_metric["rev"].model_dump_json())
+        assert restored.preferred_direction == "decrease"
+        assert by_metric["neutral"].preferred_direction == "neutral"
+        assert by_metric["orders"].preferred_direction is None
+        readout = {row["metric"]: row for row in estimates_to_readout(breakout)}
+        assert readout["rev"]["preferred_direction"] == "decrease"
+        assert readout["neutral"]["preferred_direction"] == "neutral"
+        assert readout["orders"]["preferred_direction"] is None
 
 
 class TestRunBreakoutSegmentIsolation:
@@ -2965,6 +2999,23 @@ class TestBreakoutEstimateReferenceValidation:
         again = BreakoutEstimate.model_validate(row.model_dump())
         assert again.reference_kind == "t"
         assert again.reference_df == 5.0
+
+    def test_exploratory_selection_preserves_legacy_degrees_of_freedom(self):
+        (computed,) = run_breakout(
+            [
+                _make_arm_row(500, 10.0, 4.0, country="US", group_id="control"),
+                _make_arm_row(500, 11.0, 4.0, country="US", group_id="treatment"),
+            ],
+            [_mean_metric("rev")],
+            control_group="control",
+            dimension="country",
+        )
+        assert computed.reference_df is not None
+        row = computed.model_copy(update={"dof": computed.reference_df})
+
+        (selected,) = select_exploratory_family([row], q=0.01)
+
+        assert selected.dof == row.reference_df
 
     def test_model_validate_infers_t_reference_from_legacy_dof(self):
         row = BreakoutEstimate.model_validate(self._kwargs(dof=8.0))

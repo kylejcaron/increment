@@ -40,9 +40,9 @@ _REFUSALS = refusals(
     InvalidRequestError,
     {
         "query.fact_resolution.fact_declared_any": "Fact '{fact_name}' is not declared in any fact source in the definitions. Available facts: {available}",
-        "query.fact_resolution.pass_exactly_one": "{constructor}: pass exactly one of control= or design= -- control= is shorthand for design=Randomized(control_group=...); got control={control!r}, design={design!r}",
-        "query.fact_resolution.breakout_property_references": "breakout property '{property}' references unknown source '{source}' -- this should have been caught at definitions-load time",
-        "query.fact_resolution.breakout_property_could": "breakout property '{property}' could not be resolved to any fact source with unit '{unit}' as an entity -- this should have been caught at definitions-load time",
+        "query.fact_resolution.pass_exactly_one": "{constructor}: pass exactly one of control= or design=; control= is shorthand for design=Randomized(control_group=...); got control={control!r}, design={design!r}",
+        "query.fact_resolution.breakout_property_references": "breakout property '{property}' references unknown source '{source}'; this should have been caught at definitions-load time",
+        "query.fact_resolution.breakout_property_could": "breakout property '{property}' could not be resolved to any fact source with unit '{unit}' as an entity; this should have been caught at definitions-load time",
         "query.fact_resolution.fact_source_property": "fact source '{name}': property '{prop_name}' renames onto the canonical/value column '{prop_name}', which would silently overwrite it; rename the property",
         "query.fact_resolution.fact_source_property_reads_canonical_column": "fact source '{name}': property '{prop_name}' reads the canonical source column '{prop_column}', which the builders rename onto ts/unit_id; point the property at a different column",
         "query.fact_resolution.fact_source_property_deletes_value_column": "fact source '{name}': property '{prop_name}' renames away the canonical/value column '{prop_column}', which would silently delete it; point the property at a different column",

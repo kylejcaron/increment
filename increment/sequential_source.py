@@ -1101,7 +1101,7 @@ def validate_sequential_plan(plan, metrics, design):
             if cell.alpha > allowance:
                 sequential_refuse(
                     "source.invalid",
-                    f"registered cell alpha exceeds its compiled allocation -- "
+                    f"registered cell alpha exceeds its compiled allocation; "
                     f"{cell.metric!r} holds the {procedure.role} role, so register it at "
                     f"alpha <= {float(allowance)!r}",
                 )
