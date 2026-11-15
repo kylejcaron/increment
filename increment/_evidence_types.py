@@ -198,6 +198,7 @@ class DayAxisRequest:
     experiment: Any | None = None
     covariate_metrics: frozenset[str] = frozenset()
     by: tuple[str, ...] = ()
+    declared_dimensions: tuple[str, ...] | None = None
 
 
 def day_axis_time_basis(metric: object, grain: str) -> Literal["calendar", "cohort"]:

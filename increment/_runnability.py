@@ -546,10 +546,15 @@ def _validate_declared_day_axis(
 ) -> None:
     from increment._day_axis import validate_day_axis, validate_lift_request
     from increment._evidence_types import DayAxisRequest
-    from increment.readouts._evidence import declared_day_axis_route
+    from increment.readouts._evidence import (
+        declared_day_axis_dimensions,
+        declared_day_axis_route,
+    )
     from increment.semantics.models import Experiment
 
     experiment = declaration.get("experiment")
+    typed_experiment = None if experiment is None else Experiment.model_validate(dict(experiment))
+
     validate = validate_lift_request if operation.endswith("_lift") else validate_day_axis
     validate(
         DayAxisRequest(
@@ -563,12 +568,13 @@ def _validate_declared_day_axis(
             population=request.population,
             estimands=request.estimands,
             completed_windows_only=request.completion_policy,
+            declared_dimensions=declared_day_axis_dimensions(capabilities, typed_experiment),
         ),
         src=_DeclaredSource(request.context, capabilities, declaration["source_name"]),
         design=request.design,
         plan=request.plan,
         route=declared_day_axis_route(capabilities),
-        experiment=None if experiment is None else Experiment.model_validate(dict(experiment)),
+        experiment=typed_experiment,
     )
 
 

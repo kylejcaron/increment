@@ -110,9 +110,9 @@ def source_for_population(src: _BuiltinMomentSource, population: str) -> _Builti
 
 
 def day_axis_grains(src: object) -> frozenset[str]:
-    """Return declared day grains plus those the native day-source operation can acquire."""
+    """Return declared day grains plus those the declared day-source operation can acquire."""
     evidence = declared_evidence(src)
-    if "day_source" not in evidence.operations or not is_builtin_source(src):
+    if "day_source" not in evidence.operations:
         return frozenset(evidence.grains)
     return frozenset((*evidence.grains, "daily", "asof"))
 

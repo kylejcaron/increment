@@ -236,6 +236,30 @@ def declared_day_axis_route(evidence: EvidenceCapabilities) -> DayAxisRoute:
     return MOMENTS_ROUTE if route == PANEL_ROUTE else route
 
 
+def declared_day_axis_dimensions(
+    evidence: EvidenceCapabilities, experiment: Any | None
+) -> tuple[str, ...]:
+    """Preserve the legacy dimension context for this declared day-axis view."""
+    if declared_day_axis_route(evidence) == MOMENTS_ROUTE:
+        return tuple(evidence.breakouts)
+    if experiment is None:
+        return ()
+    breakouts = (
+        experiment.get("breakouts", ())
+        if isinstance(experiment, Mapping)
+        else getattr(experiment, "breakouts", ())
+    )
+    return tuple(
+        sorted(
+            {
+                property_name
+                for item in breakouts
+                if (property_name := _declared_breakout_property(item)) is not None
+            }
+        )
+    )
+
+
 def is_artifact_route(src: EvidenceSource) -> bool:
     return source_route(src) == ARTIFACT_ROUTE
 
@@ -1793,6 +1817,7 @@ def load_builtin_day_moments(src: EvidenceSource, request: MomentsRequest) -> Mo
         completed_windows_only=request.completed_windows_only,
         population=request.population,
         experiment=experiment,
+        declared_dimensions=declared_day_axis_dimensions(declared_evidence(src), experiment),
         covariate_metrics=(
             frozenset((request.metric.name,)) if request.include_covariate else frozenset()
         ),

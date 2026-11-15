@@ -474,6 +474,7 @@ def _assert_windowed_quantile_consumer(capabilities, legacy_capabilities):
 def _assert_temporal_capability_consumer(field, capabilities):
     from increment._day_axis import validate_day_axis
     from increment._evidence_types import DayAxisRequest
+    from increment.errors import CapabilityError, InvalidRequestError
     from increment.semantics.models import MeanMetric, QuantileMetric
 
     source = SimpleNamespace(
@@ -508,10 +509,28 @@ def _assert_temporal_capability_consumer(field, capabilities):
         breakouts=(SimpleNamespace(property="country", source=None),),
     )
     expected = {
-        "temporal_quantiles": "breakout.quantile",
-        "temporal_clusters": "facade.analysis.clustered_day_axis",
-        "dimensioned_daily_metrics": "facade.analysis.undeclared_metric_for_dimension",
+        "temporal_quantiles": (
+            "breakout.quantile",
+            CapabilityError,
+            {
+                "names": ("p50",),
+                "method": "run_daily()",
+                "reason": "quantiles do not decompose into per-day moments",
+                "remedy": "Use run().",
+            },
+        ),
+        "temporal_clusters": (
+            "facade.analysis.clustered_day_axis",
+            CapabilityError,
+            {"method": "run_daily", "experiment": "recorded", "cluster": "household"},
+        ),
+        "dimensioned_daily_metrics": (
+            "facade.analysis.undeclared_metric_for_dimension",
+            InvalidRequestError,
+            {"method": "run_daily", "dimension": "country", "undeclared": ("ad_hoc",)},
+        ),
     }[field]
+    code, error_type, context = expected
     with pytest.raises(CodedError) as raised:
         validate_day_axis(
             request,
@@ -521,7 +540,212 @@ def _assert_temporal_capability_consumer(field, capabilities):
             route="moments",
             experiment=cast(Any, experiment),
         )
-    assert raised.value.code == expected
+    assert type(raised.value) is error_type
+    assert raised.value.code == code
+    assert raised.value.context == context
+
+    supported = {
+        "temporal_quantiles": True,
+        "temporal_clusters": True,
+        "dimensioned_daily_metrics": "any",
+    }[field]
+    source.evidence = dataclasses.replace(source.evidence, **{field: supported})
+    validate_day_axis(
+        request,
+        src=source,
+        design=None,
+        plan=cast(Any, SimpleNamespace(inference=None)),
+        route="moments",
+        experiment=cast(Any, experiment),
+    )
+
+
+def _restored_temporal_case(field, rows):
+    from datetime import UTC, datetime
+
+    import polars as pl
+
+    from increment import from_frame
+    from increment._metric_specs import MetricSpec
+    from increment.evidence import BreakoutIdentity
+    from increment.semantics.models import AnalysisPlan, Breakout
+    from increment.semantics.models import Experiment as Definition
+
+    if field == "temporal_quantiles":
+        experiment, reader = from_frame(
+            pl.DataFrame(rows),
+            shape="panel",
+            unit="unit",
+            group="group",
+            date="ds",
+            control="control",
+            metrics=[MetricSpec(name="p50", type="quantile", quantile=0.5)],
+            breakouts=["country"],
+            exposure_date="ds",
+        )
+        semantic = Definition(
+            name="checkout",
+            exposure="assignment",
+            unit="unit",
+            start=datetime(2025, 1, 1, tzinfo=UTC),
+            control_group="control",
+            plan=AnalysisPlan(),
+            breakouts=(Breakout(property="country"),),
+        )
+        segment = ()
+    elif field == "temporal_clusters":
+        cluster_rows = [
+            {
+                "unit": row["unit"],
+                "group": row["group"],
+                "cluster": row["cluster"],
+                "y": row["y"],
+            }
+            for row in rows
+        ]
+        experiment, reader = from_frame(
+            pl.DataFrame(cluster_rows),
+            shape="summary",
+            unit="unit",
+            group="group",
+            control="control",
+            metrics={"y": "mean"},
+            cluster="cluster",
+        )
+        semantic = Definition(
+            name="checkout",
+            exposure="assignment",
+            unit="unit",
+            start=datetime(2025, 1, 1, tzinfo=UTC),
+            control_group="control",
+            plan=AnalysisPlan(),
+            cluster="cluster",
+        )
+        segment = ()
+    else:
+        experiment, reader = from_frame(
+            pl.DataFrame(rows),
+            shape="panel",
+            unit="unit",
+            group="group",
+            date="ds",
+            control="control",
+            metrics={"y": "mean"},
+            breakouts=["country"],
+            exposure_date="ds",
+        )
+        semantic = Definition(
+            name="checkout",
+            exposure="assignment",
+            unit="unit",
+            start=datetime(2025, 1, 1, tzinfo=UTC),
+            control_group="control",
+            plan=AnalysisPlan(),
+            breakouts=(Breakout(property="country"),),
+        )
+        segment = (BreakoutIdentity("country", None),)
+
+    return experiment, reader, semantic, segment
+
+
+def _assert_restored_temporal_capability_case(
+    field, metric, value, code, experiment, semantic, segment
+):
+    from increment import runnable
+    from increment.errors import CapabilityError
+
+    capabilities = experiment.source_refs[0].capabilities
+    assert capabilities is not None
+    scope = View(view="daily", grain="daily", values=True, segment=segment)
+    context = {
+        **dict(experiment.analysis_context),
+        "experiment": semantic.model_dump(mode="json"),
+    }
+    declared = dataclasses.replace(
+        capabilities,
+        grains=frozenset({"total", "daily", "asof"}),
+        **{field: value},
+    )
+    recorded = dataclasses.replace(
+        experiment,
+        source_refs=(dataclasses.replace(experiment.source_refs[0], capabilities=declared),),
+        views=(scope,),
+        analysis_context=context,
+    )
+    restored = Experiment.from_json(recorded.to_json())
+    refusals = tuple(
+        refusal
+        for result in runnable(restored, metric).values()
+        for refusal in result.static_refusals
+    )
+    relevant_codes = {
+        "temporal_quantiles": "breakout.quantile",
+        "temporal_clusters": "facade.analysis.clustered_day_axis",
+        "dimensioned_daily_metrics": "facade.analysis.undeclared_metric_for_dimension",
+    }
+    if code is None:
+        assert not any(refusal.code == relevant_codes[field] for refusal in refusals)
+        return
+
+    matching = [refusal for refusal in refusals if refusal.code == code]
+    assert matching
+    expected_contexts = {
+        "breakout.quantile": (
+            CapabilityError,
+            {
+                "names": ("p50",),
+                "method": "run_daily()",
+                "reason": "quantiles do not decompose into per-day moments",
+                "remedy": "Use run().",
+            },
+        ),
+        "facade.analysis.clustered_day_axis": (
+            CapabilityError,
+            {"method": "run_daily", "experiment": "checkout", "cluster": "cluster"},
+        ),
+    }
+    refusal_type, expected_context = expected_contexts[code]
+    assert all(type(refusal) is refusal_type for refusal in matching)
+    assert all(refusal.context == expected_context for refusal in matching), [
+        dict(refusal.context) for refusal in matching
+    ]
+
+
+def _assert_restored_temporal_runnable_consumer():
+    rows = [
+        {
+            "unit": f"u{i}",
+            "group": "control" if i < 4 else "treat",
+            "ds": "2025-01-01",
+            "p50": float(i),
+            "y": float(i),
+            "country": "us" if i % 2 == 0 else "gb",
+            "cluster": f"c{i // 4}",
+        }
+        for i in range(8)
+    ]
+    cases = (
+        ("temporal_quantiles", "p50", True, False),
+        ("temporal_clusters", "y", True, False),
+        ("dimensioned_daily_metrics", "y", "any", "declared"),
+    )
+    refused_codes = {
+        "temporal_quantiles": "breakout.quantile",
+        "temporal_clusters": "facade.analysis.clustered_day_axis",
+        "dimensioned_daily_metrics": None,
+    }
+    for field, metric, supported, refused in cases:
+        experiment, reader, semantic, segment = _restored_temporal_case(field, rows)
+        try:
+            for value, code in (
+                (supported, None),
+                (refused, refused_codes[field]),
+            ):
+                _assert_restored_temporal_capability_case(
+                    field, metric, value, code, experiment, semantic, segment
+                )
+        finally:
+            reader.close()
 
 
 def _assert_restored_resolver_mismatches(restored, provider):
@@ -609,3 +833,4 @@ def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
             }
 
     _assert_legacy_temporal_defaults(capabilities)
+    _assert_restored_temporal_runnable_consumer()

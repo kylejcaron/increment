@@ -108,6 +108,123 @@ def test_run_daily_refuses_no_definitions_on_unit_summary_source():
     }
 
 
+def test_day_axis_dimension_declaration_preserves_legacy_route_order():
+    from dataclasses import replace
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from increment._day_axis import validate_day_axis
+    from increment._evidence_types import DayAxisRequest
+    from increment.errors import InvalidRequestError
+    from increment.evidence import EvidenceCapabilities
+    from increment.readouts._evidence import (
+        declared_day_axis_dimensions,
+        declared_day_axis_route,
+    )
+    from increment.semantics.models import AnalysisPlan, Breakout
+    from increment.semantics.models import Experiment as Definition
+
+    experiment = Definition(
+        name="checkout",
+        exposure="assignment",
+        unit="unit",
+        start=datetime(2025, 1, 1, tzinfo=UTC),
+        control_group="control",
+        plan=AnalysisPlan(),
+        breakouts=(
+            Breakout(property="platform"),
+            Breakout(property="country"),
+            Breakout(property="platform"),
+        ),
+    )
+    common: dict[str, Any] = {
+        "grains": frozenset({"total", "daily", "asof"}),
+        "shape": None,
+        "unit_rows": False,
+        "raw_outcomes": False,
+        "method_fit": "none",
+        "compliance_axis": "none",
+        "count_grains": frozenset(),
+        "populations": frozenset({"assigned"}),
+        "sequential_capture": "none",
+        "scalar": None,
+        "available_covariates": None,
+    }
+    native = EvidenceCapabilities(
+        kind="definitions",
+        breakouts=("platform", "country", "platform"),
+        operations=frozenset({"moments_source"}),
+        **common,
+    )
+    moments = EvidenceCapabilities(
+        kind="moments",
+        breakouts=("platform", "country", "platform"),
+        operations=frozenset(),
+        **common,
+    )
+
+    artifact = replace(native, operations=frozenset({"artifact_experiment"}))
+    assert declared_day_axis_dimensions(native, None) == ()
+    assert declared_day_axis_dimensions(artifact, None) == ()
+    for capabilities, expected_dimensions in (
+        (native, ("country", "platform")),
+        (artifact, ("country", "platform")),
+        (moments, ("platform", "country", "platform")),
+    ):
+        source = SimpleNamespace(
+            evidence=capabilities,
+            context=SimpleNamespace(trigger_name=None, metrics=()),
+        )
+        assert declared_day_axis_dimensions(capabilities, experiment) == expected_dimensions
+        request = DayAxisRequest(
+            caller="run_daily",
+            grain="daily",
+            metrics=(),
+            dimension="unavailable",
+            declared_dimensions=declared_day_axis_dimensions(capabilities, experiment),
+        )
+        with pytest.raises(InvalidRequestError) as raised:
+            validate_day_axis(
+                request,
+                src=source,
+                design=None,
+                plan=cast(Any, SimpleNamespace(inference=None)),
+                route=declared_day_axis_route(capabilities),
+                experiment=experiment,
+            )
+        assert raised.value.code == "facade.analysis.unknown_dimension"
+        assert raised.value.context == {
+            "method": "run_daily",
+            "dimension": "unavailable",
+            "declared": tuple(expected_dimensions),
+        }
+
+
+def test_custom_day_source_declares_acquirable_day_grains():
+    from increment._evidence_loaders import day_axis_grains
+    from increment._source_types import EvidenceCapabilities
+
+    class Provider:
+        evidence = EvidenceCapabilities(
+            kind="moments",
+            grains=frozenset({"total"}),
+            breakouts=(),
+            shape=None,
+            operations=frozenset({"moments_source", "day_source"}),
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="none",
+            compliance_axis="none",
+            count_grains=frozenset(),
+            populations=frozenset({"assigned"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
+
+    assert day_axis_grains(Provider()) == frozenset({"total", "daily", "asof"})
+
+
 def test_run_daily_values_carry_slice_fields():
     experiment, resolver = _panel()
     results = view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))

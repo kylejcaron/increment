@@ -13,6 +13,7 @@ from increment._exploratory import exploratory_sibling, select_exploratory
 from increment._source_admission import _arm_experiment
 from increment._source_types import declared_evidence
 from increment.kernel.context import ExecutionMode
+from increment.readouts._evidence import declared_day_axis_dimensions
 from increment.semantics.models import Metric
 
 if TYPE_CHECKING:
@@ -253,6 +254,9 @@ def operation_scope(
                 population=population,
                 experiment=_arm_experiment(candidate),
                 completed_windows_only=options.get("completed_windows_only", False),
+                declared_dimensions=declared_day_axis_dimensions(
+                    declared_evidence(candidate.source), _arm_experiment(candidate)
+                ),
             )
             scope_estimands, scope_uptake_facts = _day_axis_scope_dependencies(candidate, req)
             reader = planner.day_axis(candidate)

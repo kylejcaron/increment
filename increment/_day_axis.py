@@ -85,6 +85,7 @@ from increment.readouts._evidence import (
     day_axis_grains,
     day_axis_requires_preflight,
     day_axis_route,
+    declared_day_axis_dimensions,
     design_allocation,
     load_compliance_series,
     load_day_axis_rows,
@@ -358,7 +359,9 @@ def validate_day_axis(
         refuse(_DAILY_COMPLIANCE_DIMENSION, method=req.caller)
     if req.dimension is None:
         return
-    declared_breakouts = capabilities.breakouts
+    declared_breakouts = (
+        capabilities.breakouts if req.declared_dimensions is None else req.declared_dimensions
+    )
     if req.dimension not in declared_breakouts:
         refuse(
             _UNKNOWN_DIMENSION,
@@ -2198,6 +2201,9 @@ def run_daily(
         metrics=tuple(selected),
         dimension=dimension,
         population=population,
+        declared_dimensions=declared_day_axis_dimensions(
+            declared_evidence(binding.source), _arm_experiment(binding)
+        ),
     )
     rows = _run_day_axis_values(binding, req, execution_context, coherence=coherence)
     rows._default_backend = binding.input_backend
@@ -2228,6 +2234,9 @@ def run_daily_lift(
         dimension=dimension,
         estimands=tuple(estimands) if estimands is not None else None,
         population=population,
+        declared_dimensions=declared_day_axis_dimensions(
+            declared_evidence(binding.source), _arm_experiment(binding)
+        ),
     )
     (rows,) = _day_axis_lift(
         binding,
@@ -2265,6 +2274,9 @@ def run_asof(
         dimension=dimension,
         completed_windows_only=completed_windows_only,
         population=population,
+        declared_dimensions=declared_day_axis_dimensions(
+            declared_evidence(binding.source), _arm_experiment(binding)
+        ),
     )
     rows = _run_day_axis_values(binding, req, execution_context, coherence=coherence)
     rows._default_backend = binding.input_backend
@@ -2300,6 +2312,9 @@ def run_asof_lift(
         completed_windows_only=completed_windows_only,
         estimands=tuple(estimands) if estimands is not None else None,
         population=population,
+        declared_dimensions=declared_day_axis_dimensions(
+            declared_evidence(binding.source), _arm_experiment(binding)
+        ),
     )
     asof_policy = binding.plan.view_policies.for_view(
         "asof",
@@ -2362,6 +2377,9 @@ def run_asof_lift_together_and_alone(
         dimension=dimension,
         completed_windows_only=completed_windows_only,
         population=population,
+        declared_dimensions=declared_day_axis_dimensions(
+            declared_evidence(binding.source), _arm_experiment(binding)
+        ),
     )
     collections = _day_axis_lift(
         binding,
