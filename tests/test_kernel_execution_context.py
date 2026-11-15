@@ -194,30 +194,69 @@ def test_fallback_inventory_records_uptake_stream_without_metrics():
     context.close()
 
 
-def test_owned_scope_passes_read_exception_to_provider_exit():
-    seen: list[type[BaseException] | None] = []
+@pytest.mark.integration
+def test_owned_scope_passes_iterator_failure_to_provider_exit_and_releases_capture(tmp_path):
+    from increment.evidence import evidence_provider
+    from tests.analysis_factory import held_source, native_connection
+    from tests.source_conformance import definitions_source
 
-    class Provider(_Provider):
+    (_, resolver), _ = definitions_source(tmp_path, store="always", return_binding=True)
+    source = cast(Any, held_source(resolver))
+    provider = evidence_provider(source)
+    metric = source.context.metrics[0]
+    connection = native_connection(source)
+    before = connection.raw_sql(
+        "SELECT table_name FROM duckdb_tables() WHERE temporary ORDER BY table_name"
+    ).fetchall()
+    seen: list[type[BaseException]] = []
+
+    class IteratorFailure(RuntimeError):
+        pass
+
+    class Provider:
+        evidence = provider.evidence
+        context = provider.context
+
         def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
+            scoped = provider.scope(request)
+
             @contextmanager
             def entered() -> Iterator[Any]:
                 try:
-                    yield self
+                    with scoped.source as pinned:
+                        yield pinned
                 except BaseException as error:
                     seen.append(type(error))
                     raise
-                finally:
-                    self.exited += 1
 
-            return EvidenceScopeResult(entered(), request)
+            return EvidenceScopeResult(
+                entered(), request, scoped.streams, scoped.stream_resolver, scoped.capture_status
+            )
 
-    provider = Provider()
-    context = EvidenceExecutionContext(cast(Any, provider), EvidenceScope(), run_id="run-error")
-    with pytest.raises(RuntimeError):
-        with context.evidence_scope():
-            raise RuntimeError("read failed")
-    assert seen == [RuntimeError]
-    assert provider.exited == 1
+    context = EvidenceExecutionContext(
+        cast(Any, Provider()),
+        EvidenceScope(metrics=cast(Any, (metric,)), snapshot=True),
+        run_id="run-iterator-error",
+    )
+    try:
+        with pytest.raises(IteratorFailure):
+            with context.evidence_scope() as pinned:
+
+                def chunks():
+                    yield pinned.moments(MomentsRequest(metric))
+                    raise IteratorFailure
+
+                iterator = chunks()
+                next(iterator)
+                next(iterator)
+        assert seen == [IteratorFailure]
+        after = connection.raw_sql(
+            "SELECT table_name FROM duckdb_tables() WHERE temporary ORDER BY table_name"
+        ).fetchall()
+        assert after == before
+    finally:
+        context.close()
+        resolver.close()
 
 
 def test_borrower_exception_does_not_close_owner():
