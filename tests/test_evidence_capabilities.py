@@ -1799,11 +1799,18 @@ def test_whole_window_trigger_support_uses_declared_semantic_capability(tmp_path
         pass
 
     try:
-        for supported in (True, False):
-            provider_type = NativeProvider if supported else GuardedNativeProvider
-            provider = provider_type(
-                source, evidence=replace(source.evidence, fixed_triggered=supported)
-            )
+        for supported in (True, False, None):
+            provider_type = GuardedNativeProvider if supported is False else NativeProvider
+            declaration = replace(source.evidence, fixed_triggered=supported)
+            if supported is None:
+                declaration = replace(
+                    declaration,
+                    kind="moments",
+                    operations=frozenset({"moments_source"}),
+                    populations=frozenset({"assigned", "triggered"}),
+                    count_grains=source.evidence.count_grains | frozenset({"triggered"}),
+                )
+            provider = provider_type(source, evidence=declaration)
             replace_bound_source(base_resolver, provider)
             reference = base_experiment.source_refs[0]
             experiment = replace(
@@ -1812,6 +1819,9 @@ def test_whole_window_trigger_support_uses_declared_semantic_capability(tmp_path
             )
             resolver = base_resolver
             experiment = Experiment.from_json(experiment.to_json())
+            if supported is None:
+                assert experiment.source_refs[0].capabilities is not None
+                assert experiment.source_refs[0].capabilities.fixed_triggered is True
             try:
                 refusal = next(
                     (
@@ -1823,7 +1833,7 @@ def test_whole_window_trigger_support_uses_declared_semantic_capability(tmp_path
                     ),
                     None,
                 )
-                if supported:
+                if supported is not False:
                     assert refusal is None
                     result = run(experiment, resolver, views=(triggered,))
                     row = next(

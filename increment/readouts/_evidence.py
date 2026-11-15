@@ -160,9 +160,10 @@ def retains_cuped_relation(src: EvidenceSource) -> bool:
 
 def fits_uncovered_cells_locally(src: EvidenceSource) -> bool:
     """Whether cells without retained or warehouse fits can be fitted from unit rows."""
-    return (
-        is_custom_source(src) and declared_evidence(src).unit_rows and retains_cuped_relation(src)
-    )
+    if not is_custom_source(src):
+        return False
+    evidence = declared_evidence(src)
+    return evidence.unit_rows and (evidence.method_fit == "local" or retains_cuped_relation(src))
 
 
 def allows_local_metric_fit(

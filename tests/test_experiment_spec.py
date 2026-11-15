@@ -801,7 +801,7 @@ def _assert_legacy_temporal_defaults(capabilities):
     ).capabilities
     assert native is not None
     assert native.value_scale_overrides is False
-    assert native.fixed_triggered is False
+    assert native.fixed_triggered is True
     assert native.windowed_breakout_quantiles is True
     assert native.temporal_quantiles is False
     assert native.temporal_clusters is True

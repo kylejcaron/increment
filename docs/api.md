@@ -151,6 +151,12 @@ values.
   `frame.metric.window_days_supported`, matching execution before data is read.
 - Daily views honor a custom provider's declared day-level access even when
   its aggregate data lists only a total.
+- A failed custom-provider CUPED fit no longer prevents a valid comparison
+  method from using available unit-level data. The failed method retains its
+  original reason.
+- Saved experiments retain triggered analyses for legacy custom providers that
+  offer triggered moments. Explicitly disabling triggered support still refuses
+  before data is read.
 - `View.breakout(segment, *, population="assigned", metrics=())` accepts an
   optional tuple of registered metric definitions. An empty tuple selects the
   experiment's metrics. Save or log a selective breakout alongside the complete

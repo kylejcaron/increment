@@ -3143,8 +3143,9 @@ def test_failed_retained_categorical_fit_emits_unavailable_row() -> None:
     assert all(row.failure_code == failure.code for row in unavailable)
 
 
+@pytest.mark.parametrize("method_fit", ("warehouse", "local"))
 @pytest.mark.integration
-def test_failed_cuped_method_does_not_hide_valid_same_settings_companion() -> None:
+def test_failed_cuped_method_does_not_hide_valid_same_settings_companion(method_fit) -> None:
     from increment import CupedCovariate, Method
 
     analysis = _categorical_cuped_analysis()
@@ -3155,14 +3156,14 @@ def test_failed_cuped_method_does_not_hide_valid_same_settings_companion() -> No
         context={"method": "categorical"},
     )
     provider = _forwarding_provider(source)
-    provider.evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+    provider.evidence = replace(source.evidence, method_fit=method_fit, unit_rows=True)
 
-    def method_fit(request: MethodFitRequest) -> MethodFitAnswer:
+    def method_fit_answer(request: MethodFitRequest) -> MethodFitAnswer:
         if request.method.name == "categorical":
             return MethodFitAnswer("unavailable", failure=failure)
         return MethodFitAnswer("unavailable")
 
-    provider.method_fit = method_fit
+    provider.method_fit = method_fit_answer
     provider.close = lambda: None
     provider_analysis = None
     covariate = CupedCovariate(name="segment", kind="categorical")
@@ -3179,8 +3180,12 @@ def test_failed_cuped_method_does_not_hide_valid_same_settings_companion() -> No
     companion_rows = [row for row in cast(Any, rows) if row.method == "companion"]
     assert primary_rows
     assert all(row.failure_code == failure.code for row in primary_rows)
+    assert all(row.failure_context == failure.context for row in primary_rows)
     assert companion_rows
     assert all(row.lift is not None for row in companion_rows)
+    assert [row.lift.value for row in companion_rows if row.lift is not None] == pytest.approx(
+        [0.8]
+    )
 
 
 @pytest.mark.integration

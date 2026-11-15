@@ -232,7 +232,7 @@ def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
         fixed_triggered=(
             value.fixed_triggered
             if value.fixed_triggered is not None
-            else artifact or definition_source
+            else artifact or definition_source or native_moments
         ),
         windowed_breakout_quantiles=(
             value.windowed_breakout_quantiles

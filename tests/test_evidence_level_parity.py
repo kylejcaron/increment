@@ -990,9 +990,17 @@ def test_materialized_breakout_transcript_preserves_legacy_wire_identity():
         if record["answer_type"] == "MaterializedBreakoutSlices"
     )
     assert "route" not in transcript.answer_for(request)
+    compared = _comparison_records(transcript)
+    assert all(
+        "route" not in record["answer"]
+        for record in compared
+        if record["answer_type"] in {"MaterializedBreakoutSlices", "BreakoutUnitRows"}
+    )
+    _source_input_identity_projection(transcript)
     replayed = transcript.to_payload()
     assert replayed["input_sha256"] == payload["input_sha256"]
     assert replayed["records"] == payload["records"]
+    assert replayed["provenance"] == payload["provenance"]
 
 
 @pytest.mark.integration
@@ -1496,7 +1504,7 @@ def _normalize_scope_identity_metadata(value, source_identity):
 def _normalize_breakout_route_records(records):
     """Normalize comparison copies; raw transcript records retain wire provenance."""
     for record in records:
-        if record["answer_type"] == "MaterializedBreakoutSlices":
+        if record["answer_type"] in {"MaterializedBreakoutSlices", "BreakoutUnitRows"}:
             record["answer"].pop("route", None)
 
 
@@ -2888,6 +2896,7 @@ def _breakout_acquisition_projection(coordinate):
             for role, _digest_value in provenance["relation_digests"]
         ]
         for entry in receipt["entries"]:
+            _normalize_breakout_route_records((entry["record"],))
             if entry["component"] is not None:
                 entry["component"]["sha256"] = "validated-component-preimage"
             record = entry["record"]
