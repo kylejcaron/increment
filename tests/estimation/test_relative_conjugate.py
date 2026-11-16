@@ -14,11 +14,12 @@ from scipy.stats import norm
 
 from increment.errors import InvalidRequestError
 from increment.estimation._relative_conjugate import (
+    _UPDATED_WEIGHT_ERROR,
     RelativeMixturePosterior,
     RelativeNormalPosterior,
 )
 from increment.estimation._relative_posterior import _PosteriorNumericalError
-from increment.estimation.priors import MixturePosterior, Normal
+from increment.estimation.priors import MixturePosterior, MixturePrior, Normal, mixture_posterior
 
 
 def normal(mu, sigma):
@@ -242,3 +243,52 @@ def test_relative_loss_rejects_log_scale_without_changing_density():
         law.expected_negative_part(scale="log")
     assert caught.value.code == "estimation.posterior.invalid_request"
     assert law.cdf(0.6) == pytest.approx(0.25 * norm.cdf(1 / 0.3) + 0.375, abs=1e-10)
+
+
+def test_mixture_central_signs_resolve_wide_symmetric_density_median():
+    law = mixture((0.25, 0.75), (204.8, 204.8), (2e15, 4e15))
+    assert law.quantile(0.5) == pytest.approx(204.8, abs=1e-9, rel=1e-6)
+
+
+def test_mixture_inverse_never_accepts_a_rounded_coordinate_step():
+    sigma = 2.0**40
+    law = mixture((1.0,), (-11 * sigma,), (sigma,))
+    alpha = float.fromhex("0x1.e468e575e1c42p-93")
+    # Independent 120-digit direct-survival inversion of these exact floats.
+    try:
+        result = law.isf(alpha)
+    except _PosteriorNumericalError as error:
+        assert error.context["reason"] == "accuracy_unresolved"
+        assert error.context["operation"] == "isf"
+        assert error.context["tail_probability"] == alpha
+    else:
+        assert result == pytest.approx(0.0016191099683737696, abs=1e-9, rel=1e-6)
+
+
+def test_mixture_quantile_normalizes_the_exact_stored_weight_sum():
+    law = mixture(
+        (0.5, math.nextafter(0.5, 0.0)),
+        (-256 / 257, 256 / 257),
+        (1 / math.sqrt(4112),) * 2,
+    )
+    assert law.quantile(0.5) == pytest.approx(-0.8667931313940471, abs=1e-9, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    "penalty,reference",
+    [(2981, 27.20574612622934), (2977, 27.219655257633795)],
+)
+def test_updated_mixture_tiny_tail_retains_weight_quantization_uncertainty(penalty, reference):
+    prior = MixturePrior(weights=(0.5, 0.5), means=(0.0, math.sqrt(penalty)), sigmas=(1.0, 1.0))
+    law = RelativeMixturePosterior(
+        mixture_posterior(0.0, 1.0, prior), weight_relative_error=_UPDATED_WEIGHT_ERROR
+    )
+    assert law.quantile(0.5) == pytest.approx(0.0, abs=1e-9)
+    # Independent 400-digit inversion of the original continuous two-component law.
+    try:
+        result = law.isf(math.ulp(0.0))
+    except _PosteriorNumericalError as error:
+        assert error.context["reason"] == "accuracy_unresolved"
+        assert error.context["operation"] == "isf"
+    else:
+        assert result == pytest.approx(reference, abs=1e-9, rel=1e-6)

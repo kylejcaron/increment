@@ -79,6 +79,11 @@ from increment.estimation._fixed_horizon import (
     binomial_abs_interval,
 )
 from increment.estimation._readout_refusals import refuse_legacy_sampling
+from increment.estimation._relative_conjugate import (
+    _UPDATED_WEIGHT_ERROR,
+    RelativeMixturePosterior,
+    RelativeNormalPosterior,
+)
 from increment.estimation._relative_posterior import (
     RelativeStudentTPosterior,
     RelativeStudentTState,
@@ -976,14 +981,24 @@ class _RowIdentity(CodedModel, BaseModel):
         if self.posterior_model == "normal":
             if self.posterior_latent_mean is None or self.posterior_latent_sd is None:
                 return None
-            return Normal(mu=self.posterior_latent_mean, sigma=self.posterior_latent_sd)
+            normal = Normal(mu=self.posterior_latent_mean, sigma=self.posterior_latent_sd)
+            return (
+                RelativeNormalPosterior(normal)
+                if self.posterior_relative_model is not None
+                else normal
+            )
         if self.posterior_model == "mixture" and self.posterior_components is not None:
             import numpy as np
 
-            return MixturePosterior(
+            mixture = MixturePosterior(
                 weights=np.asarray(self.posterior_components.weights, dtype=float),
                 means=np.asarray(self.posterior_components.means, dtype=float),
                 sigmas=np.asarray(self.posterior_components.sigmas, dtype=float),
+            )
+            return (
+                RelativeMixturePosterior(mixture, weight_relative_error=_UPDATED_WEIGHT_ERROR)
+                if self.posterior_relative_model is not None
+                else mixture
             )
         if (
             self.posterior_model == "student_t_normal"

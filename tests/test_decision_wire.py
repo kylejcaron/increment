@@ -1105,4 +1105,14 @@ def test_compiled_plan_from_dict_rejects_mutated_guarantee() -> None:
     assert exc.value.code == "wire.multiplicity.guarantee_mismatch"
 
 
+def test_wire_relative_distribution_requires_explicit_outer_scale_tag() -> None:
+    payload = cast(dict[str, Any], compiled_plan_to_dict(_arm_plan()))
+    payload["procedures"][_METRIC_A]["prior"] = {
+        "distribution": {"type": "student_t", "nu": 4.0, "scale": 0.1}
+    }
+    with pytest.raises(WireFormatError) as raised:
+        compiled_plan_from_json(json.dumps(payload))
+    assert raised.value.code == "wire.payload.invalid"
+
+
 pytestmark = pytest.mark.integration

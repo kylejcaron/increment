@@ -35,6 +35,7 @@ from increment._literals import (
 )
 from increment._multiplicity import guarantee_for_correction
 from increment._prior_types import RelativeLiftPriorSpec
+from increment._prior_validation import validate_relative_prior_tag
 from increment.decision import (
     AbsoluteArmDecisionProcedure,
     CompiledDecisionPlan,
@@ -212,6 +213,13 @@ class _WireArmProcedure(_WireBase):
     favorable_side: Literal["greater", "less"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+
+    @field_validator("prior", mode="before")
+    @classmethod
+    def _explicit_relative_prior_tag(cls, value: object) -> object:
+        if isinstance(value, Mapping) and ("type" in value or "distribution" in value):
+            validate_relative_prior_tag(value)
+        return value
 
 
 class WireRelativeArmProcedure(_WireArmProcedure):

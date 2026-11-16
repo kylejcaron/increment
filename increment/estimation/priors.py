@@ -360,9 +360,7 @@ class RelativeLiftPrior(CodedModel, BaseModel):
 
 
 def _tagged_relative_prior(value: object) -> object:
-    if isinstance(value, Mapping) and (
-        "type" in value or ("distribution" in value and _prior_family(value) is None)
-    ):
+    if isinstance(value, Mapping) and ("type" in value or "distribution" in value):
         validate_relative_prior_tag(value)
         return RelativeLiftPrior.model_validate(value)
     return value

@@ -35,6 +35,7 @@ _LOGMAX = math.log(sys.float_info.max)
 _LOGMIN = math.log(math.ulp(0.0))
 _EPS = sys.float_info.epsilon
 _MAX = Fraction(sys.float_info.max)
+_UPDATED_WEIGHT_ERROR = 64 * _EPS * (1 + 3 * (_LOGMAX - _LOGMIN))
 
 
 def _standardized(value: float, mean: float, sigma: float) -> float:
@@ -46,11 +47,67 @@ def _standardized(value: float, mean: float, sigma: float) -> float:
     return value / sigma - mean / sigma
 
 
+def _refine_conjugate_parameters(
+    point: float,
+    se: float,
+    *,
+    prior_mean: float,
+    prior_sigma: float,
+    mean: float,
+    sigma: float,
+) -> tuple[float, float]:
+    """Retain the conditional density and cancellation-sensitive median."""
+    rounding = 16 * max(math.ulp(value) for value in (point, prior_mean, mean, sigma))
+    if rounding <= min(1e-12 * sigma, _value_tolerance(mean, mean) / 4):
+        return mean, sigma
+    observed_variance, prior_variance = Fraction(se) ** 2, Fraction(prior_sigma) ** 2
+    total = observed_variance + prior_variance
+    target_mean = (
+        Fraction(point) * prior_variance + Fraction(prior_mean) * observed_variance
+    ) / total
+    target_variance = observed_variance * prior_variance / total
+    mean = float(target_mean)
+    candidate = sigma * math.sqrt(float(target_variance / Fraction(sigma) ** 2))
+    candidates = (candidate, math.nextafter(candidate, 0.0), math.nextafter(candidate, math.inf))
+    sigma = min(
+        (value for value in candidates if 0 < value < math.inf),
+        key=lambda value: abs(Fraction(value) ** 2 - target_variance),
+    )
+    mean_error = Fraction(mean) - target_mean
+    variance_ratio = Fraction(sigma) ** 2 / target_variance
+    allowance = Fraction(1, 10**11)
+    if (
+        mean_error**2 > allowance**2 * target_variance
+        or not (1 - allowance) ** 2 <= variance_ratio <= (1 + allowance) ** 2
+    ):
+        _unavailable(
+            "construction",
+            "accuracy_unresolved",
+            parameter="posterior_state",
+            likelihood_point=point,
+            likelihood_se=se,
+            prior_mean=prior_mean,
+            prior_sigma=prior_sigma,
+            mean=mean,
+            sigma=sigma,
+        )
+    return mean, sigma
+
+
 def _logsum(values: list[float]) -> float:
     high = max(values, default=-math.inf)
     if high == -math.inf:
         return high
     return high + math.log(math.fsum(math.exp(value - high) for value in values))
+
+
+def _normal_difference_log(z: float, probability: float) -> float:
+    if abs(z) <= 1:
+        difference = math.fsum((0.5 - probability, math.erf(z / math.sqrt(2)) / 2))
+        return math.log(abs(difference)) if difference else -math.inf
+    first, second = float(log_ndtr(z)), math.log(probability)
+    high, low = max(first, second), min(first, second)
+    return high + math.log(-math.expm1(low - high)) if high > low else -math.inf
 
 
 def _midpoint(lower: float, upper: float) -> float:
@@ -96,6 +153,15 @@ class _ConjugateQueries(ABC):
     @abstractmethod
     def _parameters(self) -> dict[str, object]: ...
 
+    def _log_normalizer(self) -> float:
+        return 0.0
+
+    def _comparison_components(self) -> Iterator[_Component]:
+        return self._components()
+
+    def _log_weight_error(self, weight: float) -> float:
+        return -math.inf
+
     def _fail(self, operation: str, reason: str, **query: object) -> NoReturn:
         _unavailable(operation, reason, **query, **self._parameters())
 
@@ -108,6 +174,7 @@ class _ConjugateQueries(ABC):
                     for weight, mean, sigma in self._components()
                 ]
             )
+            - self._log_normalizer()
         )
 
     def cdf(self, value: float) -> float:
@@ -140,6 +207,7 @@ class _ConjugateQueries(ABC):
                     for weight, mean, sigma in self._components()
                 ]
             )
+            - self._log_normalizer()
         )
 
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
@@ -171,7 +239,7 @@ class _ConjugateQueries(ABC):
                 )
         except _PosteriorNumericalError as error:
             self._fail(operation, str(error.context["reason"]), scale=scale)
-        logarithm = _logsum(terms)
+        logarithm = _logsum(terms) - self._log_normalizer()
         if logarithm > _LOGMAX:
             self._fail(operation, "result_unrepresentable", scale=scale)
         return math.exp(logarithm)
@@ -188,23 +256,50 @@ class _ConjugateQueries(ABC):
             _invalid("isf", "tail probability must be in (0, 1)", tail_probability=tail_probability)
         return self._invert(tail_probability, survival=True)
 
-    def _comparison(self, value: float, alpha: float, *, survival: bool) -> int:
-        """Sign of the increasing root function, without subtracting final CDFs."""
-        baseline = [-alpha]
-        positive, negative = [], []
-        for weight, mean, sigma in self._components():
-            z = _standardized(value, mean, sigma) * (-1 if survival else 1)
-            tail = math.log(weight) + float(log_ndtr(-abs(z)))
-            if z >= 0:
-                baseline.append(weight)
-                negative.append(tail)
+    def _comparison(self, value: float, alpha: float, *, survival: bool, bound: int = 0) -> int:
+        """Sign of a continuous-target root, with optional roundoff allowance."""
+        constant = Fraction()
+        normalizer = Fraction()
+        positive, negative, uncertainty = [], [], []
+        for weight, mean, sigma in self._comparison_components():
+            exact_weight = Fraction(weight)
+            normalizer += exact_weight
+            z = _standardized(value, mean, sigma)
+            if math.isfinite(z):
+                error = 16 * _EPS * abs(z) + math.ulp(z)
+                lower = math.nextafter(z - error, -math.inf)
+                upper = math.nextafter(z + error, math.inf)
             else:
-                positive.append(tail)
-        constant = math.fsum(baseline)
-        if constant > 0:
-            positive.append(math.log(constant))
-        elif constant < 0:
-            negative.append(math.log(-constant))
+                lower = upper = z
+            if bound:
+                z = lower if bound < 0 else upper
+            z *= -1 if survival else 1
+            log_weight = math.log(weight) if weight else -math.inf
+            if abs(z) <= 1:
+                constant += exact_weight / 2
+                deviation = math.erf(z / math.sqrt(2))
+                if deviation:
+                    terms = positive if deviation > 0 else negative
+                    terms.append(log_weight + math.log(abs(deviation)) - _LOG2)
+            elif z > 0:
+                constant += exact_weight
+                negative.append(log_weight + float(log_ndtr(-z)))
+            else:
+                positive.append(log_weight + float(log_ndtr(z)))
+            log_error = self._log_weight_error(weight) if bound else -math.inf
+            if log_error > -math.inf:
+                deviations = (
+                    _normal_difference_log(endpoint * (-1 if survival else 1), alpha)
+                    for endpoint in (lower, upper)
+                )
+                uncertainty.append(log_error + max(deviations))
+        constant -= Fraction(alpha) * normalizer
+        if constant:
+            logarithm = math.log(abs(constant.numerator)) - math.log(constant.denominator)
+            (positive if constant > 0 else negative).append(logarithm)
+        if uncertainty:
+            terms = positive if bound * (-1 if survival else 1) > 0 else negative
+            terms.extend(uncertainty)
         first, second = _logsum(positive), _logsum(negative)
         sign = int(first > second) - int(first < second)
         return -sign if survival else sign
@@ -215,8 +310,8 @@ class _ConjugateQueries(ABC):
         lower, upper = math.nextafter(value, -math.inf), math.nextafter(value, math.inf)
         if upper - lower > _value_tolerance(lower, upper):
             return False
-        left = self._comparison(lower, alpha, survival=survival)
-        right = self._comparison(upper, alpha, survival=survival)
+        left = self._comparison(lower, alpha, survival=survival, bound=1)
+        right = self._comparison(upper, alpha, survival=survival, bound=-1)
         return left <= 0 <= right and left < right
 
     def _invert(self, alpha: float, *, survival: bool) -> float:
@@ -234,10 +329,15 @@ class _ConjugateQueries(ABC):
             for _, mean, sigma in self._components()
         )
         if (
-            self._comparison(lower, alpha, survival=survival) > 0
-            or self._comparison(upper, alpha, survival=survival) < 0
+            self._comparison(lower, alpha, survival=survival, bound=-1) > 0
+            or self._comparison(upper, alpha, survival=survival, bound=1) < 0
         ):
             self._fail(operation, "result_unrepresentable", **query)
+        if (
+            self._comparison(lower, alpha, survival=survival, bound=1) > 0
+            or self._comparison(upper, alpha, survival=survival, bound=-1) < 0
+        ):
+            self._fail(operation, "accuracy_unresolved", **query)
         # Physical bisection avoids an overflowing span or a coordinate scaling
         # that erases small effects. 2200 steps cover the binary64 exponent range.
         for _ in range(2200):
@@ -247,24 +347,23 @@ class _ConjugateQueries(ABC):
                 result, alpha, survival=survival
             ):
                 return result
-            comparison = self._comparison(result, alpha, survival=survival)
-            if comparison == 0:
-                # A rounded plateau is not a value bracket. Local signs must
-                # independently resolve before a zero residual can be accepted.
+            below = self._comparison(result, alpha, survival=survival, bound=1)
+            above = self._comparison(result, alpha, survival=survival, bound=-1)
+            if above <= 0 <= below:
                 distance = _value_tolerance(result, result) / 4
                 local_lower = max(lower, math.nextafter(result - distance, -math.inf))
                 local_upper = min(upper, math.nextafter(result + distance, math.inf))
                 if (
-                    self._comparison(local_lower, alpha, survival=survival)
+                    self._comparison(local_lower, alpha, survival=survival, bound=1)
                     < 0
-                    < self._comparison(local_upper, alpha, survival=survival)
+                    < self._comparison(local_upper, alpha, survival=survival, bound=-1)
                 ):
                     lower, upper = local_lower, local_upper
                     continue
                 self._fail(operation, "accuracy_unresolved", **query)
             if result == lower or result == upper:
                 self._fail(operation, "accuracy_unresolved", **query)
-            if comparison < 0:
+            if below < 0:
                 lower = result
             else:
                 upper = result
@@ -295,7 +394,9 @@ class RelativeNormalPosterior(_ConjugateQueries):
         result = float(exact)
         # Inverse-Normal rounding and affine rounding must fit the value budget,
         # including near cancellation where a small residual alone proves little.
-        error = self.normal.sigma * (8 * _EPS * abs(z)) + math.ulp(result)
+        error = (
+            self.normal.sigma * (12 * _EPS * abs(z)) + math.ulp(self.normal.mu) + math.ulp(result)
+        )
         if error > _value_tolerance(result, result) or not self._accepted(
             result, alpha, survival=survival
         ):
@@ -308,13 +409,27 @@ class RelativeMixturePosterior(_ConjugateQueries):
     """Relative-effect queries retaining the updated mixture arrays by reference."""
 
     mixture: MixturePosterior
+    weight_relative_error: float = 0.0
 
-    def _components(self) -> Iterator[_Component]:
+    def _log_normalizer(self) -> float:
+        return math.log(math.fsum(float(weight) for weight in self.mixture.weights))
+
+    def _log_weight_error(self, weight: float) -> float:
+        if not self.weight_relative_error:
+            return -math.inf
+        relative = math.log(weight) + math.log(self.weight_relative_error) if weight else -math.inf
+        # Exp and normalization can round positive mass to zero. Keep an
+        # additive allowance in log form: even half a minsub is not a float.
+        return _logsum([relative, _LOGMIN + 2 * _LOG2])
+
+    def _comparison_components(self) -> Iterator[_Component]:
         for weight, mean, sigma in zip(
             self.mixture.weights, self.mixture.means, self.mixture.sigmas, strict=True
         ):
-            if weight > 0:
-                yield float(weight), float(mean), float(sigma)
+            yield float(weight), float(mean), float(sigma)
+
+    def _components(self) -> Iterator[_Component]:
+        return (component for component in self._comparison_components() if component[0] > 0)
 
     def _parameters(self) -> dict[str, object]:
         return {

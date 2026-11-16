@@ -45,6 +45,12 @@ from increment.estimation._fixed_horizon import (
     _joint_additive_bounds,
     _resolve_fixed_horizon,
 )
+from increment.estimation._relative_conjugate import (
+    _UPDATED_WEIGHT_ERROR,
+    RelativeMixturePosterior,
+    RelativeNormalPosterior,
+    _refine_conjugate_parameters,
+)
 from increment.estimation._relative_posterior import (
     RelativeStudentTPosterior,
     RelativeStudentTState,
@@ -366,8 +372,33 @@ def _updated_posterior_fields(
             "posterior_components": None,
         }
     elif isinstance(distribution, (StudentTPrior, MixturePrior)):
-        mixture = mixture_posterior(point, se, distribution.components())
-        posterior = mixture
+        components = distribution.components()
+        mixture = mixture_posterior(point, se, components)
+        if isinstance(prior, RelativeLiftPrior):
+            for index, (weight, original_mean, original_sigma, mean, sigma) in enumerate(
+                zip(
+                    mixture.weights,
+                    components.means,
+                    components.sigmas,
+                    mixture.means,
+                    mixture.sigmas,
+                    strict=True,
+                )
+            ):
+                if weight > 0:
+                    mixture.means[index], mixture.sigmas[index] = _refine_conjugate_parameters(
+                        point,
+                        se,
+                        prior_mean=float(original_mean),
+                        prior_sigma=float(original_sigma),
+                        mean=float(mean),
+                        sigma=float(sigma),
+                    )
+        posterior = (
+            RelativeMixturePosterior(mixture, weight_relative_error=_UPDATED_WEIGHT_ERROR)
+            if isinstance(prior, RelativeLiftPrior)
+            else mixture
+        )
         fields = {
             "posterior_model": "mixture",
             "posterior_latent_mean": None,
@@ -380,7 +411,20 @@ def _updated_posterior_fields(
         }
     else:
         normal = normal_posterior(point, se, distribution)
-        posterior = normal
+        if isinstance(prior, RelativeLiftPrior):
+            mean, sigma = _refine_conjugate_parameters(
+                point,
+                se,
+                prior_mean=distribution.mu,
+                prior_sigma=distribution.sigma,
+                mean=normal.mu,
+                sigma=normal.sigma,
+            )
+            if mean != normal.mu or sigma != normal.sigma:
+                normal = Normal(mu=mean, sigma=sigma)
+        posterior = (
+            RelativeNormalPosterior(normal) if isinstance(prior, RelativeLiftPrior) else normal
+        )
         fields = {
             "posterior_model": "normal",
             "posterior_latent_mean": normal.mu,

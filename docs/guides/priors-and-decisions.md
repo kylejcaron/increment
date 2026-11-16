@@ -58,7 +58,143 @@ baseline, mass below -100% is a limitation of this working approximation.
 Signed outcomes can have such relative effects, but this declaration does not
 expand the existing data-admission rules.
 
-## Declaring a prior: `Normal`, `StudentTPrior`, `MixturePrior`
+### What is updated
+
+For an eligible contrast, write the observed relative change as
+$x=\bar Y_T/\bar Y_C-1$. The working observation model is
+$x\mid r\sim N(r,s_r^2)$, with $s_r=(1+x)s_{\log}$ from the retained
+sampling uncertainty. The prior describes $r$ itself. A log coordinate used
+to integrate a Student-t density is not a log-lift observation model.
+
+For example, $x=0.20$, $s_r=0.10$ and a relative Normal prior with mean zero
+and SD $0.10$ give posterior mean and median $0.10$ and SD
+$\sqrt{0.005}$. The published posterior estimate is the **median** for every
+family, including asymmetric mixtures; it need not equal the posterior mean.
+Normal and mixture updates retain their updated parameters. Wrapped Student-t
+updates integrate its continuous density rather than a fixed component grid.
+
+This changes a distribution on an effect, not the metric's estimand. Repeated
+control outcomes `[4, 16]` and treatment outcomes `[1, 29]` have arithmetic
+means 10 and 15: sampling lift is +50%, regardless of the prior. Taking logs
+of individual outcomes would answer a different question.
+
+### Availability, replay and approximation
+
+Check `posterior_available` and `posterior_reason_code` separately from
+`sampling_available`. A numerical inability to construct a posterior preserves
+the sampling result and valid sibling metrics. A later probability or loss
+query can also be unavailable without invalidating the retained posterior.
+Batch exports retain each query's value or its exact reason independently;
+one failed query does not erase successful queries.
+A finite median alone is not sufficient: if the saved center and spread
+cannot retain accurate posterior probabilities, the posterior is unavailable
+instead of silently replaying a different density.
+
+Saved rows retain the relative model, original declaration and either updated
+Normal/mixture parameters or the Student-t defining state. JSON and frame
+replay use that state once, not a second likelihood update. Existing public
+probability signatures and threshold validation remain unchanged: unrestricted
+parameter support does not introduce a new percentile-input or query API.
+
+The working model uses estimated uncertainty. Skew, low event counts, a noisy
+baseline and dependence between an estimate and its estimated SE can affect
+posterior calibration even when existing admission checks pass. Frozen
+joint-model simulations check the numerical posterior under its assumed
+Normal likelihood. Separate raw-outcome simulations found six distributional
+discrepancies among thirteen measurable settings and one sparse setting with
+no admitted experiments; seven fixed-truth raw/proxy contrasts were flagged.
+Those diagnostics do not establish a universal calibration guarantee or a
+new sample-size rule. In particular, informative-prior intervals need not
+have 95% repeated-sampling coverage at every fixed true effect.
+
+From a source checkout, reproduce the frozen raw-outcome diagnostics with
+`python -m calibration.relative_prior_validation --phase all --output results.json`.
+The runner preserves both historical registrations, seeds, excluded
+populations and diagnostic flags while evaluating the production relative
+Normal posterior. The separate slow working-model tests report their PIT
+distance, inclusion count, exact interval and p-value when run with `-s`.
+
+## Historical evidence: predict the next true effect
+
+Before importing a historical model, distinguish uncertainty in its pooled
+mean from variation among experiments. If the historical posterior for the
+mean is exactly $N(0.02,0.01^2)$, between-experiment SD is known to be $0.10$,
+and a new exchangeable true effect has independent Normal variation around
+that mean, its predictive distribution is exactly
+$N(0.02,0.01^2+0.10^2)$ under those assumptions:
+
+```python
+import math
+from increment.estimators import Normal, RelativeLiftPrior
+
+next_effect_prior = RelativeLiftPrior(distribution=Normal(mu=0.02, sigma=math.hypot(0.01, 0.10)))
+```
+
+| Target under this hypothetical model | SD | Equal-tail 95% interval | Probability above 10% |
+| --- | ---: | --- | ---: |
+| Pooled mean | 0.0100000000 | [0.0004003602, 0.0395996398] | 6.2209605743e-16 |
+| Next true effect | 0.1004987562 | [-0.1769739427, 0.2169739427] | 0.2130073713 |
+| Future noisy estimate, additionally assuming SE 0.05 | 0.1122497216 | [-0.2000054116, 0.2400054116] | 0.2380167465 |
+
+Use the next-true-effect distribution as the effect prior, not the first or
+third row. Future observation noise belongs in the likelihood; adding it to
+the prior counts it twice. More historical studies can reduce uncertainty in
+the pooled mean without eliminating between-experiment variation.
+
+Known heterogeneity, a plug-in estimate and uncertainty about heterogeneity
+are different models. With uncertain historical parameters, prediction
+integrates over their joint posterior. It is generally neither a single
+Normal nor a Student-t. A finite Normal mixture can describe a genuinely
+discrete model or a separately assessed approximation; a family name does
+not validate that approximation. A frequentist pooled estimate and SE are not
+automatically a Bayesian predictive distribution. No fitting or automatic
+conversion is performed here.
+
+### Student-t spread and transformed historical models
+
+For a zero-centered Student-t with degrees of freedom $\nu>2$, SD is
+$a\sqrt{\nu/(\nu-2)}$, where $a$ is `scale`. For SD 10% and $\nu=4$, use
+`StudentTPrior(nu=4, scale=0.10 * math.sqrt((4 - 2) / 4))` inside the wrapper.
+Its scale is approximately 0.0707106781, not 0.10. There is no finite SD for
+$\nu\leq2$, and no mean for $\nu\leq1$, although central quantiles exist.
+The available Student-t family is centered at zero; a nonzero historical
+center must not be silently discarded. `k` is not historical sample size or
+uncertainty in heterogeneity.
+
+A Normal prediction for $L=\log(1+r)$ instead gives
+$r=\exp(L)-1$: a shifted lognormal distribution with support $r>-1$.
+If $L\sim N(a,b^2)$, its relative median is $\operatorname{expm1}(a)$,
+mean is $\operatorname{expm1}(a+b^2/2)$ and quantiles are
+$\operatorname{expm1}(a+b\Phi^{-1}(p))$. Setting the same Normal parameters
+inside `RelativeLiftPrior` does not reproduce that distribution. Even a
+moment-matched relative Normal is an approximation with different shape and
+support, not an exact scale translation.
+
+Before treating historical experiments as exchangeable with this one, check:
+
+- The same estimand, metric denominator, analysis unit, arithmetic-versus-log
+  outcome definition, and fractional-versus-percentage-point scale.
+- Compatible exposure windows, follow-up horizons, populations and
+  interventions, including assignment versus triggering.
+- The same treatment/control orientation. Reversing a relative ratio is not
+  generally a sign flip; favorable direction does not redefine the ratio.
+- Defensible study-specific sampling SEs and any dependence from shared
+  controls, users, windows or repeated views.
+- Selection, reporting and stopping biases; heterogeneity does not repair
+  them automatically.
+- A historical evidence set fixed independently of the current likelihood.
+  Reusing current outcomes in both prior and update double-counts evidence.
+
+These checks do not broaden source or estimator eligibility.
+
+
+## Existing unwrapped priors: `Normal`, `StudentTPrior`, `MixturePrior`
+
+Unwrapped declarations retain their historical, route-specific meanings.
+On the randomized relative-lift routes below they describe log lift;
+supported absolute-native routes retain their own units. The explicit
+relative wrapper selects a different statistical model, not a compatibility
+alias or an automatic migration of these inputs.
 
 ```python
 import numpy as np
@@ -114,7 +250,7 @@ Choose `Normal` for a single bell-shaped prior, `StudentTPrior` for heavier tail
 A valid sampling result does not guarantee an available posterior. Check `posterior_available` and its reason before using a Bayesian summary.
 
 !!! warning "Exact binary inference and declarations"
-    An explicit `conversion_inference="finite_sample"` request with a prior remains refused; the exact binomial inversion has no posterior for a prior to update. Per-metric/YAML prior declarations currently accept Normal priors; Student-t and mixtures are call-time `run(prior=...)` options.
+    An explicit `conversion_inference="finite_sample"` request with a prior remains refused; exact binomial inversion has no posterior for a prior to update. Per-metric/YAML declarations accept an unwrapped Normal or an explicitly tagged relative Normal, Student-t or mixture. Unwrapped Student-t and mixtures remain call-time options.
 
 ??? info "Binary construction and path coverage"
     Informative priors also work on ordinary conversion data. `conversion_inference="auto"` chooses from the four success/failure counts whether or not a prior is declared. Dense counts use the same prior-free delta-method construction (including its t reference) as an unadjusted mean; sparse counts use exact binomial test inversion. A supported posterior is stored separately for dense counts. For sparse counts, valid exact sampling inference remains available even when the existing approximate-posterior guard reports `posterior_available=False` and its exact reason.

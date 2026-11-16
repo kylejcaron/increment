@@ -1841,6 +1841,14 @@ def test_summary_unit_frame_preserves_mixed_covariate_values_and_nulls():
         ({"type": "relative_lift", "mu": 0.0, "sigma": 0.1}, "model.field.missing"),
         ({"type": "unknown", "mu": 0.0, "sigma": 0.1}, "model.field.literal"),
         ({"distribution": {"type": "normal", "mu": 0.0, "sigma": 0.1}}, "model.field.missing"),
+        (
+            {
+                "mu": 0.0,
+                "sigma": 0.1,
+                "distribution": {"type": "student_t", "nu": 4.0, "scale": 0.1},
+            },
+            "model.field.missing",
+        ),
     ],
 )
 def test_metric_spec_malformed_relative_prior_refuses_without_legacy_fallback(payload, code):
