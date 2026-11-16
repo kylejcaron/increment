@@ -304,6 +304,51 @@ def test_student_t_adjacent_float_median_accepts_value_enclosure(prior_scale, cd
     assert lower < 0.5 < upper
 
 
+@pytest.mark.parametrize(
+    "method,probability,cdf_target,lower,upper,cdf_lower,cdf_upper",
+    [
+        (
+            "quantile",
+            0.025,
+            0.025,
+            0.999999999999998,
+            0.9999999999999981,
+            0.022836577591835591508,
+            0.029554674266138361913,
+        ),
+        (
+            "quantile",
+            0.5,
+            0.5,
+            0.9999999999999999,
+            1.0,
+            0.455799330626007186036,
+            0.500000000000001994711,
+        ),
+        (
+            "isf",
+            0.025,
+            0.975,
+            1.0000000000000018,
+            1.000000000000002,
+            0.962162939890559314326,
+            0.977163422408164950130,
+        ),
+    ],
+)
+def test_student_t_collapsed_asinh_bracket_preserves_physical_quantile(
+    method, probability, cdf_target, lower, upper, cdf_lower, cdf_upper
+):
+    # Independent direct density in likelihood coordinates, 60/85 digits.
+    distribution = posterior(1, 1e-15, 4, 1e-20)
+    result = getattr(distribution, method)(probability)
+    assert result in (lower, upper)
+    actual_lower, actual_upper = distribution.cdf(lower), distribution.cdf(upper)
+    assert actual_lower == pytest.approx(cdf_lower, abs=1e-10, rel=0)
+    assert actual_upper == pytest.approx(cdf_upper, abs=1e-10, rel=0)
+    assert actual_lower < cdf_target < actual_upper
+
+
 def test_student_t_construction_failure_context_survives_transport():
     with pytest.raises(_PosteriorNumericalError) as caught:
         posterior(sys.float_info.max, math.ulp(0.0), 4, 1)

@@ -254,6 +254,12 @@ class _Estimate:
         return max(self.value - self.lower, self.upper - self.value)
 
 
+def _tail_bracket(first: _Estimate, second: _Estimate, alpha: float, *, survival: bool) -> bool:
+    return (
+        first.lower >= alpha >= second.upper if survival else first.upper <= alpha <= second.lower
+    )
+
+
 def _normal_loss_log(mean: float, log_deviation: float, standardized_mean: float) -> float:
     """Log positive Normal part, with an alternating Mills remainder."""
     z = standardized_mean
@@ -768,62 +774,71 @@ class RelativeStudentTPosterior:
 
         return coordinate(low), coordinate(high), effect, coordinate
 
-    def _invert(self, alpha: float, *, survival: bool) -> float:
-        if alpha > 0.5:
-            alpha, survival = 1 - alpha, not survival
+    def _localize_quantile(self, alpha: float, *, survival: bool) -> tuple[float, float, float]:
         low, high, effect, coordinate = self._coordinates(alpha)
 
         def evaluate(z: float) -> _Estimate:
             return self._probability(effect(z), survival=survival, relative=True)
 
-        def bracketed(first: _Estimate, second: _Estimate) -> bool:
-            return (
-                first.lower >= alpha >= second.upper
-                if survival
-                else first.upper <= alpha <= second.lower
-            )
-
-        # First try a local likelihood bracket, retaining the full sufficient
-        # bracket if the prior has shifted the requested quantile outside it.
+        # Keep a verified physical bracket even if localization cannot resolve
+        # its endpoints after a logarithmic round trip.
         radius = -float(ndtri_exp(math.log(alpha) - _LOG2))
         work = self._workspace
-        local_low = max(
-            low, coordinate(_finite_float(Fraction(work.x) - Fraction(work.s) * Fraction(radius)))
-        )
-        local_high = min(
-            high, coordinate(_finite_float(Fraction(work.x) + Fraction(work.s) * Fraction(radius)))
-        )
-        local_left, local_right = evaluate(local_low), evaluate(local_high)
-        if bracketed(local_left, local_right):
-            low, high = local_low, local_high
-        left, right = evaluate(low), evaluate(high)
-        if not bracketed(left, right):
-            wrong = (
-                (left.upper < alpha or right.lower > alpha)
-                if survival
-                else (left.lower > alpha or right.upper < alpha)
+        physical_low = _finite_float(Fraction(work.x) - Fraction(work.s) * Fraction(radius))
+        physical_high = _finite_float(Fraction(work.x) + Fraction(work.s) * Fraction(radius))
+        physical_left = self._probability(physical_low, survival=survival, relative=True)
+        physical_right = self._probability(physical_high, survival=survival, relative=True)
+        physical_bracket = _tail_bracket(physical_left, physical_right, alpha, survival=survival)
+        result: float | None = None
+        if physical_bracket:
+            local_low, local_high = (
+                max(low, coordinate(physical_low)),
+                min(high, coordinate(physical_high)),
             )
-            _unavailable("inversion", "result_unrepresentable" if wrong else "accuracy_unresolved")
-        try:
-            root = brentq(
-                lambda z: evaluate(z).value - alpha,
-                low,
-                high,
-                xtol=math.ulp(0.0),
-                rtol=8 * _EPS,
-                maxiter=256,
-            )
-        except (ValueError, RuntimeError):
-            _unavailable("inversion", "accuracy_unresolved")
-        result = effect(root)
+            local_left, local_right = evaluate(local_low), evaluate(local_high)
+            if _tail_bracket(local_left, local_right, alpha, survival=survival):
+                low, high = local_low, local_high
+            else:
+                result = work.x
+        if result is None:
+            left, right = evaluate(low), evaluate(high)
+            if not _tail_bracket(left, right, alpha, survival=survival):
+                wrong = (
+                    (left.upper < alpha or right.lower > alpha)
+                    if survival
+                    else (left.lower > alpha or right.upper < alpha)
+                )
+                _unavailable(
+                    "inversion", "result_unrepresentable" if wrong else "accuracy_unresolved"
+                )
+            try:
+                root = brentq(
+                    lambda z: evaluate(z).value - alpha,
+                    low,
+                    high,
+                    xtol=math.ulp(0.0),
+                    rtol=8 * _EPS,
+                    maxiter=256,
+                )
+            except (ValueError, RuntimeError):
+                _unavailable("inversion", "accuracy_unresolved")
+            result = effect(root)
+            if not physical_bracket:
+                physical_low, physical_high = effect(low), effect(high)
         if not math.isfinite(result):
             _unavailable("inversion", "result_unrepresentable")
+        return result, physical_low, physical_high
+
+    def _invert(self, alpha: float, *, survival: bool) -> float:
+        if alpha > 0.5:
+            alpha, survival = 1 - alpha, not survival
+        result, physical_low, physical_high = self._localize_quantile(alpha, survival=survival)
         tolerance = 1e-9 + 1e-6 * abs(result)
-        qlo = math.nextafter(result - tolerance / 4, -math.inf)
-        qhi = math.nextafter(result + tolerance / 4, math.inf)
+        qlo = max(physical_low, math.nextafter(result - tolerance / 4, -math.inf))
+        qhi = min(physical_high, math.nextafter(result + tolerance / 4, math.inf))
         first = self._probability(qlo, survival=survival, relative=True)
         second = self._probability(qhi, survival=survival, relative=True)
-        if not bracketed(first, second):
+        if not _tail_bracket(first, second, alpha, survival=survival):
             _unavailable("inversion", "accuracy_unresolved")
         minimum = 0 if qlo <= 0 <= qhi else min(abs(qlo), abs(qhi))
         if max(result - qlo, qhi - result) > 1e-9 + 1e-6 * minimum:
@@ -838,7 +853,9 @@ class RelativeStudentTPosterior:
             following = math.nextafter(value, math.inf)
             before = self._probability(previous, survival=survival, relative=True)
             after = self._probability(following, survival=survival, relative=True)
-            adjacent = bracketed(before, pair) or bracketed(pair, after)
+            adjacent = _tail_bracket(before, pair, alpha, survival=survival) or _tail_bracket(
+                pair, after, alpha, survival=survival
+            )
             minimum = 0 if previous <= 0 <= following else min(abs(previous), abs(following))
             return adjacent and max(value - previous, following - value) <= 1e-9 + 1e-6 * minimum
 
