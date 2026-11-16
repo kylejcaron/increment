@@ -6,7 +6,7 @@ import json
 import pickle
 from fractions import Fraction
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -863,87 +863,3 @@ def test_capability_semantics_round_trip_and_preserve_resolver_mismatch():
 
     _assert_legacy_temporal_defaults(capabilities)
     _assert_restored_temporal_runnable_consumer()
-
-
-def test_registered_selection_precedes_unsupported_quantile_window():
-    from increment import run, runnable
-    from increment.errors import CapabilityError
-    from increment.estimators import AlwaysValid, SequentialCell
-    from increment.evidence import BreakoutIdentity
-    from tests.analysis_factory import bind_pair, held_source
-    from tests.sequential_cases import registration
-    from tests.test_evidence_capabilities import _ReadGuardProvider
-
-    rows = [
-        {
-            "unit": f"u{i}",
-            "group": "control" if i < 4 else "treat",
-            "ds": "2025-01-01",
-            "p50": float(i),
-            "country": "us",
-        }
-        for i in range(8)
-    ]
-    _, original, _, _ = _restored_temporal_case("temporal_quantiles", rows)
-    source = cast(Any, held_source(original))
-    try:
-        metric = source.context.metrics[0].model_copy(update={"window_days": 7})
-        model = registration("gaussian").models[0].model_copy(update={"metric": "p50"})
-        registered = registration(
-            "gaussian",
-            models=(model,),
-            cells=(
-                SequentialCell(
-                    metric="p50",
-                    group_id="treat",
-                    segment=(("registered", "us"),),
-                ),
-            ),
-        )
-        policy = AlwaysValid(registration=registered)
-        plan = source.context.plan.model_copy(
-            update={
-                "inference": policy,
-                "procedures": {
-                    name: procedure.model_copy(update={"inference": policy})
-                    for name, procedure in source.context.plan.procedures.items()
-                },
-            }
-        )
-        context = dataclasses.replace(
-            source.context,
-            metrics=(metric,),
-            configs=tuple(
-                dataclasses.replace(config, metric=metric) for config in source.context.configs
-            ),
-            plan=plan,
-        )
-
-        class Provider(_ReadGuardProvider):
-            @property
-            def context(self):
-                return context
-
-        provider = Provider(
-            source,
-            evidence=dataclasses.replace(source.evidence, windowed_breakout_quantiles=False),
-        )
-        experiment, resolver = bind_pair(provider)
-        scope = View(view="breakout", segment=(BreakoutIdentity("country", None),))
-        restored = Experiment.from_json(dataclasses.replace(experiment, views=(scope,)).to_json())
-        try:
-            expected = {
-                "reason": "registered sequential inference reads only its registered breakout dimension"
-            }
-            with pytest.raises(CapabilityError) as runtime:
-                run(restored, resolver, views=(scope,))
-            assert runtime.value.code == "sequential.route.unsupported"
-            assert runtime.value.context == expected
-            refusals = runnable(restored, "p50")["randomized.unadjusted"].static_refusals
-            assert type(refusals[0]) is CapabilityError
-            assert refusals[0].code == "sequential.route.unsupported"
-            assert refusals[0].context == expected
-        finally:
-            resolver.close()
-    finally:
-        original.close()

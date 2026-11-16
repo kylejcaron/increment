@@ -2003,3 +2003,89 @@ def test_day_axis_metric_objects_do_not_require_exploratory_sibling_support(
         replace_bound_source(resolver, source)
         resolver.close()
         connection.disconnect()
+
+
+@pytest.mark.integration
+def test_registered_selection_precedes_unsupported_quantile_window():
+    import dataclasses
+
+    from increment import Experiment, run, runnable
+    from increment.errors import CapabilityError
+    from increment.estimators import AlwaysValid, SequentialCell
+    from increment.evidence import BreakoutIdentity
+    from tests.sequential_cases import registration
+    from tests.test_experiment_spec import _restored_temporal_case
+
+    rows = [
+        {
+            "unit": f"u{i}",
+            "group": "control" if i < 4 else "treat",
+            "ds": "2025-01-01",
+            "p50": float(i),
+            "country": "us",
+        }
+        for i in range(8)
+    ]
+    _, original, _, _ = _restored_temporal_case("temporal_quantiles", rows)
+    source = cast(Any, held_source(original))
+    try:
+        metric = source.context.metrics[0].model_copy(update={"window_days": 7})
+        model = registration("gaussian").models[0].model_copy(update={"metric": "p50"})
+        registered = registration(
+            "gaussian",
+            models=(model,),
+            cells=(
+                SequentialCell(
+                    metric="p50",
+                    group_id="treat",
+                    segment=(("registered", "us"),),
+                ),
+            ),
+        )
+        policy = AlwaysValid(registration=registered)
+        plan = source.context.plan.model_copy(
+            update={
+                "inference": policy,
+                "procedures": {
+                    name: procedure.model_copy(update={"inference": policy})
+                    for name, procedure in source.context.plan.procedures.items()
+                },
+            }
+        )
+        context = dataclasses.replace(
+            source.context,
+            metrics=(metric,),
+            configs=tuple(
+                dataclasses.replace(config, metric=metric) for config in source.context.configs
+            ),
+            plan=plan,
+        )
+
+        class Provider(_ReadGuardProvider):
+            @property
+            def context(self):
+                return context
+
+        provider = Provider(
+            source,
+            evidence=dataclasses.replace(source.evidence, windowed_breakout_quantiles=False),
+        )
+        experiment, resolver = bind_pair(provider)
+        scope = View(view="breakout", segment=(BreakoutIdentity("country", None),))
+        restored = Experiment.from_json(dataclasses.replace(experiment, views=(scope,)).to_json())
+        try:
+            expected = {
+                "reason": "registered sequential inference reads only its registered breakout dimension"
+            }
+            with pytest.raises(CapabilityError) as runtime:
+                run(restored, resolver, views=(scope,))
+            assert runtime.value.code == "sequential.route.unsupported"
+            assert runtime.value.context == expected
+            refusals = runnable(restored, "p50")["randomized.unadjusted"].static_refusals
+            assert type(refusals[0]) is CapabilityError
+            assert refusals[0].code == "sequential.route.unsupported"
+            assert refusals[0].context == expected
+        finally:
+            resolver.close()
+    finally:
+        original.close()

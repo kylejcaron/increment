@@ -2821,13 +2821,17 @@ def test_custom_provider_triggered_analysis_uses_declared_population(tmp_path) -
 
 
 @pytest.mark.integration
-def test_custom_triggered_whole_window_scope_authorizes_both_integrity_counts(tmp_path) -> None:
+@pytest.mark.parametrize("assignment_counts", (True, False))
+def test_custom_triggered_whole_window_scope_authorizes_both_integrity_counts(
+    tmp_path, assignment_counts
+) -> None:
 
     native, _ = definitions_source(
         tmp_path, trigger=True, partial_trigger=False, return_binding=True
     )
     experiment, native_resolver = native
     source = cast(Any, held_source(native_resolver))
+    expected = list(view_readout(*native, population="triggered"))
     allowed_by_scope: list[frozenset[str]] = []
 
     provider = _forwarding_provider(
@@ -2836,6 +2840,8 @@ def test_custom_triggered_whole_window_scope_authorizes_both_integrity_counts(tm
         close=lambda: None,
     )
     provider.source = source
+    if not assignment_counts:
+        provider.evidence = replace(source.evidence, count_grains=frozenset({"unit", "triggered"}))
     original_counts = provider.counts
 
     def scoped_counts(request):
@@ -2859,7 +2865,13 @@ def test_custom_triggered_whole_window_scope_authorizes_both_integrity_counts(tm
     bound = bind_pair(provider, experiment=experiment_definition(*native))
     try:
         rows = list(view_readout(*bound, population="triggered"))
-        assert rows
+        assert [
+            (row.analysis_population, row.n_control, row.n_treat, row.require_lift().value)
+            for row in rows
+        ] == [
+            (row.analysis_population, row.n_control, row.n_treat, row.require_lift().value)
+            for row in expected
+        ]
         assert {row.analysis_population for row in rows} == {"triggered"}
     finally:
         bound[1].close()

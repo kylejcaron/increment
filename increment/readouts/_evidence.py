@@ -956,10 +956,26 @@ def method_fit_input_digest(src: EvidenceSource, request: MethodFitRequest) -> s
     return digest.hexdigest()
 
 
+def trigger_integrity_requests(src: EvidenceSource) -> tuple[CountsRequest, CountsRequest]:
+    """Select uptake counts at the source's declared randomization grain."""
+    declaration = declared_evidence(src)
+    if "assignment" in declaration.count_grains:
+        kind = "assignment"
+    elif src.context.cluster is not None:
+        kind = "cluster"
+    else:
+        kind = "unit"
+    return (
+        CountsRequest(kind=kind, population="assigned"),
+        CountsRequest(kind=kind, population="triggered"),
+    )
+
+
 def validate_trigger_fires_in_every_arm(src: EvidenceSource, trigger: str | None) -> None:
     """Validate trigger uptake from the same evidence source used by the readout."""
-    assigned = load_counts(src, CountsRequest(kind="assignment", population="assigned"))
-    triggered = load_counts(src, CountsRequest(kind="assignment", population="triggered"))
+    assigned_request, triggered_request = trigger_integrity_requests(src)
+    assigned = load_counts(src, assigned_request)
+    triggered = load_counts(src, triggered_request)
     rates = {
         arm: triggered.counts.get(arm, 0) / count if count else 0.0
         for arm, count in assigned.counts.items()

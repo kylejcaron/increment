@@ -219,6 +219,9 @@ values.
 - Saved experiments retain triggered analyses for legacy custom providers that
   offer triggered moments. Explicitly disabling triggered support still refuses
   before data is read.
+- Unclustered triggered analyses accept a custom provider's declared unit counts
+  when assignment counts are unavailable. Clustered analyses still require counts
+  at the randomization grain.
 - Unavailable CUPED results contribute their fit identity and structured reason
   to readout snapshot identity. Changing that evidence no longer reuses an
   identity; valid comparison-method estimates are unchanged.

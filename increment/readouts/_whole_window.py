@@ -24,6 +24,7 @@ from increment.errors import refuse as _refuse
 from increment.readouts._evidence import (
     day_axis_route,
     effective_source_capabilities,
+    trigger_integrity_requests,
     validate_populations,
     validate_trigger_fires_in_every_arm,
     validates_populations,
@@ -241,10 +242,7 @@ class WholeWindowReadouts:
             populations = ("assigned", "triggered")
             validate_populations(self._src, populations, operation="run")
             if req.metrics or _design_compliance_only(self._src.context, req.estimands):
-                trigger_counts = (
-                    CountsRequest(kind="assignment", population="assigned"),
-                    CountsRequest(kind="assignment", population="triggered"),
-                )
+                trigger_counts = trigger_integrity_requests(self._src)
         return WholeWindowPreparation(trigger_counts)
 
     def prepare_family(
