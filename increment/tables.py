@@ -29,13 +29,14 @@ from increment._display import (
     interval_text,
 )
 from increment._interpretation import (
+    _readout_cell_labels,
     interpret_readout,
     readout_evidence_columns,
     render_effect_interpretation,
 )
 from increment._optional import require_tables
 from increment._posterior_projection import _PosteriorQueryProjection, _project_posterior_query
-from increment._readout_html import readout_header
+from increment._readout_html import _evidence_label, _metadata_context, readout_header
 from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, DailyMetricValue
 from increment.breakout.projection import to_frame
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
@@ -1823,6 +1824,29 @@ class _EnvelopeReadoutRows(list):
         self.cells = tuple(cells)
 
 
+def _posterior_query_disclosure(rows: Sequence[Mapping[str, object]]) -> str:
+    import json
+
+    items = []
+    for row in rows:
+        encoded = row.get("posterior_queries")
+        if not isinstance(encoded, str):
+            continue
+        queries = tuple(
+            _PosteriorQueryProjection.model_validate(query) for query in json.loads(encoded)
+        )
+        if not row.get("posterior_queries_recorded") and not any(query.code for query in queries):
+            continue
+        label = row.get("posterior_queries_label") or _evidence_label(row)
+        details = _metadata_context(
+            [query.model_dump(mode="json") for query in queries], encoded=False
+        )
+        items.append(f"<li><b>{escape_html(str(label))}</b>{details}</li>")
+    if not items:
+        return ""
+    return "<details><summary>Posterior queries</summary><ul>" + "".join(items) + "</ul></details>"
+
+
 def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, list[dict[str, Any]]]:
     """Keep source-qualified evidence separate from the plot's display labels."""
     metadata = getattr(data, "metadata", None)
@@ -1831,9 +1855,21 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, list[dict[st
         if metadata is not None:
             interpretation = interpret_readout(data, metadata)
         row_data = estimates_to_readout(list(data))
-        for projected, estimate, cell in zip(row_data, data, data.cells, strict=True):
+        labels = (
+            _readout_cell_labels(data.cells, interpretation or interpret_readout(data, metadata))
+            if any(cell.posterior_queries for cell in data.cells)
+            else ("",) * len(data)
+        )
+        for projected, estimate, cell, label in zip(
+            row_data, data, data.cells, labels, strict=True
+        ):
             if cell.posterior_queries:
+                for name in tuple(projected):
+                    if name.startswith("posterior_query_"):
+                        projected.pop(name)
                 projected.update(_posterior_query_columns(cell.posterior_queries))
+                projected["posterior_queries_recorded"] = True
+                projected["posterior_queries_label"] = label
             if interpretation is not None:
                 projected["view_partial"] = interpretation.partial
                 projected.update(
@@ -2266,6 +2302,7 @@ def readout_table[V](
         empty=not len(frame),
         markers=multiplicity_markers,
     )
+    evidence += _posterior_query_disclosure(evidence_rows)
     disclosure = cast(Any, gt_html(evidence))
     return table.header(title or disclosure, disclosure if title else "")
 

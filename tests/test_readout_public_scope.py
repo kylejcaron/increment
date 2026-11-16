@@ -1727,7 +1727,7 @@ def _lift_rows(results: LiftEstimates) -> list[LiftEstimate]:
 pytestmark = pytest.mark.integration
 
 
-def _relative_prior_run(priors, *, view=None):
+def _relative_prior_run(priors, *, view=None, arms=("treatment",)):
     from datetime import date
 
     from increment import run
@@ -1740,7 +1740,10 @@ def _relative_prior_run(priors, *, view=None):
             "country": "US",
             **dict.fromkeys(priors, value),
         }
-        for arm, values in (("control", (65, 105) * 13), ("treatment", (1190, 1700) * 13))
+        for arm, values in (
+            ("control", (65, 105) * 13),
+            *((arm, (1190, 1700) * 13) for arm in arms),
+        )
         for i, value in enumerate(values)
     ]
     metrics = [

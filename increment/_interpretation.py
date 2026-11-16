@@ -675,13 +675,7 @@ def render_brief_qualification(row, family=None, *, alpha=None) -> str | None:
     return "; ".join(labels) if labels else None
 
 
-def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[str, ...]:
-    """Project cells and retained disclosures into source-qualified brief lines."""
-    rows_by_identity = {
-        (row.source_snapshot_id, CellKey.from_row(row)): row
-        for group in interpretation.groups
-        for row in group.visible_rows
-    }
+def _readout_cell_labels(cells, interpretation: ReadoutInterpretation) -> tuple[str, ...]:
     source_ids = {cell.source_snapshot_id for cell in cells if cell.source_snapshot_id is not None}
     comparisons = {
         (group.source_snapshot_id, CellKey.from_row(row)): (
@@ -692,7 +686,7 @@ def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[
         for row in group.visible_rows
     }
     varying = _varying_fields(cell.identity.key for cell in cells)
-    lines = []
+    labels = []
     for cell in cells:
         key = cell.identity.key
         label = _cell_coordinates(key, varying)
@@ -701,6 +695,21 @@ def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[
             label += f", comparison={comparison[1]} vs {comparison[0]}"
         if len(source_ids) > 1 and cell.source_snapshot_id is not None:
             label += f", source={_display_source(cell.source_snapshot_id)}"
+        labels.append(label)
+    return tuple(labels)
+
+
+def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[str, ...]:
+    """Project cells and retained disclosures into source-qualified brief lines."""
+    rows_by_identity = {
+        (row.source_snapshot_id, CellKey.from_row(row)): row
+        for group in interpretation.groups
+        for row in group.visible_rows
+    }
+    labels = _readout_cell_labels(cells, interpretation)
+    lines = []
+    for cell, label in zip(cells, labels, strict=True):
+        key = cell.identity.key
         status = cell.components["sampling"][0]
         row = rows_by_identity.get((cell.source_snapshot_id, key))
         text = _brief_summary_text(

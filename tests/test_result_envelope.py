@@ -3092,6 +3092,24 @@ def test_confidence_set_only_report_cells_stay_available():
         assert cell.identity.key in available
 
 
+def _assert_single_cell_query_columns(cell, failed):
+    import json
+    from dataclasses import replace
+
+    import pandas as pd
+
+    from increment.result_envelope import AnalysisEnvelope
+    from increment.tables import readout_table
+
+    standalone = readout_table(AnalysisEnvelope((cell,), None), advisory=True)
+    assert pd.api.types.is_numeric_dtype(standalone.data["posterior_query_0_value"])
+    single = readout_table(
+        AnalysisEnvelope((replace(cell, posterior_queries=(failed,)),), None), advisory=True
+    )
+    assert not any(name.startswith("posterior_query_1_") for name in single.data.columns)
+    assert len(json.loads(single.data["posterior_queries"].iloc[0])) == 1
+
+
 @pytest.mark.integration
 def test_failed_posterior_query_preserves_density_and_independent_records():
     import io
@@ -3130,8 +3148,9 @@ def test_failed_posterior_query_preserves_density_and_independent_records():
     assert failed.code == direct.value.code
     assert failed.context == direct.value.context
     assert good.code is None and good.value == pytest.approx(row.risk_if_shipped_favorable())
-    with pytest.raises(TypeError):
-        cast(dict[str, object], failed.parameters)["probability"] = 0.5
+    for mapping in (failed.parameters, good.context):
+        with pytest.raises(TypeError):
+            cast(dict[str, object], mapping)["mutated"] = True
     cells = tuple(
         replace(cell, posterior_queries=(failed, good))
         if cell.identity.key.metric == "revenue"
@@ -3161,9 +3180,10 @@ def test_failed_posterior_query_preserves_density_and_independent_records():
         assert pd.isna(encoded["posterior_query_0_value"])
         assert json.loads(encoded["posterior_query_0_context"]) == dict(direct.value.context)
         assert json.loads(encoded["posterior_queries"]) == records
-        assert table.gt().as_raw_html()
-        standalone = readout_table(AnalysisEnvelope((cell,), None), advisory=True)
-        assert pd.api.types.is_numeric_dtype(standalone.data["posterior_query_0_value"])
+        html = table.gt().as_raw_html()
+        assert failed.operation in html and failed.code in html
+        assert str(probability) in html and str(failed.context["reason"]) in html
+        _assert_single_cell_query_columns(cell, failed)
         for audience in ("full", "brief"):
             text = render(restored, audience=audience)
             assert failed.code in text
@@ -3172,3 +3192,34 @@ def test_failed_posterior_query_preserves_density_and_independent_records():
     assert "posterior_queries" not in legacy.to_payload()
     assert "posterior_queries" not in ResultCell.to_arrow([legacy]).column_names
     assert ResultCell.from_payload(legacy.to_payload()).posterior_queries == ()
+
+
+@pytest.mark.integration
+def test_posterior_query_rendering_identifies_the_affected_arm():
+    from dataclasses import replace
+
+    from increment._posterior_projection import _project_posterior_query
+    from increment.estimators import RelativeLiftPrior, StudentTPrior
+    from increment.result_envelope import AnalysisEnvelope, render
+    from tests.test_readout_public_scope import _relative_prior_run
+
+    results = _relative_prior_run(
+        {"revenue": RelativeLiftPrior(distribution=StudentTPrior(nu=1, scale=1e-53))},
+        arms=("treatment_a", "treatment_b"),
+    )
+    affected = next(row for row in results if row.group_id == "treatment_b")
+    failed = _project_posterior_query(
+        affected, operation="quantile", parameters={"probability": 0.44919976139382767}
+    )
+    assert failed.code == "estimation.posterior.numerical_unavailable"
+    cells = tuple(
+        replace(cell, posterior_queries=(failed,))
+        if cell.identity.key.group_id == affected.group_id
+        else cell
+        for cell in results.as_cells()
+    )
+    for audience in ("full", "brief"):
+        text = render(AnalysisEnvelope(cells, results.metadata), audience=audience)
+        (query_line,) = [line for line in text.splitlines() if failed.code in line]
+        assert affected.group_id in query_line
+        assert "treatment_a" not in query_line

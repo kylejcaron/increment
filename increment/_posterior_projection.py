@@ -57,7 +57,7 @@ class _PosteriorQueryProjection(BaseModel):
     operation: str
     parameters: Mapping[str, object]
     code: str | None = None
-    context: Mapping[str, object] = Field(default_factory=dict)
+    context: Mapping[str, object] = Field(default_factory=dict, validate_default=True)
 
     @field_validator("operation")
     @classmethod

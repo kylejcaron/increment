@@ -19,6 +19,7 @@ from increment._interpretation import (
     EffectEstimate,
     _failure_text,
     _has_sampling_result,
+    _readout_cell_labels,
     project_effect,
 )
 from increment._posterior_projection import _PosteriorQueryProjection
@@ -2050,15 +2051,16 @@ def render(
         for index, cell in enumerate(envelope.cells)
     )
     brief = render_readout_brief(brief_cells, interpretation)
+    labels = _readout_cell_labels(envelope.cells, interpretation)
     query_details = tuple(
-        f"{cell.identity.key.metric} posterior query {query.operation} "
+        f"{label} posterior query {query.operation} "
         f"{_json(_plain(query.parameters))}: "
         + (
             f"unavailable {status.code}; {_json(_plain(status.context))}"
             if (status := _posterior_query_status(query)).state == "unavailable"
             else f"{query.value!r}"
         )
-        for cell in envelope.cells
+        for cell, label in zip(envelope.cells, labels, strict=True)
         for query in cell.posterior_queries
     )
     if audience == "brief":
