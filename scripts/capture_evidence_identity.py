@@ -47,6 +47,7 @@ from tests.parity_harness.cases import (
 from tests.parity_harness.views import read
 
 _DUCKDB_CONNECT = ibis.duckdb.connect
+FROZEN_OPERATION_CUTOVERS = ("pre-kernel", "pre-kernel-asof", "relative-prior-v1")
 
 
 def _connect_single_thread(**kwargs):
@@ -144,6 +145,24 @@ def load_operations_capture(path: Path) -> dict[str, Any]:
 
     data["scenarios"] = expand(data["scenarios"])
     return data
+
+
+def load_frozen_operations_capture(root: Path) -> dict[str, Any]:
+    """Load every frozen cutover, rejecting overlapping scenario/ingress coordinates."""
+    scenarios: dict[str, Any] = {}
+    cutovers: dict[str, Any] = {}
+    for cutover in FROZEN_OPERATION_CUTOVERS:
+        record = load_operations_capture(root / cutover / "operations.json.gz")
+        cutovers[cutover] = {key: value for key, value in record.items() if key != "scenarios"}
+        for scenario_id, outcomes in record["scenarios"].items():
+            merged = scenarios.setdefault(scenario_id, {})
+            for ingress, outcome in outcomes.items():
+                if ingress in merged:
+                    raise ValueError(
+                        f"duplicate frozen operation coordinate: {scenario_id}/{ingress}"
+                    )
+                merged[ingress] = outcome
+    return {"cutovers": cutovers, "scenarios": scenarios}
 
 
 def _population_membership_by_arm(frames: Sequence[Any]) -> dict[str, dict[str, Any]]:
@@ -295,6 +314,22 @@ def iter_capture_keys() -> tuple[tuple[str, str], ...]:
         *((case.id, ingress) for case in PARITY_CASES for ingress in CONSTRUCTORS),
         *((code, "refusal") for code in REFUSAL_SCENARIOS),
     )
+
+
+def _selected_capture_keys(scenarios: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    keys = iter_capture_keys()
+    if not scenarios:
+        return keys
+    known = {scenario_id for scenario_id, _ in keys}
+    invalid = [
+        scenario_id
+        for scenario_id in scenarios
+        if not isinstance(scenario_id, str) or scenario_id not in known
+    ]
+    if invalid:
+        raise ValueError(f"unknown operation capture scenarios: {invalid!r}")
+    selected = set(scenarios)
+    return tuple(key for key in keys if key[0] in selected)
 
 
 def _identity(results, row) -> dict[str, Any]:
@@ -563,7 +598,9 @@ def _aggregate_evidence(
     }
 
 
-def _capture_operations(cutover: str) -> dict[str, Any]:  # noqa: PLR0915
+def _capture_operations(  # noqa: PLR0915
+    cutover: str, *, scenarios: tuple[str, ...] = ()
+) -> dict[str, Any]:
     from increment.errors import CodedError, InvalidRequestError
     from increment.result_envelope import AnalysisEnvelope, relevel
     from tests.parity_harness.cases import PARITY_CASES, _capture_kwargs
@@ -571,11 +608,11 @@ def _capture_operations(cutover: str) -> dict[str, Any]:  # noqa: PLR0915
     from tests.parity_harness.runner import _read
 
     cases = {case.id: case for case in PARITY_CASES}
-    scenarios: dict[str, Any] = {}
+    captured: dict[str, Any] = {}
     payloads: dict[str, Any] = {}
     exact_payload_hashes: set[str] = set()
-    for scenario_id, ingress in iter_capture_keys():
-        record = scenarios.setdefault(scenario_id, {})
+    for scenario_id, ingress in _selected_capture_keys(scenarios):
+        record = captured.setdefault(scenario_id, {})
         if ingress == "refusal":
             scenario = REFUSAL_SCENARIOS[scenario_id]
             if isinstance(scenario, Unreachable):
@@ -728,7 +765,7 @@ def _capture_operations(cutover: str) -> dict[str, Any]:  # noqa: PLR0915
     return {
         "schema_version": 1,
         "cutover": cutover,
-        "scenarios": scenarios,
+        "scenarios": captured,
         "payloads": payloads,
         "_exact_payload_hashes": sorted(exact_payload_hashes),
     }
@@ -765,12 +802,16 @@ def _deterministic_capture_runtime() -> Iterator[None]:
         yield
 
 
-def capture(out: Path, *, cutover: str | None = None) -> None:
+def capture(out: Path, *, cutover: str | None = None, scenarios: tuple[str, ...] = ()) -> None:
+    """Capture all outputs, or selected operation scenarios into a new cutover file."""
+    if scenarios and cutover is None:
+        raise ValueError("operation scenario selection requires a cutover")
     if cutover is not None:
         target = out / cutover / "operations.json.gz"
-        target.parent.mkdir(parents=True, exist_ok=True)
+        if scenarios and target.exists():
+            raise FileExistsError(f"operation capture already exists: {target}")
         with _single_thread_duckdb(), _deterministic_capture_runtime():
-            operations = _capture_operations(cutover)
+            operations = _capture_operations(cutover, scenarios=scenarios)
         compressed = BytesIO()
         exact_hashes = operations.pop("_exact_payload_hashes", ())
         normalized = _stable_capture_value(operations)
@@ -778,7 +819,9 @@ def capture(out: Path, *, cutover: str | None = None) -> None:
             normalized["payloads"][digest] = operations["payloads"][digest]
         with gzip.GzipFile(filename="", mode="wb", fileobj=compressed, mtime=0) as stream:
             stream.write(_json_bytes(normalized))
-        target.write_bytes(compressed.getvalue())
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("xb" if scenarios else "wb") as destination:
+            destination.write(compressed.getvalue())
         return
     out.mkdir(parents=True, exist_ok=True)
     exports = out / "exports"
@@ -1040,9 +1083,11 @@ def main() -> None:
             scenarios=tuple(args.scenario),
         )
     else:
-        if args.baseline is not None or args.resume or args.replace_inputs or args.scenario:
+        if args.baseline is not None or args.resume or args.replace_inputs:
             parser.error("consumer-input options require --consumer-inputs")
-        capture(args.out, cutover=args.cutover)
+        if args.scenario and args.cutover is None:
+            parser.error("operation --scenario requires --cutover")
+        capture(args.out, cutover=args.cutover, scenarios=tuple(args.scenario))
 
 
 if __name__ == "__main__":
