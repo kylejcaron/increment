@@ -1979,8 +1979,8 @@ def test_relative_posterior_metadata_survives_breakout_and_day_views():
 def test_exported_relative_posterior_rejects_unrecognized_defining_state():
     from copy import deepcopy
 
-    from increment._canonical import canonical_json_bytes
     from increment.breakout.projection import to_frame
+    from increment.digest import canonical_json_bytes
     from increment.errors import CodedError
     from increment.estimators import RelativeLiftPrior, StudentTPrior
 
