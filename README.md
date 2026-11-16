@@ -11,6 +11,8 @@ Increment is an open-source Python library for analyzing A/B tests. Give it a
 dataframe or a SQL warehouse; it returns each metric's effect with a confidence
 interval, and says plainly when the data cannot support a conclusion.
 
+![Illustrative experiment readout: revenue and retention intervals exclude zero, while conversion is inconclusive. Synthetic example.](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/assets/readout-example.png)
+
 > [!WARNING]
 > Increment is in pre-release. Its API may change between releases; see the
 > [compatibility policy](https://getincrement.io/docs/api/#compatibility-policy).
