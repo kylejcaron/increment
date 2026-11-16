@@ -32,6 +32,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    ValidationError,
     ValidationInfo,
     computed_field,
     field_serializer,
@@ -55,6 +56,7 @@ from increment._literals import (
     RowRole,
     ValueScale,
 )
+from increment._posterior_projection import _posterior_chance_to_beat, _posterior_risk_if_shipped
 from increment.errors import (
     CodedError,
     CodedModel,
@@ -93,6 +95,7 @@ from increment.estimation.priors import (
     Prior,
     RelativeLiftPrior,
     StudentTPrior,
+    prior_from_payload,
 )
 from increment.estimation.risk_difference import score_p_value
 from increment.estimation.sequential_result import (
@@ -162,7 +165,7 @@ _ADDITIVE_DECISION_REASONS = frozenset(
 if TYPE_CHECKING:
     from increment.estimation._fcr_reinterval import Construction
     from increment.estimation.binomial_rr import BinomialInterval
-    from increment.estimation.inference import LiftPosterior
+    from increment.estimation.priors import LiftPosterior
     from increment.estimation.readout_types import ReadoutMetadata
     from increment.result_envelope import ResultCell
     from increment.winsor import WinsorRawState
@@ -1118,6 +1121,52 @@ class _RowIdentity(CodedModel, BaseModel):
     @classmethod
     def _validated_alternative(cls, value: object) -> object:
         return binomial_rr.validate_alternative(value) if isinstance(value, str) else value
+
+    @field_validator(
+        "posterior_relative_model",
+        "posterior_student_t_state",
+        "prior_spec",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def _decode_posterior_defining_state(cls, value: object, info: ValidationInfo) -> object:
+        if isinstance(value, str):
+            try:
+                parsed = canonical_json_loads(value)
+            except (TypeError, ValueError):
+                _raise(
+                    "estimation.results.lift.posterior_components_invalid",
+                    metric=str(info.data.get("metric", "<frame>")),
+                    group_id=str(info.data.get("group_id", "<frame>")),
+                    reason="frame payload is not valid canonical JSON",
+                )
+            if not isinstance(parsed, Mapping) or canonical_json_bytes(parsed).decode() != value:
+                _raise(
+                    "estimation.results.lift.posterior_components_invalid",
+                    metric=str(info.data.get("metric", "<frame>")),
+                    group_id=str(info.data.get("group_id", "<frame>")),
+                    reason="frame payload must be a canonical JSON object",
+                )
+            value = parsed
+        try:
+            if value is not None and info.field_name == "prior_spec":
+                return prior_from_payload(value)
+            if value is not None:
+                model = (
+                    RelativePosteriorModel
+                    if info.field_name == "posterior_relative_model"
+                    else RelativeStudentTState
+                )
+                return model.model_validate(value)
+        except ValidationError:
+            _raise(
+                "estimation.results.lift.posterior_components_invalid",
+                metric=str(info.data.get("metric", "<frame>")),
+                group_id=str(info.data.get("group_id", "<frame>")),
+                reason=f"invalid {info.field_name}",
+            )
+        return value
 
     @field_validator("posterior_components", mode="before")
     @classmethod
@@ -2357,19 +2406,11 @@ class LiftEstimate(_RowIdentity):
 
     def risk_if_shipped(self) -> float | None:
         """Stored-posterior expected negative lift, when a posterior is available."""
-        posterior = self._posterior()
-        if posterior is None or self.posterior_scale is None:
-            return None
-        return posterior.expected_negative_part(scale=self.posterior_scale)
+        return _posterior_risk_if_shipped(self, favorable=False)
 
     def risk_if_shipped_favorable(self) -> float | None:
         """Stored-posterior expected loss on the declared unfavorable side."""
-        posterior = self._posterior()
-        if posterior is None or self.posterior_scale is None or self.preferred_direction is None:
-            return None
-        if self.preferred_direction == "decrease":
-            return posterior.expected_positive_part(scale=self.posterior_scale)
-        return posterior.expected_negative_part(scale=self.posterior_scale)
+        return _posterior_risk_if_shipped(self, favorable=True)
 
     def require_sequential_result(self) -> SequentialResult:
         """Return the authoritative stopped likelihood state or refuse a fixed row."""
@@ -2473,7 +2514,7 @@ if TYPE_CHECKING:
 
 def row_chance_to_beat(row: DecisionRow) -> float | None:
     """Stored-posterior probability that a decision row's lift is positive."""
-    return _row_chance_of_side(row, "greater")
+    return _posterior_chance_to_beat(row, favorable=False)
 
 
 def row_favorable_side(row: DecisionRow) -> Literal["greater", "less"] | None:
@@ -2488,18 +2529,7 @@ def row_chance_to_beat_favorable(row: DecisionRow) -> float | None:
     :func:`row_favorable_side` of zero, or ``None`` for a metric that declares no
     direction. The decrease side reads the posterior's lower tail, never
     ``1 - P(lift > 0)``, so a vanishing probability keeps its magnitude."""
-    side = row_favorable_side(row)
-    return None if side is None else _row_chance_of_side(row, side)
-
-
-def _row_chance_of_side(row: DecisionRow, side: Literal["greater", "less"]) -> float | None:
-    if isinstance(row, LiftEstimate):
-        row._refuse_selected_sequential_probability()
-    posterior = row._posterior()
-    if posterior is None:
-        return None
-    # Zero lift is zero on the log scale as well: log1p(0) == 0.
-    return posterior.survival(0.0) if side == "greater" else posterior.cdf(0.0)
+    return _posterior_chance_to_beat(row, favorable=True)
 
 
 def _require_fixed_horizon(row: DecisionRow, reason: str) -> None:

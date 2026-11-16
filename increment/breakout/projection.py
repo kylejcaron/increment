@@ -177,7 +177,11 @@ def _append_frame_value(
     binomial_set_field: str | None,
     binomial_set: BinomialConfidenceSet | None,
 ) -> None:
-    if name == "posterior_components":
+    if name in {
+        "posterior_components",
+        "posterior_relative_model",
+        "posterior_student_t_state",
+    } or (name == "prior_spec" and getattr(value, "type", None) == "relative_lift"):
         from increment._canonical import canonical_json_bytes
 
         data[name].append(

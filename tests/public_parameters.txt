@@ -99,6 +99,7 @@ plan: Declared analysis and decision policy.
 planned_looks: Number or schedule of planned analysis looks.
 pooling: How factor-adjusted observations are pooled.
 population: Population to which the analysis applies.
+posterior_queries: Immutable recorded posterior query values and query-specific refusal contexts.
 previous: Prior sequential checkpoint.
 run_id: Immutable identifier for one execution of an analysis.
 primary_key: Columns uniquely identifying relation rows.

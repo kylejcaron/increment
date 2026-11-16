@@ -1725,3 +1725,276 @@ def _lift_rows(results: LiftEstimates) -> list[LiftEstimate]:
 
 
 pytestmark = pytest.mark.integration
+
+
+def _relative_prior_run(priors, *, view=None):
+    from datetime import date
+
+    from increment import run
+
+    records = [
+        {
+            "unit": f"{arm}-{i}",
+            "arm": arm,
+            "ds": date(2026, 1, 1),
+            "country": "US",
+            **dict.fromkeys(priors, value),
+        }
+        for arm, values in (("control", (65, 105) * 13), ("treatment", (1190, 1700) * 13))
+        for i, value in enumerate(values)
+    ]
+    metrics = [
+        MetricSpec(name=name, type="mean", preferred_direction="increase", prior=prior)
+        for name, prior in priors.items()
+    ]
+    if view is None:
+        experiment, reader = from_frame(
+            pd.DataFrame(records),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=metrics,
+        )
+    else:
+        experiment, reader = from_frame(
+            pd.DataFrame(records),
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="ds",
+            exposure_date="ds",
+            breakouts=["country"],
+            control="control",
+            metrics=metrics,
+        )
+    if view is not None:
+        return run(experiment.with_views(view), reader, views=(view,)).readout(view)
+    return run(experiment, reader).readout()
+
+
+@pytest.mark.parametrize("family", ["normal", "student_t", "normal_mixture"])
+def test_relative_prior_public_replay_retains_standalone_posterior(family):
+    from increment.breakout.projection import to_frame
+    from increment.estimators import MixturePrior, Normal, RelativeLiftPrior, StudentTPrior
+    from increment.result_envelope import ResultCell
+
+    distributions = {
+        "normal": Normal(mu=0.2, sigma=2.0),
+        "student_t": StudentTPrior(nu=4, scale=2.0),
+        "normal_mixture": MixturePrior(weights=(0.3, 0.7), means=(-0.2, 0.3), sigmas=(1.0, 3.0)),
+    }
+    prior = RelativeLiftPrior(distribution=distributions[family])
+    results = _relative_prior_run({"revenue": prior})
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+    (row,) = restored
+    assert row.posterior_available is True
+    assert row.prior_spec == prior
+    assert row.posterior_relative_model.support == "real"
+    assert restored.metadata.cells[0].posterior.prior == prior
+    expected = (row.prob_beyond(0.17), row.prob_within(0.23), row.risk_if_shipped_favorable())
+    (exported,) = nw.from_native(to_frame([row], backend="pyarrow"), eager_only=True).iter_rows(
+        named=True
+    )
+    frame_only = _posterior_row_from_export(exported, LiftEstimate)
+    assert (
+        frame_only.prob_beyond(0.31),
+        frame_only.prob_within(0.27),
+        frame_only.risk_if_shipped_favorable(),
+    ) == pytest.approx(
+        (row.prob_beyond(0.31), row.prob_within(0.27), row.risk_if_shipped_favorable())
+    )
+    cell = row.as_cells()[0]
+    assert cell.components["posterior"][0].state == "available"
+    for saved in (
+        ResultCell.from_payload(cell.to_payload()),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+    ):
+        replay = saved.retained_row()
+        assert replay.prior_spec == prior
+        assert (
+            replay.prob_beyond(0.17),
+            replay.prob_within(0.23),
+            replay.risk_if_shipped_favorable(),
+        ) == pytest.approx(expected)
+        assert saved.identity == cell.identity
+
+
+def test_posterior_numerical_failure_preserves_sampling_and_siblings():
+    import json
+
+    from increment.estimators import RelativeLiftPrior, StudentTPrior
+    from increment.tables import estimates_to_readout
+
+    scale = float.fromhex("0x1.8ff094eaf88c7p-177")
+    results = _relative_prior_run(
+        {
+            "failed": RelativeLiftPrior(distribution=StudentTPrior(nu=1, scale=scale)),
+            "good": RelativeLiftPrior(distribution=StudentTPrior(nu=1, scale=1e-53)),
+        }
+    )
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+    failed, good = sorted(restored, key=lambda row: row.metric)
+    assert failed.posterior_available is False
+    assert good.posterior_available is True
+    assert failed.sampling_available is good.sampling_available is True
+    assert failed.lift == good.lift
+    assert failed.posterior_reason_code == "estimation.posterior.numerical_unavailable"
+    assert dict(failed.posterior_reason_context) == {
+        "reason": "accuracy_unresolved",
+        "operation": "quantile",
+        "probability": 0.5,
+        "likelihood_point": 16.0,
+        "likelihood_se": 1.0,
+        "prior_nu": 1.0,
+        "prior_scale": scale,
+    }
+    assert (failed.posterior_estimate, failed.posterior_lb, failed.posterior_ub) == (
+        None,
+        None,
+        None,
+    )
+    projected = {row["metric"]: row for row in estimates_to_readout(restored)}
+    assert projected["failed"]["posterior_estimate"] is None
+    context = projected["failed"]["posterior_reason_context"]
+    assert isinstance(context, str)
+    assert json.loads(context) == dict(failed.posterior_reason_context)
+    assert projected["good"]["posterior_estimate"] == good.posterior_estimate
+
+
+def _posterior_row_from_export(exported, model):
+    from datetime import datetime
+
+    names = {
+        "metric",
+        "group_id",
+        "method",
+        "method_role",
+        "inference",
+        "alternative",
+        "preferred_direction",
+        "prior_spec",
+        "analysis_population",
+        "population",
+        "source_snapshot_id",
+        "multiplicity_status",
+        "family_id",
+        "role",
+        "dimension",
+        "dimension_value",
+        "ds",
+        "ds_basis",
+        "source",
+    }
+    fields = {
+        name: value
+        for name, value in exported.items()
+        if name in model.model_fields and (name in names or name.startswith("posterior_"))
+    }
+    if fields.get("ds_basis") == "calendar" and isinstance(fields.get("ds"), datetime):
+        fields["ds"] = fields["ds"].date()
+    alpha = exported["abs_alpha"]
+    fields["lift"] = Estimate(
+        value=exported["lift"],
+        lb=exported["lb"],
+        ub=exported["ub"],
+        alpha=alpha,
+        level=1 - alpha,
+    )
+    fields["sampling_available"] = exported["sampling_available"]
+    return model.model_validate(fields)
+
+
+def test_relative_posterior_metadata_survives_breakout_and_day_views():
+    from increment import View
+    from increment.breakout.projection import to_frame
+    from increment.estimators import MixturePrior, Normal, RelativeLiftPrior, StudentTPrior
+
+    priors = {
+        "normal": RelativeLiftPrior(distribution=Normal(mu=0.2, sigma=2)),
+        "student": RelativeLiftPrior(distribution=StudentTPrior(nu=4, scale=2)),
+        "mixture": RelativeLiftPrior(
+            distribution=MixturePrior(weights=(0.4, 0.6), means=(-0.2, 0.3), sigmas=(1, 3))
+        ),
+    }
+    for view in (View(view="breakout", grain="total"), View(view="daily", grain="daily")):
+        results = _relative_prior_run(priors, view=view)
+        restored = ReadoutResults.model_validate_json(results.model_dump_json())
+        exported = nw.from_native(to_frame(restored, backend="pyarrow"), eager_only=True).iter_rows(
+            named=True
+        )
+        for row, columns in zip(restored, exported, strict=True):
+            from increment.result_envelope import ResultCell
+
+            record = next(
+                record
+                for record in restored.metadata.cells
+                if record.source_snapshot_id == row.source_snapshot_id
+                and record.cell == CellKey.from_row(row)
+            )
+            assert record.posterior.relative_model == row.posterior_relative_model
+            assert record.posterior.student_t_state == row.posterior_student_t_state
+            (cell,) = type(restored)([row]).as_cells()
+            for saved in (
+                ResultCell.from_payload(cell.to_payload()),
+                ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+            ):
+                assert saved.components["posterior"][0].state == "available"
+                assert saved._projection_row()._posterior().survival(0.31) == pytest.approx(
+                    row._posterior().survival(0.31)
+                )
+            replay = _posterior_row_from_export(columns, type(row))
+            assert replay.prior_spec == priors[row.metric]
+            assert replay.posterior_relative_model == row.posterior_relative_model
+            assert replay.posterior_student_t_state == row.posterior_student_t_state
+            assert (replay.posterior_estimate, replay.posterior_lb, replay.posterior_ub) == (
+                row.posterior_estimate,
+                row.posterior_lb,
+                row.posterior_ub,
+            )
+            assert CellKey.from_row(replay) == CellKey.from_row(row)
+            actual, expected = replay._posterior(), row._posterior()
+            assert actual.survival(0.31) == pytest.approx(expected.survival(0.31))
+            assert actual.probability_between(-0.27, 0.27) == pytest.approx(
+                expected.probability_between(-0.27, 0.27)
+            )
+            assert actual.expected_negative_part(scale="linear") == pytest.approx(
+                expected.expected_negative_part(scale="linear")
+            )
+
+
+def test_exported_relative_posterior_rejects_unrecognized_defining_state():
+    from copy import deepcopy
+
+    from increment._canonical import canonical_json_bytes
+    from increment.breakout.projection import to_frame
+    from increment.errors import CodedError
+    from increment.estimators import RelativeLiftPrior, StudentTPrior
+
+    (row,) = _relative_prior_run(
+        {"revenue": RelativeLiftPrior(distribution=StudentTPrior(nu=4, scale=2))}
+    )
+    (exported,) = nw.from_native(to_frame([row], backend="pyarrow"), eager_only=True).iter_rows(
+        named=True
+    )
+    changes = (
+        ("posterior_relative_model", {"version": 2}),
+        ("posterior_relative_model", {"unexpected": True}),
+        ("posterior_student_t_state", {"version": 2}),
+        ("posterior_student_t_state", {"unexpected": True}),
+        ("prior_spec", {"distribution": {"type": "unknown", "nu": 4, "scale": 2}}),
+    )
+    for field, change in changes:
+        payload = deepcopy(row.model_dump(mode="json"))
+        payload[field].update(change)
+        malformed = dict(exported)
+        malformed[field] = canonical_json_bytes(payload[field]).decode()
+        with pytest.raises(CodedError):
+            LiftEstimate.model_validate(payload)
+        with pytest.raises(CodedError):
+            _posterior_row_from_export(malformed, LiftEstimate)
+    payload = row.model_dump(mode="json")
+    payload["posterior_student_t_state"]["prior"]["scale"] = 3
+    with pytest.raises(CodedError) as mismatched:
+        LiftEstimate.model_validate(payload)
+    assert mismatched.value.code == "estimation.results.lift.posterior_components_invalid"

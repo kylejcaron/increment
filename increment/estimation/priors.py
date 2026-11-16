@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import lru_cache
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol, runtime_checkable
 
 import numpy as np
 from pydantic import (
@@ -143,6 +143,25 @@ def _normal_log_expected_part(
     with np.errstate(divide="ignore"):
         log_large[finite] += np.log(-np.expm1(log_small[finite] - log_large[finite]))
     return log_large
+
+
+@runtime_checkable
+class LiftPosterior(Protocol):
+    """Distribution operations consumed by fixed-horizon decision statistics."""
+
+    def cdf(self, value: float) -> float: ...
+
+    def survival(self, value: float) -> float: ...
+
+    def quantile(self, probability: float) -> float: ...
+
+    def isf(self, tail_probability: float) -> float: ...
+
+    def probability_between(self, lower: float, upper: float) -> float: ...
+
+    def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float: ...
+
+    def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float: ...
 
 
 class Normal(CodedModel, BaseModel):

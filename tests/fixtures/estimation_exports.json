@@ -44,7 +44,7 @@
     "fit_ratio_cuped": "increment.estimation.cuped:fit_ratio_cuped",
     "Estimate": "increment.estimation.results:Estimate",
     "LiftEstimate": "increment.estimation.results:LiftEstimate",
-    "LiftPosterior": "increment.estimation.inference:LiftPosterior",
+    "LiftPosterior": "increment.estimation.priors:LiftPosterior",
     "Normal": "increment.estimation.inference:Normal",
     "infer_independent_mean": "increment.estimation.inference:infer_independent_mean",
     "infer_lift": "increment.estimation.inference:infer_lift",

@@ -3090,3 +3090,85 @@ def test_confidence_set_only_report_cells_stay_available():
             assert projected[index].stat_sig() == rows[index].stat_sig()
             assert projected[index].decision_scope_complete is not False
         assert cell.identity.key in available
+
+
+@pytest.mark.integration
+def test_failed_posterior_query_preserves_density_and_independent_records():
+    import io
+    import json
+    from dataclasses import replace
+    from typing import cast
+
+    import pandas as pd
+
+    from increment._posterior_projection import _project_posterior_query
+    from increment.errors import CodedError
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.estimators import RelativeLiftPrior, StudentTPrior
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+    from increment.tables import readout_table
+    from tests.test_readout_public_scope import _relative_prior_run
+
+    results = _relative_prior_run(
+        {
+            "revenue": RelativeLiftPrior(distribution=StudentTPrior(nu=1, scale=1e-53)),
+            "sibling": RelativeLiftPrior(distribution=StudentTPrior(nu=4, scale=2)),
+        }
+    )
+    replay = ReadoutResults.model_validate_json(results.model_dump_json())
+    row = next(row for row in replay if row.metric == "revenue")
+    probability = 0.44919976139382767
+    with pytest.raises(CodedError) as direct:
+        row._posterior().quantile(probability)
+    assert direct.value.code == "estimation.posterior.numerical_unavailable"
+    assert direct.value.context["reason"] == "accuracy_unresolved"
+    failed = _project_posterior_query(
+        row, operation="quantile", parameters={"probability": probability}
+    )
+    good = _project_posterior_query(row, operation="risk_if_shipped_favorable", parameters={})
+    assert failed.value is None
+    assert failed.code == direct.value.code
+    assert failed.context == direct.value.context
+    assert good.code is None and good.value == pytest.approx(row.risk_if_shipped_favorable())
+    with pytest.raises(TypeError):
+        cast(dict[str, object], failed.parameters)["probability"] = 0.5
+    cells = tuple(
+        replace(cell, posterior_queries=(failed, good))
+        if cell.identity.key.metric == "revenue"
+        else cell
+        for cell in replay.as_cells()
+    )
+    envelope = AnalysisEnvelope(cells, replay.metadata)
+    for restored in (
+        AnalysisEnvelope.from_payload(json.loads(json.dumps(envelope.to_payload()))),
+        AnalysisEnvelope.from_arrow(envelope.to_arrow()),
+    ):
+        cell = next(cell for cell in restored.cells if cell.identity.key.metric == "revenue")
+        assert cell.posterior_queries == (failed, good)
+        assert cell.components["posterior"][0].state == "available"
+        assert cell.retained_row().posterior_available is True
+        assert cell.retained_row().risk_if_shipped_favorable() == good.value
+        assert all(cell.components["sampling"][0].state != "unavailable" for cell in restored.cells)
+        table = readout_table(restored, advisory=True)
+        data = table.data
+        projected = data.loc[data["metric"] == "revenue"].iloc[0]
+        assert pd.isna(projected["posterior_query_0_value"])
+        assert projected["posterior_query_1_value"] == good.value
+        records = json.loads(projected["posterior_queries"])
+        assert records == [failed.model_dump(mode="json"), good.model_dump(mode="json")]
+        csv = pd.read_csv(io.StringIO(data.to_csv(index=False)))
+        encoded = csv.loc[csv["metric"] == "revenue"].iloc[0]
+        assert pd.isna(encoded["posterior_query_0_value"])
+        assert json.loads(encoded["posterior_query_0_context"]) == dict(direct.value.context)
+        assert json.loads(encoded["posterior_queries"]) == records
+        assert table.gt().as_raw_html()
+        standalone = readout_table(AnalysisEnvelope((cell,), None), advisory=True)
+        assert pd.api.types.is_numeric_dtype(standalone.data["posterior_query_0_value"])
+        for audience in ("full", "brief"):
+            text = render(restored, audience=audience)
+            assert failed.code in text
+            assert row.metric in text and "sibling" in text
+    legacy = row.as_cells()[0]
+    assert "posterior_queries" not in legacy.to_payload()
+    assert "posterior_queries" not in ResultCell.to_arrow([legacy]).column_names
+    assert ResultCell.from_payload(legacy.to_payload()).posterior_queries == ()

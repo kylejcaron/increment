@@ -10,6 +10,7 @@ from fractions import Fraction
 from typing import Any, Literal
 
 from increment._display import interval_text
+from increment._posterior_projection import _project_posterior_query
 from increment.estimation.readout_types import (
     CellKey,
     ReadoutMetadata,
@@ -20,8 +21,6 @@ from increment.estimation.results import (
     _selection_qualification,
     contrast_rejection_side,
     contrast_stat_sig,
-    row_chance_to_beat,
-    row_chance_to_beat_favorable,
     row_favorable_side,
     row_verdict,
 )
@@ -998,10 +997,15 @@ def _render_group_rows(group, visible_rows) -> list[str]:
                 if relative and posterior_estimate is not None
                 else repr(posterior_estimate)
             )
-            if row_favorable_side(row) is None:
-                chance = f"chance_to_beat={row_chance_to_beat(row)!r}"
-            else:
-                chance = f"chance_to_beat_favorable={row_chance_to_beat_favorable(row)!r}"
+            operation = (
+                "chance_to_beat" if row_favorable_side(row) is None else "chance_to_beat_favorable"
+            )
+            query = _project_posterior_query(row, operation=operation, parameters={})
+            chance = (
+                f"{operation}={query.value!r}"
+                if query.code is None
+                else f"{operation} unavailable {query.code}: {_reason(query.context)}"
+            )
             lines.append(f"{row.metric} posterior: estimate={estimate}; {chance}")
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:

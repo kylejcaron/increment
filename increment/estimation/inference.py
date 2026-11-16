@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, runtime_checkable
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from increment._literals import (
     VALUE_SCALE_VALUES,
@@ -53,6 +53,7 @@ from increment.estimation._relative_posterior import (
 )
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.priors import (
+    LiftPosterior,
     MixturePrior,
     Normal,
     Prior,
@@ -186,25 +187,6 @@ class LiftGuardError(CodedError):
     ) -> None:
         super().__init__(message, code=self._CODE, context={"reason": reason})
         self.reason = reason
-
-
-@runtime_checkable
-class LiftPosterior(Protocol):
-    """Distribution operations consumed by fixed-horizon decision statistics."""
-
-    def cdf(self, value: float) -> float: ...
-
-    def survival(self, value: float) -> float: ...
-
-    def quantile(self, probability: float) -> float: ...
-
-    def isf(self, tail_probability: float) -> float: ...
-
-    def probability_between(self, lower: float, upper: float) -> float: ...
-
-    def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float: ...
-
-    def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float: ...
 
 
 _DEFAULT_PRIOR = Normal(mu=0.0, sigma=1e6)
