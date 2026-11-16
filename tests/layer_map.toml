@@ -7,6 +7,7 @@ core = [
   "increment._compile_gaps",
   "increment.semantics*",
   "increment.estimation*",
+  "increment.estimation._relative_posterior",
   "increment.estimation._adjust.clustered_unadjusted",
   "increment.estimation._adjust.common",
   "increment.estimation._adjust.encoding",

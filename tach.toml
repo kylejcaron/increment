@@ -556,6 +556,11 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment.estimation._relative_posterior"
+layer = "core"
+depends_on = ["increment.errors", "increment.estimation.priors"]
+
+[[modules]]
 path = "increment.estimation._student_t"
 layer = "core"
 depends_on = []
