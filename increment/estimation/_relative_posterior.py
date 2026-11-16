@@ -616,6 +616,17 @@ def _finite_float(value: Fraction) -> float:
         return sys.float_info.max if value > 0 else -sys.float_info.max
 
 
+def _finite_endpoint(value: Fraction, *, upper: bool) -> float:
+    """Round toward the bracket exterior, retaining finite search caps."""
+    result = _finite_float(value)
+    rounded = Fraction(result)
+    if (upper and rounded < value) or (not upper and rounded > value):
+        outward = math.nextafter(result, math.inf if upper else -math.inf)
+        if math.isfinite(outward):
+            return outward
+    return result
+
+
 @dataclass(frozen=True)
 class RelativeStudentTPosterior:
     """Value-only posterior with a runtime-only normalization workspace."""
@@ -743,8 +754,12 @@ class RelativeStudentTPosterior:
     ) -> tuple[float, float, Callable[[float], float], Callable[[float], float]]:
         work = self._workspace
         radius = -float(ndtri_exp(math.log(alpha) - _LOG2))
-        low = _finite_float(Fraction(min(0, work.x)) - Fraction(work.s) * Fraction(radius))
-        high = _finite_float(Fraction(max(0, work.x)) + Fraction(work.s) * Fraction(radius))
+        low = _finite_endpoint(
+            Fraction(min(0, work.x)) - Fraction(work.s) * Fraction(radius), upper=False
+        )
+        high = _finite_endpoint(
+            Fraction(max(0, work.x)) + Fraction(work.s) * Fraction(radius), upper=True
+        )
         if work.a >= work.s:
 
             def coordinate(r: float) -> float:
@@ -784,8 +799,12 @@ class RelativeStudentTPosterior:
         # its endpoints after a logarithmic round trip.
         radius = -float(ndtri_exp(math.log(alpha) - _LOG2))
         work = self._workspace
-        physical_low = _finite_float(Fraction(work.x) - Fraction(work.s) * Fraction(radius))
-        physical_high = _finite_float(Fraction(work.x) + Fraction(work.s) * Fraction(radius))
+        physical_low = _finite_endpoint(
+            Fraction(work.x) - Fraction(work.s) * Fraction(radius), upper=False
+        )
+        physical_high = _finite_endpoint(
+            Fraction(work.x) + Fraction(work.s) * Fraction(radius), upper=True
+        )
         physical_left = self._probability(physical_low, survival=survival, relative=True)
         physical_right = self._probability(physical_high, survival=survival, relative=True)
         physical_bracket = _tail_bracket(physical_left, physical_right, alpha, survival=survival)

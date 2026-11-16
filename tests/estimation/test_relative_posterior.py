@@ -349,6 +349,17 @@ def test_student_t_collapsed_asinh_bracket_preserves_physical_quantile(
     assert actual_lower < cdf_target < actual_upper
 
 
+def test_student_t_sub_ulp_likelihood_brackets_round_outward():
+    # Independent direct-density tails, separately scaled at 60/85 digits.
+    distribution = posterior(1, 1e-17, 4, 1e-20)
+    lower, upper = math.nextafter(1, -math.inf), math.nextafter(1, math.inf)
+    assert distribution.quantile(0.5) == 1.0
+    assert distribution.isf(0.025) in (1.0, upper)
+    assert distribution.cdf(1) == pytest.approx(0.5, abs=1e-10, rel=0)
+    assert distribution.cdf(lower) == pytest.approx(6.117602605641599e-29, rel=1e-6, abs=0)
+    assert distribution.survival(upper) == pytest.approx(1.5550263204184895e-109, rel=1e-6, abs=0)
+
+
 def test_student_t_construction_failure_context_survives_transport():
     with pytest.raises(_PosteriorNumericalError) as caught:
         posterior(sys.float_info.max, math.ulp(0.0), 4, 1)
