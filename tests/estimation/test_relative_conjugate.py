@@ -154,6 +154,30 @@ def test_relative_downside_is_uncapped_and_never_exponentiated():
     )
 
 
+@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("positive", [False, True])
+def test_underflowed_standardized_mean_keeps_finite_partial_expectation(mixed, positive):
+    mean = -1e-300 if positive else 1e-300
+    law = mixture((1.0,), (mean,), (1e300,)) if mixed else normal(mean, 1e300)
+    # The centered expectation differs by at most abs(mean), below one output ULP.
+    reference = 1e300 / math.sqrt(2 * math.pi)
+    result = (
+        law.expected_positive_part(scale="linear")
+        if positive
+        else law.expected_negative_part(scale="linear")
+    )
+    assert result == pytest.approx(reference, rel=1e-6, abs=1e-10)
+
+
+def test_adjacent_interval_midpoint_keeps_subtraction_before_rescaling():
+    sigma = 2.0**-40
+    law = normal(1 - sigma, sigma)
+    lower, upper = 1.0, math.nextafter(1.0, math.inf)
+    width = 2.0**-12
+    reference = quad(norm.pdf, 1.0, 1.0 + width, epsabs=1e-16)[0]
+    assert law.probability_between(lower, upper) == pytest.approx(reference, abs=1e-10, rel=0)
+
+
 def test_tiny_normal_loss_retains_original_large_units():
     law = normal(1e308, 1e307)
     reference_unit = (

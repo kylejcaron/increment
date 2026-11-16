@@ -70,7 +70,7 @@ def _interval_log(lower: float, upper: float, mean: float, sigma: float) -> floa
     if upper == math.inf:
         return float(log_ndtr(-zl))
     width = _standardized(upper, lower, sigma)
-    midpoint = _standardized(_midpoint(lower, upper), mean, sigma)
+    midpoint = zl + width / 2
     if width == 0:
         return -math.inf
     if math.isfinite(midpoint) and width * max(1, abs(midpoint)) <= 1e-3:
@@ -164,7 +164,11 @@ class _ConjugateQueries(ABC):
                 # Omit only a term that rounds to zero even before weighting.
                 if z < 0 and log_density_scale < _LOGMIN - _LOG2:
                     continue
-                terms.append(math.log(weight) + _normal_loss_log(directed, math.log(sigma), z))
+                # The central kernel uses only the nonnegative mean summand;
+                # keep it nonnegative when a negative ratio rounds to -0.0.
+                terms.append(
+                    math.log(weight) + _normal_loss_log(max(0.0, directed), math.log(sigma), z)
+                )
         except _PosteriorNumericalError as error:
             self._fail(operation, str(error.context["reason"]), scale=scale)
         logarithm = _logsum(terms)
