@@ -1861,12 +1861,13 @@ def _censor_to_observable_window(
     *,
     warn_on_censoring: bool,
     censor_population: ir.Table | None = None,
+    observable_end: ir.Value | None = None,
     execute: Callable[[ir.Table], list[dict[str, Any]]] | None = None,
 ) -> ir.Table:
     """Drop units whose metric window is not observable yet, and units
     with no observed day at all (a null-date spine row)."""
     has_observed_day, window_complete, observable_end = _observable_window_flags(
-        dense, metric, experiment, data_as_of
+        dense, metric, experiment, data_as_of, observable_end=observable_end
     )
     dense_before_censor = dense
     kept = has_observed_day & window_complete
@@ -2244,6 +2245,12 @@ def unit_totals(  # noqa: PLR0913
         metric,
         experiment,
         data_as_of,
+        # The left event join cannot change the calendar's latest day.
+        observable_end=(
+            ibis.literal(experiment.observation_horizon_day)
+            if experiment.observation_horizon is not None
+            else spine.ds.max().as_scalar()
+        ),
         warn_on_censoring=bool(warn_on_censoring),
         censor_population=censor_population,
         execute=warn_on_censoring if callable(warn_on_censoring) else None,

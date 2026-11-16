@@ -14,6 +14,7 @@ on:
           - all
           - dependency-floors
           - newest-dependencies
+          - floor-censoring-probe
 permissions:
   contents: read
 
@@ -21,6 +22,28 @@ env:
   UV_LOCKED: "1"
 
 jobs:
+  floor-censoring-probe:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'floor-censoring-probe' }}
+    name: isolated censor-count floor regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: >-
+          uv run --with nox nox -s tests_floor_full-3.12 --
+          'tests/test_evidence_level_parity.py::test_declared_coordinate_acquires_exact_evidence_or_disposition[exact_binomial_beyond_the_former_arm_ceiling--from_definitions]'
+          -n 0 --durations=5 --junitxml=probe-junit.xml
+      - name: Retain the isolated regression result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: isolated-floor-censoring-${{ github.run_id }}
+          path: probe-junit.xml
+          if-no-files-found: warn
+
   test-all-floor:
     if: ${{ github.event_name == 'schedule' || inputs.target == 'all' || inputs.target == 'dependency-floors' }}
     name: full suite at dependency floors (${{ matrix.python-version }}, part ${{ matrix.group }}/3)

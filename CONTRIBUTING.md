@@ -563,6 +563,7 @@ null handling, without exporting outcomes when eligibility needs only membership
 Keep the large-population cases and their existing memory and timeout limits.
 Avoid joining expanded calendars back to enrollment solely to preserve empty
 ranges; retain an undated enrollment row during expansion instead.
+Observation-window bookkeeping uses the calendar alone, not joined outcome statistics.
 Count scans from structured `EXPLAIN` output; calibrate SQL instrumentation with
 explicit statements rather than Ibis-private cleanup behavior.
 
