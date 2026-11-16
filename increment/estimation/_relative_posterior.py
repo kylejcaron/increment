@@ -432,8 +432,8 @@ class _Workspace:
             {
                 left,
                 right,
-                *self.boundaries,
-                *extra,
+                *(boundary for boundary in self.boundaries if left < boundary < right),
+                *(crossing for crossing in extra if left < crossing < right),
                 *(left + (right - left) * index / count for index in range(1, count)),
             }
         )
