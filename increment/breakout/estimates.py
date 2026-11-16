@@ -97,14 +97,14 @@ from increment.estimation.engine import (
     merge_decision_computations as _merge_decision_computations,
 )
 from increment.estimation.family import decision_cells, family_discovery, select_family
-from increment.estimation.inference import LiftGuardError, Prior
+from increment.estimation.inference import LiftGuardError
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
 from increment.estimation.multiplicity import (
     DESIGN_EXCLUSIONS,
     design_excluded,
     stamp_multiplicity_status,
 )
-from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimation.priors import Prior
 from increment.estimation.readout_types import (
     CellKey,
     cell_advisories,
@@ -596,6 +596,8 @@ _FAMILY_VIEW_FIELDS = (
     "posterior_prob_favorable_reason_code",
     "posterior_model",
     "posterior_scale",
+    "posterior_relative_model",
+    "posterior_student_t_state",
     "posterior_estimate",
     "posterior_lb",
     "posterior_ub",
@@ -711,8 +713,8 @@ class BreakoutEstimate(_RowIdentity):
     abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
     # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.
     excluded: ExclusionReason | None = None
-    # Declared mixture prior, separate from posterior_components.
-    prior_spec: StudentTPrior | MixturePrior | None = None
+    # Original declaration, separate from the updated posterior state.
+    prior_spec: Prior | None = None
     # Historical prior-present marker; modern sampling/posterior availability fields
     # determine which inference products are available.
     prior_shrunk: bool = False
@@ -1389,7 +1391,7 @@ class DailyLiftEstimate(_RowIdentity):
     """
 
     analysis_population: Literal["assigned", "triggered"] = "assigned"
-    prior_spec: StudentTPrior | MixturePrior | None = None
+    prior_spec: Prior | None = None
     dof: float | None = None
     reference_kind: Literal["normal", "t", "sequential", "binomial"] = "normal"
     reference_df: float | None = None

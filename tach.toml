@@ -185,6 +185,7 @@ depends_on = [
   "increment.estimation.decision_types",
   "increment.kernel.contracts",
   "increment._interpretation",
+  "increment._posterior_projection",
   "increment.estimation.sequential_result", "increment.estimation.results", "increment.estimation.multiplicity", "increment.estimation.readout_types", "increment.estimation._fcr_reinterval", "increment.estimation.family",
 ]
 [[modules]]
@@ -238,7 +239,12 @@ depends_on = ["increment._canonical", "increment._immutable"]
 [[modules]]
 path = "increment._interpretation"
 layer = "core"
-depends_on = ["increment._display", "increment.estimation.readout_types", "increment.estimation.results"]
+depends_on = ["increment._display", "increment._posterior_projection", "increment.estimation.readout_types", "increment.estimation.results"]
+
+[[modules]]
+path = "increment._posterior_projection"
+layer = "core"
+depends_on = ["increment._immutable", "increment._literals", "increment.estimation._relative_posterior", "increment.estimation.priors", "increment.semantics"]
 
 [[modules]]
 path = "increment.estimation.decision_types"
@@ -996,11 +1002,13 @@ depends_on = [
   "increment.declarations",
   "increment.errors",
   "increment.estimation._readout_refusals",
+  "increment.estimation._relative_posterior",
   "increment.estimation._sequential_likelihood",
   "increment.estimation.advisory",
   "increment.estimation.cuped.encoding",
   "increment.estimation.decision_types",
   "increment.estimation.priors",
+  "increment.estimation.results",
   "increment.estimation.sequential_result",
   "increment.sequential_state",
 ]
@@ -1013,6 +1021,7 @@ depends_on = [
   "increment._display",
   "increment._immutable",
   "increment._literals",
+  "increment._posterior_projection",
   "increment.errors",
   "increment.estimation._fcr_reinterval",
   "increment.estimation._fixed_horizon",
@@ -1654,6 +1663,7 @@ path = "increment.tables"
 layer = "core"
 depends_on = [
   "increment._canonical", "increment._display", "increment._readout_html",
+  "increment._posterior_projection",
   "increment.breakout.estimates", "increment.errors",
   "increment.estimation.sequential_result", "increment.breakout.projection", "increment._interpretation",
   "increment._optional", "increment.estimation.contrast_results", "increment.estimation.results", "increment.estimation.contrast",

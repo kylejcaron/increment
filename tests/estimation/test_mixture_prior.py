@@ -234,7 +234,7 @@ class TestMixturePosterior:
         assert method(scale=scale) == pytest.approx(reference, abs=1e-10, rel=1e-6)
 
     def test_satisfies_lift_posterior_protocol(self):
-        from increment.estimation.inference import LiftPosterior
+        from increment.estimation.priors import LiftPosterior
 
         assert isinstance(_t4_posterior(), LiftPosterior)
 

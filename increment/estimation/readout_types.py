@@ -54,6 +54,7 @@ from increment.estimation._readout_refusals import LEGACY_SAMPLING_UNRECONSTRUCT
 from increment.estimation._readout_refusals import (
     refuse_legacy_sampling as refuse_legacy_sampling,
 )
+from increment.estimation._relative_posterior import RelativeStudentTState
 from increment.estimation._sequential_likelihood import LikelihoodCertificate
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.decision_types import (
@@ -64,7 +65,8 @@ from increment.estimation.decision_types import (
     MethodHypothesisKey,
     PValueEvidence,
 )
-from increment.estimation.priors import MixturePrior, Normal, StudentTPrior
+from increment.estimation.priors import Prior, prior_from_payload
+from increment.estimation.results import RelativePosteriorModel
 from increment.estimation.sequential_result import AsymptoticSequentialResult
 from increment.sequential_state import SequentialCheckpoint, SequentialSnapshot
 
@@ -144,7 +146,6 @@ _WIRE_REFUSALS = refusals(
 )
 
 SamplingEvidence = PValueEvidence | EValueEvidence | AsymptoticSequentialEvidence
-Prior = Normal | StudentTPrior | MixturePrior
 
 
 class CellFailure(_ReadoutModel):
@@ -200,6 +201,17 @@ class PosteriorInference(_ReadoutModel):
     prior: Prior | None = None
     reason_code: str | None = None
     reason_context: Mapping[str, Any] | None = None
+    relative_model: RelativePosteriorModel | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    student_t_state: RelativeStudentTState | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @field_validator("prior", mode="before")
+    @classmethod
+    def _decode_prior(cls, value: object) -> object:
+        return None if value is None else prior_from_payload(value)
 
 
 class CellRecord(_ReadoutModel):

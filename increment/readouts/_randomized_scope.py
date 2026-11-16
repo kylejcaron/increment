@@ -255,6 +255,8 @@ def _randomized_cell_record(
             model=None if row is None else row.posterior_model,
             scale=None if row is None else row.posterior_scale,
             prior=config.prior,
+            relative_model=None if row is None else row.posterior_relative_model,
+            student_t_state=None if row is None else row.posterior_student_t_state,
             reason_code=None if row is None else row.posterior_reason_code,
             reason_context=None if row is None else row.posterior_reason_context,
         )

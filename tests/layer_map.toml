@@ -7,6 +7,7 @@ core = [
   "increment._compile_gaps",
   "increment._prior_types",
   "increment._prior_validation",
+  "increment._posterior_projection",
   "increment.semantics*",
   "increment.estimation*",
   "increment.estimation._relative_conjugate",
