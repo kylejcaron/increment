@@ -167,6 +167,8 @@ values.
   execution. Providers can answer these requests through their moments operation
   without creating an exploratory sibling; `exploratory_metrics=` still requires
   separately declared support.
+- Missing-breakout refusals retain their full structured context in `runnable()`
+  and `run`, including the original guidance for declaring breakouts.
 - `View.breakout(segment, *, population="assigned", metrics=())` accepts an
   optional tuple of registered metric definitions. An empty tuple selects the
   experiment's metrics. Save or log a selective breakout alongside the complete

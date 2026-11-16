@@ -255,10 +255,7 @@ def _refuse_undeclared_breakouts(experiment: Any, scope: Any) -> None:
         constructor=_BUILDERS.get(capabilities[0].kind, capabilities[0].kind),
         requested=_requested_breakouts(experiment, scope),
         offered=(),
-        route=(
-            "a breakout view needs an experiment built by from_definitions or "
-            'from_frame(shape="panel") with declared breakouts'
-        ),
+        route="declare breakouts=[...] on from_frame, or on the experiment in the definitions",
     )
 
 

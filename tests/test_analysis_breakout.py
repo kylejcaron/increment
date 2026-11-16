@@ -1630,10 +1630,7 @@ def test_run_breakout_refuses_when_no_breakouts_declared(con, example_definition
         "constructor": "from_definitions",
         "requested": (),
         "offered": (),
-        "route": (
-            "a breakout view needs an experiment built by from_definitions or "
-            'from_frame(shape="panel") with declared breakouts'
-        ),
+        "route": "declare breakouts=[...] on from_frame, or on the experiment in the definitions",
     }
 
 
