@@ -27,6 +27,7 @@ core = [
   "increment.evidence*",
   "increment.query*",
   "increment.query._summary_sql",
+  "increment.query._day_offsets",
   "increment.sources",
   "increment.frame",
   "increment.readouts*",

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import itertools
-import json
-import uuid
-from pathlib import Path
+from datetime import datetime
 from typing import Any, cast
 
 import ibis
@@ -15,24 +12,9 @@ from tests._unit_boundary import backend_fixture
 
 pytestmark = pytest.mark.integration
 
-GOLDENS = Path(__file__).parents[1] / "goldens" / "sql"
-
-
-def render_sql_goldens(binding: tuple[Any, Any]) -> dict[str, dict[str, str]]:
-    return {
-        "panel": {key: str(value) for key, value in sorted(panel_sql(*binding).items())},
-        "summary": {key: str(value) for key, value in sorted(summary_sql(*binding).items())},
-    }
-
 
 @backend_fixture()
-def sql_analysis(tmp_path, monkeypatch):
-    generated_names = itertools.count(1)
-    monkeypatch.setattr(
-        uuid,
-        "uuid4",
-        lambda: uuid.UUID(int=next(generated_names)),
-    )
+def sql_analysis(tmp_path):
     con = ibis.duckdb.connect()
     con.create_table(
         "events",
@@ -40,14 +22,14 @@ def sql_analysis(tmp_path, monkeypatch):
             {
                 "unit_id": "u1",
                 "user_id": "u1",
-                "ts": "2024-01-01 09:00:00",
+                "ts": datetime(2024, 1, 1, 9),
                 "event": "exposure",
                 "group_id": "control",
             },
             {
                 "unit_id": "u2",
                 "user_id": "u2",
-                "ts": "2024-01-01 09:05:00",
+                "ts": datetime(2024, 1, 31, 9, 5),
                 "event": "purchase",
                 "group_id": "treatment",
             },
@@ -91,28 +73,27 @@ experiments:
         definitions, con, experiment_name="sql_golden", store="none"
     )
     try:
-        yield experiment, resolver
+        yield (experiment, resolver), con
     finally:
         cast(Any, resolver).close()
         con.disconnect()
 
 
-def _golden(name: str) -> dict[str, object]:
-    return json.loads((GOLDENS / f"{name}.sql.json").read_text(encoding="utf-8"))
+def test_exported_panel_sql_keeps_zero_outcomes_and_excludes_unassigned_units(sql_analysis):
+    binding, con = sql_analysis
+    statements = panel_sql(*binding)
+    rows = con.sql(statements["purchase_rate"]).to_pyarrow()
+    assert rows.select(["unit_id", "day_offset", "n_events", "sum_value"]).sort_by(
+        [("day_offset", "ascending")]
+    ).to_pylist() == [
+        {"unit_id": "u1", "day_offset": day, "n_events": 0, "sum_value": 0.0} for day in range(31)
+    ]
 
 
-def test_panel_sql_matches_golden_snapshot(sql_analysis):
-    assert {
-        "schema_version": 1,
-        "dialect": "duckdb",
-        "statements": render_sql_goldens(sql_analysis)["panel"],
-    } == _golden("panel")
-
-
-def test_sql_golden_keys_are_stable_and_nonempty(sql_analysis):
-    rendered = render_sql_goldens(sql_analysis)
-    assert set(rendered) == {"panel", "summary"}
-    for statements in rendered.values():
-        assert list(statements) == sorted(statements)
-        assert statements
-        assert all(isinstance(sql, str) and sql.strip() for sql in statements.values())
+def test_exported_summary_sql_counts_mature_assigned_units_without_purchases(sql_analysis):
+    binding, con = sql_analysis
+    statements = summary_sql(*binding)
+    rows = con.sql(statements["purchase_rate"]).to_pyarrow()
+    assert rows.select(["group_id", "n", "successes"]).to_pylist() == [
+        {"group_id": "control", "n": 1, "successes": 0}
+    ]
