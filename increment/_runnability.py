@@ -592,8 +592,7 @@ def _validate_scope_request(
 ) -> None:
     if scope.view == "daily":
         check(_validate_declared_day_axis, declaration, request, operation, capabilities)
-        if not refusals:
-            check(validate_request, request)
+        check(validate_request, request)
     elif scope.view == "asof":
         check(_validate_declared_day_axis, declaration, request, operation, capabilities)
     elif scope.view == "breakout":

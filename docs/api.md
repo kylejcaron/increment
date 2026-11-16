@@ -169,6 +169,8 @@ values.
   separately declared support.
 - Missing-breakout refusals retain their full structured context in `runnable()`
   and `run`, including the original guidance for declaring breakouts.
+- `runnable()` retains daily quantile refusals for saved artifacts when another
+  validation check also refuses; execution's reason is no longer omitted.
 - `View.breakout(segment, *, population="assigned", metrics=())` accepts an
   optional tuple of registered metric definitions. An empty tuple selects the
   experiment's metrics. Save or log a selective breakout alongside the complete
