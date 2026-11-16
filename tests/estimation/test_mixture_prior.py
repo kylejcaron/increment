@@ -12,6 +12,7 @@ from increment.estimation.inference import infer_lift
 from increment.estimation.priors import (
     MixturePosterior,
     MixturePrior,
+    Normal,
     StudentTPrior,
     mixture_posterior,
 )
@@ -153,6 +154,43 @@ def _t4_posterior(y=0.20, se=0.05):
     return mixture_posterior(y, se, StudentTPrior(nu=4.0, scale=0.05).components())
 
 
+def _normal_or_mixture(mu: float, sigma: float, as_mixture: bool):
+    if as_mixture:
+        return MixturePosterior(
+            weights=np.array([1.0]), means=np.array([mu]), sigmas=np.array([sigma])
+        )
+    return Normal(mu=mu, sigma=sigma)
+
+
+@pytest.mark.parametrize("as_mixture", [False, True], ids=["normal", "mixture"])
+@pytest.mark.parametrize("positive", [False, True], ids=["negative-part", "positive-part"])
+def test_linear_partial_expectation_preserves_rescaled_far_tail(as_mixture, positive):
+    # Positive-integrand quadrature after u = 37.7 * abs(x) / sigma.
+    mu = (-1.0 if positive else 1.0) * 37.7e306
+    posterior = _normal_or_mixture(mu, 1e306, as_mixture)
+    method = posterior.expected_positive_part if positive else posterior.expected_negative_part
+    assert method(scale="linear") == pytest.approx(6.578256893633751e-7, abs=1e-10, rel=1e-6)
+
+
+@pytest.mark.parametrize("as_mixture", [False, True], ids=["normal", "mixture"])
+def test_log_negative_part_stays_bounded_when_tilted_moment_overflows(as_mixture):
+    # Integral of -expm1(x) * Normal(x; 5, 40) on the negative half-line.
+    posterior = _normal_or_mixture(5.0, 40.0, as_mixture)
+    assert posterior.expected_negative_part(scale="log") == pytest.approx(
+        0.44040277743491413, abs=1e-10, rel=1e-6
+    )
+
+
+@pytest.mark.parametrize("as_mixture", [False, True], ids=["normal", "mixture"])
+def test_log_positive_part_keeps_cancelled_exponent_bits(as_mixture):
+    # Exact float inputs give mu + sigma**2/2 = 0.40895355165004732...
+    # Both omitted Normal tails are below exp(-1e15).
+    posterior = _normal_or_mixture(-5000000009999999.0, 100000000.1, as_mixture)
+    assert posterior.expected_positive_part(scale="log") == pytest.approx(
+        1.5052418028637704, abs=1e-10, rel=1e-6
+    )
+
+
 class TestMixturePosterior:
     def test_satisfies_lift_posterior_protocol(self):
         from increment.estimation.inference import LiftPosterior
@@ -223,6 +261,68 @@ class TestMixturePosterior:
         post = mixture_posterior(2.0, 0.05, StudentTPrior(nu=4.0, scale=0.05).components())
         assert np.isfinite(post.quantile(0.5))
         assert post.quantile(0.5) == pytest.approx(2.0, rel=0.05)  # data wins
+
+    def test_large_scales_match_independent_rescaled_density_integrals(self):
+        from scipy.integrate import quad
+        from scipy.stats import norm
+
+        weights, means, sigmas = (0.2, 0.5, 0.3), (-1.5, 0.75, 4.0), (0.5, 2.0, 3.0)
+        masses, reference_means, reference_sigmas = [], [], []
+        for weight, mean, sigma in zip(weights, means, sigmas, strict=True):
+
+            def density(x, weight=weight, mean=mean, sigma=sigma):
+                return weight * norm.pdf(x, mean, sigma) * norm.pdf(1.25, x, 0.8)
+
+            mass = quad(density, -math.inf, math.inf, epsabs=1e-13, epsrel=1e-12)[0]
+            center = (
+                quad(lambda x: x * density(x), -math.inf, math.inf, epsabs=1e-13, epsrel=1e-12)[0]
+                / mass
+            )
+            variance = (
+                quad(
+                    lambda x, center=center: (x - center) ** 2 * density(x),
+                    -math.inf,
+                    math.inf,
+                    epsabs=1e-13,
+                    epsrel=1e-12,
+                )[0]
+                / mass
+            )
+            masses.append(mass)
+            reference_means.append(center)
+            reference_sigmas.append(math.sqrt(variance))
+        prior = MixturePrior(
+            weights=weights,
+            means=tuple(x * 1e160 for x in means),
+            sigmas=tuple(x * 1e160 for x in sigmas),
+        )
+        post = mixture_posterior(1.25e160, 0.8e160, prior)
+        assert np.isfinite(post.weights).all()
+        assert np.isfinite(post.means).all()
+        assert np.isfinite(post.sigmas).all()
+        assert (post.weights > 0.0).all()
+        assert (post.sigmas > 0.0).all()
+        assert post.weights.sum() == pytest.approx(1.0, abs=1e-14)
+        assert post.weights == pytest.approx(np.array(masses) / sum(masses), abs=1e-12)
+        assert post.means / 1e160 == pytest.approx(reference_means, abs=1e-12)
+        assert post.sigmas / 1e160 == pytest.approx(reference_sigmas, abs=1e-12)
+
+    def test_opposite_extreme_means_keep_finite_standardized_distances(self):
+        prior = MixturePrior(weights=(0.4, 0.6), means=(-1.5e308, 0.5e308), sigmas=(1e308, 1e308))
+        post = mixture_posterior(1.5e308, 1e308, prior)
+        # Dimensionless marginal exponents differ by (3**2 - 1**2) / 4 = 2.
+        mass = np.array([0.4 * math.exp(-2.0), 0.6])
+        assert post.weights == pytest.approx(mass / mass.sum(), abs=1e-12)
+        assert post.means / 1e308 == pytest.approx([0.0, 1.0], abs=1e-14)
+        assert post.sigmas / 1e308 == pytest.approx([math.sqrt(0.5)] * 2, abs=1e-14)
+
+    def test_unrepresentable_marginal_densities_keep_normalized_weights(self):
+        prior = MixturePrior(weights=(0.4, 0.6), means=(0.0, 0.0), sigmas=(1.0, 2.0))
+        post = mixture_posterior(1e160, 1.0, prior)
+        # Marginal variance 5 wins over variance 2 by exp(1.5e319).
+        assert post.weights == pytest.approx([0.0, 1.0], abs=1e-14)
+        assert post.means / 1e160 == pytest.approx([0.5, 0.8], abs=1e-14)
+        assert post.sigmas == pytest.approx([math.sqrt(0.5), math.sqrt(0.8)], abs=1e-14)
 
     def test_narrow_symmetric_mixture_median_is_exactly_zero(self):
         # Brent's xtol used to be an absolute 1e-12 - eight orders of

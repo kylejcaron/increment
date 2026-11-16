@@ -59,6 +59,78 @@ EXPECTED_POSITIVE_PART_SCALE = _REFUSALS[
 ]
 
 
+def _normal_log_moment(means: np.ndarray, sigmas: np.ndarray) -> np.ndarray:
+    """Compute mu + sigma²/2 without losing the low product bits."""
+    mantissas, exponents = np.frexp(sigmas)
+    split = (2**27 + 1) * mantissas
+    high = split - (split - mantissas)
+    low = mantissas - high
+    square = mantissas * mantissas
+    error = ((high * high - square) + 2.0 * high * low) + low * low
+    powers = 2 * exponents - 1
+    result = np.empty_like(means)
+    small = powers <= 0
+    result[small] = (means[small] + np.ldexp(square[small], powers[small])) + np.ldexp(
+        error[small], powers[small]
+    )
+    # Scale the sum as well as the square when the variance itself can overflow.
+    scaled = np.ldexp(means[~small], -powers[~small])
+    total = square[~small] + scaled
+    remainder = total - square[~small]
+    correction = (square[~small] - (total - remainder)) + (scaled - remainder)
+    with np.errstate(over="ignore"):
+        result[~small] = np.ldexp(total + (correction + error[~small]), powers[~small])
+    return result
+
+
+def _normal_expected_part(
+    means: np.ndarray, sigmas: np.ndarray, *, scale: Literal["linear", "log"], positive: bool
+) -> np.ndarray:
+    """Evaluate Normal partial expectations before mixing component losses."""
+    from scipy.special import erfcx, log_ndtr, ndtr
+
+    with np.errstate(over="ignore", divide="ignore"):
+        z = means / sigmas
+        log_density = -0.5 * z * z - 0.5 * math.log(2.0 * math.pi)
+    if scale == "linear":
+        directed_means = means if positive else -means
+        directed_z = z if positive else -z
+        log_scaled_density = np.log(sigmas) + log_density
+        result = np.empty_like(means)
+        central = directed_z >= 0.0
+        with np.errstate(over="ignore"):
+            result[central] = np.exp(log_scaled_density[central]) + directed_means[central] * ndtr(
+                directed_z[central]
+            )
+        # The loss is bounded above by sigma*phi(z); omit only rounded-zero terms.
+        tail = ~central & (log_scaled_density > math.log(_MIN_POSITIVE_FLOAT) - math.log(2.0))
+        result[~central] = 0.0
+        t = -directed_z[tail]
+        mills = math.sqrt(math.pi / 2.0) * erfcx(t / math.sqrt(2.0))
+        result[tail] = np.exp(log_scaled_density[tail] + np.log1p(-t * mills))
+        return result
+
+    with np.errstate(over="ignore"):
+        tilted_z = z + sigmas
+    log_tilted = np.empty_like(means)
+    tail = tilted_z < 0.0 if positive else tilted_z >= 0.0
+    t = -tilted_z[tail] if positive else tilted_z[tail]
+    with np.errstate(divide="ignore"):
+        log_tilted[tail] = log_density[tail] + np.log(
+            math.sqrt(math.pi / 2.0) * erfcx(t / math.sqrt(2.0))
+        )
+    log_tilted[~tail] = _normal_log_moment(means[~tail], sigmas[~tail]) + log_ndtr(
+        tilted_z[~tail] if positive else -tilted_z[~tail]
+    )
+    log_mass = log_ndtr(z if positive else -z)
+    log_large, log_small = (log_tilted, log_mass) if positive else (log_mass, log_tilted)
+    finite = np.isfinite(log_large)
+    with np.errstate(over="ignore"):
+        result = np.exp(log_large)
+        result[finite] *= -np.expm1(log_small[finite] - log_large[finite])
+    return result
+
+
 class Normal(CodedModel, BaseModel):
     """Normal distribution with finite scalar parameters."""
 
@@ -104,31 +176,23 @@ class Normal(CodedModel, BaseModel):
 
     def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float:
         """Expected magnitude below zero on the requested reporting scale."""
-        from scipy.stats import norm as _norm
-
-        z = self.mu / self.sigma
-        if scale == "linear":
-            return float(self.sigma * _norm.pdf(z) - self.mu * _norm.cdf(-z))
-        if scale == "log":
-            a = -z
-            return float(
-                _norm.cdf(a) - math.exp(self.mu + 0.5 * self.sigma**2) * _norm.cdf(a - self.sigma)
-            )
-        refuse(EXPECTED_NEGATIVE_PART_SCALE, scale=scale)
+        if scale not in ("linear", "log"):
+            refuse(EXPECTED_NEGATIVE_PART_SCALE, scale=scale)
+        return float(
+            _normal_expected_part(
+                np.array([self.mu]), np.array([self.sigma]), scale=scale, positive=False
+            )[0]
+        )
 
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
         """Expected magnitude above zero on the requested reporting scale."""
-        from scipy.stats import norm as _norm
-
-        z = self.mu / self.sigma
-        if scale == "linear":
-            return float(self.sigma * _norm.pdf(z) + self.mu * _norm.cdf(z))
-        if scale == "log":
-            a = -z
-            return float(
-                math.exp(self.mu + 0.5 * self.sigma**2) * _norm.cdf(self.sigma - a) - _norm.cdf(-a)
-            )
-        refuse(EXPECTED_POSITIVE_PART_SCALE, scale=scale)
+        if scale not in ("linear", "log"):
+            refuse(EXPECTED_POSITIVE_PART_SCALE, scale=scale)
+        return float(
+            _normal_expected_part(
+                np.array([self.mu]), np.array([self.sigma]), scale=scale, positive=True
+            )[0]
+        )
 
 
 class MixturePrior(CodedModel, BaseModel):
@@ -309,37 +373,23 @@ class MixturePosterior:
         return float((self.weights * per_component).sum())
 
     def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float:
-        from scipy.stats import norm as _norm
-
+        if scale not in ("linear", "log"):
+            _raise("estimation.priors.mixture_posterior.expected_negative_part_scale", scale=scale)
         active = self.weights > 0.0
         weights = self.weights[active]
-        means = self.means[active]
-        sigmas = self.sigmas[active]
-        z = means / sigmas
-        if scale == "linear":
-            per = sigmas * _norm.pdf(z) - means * _norm.cdf(-z)
-        elif scale == "log":
-            a = -z
-            per = _norm.cdf(a) - np.exp(means + 0.5 * sigmas**2) * _norm.cdf(a - sigmas)
-        else:
-            _raise("estimation.priors.mixture_posterior.expected_negative_part_scale", scale=scale)
+        per = _normal_expected_part(
+            self.means[active], self.sigmas[active], scale=scale, positive=False
+        )
         return float((weights * per).sum())
 
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
-        from scipy.stats import norm as _norm
-
+        if scale not in ("linear", "log"):
+            _raise("estimation.priors.mixture_posterior.expected_positive_part_scale", scale=scale)
         active = self.weights > 0.0
         weights = self.weights[active]
-        means = self.means[active]
-        sigmas = self.sigmas[active]
-        z = means / sigmas
-        if scale == "linear":
-            per = sigmas * _norm.pdf(z) + means * _norm.cdf(z)
-        elif scale == "log":
-            a = -z
-            per = np.exp(means + 0.5 * sigmas**2) * _norm.cdf(sigmas - a) - _norm.cdf(-a)
-        else:
-            _raise("estimation.priors.mixture_posterior.expected_positive_part_scale", scale=scale)
+        per = _normal_expected_part(
+            self.means[active], self.sigmas[active], scale=scale, positive=True
+        )
         return float((weights * per).sum())
 
 
@@ -353,18 +403,41 @@ def mixture_posterior(
     likelihood of the data, computed in log space so a many-sigma surprise
     re-normalizes instead of underflowing to NaN.
     """
-    from scipy.stats import norm as _norm
-
     if standard_error <= 0:
         _raise("estimation.priors.standard_error", standard_error=standard_error)
     prior_means = np.asarray(prior.means)
     prior_sigmas = np.asarray(prior.sigmas)
-    log_weights = np.log(np.asarray(prior.weights)) + _norm.logpdf(
-        estimate, prior_means, np.sqrt(prior_sigmas**2 + standard_error**2)
+    small = np.minimum(prior_sigmas, standard_error)
+    large = np.maximum(prior_sigmas, standard_error)
+    ratio = small / large
+    unit_marginal = np.hypot(1.0, ratio)
+    same_sign = np.signbit(prior_means) == np.signbit(estimate)
+    standardized = np.empty_like(prior_means)
+    standardized[same_sign] = (estimate - prior_means[same_sign]) / large[same_sign]
+    standardized[~same_sign] = (
+        estimate / large[~same_sign] - prior_means[~same_sign] / large[~same_sign]
     )
-    log_weights -= log_weights.max()
-    weights = np.exp(log_weights)
+    distances = np.abs(standardized / unit_marginal)
+    closest = distances.min()
+    # Remove the common quadratic term before squaring, even if all densities underflow.
+    with np.errstate(over="ignore"):
+        relative_penalty = (distances - closest) * (0.5 * distances + 0.5 * closest)
+    log_weights = (
+        np.log(np.asarray(prior.weights)) - np.log(large) - np.log(unit_marginal) - relative_penalty
+    )
+    weights = np.exp(log_weights - log_weights.max())
     weights /= weights.sum()
-    variances = 1.0 / (1.0 / prior_sigmas**2 + 1.0 / standard_error**2)
-    means = variances * (prior_means / prior_sigmas**2 + estimate / standard_error**2)
-    return MixturePosterior(weights=weights, means=means, sigmas=np.sqrt(variances))
+
+    prior_smaller = prior_sigmas <= standard_error
+    small_means = np.where(prior_smaller, prior_means, estimate)
+    large_means = np.where(prior_smaller, estimate, prior_means)
+    denominator = 1.0 + ratio * ratio
+    means = np.empty_like(prior_means)
+    means[same_sign] = small_means[same_sign] + ratio[same_sign] * (
+        (ratio[same_sign] * (large_means[same_sign] - small_means[same_sign]))
+        / denominator[same_sign]
+    )
+    means[~same_sign] = small_means[~same_sign] / denominator[~same_sign] + ratio[~same_sign] * (
+        (ratio[~same_sign] * large_means[~same_sign]) / denominator[~same_sign]
+    )
+    return MixturePosterior(weights=weights, means=means, sigmas=small / unit_marginal)
