@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal, localcontext
 
 import numpy as np
 import pytest
@@ -342,6 +343,50 @@ class TestMixturePosterior:
         assert post.weights == pytest.approx([0.0, 1.0], abs=1e-14)
         assert post.means / 1e160 == pytest.approx([0.5, 0.8], abs=1e-14)
         assert post.sigmas == pytest.approx([math.sqrt(0.5), math.sqrt(0.8)], abs=1e-14)
+
+    @pytest.mark.parametrize(
+        ("standard_error", "sigma", "separation"),
+        [(1e150, 1e-150, 1e-8), (1e160, 1e160, 1e12)],
+        ids=["dominant-observation-scale", "equal-scales"],
+    )
+    def test_small_mean_separation_keeps_resolvable_relative_evidence(
+        self, standard_error, sigma, separation
+    ):
+        prior = MixturePrior(weights=(0.4, 0.6), means=(0.0, separation), sigmas=(sigma, sigma))
+        with localcontext() as context:
+            context.prec = 100
+            y, e, s, delta = map(Decimal.from_float, (1e308, standard_error, sigma, separation))
+            log_odds_shift = delta * (2 * y - delta) / (2 * (s * s + e * e))
+            masses = [
+                Decimal.from_float(prior.weights[0]),
+                Decimal.from_float(prior.weights[1]) * log_odds_shift.exp(),
+            ]
+            reference = np.array([float(mass / sum(masses)) for mass in masses])
+        post = mixture_posterior(1e308, standard_error, prior)
+        assert post.weights == pytest.approx(reference, abs=1e-10)
+        assert np.isfinite(post.means).all()
+        assert np.isfinite(post.sigmas).all()
+
+    def test_infinite_absolute_standardized_distances_keep_finite_posterior(self):
+        prior = MixturePrior(weights=(0.4, 0.6), means=(0.0, 0.0), sigmas=(1e-160, 1e-160))
+        post = mixture_posterior(1e308, 1e-160, prior)
+        assert post.weights == pytest.approx(prior.weights, abs=1e-10)
+        assert post.means / 1e308 == pytest.approx([0.5, 0.5], abs=1e-14)
+        assert post.sigmas / 1e-160 == pytest.approx([math.sqrt(0.5)] * 2, abs=1e-14)
+
+    def test_weighted_log_positive_part_stays_finite_when_component_loss_overflows(self):
+        posterior = MixturePosterior(
+            weights=np.array([1e-300, 1.0]),
+            means=np.array([1000.0, -1000.0]),
+            sigmas=np.array([1.0, 1.0]),
+        )
+        with localcontext() as context:
+            context.prec = 100
+            # Full exponential moment; omitted half-line tails are far below tolerance.
+            reference = float(Decimal.from_float(1e-300) * (Decimal("1000.5").exp() - 1))
+        assert posterior.expected_positive_part(scale="log") == pytest.approx(
+            reference, abs=1e-10, rel=1e-6
+        )
 
     def test_narrow_symmetric_mixture_median_is_exactly_zero(self):
         # Brent's xtol used to be an absolute 1e-12 - eight orders of
