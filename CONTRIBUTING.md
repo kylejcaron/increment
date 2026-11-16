@@ -561,6 +561,8 @@ Affected selections of up to six direct test files run without xdist workers.
 Population identity capture preserves canonical hashes, including duplicate and
 null handling, without exporting outcomes when eligibility needs only membership.
 Keep the large-population cases and their existing memory and timeout limits.
+Avoid joining expanded calendars back to enrollment solely to preserve empty
+ranges; retain an undated enrollment row during expansion instead.
 Count scans from structured `EXPLAIN` output; calibrate SQL instrumentation with
 explicit statements rather than Ibis-private cleanup behavior.
 

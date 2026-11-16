@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import ibis
 import ibis.expr.operations as ops
@@ -11,7 +11,7 @@ import sqlglot.expressions as sge
 
 
 class _DayOffsets(ops.TableUnnest):
-    """Expand a non-null integer range into the unit's observed day offsets."""
+    """Expand a unit's day range, retaining a null offset when it is empty."""
 
 
 def _register_day_offsets() -> None:
@@ -62,13 +62,18 @@ _register_day_offsets()
 
 
 def expand_day_offsets(keys: ir.Table, day_count: ir.IntegerValue) -> ir.Table:
-    """Append offsets ``0..day_count-1``; empty ranges produce no rows."""
+    """Append offsets ``0..day_count-1``; empty ranges retain one null offset."""
     name = "__panel_day_offsets"
     while name in keys.columns:
         name += "_"
+    day_range = ibis.range(0, day_count, 1)
+    # A negative sentinel preserves empty ranges without an outer unnest.
+    # Real offsets are nonnegative; the sentinel is nulled before date arithmetic.
+    has_days = cast("Any", day_count) > 0
+    day_range = has_days.ifelse(day_range, ibis.array([-1]).cast(day_range.type()))
     # Projection scopes scalar horizon reductions before the lateral expansion.
-    ranges = keys.mutate(**{name: ibis.range(0, day_count, 1)})
-    return (
+    ranges = keys.mutate(**{name: day_range})
+    expanded = (
         _DayOffsets(
             parent=ranges.op(),
             column=ranges[name].op(),
@@ -79,3 +84,5 @@ def expand_day_offsets(keys: ir.Table, day_count: ir.IntegerValue) -> ir.Table:
         .to_expr()
         .drop(name)
     )
+    offset = expanded.day_offset
+    return expanded.mutate(day_offset=(offset >= 0).ifelse(offset, ibis.null().cast(offset.type())))
