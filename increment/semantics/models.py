@@ -39,6 +39,8 @@ from increment._literals import (
     Correction,
     PreferredDirection,
 )
+from increment._prior_types import RelativeLiftPriorSpec
+from increment._prior_validation import validate_relative_prior_tag
 from increment.errors import CodedModel, DefinitionError, RefusalSpec
 from increment.semantics.design import (
     ALLOCATION_SCHEME_INCOMPATIBLE,
@@ -2002,9 +2004,17 @@ class ExperimentMetric(_Base):
     metric: str
     decision_method: MethodSpec | None = None
     sensitivity_methods: tuple[MethodSpec, ...] = ()
-    prior: NormalPriorSpec | None = None
+    prior: NormalPriorSpec | RelativeLiftPriorSpec | None = None
     margin: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
     margin_abs: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
+
+    @field_validator("prior", mode="before")
+    @classmethod
+    def _tagged_prior(cls, value: object) -> object:
+        if isinstance(value, Mapping) and ("type" in value or "distribution" in value):
+            validate_relative_prior_tag(value)
+            return RelativeLiftPriorSpec.model_validate(value)
+        return value
 
     @model_validator(mode="after")
     def _margins_mutually_exclusive(self) -> "ExperimentMetric":

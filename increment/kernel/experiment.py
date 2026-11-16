@@ -182,12 +182,37 @@ def _serialization_model(value: Any) -> Any:
     return value
 
 
+def _contains_runtime_callable(value: Any) -> bool:
+    if callable(value):
+        return True
+    if isinstance(value, BaseModel):
+        return any(
+            _contains_runtime_callable(getattr(value, name)) for name in type(value).model_fields
+        )
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return any(
+            _contains_runtime_callable(getattr(value, field.name))
+            for field in dataclasses.fields(value)
+        )
+    if isinstance(value, Mapping):
+        return any(_contains_runtime_callable(item) for item in value.values())
+    if isinstance(value, (tuple, list)):
+        return any(_contains_runtime_callable(item) for item in value)
+    return False
+
+
 def _freeze(value: Any) -> Any:
     if callable(value):
         return value
     if isinstance(value, BaseModel):
         fields = _serialization_model(value).model_dump(mode="python")
-        return _freeze({name: getattr(value, name) for name in fields})
+        # Python-mode dumps can still turn a callable BaseModel factory into a dict.
+        # Keep runtime-bearing branches; honor serializers on portable branches.
+        for name in fields:
+            raw = getattr(value, name, None)
+            if _contains_runtime_callable(raw):
+                fields[name] = raw
+        return _freeze(fields)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return _freeze(
             {field.name: getattr(value, field.name) for field in dataclasses.fields(value)}

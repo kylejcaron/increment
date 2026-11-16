@@ -8,6 +8,7 @@ from os import PathLike
 
 from increment import (
     AnalysisPlan,
+    MetricSpec,
     Randomized,
     from_definitions,
     from_frame,
@@ -16,6 +17,7 @@ from increment import (
     from_unit_day_artifact,
 )
 from increment.artifacts import SourceSnapshotEvidence
+from increment.estimators import MixturePrior, Normal, RelativeLiftPrior, StudentTPrior
 from increment.frame import IntoDataFrame
 from increment.query.artifact_contract import ArtifactStore
 from increment.semantics.artifact import ArtifactContext, UnitDayArtifactRef
@@ -151,3 +153,19 @@ def definitions_calls(path: str | PathLike[str], evidence: SourceSnapshotEvidenc
         source_snapshot_evidence=evidence,
     )
     from_definitions(path, store="invalid")  # ty: ignore[invalid-argument-type]
+
+
+def relative_prior_calls(frame: IntoDataFrame) -> None:
+    for distribution in (
+        Normal(mu=0.0, sigma=0.1),
+        StudentTPrior(nu=4.0, scale=0.1),
+        MixturePrior(weights=(1.0,), means=(0.0,), sigmas=(0.1,)),
+    ):
+        from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="value", prior=RelativeLiftPrior(distribution=distribution))],
+        )

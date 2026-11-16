@@ -27,7 +27,14 @@ from increment.decision import (
     refuse_margin_less_procedures,
 )
 from increment.declarations import VARIANCE_REDUCTION, estimator_refs, thaw
-from increment.errors import CapabilityError, CodedError, InvalidRequestError, RefusalSpec, refuse
+from increment.errors import (
+    CapabilityError,
+    CodedError,
+    InvalidRequestError,
+    RefusalSpec,
+    refuse,
+)
+from increment.estimation.priors import prior_from_payload
 from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
 
 if TYPE_CHECKING:
@@ -461,7 +468,6 @@ def _estimator_config(
 def typed_request_options(options: Mapping[str, Any]) -> dict[str, Any]:
     """Restore portable request declarations to their runtime models."""
     from increment.estimation.engine import Method
-    from increment.estimation.inference import Prior
     from increment.semantics.models import Metric
 
     values = thaw(options)
@@ -482,7 +488,7 @@ def typed_request_options(options: Mapping[str, Any]) -> dict[str, Any]:
         ]
     prior = values.get("prior")
     if isinstance(prior, Mapping):
-        values["prior"] = TypeAdapter(Prior).validate_python(prior)
+        values["prior"] = prior_from_payload(prior)
     return values
 
 
@@ -512,7 +518,15 @@ def _request_config(
     metric_name: str,
 ) -> tuple[dict[str, Any], tuple[ResolvedMetricConfig, ...], tuple[ResolvedMetricConfig, ...]]:
     values = typed_request_options(options)
-    base = _CONFIGS.validate_python(declaration["configs"])
+    recorded_configs = tuple(
+        {**config, "prior": prior_from_payload(prior)}
+        if isinstance(config, Mapping)
+        and isinstance((prior := config.get("prior")), Mapping)
+        and ("type" in prior or "distribution" in prior)
+        else config
+        for config in declaration["configs"]
+    )
+    base = _CONFIGS.validate_python(recorded_configs)
     metrics = select_metrics(
         tuple(config.metric for config in base), values.get("metrics"), caller=operation
     )

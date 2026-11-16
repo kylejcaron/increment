@@ -14,7 +14,12 @@ from increment.decision import (
     RelativeArmDecisionProcedure,
 )
 from increment.decision_wire import compiled_plan_from_json, compiled_plan_to_json
-from increment.errors import CodedError, InvalidRequestError, WireFormatError
+from increment.errors import (
+    CodedError,
+    InvalidRequestError,
+    UnsupportedRequestError,
+    WireFormatError,
+)
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
 from increment.estimation.priors import StudentTPrior
@@ -1060,3 +1065,16 @@ def test_plan_refusal_carries_code(code, build):
     with pytest.raises(CodedError) as raised:
         build()
     assert raised.value.code == code
+
+
+def test_relative_prior_refuses_absolute_procedure_before_execution():
+    from increment.estimators import RelativeLiftPrior
+
+    with pytest.raises(UnsupportedRequestError) as raised:
+        compile_decision_plan(
+            None,
+            [_mean("rev", margin_abs=1.0, preferred_direction="increase")],
+            prior=RelativeLiftPrior(distribution=Normal(mu=0.0, sigma=0.1)),
+        )
+    assert raised.value.code == "plan.metric_priors_relative"
+    assert raised.value.context == {"metric": "rev", "prior": "RelativeLiftPrior"}

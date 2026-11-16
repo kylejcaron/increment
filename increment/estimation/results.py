@@ -77,12 +77,23 @@ from increment.estimation._fixed_horizon import (
     binomial_abs_interval,
 )
 from increment.estimation._readout_refusals import refuse_legacy_sampling
+from increment.estimation._relative_posterior import (
+    RelativeStudentTPosterior,
+    RelativeStudentTState,
+)
 from increment.estimation._student_t import _log_tail_bounds
 from increment.estimation._tails import resolvable_expm1, student_t_isf, tail_isf, wald_bounds
 from increment.estimation._winsor_bootstrap import bootstrap_p_value
 from increment.estimation.armstats import IndependentMeanReference
 from increment.estimation.conversion_route import CAPPED_NOTE_PREFIX, ESCALATED_NOTE_PREFIX
-from increment.estimation.priors import MixturePosterior, MixturePrior, Normal, StudentTPrior
+from increment.estimation.priors import (
+    MixturePosterior,
+    MixturePrior,
+    Normal,
+    Prior,
+    RelativeLiftPrior,
+    StudentTPrior,
+)
 from increment.estimation.risk_difference import score_p_value
 from increment.estimation.sequential_result import (
     AsymptoticSequentialResult,
@@ -855,6 +866,18 @@ def _freeze_row_contexts(row: Any) -> None:
             object.__setattr__(row, name, freeze(value))
 
 
+class RelativePosteriorModel(CodedModel, BaseModel):
+    """Recorded likelihood, units and support for a relative-effect posterior."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    version: Literal[1] = 1
+    likelihood: Literal["relative_normal"] = "relative_normal"
+    prior_scale: Literal["relative"] = "relative"
+    support: Literal["real"] = "real"
+    summary: Literal["median"] = "median"
+
+
 class _RowIdentity(CodedModel, BaseModel):
     """Leading identity fields shared, in the same declared order, by
     LiftEstimate, BreakoutEstimate and DailyLiftEstimate. Only a field
@@ -879,8 +902,14 @@ class _RowIdentity(CodedModel, BaseModel):
     posterior_components: PosteriorComponents | None = None
     posterior_reason_code: str | None = None
     posterior_reason_context: Mapping[str, object] | None = None
-    posterior_model: Literal["normal", "mixture"] | None = None
+    posterior_model: Literal["normal", "mixture", "student_t_normal"] | None = None
     posterior_scale: Literal["log", "linear"] | None = None
+    posterior_relative_model: RelativePosteriorModel | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    posterior_student_t_state: RelativeStudentTState | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     posterior_estimate: float | None = None
     posterior_lb: float | None = None
     posterior_ub: float | None = None
@@ -953,6 +982,11 @@ class _RowIdentity(CodedModel, BaseModel):
                 means=np.asarray(self.posterior_components.means, dtype=float),
                 sigmas=np.asarray(self.posterior_components.sigmas, dtype=float),
             )
+        if (
+            self.posterior_model == "student_t_normal"
+            and self.posterior_student_t_state is not None
+        ):
+            return RelativeStudentTPosterior(self.posterior_student_t_state)
         return None
 
     @model_validator(mode="after")
@@ -986,6 +1020,8 @@ class _RowIdentity(CodedModel, BaseModel):
                 self.posterior_model is not None
                 or self.posterior_scale is not None
                 or self.posterior_components is not None
+                or self.posterior_relative_model is not None
+                or self.posterior_student_t_state is not None
                 or any(value is not None for value in payload)
             ):
                 invalid("posterior state is present while posterior_available is not true")
@@ -1001,26 +1037,58 @@ class _RowIdentity(CodedModel, BaseModel):
             invalid("available posterior is missing its model or scale")
         if any(value is None or not math.isfinite(value) for value in required):
             invalid("available posterior is missing finite interval payload")
+        declared = getattr(self, "prior_spec", None)
+        if isinstance(declared, RelativeLiftPrior):
+            if self.posterior_relative_model is None or self.posterior_scale != "linear":
+                invalid("relative prior requires its explicit relative model and linear scale")
+            family = declared.distribution
+            expected_model = (
+                "normal"
+                if isinstance(family, Normal)
+                else "mixture"
+                if isinstance(family, MixturePrior)
+                else "student_t_normal"
+            )
+            if self.posterior_model != expected_model:
+                invalid("relative posterior model does not match its declared family")
+        elif self.posterior_relative_model is not None:
+            invalid("relative model requires an explicit relative prior")
         if self.posterior_model == "normal":
             if (
                 self.posterior_components is not None
+                or self.posterior_student_t_state is not None
                 or self.posterior_latent_mean is None
                 or self.posterior_latent_sd is None
                 or not math.isfinite(self.posterior_latent_mean)
                 or not math.isfinite(self.posterior_latent_sd)
                 or self.posterior_latent_sd <= 0.0
-                or getattr(self, "prior_spec", None) is not None
+                or (declared is not None and not isinstance(declared, RelativeLiftPrior))
             ):
                 invalid("Normal posterior requires finite latent parameters and no mixture state")
         elif self.posterior_model == "mixture":
             if (
                 self.posterior_components is None
+                or self.posterior_student_t_state is not None
                 or self.posterior_latent_mean is not None
                 or self.posterior_latent_sd is not None
-                or getattr(self, "prior_spec", None) is None
+                or not isinstance(declared, (StudentTPrior, MixturePrior, RelativeLiftPrior))
             ):
                 invalid(
                     "mixture posterior requires stored components and a separate declared prior"
+                )
+        elif self.posterior_model == "student_t_normal":
+            state = self.posterior_student_t_state
+            if (
+                state is None
+                or self.posterior_components is not None
+                or self.posterior_latent_mean is not None
+                or self.posterior_latent_sd is not None
+                or not isinstance(declared, RelativeLiftPrior)
+                or not isinstance(declared.distribution, StudentTPrior)
+                or state.prior != declared.distribution
+            ):
+                invalid(
+                    "Student-t posterior requires its original relative prior and saved likelihood"
                 )
         else:
             invalid("available posterior model is unsupported")
@@ -1324,7 +1392,7 @@ class LiftEstimate(_RowIdentity):
     # Scale on which the underlying posterior law is parameterized.
     # Declared Student-t/MixturePrior input; exact updated posterior state is
     # separately persisted in posterior_components.
-    prior_spec: StudentTPrior | MixturePrior | None = None
+    prior_spec: Prior | None = None
     # Historical persisted marker that an informative prior was supplied.
     # Modern sampling availability and posterior availability are authoritative.
     prior_shrunk: bool = False

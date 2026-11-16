@@ -2347,3 +2347,78 @@ def test_legacy_daily_value_restore_leaves_daily_lift_keys_alone():
     assert {key.value_scale for key in keys if key != lift} == {"absolute"}
     assert hidden in metadata.scope.cells
     assert metadata.scope.families[0].members == tuple(sorted((lift, hidden), key=cell_order))
+
+
+def test_relative_prior_observational_refusal_matches_preflight_without_reads():
+    from increment.estimators import Normal, RelativeLiftPrior
+    from tests.analysis_factory import replace_bound_source
+    from tests.test_metric_evidence import _CountingSource
+
+    class CountingSource(_CountingSource):
+        moment_reads = 0
+
+        def moments(self, request):
+            self.moment_reads += 1
+            return super().moments(request)
+
+    frame = _frame()
+    frame["pre"] = np.arange(len(frame), dtype=float) % 7
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("pre",))
+        ),
+    )
+    counted = CountingSource(resolver._binding.source)
+    replace_bound_source(resolver, counted)
+    requested = replace(
+        experiment,
+        request_options={
+            **experiment.request_options,
+            "prior": RelativeLiftPrior(distribution=Normal(mu=0.0, sigma=0.1)),
+        },
+    )
+    try:
+        (preflight,) = runnable(requested, "value")["observational.iptw"].static_refusals
+        with pytest.raises(CodedError) as raised:
+            run(requested, resolver)
+        assert raised.value.code == "estimation.adjust.prior.type"
+        assert (raised.value.code, raised.value.context) == (preflight.code, preflight.context)
+        assert counted.unit_frame_reads == counted.moment_reads == 0
+    finally:
+        resolver.close()
+
+
+@pytest.mark.parametrize(
+    "payload,code",
+    [
+        ({"type": "relative_lift", "mu": 0.0, "sigma": 0.1}, "model.field.missing"),
+        (
+            {"type": "unknown", "distribution": {"type": "normal", "mu": 0.0, "sigma": 0.1}},
+            "model.field.literal",
+        ),
+        ({"distribution": {"type": "normal", "mu": 0.0, "sigma": 0.1}}, "model.field.missing"),
+    ],
+)
+def test_malformed_tagged_prior_has_same_coded_preflight_and_execution_refusal(payload, code):
+    from increment.semantics.models import ExperimentMetric
+
+    with pytest.raises(CodedError) as binding:
+        ExperimentMetric.model_validate({"metric": "value", "prior": payload})
+    assert binding.value.code == code
+    experiment, reader = _experiment()
+    requested = Experiment.from_json(
+        replace(experiment, request_options={"prior": payload}).to_json()
+    )
+    try:
+        (preflight,) = runnable(requested, "value")["randomized.unadjusted"].static_refusals
+        with pytest.raises(CodedError) as raised:
+            run(requested, reader)
+        assert raised.value.code == code
+        assert (raised.value.code, raised.value.context) == (preflight.code, preflight.context)
+    finally:
+        reader.close()

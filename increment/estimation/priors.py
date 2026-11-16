@@ -13,21 +13,38 @@ again.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Discriminator,
+    Field,
+    FieldSerializationInfo,
+    Tag,
+    TypeAdapter,
+    ValidationError,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from scipy.optimize import brentq
 
+from increment._prior_types import RelativeLiftPriorSpec
+from increment._prior_validation import validate_mixture_prior, validate_relative_prior_tag
 from increment.errors import (
     CodedModel,
     InvalidRequestError,
     raiser,
     refusals,
     refuse,
+    unwrap_coded,
 )
 
 _MIN_POSITIVE_FLOAT = math.nextafter(0.0, 1.0)
@@ -37,12 +54,6 @@ _MAX_FINITE_FLOAT = Fraction(float(np.finfo(float).max))
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "estimation.priors.mixture.prior_needs_least": "a mixture prior needs at least one component",
-        "estimation.priors.mixture.weights_means_sigmas": "weights/means/sigmas must have the same length, got {k}/{means}/{sigmas}",
-        "estimation.priors.mixture.every_weight_mean": "every mixture weight, mean, and sigma must be finite, got weights={weights}, means={means}, sigmas={sigmas}",
-        "estimation.priors.mixture.every_weight": "every mixture weight must be > 0",
-        "estimation.priors.mixture.every_sigma": "every mixture sigma must be > 0",
-        "estimation.priors.mixture.weights_sum": "mixture weights must sum to 1, got {total}",
         "estimation.priors.student_t.nu_exceeds_200": "nu={nu} exceeds 200, where the mixture expansion is numerically unstable; and a t with nu > 200 is within 0.6% of a Normal anyway. Use Normal(mu=0, sigma=scale) instead.",
         "estimation.priors.mixture_posterior.probability": "probability must be in (0, 1), got {probability}",
         "estimation.priors.mixture_posterior.tail_probability": "tail_probability must be in (0, 1), got {tail_probability}",
@@ -205,7 +216,7 @@ class Normal(CodedModel, BaseModel):
 
 
 class MixturePrior(CodedModel, BaseModel):
-    """Finite normal-mixture prior on the log-relative-risk lift scale."""
+    """Finite Normal mixture with ordered component weights, means and deviations."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -215,37 +226,7 @@ class MixturePrior(CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _consistent(self):
-        k = len(self.weights)
-        if k == 0:
-            _raise("estimation.priors.mixture.prior_needs_least")
-        if len(self.means) != k or len(self.sigmas) != k:
-            _raise(
-                "estimation.priors.mixture.weights_means_sigmas",
-                k=k,
-                means=len(self.means),
-                sigmas=len(self.sigmas),
-            )
-        # NaN comparisons are always false, so positivity/normalization
-        # checks below would silently accept a non-finite component
-        # without this: check finiteness first, before any comparison.
-        if not (
-            all(math.isfinite(w) for w in self.weights)
-            and all(math.isfinite(m) for m in self.means)
-            and all(math.isfinite(s) for s in self.sigmas)
-        ):
-            _raise(
-                "estimation.priors.mixture.every_weight_mean",
-                weights=self.weights,
-                means=self.means,
-                sigmas=self.sigmas,
-            )
-        if any(w <= 0.0 for w in self.weights):
-            _raise("estimation.priors.mixture.every_weight")
-        if any(s <= 0.0 for s in self.sigmas):
-            _raise("estimation.priors.mixture.every_sigma")
-        total = sum(self.weights)
-        if abs(total - 1.0) > 1e-9:
-            _raise("estimation.priors.mixture.weights_sum", total=total)
+        validate_mixture_prior(self.weights, self.means, self.sigmas)
         return self
 
     def components(self) -> MixturePrior:
@@ -268,19 +249,15 @@ def _student_t_unit_expansion(nu: float, k: int) -> tuple[tuple[float, ...], tup
 
 
 class StudentTPrior(CodedModel, BaseModel):
-    """Student-t prior on the lift, declared by (nu, scale, k).
+    """Zero-centered Student-t prior with shape nu, scale and legacy size k.
 
-    A t is a Gaussian scale mixture: ``theta | lam ~ N(0, scale^2/lam)``
-    with ``lam ~ Gamma(nu/2, nu/2)``. ``components()`` discretizes that
-    mixing density on generalized Gauss-Laguerre nodes - a fixed,
-    data-independent expansion whose error lives entirely in
-    representing the prior; the posterior update stays exact. K=80
-    holds the posterior mean within 1% of the exact t out to 5-sigma
-    surprises (measured).
+    The precision mixture is ``theta | lam ~ N(0, scale^2/lam)`` with
+    ``lam ~ Gamma(nu/2, nu/2)``. Unwrapped priors use ``components()``:
+    a fixed, data-independent finite expansion of that mixing density.
+    ``RelativeLiftPrior`` uses the continuous target; k does not change it.
 
-    ``nu`` is capped at 200: the expansion is numerically unstable for
-    large ``nu`` (NaN weights measured at nu=400), and at nu=200 a t
-    is within 0.6% of a Normal at the 97.5% quantile anyway.
+    The existing declaration range caps nu at 200. Use a Normal prior
+    for a larger, near-Normal shape.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -305,9 +282,92 @@ class StudentTPrior(CodedModel, BaseModel):
         )
 
 
-type Prior = Normal | StudentTPrior | MixturePrior
-# Composes with a mixture everywhere except normal_posterior (the single-
-# Normal update) and paths that don't persist state to recompute it.
+def _prior_family(value: object) -> str | None:
+    if isinstance(value, Mapping):
+        if "type" in value:
+            tag = value.get("type")
+            return tag if isinstance(tag, str) else None
+        if "mu" in value or "sigma" in value:
+            return "normal"
+        if "nu" in value or "scale" in value:
+            return "student_t"
+        if "weights" in value or "means" in value or "sigmas" in value:
+            return "normal_mixture"
+        return None
+    if isinstance(value, Normal):
+        return "normal"
+    if isinstance(value, StudentTPrior):
+        return "student_t"
+    if isinstance(value, MixturePrior):
+        return "normal_mixture"
+    if isinstance(value, RelativeLiftPrior):
+        return "relative_lift"
+    return None
+
+
+type _RelativeDistribution = Annotated[
+    Annotated[Normal, Tag("normal")]
+    | Annotated[StudentTPrior, Tag("student_t")]
+    | Annotated[MixturePrior, Tag("normal_mixture")],
+    Discriminator(_prior_family),
+]
+
+
+class RelativeLiftPrior(CodedModel, BaseModel):
+    """Prior directly on fractional relative lift: 0.10 means ten percent."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    type: Literal["relative_lift"] = "relative_lift"
+    distribution: _RelativeDistribution
+
+    @field_validator("distribution", mode="before")
+    @classmethod
+    def _strict_family_payload(cls, value: object) -> object:
+        models = {"normal": Normal, "student_t": StudentTPrior, "normal_mixture": MixturePrior}
+        payload: object = value
+        if isinstance(value, (Normal, StudentTPrior, MixturePrior)):
+            payload = {"type": _prior_family(value), **value.model_dump()}
+        declared = RelativeLiftPriorSpec.model_validate({"distribution": payload}).distribution
+        if isinstance(value, (Normal, StudentTPrior, MixturePrior)):
+            return value
+        return models[declared.type].model_validate(declared.model_dump(exclude={"type"}))
+
+    @field_serializer("distribution")
+    def _distribution_payload(
+        self, value: Normal | StudentTPrior | MixturePrior, info: FieldSerializationInfo
+    ) -> dict[str, object]:
+        return {"type": _prior_family(value), **value.model_dump(mode=info.mode)}
+
+
+def _tagged_relative_prior(value: object) -> object:
+    if isinstance(value, Mapping) and (
+        "type" in value or ("distribution" in value and _prior_family(value) is None)
+    ):
+        validate_relative_prior_tag(value)
+        return RelativeLiftPrior.model_validate(value)
+    return value
+
+
+type Prior = Annotated[
+    Annotated[Normal, Tag("normal")]
+    | Annotated[StudentTPrior, Tag("student_t")]
+    | Annotated[MixturePrior, Tag("normal_mixture")]
+    | Annotated[RelativeLiftPrior, Tag("relative_lift")],
+    Discriminator(_prior_family),
+    BeforeValidator(_tagged_relative_prior),
+]
+
+_PRIOR_PAYLOAD = TypeAdapter(Prior)
+
+
+def prior_from_payload(value: object) -> Prior:
+    """Decode prior data without reinterpreting legacy family declarations."""
+    try:
+        return _PRIOR_PAYLOAD.validate_python(value)
+    except ValidationError as error:
+        unwrap_coded(error)
+        raise
 
 
 @dataclass(frozen=True)

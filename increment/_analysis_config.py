@@ -17,6 +17,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
+from increment._prior_types import RelativeLiftPriorSpec
 from increment.errors import (
     InvalidRequestError,
     RefusalSpec,
@@ -30,7 +31,7 @@ from increment.estimation.engine import (
     _validate_unique_method_names,
     resolve_method_roles,
 )
-from increment.estimation.inference import Normal, Prior
+from increment.estimation.priors import Prior, prior_from_payload
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import (
     AdjustmentCovariate,
@@ -462,9 +463,11 @@ def method_from_spec(spec: MethodSpec) -> Method:
     )
 
 
-def normal_from_spec(spec: NormalPriorSpec) -> Normal:
-    """Convert a declaration-layer `NormalPriorSpec` to the runtime `Normal` estimators consume."""
-    return Normal(mu=spec.mu, sigma=spec.sigma)
+def prior_from_spec(spec: NormalPriorSpec | RelativeLiftPriorSpec | None) -> Prior | None:
+    """Convert a tagged declaration without changing a legacy prior's scale."""
+    if spec is None:
+        return None
+    return prior_from_payload(spec.model_dump())
 
 
 def select_metrics(
@@ -684,7 +687,7 @@ def resolve_configs(
             resolved_prior = prior
             prior_is_global = True
         elif binding is not None and binding.prior is not None:
-            resolved_prior = normal_from_spec(binding.prior)
+            resolved_prior = prior_from_spec(binding.prior)
             prior_is_global = False
         elif spec is not None and spec.prior is not None:
             resolved_prior = spec.prior

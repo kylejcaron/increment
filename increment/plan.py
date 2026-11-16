@@ -246,7 +246,7 @@ def _compile_one_procedure(
         MultiplicityFamily,
         RelativeArmDecisionProcedure,
     )
-    from increment.estimation.priors import MixturePrior, StudentTPrior
+    from increment.estimation.priors import MixturePrior, RelativeLiftPrior, StudentTPrior
     from increment.estimation.sequential import ASYMPTOTIC_PROCEDURE_POLICIES, SEQUENTIAL_POLICIES
 
     methods = effective_methods(config, design=design)
@@ -265,7 +265,7 @@ def _compile_one_procedure(
             inference=type(resolved.inference).__name__,
         )
     is_absolute = test.null_abs is not None
-    if is_absolute and isinstance(resolved_prior, (StudentTPrior, MixturePrior)):
+    if is_absolute and isinstance(resolved_prior, (StudentTPrior, MixturePrior, RelativeLiftPrior)):
         _raise(
             "plan.metric_priors_relative",
             metric=metric.name,

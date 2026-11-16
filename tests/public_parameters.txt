@@ -50,6 +50,7 @@ design: Experiment assignment and identification design.
 dimension: Name of a segment or breakout dimension.
 dimension_value_a: First value of a segment contrast.
 dimension_value_b: Second value of a segment contrast.
+distribution: Prior distribution expressed in fractional relative-lift units.
 effect_delta: Effect size used in unit-cycle planning.
 fit: Fitted adjustment evidence used to improve treatment-effect precision.
 encouragement_uptake: Uptake declaration for an encouragement study.

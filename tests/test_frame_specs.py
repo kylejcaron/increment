@@ -673,7 +673,7 @@ def test_metric_spec_accepts_method_roles_and_prior() -> None:
     )
     assert spec.decision_method is not None
     assert spec.sensitivity_methods[0].variance_reduction == "cuped"
-    assert spec.prior is not None
+    assert isinstance(spec.prior, Normal)
     assert spec.prior.sigma == 0.03
 
 

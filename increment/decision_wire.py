@@ -1,8 +1,8 @@
 """Pydantic wire DTOs for compiled decision plans.
 
-The wire model is deliberately narrower than the runtime model.  A moments
-cube can carry declaration-safe method names and Normal priors, but never
-callable learners, fold state, or runtime-only prior implementations. New fixed
+The wire model carries declaration-safe method names, legacy Normal priors
+and explicitly tagged relative priors, but never callable learners, fold
+state or other runtime-only prior implementations. New fixed
 horizon plans use wire version 4; sequential plans use version 5. Versions 2/3
 are read only for legacy configurations whose covariate meaning is recoverable.
 """
@@ -34,6 +34,7 @@ from increment._literals import (
     ValueScale,
 )
 from increment._multiplicity import guarantee_for_correction
+from increment._prior_types import RelativeLiftPriorSpec
 from increment.decision import (
     AbsoluteArmDecisionProcedure,
     CompiledDecisionPlan,
@@ -48,7 +49,7 @@ from increment.decision import (
 )
 from increment.declarations import Method
 from increment.errors import CodedError, CodedModel, WireFormatError
-from increment.estimation.priors import Normal
+from increment.estimation.priors import Normal, Prior, RelativeLiftPrior, prior_from_payload
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,
     SEQUENTIAL_POLICIES,
@@ -57,7 +58,11 @@ from increment.estimation.sequential import (
     MixedFamily,
     compose_asymptotic_or_mixed,
 )
-from increment.semantics.models import CupedCovariate, CupedCovariateBinding, NormalPriorSpec
+from increment.semantics.models import (
+    CupedCovariate,
+    CupedCovariateBinding,
+    NormalPriorSpec,
+)
 from increment.semantics.rational import _JSON_RATIONAL_CONTEXT, RATIONAL_INVALID
 from increment.semantics.sequential import (
     SequentialCompliancePolicy,
@@ -197,7 +202,7 @@ class _WireArmProcedure(_WireBase):
     sensitivity_methods: tuple[WireMethod, ...] = ()
     methods_explicitly_empty: bool = False
     alternative: Alternative
-    prior: NormalPriorSpec | None = None
+    prior: NormalPriorSpec | RelativeLiftPriorSpec | None = None
     prior_is_global: bool = True
     alpha: float = Field(gt=0, lt=1, allow_inf_nan=False)
     family: WireFamilyMembership = WireFamilyMembership()
@@ -434,32 +439,31 @@ def _method_from_wire(method: WireMethod, *, metric: str, role: str) -> Method:
         )
 
 
-def _prior_to_wire(prior: object, *, metric: str, role: str) -> NormalPriorSpec:
-    if not isinstance(prior, Normal):
-        _raise(
-            "wire.procedure.runtime_prior",
-            "runtime-only priors cannot be carried through the moments wire format",
-            metric=metric,
-            role=role,
-            prior=type(prior).__name__,
-        )
-    if not _finite(prior.mu) or not _finite(prior.sigma) or prior.sigma <= 0:
-        _raise(
-            "wire.procedure.invalid_prior",
-            "Normal prior parameters must be finite and sigma must be positive",
-            metric=metric,
-            role=role,
-        )
-    return NormalPriorSpec(mu=prior.mu, sigma=prior.sigma)
+def _prior_to_wire(
+    prior: object, *, metric: str, role: str
+) -> NormalPriorSpec | RelativeLiftPriorSpec:
+    if isinstance(prior, Normal):
+        if not _finite(prior.mu) or not _finite(prior.sigma) or prior.sigma <= 0:
+            _raise(
+                "wire.procedure.invalid_prior",
+                "Normal prior parameters must be finite and sigma must be positive",
+                metric=metric,
+                role=role,
+            )
+        return NormalPriorSpec(mu=prior.mu, sigma=prior.sigma)
+    if isinstance(prior, RelativeLiftPrior):
+        return RelativeLiftPriorSpec.model_validate(prior.model_dump(mode="json"))
+    _raise(
+        "wire.procedure.runtime_prior",
+        "runtime-only priors cannot be carried through the moments wire format",
+        metric=metric,
+        role=role,
+        prior=type(prior).__name__,
+    )
 
 
-def _prior_from_wire(prior: NormalPriorSpec) -> Normal:
-    if not _finite(prior.mu) or not _finite(prior.sigma) or prior.sigma <= 0:
-        _raise(
-            "wire.procedure.invalid_prior",
-            "Normal prior parameters must be finite and sigma must be positive",
-        )
-    return Normal(mu=prior.mu, sigma=prior.sigma)
+def _prior_from_wire(prior: NormalPriorSpec | RelativeLiftPriorSpec) -> Prior:
+    return prior_from_payload(prior.model_dump())
 
 
 def _inference_to_wire(inference: object) -> WireInference:

@@ -195,7 +195,7 @@ SamplingInference.model_rebuild(
 
 class PosteriorInference(_ReadoutModel):
     available: bool | None = None
-    model: Literal["normal", "mixture"] | None = None
+    model: Literal["normal", "mixture", "student_t_normal"] | None = None
     scale: Literal["log", "linear"] | None = None
     prior: Prior | None = None
     reason_code: str | None = None

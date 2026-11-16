@@ -519,3 +519,90 @@ def test_prior_overrides_inherit_clear_replace_without_mutating_declaration():
     assert interval(view_readout(declared_experiment, declared_resolver)) == pytest.approx(
         inherited
     )
+
+
+@pytest.mark.parametrize(
+    "distribution",
+    [
+        {"type": "normal", "mu": 0.0, "sigma": 0.1},
+        {"type": "student_t", "nu": 4.0, "scale": 0.1, "k": 80},
+        {
+            "type": "normal_mixture",
+            "weights": [0.25, 0.75],
+            "means": [-0.1, 0.2],
+            "sigmas": [0.05, 0.1],
+        },
+    ],
+)
+def test_bound_relative_prior_retains_family_through_compiled_wire(distribution):
+    from increment.decision_wire import compiled_plan_from_json, compiled_plan_to_json
+
+    declared = {"type": "relative_lift", "distribution": distribution}
+    binding = ExperimentMetric.model_validate({"metric": "revenue", "prior": declared})
+    compiled = compile_decision_plan(AnalysisPlan(primary=binding), [REVENUE])
+    restored = compiled_plan_from_json(compiled_plan_to_json(compiled))
+    prior = _procedure(restored).prior
+    assert prior is not None
+    assert prior.model_dump(mode="json") == declared
+
+
+def test_frame_bound_relative_prior_survives_experiment_json_and_explicit_reset():
+    import json
+
+    from increment.estimators import RelativeLiftPrior
+    from increment.kernel.experiment import Experiment
+    from tests.analysis_factory import lift_rows
+
+    prior = RelativeLiftPrior(distribution=Normal(mu=0.0, sigma=0.1))
+    experiment, reader = from_frame(
+        _unit_frame(),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[MetricSpec(name="revenue", prior=prior)],
+    )
+    text = experiment.to_json()
+    restored = Experiment.from_json(text)
+    assert restored.to_json() == text
+    assert json.loads(text)["analysis_context"]["configs"][0]["prior"] == prior.model_dump(
+        mode="json"
+    )
+    with pytest.warns(IncrementWarning):
+        [row] = lift_rows(view_readout(restored, reader, prior=None))
+    assert row.posterior_available is not True
+    control = sum(float(i % 7) for i in range(0, UNITS, 2))
+    treatment = sum(float(i % 7) for i in range(1, UNITS, 2))
+    assert row.require_lift().value == pytest.approx(treatment / control - 1.0)
+
+
+@pytest.mark.parametrize(
+    "distribution,code",
+    [
+        ({"type": "unknown"}, "model.field.literal"),
+        (
+            {"type": "normal", "mu": 0, "sigma": 0.1, "alien": 1},
+            "model.field.unknown",
+        ),
+        (
+            {"type": "student_t", "nu": 4, "scale": float("inf")},
+            "model.field.nonfinite",
+        ),
+        (
+            {"type": "normal_mixture", "weights": [1.0], "means": [], "sigmas": [0.1]},
+            "estimation.priors.mixture.weights_means_sigmas",
+        ),
+    ],
+)
+def test_relative_prior_invalid_distribution_is_coded_across_declarations(distribution, code):
+    from increment._prior_types import RelativeLiftPriorSpec
+    from increment.errors import CodedError
+    from increment.estimators import RelativeLiftPrior
+
+    payload = {"type": "relative_lift", "distribution": distribution}
+    with pytest.raises(CodedError) as declared:
+        RelativeLiftPriorSpec.model_validate(payload)
+    with pytest.raises(CodedError) as runtime:
+        RelativeLiftPrior.model_validate(payload)
+    assert declared.value.code == runtime.value.code == code
+    assert declared.value.context == runtime.value.context

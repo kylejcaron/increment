@@ -12,6 +12,7 @@ _EXPORTS = {
     "Normal": ("increment.estimation.priors", "Normal"),
     "MixturePrior": ("increment.estimation.priors", "MixturePrior"),
     "StudentTPrior": ("increment.estimation.priors", "StudentTPrior"),
+    "RelativeLiftPrior": ("increment.estimation.priors", "RelativeLiftPrior"),
     "AsymptoticMean": ("increment.estimation.sequential", "AsymptoticMean"),
     "AsymptoticSequentialResult": (
         "increment.estimation.sequential_result",
@@ -217,6 +218,7 @@ if TYPE_CHECKING:
     )
     from increment.estimation.priors import MixturePrior as MixturePrior
     from increment.estimation.priors import Normal as Normal
+    from increment.estimation.priors import RelativeLiftPrior as RelativeLiftPrior
     from increment.estimation.priors import StudentTPrior as StudentTPrior
     from increment.estimation.sequential import (
         AlwaysValid as AlwaysValid,
@@ -368,6 +370,7 @@ __all__ = [
     "Normal",
     "MixturePrior",
     "StudentTPrior",
+    "RelativeLiftPrior",
     "AsymptoticMean",
     "AsymptoticSequentialResult",
     "AsymptoticSequentialEvidence",

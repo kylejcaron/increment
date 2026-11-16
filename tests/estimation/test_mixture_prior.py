@@ -44,6 +44,17 @@ def test_priors_refusal_carries_code(code, build):
     assert exc_info.value.code == code
 
 
+@pytest.mark.parametrize("tag", ["relative_lift", "unknown"])
+def test_tagged_prior_payload_does_not_fall_back_to_legacy_normal(tag):
+    from pydantic import TypeAdapter, ValidationError
+
+    from increment.estimation.priors import Prior
+
+    payload = {"type": tag, "mu": 0.0, "sigma": 0.1}
+    with pytest.raises(ValidationError):
+        TypeAdapter(Prior).validate_python(payload)
+
+
 class TestMixturePriorValidation:
     def test_rejects_mismatched_lengths(self):
         with pytest.raises(InvalidRequestError) as exc_info:

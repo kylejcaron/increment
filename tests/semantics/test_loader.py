@@ -14,7 +14,7 @@ import yaml
 from increment.errors import DefinitionError, IncrementWarning, InvalidRequestError
 from increment.semantics import load
 from increment.semantics.loader import admit_read_only_sql
-from increment.semantics.models import Definitions, RatioMetric
+from increment.semantics.models import Definitions, NormalPriorSpec, RatioMetric
 from tests.warning_codes import warning_codes
 
 
@@ -794,7 +794,7 @@ def test_experiment_metric_binding_loads_via_loader(tmp_path: Path):
     defs = load(tmp_path / "defs.yaml")
     binding = defs.experiments[0].bindings["orders"]
     assert binding.wants_cuped
-    assert binding.prior is not None
+    assert isinstance(binding.prior, NormalPriorSpec)
     assert binding.prior.sigma == 0.03
 
 

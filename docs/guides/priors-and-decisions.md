@@ -2,6 +2,62 @@
 
 `run(prior=...)` adds a posterior for probability-based decisions without changing the sampling estimate, interval, reference, p-value, or significance verdict. Use the posterior fields and accessors for Bayesian summaries; ordinary `lift`, `stat_sig()`, and `p_value()` remain prior-free sampling results.
 
+## `RelativeLiftPrior`: specify fractional relative lift
+
+Use an explicit wrapper when beliefs describe the relative change itself:
+
+```python
+from increment.estimators import MixturePrior, Normal, RelativeLiftPrior, StudentTPrior
+
+relative_normal = RelativeLiftPrior(distribution=Normal(mu=0.0, sigma=0.10))
+relative_heavy_tail = RelativeLiftPrior(distribution=StudentTPrior(nu=4, scale=0.10))
+relative_mixture = RelativeLiftPrior(
+    distribution=MixturePrior(weights=(0.25, 0.75), means=(-0.10, 0.20), sigmas=(0.05, 0.10))
+)
+```
+
+The Normal declaration means mean zero and standard deviation **10% relative
+lift**, not ten percentage points in a conversion rate and not a Normal prior
+on log lift. Fractions are literal: `0.10` means 10%, not `10`.
+Student-t `scale` is not its standard deviation; the distribution remains
+centered at zero. Its `k` parameter is retained for saved-input compatibility
+but does not select an approximation for the wrapped Student-t posterior.
+
+Pass a wrapper as the call-time `prior`, or bind it with
+`MetricSpec(name="revenue", prior=relative_normal)`. The call-time value wins;
+an explicit `prior=None` clears the declared prior for that run. Omission
+continues to inherit the declaration.
+
+Per-metric experiment definitions use explicit scale and family tags:
+
+```yaml
+metric: revenue
+prior:
+  type: relative_lift
+  distribution:
+    type: student_t
+    nu: 4
+    scale: 0.10
+    k: 80
+```
+
+For a Normal, use `type: normal` with `mu` and `sigma`; for a mixture, use
+`type: normal_mixture` with ordered `weights`, `means`, and `sigmas`.
+New tags do not change the encoding or meaning of existing unwrapped priors.
+
+The new posterior uses a Normal working likelihood directly on relative lift.
+It is an approximation for eligible fixed-horizon randomized contrasts, not a
+promise that posterior probabilities are calibrated for every outcome
+distribution. Existing positivity, uncertainty and method checks still apply.
+It does not add support for sequential inference, clustering, switchbacks,
+observational adjustment or encouragement designs.
+
+Support is unrestricted: neither prior nor posterior is truncated at -100%,
+and losses are not capped at one. With nonnegative outcomes and a positive
+baseline, mass below -100% is a limitation of this working approximation.
+Signed outcomes can have such relative effects, but this declaration does not
+expand the existing data-admission rules.
+
 ## Declaring a prior: `Normal`, `StudentTPrior`, `MixturePrior`
 
 ```python
