@@ -991,7 +991,7 @@ Retired codes and their replacements are listed below.
 | `facade.analysis.sitewide_winsorized_metric` | `CapabilityError` | `metric` | `increment._sitewide` |
 | `facade.analysis.source_context_design_disagrees_arm` | `InvalidRequestError` | — | `increment.builders` |
 | `facade.analysis.switchback_only` | `CapabilityError` | `method` | `increment._source_diagnostics` |
-| `facade.analysis.trigger_unsupported` | `CapabilityError` | `experiment`, `method`, `trigger` | `increment._breakout_readouts`, `increment._day_axis`, `increment._execute`, `increment.readouts._whole_window` |
+| `facade.analysis.trigger_unsupported` | `CapabilityError` | `experiment`, `method`, `trigger` | `increment._breakout_readouts`, `increment._day_axis`, `increment._evidence_refusals`, `increment._execute`, `increment.readouts._whole_window` |
 | `facade.analysis.uncorrected_segments_sequential` | `UnsupportedRequestError` | `inference` | `increment._breakout_readouts` |
 | `facade.analysis.undeclared_breakout` | `InvalidRequestError` | `declared`, `requested` | `increment._binding`, `increment._dashboard_capture`, `increment._runnability` |
 | `facade.analysis.undeclared_metric_for_dimension` | `InvalidRequestError` | `dimension`, `method`, `undeclared` | `increment._day_axis` |
