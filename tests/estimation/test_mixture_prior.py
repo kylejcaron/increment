@@ -174,6 +174,16 @@ def test_linear_partial_expectation_preserves_rescaled_far_tail(as_mixture, posi
 
 
 @pytest.mark.parametrize("as_mixture", [False, True], ids=["normal", "mixture"])
+@pytest.mark.parametrize("positive", [False, True], ids=["negative-part", "positive-part"])
+def test_subnormal_mean_preserves_finite_linear_partial_expectation(as_mixture, positive):
+    mu = (-1.0 if positive else 1.0) * math.nextafter(0.0, 1.0)
+    posterior = _normal_or_mixture(mu, 2.0, as_mixture)
+    method = posterior.expected_positive_part if positive else posterior.expected_negative_part
+    # The centered Normal loss is sigma/sqrt(2*pi); shifting mu changes it by at most abs(mu).
+    assert method(scale="linear") == pytest.approx(math.sqrt(2.0 / math.pi), abs=1e-10)
+
+
+@pytest.mark.parametrize("as_mixture", [False, True], ids=["normal", "mixture"])
 def test_log_negative_part_stays_bounded_when_tilted_moment_overflows(as_mixture):
     # Integral of -expm1(x) * Normal(x; 5, 40) on the negative half-line.
     posterior = _normal_or_mixture(5.0, 40.0, as_mixture)

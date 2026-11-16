@@ -101,7 +101,7 @@ def _normal_log_expected_part(
         directed_z = z if positive else -z
         log_scaled_density = np.log(sigmas) + log_density
         result = np.full_like(means, -math.inf)
-        central = directed_z >= 0.0
+        central = directed_means >= 0.0
         with np.errstate(divide="ignore"):
             result[central] = np.logaddexp(
                 log_scaled_density[central],
