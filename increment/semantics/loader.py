@@ -276,7 +276,11 @@ def _load(path_obj: Path, *, advise: bool) -> Definitions:
     # Warn when variable-window metrics omit window_days
     if advise:
         for m in defs.metrics:
-            if isinstance(m, MeanMetric | ConversionMetric) and m.window_days is None:
+            if (
+                isinstance(m, MeanMetric | ConversionMetric)
+                and m.window_days is None
+                and "window_days" not in m.model_fields_set
+            ):
                 warn(_VARIABLE_WINDOW_DAYS_NONE_WARNING, context={"name": m.name}, stacklevel=3)
     return defs
 

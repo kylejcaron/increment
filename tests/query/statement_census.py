@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -16,7 +17,7 @@ class StatementCensus:
     other_statements: list[str] = field(default_factory=list)
     statements: list[str] = field(default_factory=list)
     explain_inserts: bool = False
-    plans: list[str] = field(default_factory=list)
+    table_scan_counts: list[int] = field(default_factory=list)
 
     def record(self, sql: Any) -> None:
         text = str(sql)
@@ -47,6 +48,13 @@ def _kind(sql: str) -> str:
     return "other"
 
 
+def _table_scan_count(plan: dict[str, Any]) -> int:
+    """Count physical table reads independently of displayed operator names."""
+    return int("Table" in plan.get("extra_info", {})) + sum(
+        _table_scan_count(child) for child in plan.get("children", ())
+    )
+
+
 class _ConnectionProxy:
     def __init__(self, connection: Any, census: StatementCensus):
         self._connection = connection
@@ -63,8 +71,13 @@ class _ConnectionProxy:
                 if self._census.explain_inserts and str(args[0]).lstrip().upper().startswith(
                     "INSERT"
                 ):
-                    self._census.plans.append(
-                        self._connection.execute("EXPLAIN " + str(args[0])).fetchall()[0][1]
+                    plan = json.loads(
+                        self._connection.execute(
+                            "EXPLAIN (FORMAT JSON) " + str(args[0])
+                        ).fetchall()[0][1]
+                    )
+                    self._census.table_scan_counts.append(
+                        sum(_table_scan_count(node) for node in plan)
                     )
             result = attribute(*args, **kwargs)
             return _ConnectionProxy(result, self._census) if result is self._connection else result

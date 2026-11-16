@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
-from itertools import count
+from itertools import count, groupby
 from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import patch
@@ -168,7 +168,7 @@ def load_frozen_operations_capture(root: Path) -> dict[str, Any]:
 def _population_membership_by_arm(frames: Sequence[Any]) -> dict[str, dict[str, Any]]:
     import pyarrow as pa
 
-    rows = pa.concat_tables(frames).group_by(["group_id", "unit_id"]).aggregate([])
+    rows = pa.concat_tables(frames)
     if rows.num_rows == 0:
         return {}
     rows = rows.sort_by([("group_id", "ascending"), ("unit_id", "ascending")])
@@ -176,32 +176,46 @@ def _population_membership_by_arm(frames: Sequence[Any]) -> dict[str, dict[str, 
     current_arm: str | None = None
     digest = hashlib.sha256(b"[")
     count = 0
-    first = True
+    previous_id: str | None = None
     for batch in rows.to_batches(max_chunksize=1024):
         arms = batch.column(batch.schema.get_field_index("group_id")).to_pylist()
         identifiers = batch.column(batch.schema.get_field_index("unit_id")).to_pylist()
-        for arm, identifier in zip(arms, identifiers, strict=True):
+        for arm, members in groupby(zip(arms, identifiers, strict=True), key=lambda row: row[0]):
             if arm != current_arm:
                 if current_arm is not None:
                     digest.update(b"]")
                     by_arm[current_arm] = {"digest": digest.hexdigest(), "unit_count": count}
-                    digest = hashlib.sha256(b"[")
                 current_arm = arm
+                digest = hashlib.sha256(b"[")
                 count = 0
-                first = True
-            if not first:
+                previous_id = None
+            unique_ids = []
+            for _arm, identifier in members:
+                if identifier != previous_id:
+                    unique_ids.append(identifier)
+                    previous_id = identifier
+            if not unique_ids:
+                continue
+            if count:
                 digest.update(b",")
-            digest.update(
-                json.dumps(
-                    identifier, ensure_ascii=False, separators=(",", ":"), allow_nan=False
-                ).encode("utf-8")
-            )
-            first = False
-            count += 1
+            payload = json.dumps(
+                unique_ids, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
+            digest.update(payload[1:-1])
+            count += len(unique_ids)
     if current_arm is not None:
         digest.update(b"]")
         by_arm[current_arm] = {"digest": digest.hexdigest(), "unit_count": count}
     return by_arm
+
+
+def _identity_strings(values: Any) -> Any:
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not pa.types.is_string(values.type):
+        values = pc.cast(values, pa.string())
+    return values.fill_null("None") if values.null_count else values
 
 
 def _population_identity(
@@ -214,7 +228,6 @@ def _population_identity(
 ) -> dict[str, Any]:
     import narwhals as nw
     import pyarrow as pa
-    import pyarrow.compute as pc
 
     from increment._execute import readout_source
     from increment.cate import _cate_source
@@ -251,23 +264,19 @@ def _population_identity(
             if config.metric.name not in cell_metrics:
                 continue
             try:
-                membership_reader = getattr(source, "_population_membership", source.unit_frame)
                 native = nw.from_native(
-                    membership_reader(config.metric), eager_only=True
+                    getattr(source, "_population_membership", source.unit_frame)(config.metric),
+                    eager_only=True,
                 ).to_native()
             except (CodedError, InvalidRequestError, KeyError, ValueError, TypeError):
                 continue
             if not isinstance(native, pa.Table):
                 native = pa.Table.from_pandas(native, preserve_index=False)
             try:
-                ids = native.column("unit_id")
-                arms = native.column("group_id")
+                ids = _identity_strings(native.column("unit_id"))
+                arms = _identity_strings(native.column("group_id"))
             except KeyError:
                 continue
-            ids = pc.cast(ids, pa.string())
-            arms = pc.cast(arms, pa.string())
-            ids = ids.fill_null("None")
-            arms = arms.fill_null("None")
             frames.append(pa.Table.from_arrays([arms, ids], names=["group_id", "unit_id"]))
         if not frames:
             continue

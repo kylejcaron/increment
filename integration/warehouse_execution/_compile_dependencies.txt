@@ -1,4 +1,4 @@
-# Traced on commit: e42282e58a5b15d1b6721223662013a5552615a6
+# Traced on commit: c6fd05fdda673909ac6104baa30f44a5c50ed025
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -144,6 +144,7 @@ increment.query
 increment.query._artifact_float
 increment.query._cuped_cells
 increment.query._cuped_qr
+increment.query._day_offsets
 increment.query._float_literals
 increment.query._native_dashboard
 increment.query._native_day_source

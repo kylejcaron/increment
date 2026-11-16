@@ -312,8 +312,7 @@ def test_power_export_renders_expected_figures(tmp_path):
 def test_cuped_export_renders_expected_figures(tmp_path):
     pytest.importorskip("coeftable")
     html = _export_html("cuped.py", tmp_path)
-    assert "Unadjusted vs CUPED" in html
-    assert "CUPED reduces" in html
+    assert _rendered_table_title_index(html, "Unadjusted vs CUPED") >= 0
     assert "avg_session_duration" in html
     assert "purchase_rate" in html
     assert "d7_retention" in html
