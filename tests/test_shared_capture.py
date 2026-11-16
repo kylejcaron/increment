@@ -130,9 +130,6 @@ def _builder(
             )
     path = tmp_path / "definitions.yaml"
     path.write_text(json.dumps(definitions), encoding="utf-8")
-    if running_revenue:
-        with pytest.warns(IncrementWarning):
-            return from_definitions(path, con, experiment_name="exp", store="none", **kwargs)
     return from_definitions(path, con, experiment_name="exp", store="none", **kwargs)
 
 

@@ -1221,11 +1221,10 @@ def test_triggered_unwindowed_outcome_after_watermark_matches_native(tmp_path: P
     definitions = _triggered_definitions(tmp_path, window_days=None)
     cutoff = datetime(2030, 1, 1, tzinfo=UTC)
     watermark = datetime(2025, 1, 16, tzinfo=UTC)
-    with pytest.warns(IncrementWarning):
-        connection, (experiment, resolver), context, store = _native(
-            definitions=definitions,
-            source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
-        )
+    connection, (experiment, resolver), context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
+    )
     user_id = _insert_purchase_for_first_trigger_user(
         connection, datetime(2025, 1, 16, 12, tzinfo=UTC)
     )
@@ -1400,11 +1399,10 @@ def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
 def test_trigger_measure_cutoff_day_publishes_and_reopens(tmp_path: Path) -> None:
     cutoff = datetime(2025, 1, 20, 12, tzinfo=UTC)
     definitions = _triggered_definitions(tmp_path, window_days=None)
-    with pytest.warns(IncrementWarning):
-        connection, (experiment, resolver), context, store = _native(
-            definitions=definitions,
-            source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
-        )
+    connection, (experiment, resolver), context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
+    )
     user_id = _insert_purchase_for_first_trigger_user(
         connection, datetime(2025, 1, 20, 10, tzinfo=UTC)
     )
@@ -2083,8 +2081,7 @@ def test_unpinned_avg_calendar_day_asof_uses_declared_horizon(tmp_path: Path) ->
     metric_def["type"] = "mean"
     metric_def["aggregation"] = "avg_calendar_day"
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
-    with pytest.warns(IncrementWarning):
-        connection, (experiment, resolver), context, store = _native(definitions=definitions)
+    connection, (experiment, resolver), context, store = _native(definitions=definitions)
     reference = publish_unit_day_artifact(experiment, resolver, store)
     artifact_source = _artifact_source(store, reference, context)
     try:

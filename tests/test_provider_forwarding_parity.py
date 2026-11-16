@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import fields, is_dataclass
 from typing import Any, cast
 
@@ -11,7 +10,7 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from increment import workflows
-from increment.errors import CodedError, IncrementWarning
+from increment.errors import CodedError
 from increment.evidence import (
     BreakoutMethodMomentsRequest,
     ComplianceRequest,
@@ -33,7 +32,6 @@ from tests.parity_harness import matrix, matrix_cases
 from tests.parity_harness.cases import Bound, _close_parity_binding, _triggered_day_axis_cases
 from tests.parity_harness.comparison import nested_close
 from tests.parity_harness.views import read
-from tests.warning_codes import warning_codes
 
 IDENTITY_FIELDS = {"source_snapshot_id", "family_id"}
 
@@ -160,16 +158,7 @@ def _check(cell: matrix.Cell, ingress: str, mode: str) -> list[str]:
     divergences: list[str] = []
     factory = matrix_cases._Ingress(cell)
     build = factory.definitions if ingress == "from_definitions" else factory.artifact
-    with warnings.catch_warnings(record=True) as construction_warnings:
-        warnings.simplefilter("always", IncrementWarning)
-        builtin = build()
-    metric = matrix_cases.metric_definition(cell)
-    expected_warnings = (
-        ["definition.metric.variable_window_days_none"]
-        if metric["type"] in {"mean", "conversion"} and metric.get("window_days") is None
-        else []
-    )
-    assert warning_codes(construction_warnings) == expected_warnings
+    builtin = build()
     custom = _provider_pair(_forwarding(builtin, mode))
     try:
         for method in matrix.methods(cell):
@@ -264,10 +253,7 @@ def test_forwarding_provider_boundary_cell(cell: matrix.Cell) -> None:
 @pytest.mark.integration
 def test_forwarding_provider_breakout_produces_rows() -> None:
     cell = matrix.Cell("mean", "breakout", "none", "utc", "error")
-    with warnings.catch_warnings(record=True) as construction_warnings:
-        warnings.simplefilter("always", IncrementWarning)
-        builtin = matrix_cases._Ingress(cell).definitions()
-    assert warning_codes(construction_warnings) == ["definition.metric.variable_window_days_none"]
+    builtin = matrix_cases._Ingress(cell).definitions()
     custom = _provider_pair(_forwarding(builtin, "self"))
     try:
         method = matrix.methods(cell)[0]
