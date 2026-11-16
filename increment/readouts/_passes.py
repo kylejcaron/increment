@@ -593,12 +593,13 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
 
         for method in linear_methods:
             cache_key = method.model_dump_json(exclude={"name"})
-            cached = linear_cache.get(cache_key)
             try:
-                if cached is not None:
-                    cached_bundle, cached_error = cached
-                    if cached_error is not None:
-                        raise cached_error
+                prepared = prepare_multicovariate_fit(method, evidence.method_fit_answers)
+                if prepared.failure is not None:
+                    raise prepared.failure
+                cached = linear_cache.get(cache_key)
+                if cached is not None and cached[1] is None:
+                    cached_bundle, _ = cached
                     assert cached_bundle is not None
                     reused_results = tuple(
                         row.model_copy(
@@ -620,9 +621,6 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
                         advisories=cached_bundle.advisories,
                     )
                 else:
-                    prepared = prepare_multicovariate_fit(method, evidence.method_fit_answers)
-                    if prepared.failure is not None:
-                        raise prepared.failure
                     if prepared.origin in {"warehouse", "retained_fitted"}:
                         linear = estimate_cuped_linear_fit(
                             metric,
@@ -677,8 +675,6 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
             except CodedError as exc:
                 if exc.code not in _CELL_ESTIMATION_GUARD_CODES:
                     raise
-                if cache_key not in linear_cache:
-                    linear_cache[cache_key] = (None, exc)
                 failures: dict[Any, DecisionFailure] = {}
                 groups = sorted(evidence.observed_arms - {design.control_group})
                 for group_id in groups:

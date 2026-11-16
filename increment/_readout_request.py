@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn, cast
 from increment._analysis_config import effective_methods
 from increment._evidence_types import SourceContext
 from increment._literals import Correction, ValueScale
-from increment._source_types import declared_evidence
+from increment._source_types import declared_evidence, source_class_name
 from increment.errors import (
     RefusalSpec,
     refuse,
@@ -337,7 +337,7 @@ class ReadoutRequest:
             capabilities=evidence.grains,
             grain_route=evidence.grain_route,
             source_breakouts=evidence.breakouts,
-            source_name=type(source).__name__,
+            source_name=source_class_name(source),
             shape=evidence.shape,
             cluster=context.cluster,
             population=population,

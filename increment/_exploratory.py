@@ -6,11 +6,12 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from increment._analysis_config import select_exploratory_metrics, select_metrics
+from increment._evidence_loaders import load_exploratory_source
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import ExploratorySourceOperation
 from increment.decision import DefinitionsArmAnalysisState
 from increment.errors import CapabilityError, RefusalSpec, UnsupportedRequestError, refuse
-from increment.readouts._evidence import NATIVE_ROUTE, day_axis_route
+from increment.readouts._evidence import day_axis_metric_objects_supported
 from increment.readouts._execution_context import current_execution_context
 
 if TYPE_CHECKING:
@@ -76,13 +77,14 @@ def exploratory_sibling(
 ) -> SourceBinding:
     """The binding reading from a sibling source that also carries *added*."""
     _require_arm_binding(binding, caller)
-    source = _require_analysis_operation(
+    operation = _require_analysis_operation(
         binding.source,
         "exploratory_source",
         ExploratorySourceOperation,
         message=f"{caller}(exploratory_metrics=...) needs an experiment built by from_definitions.",
     )
-    derived = binding.with_source(source.exploratory_source(metrics=added))
+    source = load_exploratory_source(operation, added)
+    derived = binding.with_source(source)
     context = current_execution_context()
     if context is not None:
         context.declare_source_alias(derived.source, parent=binding.source)
@@ -96,10 +98,10 @@ def select_day_axis_metrics(
     caller: str,
     added: Sequence[Metric] = (),
 ) -> list[Metric]:
-    """Select day-axis metrics; only the native route accepts undeclared Metric objects."""
-    native = day_axis_route(binding.source) == NATIVE_ROUTE
+    """Select day-axis metrics using the declared moments support."""
+    allow_undeclared = day_axis_metric_objects_supported(binding.source)
     selected = select_metrics(
-        binding.metrics, metrics, caller=caller, allow_undeclared_objects=native
+        binding.metrics, metrics, caller=caller, allow_undeclared_objects=allow_undeclared
     )
     if not added:
         return selected

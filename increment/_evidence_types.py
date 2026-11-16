@@ -161,11 +161,11 @@ class BreakoutSlice:
     source: Any
     source_name: str | None
     stamp_source: str | None
+    metrics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class BreakoutSlices:
-    route: BreakoutRoute
     slices: tuple[BreakoutSlice, ...]
 
 
@@ -182,7 +182,6 @@ class BreakoutUnitRowsRequest:
 @dataclass(frozen=True, slots=True)
 class BreakoutUnitRows:
     identity: BreakoutIdentity
-    route: BreakoutRoute
     frame: Any
     unit_frame_has_dimension: bool
 
@@ -199,6 +198,7 @@ class DayAxisRequest:
     experiment: Any | None = None
     covariate_metrics: frozenset[str] = frozenset()
     by: tuple[str, ...] = ()
+    declared_dimensions: tuple[str, ...] | None = None
 
 
 def day_axis_time_basis(metric: object, grain: str) -> Literal["calendar", "cohort"]:
@@ -498,6 +498,43 @@ class CountEvidence:
     grain: str
     counts: Mapping[str, int]
     unit_counts: Mapping[str, int] = dataclass_field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class TriggeredHealthFeedEvidence:
+    """One feed's completeness evidence acquired for a health report."""
+
+    evidence_kind: str
+    feed: str | None
+    metric: str | None
+    complete_through: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthObservationEdgeAnswer:
+    """A metric edge or its explicit source refusal."""
+
+    observed: date | None = None
+    finalized: date | None = None
+    failure: CodedError | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthDiagnosticEvidence:
+    """Optional cutoff, feed, metric-edge, and trigger declaration answers."""
+
+    feed_operation_available: bool
+    observation_cutoff: datetime | None
+    feeds: tuple[TriggeredHealthFeedEvidence, ...]
+    edge_operation_available: bool
+    edges: Mapping[str, HealthObservationEdgeAnswer]
+    trigger_name: str | None
+    triggered_registration: Any
+    health_cutoff: str | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "feeds", tuple(self.feeds))
+        object.__setattr__(self, "edges", _FrozenMapping(self.edges))
 
 
 @dataclass(frozen=True, slots=True)

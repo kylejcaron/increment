@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
 from increment._binding import SourceBinding, binding_for
-from increment._evidence_refusals import INVALID_POPULATION
-from increment._evidence_types import CountsRequest
+from increment._evidence_loaders import load_sitewide_evidence, load_triggered_sitewide_counts
+from increment._evidence_refusals import INVALID_POPULATION, refuse_operation
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import SitewideEvidenceOperation
 from increment._source_types import declared_evidence
@@ -22,10 +22,7 @@ from increment.estimation.sitewide import (
     sitewide_impact_ratio,
 )
 from increment.evidence import evidence_provider
-from increment.readouts._whole_window import (
-    _UNKNOWN_METRIC,
-    _is_artifact_source,
-)
+from increment.readouts._whole_window import _UNKNOWN_METRIC
 from increment.semantics.models import Metric, RatioMetric
 
 if TYPE_CHECKING:
@@ -161,7 +158,7 @@ class SitewideReadouts:
                     sample_ratio_mismatch,
                 )
 
-                triggered = evidence_provider(self._src).counts(CountsRequest(kind="triggered"))
+                triggered = load_triggered_sitewide_counts(self._src, evidence_provider)
                 grain, triggered_counts, unit_counts = (
                     cast("Literal['unit', 'cluster']", triggered.grain),
                     dict(triggered.counts),
@@ -253,19 +250,18 @@ class SitewideReadouts:
         ):
             _refuse(_SITEWIDE_REQUIRES_RANDOMIZED)
         source = self._src
-        if _is_artifact_source(source):
-            if "sitewide_evidence" not in declared_evidence(source).operations:
-                from increment._evidence_refusals import refuse_operation
-
+        capabilities = declared_evidence(source)
+        if "artifact_experiment" in capabilities.operations:
+            if "sitewide_evidence" not in capabilities.operations:
                 refuse_operation(
                     source,
                     "sitewide_evidence",
-                    tuple(sorted(declared_evidence(source).operations)),
+                    tuple(sorted(capabilities.operations)),
                     route="sitewide() requires a published site-volume evidence extension",
                 )
-            src = cast("SitewideEvidenceOperation", source)
+            operation = cast("SitewideEvidenceOperation", source)
         else:
-            src = _require_analysis_operation(
+            operation = _require_analysis_operation(
                 source,
                 "sitewide_evidence",
                 SitewideEvidenceOperation,
@@ -297,7 +293,8 @@ class SitewideReadouts:
         self._validate_metric_alignment(metric)
         if req.population == "triggered":
             self._validate_triggered_metric()
-        evidence = src.sitewide_evidence(
+        evidence = load_sitewide_evidence(
+            operation,
             metric,
             include_ratio=isinstance(metric, RatioMetric),
             population=req.population,

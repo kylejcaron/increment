@@ -394,7 +394,7 @@ class ExperimentReader:
         return binding.state.source
 
     def _verify(self, source_refs: Sequence[SourceReference], provider: object) -> list[CodedError]:
-        from increment._source_types import provider_refusal
+        from increment._source_types import effective_capabilities, provider_refusal
 
         failures = []
         if provider is not self._binding.state.source or tuple(
@@ -428,7 +428,11 @@ class ExperimentReader:
                     )
                 )
             capabilities = getattr(provider, "evidence", None)
-            if reference.capabilities is not None and reference.capabilities != capabilities:
+            if reference.capabilities is not None and (
+                not isinstance(capabilities, type(reference.capabilities))
+                or effective_capabilities(reference.capabilities)
+                != effective_capabilities(capabilities)
+            ):
                 failures.append(
                     provider_refusal(
                         "kernel.provider.capability_mismatch", source_ref=reference.name

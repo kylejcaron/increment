@@ -106,6 +106,23 @@ INVALID_POPULATION = RefusalSpec(
 )
 
 
+_TRIGGER_UNSUPPORTED = RefusalSpec(
+    "facade.analysis.trigger_unsupported",
+    CapabilityError,
+    lambda *, method, experiment, trigger, **_: (
+        (
+            f"{method}: experiment {experiment!r} declares no trigger on this source, "
+            "so it has no triggered population."
+            if trigger is None
+            else f"{method}: experiment {experiment!r} declares trigger {trigger!r}, "
+            "which this readout does not apply."
+        )
+        + " To analyze triggered populations, build the experiment with from_definitions, "
+        "or with from_unit_day_artifact from an artifact carrying trigger-population evidence."
+    ),
+)
+
+
 GRAIN_UNAVAILABLE = _spec("evidence.grain_unavailable", "grain")
 BREAKOUT_UNAVAILABLE = _spec("evidence.breakout_unavailable", "breakout")
 UNIT_ROWS_UNAVAILABLE = _spec("evidence.unit_rows_unavailable", "unit rows")
@@ -159,6 +176,7 @@ UNSUPPORTED_REQUEST = RefusalSpec(
 EVIDENCE_REFUSALS = {
     spec.code: spec
     for spec in (
+        _TRIGGER_UNSUPPORTED,
         GRAIN_UNAVAILABLE,
         BREAKOUT_UNAVAILABLE,
         UNIT_ROWS_UNAVAILABLE,
@@ -655,9 +673,14 @@ def _require_evidence(
         if operation != "sql" and "day_source" in evidence.operations:
             from increment._source_types import is_builtin_source
 
-            if not is_builtin_source(src):
-                # A provider forwarding to a loader with a day source answers daily and
-                # as-of requests through it; built-in loaders keep their own refusals.
+            if is_builtin_source(src):
+                from increment._evidence_types import DayAxisRequest
+
+                if isinstance(request, DayAxisRequest):
+                    offered = offered | {"daily", "asof"}
+            else:
+                # A custom provider forwarding to a loader with a day source answers
+                # daily and as-of requests through it.
                 offered = offered | {"daily", "asof"}
         if grain not in offered:
             refuse_grain(

@@ -34,15 +34,13 @@ from increment._analysis_config import select_metrics
 from increment._evidence_types import (
     ComplianceRequest,
     CountsRequest,
-    EvidenceScope,
     MomentsRequest,
     UnitRowsRequest,
 )
 from increment._trigger_integrity import validate_trigger_fires_in_every_arm
 from increment.errors import CapabilityError, RefusalSpec, raiser, refusals
 from increment.readouts._evidence import (
-    evidence_scope,
-    is_custom_provider,
+    acquire_custom_triggered_population,
     load_compliance,
     load_counts,
     load_moments,
@@ -148,13 +146,12 @@ def planning_baseline(
         _raise("analysis.planning_baseline.design_unavailable", metric=metric)
     control_group = design.control_group
     if trigger is not None:
-        if is_custom_provider(source):
-            trigger_rate = _provider_trigger_rate(
-                source, trigger=trigger, control_group=control_group
-            )
-            with evidence_scope(
-                source, EvidenceScope(metrics=(spec,), population="triggered")
-            ) as population_source:
+        triggered_population = acquire_custom_triggered_population(
+            source, trigger=trigger, control_group=control_group, metric=spec
+        )
+        if triggered_population is not None:
+            population_scope, trigger_rate = triggered_population
+            with population_scope as population_source:
                 return _baseline_from_population(
                     source,
                     population_source,
@@ -284,23 +281,6 @@ def _with_cluster_participation(
             "trigger_rate": trigger_rate,
         }
     )
-
-
-def _provider_trigger_rate(source: Any, *, trigger: str, control_group: str) -> float:
-    """Derive a custom provider's control trigger rate from unit counts."""
-    assigned = load_counts(source, CountsRequest(kind="unit"))
-    triggered = load_counts(source, CountsRequest(kind="triggered"))
-    from increment.readouts._design_scope import _is_accounting_label
-
-    observed = triggered.unit_counts if triggered.grain == "cluster" else triggered.counts
-    # Unassigned and mixed-assignment audit buckets are not arms.
-    rates = {
-        group: float(observed.get(group, 0)) / count
-        for group, count in assigned.counts.items()
-        if count > 0 and not _is_accounting_label(group)
-    }
-    validate_trigger_fires_in_every_arm(rates, trigger)
-    return rates[control_group]
 
 
 def _with_trigger_rate(baseline: Baseline, trigger_rate: float) -> Baseline:

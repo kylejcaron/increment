@@ -175,9 +175,9 @@ _ANSWER_FIELDS = {
         }
     ),
     "ComplianceSeries": None,
-    "MaterializedBreakoutSlices": frozenset({"scope", "route", "slices"}),
+    "MaterializedBreakoutSlices": frozenset({"scope", "slices"}),
     "ScalarBreakoutRows": frozenset({"rows", "refusals"}),
-    "BreakoutUnitRows": frozenset({"identity", "route", "frame", "unit_frame_has_dimension"}),
+    "BreakoutUnitRows": frozenset({"identity", "frame", "unit_frame_has_dimension"}),
 }
 _TYPED_ANSWER_CLASSES = {
     "MetricEvidence": MetricEvidence,
@@ -194,7 +194,11 @@ _TYPED_WIRE_EXTRA_FIELDS = {
 for _answer_type, _answer_class in _TYPED_ANSWER_CLASSES.items():
     declared_fields = frozenset(field.name for field in fields(_answer_class))
     declared_fields |= _TYPED_WIRE_EXTRA_FIELDS.get(_answer_type, frozenset())
-    if _ANSWER_FIELDS[_answer_type] != declared_fields:
+    expected_fields = _ANSWER_FIELDS[_answer_type]
+    legacy_breakout_unit_fields = (expected_fields or frozenset()) | {"route"}
+    if declared_fields != expected_fields and not (
+        _answer_type == "BreakoutUnitRows" and declared_fields == legacy_breakout_unit_fields
+    ):
         raise RuntimeError(f"{_answer_type} transcript field inventory is incomplete")
 if frozenset(field.name for field in fields(RefusalSpec)) != frozenset(
     {"code", "error_type", "render", "template", "keys"}
@@ -251,6 +255,13 @@ def _typed_declaration(record: Mapping[str, Any]) -> list[Any]:
     return [record["request_type"], record["request"]]
 
 
+def _dataclass_payload(value: Any) -> dict[str, Any]:
+    payload = {field.name: _plain(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, DayAxisRequest) and value.declared_dimensions is None:
+        del payload["declared_dimensions"]
+    return payload
+
+
 def _plain(value: Any) -> Any:
     if isinstance(value, Decimal):
         return {_TYPED_DECIMAL: str(value)}
@@ -291,7 +302,7 @@ def _plain(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return _plain(value.model_dump(mode="python"))
     if hasattr(value, "__dataclass_fields__"):
-        return {field.name: _plain(getattr(value, field.name)) for field in fields(value)}
+        return _dataclass_payload(value)
     if isinstance(value, Mapping):
         encoded = [(_plain_key(key), _plain(item)) for key, item in value.items()]
         if all(isinstance(key, str) for key in value):
@@ -405,13 +416,20 @@ def _validate_answer_payload(answer_type: str, answer: Any) -> None:
     except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
         raise ValueError("answer contains malformed typed transcript data") from exc
     answer_fields = _ANSWER_FIELDS[answer_type]
+    legacy_route = (
+        answer_type in {"BreakoutUnitRows", "MaterializedBreakoutSlices"}
+        and isinstance(answer, dict)
+        and answer_fields is not None
+        and answer.keys() == answer_fields | {"route"}
+        and isinstance(answer["route"], str)
+    )
     if answer_fields is None:
         if not isinstance(answer, list):
             raise ValueError(f"{answer_type} answer must be a list")
         if answer_type == "ComplianceSeries":
             _validate_compliance_series(answer)
         return
-    if not isinstance(answer, dict) or answer.keys() != answer_fields:
+    if not isinstance(answer, dict) or (answer.keys() != answer_fields and not legacy_route):
         raise ValueError("answer fields are incomplete or unexpected")
     if not _is_plain_json(answer):
         raise ValueError("answer contains a non-plain value")
@@ -624,7 +642,6 @@ def _validate_materialized_breakouts(answer: dict[str, Any]) -> None:
         or not isinstance(scope["breakouts"], list)
         or not isinstance(scope["metrics"], list)
         or not isinstance(scope["configs"], list)
-        or not isinstance(answer["route"], str)
         or not isinstance(answer["slices"], list)
     ):
         raise ValueError("materialized breakout fields are invalid")
@@ -678,7 +695,6 @@ def _validate_breakout_unit_rows(answer: dict[str, Any]) -> None:
         or identity.keys() != {"property", "source"}
         or not isinstance(identity["property"], str)
         or (identity["source"] is not None and not isinstance(identity["source"], str))
-        or not isinstance(answer["route"], str)
         or type(answer["unit_frame_has_dimension"]) is not bool
     ):
         raise ValueError("breakout unit-row fields are invalid")
@@ -745,7 +761,6 @@ def _encode_answer(answer: Any, request_type: str) -> tuple[str, Any]:
             "BreakoutUnitRows",
             {
                 "identity": _plain(answer.identity),
-                "route": _plain(answer.route),
                 "frame": _frame_payload(answer.frame),
                 "unit_frame_has_dimension": answer.unit_frame_has_dimension,
             },
@@ -946,7 +961,11 @@ class Transcript:
         ]
         if len(matches) != 1:
             raise ValueError("request is missing or duplicated in transcript")
-        return _restore(matches[0]["answer"])
+        record = matches[0]
+        answer = _restore(record["answer"])
+        if record["answer_type"] in {"BreakoutUnitRows", "MaterializedBreakoutSlices"}:
+            answer.pop("route", None)
+        return answer
 
     @classmethod
     def from_payload(

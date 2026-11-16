@@ -8,7 +8,7 @@ import pytest
 
 from increment import Method, View, from_definitions, from_frame, from_moments, run, workflows
 from increment._evidence_types import BreakoutSlicesRequest, BreakoutUnitRowsRequest, DayAxisRequest
-from increment.errors import CapabilityError, CodedError
+from increment.errors import CapabilityError, CodedError, IncrementWarning
 from increment.evidence import (
     BreakoutIdentity,
     ComplianceRequest,
@@ -834,6 +834,60 @@ def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
     resolver.close()
 
 
+@pytest.mark.integration
+def test_declared_allocation_history_without_operation_method_refuses_before_reads(
+    tmp_path,
+) -> None:
+    from increment.readouts._evidence import load_allocation_history
+
+    source, _ = definitions_source(tmp_path, trigger=True)
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+
+    provider = Provider()
+
+    with pytest.raises(CapabilityError) as raised:
+        load_allocation_history(cast(Any, provider), population="assigned")
+
+    assert raised.value.code == "evidence.operation_unavailable"
+    assert dict(raised.value.context) == {
+        "constructor": "Provider",
+        "requested": "allocation_history",
+        "offered": tuple(sorted(provider.evidence.operations)),
+        "route": "use a source that implements the requested operation",
+    }
+    with pytest.raises(TypeError):
+        cast(Any, raised.value.context)["requested"] = "other"
+
+
+@pytest.mark.integration
+def test_trigger_rates_refuse_provider_missing_native_core_contract(tmp_path) -> None:
+    from increment.readouts._evidence import load_trigger_rates
+
+    source, _ = definitions_source(tmp_path, trigger=True)
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+
+        def trigger_rates(self) -> dict[str, float]:
+            return {"C": 0.5, "T": 0.5}
+
+    provider = Provider()
+    with pytest.raises(CapabilityError) as raised:
+        load_trigger_rates(cast(Any, provider))
+
+    assert raised.value.code == "evidence.operation_unavailable"
+    assert dict(raised.value.context) == {
+        "constructor": "Provider",
+        "requested": "triggered_counts",
+        "offered": tuple(sorted(provider.evidence.operations)),
+        "route": "use a source that implements the requested operation",
+    }
+
+
 def test_temporal_compliance_requests_refuse_total_only_provider_before_reads() -> None:
     from contextlib import nullcontext
     from datetime import date
@@ -1252,7 +1306,6 @@ def test_scoped_breakout_moments_reject_another_source_before_reading(
 
 @pytest.mark.integration
 def test_scoped_breakout_unit_rows_reject_another_source(tmp_path) -> None:
-    from increment._evidence_types import BreakoutUnitRowsRequest
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 
@@ -1310,7 +1363,6 @@ def test_legacy_source_without_evidence_refuses_before_reading() -> None:
 def test_refusals_precede_population_or_source_reads(
     tmp_path, kind, expected_code, monkeypatch
 ) -> None:
-    from increment._evidence_types import BreakoutSlicesRequest, BreakoutUnitRowsRequest
     from increment.evidence import BreakoutMethodMomentsRequest
 
     (_, resolver), declared_breakout = definitions_source(
@@ -1689,8 +1741,6 @@ def test_triggered_multicovariate_fallback_reads_triggered_unit_rows() -> None:
 
 @pytest.mark.integration
 def test_builtin_breakout_unit_rows_respect_triggered_population(tmp_path) -> None:
-    from increment._evidence_types import BreakoutUnitRowsRequest
-
     source, identity = definitions_source(tmp_path, trigger=True, partial_trigger=True)
     metric = source.context.metrics[0]
     request = BreakoutUnitRowsRequest(
@@ -2583,7 +2633,7 @@ def _forwarding_provider(source: Any, **attributes: Any) -> Any:
     return provider
 
 
-def _categorical_cuped_analysis() -> Any:
+def _categorical_cuped_analysis(*, plan: Any = None) -> Any:
     import pyarrow as pa
 
     from increment import AnalysisPlan
@@ -2610,7 +2660,7 @@ def _categorical_cuped_analysis() -> Any:
         group="arm",
         control="control",
         metrics=[MetricSpec(name="revenue", type="mean", decision_method=method)],
-        plan=AnalysisPlan(primary="revenue"),
+        plan=plan if plan is not None else AnalysisPlan(primary="revenue"),
         breakouts=("country",),
     )
 
@@ -2768,6 +2818,64 @@ def test_custom_provider_triggered_analysis_uses_declared_population(tmp_path) -
     assert populations
     assert set(populations) == {"triggered"}
     assert "moments" in operations_seen
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("assignment_counts", (True, False))
+def test_custom_triggered_whole_window_scope_authorizes_both_integrity_counts(
+    tmp_path, assignment_counts
+) -> None:
+
+    native, _ = definitions_source(
+        tmp_path, trigger=True, partial_trigger=False, return_binding=True
+    )
+    experiment, native_resolver = native
+    source = cast(Any, held_source(native_resolver))
+    expected = list(view_readout(*native, population="triggered"))
+    allowed_by_scope: list[frozenset[str]] = []
+
+    provider = _forwarding_provider(
+        source,
+        artifact_experiment=experiment_definition(*native),
+        close=lambda: None,
+    )
+    provider.source = source
+    if not assignment_counts:
+        provider.evidence = replace(source.evidence, count_grains=frozenset({"unit", "triggered"}))
+    original_counts = provider.counts
+
+    def scoped_counts(request):
+        allowed = allowed_by_scope[-1]
+        if request.population not in allowed:
+            raise AssertionError(f"count population {request.population!r} outside scope")
+        return original_counts(request)
+
+    provider.counts = scoped_counts
+
+    def scoped(request):
+        allowed_by_scope.append(frozenset(request.populations))
+
+        @contextmanager
+        def hold():
+            yield provider
+
+        return EvidenceScopeResult(hold(), request)
+
+    provider.scope = scoped
+    bound = bind_pair(provider, experiment=experiment_definition(*native))
+    try:
+        rows = list(view_readout(*bound, population="triggered"))
+        assert [
+            (row.analysis_population, row.n_control, row.n_treat, row.require_lift().value)
+            for row in rows
+        ] == [
+            (row.analysis_population, row.n_control, row.n_treat, row.require_lift().value)
+            for row in expected
+        ]
+        assert {row.analysis_population for row in rows} == {"triggered"}
+    finally:
+        bound[1].close()
+        native_resolver.close()
 
 
 def test_warehouse_fit_keeps_unit_rows_for_uncovered_cuped_method() -> None:
@@ -3045,6 +3153,444 @@ def test_failed_retained_categorical_fit_emits_unavailable_row() -> None:
     unavailable = [row for row in cast(Any, rows) if row.method == "categorical"]
     assert unavailable
     assert all(row.failure_code == failure.code for row in unavailable)
+
+
+@pytest.mark.parametrize("method_fit", ("warehouse", "local"))
+@pytest.mark.integration
+def test_failed_cuped_method_does_not_hide_valid_same_settings_companion(method_fit) -> None:
+    from increment import CupedCovariate, Method
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    failure = CodedError(
+        "first method failed",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical"},
+    )
+    provider = _forwarding_provider(source)
+    provider.evidence = replace(source.evidence, method_fit=method_fit, unit_rows=True)
+
+    def method_fit_answer(request: MethodFitRequest) -> MethodFitAnswer:
+        if request.method.name == "categorical":
+            return MethodFitAnswer("unavailable", failure=failure)
+        return MethodFitAnswer("unavailable")
+
+    provider.method_fit = method_fit_answer
+    provider.close = lambda: None
+    provider_analysis = None
+    covariate = CupedCovariate(name="segment", kind="categorical")
+    companion = Method.cuped_multicovariate(name="companion", covariates=(covariate,))
+    try:
+        provider_analysis = bind_pair(provider)
+        rows = list(view_readout(*provider_analysis, sensitivity_methods=[companion]))
+    finally:
+        if provider_analysis is not None:
+            provider_analysis[1].close()
+        analysis[1].close()
+
+    primary_rows = [row for row in cast(Any, rows) if row.method == "categorical"]
+    companion_rows = [row for row in cast(Any, rows) if row.method == "companion"]
+    assert primary_rows
+    assert all(row.failure_code == failure.code for row in primary_rows)
+    assert all(row.failure_context == failure.context for row in primary_rows)
+    assert companion_rows
+    assert all(row.lift is not None for row in companion_rows)
+    assert [row.lift.value for row in companion_rows if row.lift is not None] == pytest.approx(
+        [0.8]
+    )
+
+
+@pytest.mark.integration
+def test_breakout_keeps_failed_cuped_cell_local_to_its_method() -> None:
+    from increment import CupedCovariate, Method
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    builtin = evidence_provider(source)
+    covariate = CupedCovariate(name="segment", kind="categorical")
+    primary = Method.cuped_multicovariate(name="categorical", covariates=(covariate,))
+    companion = Method.cuped_multicovariate(name="companion", covariates=(covariate,))
+    failure = CodedError(
+        "first method failed",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical", "cell": "US"},
+    )
+    provider = _forwarding_provider(source)
+    provider.evidence = replace(
+        source.evidence, method_fit="warehouse", unit_rows=True, breakouts=("country",)
+    )
+
+    def method_fit(request: MethodFitRequest) -> MethodFitAnswer:
+        if request.method.name == "categorical" and request.cell is not None:
+            if request.cell.value == "US":
+                return MethodFitAnswer("unavailable", failure=failure)
+            return MethodFitAnswer("unavailable")
+        if request.method.name == "companion":
+            return MethodFitAnswer("unavailable")
+        return builtin.method_fit(request)
+
+    provider.method_fit = method_fit
+    provider.close = lambda: None
+    from increment.readouts import breakout
+
+    try:
+        rows = breakout(
+            provider,
+            "country",
+            metrics=("revenue",),
+            correction="none",
+            sensitivity_methods=(companion,),
+        )
+    finally:
+        analysis[1].close()
+
+    primary_failed = [
+        row for row in rows if row.method == primary.name and row.dimension_value == "US"
+    ]
+    companion_valid = [row for row in rows if row.method == companion.name and row.lift is not None]
+    assert primary_failed
+    assert all(row.failure_code == failure.code for row in primary_failed)
+    assert all(row.failure_context == failure.context for row in primary_failed)
+    assert companion_valid
+
+
+@pytest.mark.parametrize("scope", (View.overall(), View(view="breakout", grain="total")))
+@pytest.mark.integration
+def test_failed_fit_identity_changes_snapshot_without_changing_valid_companion(scope) -> None:
+    from increment import AnalysisPlan, CupedCovariate, Method, MultiplicitySpec
+
+    analysis = _categorical_cuped_analysis(
+        plan=AnalysisPlan(primary="revenue", view_multiplicity=MultiplicitySpec(correction="none"))
+    )
+    source = cast(Any, held_source(analysis[1]))
+    companion = Method.cuped_multicovariate(
+        name="companion", covariates=(CupedCovariate(name="segment", kind="categorical"),)
+    )
+
+    def read(failure, identity):
+        provider = _forwarding_provider(source)
+        provider.evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+        provider.method_fit = lambda request: (
+            MethodFitAnswer("unavailable", failure=failure, fit_identity=identity)
+            if request.method.name == "categorical"
+            and (request.cell is None or request.cell.value == "US")
+            else MethodFitAnswer("unavailable")
+        )
+        provider.close = lambda: None
+        experiment, reader = bind_pair(provider)
+        try:
+            return list(view_readout(experiment, reader, scope, sensitivity_methods=[companion]))
+        finally:
+            reader.close()
+
+    failure = CodedError(
+        "unavailable adjustment",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical", "detail": "constant"},
+    )
+    try:
+        baseline = read(failure, ("provider-fit", "original"))
+        original = next(row for row in baseline if row.failure_code == failure.code)
+        expected = {None: 0.8} if scope.view != "breakout" else {"US": 0.75, "CA": 6 / 7}
+        changes = (
+            (
+                CodedError(
+                    "different failure",
+                    code="estimation.cuped_linear.rank_deficiency",
+                    context=failure.context,
+                ),
+                ("provider-fit", "original"),
+            ),
+            (
+                CodedError(
+                    "different context",
+                    code=failure.code,
+                    context={"method": "categorical", "detail": "singular"},
+                ),
+                ("provider-fit", "original"),
+            ),
+            (failure, ("provider-fit", "changed")),
+        )
+        for changed_failure, identity in changes:
+            rows = read(changed_failure, identity)
+            unavailable = next(row for row in rows if row.failure_code == changed_failure.code)
+            assert dict(unavailable.failure_context) == dict(changed_failure.context)
+            assert unavailable.source_snapshot_id != original.source_snapshot_id
+            valid = {
+                (row.dimension_value if scope.view == "breakout" else None): row.lift.value
+                for row in rows
+                if row.method == companion.name and row.lift is not None
+            }
+            assert valid == pytest.approx(expected)
+    finally:
+        analysis[1].close()
+
+
+@pytest.mark.integration
+def test_mixed_fit_answers_preserve_order_with_withheld_arm_without_unit_rows() -> None:
+    from types import SimpleNamespace
+
+    from increment import CupedCovariate, Method
+    from increment._evidence_types import MetricEvidenceRequest
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    retained_covariate = CupedCovariate(name="segment", kind="categorical")
+    methods = (
+        Method.cuped_multicovariate(name="categorical", covariates=(retained_covariate,)),
+        Method.cuped_multicovariate(name="warehouse", covariates=(retained_covariate,)),
+        Method.cuped_multicovariate(name="unavailable", covariates=(retained_covariate,)),
+    )
+    withheld = CodedError(
+        "treatment arm withheld",
+        code="estimation.cuped_linear.missing_refused",
+        context={"arm": "treatment"},
+    )
+    local_failure = CodedError(
+        "fit unavailable",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"arm": "treatment", "level": "rare"},
+    )
+    unit_requests: list[UnitRowsRequest] = []
+
+    class Provider:
+        context = source.context
+        evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+
+        def moments(self, request):
+            return evidence_provider(source).moments(request)
+
+        def unit_rows(self, request):
+            unit_requests.append(request)
+            return evidence_provider(source).unit_rows(request)
+
+        def method_fit(self, request):
+            if request.method.name == "categorical":
+                return MethodFitAnswer(
+                    "retained_categorical",
+                    cells=cast(
+                        "CategoricalCells",
+                        SimpleNamespace(arms=("control", "treatment"), counts=((4, 4), (4, 4))),
+                    ),
+                    evidence_sha256="retained-digest",
+                    fit_identity=("retained-fit",),
+                )
+            if request.method.name == "warehouse":
+                return MethodFitAnswer(
+                    "warehouse",
+                    envelope=SimpleNamespace(
+                        fit=None,
+                        arm_order=("control", "treatment"),
+                        withheld=(("treatment", withheld),),
+                    ),
+                    fit_identity=("warehouse-fit",),
+                    evidence_sha256="warehouse-digest",
+                )
+            return MethodFitAnswer(
+                "unavailable", failure=local_failure, fit_identity=("unavailable-fit",)
+            )
+
+        def breakout_method_moments(self, request):
+            return evidence_provider(source).breakout_method_moments(request)
+
+        def compliance(self, request):
+            return evidence_provider(source).compliance(request)
+
+        def compliance_series(self, request):
+            return evidence_provider(source).compliance_series(request)
+
+        def counts(self, request):
+            return evidence_provider(source).counts(request)
+
+        def capture_sequential(self, request):
+            return evidence_provider(source).capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    provider = Provider()
+    provider_analysis = None
+    try:
+        evidence = cast(
+            Any,
+            request_evidence(
+                provider,
+                MetricEvidenceRequest(
+                    metric=source.context.metrics[0],
+                    control_group="control",
+                    methods=methods,
+                    covariates=(retained_covariate,),
+                ),
+            ),
+        )
+        provider_analysis = bind_pair(provider)
+        with pytest.warns(IncrementWarning):
+            rows = list(
+                view_readout(
+                    *provider_analysis,
+                    decision_method=Method(name="unadjusted"),
+                    sensitivity_methods=methods[1:],
+                )
+            )
+    finally:
+        if provider_analysis is not None:
+            provider_analysis[1].close()
+        analysis[1].close()
+
+    answers = tuple(answer for _, answer in evidence.method_fit_answers)
+    assert tuple(answer.origin for answer in answers) == (
+        "retained_categorical",
+        "warehouse",
+        "unavailable",
+    )
+    assert tuple(answer.fit_identity for answer in answers) == (
+        ("retained-fit",),
+        ("warehouse-fit",),
+        ("unavailable-fit",),
+    )
+    assert tuple(answer.evidence_sha256 for answer in answers) == (
+        "retained-digest",
+        "warehouse-digest",
+        None,
+    )
+    assert answers[1].envelope.withheld == (("treatment", withheld),)
+    assert answers[2].failure is local_failure
+    assert unit_requests == []
+    fit_components = tuple(
+        component
+        for component in evidence.evidence_components
+        if component[0].startswith(("categorical_cells:", "warehouse_qr:"))
+    )
+    assert tuple(component[0] for component in fit_components) == (
+        "categorical_cells:categorical",
+        "warehouse_qr:warehouse",
+        "warehouse_qr:unavailable",
+    )
+    assert fit_components[0] == ("categorical_cells:categorical", "retained-digest", 1)
+    assert tuple(count for _name, _digest, count in fit_components) == (1, 1, 1)
+
+    by_method = {row.method: row for row in cast(Any, rows)}
+    assert set(by_method) == {"unadjusted", "warehouse", "unavailable"}
+    assert {
+        method: (
+            row.metric,
+            row.method,
+            row.analysis_population,
+            row.group_id,
+        )
+        for method, row in by_method.items()
+    } == {
+        "unadjusted": ("revenue", "unadjusted", "assigned", "treatment"),
+        "warehouse": ("revenue", "warehouse", "assigned", "treatment"),
+        "unavailable": ("revenue", "unavailable", "assigned", "treatment"),
+    }
+    assert by_method["unadjusted"].lift.value == pytest.approx(0.8)
+    assert by_method["warehouse"].failure_code == withheld.code
+    assert by_method["warehouse"].failure_context == withheld.context
+    assert by_method["unavailable"].failure_code == local_failure.code
+    assert by_method["unavailable"].failure_context == local_failure.context
+
+
+@pytest.mark.integration
+def test_breakout_does_not_fetch_unit_rows_for_failed_fit_with_valid_sibling() -> None:
+    from increment.readouts import breakout
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    failure = CodedError(
+        "warehouse fit withheld the treatment arm",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical", "arm": "treatment", "weighted_var_x": 0.0},
+    )
+    provider = _forwarding_provider(source)
+    provider.evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+    provider.method_fit = lambda request: MethodFitAnswer("unavailable", failure=failure)
+    unit_row_requests: list[UnitRowsRequest] = []
+
+    def fail_unit_rows(request: UnitRowsRequest) -> None:
+        unit_row_requests.append(request)
+        raise AssertionError("failed fits must not trigger local unit-row reads")
+
+    provider.unit_rows = fail_unit_rows
+    try:
+        with pytest.warns(IncrementWarning):
+            rows = breakout(
+                provider,
+                "country",
+                metrics=("revenue",),
+                sensitivity_methods=(Method.unadjusted(),),
+                correction="none",
+            )
+    finally:
+        analysis[1].close()
+
+    sibling_method = Method.unadjusted().name
+    by_cell = {(row.dimension_value, row.method): row for row in rows}
+    assert set(by_cell) == {
+        (dimension_value, method)
+        for dimension_value in ("CA", "US")
+        for method in ("categorical", sibling_method)
+    }
+    for dimension_value in ("CA", "US"):
+        failed = by_cell[dimension_value, "categorical"]
+        assert (
+            failed.metric,
+            failed.method,
+            failed.analysis_population,
+            failed.dimension,
+            failed.dimension_value,
+            failed.group_id,
+        ) == ("revenue", "categorical", "assigned", "country", dimension_value, "treatment")
+        assert failed.failure_code == failure.code
+        assert failed.failure_context == failure.context
+        sibling = by_cell[dimension_value, sibling_method]
+        assert sibling.metric == "revenue"
+        assert sibling.analysis_population == "assigned"
+        assert sibling.group_id == "treatment"
+        assert sibling.lift is not None
+    assert unit_row_requests == []
+
+
+def test_failed_warehouse_fit_emits_unavailable_row_instead_of_local_fit() -> None:
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis[1]))
+    failure = CodedError(
+        "warehouse fit withheld the treatment arm",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical", "arm": "treatment", "weighted_var_x": 0.0},
+    )
+    provider = _forwarding_provider(source)
+    load_unit_rows = provider.unit_rows
+    provider.evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+    unit_row_requests: list[UnitRowsRequest] = []
+
+    def record_unit_rows(request: UnitRowsRequest):
+        unit_row_requests.append(request)
+        return load_unit_rows(request)
+
+    provider.unit_rows = record_unit_rows
+    provider.method_fit = lambda request: MethodFitAnswer("unavailable", failure=failure)
+    provider.close = lambda: None
+    provider_analysis = None
+    try:
+        provider_analysis = bind_pair(provider)
+        rows = list(
+            view_readout(*provider_analysis, sensitivity_methods=[Method(name="unadjusted")])
+        )
+    finally:
+        if provider_analysis is not None:
+            provider_analysis[1].close()
+        analysis[1].close()
+
+    unavailable = [row for row in cast(Any, rows) if row.method == "categorical"]
+    assert unavailable
+    assert all(row.failure_code == failure.code for row in unavailable)
+    assert all(row.failure_context == failure.context for row in unavailable)
+    assert not unit_row_requests
 
 
 @pytest.mark.integration

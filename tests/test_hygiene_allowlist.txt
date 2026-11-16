@@ -2,7 +2,6 @@
 # ---
 # H2: private-attribute reach-ins outside the two sanctioned shims
 tests/test_readout_execution_context.py::test_analysis_run_exposes_live_coherence_when_temp_tables_are_denied::_con
-tests/test_readout_execution_context.py::test_custom_provider_preserves_snapshot_after_update::_con
 tests/test_readout_execution_context.py::test_mutable_sql_panel_is_not_reported_as_captured::_con
 tests/test_readout_execution_context.py::test_whole_window_assigned_and_triggered_reads_share_capture.count_snapshot::_con
 # H3: patches targeting increment internals
@@ -83,7 +82,7 @@ tests/test_warehouse_cuped_qr.py 5
 # Test-only evidence-fixture inspection of retired internal acquisition envelopes.
 tests/evidence_fixtures/capture.py 2
 # Captured declarations and genuine data-only family, alpha, identity and readout consumers.
-tests/test_evidence_level_parity.py 41
+tests/test_evidence_level_parity.py 40
 # Pinned acquisition, genuine slice routes, qualified fit/frame receipts and source identity.
 tests/evidence_fixtures/scenarios.py 22
 # Closed request/answer codecs and genuine pinned warehouse input source identity.
@@ -99,7 +98,7 @@ tests/test_loader_conformance.py 7
 tests/evidence_fixtures/temporal.py 44
 tests/test_analysis_breakout.py 3
 # These counts cover breakout, day-axis, and metric-evidence request tests.
-tests/test_evidence_provider.py 11
+tests/test_evidence_provider.py 10
 # Day-axis acquisition request coverage for the custom-provider example.
 tests/test_examples_custom_provider.py 1
 # Compound request encoding and scope-compatibility contract coverage.

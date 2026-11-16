@@ -296,10 +296,14 @@ def test_pr_preflight_keeps_one_cell_per_refusal_hazard():
 def _assert_preflight_refusal(status, expected, scope):
     refusal = next((item for item in status.static_refusals if item.code == expected.code), None)
     assert refusal is not None, tuple(item.code for item in status.static_refusals)
+    expected_context = dict(expected.context)
     if expected.code == "evidence.breakout_unavailable":
-        # Execution reads the implicit run_breakout(); preflight names the authored selection.
-        selection = tuple(identity.property for identity in scope.segment)
-        assert dict(refusal.context) == {**expected.context, "requested": selection}
+        # Execution reads implicit run_breakout(); preflight names the authored selection.
+        expected_context = {
+            **expected_context,
+            "requested": tuple(identity.property for identity in scope.segment),
+        }
+    assert tuple(refusal.context.items()) == tuple(expected_context.items())
 
 
 def _assert_runners_produced_rows(
@@ -622,3 +626,62 @@ def test_asymptotic_retention_cell(cell: matrix.Cell) -> None:
         _switchback(cell, method, disposition)
         for name, capture in merged.sequential_state.items():
             assert {state[3] for state in capture.fingerprint[0]} == {"scalar_mean"}, name
+
+
+def test_runnable_and_run_refuse_restored_unsupported_value_scale_before_reads():
+    from typing import Any, cast
+
+    from increment import Experiment, from_frame, run, runnable
+    from increment.errors import UnsupportedRequestError
+    from tests.analysis_factory import bind_pair
+    from tests.test_evidence_provider import _forwarding_provider
+    from tests.test_readouts_observational import _OBS_X, _near_zero_table
+
+    _, source_reader = from_frame(
+        _near_zero_table(n=200),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=_OBS_X,
+    )
+    source = cast(Any, source_reader._binding.state.source)
+    provider = _forwarding_provider(
+        source,
+        evidence=replace(source.evidence, value_scale_overrides=False),
+    )
+    original_moments = provider.moments
+    reads = 0
+
+    def count_moments(request):
+        nonlocal reads
+        reads += 1
+        return original_moments(request)
+
+    provider.moments = count_moments
+    experiment, resolver = bind_pair(provider)
+    requested = replace(
+        experiment,
+        request_options={"value_scale": {"revenue": "absolute"}},
+    )
+    restored = Experiment.from_json(requested.to_json())
+    capabilities = restored.source_refs[0].capabilities
+    assert capabilities is not None
+    assert capabilities.value_scale_overrides is False
+
+    status = runnable(restored, "revenue")["observational.iptw"]
+    (refusal,) = (
+        item for item in status.static_refusals if item.code == "readout.randomized.value_scale"
+    )
+    assert isinstance(refusal, UnsupportedRequestError)
+    assert tuple(refusal.context.items()) == ()
+
+    try:
+        with pytest.raises(UnsupportedRequestError) as raised:
+            run(restored, resolver, value_scale={"revenue": "absolute"})
+        assert raised.value.code == refusal.code
+        assert tuple(raised.value.context.items()) == tuple(refusal.context.items())
+        assert reads == 0
+    finally:
+        resolver.close()
+        source_reader.close()

@@ -16,16 +16,18 @@ from increment._evidence_types import (
     UnitRowsRequest,
 )
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
-from increment._source_types import MOMENTS_BATCH_OWNERS, declared_evidence, is_custom_source
+from increment._source_types import MOMENTS_BATCH_OWNERS, declared_evidence, source_class_name
 from increment.errors import CodedError
 from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._evidence import (
+    allows_local_metric_fit,
     evidence_scope,
     fits_cuped_in_warehouse,
     load_breakout_method_moments,
     load_method_fit,
     load_moments,
     load_unit_rows,
+    local_metric_fit_components,
     method_fit_input_digest,
     metric_authenticator,
     retains_cuped_relation,
@@ -109,7 +111,7 @@ def _scalar_method_rows(src, metric, methods, decision, *, by, population):
     if scalar is None or not scalar.method_evidence:
         validate_scalar_route(
             overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
-            route=type(src).__name__,
+            route=source_class_name(src),
             representation="implicit",
             design=src.context.design,
         )
@@ -547,11 +549,7 @@ def _load_metric_evidence(  # noqa: PLR0915
         for _method_fit_request, answer in method_fit_answers
         if answer.origin in {"warehouse", "retained_fitted"} or answer.failure is not None
     ]
-    needs_local_units = (
-        is_custom_source(src)
-        and declared_evidence(src).unit_rows
-        and any(answer.origin == "unavailable" for _fit_request, answer in method_fit_answers)
-    )
+    needs_local_units = allows_local_metric_fit(src, method_fit_answers)
     fit_components = ()
     if warehouse_fits:
 
@@ -560,6 +558,7 @@ def _load_metric_evidence(  # noqa: PLR0915
                 return {
                     "fit_identity": identity,
                     "failure": evidence.code,
+                    "failure_context": dict(evidence.context),
                     "fit": None,
                 }
             fitted = evidence.fit
@@ -651,13 +650,13 @@ def _load_metric_evidence(  # noqa: PLR0915
     )
     frame = nw.from_native(native, eager_only=True)
     unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)
-    local_fit_components = (
-        (*categorical_components, *fit_components) if is_custom_source(src) else ()
-    )
+    local_fit_components = local_metric_fit_components(src, categorical_components, fit_components)
     decision_fitted_locally = bool(
         methods
         and any(
-            fit_request.method.name == methods[0].name and answer.origin == "unavailable"
+            fit_request.method.name == methods[0].name
+            and answer.origin == "unavailable"
+            and answer.failure is None
             for fit_request, answer in method_fit_answers
         )
     )
@@ -701,7 +700,12 @@ def _load_metric_evidence(  # noqa: PLR0915
 
 def _breakout_fit_record(identity: tuple[object, ...], evidence: Any) -> dict[str, Any]:
     if isinstance(evidence, CodedError):
-        return {"fit_identity": identity, "failure": evidence.code, "fit": None}
+        return {
+            "fit_identity": identity,
+            "failure": evidence.code,
+            "failure_context": dict(evidence.context),
+            "fit": None,
+        }
     fitted = getattr(evidence, "fit", evidence)
     withheld = tuple(
         (arm, refusal.code, dict(refusal.context))
@@ -787,7 +791,7 @@ def _load_breakout_metric_rows(
     ):
         validate_scalar_route(
             overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
-            route=f"{type(src).__name__}.breakout",
+            route=f"{source_class_name(src)}.breakout",
             representation="implicit",
             design=src.context.design,
         )
@@ -861,8 +865,8 @@ def _load_breakout_metric_rows(
             )
             answer = load_method_fit(src, method_fit_request)
             breakout_fit_answers.append((method_fit_request, answer))
-            if answer.origin == "unavailable":
-                # Kept so the readout can acquire unit rows for this cell's local fit.
+            if answer.origin == "unavailable" and answer.failure is None:
+                # A missing fit without a failure may still use local unit rows.
                 continue
             if answer.origin == "retained_categorical" and answer.failure is None:
                 # Retained categorical cells carry no envelope; their evidence digest is the identity.

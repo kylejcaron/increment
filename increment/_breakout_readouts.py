@@ -14,10 +14,11 @@ from increment._analysis_config import (
     overlay_configs,
     select_metrics,
 )
-from increment._day_axis import _TRIGGER_UNSUPPORTED, require_arm_state
+from increment._day_axis import require_arm_state
+from increment._evidence_loaders import breakout_readout_source
+from increment._evidence_refusals import _TRIGGER_UNSUPPORTED
 from increment._evidence_types import (
     BreakoutIdentity,
-    BreakoutRoute,
     BreakoutSlice,
     BreakoutSlicesRequest,
     EvidenceScope,
@@ -31,17 +32,14 @@ from increment.errors import refuse as _refuse
 from increment.readouts._breakout import _breakout_impl
 from increment.readouts._breakout import breakout as readout_breakout
 from increment.readouts._evidence import (
-    ARTIFACT_ROUTE,
-    NATIVE_ROUTE,
-    PANEL_ROUTE,
-    UNSUPPORTED_ROUTE,
-    _builtin_source,
-    breakout_route,
     breakout_snapshot_population,
+    breakout_uses_owned_execution_context,
+    breakout_uses_scoped_execution,
+    effective_source_capabilities,
     evidence_scope,
     load_breakout_evidence,
-    serves_custom_breakouts,
-    validate_populations,
+    require_breakout_source_support,
+    validate_breakout_populations,
 )
 from increment.readouts._execution_context import current_execution_context
 from increment.readouts._requests import _validate_breakout_request
@@ -128,7 +126,7 @@ class BreakoutReadouts:
         if self._execution_context is not None and self._src is not self._scope_source:
             self._execution_context.declare_source_alias(self._src, parent=self._scope_source)
         evidence = load_breakout_evidence(
-            _builtin_source(self._src),
+            self._src,
             request,
             execution_context=self._execution_context,
             fallback_source=self._src if self._execution_context is not None else None,
@@ -162,22 +160,7 @@ class BreakoutReadouts:
                 "route.unsupported",
                 "registered sequential inference has no triggered breakout construction",
             )
-        route = breakout_route(self._src)
-        custom = serves_custom_breakouts(self._src)
-        if not custom and (
-            route not in (ARTIFACT_ROUTE, NATIVE_ROUTE)
-            or self._experiment is None
-            or self._experiment.trigger is None
-        ):
-            _refuse(
-                _TRIGGER_UNSUPPORTED,
-                method="run_breakout",
-                experiment="<unknown>" if self._experiment is None else self._experiment.name,
-                trigger=None if self._experiment is None else self._experiment.trigger,
-                route=route,
-                supported_sources=("from_definitions", "from_unit_day_artifact"),
-            )
-        validate_populations(self._src, populations, operation="run_breakout")
+        validate_breakout_populations(self._src, self._experiment, populations)
 
     def _require_registered_selection(self, population: Literal["assigned", "triggered"]) -> None:
         registration = getattr(self._src.context.plan.inference, "registration", None)
@@ -193,22 +176,13 @@ class BreakoutReadouts:
         )
 
     def validate_request(self, req: BreakoutRequest) -> BreakoutRequest:
-        self._require_registered_selection(req.population)
-        route = breakout_route(self._src)
-        if route == ARTIFACT_ROUTE and any(
-            metric.type == "quantile" and metric.window_days is not None for metric in req.metrics
-        ):
-            from increment._metric_specs import MetricSpec
+        from increment._metric_specs import validate_windowed_quantile_support
 
-            for metric in req.metrics:
-                if metric.type == "quantile" and metric.window_days is not None:
-                    MetricSpec(
-                        name=metric.name,
-                        type="quantile",
-                        quantile=metric.quantile,
-                        window_days=metric.window_days,
-                    )
-            return req
+        self._require_registered_selection(req.population)
+        validate_windowed_quantile_support(
+            req.metrics,
+            supported=effective_source_capabilities(self._src).windowed_breakout_quantiles is True,
+        )
         if not req.metrics:
             return req
         identities = self._identities(self._src)
@@ -238,14 +212,12 @@ class BreakoutReadouts:
     def _run_owned_context(self, req: BreakoutRequest) -> BreakoutEstimates:
         from uuid import uuid4
 
-        from increment._source_types import is_custom_source
-        from increment.decision import ContrastContext
         from increment.kernel.context import EvidenceExecutionContext
         from increment.readouts._execution_context import (
             execution_context_scope,
             owned_execution_context,
         )
-        from increment.readouts._provider import native_scope_provider
+        from increment.readouts._provider import scope_provider
 
         if self._breakouts is not None:
             identities = self._breakouts
@@ -270,16 +242,7 @@ class BreakoutReadouts:
             execution=True,
             include_breakouts=True,
         )
-        if isinstance(self._scope_source.context, ContrastContext):
-            from increment._evidence_scopes import switchback_scope_provider
-
-            provider = switchback_scope_provider(self._scope_source)
-        else:
-            provider = (
-                self._scope_source
-                if is_custom_source(self._scope_source)
-                else native_scope_provider(self._scope_source)
-            )
+        provider = scope_provider(self._scope_source)
         with owned_execution_context(
             lambda: EvidenceExecutionContext(
                 provider,
@@ -324,26 +287,7 @@ class BreakoutReadouts:
                     analysis_population=req.population,
                 )
             )
-        route = breakout_route(self._src)
-        if route == UNSUPPORTED_ROUTE:
-            from increment._evidence_refusals import refuse_breakout
-            from increment._source_types import declared_evidence
-
-            refusal = declared_evidence(self._src)
-            requested = (
-                tuple(identity.property for identity in self._breakouts)
-                if self._breakouts is not None
-                else tuple(breakout.property for breakout in self._experiment.breakouts)
-                if self._experiment is not None
-                else tuple(refusal.breakouts)
-            )
-            refuse_breakout(
-                self._src,
-                requested,
-                refusal.breakouts,
-                route="use a source with the requested breakout dimensions",
-            )
-        custom = serves_custom_breakouts(self._src)
+        require_breakout_source_support(self._src, self._experiment, self._breakouts)
         # Validate before any evidence scope opens so refusals precede any read.
         if not req.metrics:
             return BreakoutEstimates([])
@@ -354,11 +298,13 @@ class BreakoutReadouts:
                 req.metrics,
                 self._configs(req),
             )
-        if self._execution_context is None and not custom and req.population != "triggered":
+        if self._execution_context is None and breakout_uses_owned_execution_context(
+            self._src, req.population
+        ):
             return self._run_owned_context(req)
-        if route == NATIVE_ROUTE or custom:
+        if breakout_uses_scoped_execution(self._src):
             if self._execution_context is not None:
-                return self._stamp_execution_context(self._run_slices(req, route))
+                return self._stamp_execution_context(self._run_slices(req))
             with evidence_scope(
                 self._src,
                 EvidenceScope(
@@ -373,18 +319,17 @@ class BreakoutReadouts:
             ) as pinned:
                 rows = BreakoutReadouts(
                     src=pinned, experiment=self._experiment, breakouts=self._breakouts
-                )._run_slices(req, route)
+                )._run_slices(req)
                 return self._stamp_execution_context(rows)
 
-        return self._stamp_execution_context(self._run_slices(req, route))
+        return self._stamp_execution_context(self._run_slices(req))
 
-    def _run_slices(self, req: BreakoutRequest, route: BreakoutRoute) -> BreakoutEstimates:
+    def _run_slices(self, req: BreakoutRequest) -> BreakoutEstimates:
         from increment.breakout.estimates import BreakoutEstimates
 
         results: BreakoutEstimates | None = None
-        breakout_fn = _breakout_impl if route == PANEL_ROUTE else readout_breakout
         for breakout_slice in self._slices(req):
-            segment_results = breakout_fn(
+            segment_results = _breakout_impl(
                 breakout_slice.source,
                 breakout_slice.identity.property,
                 source_name=(
@@ -395,7 +340,7 @@ class BreakoutReadouts:
                 decision_method=req.decision_method,
                 sensitivity_methods=req.sensitivity_methods,
                 prior=req.prior,
-                metrics=([metric.name for metric in req.metrics] if route == PANEL_ROUTE else None),
+                metrics=breakout_slice.metrics or [metric.name for metric in req.metrics],
                 correction=req.correction,
                 q=req.q,
                 analysis_population=req.population,
@@ -684,9 +629,8 @@ def _breakout_rows(
         population=population,
     )
     source = binding.source
-    summary_source = getattr(source, "summary_breakout_source", None)
     reader = BreakoutReadouts(
-        src=summary_source if summary_source is not None else source,
+        src=breakout_readout_source(source),
         experiment=_arm_experiment(binding),
         execution_context=execution_context,
         scope_source=source if scope_source is None else scope_source,

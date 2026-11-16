@@ -7,17 +7,20 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from increment._analysis_config import select_metrics
 from increment._binding import SourceBinding, binding_for
+from increment._evidence_loaders import build_triggered_srm_provider, load_assignment_diagnostic
 from increment._evidence_refusals import INVALID_POPULATION
-from increment._evidence_types import CountEvidence, CountsRequest
 from increment._health import SrmObservations, check_health, srm_observation_key
 from increment._optional import require_warehouse
 from increment._planning_baseline import planning_baseline as _arm_planning_baseline
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
-from increment._source_operations import AllocationHistoryOperation
-from increment._source_types import declared_evidence, is_custom_source
 from increment.errors import CapabilityError, RefusalSpec, refuse
-from increment.evidence import evidence_provider, request_evidence
-from increment.readouts._evidence import is_artifact_route
+from increment.evidence import evidence_provider
+from increment.readouts._evidence import (
+    baseline_trigger,
+    load_allocation_history,
+    load_trigger_rates,
+    load_unit_counts,
+)
 from increment.readouts._srm import srm as _assigned_srm
 from increment.readouts._srm import triggered_srm
 
@@ -51,15 +54,7 @@ def unit_counts(experiment: Experiment, reader: ExperimentReader) -> dict[str, i
 
 
 def _unit_counts_binding(binding: SourceBinding) -> dict[str, int]:
-    source = binding.source
-    if not is_custom_source(source):
-        source = _require_analysis_operation(
-            source,
-            "unit_counts",
-            message="unit_counts() requires a source with enrolled total-grain counts.",
-        )
-    request = CountsRequest(kind="unit", population=getattr(source, "population", "assigned"))
-    return dict(cast(CountEvidence, request_evidence(evidence_provider(source), request)).counts)
+    return dict(load_unit_counts(binding.source).counts)
 
 
 def srm(
@@ -137,7 +132,7 @@ def _srm_binding(
                 ),
             )
             result = triggered_srm(
-                evidence_provider(source),
+                build_triggered_srm_provider(source, evidence_provider),
                 design=binding.design,
                 expected=expected,
                 alpha=alpha,
@@ -174,28 +169,7 @@ def trigger_rates(experiment: Experiment, reader: ExperimentReader) -> dict[str,
 
 
 def _trigger_rates_binding(binding: SourceBinding) -> dict[str, float]:
-    from increment.query.native_contract import NativeCoreSource
-
-    source = binding.source
-    if is_artifact_route(source):
-        operations = declared_evidence(source).operations
-        if "triggered_counts" not in operations:
-            from increment._evidence_refusals import refuse_operation
-
-            refuse_operation(
-                source,
-                "triggered_counts",
-                tuple(sorted(operations)),
-                route="trigger_rates() requires complete trigger evidence",
-            )
-        return source.trigger_rates()
-    native = _require_analysis_operation(
-        source,
-        "triggered_counts",
-        NativeCoreSource,
-        message="trigger_rates() needs an experiment built by from_definitions with a warehouse connection",
-    )
-    return native.trigger_rates()
+    return dict(load_trigger_rates(binding.source))
 
 
 def allocation_history(
@@ -221,17 +195,7 @@ def allocation_history(
 def _allocation_history_binding(
     binding: SourceBinding, *, population: Literal["assigned", "triggered"] = "assigned"
 ) -> pa.Table:
-    source = _require_analysis_operation(
-        binding.source,
-        "allocation_history",
-        AllocationHistoryOperation,
-        message=(
-            "allocation_history() needs an experiment built by from_definitions; "
-            "a frame, warehouse or moments experiment retains no raw event stream "
-            "to build a daily enrollment timeline from."
-        ),
-    )
-    return source.allocation_history(population=population)
+    return load_allocation_history(binding.source, population=population)
 
 
 def health_check(
@@ -296,7 +260,7 @@ def assignment_diagnostic(
 def _assignment_diagnostic_binding(binding: SourceBinding) -> SwitchbackAssignmentDiagnostic:
     if binding.state.family != "contrast":
         refuse(_SWITCHBACK_ONLY, method="assignment_diagnostic")
-    return binding.source.diagnostics
+    return load_assignment_diagnostic(binding.source)
 
 
 def planning_baseline(
@@ -352,9 +316,11 @@ def _planning_baseline_binding(
         context = cast("ContrastContext", binding.context)
         spec = select_metrics(context.metrics, [metric], caller="planning_baseline")[0]
         return cast("ContrastSource", source).planning_baseline(spec)
-    trigger = getattr(getattr(binding, "experiment", None), "trigger", None)
-    if trigger is None and is_custom_source(source):
-        trigger = getattr(binding.context, "trigger_name", None)
+    trigger = baseline_trigger(
+        source,
+        getattr(getattr(binding, "experiment", None), "trigger", None),
+        getattr(binding.context, "trigger_name", None),
+    )
     return _arm_planning_baseline(
         cast("_BuiltinMomentSource", source),
         metric,

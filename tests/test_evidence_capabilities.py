@@ -33,7 +33,7 @@ from increment.evidence import (
     request_evidence,
 )
 from increment.workflows import export_moments, metrics
-from tests.analysis_factory import held_source, view_readout
+from tests.analysis_factory import bind_pair, declare_views, held_source, lift_rows, view_readout
 from tests.source_conformance import (
     exposed_unit_panel_table,
     switchback_analysis,
@@ -44,13 +44,14 @@ from tests.source_conformance import (
 
 
 class _ForwardingProvider:
-    def __init__(self, source):
+    def __init__(self, source, *, evidence=None):
         self.source = source
+        self._evidence_override = evidence
         self.scope_calls = 0
 
     @property
     def evidence(self):
-        return self.source.evidence
+        return self.source.evidence if self._evidence_override is None else self._evidence_override
 
     @property
     def context(self):
@@ -83,7 +84,7 @@ class _ForwardingProvider:
     @contextmanager
     def _scoped_source(self, request):
         with evidence_provider(self.source).scope(request).source as scoped:
-            yield _ForwardingProvider(scoped)
+            yield type(self)(scoped, evidence=self._evidence_override)
 
     def scope(self, request):
         self.scope_calls += 1
@@ -96,6 +97,23 @@ class _ForwardingProvider:
     @contextmanager
     def readout_snapshot(self, **_kwargs):
         yield self.source
+
+    def close(self):
+        return None
+
+
+class _ReadGuardProvider(_ForwardingProvider):
+    def _fail_read(self, request):
+        raise AssertionError("unsupported request performed an evidence read")
+
+    moments = _fail_read
+    unit_rows = _fail_read
+    method_fit = _fail_read
+    breakout_method_moments = _fail_read
+    compliance = _fail_read
+    compliance_series = _fail_read
+    counts = _fail_read
+    capture_sequential = _fail_read
 
 
 @pytest.mark.parametrize(
@@ -1529,6 +1547,53 @@ def test_definitions_day_source_declares_only_its_day_axis(seeded_con, seeded_de
     cast(Any, resolver).close()
 
 
+@pytest.mark.integration
+def test_definitions_reject_randomized_value_scale_before_reads(
+    tmp_path, example_definitions
+) -> None:
+    import json
+    from dataclasses import replace
+
+    import ibis
+
+    from examples._seed import seed_event_log
+    from increment import run, runnable
+    from increment.errors import UnsupportedRequestError
+
+    con = ibis.duckdb.connect(str(tmp_path / "warehouse.duckdb"))
+    resolver = None
+    try:
+        seed_event_log(con)
+        experiment, resolver = from_definitions(
+            example_definitions, con, experiment_name="new_onboarding_v2", store="none"
+        )
+        requested = replace(
+            experiment, request_options={"value_scale": {"purchase_rate": "absolute"}}
+        )
+        capabilities = requested.source_refs[0].capabilities
+        assert capabilities is not None
+        assert capabilities.value_scale_overrides is False
+        serialized_capabilities = json.loads(experiment.to_json())["source_refs"][0]["capabilities"]
+        assert "value_scale_overrides" not in serialized_capabilities
+
+        status = runnable(requested, "purchase_rate")["randomized.unadjusted"]
+        refusal = next(
+            item for item in status.static_refusals if item.code == "readout.randomized.value_scale"
+        )
+        assert isinstance(refusal, UnsupportedRequestError)
+        assert tuple(refusal.context.items()) == ()
+
+        con.drop_table("event_log", database="analytics")
+        with pytest.raises(UnsupportedRequestError) as raised:
+            run(requested, resolver, value_scale={"purchase_rate": "absolute"})
+        assert raised.value.code == refusal.code
+        assert tuple(raised.value.context.items()) == tuple(refusal.context.items())
+    finally:
+        if resolver is not None:
+            resolver.close()
+        con.disconnect()
+
+
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 @pytest.mark.integration
 def test_artifact_count_declarations_follow_retained_extensions(tmp_path) -> None:
@@ -1635,3 +1700,392 @@ def test_artifact_facade_keeps_warehouse_fit_declaration(tmp_path) -> None:
     assert source.evidence.method_fit == "warehouse"
     assert callable(source.fit_cuped_multicovariate)
     analysis[1].close()
+
+
+def test_whole_window_scale_override_uses_declared_semantic_support() -> None:
+    from dataclasses import replace
+
+    from increment import AdjustmentSet, Experiment, Observational, run, runnable
+    from increment.errors import UnsupportedRequestError
+
+    values = list(range(12))
+    analysis = from_frame(
+        pa.table(
+            {
+                "user_id": [
+                    f"{arm}-{index}" for arm in ("control", "treatment") for index in values
+                ],
+                "variant": ["control"] * 12 + ["treatment"] * 12,
+                "revenue": [float(value + 1) for value in values]
+                + [float(value + 4) for value in values],
+                "x": values * 2,
+            }
+        ),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=Observational(control_group="control", adjustment=AdjustmentSet(covariates=("x",))),
+    )
+    source = cast(Any, held_source(analysis[1]))
+    try:
+        for supported in (True, False):
+            provider_type = _ForwardingProvider if supported else _ReadGuardProvider
+            experiment, resolver = bind_pair(
+                provider_type(
+                    source,
+                    evidence=replace(source.evidence, value_scale_overrides=supported),
+                )
+            )
+            experiment = replace(
+                experiment,
+                request_options={"value_scale": {"revenue": "absolute"}},
+            )
+            experiment = Experiment.from_json(experiment.to_json())
+            try:
+                refusal = next(
+                    (
+                        item
+                        for status in runnable(experiment, "revenue").values()
+                        for item in status.static_refusals
+                        if item.code == "readout.randomized.value_scale"
+                    ),
+                    None,
+                )
+                if supported:
+                    assert refusal is None
+                    result = run(experiment, resolver, value_scale={"revenue": "absolute"})
+                    (row,) = lift_rows(result.readout(experiment.views[0]))
+                    assert row.require_lift().value == pytest.approx(3.0)
+                    assert row.value_scale == "absolute"
+                else:
+                    assert isinstance(refusal, UnsupportedRequestError)
+                    with pytest.raises(UnsupportedRequestError) as raised:
+                        run(experiment, resolver, value_scale={"revenue": "absolute"})
+                    assert raised.value.code == refusal.code
+                    assert tuple(raised.value.context.items()) == tuple(refusal.context.items())
+            finally:
+                resolver.close()
+    finally:
+        analysis[1].close()
+
+
+@pytest.mark.integration
+def test_whole_window_trigger_support_uses_declared_semantic_capability(tmp_path) -> None:
+    from dataclasses import replace
+
+    from increment import Experiment, run, runnable
+    from increment.errors import CapabilityError
+    from increment.kernel.contracts import View
+    from tests.analysis_factory import replace_bound_source
+    from tests.test_analysis_trigger import _analysis, _events
+
+    events = _events(n_per_arm=20, trigger_rate=0.5)
+    trigger_counts = {
+        arm: sum(
+            row["event"] == "saw_surface" and row["group_id"] == arm for row in events.to_pylist()
+        )
+        for arm in ("C", "T")
+    }
+    base_experiment, base_resolver = _analysis(tmp_path, events)
+    source = cast(Any, held_source(base_resolver))
+    triggered = View.overall(population="triggered")
+
+    class NativeProvider(_ForwardingProvider):
+        def declaration_identity(self):
+            return self.source.declaration_identity()
+
+    class GuardedNativeProvider(_ReadGuardProvider, NativeProvider):
+        pass
+
+    try:
+        for supported in (True, False, None):
+            provider_type = GuardedNativeProvider if supported is False else NativeProvider
+            declaration = replace(source.evidence, fixed_triggered=supported)
+            if supported is None:
+                declaration = replace(
+                    declaration,
+                    kind="moments",
+                    operations=frozenset({"moments_source"}),
+                    populations=frozenset({"assigned", "triggered"}),
+                    count_grains=source.evidence.count_grains | frozenset({"triggered"}),
+                )
+            provider = provider_type(source, evidence=declaration)
+            replace_bound_source(base_resolver, provider)
+            reference = base_experiment.source_refs[0]
+            experiment = replace(
+                declare_views(base_experiment, triggered),
+                source_refs=(replace(reference, capabilities=provider.evidence),),
+            )
+            resolver = base_resolver
+            experiment = Experiment.from_json(experiment.to_json())
+            if supported is None:
+                assert experiment.source_refs[0].capabilities is not None
+                assert experiment.source_refs[0].capabilities.fixed_triggered is True
+            try:
+                refusal = next(
+                    (
+                        item
+                        for item in runnable(experiment, "revenue")[
+                            "randomized.unadjusted"
+                        ].static_refusals
+                        if item.code == "facade.analysis.trigger_unsupported"
+                    ),
+                    None,
+                )
+                if supported is not False:
+                    assert refusal is None
+                    result = run(experiment, resolver, views=(triggered,))
+                    row = next(
+                        row
+                        for row in lift_rows(result.readout(triggered))
+                        if row.metric == "revenue"
+                    )
+                    assert (row.n_control, row.n_treat) == (
+                        trigger_counts["C"],
+                        trigger_counts["T"],
+                    )
+                else:
+                    assert isinstance(refusal, CapabilityError)
+                    with pytest.raises(CapabilityError) as raised:
+                        run(experiment, resolver, views=(triggered,))
+                    assert raised.value.code == refusal.code
+                    assert tuple(raised.value.context.items()) == tuple(refusal.context.items())
+            finally:
+                replace_bound_source(base_resolver, source)
+    finally:
+        base_resolver.close()
+
+
+@pytest.mark.integration
+def test_legacy_native_operations_preserve_clustered_temporal_refusals(tmp_path):
+    from dataclasses import replace
+
+    from increment import Experiment, run, runnable
+    from increment.errors import CapabilityError
+    from tests.analysis_factory import replace_bound_source
+    from tests.source_conformance import definitions_source
+
+    (experiment, resolver), (_breakout, connection) = definitions_source(
+        tmp_path, cluster=True, return_binding=True, return_connection=True
+    )
+    source = held_source(resolver)
+    semantic = workflows.experiment_definition(experiment, resolver)
+
+    class NativeOperationProvider(_ForwardingProvider):
+        artifact_experiment = semantic
+
+        @property
+        def evidence(self):
+            return replace(
+                self.source.evidence,
+                kind="moments",
+                operations=frozenset({"moments_source"}),
+                value_scale_overrides=None,
+                fixed_triggered=None,
+                windowed_breakout_quantiles=None,
+                temporal_quantiles=None,
+                temporal_clusters=None,
+                dimensioned_daily_metrics=None,
+            )
+
+        def declaration_identity(self):
+            return self.source.declaration_identity()
+
+    try:
+        provider = NativeOperationProvider(source)
+        replace_bound_source(resolver, provider)
+        experiment = replace(
+            experiment,
+            source_refs=(replace(experiment.source_refs[0], capabilities=provider.evidence),),
+        )
+        experiment = Experiment.from_json(experiment.to_json())
+        for grain in ("daily", "asof"):
+            view = View(view=grain, grain=grain, values=True)
+            declared = experiment.with_views(view)
+            expected_context = {
+                "method": f"run_{grain}",
+                "experiment": "conformance",
+                "cluster": "store_id",
+            }
+            refusals = runnable(declared, "revenue")["randomized.unadjusted"].static_refusals
+            assert [(type(error), error.code, dict(error.context)) for error in refusals] == [
+                (CapabilityError, "facade.analysis.clustered_day_axis", expected_context)
+            ]
+            with pytest.raises(CapabilityError) as raised:
+                run(declared, resolver, views=(view,))
+            assert raised.value.code == "facade.analysis.clustered_day_axis"
+            assert raised.value.context == expected_context
+    finally:
+        replace_bound_source(resolver, source)
+        resolver.close()
+        connection.disconnect()
+
+
+@pytest.mark.parametrize(
+    ("grain", "value_view"), (("daily", True), ("asof", True), ("asof", False))
+)
+@pytest.mark.integration
+def test_day_axis_metric_objects_do_not_require_exploratory_sibling_support(
+    tmp_path, grain, value_view
+):
+    from dataclasses import replace
+
+    from increment import Experiment, run, runnable
+    from increment.results import DailyLiftEstimate, DailyMetricValue
+    from tests.analysis_factory import replace_bound_source
+    from tests.source_conformance import definitions_source
+
+    (experiment, resolver), (_breakout, connection) = definitions_source(
+        tmp_path, return_binding=True, return_connection=True
+    )
+    source = cast(Any, held_source(resolver))
+    semantic = workflows.experiment_definition(experiment, resolver)
+
+    class TypedMomentsProvider(_ForwardingProvider):
+        artifact_experiment = semantic
+
+        @property
+        def evidence(self):
+            return replace(
+                self.source.evidence,
+                operations=(
+                    self.source.evidence.operations | frozenset({"moments_source", "day_source"})
+                )
+                - frozenset({"exploratory_source"}),
+            )
+
+        def declaration_identity(self):
+            return self.source.declaration_identity()
+
+        def day_source(self, *args, **kwargs):
+            return self.source.day_source(*args, **kwargs)
+
+        def exploratory_source(self, *args, **kwargs):
+            raise AssertionError("temporal selection must not create an exploratory sibling")
+
+    try:
+        provider = TypedMomentsProvider(source)
+        replace_bound_source(resolver, provider)
+        experiment = replace(
+            experiment,
+            source_refs=(replace(experiment.source_refs[0], capabilities=provider.evidence),),
+        )
+        added = source.context.metrics[0].model_copy(update={"name": "ad_hoc_revenue"})
+        scope = View(view=grain, grain=grain, values=value_view)
+        experiment = replace(
+            experiment,
+            views=(scope,),
+            request_options={
+                **dict(experiment.request_options),
+                "metrics": [added.model_dump(mode="json")],
+            },
+        )
+        experiment = Experiment.from_json(experiment.to_json())
+        rows = run(experiment, resolver, views=(scope,)).readout(scope)
+        assert runnable(experiment, added)["randomized.unadjusted"].static_refusals == ()
+        assert {row.metric for row in rows} == {"ad_hoc_revenue"}
+        if value_view:
+            values = {
+                row.group_id: row.value.value
+                for row in rows
+                if isinstance(row, DailyMetricValue) and row.value is not None
+            }
+            assert values == pytest.approx({"control": 1.5, "treatment": 4.5})
+        else:
+            row = max(
+                (row for row in rows if isinstance(row, DailyLiftEstimate)),
+                key=lambda row: str(row.ds),
+            )
+            assert row.lift is not None
+            assert row.lift.value == pytest.approx(2.0)
+    finally:
+        replace_bound_source(resolver, source)
+        resolver.close()
+        connection.disconnect()
+
+
+@pytest.mark.integration
+def test_registered_selection_precedes_unsupported_quantile_window():
+    import dataclasses
+
+    from increment import Experiment, run, runnable
+    from increment.errors import CapabilityError
+    from increment.estimators import AlwaysValid, SequentialCell
+    from increment.evidence import BreakoutIdentity
+    from tests.sequential_cases import registration
+    from tests.test_experiment_spec import _restored_temporal_case
+
+    rows = [
+        {
+            "unit": f"u{i}",
+            "group": "control" if i < 4 else "treat",
+            "ds": "2025-01-01",
+            "p50": float(i),
+            "country": "us",
+        }
+        for i in range(8)
+    ]
+    _, original, _, _ = _restored_temporal_case("temporal_quantiles", rows)
+    source = cast(Any, held_source(original))
+    try:
+        metric = source.context.metrics[0].model_copy(update={"window_days": 7})
+        model = registration("gaussian").models[0].model_copy(update={"metric": "p50"})
+        registered = registration(
+            "gaussian",
+            models=(model,),
+            cells=(
+                SequentialCell(
+                    metric="p50",
+                    group_id="treat",
+                    segment=(("registered", "us"),),
+                ),
+            ),
+        )
+        policy = AlwaysValid(registration=registered)
+        plan = source.context.plan.model_copy(
+            update={
+                "inference": policy,
+                "procedures": {
+                    name: procedure.model_copy(update={"inference": policy})
+                    for name, procedure in source.context.plan.procedures.items()
+                },
+            }
+        )
+        context = dataclasses.replace(
+            source.context,
+            metrics=(metric,),
+            configs=tuple(
+                dataclasses.replace(config, metric=metric) for config in source.context.configs
+            ),
+            plan=plan,
+        )
+
+        class Provider(_ReadGuardProvider):
+            @property
+            def context(self):
+                return context
+
+        provider = Provider(
+            source,
+            evidence=dataclasses.replace(source.evidence, windowed_breakout_quantiles=False),
+        )
+        experiment, resolver = bind_pair(provider)
+        scope = View(view="breakout", segment=(BreakoutIdentity("country", None),))
+        restored = Experiment.from_json(dataclasses.replace(experiment, views=(scope,)).to_json())
+        try:
+            expected = {
+                "reason": "registered sequential inference reads only its registered breakout dimension"
+            }
+            with pytest.raises(CapabilityError) as runtime:
+                run(restored, resolver, views=(scope,))
+            assert runtime.value.code == "sequential.route.unsupported"
+            assert runtime.value.context == expected
+            refusals = runnable(restored, "p50")["randomized.unadjusted"].static_refusals
+            assert type(refusals[0]) is CapabilityError
+            assert refusals[0].code == "sequential.route.unsupported"
+            assert refusals[0].context == expected
+        finally:
+            resolver.close()
+    finally:
+        original.close()

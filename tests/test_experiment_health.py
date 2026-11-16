@@ -342,6 +342,7 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
         return pinned
 
     monkeypatch.setattr(source, "_pinned_source", pin_then_append)
+
     try:
         first = health_check(experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5})
         second = health_check(experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5})
@@ -366,15 +367,11 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
     assert second_rate_values["C"] == pytest.approx((first_rate_values["C"] * 100 + 1) / 101)
     assert first.source_snapshot_id and second.source_snapshot_id
     assert first.source_snapshot_id != second.source_snapshot_id
-    assert first.source_cutoff == second.source_cutoff == cutoff.isoformat()
+    expected_cutoff = cutoff.isoformat()
+    assert first.source_cutoff == second.source_cutoff == expected_cutoff
     restored = ExperimentHealth.model_validate_json(first.model_dump_json())
     assert restored.source_snapshot_id == first.source_snapshot_id
     assert restored.source_cutoff == first.source_cutoff
-
-
-@pytest.mark.integration
-def test_health_checks_share_one_snapshot(tmp_path, monkeypatch) -> None:
-    _health_snapshot_scenario(tmp_path, monkeypatch)
 
 
 @pytest.mark.integration
@@ -971,6 +968,47 @@ def test_health_validates_expected_allocation_before_empty_trigger_counts(tmp_pa
     finally:
         resolver.close()
     assert caught.value.code == "estimation.diagnostics.every_expected_share_positive"
+
+
+@pytest.mark.integration
+def test_health_propagates_trigger_edge_request_errors_after_allocation_validation(
+    tmp_path,
+) -> None:
+    from increment.errors import InvalidRequestError
+    from tests.analysis_factory import bind_pair, held_source
+    from tests.test_analysis_trigger import _analysis, _events
+    from tests.test_evidence_capabilities import _ForwardingProvider
+
+    experiment, resolver = _analysis(
+        tmp_path, _events(n_per_arm=20, trigger_rate=0.5), allocation_scheme="blocked"
+    )
+    source = held_source(resolver)
+
+    class Provider(_ForwardingProvider):
+        def triggered_observation_edges(self, metric: Any) -> tuple[None, None]:
+            raise InvalidRequestError(
+                "invalid edge request",
+                code="test.health.trigger_edges.invalid_request",
+                context={"metric": metric.name},
+            )
+
+    custom_experiment, custom_resolver = bind_pair(Provider(source))
+    try:
+        with pytest.raises(InvalidRequestError) as edge_error:
+            health_check(
+                custom_experiment, custom_resolver, expected_allocation={"C": 0.5, "T": 0.5}
+            )
+        assert edge_error.value.code == "test.health.trigger_edges.invalid_request"
+        assert edge_error.value.context == {"metric": "revenue"}
+
+        with pytest.raises(InvalidRequestError) as allocation_error:
+            health_check(
+                custom_experiment, custom_resolver, expected_allocation={"C": 0.0, "T": 1.0}
+            )
+        assert allocation_error.value.code == "estimation.diagnostics.every_expected_share_positive"
+    finally:
+        custom_resolver.close()
+        resolver.close()
 
 
 def test_health_srm_report_supports_pickle_and_deepcopy() -> None:
