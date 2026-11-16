@@ -583,6 +583,29 @@ def _validate_declared_day_axis(
     )
 
 
+def _validate_declared_scalar_route(
+    request: ReadoutRequest, operation: str, capabilities: EvidenceCapabilities
+) -> None:
+    from increment._analysis_config import DAY_AXIS_ROUTES, validate_scalar_route
+    from increment.readouts._common import _sequential_inference
+
+    scalar = capabilities.scalar
+    validate_scalar_route(
+        request.configs,
+        route=DAY_AXIS_ROUTES[operation],
+        representation="registered"
+        if _sequential_inference(request.plan) is not None
+        else "implicit",
+        registered_plan=request.plan,
+        design=request.design,
+        covariate_moments_available=(
+            scalar is None
+            or scalar.covariate_grains is None
+            or request.grain in scalar.covariate_grains
+        ),
+    )
+
+
 def _validate_scope_request(
     declaration: Mapping[str, Any],
     request: ReadoutRequest,
@@ -592,10 +615,17 @@ def _validate_scope_request(
     check: Any,
     refusals: list[CodedError],
 ) -> None:
-    if scope.view != "asof":
-        check(validate_request, request)
-    if scope.view in {"daily", "asof"}:
+    if scope.view == "daily":
         check(_validate_declared_day_axis, declaration, request, operation, capabilities)
+        if refusals:
+            return
+        check(validate_request, request)
+    elif scope.view == "asof":
+        check(_validate_declared_day_axis, declaration, request, operation, capabilities)
+    else:
+        check(validate_request, request)
+    if operation == "run_asof_lift" and not refusals:
+        check(_validate_declared_scalar_route, request, operation, capabilities)
     if operation == "run_asof_lift" and not refusals:
         validation_request = request
         if capabilities.kind == "moments" and capabilities.sequential_capture == "replay":
@@ -685,9 +715,18 @@ def readout_refusals(
             ):
                 refusals.append(error)
 
-    if capabilities.kind == "artifact":
+    # Breakouts bind artifact metric columns before validating the readout.
+    if capabilities.kind == "artifact" and scope.view == "breakout":
         check(_validate_artifact_metrics, declaration)
+        if refusals:
+            return tuple(refusals)
     _validate_scope_request(declaration, request, scope, operation, capabilities, check, refusals)
+    if refusals:
+        return tuple(refusals)
+    if capabilities.kind == "artifact" and scope.view != "breakout":
+        check(_validate_artifact_metrics, declaration)
+        if refusals:
+            return tuple(refusals)
     from increment.readouts._common import _sequential_inference
 
     inference = _sequential_inference(plan)
@@ -740,22 +779,7 @@ def readout_refusals(
         from increment.readouts._daily import _validate_daily_inference
 
         check(_validate_daily_inference, inference)
-    if operation in {"run_daily_lift", "run_asof_lift"}:
-        from increment._analysis_config import DAY_AXIS_ROUTES, validate_scalar_route
-
-        check(
-            validate_scalar_route,
-            configs,
-            route=DAY_AXIS_ROUTES[operation],
-            representation="registered" if inference is not None else "implicit",
-            registered_plan=plan,
-            design=context.design,
-            covariate_moments_available=(
-                scalar is None
-                or scalar.covariate_grains is None
-                or scope.grain in scalar.covariate_grains
-            ),
-        )
+        check(_validate_declared_scalar_route, request, operation, capabilities)
     if getattr(context.design, "mechanism", None) == "observational":
         from increment.estimation._readout_refusals import refuse_observational_quantile
 

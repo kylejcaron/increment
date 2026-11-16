@@ -6,11 +6,23 @@ import math
 from collections.abc import Callable, Mapping
 from typing import Literal, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from increment._immutable import _FrozenMapping
 from increment._literals import PreferredDirection
-from increment.estimation._relative_posterior import _PosteriorNumericalError, _unavailable
+from increment.errors import CodedModel
+from increment.estimation._relative_posterior import (
+    _invalid,
+    _PosteriorNumericalError,
+    _unavailable,
+)
 from increment.estimation.priors import LiftPosterior
 from increment.semantics.models import favorable_alternative
 
@@ -51,7 +63,24 @@ def _plain(value: object) -> object:
     return value
 
 
-class _PosteriorQueryProjection(BaseModel):
+def _validate_parameters(operation: str, parameters: Mapping[str, object]) -> None:
+    expected = ("probability",) if operation == "quantile" else ()
+    if set(parameters) != set(expected):
+        _invalid(
+            operation,
+            "unexpected parameters",
+            expected_parameters=expected,
+            parameters=parameters,
+        )
+    if operation == "quantile":
+        probability = parameters["probability"]
+        if not isinstance(probability, (int, float)) or isinstance(probability, bool):
+            _invalid(operation, "probability must be numeric", probability=probability)
+        if not 0 < probability < 1:
+            _invalid(operation, "probability must be in (0, 1)", probability=probability)
+
+
+class _PosteriorQueryProjection(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     value: float | None
@@ -64,8 +93,13 @@ class _PosteriorQueryProjection(BaseModel):
     @classmethod
     def _supported_operation(cls, value: str) -> str:
         if value not in _OPERATIONS:
-            raise ValueError("Unsupported posterior query operation")
+            _invalid(value, "unsupported operation")
         return value
+
+    @model_validator(mode="after")
+    def _valid_parameters(self) -> _PosteriorQueryProjection:
+        _validate_parameters(self.operation, self.parameters)
+        return self
 
     @field_validator("parameters", "context", mode="after")
     @classmethod
@@ -105,12 +139,10 @@ def _posterior_risk_if_shipped(row: _PosteriorQueryRow, *, favorable: bool) -> f
 def _project_posterior_query(
     row: _PosteriorQueryRow, *, operation: str, parameters: Mapping[str, object]
 ) -> _PosteriorQueryProjection:
-    """Evaluate one supported query without changing retained density availability."""
+    """Refuse invalid requests; retain numerical failures without changing density."""
     if operation not in _OPERATIONS:
-        raise ValueError("Unsupported posterior query operation")
-    expected = {"probability"} if operation == "quantile" else set()
-    if set(parameters) != expected:
-        raise ValueError("Unexpected posterior query parameters")
+        _invalid(operation, "unsupported operation")
+    _validate_parameters(operation, parameters)
     try:
         if operation in {"chance_to_beat", "chance_to_beat_favorable"}:
             value = _posterior_chance_to_beat(row, favorable=operation.endswith("_favorable"))
@@ -118,9 +150,7 @@ def _project_posterior_query(
             value = _posterior_risk_if_shipped(row, favorable=operation.endswith("_favorable"))
         else:
             posterior = row._posterior()
-            probability = parameters["probability"]
-            if not isinstance(probability, (int, float)) or isinstance(probability, bool):
-                raise ValueError("Posterior quantile probability must be numeric")
+            probability = cast(float, parameters["probability"])
             value = None if posterior is None else posterior.quantile(probability)
         if value is not None and not math.isfinite(value):
             _unavailable(operation, "result_unrepresentable", **parameters)

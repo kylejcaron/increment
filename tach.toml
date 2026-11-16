@@ -244,7 +244,7 @@ depends_on = ["increment._display", "increment._posterior_projection", "incremen
 [[modules]]
 path = "increment._posterior_projection"
 layer = "core"
-depends_on = ["increment._immutable", "increment._literals", "increment.estimation._relative_posterior", "increment.estimation.priors", "increment.semantics"]
+depends_on = ["increment._immutable", "increment._literals", "increment.errors", "increment.estimation._relative_posterior", "increment.estimation.priors", "increment.semantics"]
 
 [[modules]]
 path = "increment.estimation.decision_types"

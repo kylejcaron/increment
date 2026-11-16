@@ -3092,6 +3092,74 @@ def test_confidence_set_only_report_cells_stay_available():
         assert cell.identity.key in available
 
 
+@pytest.mark.parametrize(
+    ("operation", "parameters", "details"),
+    [
+        ("unknown", {"probability": "invalid"}, {}),
+        (
+            "chance_to_beat",
+            {"unexpected": {"values": [1]}},
+            {
+                "expected_parameters": (),
+                "parameters": {"unexpected": {"values": (1,)}},
+            },
+        ),
+        (
+            "quantile",
+            {},
+            {"expected_parameters": ("probability",), "parameters": {}},
+        ),
+        (
+            "quantile",
+            {"probability": True},
+            {"probability": True},
+        ),
+        (
+            "quantile",
+            {"probability": "0.5"},
+            {"probability": "0.5"},
+        ),
+        (
+            "quantile",
+            {"probability": 0.0},
+            {"probability": 0.0},
+        ),
+        (
+            "quantile",
+            {"probability": 1.0},
+            {"probability": 1.0},
+        ),
+    ],
+    ids=["operation", "extra-parameter", "missing-parameter", "boolean", "string", "zero", "one"],
+)
+def test_malformed_posterior_query_payload_refuses_with_immutable_context(
+    operation, parameters, details
+):
+    from increment.errors import CodedError
+    from increment.result_envelope import ResultCell
+
+    row, _ = _relevel_test_t_rows(*_relevel_test_data())
+    parameters = dict(parameters)
+    payload = ResultCell.from_row(row).to_payload()
+    payload["posterior_queries"] = [
+        {"value": None, "operation": operation, "parameters": parameters}
+    ]
+
+    with pytest.raises(CodedError) as caught:
+        ResultCell.from_payload(payload)
+
+    assert caught.value.code == "estimation.posterior.invalid_request"
+    assert {key: value for key, value in caught.value.context.items() if key != "reason"} == {
+        "operation": operation,
+        **details,
+    }
+    recorded_context = dict(caught.value.context)
+    with pytest.raises(TypeError):
+        cast(dict[str, object], caught.value.context)["operation"] = "changed"
+    parameters.clear()
+    assert caught.value.context == recorded_context
+
+
 def _assert_single_cell_query_columns(cell, failed):
     import json
     from dataclasses import replace
@@ -3114,12 +3182,10 @@ def _assert_single_cell_query_columns(cell, failed):
 def test_failed_posterior_query_preserves_density_and_independent_records():
     import io
     import json
-    from dataclasses import replace
     from typing import cast
 
     import pandas as pd
 
-    from increment._posterior_projection import _project_posterior_query
     from increment.errors import CodedError
     from increment.estimation.readout_types import ReadoutResults
     from increment.estimators import RelativeLiftPrior, StudentTPrior
@@ -3140,10 +3206,23 @@ def test_failed_posterior_query_preserves_density_and_independent_records():
         row._posterior().quantile(probability)
     assert direct.value.code == "estimation.posterior.numerical_unavailable"
     assert direct.value.context["reason"] == "accuracy_unresolved"
-    failed = _project_posterior_query(
-        row, operation="quantile", parameters={"probability": probability}
-    )
-    good = _project_posterior_query(row, operation="risk_if_shipped_favorable", parameters={})
+    payload = row.as_cells()[0].to_payload()
+    payload["posterior_queries"] = [
+        {
+            "value": None,
+            "operation": "quantile",
+            "parameters": {"probability": probability},
+            "code": direct.value.code,
+            "context": dict(direct.value.context),
+        },
+        {
+            "value": row.risk_if_shipped_favorable(),
+            "operation": "risk_if_shipped_favorable",
+            "parameters": {},
+        },
+    ]
+    recorded = ResultCell.from_payload(json.loads(json.dumps(payload)))
+    failed, good = recorded.posterior_queries
     assert failed.value is None
     assert failed.code == direct.value.code
     assert failed.context == direct.value.context
@@ -3152,10 +3231,7 @@ def test_failed_posterior_query_preserves_density_and_independent_records():
         with pytest.raises(TypeError):
             cast(dict[str, object], mapping)["mutated"] = True
     cells = tuple(
-        replace(cell, posterior_queries=(failed, good))
-        if cell.identity.key.metric == "revenue"
-        else cell
-        for cell in replay.as_cells()
+        recorded if cell.identity.key.metric == "revenue" else cell for cell in replay.as_cells()
     )
     envelope = AnalysisEnvelope(cells, replay.metadata)
     for restored in (
@@ -3196,11 +3272,9 @@ def test_failed_posterior_query_preserves_density_and_independent_records():
 
 @pytest.mark.integration
 def test_posterior_query_rendering_identifies_the_affected_arm():
-    from dataclasses import replace
-
-    from increment._posterior_projection import _project_posterior_query
+    from increment.errors import CodedError
     from increment.estimators import RelativeLiftPrior, StudentTPrior
-    from increment.result_envelope import AnalysisEnvelope, render
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
     from tests.test_readout_public_scope import _relative_prior_run
 
     results = _relative_prior_run(
@@ -3208,14 +3282,24 @@ def test_posterior_query_rendering_identifies_the_affected_arm():
         arms=("treatment_a", "treatment_b"),
     )
     affected = next(row for row in results if row.group_id == "treatment_b")
-    failed = _project_posterior_query(
-        affected, operation="quantile", parameters={"probability": 0.44919976139382767}
-    )
+    probability = 0.44919976139382767
+    with pytest.raises(CodedError) as direct:
+        affected._posterior().quantile(probability)
+    payload = affected.as_cells()[0].to_payload()
+    payload["posterior_queries"] = [
+        {
+            "value": None,
+            "operation": "quantile",
+            "parameters": {"probability": probability},
+            "code": direct.value.code,
+            "context": dict(direct.value.context),
+        }
+    ]
+    recorded = ResultCell.from_payload(payload)
+    (failed,) = recorded.posterior_queries
     assert failed.code == "estimation.posterior.numerical_unavailable"
     cells = tuple(
-        replace(cell, posterior_queries=(failed,))
-        if cell.identity.key.group_id == affected.group_id
-        else cell
+        recorded if cell.identity.key.group_id == affected.group_id else cell
         for cell in results.as_cells()
     )
     for audience in ("full", "brief"):

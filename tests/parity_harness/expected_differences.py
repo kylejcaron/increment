@@ -1474,6 +1474,25 @@ def _assert_score_replaced_wald(
     assert nested_close(wald, (expected["abs_lb"], expected["abs_ub"])), (alpha, wald)
 
 
+def without_absent_relative_posterior_state(
+    expected: Mapping[str, Any], actual: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Drop null relative-posterior columns absent from a frozen row.
+
+    Typed rows omit absent state; flattened tables retain its null columns. A
+    non-null addition has no historical authority and fails. State recorded by
+    the capture stays untouched for the caller's complete comparison.
+    """
+    projected = dict(actual)
+    for name in ("posterior_relative_model", "posterior_student_t_state"):
+        if name not in expected:
+            assert actual.get(name) is None, (
+                f"relative posterior field {name!r} has a value but no frozen authority"
+            )
+            projected.pop(name, None)
+    return projected
+
+
 def without_gained_arm_facts(
     expected: Any,
     actual: Any,

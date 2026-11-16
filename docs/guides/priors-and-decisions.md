@@ -86,6 +86,8 @@ the sampling result and valid sibling metrics. A later probability or loss
 query can also be unavailable without invalidating the retained posterior.
 Batch exports retain each query's value or its exact reason independently;
 one failed query does not erase successful queries.
+Malformed saved query parameters raise `estimation.posterior.invalid_request`;
+they are not treated as numerical unavailability.
 A finite median alone is not sufficient: if the saved center and spread
 cannot retain accurate posterior probabilities, the posterior is unavailable
 instead of silently replaying a different density.

@@ -1689,6 +1689,16 @@ def _plain_builder(kind, *, conversion=False):
     breakout_dimension="region",
     descriptive_daily_conversion=False,
 )
+@example(
+    kind="summary",
+    view="daily",
+    operation=None,
+    prior="unset",
+    estimands=("unknown",),
+    metrics=None,
+    breakout_dimension=None,
+    descriptive_daily_conversion=False,
+)
 @given(
     kind=st.sampled_from(["summary", "panel", "switchback"]),
     view=st.sampled_from(["run", "daily", "asof", "breakout", "switchback"]),
