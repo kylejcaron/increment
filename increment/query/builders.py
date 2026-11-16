@@ -1300,9 +1300,8 @@ def panel_spine(
             )
         spine_cols.append(experiment.cluster)
 
-    # Each unit gets inclusive offsets from first exposure through the edge. A
-    # non-positive count, including a NULL edge, unnests to zero rows; the left
-    # join below keeps the unit with NULL day_offset and ds.
+    # Each unit gets inclusive offsets from first exposure through the edge.
+    # Empty ranges retain one null offset without joining expanded days back to units.
     keys = firsts.select(*spine_cols)
     day_count = ibis.greatest(
         ibis.coalesce(
@@ -1310,19 +1309,15 @@ def panel_spine(
         ),
         0,
     )
-    days = expand_day_offsets(keys, cast("ir.IntegerValue", day_count)).select(
-        "unit_id", "experiment_id", "first_exposure_date", "day_offset"
-    )
+    days = expand_day_offsets(keys, cast("ir.IntegerValue", day_count))
     # Ibis already types date + interval as a date and drops a plain date cast,
     # but DuckDB evaluates the sum as a timestamp; the round trip keeps `ds` a date.
     days = days.mutate(
         ds=(days.first_exposure_date + days.day_offset.as_interval("D"))
         .cast("timestamp")
         .cast("date")
-    ).select("unit_id", "experiment_id", "day_offset", "ds")
-    return keys.left_join(days, ["unit_id", "experiment_id"]).select(
-        *spine_cols, "day_offset", "ds"
     )
+    return days.select(*spine_cols, "day_offset", "ds")
 
 
 def post_exposure_stats(
