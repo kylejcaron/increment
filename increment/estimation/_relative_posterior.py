@@ -11,13 +11,13 @@ from __future__ import annotations
 import math
 import sys
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from fractions import Fraction
 from typing import Literal, NoReturn
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from scipy.integrate import IntegrationWarning, quad
 from scipy.optimize import brentq
 from scipy.special import erfcx, log_ndtr, ndtri_exp
@@ -66,6 +66,15 @@ class RelativeStudentTState(CodedModel, BaseModel):
     likelihood_point: float
     likelihood_se: float = Field(gt=0)
     prior: StudentTPrior
+
+    @field_validator("prior", mode="before")
+    @classmethod
+    def _prior_fields(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            unknown = tuple(sorted(str(key) for key in value if key not in {"nu", "scale", "k"}))
+            if unknown:
+                _invalid("state", "prior contains unrecognized fields", unknown_fields=unknown)
+        return value
 
     @model_validator(mode="after")
     def _finite_prior(self) -> RelativeStudentTState:

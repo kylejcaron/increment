@@ -10,6 +10,7 @@ The oracles do not import this module's integration implementation.
 from __future__ import annotations
 
 import copy
+import json
 import math
 import pickle
 import sys
@@ -395,6 +396,24 @@ def test_student_t_defining_state_excludes_runtime_cache_and_replays_once():
     ):
         with pytest.raises((InvalidRequestError, ValidationError)):
             RelativeStudentTState.model_validate({**state.model_dump(), **changes})
+
+
+@pytest.mark.parametrize("extra", [{"mu": 0.2}, {"type": "normal"}])
+def test_student_t_state_rejects_extra_prior_fields_without_changing_legacy(extra):
+    original = {"nu": 4.0, "scale": 0.1, "k": 80}
+    prior = {**original, **extra}
+    assert StudentTPrior.model_validate(prior).model_dump() == original
+    payload = {
+        "version": 1,
+        "likelihood_point": 0.2,
+        "likelihood_se": 0.1,
+        "prior": prior,
+    }
+    with pytest.raises(InvalidRequestError) as caught:
+        RelativeStudentTState.model_validate_json(json.dumps(payload))
+    assert caught.value.code == "estimation.posterior.invalid_request"
+    assert caught.value.context["operation"] == "state"
+    assert caught.value.context["unknown_fields"] == tuple(extra)
 
 
 @pytest.mark.parametrize("method", ["expected_positive_part", "expected_negative_part"])
