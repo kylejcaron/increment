@@ -67,6 +67,12 @@ _LINE1_SCENARIOS = frozenset(
         "lift_prior_normal_mean_ratio_conversion_cuped",
         "lift_prior_student_t_mean_ratio_conversion_cuped",
         "lift_prior_mixture_mean_ratio_conversion_cuped",
+        "lift_prior_relative_normal_mean_ratio_conversion_cuped",
+        "lift_prior_relative_student_t_mean_ratio_conversion_cuped",
+        "lift_prior_relative_mixture_mean_ratio_conversion_cuped",
+        "relative_prior_breakout_store_dimension",
+        "relative_prior_audit-retention-breakout-cohorts",
+        "relative_prior_quantile_tied_rounded_outcomes",
         "exploratory-metrics",
         "window_spelling_zulu_vs_offset",
         "window_spelling_offset_vs_offset",
@@ -157,13 +163,10 @@ _SKIP_COUNT = 0
 
 @cache
 def _capture() -> dict:
-    from scripts.capture_evidence_identity import load_operations_capture
+    from scripts.capture_evidence_identity import load_frozen_operations_capture
 
     root = Path(__file__).parent / "fixtures" / "evidence_identity"
-    capture = load_operations_capture(root / "pre-kernel" / "operations.json.gz")
-    asof = load_operations_capture(root / "pre-kernel-asof" / "operations.json.gz")
-    capture["scenarios"].update(asof["scenarios"])
-    return capture
+    return load_frozen_operations_capture(root)
 
 
 def test_capture_reuses_decoded_fixture() -> None:
@@ -1393,11 +1396,11 @@ def test_line7_registry_matches_frozen_artifact_inventory() -> None:
 
     frozen = _artifact_outcomes()
     assert _LINE7_PAIRS == {(scenario_id, "from_unit_day_artifact") for scenario_id in frozen}
-    assert len(frozen) == 112
+    assert len(frozen) == 120
     assert {
         kind: sum(outcome["kind"] == kind for outcome in frozen.values())
         for kind in ("cells", "refusal", "absent")
-    } == {"cells": 93, "refusal": 11, "absent": 8}
+    } == {"cells": 101, "refusal": 11, "absent": 8}
 
 
 def _offset_payload(cell: Mapping[str, Any], fraction: float) -> dict[str, Any]:
@@ -1442,7 +1445,7 @@ def test_line1_registration_inventory_matches_frozen_capture() -> None:
         )
         for kind in ("cells", "refusal", "absent")
     }
-    assert counts == {"cells": 144, "refusal": 19, "absent": 37}
+    assert counts == {"cells": 164, "refusal": 23, "absent": 37}
 
 
 def test_line3_registration_inventory_matches_frozen_capture() -> None:

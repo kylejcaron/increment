@@ -1988,6 +1988,26 @@ PARITY_DECLARATIONS = MappingProxyType(
 _merged_declarations = dict(PARITY_DECLARATIONS)
 _merged_declarations.update(
     {
+        f"lift_prior_relative_{family}_mean_ratio_conversion_cuped": PARITY_DECLARATIONS[
+            f"lift_prior_{family}_mean_ratio_conversion_cuped"
+        ]
+        for family in ("normal", "student_t", "mixture")
+    }
+)
+_merged_declarations.update(
+    {
+        f"relative_prior_{case_id}": PARITY_DECLARATIONS[case_id]
+        for case_id in (
+            "breakout_store_dimension",
+            "audit-retention-breakout-cohorts",
+            "quantile_tied_rounded_outcomes",
+            "triggered_daily_lift",
+            "triggered_asof_lift",
+        )
+    }
+)
+_merged_declarations.update(
+    {
         "audit-retention-breakout-cohorts-single-segment": PARITY_DECLARATIONS[
             "audit-retention-breakout-cohorts"
         ],

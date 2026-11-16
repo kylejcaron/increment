@@ -76,10 +76,10 @@ def _capability_families(case: ParityCase, outcome: dict) -> frozenset[tuple[str
 def test_pr_parity_cases_cover_every_constructor_and_capability_family():
     from pathlib import Path
 
-    from scripts.capture_evidence_identity import load_operations_capture
+    from scripts.capture_evidence_identity import load_frozen_operations_capture
 
-    capture = Path(__file__).parent / "fixtures" / "evidence_identity" / "pre-kernel"
-    captured = load_operations_capture(capture / "operations.json.gz")["scenarios"]
+    capture = Path(__file__).parent / "fixtures" / "evidence_identity"
+    captured = load_frozen_operations_capture(capture)["scenarios"]
 
     def pairs(cases):
         return {

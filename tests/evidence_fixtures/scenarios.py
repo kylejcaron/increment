@@ -552,22 +552,18 @@ def _source_inputs(
 
 @cache
 def _frozen_dispositions() -> Mapping[tuple[str, str], Mapping[str, Any]]:
-    from scripts.capture_evidence_identity import load_operations_capture
+    from scripts.capture_evidence_identity import load_frozen_operations_capture
 
     root = Path(__file__).parents[1] / "fixtures" / "evidence_identity"
+    capture = load_frozen_operations_capture(root)
     outcomes = {}
-    for name in ("pre-kernel", "pre-kernel-asof"):
-        capture = load_operations_capture(root / name / "operations.json.gz")
-        for scenario_id, ingresses in capture["scenarios"].items():
-            for ingress, outcome in ingresses.items():
-                coordinate = (scenario_id, ingress)
-                if coordinate in outcomes:
-                    raise ValueError(f"duplicate frozen scenario coordinate: {coordinate}")
-                outcomes[coordinate] = {
-                    key: outcome[key]
-                    for key in ("kind", "code", "stage", "context", "reason")
-                    if key in outcome
-                }
+    for scenario_id, ingresses in capture["scenarios"].items():
+        for ingress, outcome in ingresses.items():
+            outcomes[scenario_id, ingress] = {
+                key: outcome[key]
+                for key in ("kind", "code", "stage", "context", "reason")
+                if key in outcome
+            }
     return outcomes
 
 

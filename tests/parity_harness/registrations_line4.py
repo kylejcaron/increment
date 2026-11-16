@@ -21,6 +21,8 @@ _LINE4_SCENARIOS = (
     "sequential_composed_itt_and_uptake",
     "triggered_asof",
     "triggered_asof_lift",
+    "relative_prior_triggered_daily_lift",
+    "relative_prior_triggered_asof_lift",
 )
 _LINE4_INGRESSES = ("from_definitions", "from_moments", "from_unit_panel", "from_unit_summary")
 LINE4_PAIRS = frozenset(

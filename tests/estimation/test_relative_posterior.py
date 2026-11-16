@@ -17,11 +17,17 @@ import sys
 from fractions import Fraction
 from typing import cast
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 from scipy.integrate import quad
+from scipy.stats import binomtest
 
 from increment.errors import InvalidRequestError
+from increment.estimation._relative_conjugate import (
+    RelativeMixturePosterior,
+    RelativeNormalPosterior,
+)
 from increment.estimation._relative_posterior import (
     RelativeStudentTPosterior,
     RelativeStudentTState,
@@ -29,7 +35,8 @@ from increment.estimation._relative_posterior import (
     _stationary_partition,
     _turning_intervals,
 )
-from increment.estimation.priors import StudentTPrior
+from increment.estimation.inference import normal_posterior
+from increment.estimation.priors import MixturePrior, Normal, StudentTPrior, mixture_posterior
 
 
 def posterior(x=0.2, s=0.1, nu=4.0, a=0.1):
@@ -437,3 +444,113 @@ def test_student_t_query_domain_and_endpoints():
     ):
         with pytest.raises(InvalidRequestError):
             call()
+
+
+@pytest.mark.slow
+@pytest.mark.parameter_recovery
+@pytest.mark.parametrize("family", ("normal", "mixture", "student_t_1", "student_t_4"))
+def test_relative_working_model_pit_and_central_inclusion(family):
+    """Frozen joint-model protocol; raw-outcome adequacy is a different claim."""
+    families = ("normal", "mixture", "student_t_1", "student_t_4")
+    stream = np.random.SeedSequence(2026111503).spawn(4)[families.index(family)]
+    rng = np.random.default_rng(stream)
+    n, s = 2048, 0.1
+    if family == "normal":
+        truth = rng.normal(0.0, 0.1, n)
+    elif family == "mixture":
+        component = rng.choice(2, n, p=[0.8, 0.2])
+        truth = rng.normal(np.array([0.0, 0.2])[component], np.array([0.05, 0.15])[component])
+    else:
+        truth = 0.1 * rng.standard_t(1.0 if family == "student_t_1" else 4.0, n)
+    observations = truth + s * rng.standard_normal(n)
+    pits = []
+    for r, x in zip(truth, observations, strict=True):
+        if family == "normal":
+            law = RelativeNormalPosterior(
+                normal_posterior(float(x), s, prior=Normal(mu=0.0, sigma=0.1))
+            )
+        elif family == "mixture":
+            law = RelativeMixturePosterior(
+                mixture_posterior(
+                    float(x),
+                    s,
+                    MixturePrior(weights=(0.8, 0.2), means=(0.0, 0.2), sigmas=(0.05, 0.15)),
+                )
+            )
+        else:
+            law = posterior(float(x), s, 1.0 if family == "student_t_1" else 4.0, 0.1)
+        pits.append(law.cdf(float(r)))
+    values = np.asarray(pits)
+    assert np.all(np.isfinite(values)) and np.all((values >= 0) & (values <= 1))
+    ordered = np.sort(values)
+    distance = max(
+        np.max(np.arange(1, n + 1) / n - ordered),
+        np.max(ordered - np.arange(n) / n),
+    )
+    alpha_cell = 0.005 / 4
+    bound = math.sqrt(math.log(2 / alpha_cell) / (2 * n))
+    covered = int(np.count_nonzero((values >= 0.025) & (values <= 0.975)))
+    inclusion = binomtest(covered, n, p=0.95)
+    interval = inclusion.proportion_ci(confidence_level=1 - alpha_cell, method="exact")
+    print(
+        json.dumps(
+            {
+                "study": "relative_working_model",
+                "family": family,
+                "seed": 2026111503,
+                "seed_spawn_key": stream.spawn_key,
+                "attempted": n,
+                "evaluated": len(values),
+                "pit_distance": float(distance),
+                "simultaneous_dkw_bound": bound,
+                "central_inclusion_count": covered,
+                "central_inclusion_interval": [interval.low, interval.high],
+                "exact_inclusion_pvalue": inclusion.pvalue,
+            },
+            sort_keys=True,
+            allow_nan=False,
+        )
+    )
+    assert distance <= bound
+    assert inclusion.pvalue >= alpha_cell
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+@pytest.mark.parametrize("x,s,nu,a", [(0.2, 0.1, 4, 0.1), (1.0, 0.2, 1, 0.01), (-0.3, 0.07, 2, 3)])
+@pytest.mark.parametrize("unit_scale", [1e-120, 1e120])
+def test_relative_student_t_retains_density_and_loss_accuracy_across_units(x, s, nu, a, unit_scale):
+    """Independent direct-density integration, not the latent production representation."""
+
+    def kernel(z):
+        r = x + s * z
+        return math.exp(-z * z / 2) * (1 + r * r / (nu * a * a)) ** (-(nu + 1) / 2)
+
+    def integral(lower, upper, *, positive=False, negative=False):
+        def integrand(z):
+            r = x + s * z
+            value = max(r, 0) if positive else max(-r, 0) if negative else 1.0
+            return value * kernel(z)
+
+        splits = sorted({lower, upper, min(upper, max(lower, -x / s))})
+        return math.fsum(
+            quad(integrand, left, right, epsabs=1e-25, epsrel=2e-12)[0]
+            for left, right in zip(splits[:-1], splits[1:], strict=True)
+        )
+
+    normalizer = integral(-math.inf, math.inf)
+    law = posterior(x * unit_scale, s * unit_scale, nu, a * unit_scale)
+    assert law.cdf(0) == pytest.approx(integral(-math.inf, -x / s) / normalizer, abs=1e-10)
+    threshold = x + 6 * s
+    tail = integral(6, math.inf) / normalizer
+    assert law.survival(threshold * unit_scale) == pytest.approx(tail, rel=1e-6, abs=0)
+    for positive in (False, True):
+        expected = (
+            integral(-math.inf, math.inf, positive=positive, negative=not positive) / normalizer
+        )
+        actual = (
+            law.expected_positive_part(scale="linear")
+            if positive
+            else law.expected_negative_part(scale="linear")
+        )
+        assert actual == pytest.approx(expected * unit_scale, abs=1e-10, rel=1e-6)

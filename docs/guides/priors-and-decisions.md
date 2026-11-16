@@ -112,7 +112,14 @@ From a source checkout, reproduce the frozen raw-outcome diagnostics with
 The runner preserves both historical registrations, seeds, excluded
 populations and diagnostic flags while evaluating the production relative
 Normal posterior. The separate slow working-model tests report their PIT
-distance, inclusion count, exact interval and p-value when run with `-s`.
+distance, inclusion count, exact interval and p-value with:
+
+```bash
+make test TESTS=tests/estimation/test_relative_posterior.py \
+  PYTEST_XDIST_ARGS= PYTEST_ARGS=-s
+```
+
+This runs without parallel workers so successful-test reports remain visible.
 
 ## Historical evidence: predict the next true effect
 

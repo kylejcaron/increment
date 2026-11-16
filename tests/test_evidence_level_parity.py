@@ -2890,16 +2890,22 @@ def _breakout_scope_request(receipt, configuration, context):
     assert request["source_name"] == source_name
     assert request["analysis_population"] == configuration["population"]
     assert _plain(request["estimands"]) == configuration["estimands"]
+    source_metrics = {metric.name for metric in context.metrics}
+    effective_configs = tuple(
+        _decode_config(value)
+        for value in configuration["context"]["configs"]
+        if value["metric"]["name"] in source_metrics
+    )
     _assert_input_value(
         request["configs"],
         [
             _snapshot_config(config, context.design)
-            for config in sorted(context.configs, key=lambda value: value.metric.name)
+            for config in sorted(effective_configs, key=lambda value: value.metric.name)
         ],
     )
     assert request["metrics"] == [
         config.metric.model_dump(mode="json")
-        for config in sorted(context.configs, key=lambda value: value.metric.name)
+        for config in sorted(effective_configs, key=lambda value: value.metric.name)
     ]
     policy = context.plan.view_policies.for_view(
         "breakout",
