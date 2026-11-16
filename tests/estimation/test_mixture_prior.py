@@ -192,6 +192,25 @@ def test_log_positive_part_keeps_cancelled_exponent_bits(as_mixture):
 
 
 class TestMixturePosterior:
+    @pytest.mark.parametrize("scale", ["linear", "log"])
+    @pytest.mark.parametrize("positive", [False, True], ids=["negative-part", "positive-part"])
+    def test_integer_components_preserve_fractional_partial_expectations(self, scale, positive):
+        from scipy.integrate import quad
+        from scipy.stats import norm
+
+        posterior = MixturePosterior(
+            weights=np.array([1.0]), means=np.array([0]), sigmas=np.array([1])
+        )
+        method = posterior.expected_positive_part if positive else posterior.expected_negative_part
+        direction = 1.0 if positive else -1.0
+        reference = quad(
+            lambda x: direction * (x if scale == "linear" else math.expm1(x)) * norm.pdf(x),
+            *(0.0, 12.0) if positive else (-12.0, 0.0),
+            epsabs=1e-13,
+            epsrel=1e-12,
+        )[0]
+        assert method(scale=scale) == pytest.approx(reference, abs=1e-10, rel=1e-6)
+
     def test_satisfies_lift_posterior_protocol(self):
         from increment.estimation.inference import LiftPosterior
 

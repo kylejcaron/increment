@@ -89,6 +89,8 @@ def _normal_expected_part(
     """Evaluate Normal partial expectations before mixing component losses."""
     from scipy.special import erfcx, log_ndtr, ndtr
 
+    means = np.asarray(means, dtype=float)
+    sigmas = np.asarray(sigmas, dtype=float)
     with np.errstate(over="ignore", divide="ignore"):
         z = means / sigmas
         log_density = -0.5 * z * z - 0.5 * math.log(2.0 * math.pi)
