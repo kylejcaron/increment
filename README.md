@@ -52,7 +52,7 @@ from random import Random
 
 import polars as pl
 
-from increment import from_frame, run
+import increment
 
 # Simulated data: treatment raises revenue and conversion by 8%.
 rng = Random(7)
@@ -68,7 +68,7 @@ df = pl.DataFrame(
     }
 )
 
-experiment, reader = from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
@@ -76,7 +76,7 @@ experiment, reader = from_frame(
     control="control",
     metrics=["revenue", "converted"],
 )
-result = run(experiment, reader)
+result = increment.run(experiment, reader)
 print(result.readout())
 ```
 
@@ -87,9 +87,9 @@ python -m pip install --pre "increment[tables]"
 ```
 
 ```python
-from increment.tables import readout_table
+import increment.tables
 
-readout_table(result, title="Revenue and conversion")
+increment.tables.readout_table(result, title="Revenue and conversion")
 ```
 
 
@@ -99,7 +99,7 @@ zero. Two thousand users are too few to detect an 8% change in a 10%
 conversion rate; [power analysis](https://getincrement.io/docs/guides/power-analysis/)
 tells you how many you need.
 
-- `from_frame` describes the experiment: the column that identifies users
+- `increment.from_frame` describes the experiment: the column that identifies users
   (`unit`), the column that holds the variant (`group`), the control variant,
   and the metrics. `shape="summary"` means one row per user; use
   `shape="panel"` for one row per user per day; include every assigned unit at
@@ -110,9 +110,10 @@ tells you how many you need.
   explicitly before inspecting results, for example
   `metrics={"converted": "conversion"}`. Integer columns also need an explicit
   type because they may represent either a count or a binary outcome.
-- `from_frame` also returns a reader, which reads your data when `run` needs
-  it. `run(experiment, reader)` analyzes the experiment. `result.readout()`
-  lists the estimates; `result.to_frame()` returns them as a dataframe.
+- `increment.from_frame` also returns a reader, which reads your data when
+  `increment.run` needs it. `increment.run(experiment, reader)` analyzes the
+  experiment. `result.readout()` lists the estimates; `result.to_frame()`
+  returns them as a dataframe.
 - The closing lines name checks that did not run. Here, Increment could not
   test for a sample ratio mismatch (SRM: a traffic split different from the
   plan) because the example did not state the planned split.
@@ -136,12 +137,14 @@ python -m pip install --pre "increment[warehouse]" "ibis-framework[snowflake]"
 
 ```python
 import ibis
-from increment import from_definitions, run
+import increment
 
 con = ibis.snowflake.connect(...)
-experiment, reader = from_definitions("definitions/", con, experiment_name="checkout_redesign")
+experiment, reader = increment.from_definitions(
+    "definitions/", con, experiment_name="checkout_redesign"
+)
 with reader:
-    result = run(experiment, reader)
+    result = increment.run(experiment, reader)
 print(result.readout())
 ```
 
