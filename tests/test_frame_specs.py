@@ -1833,3 +1833,17 @@ def test_summary_unit_frame_preserves_mixed_covariate_values_and_nulls():
     assert rows["u1"]["country"] == "7"
     assert table.schema.field("country").type == pa.string()
     assert set(rows) == {"u1", "u2", "u3", "u4"}
+
+
+@pytest.mark.parametrize(
+    "payload,code",
+    [
+        ({"type": "relative_lift", "mu": 0.0, "sigma": 0.1}, "model.field.missing"),
+        ({"type": "unknown", "mu": 0.0, "sigma": 0.1}, "model.field.literal"),
+        ({"distribution": {"type": "normal", "mu": 0.0, "sigma": 0.1}}, "model.field.missing"),
+    ],
+)
+def test_metric_spec_malformed_relative_prior_refuses_without_legacy_fallback(payload, code):
+    with pytest.raises(InvalidRequestError) as caught:
+        MetricSpec.model_validate({"name": "revenue", "prior": payload})
+    assert caught.value.code == code
