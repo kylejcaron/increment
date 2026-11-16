@@ -71,7 +71,7 @@ warehouse = [
     "pandas>=3.0.5,<3.1",
     # These SQLGlot releases generate malformed SQL for Ibis 12's DuckDB cleanup.
     # Reassess these SDK-incompatible releases when a stable Ibis fix is published.
-    "sqlglot>=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0,!=30.29.0,!=30.30.0,!=30.31.0",
+    "sqlglot>=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0,!=30.29.0,!=30.30.0,!=30.31.0,!=30.32.0",
 ]
 demo   = [
     "increment[warehouse]",

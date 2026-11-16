@@ -222,6 +222,8 @@ values.
 - Unclustered triggered analyses accept a custom provider's declared unit counts
   when assignment counts are unavailable. Clustered analyses still require counts
   at the randomization grain.
+- Fresh warehouse and demo installations exclude SQLGlot 30.32.0, which produces
+  invalid SQL when Ibis creates a DuckDB table from Arrow data.
 - Unavailable CUPED results contribute their fit identity and structured reason
   to readout snapshot identity. Changing that evidence no longer reuses an
   identity; valid comparison-method estimates are unchanged.
