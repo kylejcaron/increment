@@ -866,6 +866,61 @@ def test_estimates_to_readout_qualifies_only_stored_posterior_values():
     assert "risk_if_shipped" not in row
 
 
+def test_legacy_unrepresentable_loss_preserves_independent_table_queries():
+    import json
+    import math
+
+    from increment.estimation.inference import infer_lift
+    from increment.estimation.priors import Normal
+
+    row = infer_lift(
+        metric="legacy",
+        group_id="T",
+        method="unadjusted",
+        method_role="decision",
+        log_rr=709.75,
+        se_t=0.28,
+        se_c=0.28,
+        alpha=0.99,
+        prior=Normal(mu=709.75, sigma=100),
+        preferred_direction="decrease",
+    )
+    assert row.risk_if_shipped_favorable() == math.inf
+    assert all(
+        value is not None and math.isfinite(value)
+        for value in (
+            row.posterior_estimate,
+            row.posterior_lb,
+            row.posterior_ub,
+        )
+    )
+    saved = row.model_dump_json()
+    sibling = _valid_estimate(
+        metric="sibling", prior=Normal(mu=0, sigma=0.1), preferred_direction="increase"
+    )
+    projected, other = estimates_to_readout([row, sibling])
+    assert projected["lift"] == row.require_lift().value
+    assert projected["posterior_available"] is True
+    assert projected["posterior_chance_to_beat"] == row.chance_to_beat_favorable()
+    assert projected["posterior_risk_if_shipped"] is None
+    assert projected["posterior_risk_if_shipped_reason_code"] == (
+        "estimation.posterior.numerical_unavailable"
+    )
+    assert projected["posterior_risk_if_shipped_reason_context"] == {
+        "operation": "risk_if_shipped_favorable",
+        "reason": "result_unrepresentable",
+    }
+    encoded = projected["posterior_queries"]
+    assert isinstance(encoded, str)
+    successful, unavailable = json.loads(encoded)
+    assert successful["value"] == projected["posterior_chance_to_beat"]
+    assert successful["code"] is None
+    assert unavailable["value"] is None
+    assert unavailable["context"] == projected["posterior_risk_if_shipped_reason_context"]
+    assert other["posterior_risk_if_shipped"] == sibling.risk_if_shipped_favorable()
+    assert row.model_dump_json() == saved
+
+
 def test_readout_uses_stored_posterior_for_clustered_and_binomial_rows():
     from increment.estimation.engine import Method
     from increment.estimation.inference import Normal

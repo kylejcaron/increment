@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 from typing import Literal, Protocol, cast
 
@@ -9,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 
 from increment._immutable import _FrozenMapping
 from increment._literals import PreferredDirection
-from increment.estimation._relative_posterior import _PosteriorNumericalError
+from increment.estimation._relative_posterior import _PosteriorNumericalError, _unavailable
 from increment.estimation.priors import LiftPosterior
 from increment.semantics.models import favorable_alternative
 
@@ -121,6 +122,8 @@ def _project_posterior_query(
             if not isinstance(probability, (int, float)) or isinstance(probability, bool):
                 raise ValueError("Posterior quantile probability must be numeric")
             value = None if posterior is None else posterior.quantile(probability)
+        if value is not None and not math.isfinite(value):
+            _unavailable(operation, "result_unrepresentable", **parameters)
     except _PosteriorNumericalError as error:
         return _PosteriorQueryProjection(
             value=None,
