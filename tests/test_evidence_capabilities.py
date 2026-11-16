@@ -1922,12 +1922,17 @@ def test_legacy_native_operations_preserve_clustered_temporal_refusals(tmp_path)
         connection.disconnect()
 
 
+@pytest.mark.parametrize(
+    ("grain", "value_view"), (("daily", True), ("asof", True), ("asof", False))
+)
 @pytest.mark.integration
-def test_asof_metric_objects_do_not_require_exploratory_sibling_support(tmp_path):
+def test_day_axis_metric_objects_do_not_require_exploratory_sibling_support(
+    tmp_path, grain, value_view
+):
     from dataclasses import replace
 
-    from increment import Experiment, run
-    from increment.results import DailyMetricValue
+    from increment import Experiment, run, runnable
+    from increment.results import DailyLiftEstimate, DailyMetricValue
     from tests.analysis_factory import replace_bound_source
     from tests.source_conformance import definitions_source
 
@@ -1957,7 +1962,7 @@ def test_asof_metric_objects_do_not_require_exploratory_sibling_support(tmp_path
             return self.source.day_source(*args, **kwargs)
 
         def exploratory_source(self, *args, **kwargs):
-            raise AssertionError("as-of selection must not create an exploratory sibling")
+            raise AssertionError("temporal selection must not create an exploratory sibling")
 
     try:
         provider = TypedMomentsProvider(source)
@@ -1966,19 +1971,34 @@ def test_asof_metric_objects_do_not_require_exploratory_sibling_support(tmp_path
             experiment,
             source_refs=(replace(experiment.source_refs[0], capabilities=provider.evidence),),
         )
-        experiment = Experiment.from_json(experiment.to_json())
         added = source.context.metrics[0].model_copy(update={"name": "ad_hoc_revenue"})
-        scope = View(view="asof", grain="asof", values=True)
-        rows = run(experiment.with_views(scope), resolver, views=(scope,), metrics=[added]).readout(
-            scope
+        scope = View(view=grain, grain=grain, values=value_view)
+        experiment = replace(
+            experiment,
+            views=(scope,),
+            request_options={
+                **dict(experiment.request_options),
+                "metrics": [added.model_dump(mode="json")],
+            },
         )
+        experiment = Experiment.from_json(experiment.to_json())
+        rows = run(experiment, resolver, views=(scope,)).readout(scope)
+        assert runnable(experiment, added)["randomized.unadjusted"].static_refusals == ()
         assert {row.metric for row in rows} == {"ad_hoc_revenue"}
-        values = {
-            row.group_id: row.value.value
-            for row in rows
-            if isinstance(row, DailyMetricValue) and row.value is not None
-        }
-        assert values == pytest.approx({"control": 1.5, "treatment": 4.5})
+        if value_view:
+            values = {
+                row.group_id: row.value.value
+                for row in rows
+                if isinstance(row, DailyMetricValue) and row.value is not None
+            }
+            assert values == pytest.approx({"control": 1.5, "treatment": 4.5})
+        else:
+            row = max(
+                (row for row in rows if isinstance(row, DailyLiftEstimate)),
+                key=lambda row: str(row.ds),
+            )
+            assert row.lift is not None
+            assert row.lift.value == pytest.approx(2.0)
     finally:
         replace_bound_source(resolver, source)
         resolver.close()

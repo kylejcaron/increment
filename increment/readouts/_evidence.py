@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+from increment._analysis_config import overlay_configs, resolve_configs
 from increment._evidence_loaders import day_axis_grains as _declared_day_axis_grains
 from increment._evidence_loaders import (
     load_moments,
@@ -80,6 +81,7 @@ from increment._source_types import (
     EvidenceProvider,
     _BuiltinMomentSource,
     compliance_summary_series,
+    declared_day_axis_metric_objects_supported,
     declared_evidence,
     effective_capabilities,
     is_builtin_source,
@@ -694,8 +696,7 @@ def day_axis_requires_preflight(
 
 def day_axis_metric_objects_supported(source: EvidenceSource) -> bool:
     """Whether day-axis requests can select undeclared metric definitions."""
-    operations = declared_evidence(source).operations
-    return "moments_source" in operations and "artifact_experiment" not in operations
+    return declared_day_axis_metric_objects_supported(declared_evidence(source))
 
 
 def load_missing_value_account(src: EvidenceSource, metric: Any) -> MissingValueAccount | None:
@@ -1709,11 +1710,13 @@ def _validate_daily_readout(src: EvidenceSource, req: DayAxisRequest, metric: An
         return
     from increment._readout_request import ReadoutRequest, validate_request
 
-    configs = {config.metric.name: config for config in src.context.configs}
+    config = next((item for item in src.context.configs if item.metric.name == metric.name), None)
+    if config is None:
+        (config,) = resolve_configs((metric,), None, None, methods=None, prior=None)
     readout_request = ReadoutRequest.from_source(
         src,
         metrics=(metric,),
-        configs=(configs[metric.name],),
+        configs=(config,),
         view="daily",
         grain="daily",
         by=req.by,
@@ -2140,7 +2143,6 @@ def load_breakout_method_moments(
         )
     method_source = _builtin_source(src)
     if callable(getattr(src, "breakout_source", None)):
-        from increment._analysis_config import overlay_configs
         from increment.semantics.models import Breakout
 
         configs = overlay_configs(

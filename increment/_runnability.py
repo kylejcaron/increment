@@ -15,6 +15,7 @@ from increment._analysis_config import (
     effective_methods,
     normalize_display_correction,
     overlay_configs,
+    resolve_configs,
     select_metrics,
 )
 from increment._canonical import declaration_value
@@ -24,7 +25,11 @@ from increment._evidence_types import SourceContext
 from increment._metric_specs import validate_windowed_quantile_support
 from increment._readout_request import ReadoutRequest, validate_request
 from increment._readout_request import _raise as _raise_readout
-from increment._source_types import EvidenceCapabilities, effective_capabilities
+from increment._source_types import (
+    EvidenceCapabilities,
+    declared_day_axis_metric_objects_supported,
+    effective_capabilities,
+)
 from increment.decision import (
     CompiledDecisionPlan,
     margin_less_guardrail_route,
@@ -32,6 +37,7 @@ from increment.decision import (
 )
 from increment.declarations import VARIANCE_REDUCTION, estimator_refs, thaw
 from increment.errors import CapabilityError, CodedError, InvalidRequestError, RefusalSpec, refuse
+from increment.plan import with_unassigned_procedures
 from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
 
 if TYPE_CHECKING:
@@ -498,16 +504,31 @@ def _request_config(
     estimator_id: str,
     operation: str,
     metric_name: str,
+    *,
+    capabilities: EvidenceCapabilities,
 ) -> tuple[dict[str, Any], tuple[ResolvedMetricConfig, ...], tuple[ResolvedMetricConfig, ...]]:
     values = typed_request_options(options)
     base = _CONFIGS.validate_python(declaration["configs"])
     metrics = select_metrics(
-        tuple(config.metric for config in base), values.get("metrics"), caller=operation
+        tuple(config.metric for config in base),
+        values.get("metrics"),
+        caller=operation,
+        allow_undeclared_objects=(
+            operation in {"run_daily", "run_daily_lift", "run_asof", "run_asof_lift"}
+            and declared_day_axis_metric_objects_supported(capabilities)
+        ),
     )
     overrides = {} if operation in _VALUE_OPERATIONS else values
+    base_names = {config.metric.name for config in base}
+    missing = tuple(metric for metric in metrics if metric.name not in base_names)
+    request_base = (
+        (*base, *resolve_configs(missing, None, None, methods=None, prior=None))
+        if missing
+        else base
+    )
     configs = overlay_configs(
         metrics,
-        base,
+        request_base,
         methods=None,
         prior=None,
         decision_method=overrides.get("decision_method", UNSET),
@@ -622,11 +643,23 @@ def readout_refusals(
     decoded_design = parse_design(declaration_value(design))
     try:
         options, base_configs, configs = _request_config(
-            declaration, options, decoded_design, estimator_id, operation, metric_name
+            declaration,
+            options,
+            decoded_design,
+            estimator_id,
+            operation,
+            metric_name,
+            capabilities=capabilities,
         )
+        plan = CompiledDecisionPlan.model_validate(dict(declaration["plan"]))
+        if scope.view in {"daily", "asof"} and declared_day_axis_metric_objects_supported(
+            capabilities
+        ):
+            plan = with_unassigned_procedures(
+                plan, tuple(config.metric for config in configs), design=None
+            )
     except CodedError as refusal:
         return (refusal,)
-    plan = CompiledDecisionPlan.model_validate(dict(declaration["plan"]))
     context = SourceContext(
         study_id=declaration["study_id"],
         design=decoded_design,

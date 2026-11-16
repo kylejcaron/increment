@@ -257,6 +257,12 @@ def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
     )
 
 
+def declared_day_axis_metric_objects_supported(evidence: EvidenceCapabilities) -> bool:
+    """Whether the declaration permits direct metric definitions on day axes."""
+    operations = evidence.operations
+    return "moments_source" in operations and "artifact_experiment" not in operations
+
+
 MOMENTS_BATCH_OWNERS: dict[
     type, Callable[[Any, Sequence[MomentsRequest]], tuple[MomentRows | None, ...]]
 ] = {}

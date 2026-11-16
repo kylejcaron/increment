@@ -163,9 +163,10 @@ values.
 - Clustered daily/as-of requests honor custom-provider support declarations
   even when cluster metadata is supplied without an experiment definition.
   Older declarations retain their existing early refusals.
-- An as-of metric definition no longer requires `exploratory_source` when the
-  provider can answer it directly through its moments operation.
-  `exploratory_metrics=` still requires its own declared support.
+- Saved daily/as-of metric definitions now agree between `runnable()` and
+  execution. Providers can answer these requests through their moments operation
+  without creating an exploratory sibling; `exploratory_metrics=` still requires
+  separately declared support.
 - `View.breakout(segment, *, population="assigned", metrics=())` accepts an
   optional tuple of registered metric definitions. An empty tuple selects the
   experiment's metrics. Save or log a selective breakout alongside the complete

@@ -79,6 +79,9 @@ Native moments declarations accept undeclared metric definitions through
 `metrics=` on day-axis views without creating an exploratory sibling.
 `exploratory_metrics=` still requires separately declared `exploratory_source`
 support. Dimensioned daily selection still follows `dimensioned_daily_metrics`.
+Saved daily/as-of requests use the same selection rule in `runnable()`. Requested
+metric configurations are resolved even if the provider retains its original
+`SourceContext`.
 
 For scalar multicovariate CUPED, distinguish a missing fit from a failed one.
 An unavailable `MethodFitAnswer` without a failure may be fit from `unit_rows`

@@ -1965,6 +1965,7 @@ depends_on = [
   "increment._evidence_loaders",
   "increment._metric_specs",
   "increment._source_types", "increment._window", "increment.decision", "increment.kernel.contracts",
+  "increment.plan",
   "increment.declarations", "increment.errors", "increment.query.artifact_ports", "increment.readouts", "increment.semantics",
   "increment.sequential_source", "increment.readouts._whole_window", "increment.estimation.inference", "increment.estimation._readout_refusals", "increment.estimation.engine",
 ]
