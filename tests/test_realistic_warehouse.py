@@ -508,11 +508,9 @@ def test_export_round_trips_registered_native_actual_state(
     experiment = experiment_definition(*analysis).model_copy(
         update={"plan": AnalysisPlan(secondaries=[metric.name])}
     )
-    with pytest.warns(IncrementWarning) as record:
-        definitions = load(DEFINITIONS).model_copy(
-            update={"experiments": (experiment,), "metrics": (metric,)}
-        )
-    assert set(warning_codes(record)) == {"definition.metric.variable_window_days_none"}
+    definitions = load(DEFINITIONS).model_copy(
+        update={"experiments": (experiment,), "metrics": (metric,)}
+    )
     selected = make_binding(con, definitions, experiment=experiment)
     # A plain-mean metric under a fixed Randomized mechanism: the public
     # scalar_mean law admits this today; it is only

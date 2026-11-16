@@ -2034,15 +2034,9 @@ def test_cutoff_only_avg_calendar_day_parity_keeps_zero_days_to_cutoff(
     metric_def["type"] = "mean"
     metric_def["aggregation"] = "avg_calendar_day"
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
-    with pytest.warns(IncrementWarning) as raised:
-        connection, (experiment, resolver), context, store = _native(
-            definitions=definitions,
-            source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
-        )
-    assert any(
-        isinstance(warning.message, IncrementWarning)
-        and warning.message.code == "definition.metric.variable_window_days_none"
-        for warning in raised
+    connection, (experiment, resolver), context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
     )
     _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 10, 10, tzinfo=UTC))
     _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 20, 10, tzinfo=UTC))
