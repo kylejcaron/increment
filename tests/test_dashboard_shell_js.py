@@ -154,3 +154,14 @@ def test_focus_metric_list_stays_usable_at_thirty_metrics():
         [node_path, "--test", str(script)], cwd=root, capture_output=True, text=True
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+
+@pytest.mark.integration
+def test_whole_experiment_series_uses_population_packet_and_restores_breakouts():
+    node_path = _node_or_gate()
+    root = Path(__file__).resolve().parents[1]
+    script = root / "tests/js/dashboard_whole_experiment.test.mjs"
+    result = subprocess.run(
+        [node_path, "--test", str(script)], cwd=root, capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

@@ -167,6 +167,8 @@ def test_dashboard_snapshot_retains_population_specific_headline_and_group_evide
     assert payload["defaultPopulation"] == "triggered"
     assert payload["populationOptions"] == ["assigned", "triggered"]
     assert payload["populationViews"]["triggered"]["population"] == "triggered"
+    triggered_qualifications = payload["populationViews"]["triggered"]["report"]["qualifications"]
+    assert "inc-dashboard-status--warn" not in triggered_qualifications.split("<details", 1)[0]
     assert payload["populationViews"]["assigned"]["population"] == "assigned"
     assert (
         payload["populationViews"]["triggered"]["readoutCsv"]

@@ -1639,7 +1639,7 @@ def from_switchback_panel(  # noqa: PLR0915
                 if mechanism_rejected
                 else (
                     "declare more blocks, or a probability_ct closer to 0.5, so both cycle "
-                    "orders are likely to occur -- the realized order is known before launch, "
+                    "orders are likely to occur; the realized order is known before launch, "
                     "so this can be checked before collecting outcomes"
                 )
             ),

@@ -105,17 +105,17 @@ from increment.estimation._score_design import PsiFn, ScoreDesign
 # split (see `_holdout_mask`) and does not implement that reduction.
 _SINGLE_SPLIT_CAVEAT = (
     "every number here is read off one deterministic train/holdout split "
-    "(crc32 content hash of the assignment identity -- cluster ids when "
+    "(crc32 content hash of the assignment identity: cluster ids when "
     "supplied, otherwise unit ids); CDDF (2018) medians GATES/CLAN/rank "
-    "numbers over many splits for stability, which this module does not do "
-    "-- a different split can move the group effects, CLAN profile, and "
+    "numbers over many splits for stability, which this module does not do"
+    "; a different split can move the group effects, CLAN profile, and "
     "rank tests, though not the honest-split guarantee itself."
 )
 
 _SEEDED_STRATIFIED_SPLIT_CAVEAT = (
     "every number here is read off one seeded, treatment-stratified outer "
     "train/holdout split; CDDF (2018) medians GATES/CLAN/rank numbers over "
-    "many splits for stability, which this module does not do -- a different "
+    "many splits for stability, which this module does not do; a different "
     "seed can move the group effects, CLAN profile, and rank tests, though not "
     "the honest-split guarantee itself."
 )
@@ -2664,12 +2664,12 @@ _REFUSALS = refusals(
         "estimation.targeting.cluster_count_bounds": "n_clusters ({n_clusters}) must not exceed n_holdout ({n_holdout})",
         "estimation.targeting.cluster_count_mismatch": "rule n_clusters ({n_clusters}) must equal validation.n_clusters ({validation_n_clusters})",
         "estimation.targeting.cluster_grain_count_required": "cluster-grain policies require a non-null n_clusters",
-        "estimation.targeting.unit_ids_string": "unit_ids must be string-typed for a stable split, got dtype {unit_ids!r} -- cast to str before calling (e.g. unit_frame's own unit_id column, which is already String-typed)",
-        "estimation.targeting.cluster_ids_string": "cluster_ids must be string-typed for a stable split, got dtype {cluster_ids!r} -- cast to str before calling",
+        "estimation.targeting.unit_ids_string": "unit_ids must be string-typed for a stable split, got dtype {unit_ids!r}; cast to str before calling (e.g. unit_frame's own unit_id column, which is already String-typed)",
+        "estimation.targeting.cluster_ids_string": "cluster_ids must be string-typed for a stable split, got dtype {cluster_ids!r}; cast to str before calling",
         "estimation.targeting.outcome_shape": "outcome y must be 1-d, got shape {y}",
         "estimation.targeting.treatment_shape_expected": "treatment d has shape {d}, expected {y} to match y",
         "estimation.targeting.unit_ids_shape": "unit_ids has shape {unit_ids}, expected {y} to match y",
-        "estimation.targeting.unit_ids_contains": "unit_ids contains {count} duplicate id(s), e.g. {dupes!r} -- a duplicated unit can land on both sides of the honest split (or twice on one side), breaking the independence the split relies on; deduplicate before calling",
+        "estimation.targeting.unit_ids_contains": "unit_ids contains {count} duplicate id(s), e.g. {dupes!r}; a duplicated unit can land on both sides of the honest split (or twice on one side), breaking the independence the split relies on; deduplicate before calling",
         "estimation.targeting.n_groups_least": "n_groups must be at least 2 to compare a top group against a bottom one, got {n_groups}",
         "estimation.targeting.covariate_rows_expected": "covariate {cov!r} has {values} rows, expected {y}",
         "estimation.targeting.adjustment_dtype": "{caller} cannot adjust on observational adjustment column {column!r} of dtype {dtype}: an adjustment column is numeric (int/float/bool) or categorical (string); a date, time, nested or mixed-type column carries no adjustment meaning. Derive a numeric or categorical pre-exposure column upstream",
@@ -2678,11 +2678,11 @@ _REFUSALS = refusals(
         "estimation.targeting.cluster_ids_shape": "cluster_ids has shape {cluster_ids}, expected {y} to match y",
         "estimation.targeting.half_split_holds": "the {name} half of the split holds {n_treated} treated and {n_control} control unit(s); an honest split needs at least 2 per arm in each half. Estimate the average effect instead of validating a CATE model",
         "estimation.targeting.targeting_fraction_leaves": "targeting fraction={fraction!r} leaves fewer than 2 held-out units in an arm (treatment={n_treatment}, control={n_control}); increase the pre-committed fraction or supply more validation units",
-        "estimation.targeting.fraction_share_units": "fraction must be in [0, 1] -- the share of units the rule would treat, got {fraction}. It has no default on purpose: picking the cut after seeing the group table biases the reported policy value upward by 60-120%",
-        "estimation.targeting.fractions_non_empty": "fractions must be a non-empty pre-specified grid -- selecting from a grid chosen after seeing results is the bias this function exists to prevent",
+        "estimation.targeting.fraction_share_units": "fraction must be in [0, 1]; the share of units the rule would treat, got {fraction}. It has no default on purpose: picking the cut after seeing the group table biases the reported policy value upward by 60-120%",
+        "estimation.targeting.fractions_non_empty": "fractions must be a non-empty pre-specified grid; selecting from a grid chosen after seeing results is the bias this function exists to prevent",
         "estimation.targeting.every_fraction": "every fraction must be in [0, 1], got {f}",
         "estimation.targeting.fractions_contains_duplicates": "fractions contains duplicates: {fracs}",
-        "estimation.targeting.validation_fold_holds": "validation fold {label} holds {n_treated} treated and {n_control} control unit(s); selection needs at least 2 per arm in every fold -- use fewer folds or estimate the average effect instead",
+        "estimation.targeting.validation_fold_holds": "validation fold {label} holds {n_treated} treated and {n_control} control unit(s); selection needs at least 2 per arm in every fold; use fewer folds or estimate the average effect instead",
         "estimation.targeting.overlap.refuse": RefusalSpec(
             "estimation.targeting.overlap.refuse",
             IdentificationError,

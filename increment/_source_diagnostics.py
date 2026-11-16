@@ -127,7 +127,7 @@ def _srm_binding(
                 "triggered_counts",
                 message=(
                     "srm(population='triggered') needs an experiment built by "
-                    "from_definitions -- a frame, warehouse or moments experiment "
+                    "from_definitions; a frame, warehouse or moments experiment "
                     "retains no raw event stream to narrow to a triggered population."
                 ),
             )

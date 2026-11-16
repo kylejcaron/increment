@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.15"
+__generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 
@@ -112,9 +112,11 @@ def _(mo):
 
 
 @app.cell
-def _(ibis):
+def _(ibis, mo):
     # Instantiate a local warehouse connection.
     con = ibis.duckdb.connect()
+
+    mo.show_code(position="above")
     return (con,)
 
 
@@ -174,7 +176,15 @@ def _(mo, warehouse_manifest):
 
 
 @app.cell
-def _(DEFINITIONS, EXPERIMENT, con, experiment_definition, increment, warehouse_ready):
+def _(
+    DEFINITIONS,
+    EXPERIMENT,
+    con,
+    experiment_definition,
+    increment,
+    mo,
+    warehouse_ready,
+):
     assert (warehouse_ready / "manifest.json").exists(), (
         "warehouse missing; run the generation cell above first"
     )
@@ -182,6 +192,8 @@ def _(DEFINITIONS, EXPERIMENT, con, experiment_definition, increment, warehouse_
         DEFINITIONS, con, experiment_name=EXPERIMENT, store="always"
     )
     definition = experiment_definition(experiment, reader)
+
+    mo.show_code(position="above")
     return definition, experiment, reader
 
 
@@ -220,22 +232,39 @@ def _(definition, mo):
 
 
 @app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Inspecting the SQL
+
+    The public SQL preview shows the warehouse reduction before it
+    runs. Each metric produces the same small per-arm moments shape
+    consumed by the estimator.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
 def _(experiment, mo, reader, summary_sql):
     conversion_sql = summary_sql(experiment, reader)["conversion_rate"]
-    mo.vstack(
-        [
-            mo.md(r"""
-            ## Inspecting the SQL
+    mo.show_code(position="above")
+    return (conversion_sql,)
 
-            The public SQL preview shows the warehouse reduction before it
-            runs. Each metric produces the same small per-arm moments shape
-            consumed by the estimator.
-            """),
-            mo.accordion(
-                {"SQL for the conversion_rate summary": mo.md(f"```sql\n{conversion_sql}\n```")}
-            ),
-        ]
-    )
+
+@app.cell(hide_code=True)
+def _(conversion_sql, mo):
+    mo.accordion({"SQL for the conversion_rate summary": mo.md(f"```sql\n{conversion_sql}\n```")})
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Checking the allocation
+
+    The generator assigns users 50/50. Reaching checkout is independent of
+    treatment in this fixture, so the enrolled population remains valid
+    for a sample-ratio check.
+    """)
     return
 
 
@@ -245,15 +274,16 @@ def _(experiment, mo, reader, srm):
     srm_result = srm(
         experiment, reader, expected={"control": 0.5, "treatment": 0.5}, inference="always_valid"
     )
+
+    mo.show_code(position="above")
+    return (srm_result,)
+
+
+@app.cell(hide_code=True)
+def _(mo, srm_result):
     srm_status = "SRM detected" if srm_result.is_srm else "No SRM detected"
     mo.md(
         f"""
-        ## Checking the allocation
-
-        The generator assigns users 50/50. Reaching checkout is independent of
-        treatment in this fixture, so the enrolled population remains valid
-        for a sample-ratio check.
-
         **{srm_status}.**
 
         | Arm | Enrolled units |
@@ -282,10 +312,18 @@ def _(mo):
 
 
 @app.cell
-def _(experiment, increment, reader):
+def _(experiment, increment, mo, reader):
     # This readout materializes once for all declared metrics.
     estimates = increment.run(experiment, reader).readout()
+
+    mo.show_code(position="above")
     return (estimates,)
+
+
+@app.cell
+def _(estimates, mo):
+    mo.show_code(estimates.to_frame(columns="summary", backend="pandas"), position="above")
+    return
 
 
 @app.cell
@@ -312,7 +350,7 @@ def _(mo):
 
 
 @app.cell
-def _(estimates_to_readout, experiment, increment, reader, readout_table):
+def _(estimates_to_readout, experiment, increment, mo, reader, readout_table):
     # A breakout cannot test a guardrail's margin, so the view reads the metric it shows.
     breakout_scope = increment.View.breakout(())
     breakout_estimates = increment.run(
@@ -333,12 +371,20 @@ def _(estimates_to_readout, experiment, increment, reader, readout_table):
         subtitle="conversion_rate, by country",
         nest_by="segment",
     )
-    breakout_table
+    mo.show_code(breakout_table, position="above")
     return
 
 
 @app.cell
-def _(estimates, estimates_to_readout, experiment, increment, reader, readout_table):
+def _(
+    estimates,
+    estimates_to_readout,
+    experiment,
+    increment,
+    mo,
+    reader,
+    readout_table,
+):
     asof_lift_scope = increment.View.asof()
     daily_estimates = increment.run(
         experiment.with_views(asof_lift_scope),
@@ -353,7 +399,7 @@ def _(estimates, estimates_to_readout, experiment, increment, reader, readout_ta
         subtitle="Daily lift trajectory",
         trend=list(daily_estimates),
     )
-    trend_table
+    mo.show_code(trend_table, position="above")
     return
 
 
@@ -375,14 +421,16 @@ def _(mo):
 
 
 @app.cell
-def _(MOMENTS_PARQUET, experiment, export_moments, pq, reader):
+def _(MOMENTS_PARQUET, experiment, export_moments, mo, pq, reader):
     export_moments(experiment, reader, MOMENTS_PARQUET)
     exported_moments = pq.read_table(MOMENTS_PARQUET).to_pylist()
+
+    mo.show_code(position="above")
     return (exported_moments,)
 
 
 @app.cell
-def _(definition, exported_moments, increment):
+def _(increment):
     moment_metrics = [
         increment.MetricSpec(
             name="conversion_rate",
@@ -418,13 +466,19 @@ def _(definition, exported_moments, increment):
             preferred_direction="decrease",
         ),
     ]
-    _experiment, _reader = increment.from_moments(
+    return (moment_metrics,)
+
+
+@app.cell(hide_code=True)
+def _(definition, exported_moments, increment, mo, moment_metrics):
+    rehydrated_experiment, rehydrated_reader = increment.from_moments(
         exported_moments,
         metrics=moment_metrics,
         control=definition.control_group,
         experiment_id=definition.name,
     )
-    rehydrated_estimates = increment.run(_experiment, _reader).readout()
+    rehydrated_estimates = increment.run(rehydrated_experiment, rehydrated_reader).readout()
+    mo.show_code(position="above")
     return (rehydrated_estimates,)
 
 

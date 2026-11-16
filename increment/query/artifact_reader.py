@@ -130,7 +130,7 @@ _ARTIFACT_GRAIN = RefusalSpec(
 )
 _ARTIFACT_METRIC = REFUSALS["artifact.metric.binding_mismatch"]
 _ARTIFACT_RELATION_INVALID = RefusalSpec(
-    "artifact.relation.invalid", CapabilityError, template="{relation}: {check} -- {detail}"
+    "artifact.relation.invalid", CapabilityError, template="{relation}: {check}; {detail}"
 )
 
 

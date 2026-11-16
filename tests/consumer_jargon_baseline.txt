@@ -11,7 +11,6 @@ retained family	docs/guides/reading-results.md	3
 retained family	increment/estimation/results.py	2
 retained family	docs/guides/sequential-inference.md	1
 roster completeness	increment/_interpretation.py	1
-roster completeness	increment/tables.py	1
 seam	docs/guides/compatibility.md	4
 seam	increment/estimation/cuped/scalar.py	1
 sidecar	docs/guides/observational.md	1

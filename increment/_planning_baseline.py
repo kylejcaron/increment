@@ -61,12 +61,12 @@ if TYPE_CHECKING:
 _REFUSALS = refusals(
     CapabilityError,
     {
-        "analysis.planning_baseline.quantile_source_unavailable": "metric {metric!r} has no per-unit control-arm values on this source -- quantile planning baselines need from_definitions, from_unit_day_artifact, or from_unit_summary",
-        "analysis.planning_baseline.quantile_insufficient_data": "metric {metric!r}: fewer than 2 control-arm values on this source -- a quantile planning baseline needs at least 2 observations",
-        "analysis.planning_baseline.design_unavailable": "metric {metric!r}: no declared design on this source -- planning_baseline needs a control group",
+        "analysis.planning_baseline.quantile_source_unavailable": "metric {metric!r} has no per-unit control-arm values on this source; quantile planning baselines need from_definitions, from_unit_day_artifact, or from_unit_summary",
+        "analysis.planning_baseline.quantile_insufficient_data": "metric {metric!r}: fewer than 2 control-arm values on this source; a quantile planning baseline needs at least 2 observations",
+        "analysis.planning_baseline.design_unavailable": "metric {metric!r}: no declared design on this source; planning_baseline needs a control group",
         "analysis.planning_baseline.covariate_source_unavailable": "metric {metric!r} declares CUPED but this source's moments do not carry the covariate",
-        "analysis.planning_baseline.cuped_no_residual_variance": "metric {metric!r}: its CUPED covariate explains all of the control arm's variance, which usually means the covariate repeats the outcome -- declare a pre-period covariate, or plan without CUPED",
-        "analysis.planning_baseline.cluster_icc_not_estimable": "cluster ICC is not estimable from the control arm's {control_clusters} cluster(s) over {control_units} units -- needs at least 2 clusters, and not exactly one unit per cluster; pass cluster_icc explicitly to Baseline instead",
+        "analysis.planning_baseline.cuped_no_residual_variance": "metric {metric!r}: its CUPED covariate explains all of the control arm's variance, which usually means the covariate repeats the outcome; declare a pre-period covariate, or plan without CUPED",
+        "analysis.planning_baseline.cluster_icc_not_estimable": "cluster ICC is not estimable from the control arm's {control_clusters} cluster(s) over {control_units} units; needs at least 2 clusters, and not exactly one unit per cluster; pass cluster_icc explicitly to Baseline instead",
         "analysis.planning_baseline.trigger_membership_unavailable": RefusalSpec(
             "analysis.planning_baseline.trigger_membership_unavailable",
             CapabilityError,

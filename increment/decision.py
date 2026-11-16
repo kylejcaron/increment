@@ -182,23 +182,23 @@ _REFUSALS = refusals(
             InvalidRequestError,
             lambda *, path, unknown, declared: (
                 f"plan names metrics this {path} does not declare: {sorted(unknown)} "
-                f"(declared: {sorted(declared)}) -- refusing rather than silently dropping a role"
+                f"(declared: {sorted(declared)}); refusing rather than silently dropping a role"
             ),
         ),
-        "plan.guardrail.direction": "metric {metric!r}: a guardrail role requires an explicitly-set, non-neutral preferred_direction (increase|decrease) on the metric -- a guardrail's non-inferiority margin has no adverse side to test against otherwise, and 'neutral' names no side",
-        "plan.guardrail.margin_required": "metric {metric!r}: a guardrail tests that the treatment is not worse than control by more than a margin, and this guardrail declares no margin -- {route}",
-        "plan.primary.alternative_direction": "metric {metric!r}: the plan tests alternative={alternative!r}, but the metric declares preferred_direction={preferred_direction!r}, so this primary could only ever show a worse result -- use alternative='two-sided' (each primary's verdict reads its own preferred_direction) or the one-sided alternative on its favorable side",
+        "plan.guardrail.direction": "metric {metric!r}: a guardrail role requires an explicitly-set, non-neutral preferred_direction (increase|decrease) on the metric; a guardrail's non-inferiority margin has no adverse side to test against otherwise, and 'neutral' names no side",
+        "plan.guardrail.margin_required": "metric {metric!r}: a guardrail tests that the treatment is not worse than control by more than a margin, and this guardrail declares no margin; {route}",
+        "plan.primary.alternative_direction": "metric {metric!r}: the plan tests alternative={alternative!r}, but the metric declares preferred_direction={preferred_direction!r}, so this primary could only ever show a worse result; use alternative='two-sided' (each primary's verdict reads its own preferred_direction) or the one-sided alternative on its favorable side",
         "plan.frame.override": RefusalSpec(
             "plan.frame.override",
             InvalidRequestError,
             lambda *, metric, field=None: (
                 f"plan entry {metric!r}: "
                 + (
-                    f"{field}= overrides are not supported on the frame path -- declare "
+                    f"{field}= overrides are not supported on the frame path; declare "
                     "them on the frame's own MetricSpec for this metric instead"
                     if field is not None
                     else "decision_method=/sensitivity_methods=/prior= overrides are not "
-                    "supported on the frame path -- declare them on the frame's own "
+                    "supported on the frame path; declare them on the frame's own "
                     "MetricSpec for this metric instead"
                 )
             ),
@@ -209,11 +209,11 @@ _REFUSALS = refusals(
             lambda *, explicit, derived: (
                 f"frame plan secondaries={sorted(explicit)} does not match the default derivation "
                 "(declared minus primaries minus guardrails) "
-                f"={sorted(derived)} -- a frame plan's secondaries must be the metrics left over, "
+                f"={sorted(derived)}; a frame plan's secondaries must be the metrics left over, "
                 "or omitted entirely"
             ),
         ),
-        "plan.metric.report_only": "metric {metric!r} is report-only (no margin/direction concept) and cannot be declared into the {role!r} testing role -- it has no null it can be tested against. Report it without naming it in a plan role.",
+        "plan.metric.report_only": "metric {metric!r} is report-only (no margin/direction concept) and cannot be declared into the {role!r} testing role; it has no null it can be tested against. Report it without naming it in a plan role.",
     },
 )
 

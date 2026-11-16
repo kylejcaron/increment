@@ -1,4 +1,4 @@
-# Traced on commit: 26c275742dae2f3e32dcf9e7679812b322bc7609
+# Traced on commit: a75ba70e0172c1136885d049f64eaa164ae1a2ef
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -144,6 +144,7 @@ increment.query
 increment.query._artifact_float
 increment.query._cuped_cells
 increment.query._cuped_qr
+increment.query._day_offsets
 increment.query._float_literals
 increment.query._native_dashboard
 increment.query._native_day_source
@@ -151,6 +152,7 @@ increment.query._native_materialization
 increment.query._native_refusals
 increment.query._native_triggered
 increment.query._nonfinite
+increment.query._summary_sql
 increment.query._workflows
 increment.query.artifact_contract
 increment.query.artifact_digest

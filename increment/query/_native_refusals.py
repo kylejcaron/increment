@@ -25,7 +25,7 @@ _NATIVE_COVARIATE_UNRESOLVED = RefusalSpec(
     lambda *, covariate, unit, source: (
         f"unit_frame: covariate {covariate!r} could not be resolved to a property "
         + (f"on fact source {source!r}" if source else "on any fact source")
-        + f" with unit {unit!r} as an entity -- declare it as a Property on the "
+        + f" with unit {unit!r} as an entity; declare it as a Property on the "
         "fact source that carries it."
     ),
 )
@@ -34,7 +34,7 @@ _NATIVE_COVARIATE_AMBIGUOUS = RefusalSpec(
     CapabilityError,
     lambda *, covariate, candidates: (
         f"unit_frame: covariate {covariate!r} matches {len(candidates)} fact "
-        f"sources ({', '.join(candidates)}) -- rename the property on one source, "
+        f"sources ({', '.join(candidates)}); rename the property on one source, "
         "or declare the covariate under the experiment's observational design "
         "with 'source: <name>' to disambiguate."
     ),
@@ -42,12 +42,12 @@ _NATIVE_COVARIATE_AMBIGUOUS = RefusalSpec(
 _NATIVE_COVARIATE_AS_OF = RefusalSpec(
     "source.native.covariate_as_of",
     CapabilityError,
-    template="unit_frame: covariate {covariate!r} (source {source!r}) has as_of={as_of!r} -- conditioning on a value measured at/after exposure biases the adjustment. Declare as_of='pre_exposure' or 'static' on the property.",
+    template="unit_frame: covariate {covariate!r} (source {source!r}) has as_of={as_of!r}; conditioning on a value measured at/after exposure biases the adjustment. Declare as_of='pre_exposure' or 'static' on the property.",
 )
 _NATIVE_COVARIATE_DTYPE = RefusalSpec(
     "source.native.covariate_dtype",
     CapabilityError,
-    template="unit_frame: covariate {covariate!r} (source {source!r}) has dtype {dtype!r}; covariate adjustment needs a numeric (int/float/bool) or categorical (string) column -- a date carries no adjustment meaning. Derive a numeric or categorical pre-exposure property.",
+    template="unit_frame: covariate {covariate!r} (source {source!r}) has dtype {dtype!r}; covariate adjustment needs a numeric (int/float/bool) or categorical (string) column; a date carries no adjustment meaning. Derive a numeric or categorical pre-exposure property.",
 )
 _NATIVE_COVARIATE_KIND = RefusalSpec(
     "source.native.covariate_kind_mismatch",

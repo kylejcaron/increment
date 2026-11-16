@@ -104,6 +104,11 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment._readout_html"
+layer = "core"
+depends_on = ["increment._display", "increment._interpretation"]
+
+[[modules]]
 path = "increment._unit_cycle"
 layer = "core"
 depends_on = ["increment._literals", "increment.errors", "increment.semantics"]
@@ -1168,8 +1173,20 @@ depends_on = [
   "increment._artifact_identity",
   "increment._assignment_ledger_contract", "increment._frame_ledger",
   "increment.query.artifact_ports",
+  "increment.query._day_offsets",
+  "increment.query._summary_sql",
   "increment.query._workflows", "increment.estimation.variance", "increment.estimation.cuped.multicovariate", "increment.estimation.cuped.inference", "increment.estimation.engine", "increment.estimation.cuped._numeric", "increment.estimation._readout_refusals", "increment.estimation.cuped.cells", "increment.estimation.armstats", "increment.estimation.cuped.encoding", "increment.estimation.cuped.types",
 ]
+
+[[modules]]
+path = "increment.query._day_offsets"
+layer = "core"
+depends_on = []
+
+[[modules]]
+path = "increment.query._summary_sql"
+layer = "core"
+depends_on = ["increment._compile_gaps"]
 
 [[modules]]
 path = "increment.query._workflows"
@@ -1619,7 +1636,7 @@ depends_on = ["increment.errors", "increment.estimation.absorption"]
 path = "increment.tables"
 layer = "core"
 depends_on = [
-  "increment._canonical", "increment._display",
+  "increment._canonical", "increment._display", "increment._readout_html",
   "increment.breakout.estimates", "increment.errors",
   "increment.estimation.sequential_result", "increment.breakout.projection", "increment._interpretation",
   "increment._optional", "increment.estimation.contrast_results", "increment.estimation.results", "increment.estimation.contrast",
@@ -1640,10 +1657,13 @@ depends_on = [
   "increment._exploratory",
   "increment._interpretation",
   "increment._optional",
+  "increment._readout_html",
   "increment._source_diagnostics",
   "increment._source_operations",
   "increment._source_workflows",
   "increment.breakout.estimates",
+  "increment.declarations",
+  "increment.estimation.readout_types",
   "increment.errors",
   "increment.tables", "increment.estimation.health", "increment.estimation.diagnostics", "increment.estimation.exploratory_family",
 ]

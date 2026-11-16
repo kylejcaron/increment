@@ -149,7 +149,8 @@ def con():
 
 @pytest.fixture
 def analysis(con):
-    return from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
+    binding = from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
+    return binding
 
 
 def _metric_spec(metric) -> MetricSpec:

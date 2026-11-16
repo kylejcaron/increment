@@ -107,13 +107,12 @@ _REFUSALS = (
                 " request; run separate calls with priors declared on each method's parameterization"
             ),
             "estimation.adjust.names_metrics_source": (
-                "{label}= names metrics this source does not declare: {unknown} (declared: {by_name})"
-                " -- refusing rather than silently dropping the request"
+                "{label}= names metrics this source does not declare: {unknown} (declared: {by_name}); refusing rather than silently dropping the request"
             ),
             "estimation.adjust.value_scale_relative": "value_scale={{{name!r}: {requested!r}}}: must be 'relative' or 'absolute'",
             "estimation.adjust.value_scale_names": (
                 "value_scale names metric {name!r}: no observational adjustment exists for"
-                " {metric_type} metrics -- the absolute channel changes how an adjusted estimate is"
+                " {metric_type} metrics; the absolute channel changes how an adjusted estimate is"
                 " REPORTED; it does not extend estimator coverage."
             ),
             "estimation.adjust.resolve_value_scales_null_abs_on_absolute_metric": (
@@ -133,7 +132,7 @@ _REFUSALS = (
             "estimation.adjust.method_name_unadjusted": (
                 "Method(name='unadjusted') cannot honor value_scale='absolute': the unadjusted moments"
                 " path already reports the absolute pair (abs_diff/abs_se) alongside relative lift on"
-                " every row, and its rows are confounded -- an absolute-native unadjusted row would"
+                " every row, and its rows are confounded; an absolute-native unadjusted row would"
                 " dress a non-causal difference in the channel built to rescue identified adjusted"
                 " estimates. Drop 'unadjusted' from methods or remove the metric from value_scale."
             ),
@@ -150,12 +149,12 @@ _REFUSALS = (
         {
             "adjust.variance_reduction.unsupported": (
                 "variance_reduction={variance_reduction!r} is not supported under adjustment {method!r}"
-                " -- the adjustment estimators consume unit frames, not the moments the reduction is"
+                "; the adjustment estimators consume unit frames, not the moments the reduction is"
                 " defined on; it would be silently ignored rather than applied."
             ),
             "estimation.adjust.estimate_ate_every": (
                 "estimate_ate: every declared metric was refused by the requested adjustment method(s)"
-                " -- nothing to estimate. See the accompanying UserWarnings for the per-metric refusal"
+                "; nothing to estimate. See the accompanying UserWarnings for the per-metric refusal"
                 " reasons."
             ),
             "readout.view.observational": RefusalSpec(
@@ -279,7 +278,7 @@ _register_warning(
     IncrementWarning,
     lambda *, n_metrics, names: (
         f"estimate_ate: one scalar prior= spans {n_metrics} metrics all "
-        "reported on the absolute scale -- it is interpreted in EACH "
+        "reported on the absolute scale; it is interpreted in EACH "
         "metric's own additive units, which are not commensurable across "
         f"metrics ({names}). Run one metric per call to give each "
         "its own prior."
@@ -290,7 +289,7 @@ _register_warning(
     "estimation.adjust.skip_unsupported_metric",
     IncrementWarning,
     lambda *, metric_name, method_name, exc: (
-        f"estimate_ate: skipping metric {metric_name!r} under method {method_name!r} -- {exc}"
+        f"estimate_ate: skipping metric {metric_name!r} under method {method_name!r}; {exc}"
     ),
 )
 
@@ -1132,7 +1131,7 @@ def _estimate_ate_data(  # noqa: PLR0913
                             ),
                             "note": (
                                 "unadjusted group-mean comparison under an "
-                                "Observational design -- confounded; not a "
+                                "Observational design; confounded; not a "
                                 "causal estimate" + (f" | {r.note}" if r.note else "")
                             ),
                         }

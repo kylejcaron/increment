@@ -1875,6 +1875,22 @@ class TestDailyLiftEstimate:
         round_tripped = DailyLiftEstimate.model_validate_json(est.model_dump_json())
         assert round_tripped == est
 
+    def test_declared_preferred_direction_survives_daily_projection_and_json_round_trip(self):
+        ds = date(2025, 1, 1)
+        rows = [
+            _make_daily_row(n=50, mean=10.0, var=4.0, ds=ds, group_id="control"),
+            _make_daily_row(n=50, mean=8.0, var=4.0, ds=ds, group_id="treatment"),
+        ]
+
+        (estimate,) = run_daily_lift(
+            rows,
+            [MeanMetric(name="rev", entity="user", fact="rev", preferred_direction="decrease")],
+            control_group="control",
+        )
+
+        restored = DailyLiftEstimate.model_validate_json(estimate.model_dump_json())
+        assert restored.preferred_direction == "decrease"
+
     def test_public_replay_rejects_gaussian_checkpoint(self):
         from increment.errors import CapabilityError
         from increment.estimation.sequential_runtime import (

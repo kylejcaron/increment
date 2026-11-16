@@ -88,6 +88,7 @@ from increment.query._native_refusals import (
     _refuse_operation,
 )
 from increment.query._native_triggered import TriggeredPopulationSource
+from increment.query._summary_sql import SummarySqlStages
 from increment.query.artifact_contract import ArtifactStore
 from increment.query.artifact_ports import artifact_query_ports
 from increment.query.builders import (
@@ -1612,22 +1613,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def _union_event_horizon_for(self, metrics: Sequence[Metric]) -> ir.Scalar:
         """Build one event horizon for an explicit effective metric set."""
-        event_tables = [self._metric_primary_events(m) for m in metrics]
+        event_tables: dict[Any, Table] = {}
         for metric in metrics:
-            if isinstance(metric, RatioMetric):
-                den_fs, den_fact_def = _find_fact_source(self._defs, metric.denominator.fact)
-                den_tbl = self._get_fact_table(den_fs)
-                den_col = _resolve_value_column(den_fs, den_fact_def)
-                event_tables.append(
-                    metric_events(
-                        den_tbl,
-                        metric,
-                        value_column=den_col,
-                        part="denominator",
-                        null_policy=den_fact_def.missing,
-                    )
-                )
-        return union_event_horizon(event_tables, self._experiment)
+            components = (
+                (metric.numerator, metric.denominator)
+                if isinstance(metric, RatioMetric)
+                else (metric,)
+            )
+            for component in components:
+                source, fact = _find_fact_source(self._defs, component.fact)
+                rows = measure_rows(self._get_fact_table(source), component)
+                column = _resolve_value_column(source, fact)
+                if column is not None and fact.missing != "zero":
+                    rows = rows.filter(rows[column].notnull())
+                timestamps = rows.select("ts")
+                event_tables.setdefault(timestamps.op(), timestamps)
+        return union_event_horizon(tuple(event_tables.values()), self._experiment)
 
     @property
     def _publisher(self) -> Any:
@@ -2343,6 +2344,20 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             update={"observation_end": dt.datetime.combine(spine_end, dt.time())}
         )
 
+    def _metric_spine_bounds(
+        self, metric: Metric, *, horizon_metrics: Sequence[Metric] | None = None
+    ) -> tuple[Experiment, ir.Scalar, dt.date | None]:
+        spine_experiment = self._experiment
+        spine_end: dt.date | None = None
+        evidence = self._session.source_snapshot_evidence
+        if evidence is not None:
+            spine_experiment = self._pinned_spine_experiment(metric, evidence)
+            spine_end = spine_experiment.observation_horizon_day
+        horizon = self._union_event_horizon(horizon_metrics)
+        if spine_end is not None:
+            horizon = cast("ir.Scalar", ibis.least(horizon, ibis.literal(spine_end)))
+        return spine_experiment, horizon, spine_end
+
     def _build_panel_for_metric_impl(
         self,
         exposures: Table,
@@ -2431,17 +2446,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if den_events is not None:
                 den_events = self._after_trigger_events(den_events, exposures)
             outcome_exposures = exposures.mutate(first_exposure_ts=exposures.first_trigger_ts)
-        spine_experiment = self._experiment
-        spine_end: dt.date | None = None
-        if evidence is not None:
-            spine_experiment = self._pinned_spine_experiment(metric, evidence)
-            spine_end = spine_experiment.observation_horizon_day
-            if spine_end is not None:
-                data_as_of = ibis.literal(spine_end)
-
-        horizon = self._union_event_horizon(horizon_metrics)
+        spine_experiment, horizon, spine_end = self._metric_spine_bounds(
+            metric, horizon_metrics=horizon_metrics
+        )
         if spine_end is not None:
-            horizon = cast("ir.Scalar", ibis.least(horizon, ibis.literal(spine_end)))
+            data_as_of = ibis.literal(spine_end)
         panel = unit_day_panel(
             outcome_exposures,
             events,
@@ -3390,9 +3399,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         sql_results: dict[str, str] = {}
         for metric in effective:
+            stages = SummarySqlStages()
+            stages.mark("enrolled_units", exposures)
             panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
                 self._build_panel_for_metric(exposures, metric, population, use_cache=False)
             )
+            stages.mark("outcome_events", _events)
+            stages.mark("outcome_day_stats", stats)
             summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
                 metric,
                 exposures,
@@ -3406,8 +3419,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 uptake_events=uptake_events,
                 uptake_window_days=uptake_window_days,
                 warn_on_censoring=False,
+                _sql_stages=stages,
             )
-            sql_results[metric.name] = ibis_to_sql(summary, dialect=self._backend or self._con.name)
+            sql_results[metric.name] = stages.to_sql(
+                summary, dialect=self._backend or self._con.name
+            )
             for breakout, fs, properties_table in breakout_props:
                 summary_by, _pre_stats_by, _den_stats_by, _totals_by = self._build_metric_summary(
                     metric,
@@ -3424,9 +3440,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     warn_on_censoring=False,
                     by=[breakout.property],
                     properties_table=properties_table,
+                    _sql_stages=stages,
                 )
                 key = f"{metric.name}:{breakout.property}:{fs.name}"
-                sql_results[key] = ibis_to_sql(summary_by, dialect=self._backend or self._con.name)
+                sql_results[key] = stages.to_sql(
+                    summary_by, dialect=self._backend or self._con.name
+                )
         return sql_results
 
     def _component_batch_key(self, request: MomentsRequest) -> tuple[Any, ...] | None:
@@ -5715,6 +5734,58 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     )
                 pinned._cuped_relation_cache[cache_key] = relation
                 yield relation, execute, pinned._session.qr_scratch
+
+    def _population_membership(self, metric: Metric) -> pa.Table:
+        components = (
+            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
+        )
+        event_dependent = any(
+            getattr(component, "aggregation", None) == "avg_event" for component in components
+        )
+        covariate_methods = any(
+            method.covariates
+            for config in self.context.configs
+            if config.metric.name == metric.name
+            for method in effective_methods(config, design=self.context.design)
+        )
+        if event_dependent or covariate_methods:
+            with self._unit_relation(metric) as (relation, execute):
+                return cast("pa.Table", execute(relation.select("unit_id", "group_id")))
+        with self._reduction_batch():
+            exposures = self._get_exposures()
+            cluster = self._experiment.cluster
+            if cluster is not None:
+                self._validate_cluster_labels(exposures, cluster)
+            self._resolve_uptake(cluster, operation="unit_frame")
+            _panel, _spine, _stats, _events, _den, _facts, _value, data_as_of = (
+                self._build_panel_for_metric(exposures, metric)
+            )
+            spine_experiment, horizon, _spine_end = self._metric_spine_bounds(
+                metric, horizon_metrics=(metric,)
+            )
+            edge = (
+                ibis.literal(spine_experiment.observation_horizon_day)
+                if spine_experiment.observation_horizon is not None
+                else horizon
+            )
+            anchors = exposures.mutate(
+                first_exposure_date=_local_date(exposures.first_exposure_ts, self._experiment)
+            )
+            # Zero-defined outcomes keep every mature unit with an observed day.
+            # Its last spine day suffices; no day expansion or outcome join is needed.
+            anchors = anchors.mutate(
+                ds=(anchors.first_exposure_date <= edge).ifelse(edge, ibis.null().cast("date"))
+            )
+            members = _censor_to_observable_window(
+                anchors,
+                metric,
+                self._experiment,
+                data_as_of,
+                warn_on_censoring=True,
+                censor_population=anchors,
+                execute=self._censoring_bookkeeping(metric, exposures),
+            )
+            return self._session.fetch_arrow(members.select("unit_id", "group_id"))
 
     def unit_frame(
         self,

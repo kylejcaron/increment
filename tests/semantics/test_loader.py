@@ -14,7 +14,12 @@ import yaml
 from increment.errors import DefinitionError, IncrementWarning, InvalidRequestError
 from increment.semantics import load
 from increment.semantics.loader import admit_read_only_sql
-from increment.semantics.models import Definitions, RatioMetric
+from increment.semantics.models import (
+    ConversionMetric,
+    Definitions,
+    MeanMetric,
+    RatioMetric,
+)
 from tests.warning_codes import warning_codes
 
 
@@ -1530,10 +1535,8 @@ def test_realistic_demo_example_loads():
     assert isinstance(latency, RatioMetric)
     assert latency.numerator.fact == "page_load"
     assert latency.numerator.aggregation == "sum"
-    assert latency.numerator.window_days == 14
     assert latency.denominator.fact == "page_load"
     assert latency.denominator.aggregation == "count"
-    assert latency.denominator.window_days == 14
     assert latency.numerator.filters == latency.denominator.filters
     experiments = {experiment.name: experiment for experiment in defs.experiments}
     assert set(experiments) == {"checkout_redesign", "express_checkout"}
@@ -1614,8 +1617,8 @@ def test_window_days_none_warns_for_conversion_metric(tmp_path: Path):
         load(tmp_path / "defs.yaml")
 
 
-def test_window_days_set_no_warning(tmp_path: Path):
-    """Metric with explicit window_days produces no warning."""
+def test_explicit_windows_preserve_fixed_and_open_choices_without_advice(tmp_path: Path):
+    """Explicit null declares an open window rather than omitting the choice."""
     _dump_yaml(
         {
             "fact_sources": [
@@ -1629,7 +1632,21 @@ def test_window_days_set_no_warning(tmp_path: Path):
             ],
             "exposures": [{"name": "e", "fact": "ev"}],
             "metrics": [
-                {"type": "mean", "name": "m", "entity": "u", "fact": "ev", "window_days": 30}
+                {"type": "mean", "name": "fixed", "entity": "u", "fact": "ev", "window_days": 30},
+                {
+                    "type": "mean",
+                    "name": "open_mean",
+                    "entity": "u",
+                    "fact": "ev",
+                    "window_days": None,
+                },
+                {
+                    "type": "conversion",
+                    "name": "open_conversion",
+                    "entity": "u",
+                    "fact": "ev",
+                    "window_days": None,
+                },
             ],
             "experiments": [
                 {
@@ -1646,7 +1663,16 @@ def test_window_days_set_no_warning(tmp_path: Path):
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        load(tmp_path / "defs.yaml")
+        defs = load(tmp_path / "defs.yaml")
+    assert {
+        metric.name: metric.window_days
+        for metric in defs.metrics
+        if isinstance(metric, MeanMetric | ConversionMetric)
+    } == {
+        "fixed": 30,
+        "open_mean": None,
+        "open_conversion": None,
+    }
 
 
 # ── Regression: property-name duplicates with file origins ─────────

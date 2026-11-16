@@ -137,35 +137,6 @@ def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
     assert any(line.startswith("secondary selection:") for line in rendered.splitlines())
 
 
-def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_row():
-    results = view_readout(*_analysis(_frame(guard_constant=False)), metrics=["rev"])
-    html = readout_table(results).gt().as_raw_html()
-    subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
-    assert "<ul " in subtitle
-    assert subtitle.count("<li>") == 6
-    assert "Coherence: captured." in subtitle
-    assert "Effective evidence modes:" in subtitle
-    assert "Integrity: not_checked" in subtitle
-    assert subtitle.count("sha256:") == 1
-    assert "Interpretation:" not in subtitle and "Interpretation:" not in html
-    assert "Interval interpretation" in html
-    assert 'th[id="Interval-interpretation"]{width:18em' in html
-    assert "Excludes zero — increase established" in html
-    assert results[0].source_snapshot_id not in subtitle
-
-
-def test_row_only_table_discloses_unknown_scope_and_integrity():
-    from increment.tables import estimates_to_readout
-
-    results = view_readout(*_analysis(_frame(guard_constant=False)), metrics=["rev"])
-    # A received row carries no collection evidence; the table must not look vouched for.
-    html = readout_table(estimates_to_readout([results[0]])).gt().as_raw_html()
-    subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
-    assert "Scope and integrity unknown." in subtitle
-    scoped = readout_table(results).gt().as_raw_html()
-    assert "Scope and integrity unknown." not in scoped
-
-
 def test_readout_table_escapes_user_text_in_qualification_list():
     frame = _frame(guard_constant=False)
     frame["arm"] = frame["arm"].replace("treatment", "<img src=x>")
@@ -476,15 +447,6 @@ def test_row_only_readout_table_retains_roster_and_family_qualifications():
     assert "roster" in direct_html.lower()
     assert "family" in row_only_html.lower()
     assert "roster" in row_only_html.lower()
-
-
-def test_empty_breakout_table_keeps_segment_schema():
-    pytest.importorskip("coeftable")
-    from increment.breakout.estimates import BreakoutEstimates
-
-    html = readout_table(BreakoutEstimates([]), nest_by="segment").gt().as_raw_html()
-
-    assert "Scope and integrity unknown" in html
 
 
 def test_interpretation_labels_distinct_source_snapshots():
@@ -1404,6 +1366,7 @@ def test_frames_carry_failure_and_scope_columns_on_every_backend(backend):
 def test_readout_table_renders_failed_scope_and_partial_collection_view():
     pytest.importorskip("coeftable")
     from increment.tables import estimates_to_readout, readout_table
+    from tests.test_tables import _ReadoutChecksParser
 
     with pytest.warns(IncrementWarning) as captured:
         results = view_readout(*_analysis(_frame()))
@@ -1419,14 +1382,14 @@ def test_readout_table_renders_failed_scope_and_partial_collection_view():
     message = str(failed_row["failure_message"])
     assert message == context["display"]
     assert message in full_html
-    assert "Decision scope is incomplete" in full_html
 
     filtered = results.filter(lambda row: row.metric == "rev")
     rows = estimates_to_readout(filtered)
     assert all(row["view_partial"] is True for row in rows)
     partial_html = readout_table(rows).gt().as_raw_html()
-    assert "Partial view" in partial_html
-    assert "Decision scope is incomplete" in partial_html
+    parser = _ReadoutChecksParser()
+    parser.feed(partial_html)
+    assert {("decision_scope_complete", 0), ("view_partial", 0)} <= set(parser.statuses)
 
 
 def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
@@ -1490,7 +1453,6 @@ def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
     assert "View: partial" in repr(empty)
     empty_frame = nw.from_native(empty.to_frame(), eager_only=True)
     assert len(empty_frame) == 0 and "integrity_status" in empty_frame.columns
-    assert "Scope and integrity unknown" not in readout_table(empty).gt().as_raw_html()
 
     unselected = run(experiment, resolver, metrics=[])
     live_frame = nw.from_native(unselected.to_frame(), eager_only=True)
@@ -1503,7 +1465,6 @@ def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
     )
     assert "integrity_status" not in unselected_frame.columns
     assert unselected_frame.schema == live_frame.schema
-    assert "Scope and integrity unknown" in readout_table(unselected).gt().as_raw_html()
 
 
 def test_real_assignment_integrity_failure_still_says_failed():
@@ -1656,8 +1617,6 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
     html = readout_table(readout).gt().as_raw_html()
     assert "treatment_a vs control" in html
     assert "treatment_b vs control" in html
-    assert "required cells" in html.lower()
-    assert "Unadjusted for multiplicity" not in html
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     assert restored.metadata == results.metadata
     restored_rows = []

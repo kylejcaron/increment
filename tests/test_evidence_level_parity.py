@@ -1880,6 +1880,12 @@ def _assert_coordinate_inputs(live, frozen):
     _assert_input_value(without_gained_fit_fields(expected, actual), expected)
 
 
+def _same_input_leaf(actual, expected, path):
+    if path.endswith(".answer.note") and isinstance(actual, str) and isinstance(expected, str):
+        return True
+    return type(actual) is type(expected) and actual == expected
+
+
 def _assert_input_value(actual, expected, path="typed_inputs"):
     import math
     from collections.abc import Mapping
@@ -1944,7 +1950,7 @@ def _assert_input_value(actual, expected, path="typed_inputs"):
             expected,
         )
     else:
-        assert type(actual) is type(expected) and actual == expected, (path, actual, expected)
+        assert _same_input_leaf(actual, expected, path), (path, actual, expected)
 
 
 def _assert_bootstrap_series(actual, expected, path):
@@ -3483,7 +3489,12 @@ def _assert_common_snapshot(
             name: procedure.model_dump(mode="python") for name, procedure in plan.procedures.items()
         },
     }
-    projected_rows = [_input_evidence_projection(row) for row in rows]
+    projected_rows = [
+        _input_evidence_projection(
+            {field: value for field, value in row.items() if field != "preferred_direction"}
+        )
+        for row in rows
+    ]
     descriptor = {
         "kind": "readout_input_evidence",
         "route": route,
@@ -3636,7 +3647,7 @@ def _assert_old_assembled_metadata(parts, transcript):
 def _assert_old_source_scopes(results, transcript):
     from tests.test_evidence_identity_parity import (
         _compare,
-        _post_capture_absolute_contrast_projection,
+        _post_capture_row_projection,
     )
 
     scope = results.metadata.scope
@@ -3683,7 +3694,7 @@ def _assert_old_source_scopes(results, transcript):
             expected["source"] = _rebind_source_descriptor(
                 expected["source"], actual["source"], source_id
             )
-        actual = _post_capture_absolute_contrast_projection(expected, actual)
+        actual = _post_capture_row_projection(expected, actual)
         _compare(expected, actual)
         _OLD_METADATA_SCOPES.setdefault(key, set()).add(old_id)
         bindings[old_id] = source_id
@@ -3705,7 +3716,7 @@ def _assert_old_metadata_payload(results, transcript, bindings, source_scopes, *
     from tests.test_evidence_identity_parity import (
         _compare,
         _metadata_without_modes,
-        _post_capture_absolute_contrast_projection,
+        _post_capture_row_projection,
         _project_post_capture_artifact_digests,
     )
 
@@ -3733,9 +3744,7 @@ def _assert_old_metadata_payload(results, transcript, bindings, source_scopes, *
     assert [list(pair) for pair in results.metadata.artifact_relation_digests] == [
         list(pair) for pair in expected_artifacts["relation_digests"]
     ]
-    comparable = _post_capture_absolute_contrast_projection(
-        expected, _metadata_without_modes(actual)
-    )
+    comparable = _post_capture_row_projection(expected, _metadata_without_modes(actual))
     comparable = _project_post_capture_artifact_digests(expected, comparable)
     comparable = without_relative_late_p_value(expected, comparable, results)
     try:

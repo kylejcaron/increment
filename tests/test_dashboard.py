@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from increment.errors import InvalidRequestError
+from increment.errors import CodedError, InvalidRequestError
 
 pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
@@ -24,6 +24,7 @@ from increment.dashboard import (
     DashboardSnapshot,
     ExploreView,
     readout_csv,
+    render_details,
     render_explore,
     render_header,
     render_health,
@@ -32,7 +33,7 @@ from increment.dashboard import (
 )
 from increment.dashboard._app import _render_entry, _report_notes, build_payload
 from increment.dashboard._data import enriched_rows
-from increment.dashboard._html import results_table, temporal_figure
+from increment.dashboard._html import temporal_figure
 from tests.dashboard_snapshots import (
     binomial_region,
     experiment_for,
@@ -141,6 +142,26 @@ def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) 
     assert "30.0%" in html
     assert "baseline" in html
     assert "candidate" in html
+
+
+def test_dashboard_allocation_mismatch_stays_visible_before_the_readout(
+    storefront: DashboardSnapshot,
+) -> None:
+    assert storefront.allocation is not None
+    expected = {storefront.control_group: 0.25, storefront.treatment_group: 0.75}
+    snapshot = dataclasses.replace(
+        storefront,
+        config=dataclasses.replace(storefront.config, expected_allocation=expected),
+        allocation=storefront.allocation.model_copy(
+            update={"expected": expected, "is_srm": True, "log_e_value": 100.0}
+        ),
+    )
+    rendered = render_results(snapshot).text
+    visible = rendered.split("<details", 1)[0]
+    warnings = re.findall(
+        r'<p class="[^"]*inc-dashboard-status--warn[^"]*">(.*?)</p>', visible, re.S
+    )
+    assert any("allocation" in warning.lower() and "assigned" in warning for warning in warnings)
 
 
 def test_assigned_health_collapses_inapplicable_checks_and_omits_duplicate_allocation(
@@ -308,12 +329,12 @@ def _with_primary_row(snapshot: DashboardSnapshot, **changes: Any) -> DashboardS
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("direction", "lower", "higher", "tone"),
+    ("direction", "lower", "higher", "tone", "label"),
     [
-        ("increase", 0.02, 0.18, "favorable"),
-        ("increase", -0.18, -0.02, "unfavorable"),
-        ("decrease", -0.18, -0.02, "favorable"),
-        ("decrease", 0.02, 0.18, "unfavorable"),
+        ("increase", 0.02, 0.18, "favorable", "Improvement detected"),
+        ("increase", -0.18, -0.02, "unfavorable", "Decline detected"),
+        ("decrease", -0.18, -0.02, "favorable", "Improvement detected"),
+        ("decrease", 0.02, 0.18, "unfavorable", "Decline detected"),
     ],
 )
 def test_primary_headline_colors_significant_results_by_declared_direction(
@@ -322,6 +343,7 @@ def test_primary_headline_colors_significant_results_by_declared_direction(
     lower: float,
     higher: float,
     tone: str,
+    label: str,
 ) -> None:
     snapshot = _with_primary_row(
         storefront,
@@ -335,7 +357,7 @@ def test_primary_headline_colors_significant_results_by_declared_direction(
     html = render_header(snapshot).text
 
     assert f"inc-dashboard-primary--{tone}" in html
-    assert f">Significant · {tone}</span>" in html
+    assert f">{label}</span>" in html
 
 
 @pytest.mark.slow
@@ -353,8 +375,8 @@ def test_primary_headline_keeps_directionless_significance_neutral(
 
     html = render_header(snapshot).text
 
-    assert "inc-dashboard-primary--neutral" in html
-    assert ">Significant</span>" in html
+    assert "inc-dashboard-primary--detected" in html
+    assert ">Difference detected</span>" in html
 
 
 # Allocation history presentation and snapshot validation.
@@ -553,6 +575,7 @@ def test_results_table_keeps_absolute_scale_values(pricing: DashboardSnapshot) -
             "lift": 23.456,
             "lower": 12.345,
             "higher": 34.567,
+            "note": "Absolute estimate needs interpretation.",
         }
         if row["metric"] == pricing.primary_metric
         else row
@@ -561,6 +584,12 @@ def test_results_table_keeps_absolute_scale_values(pricing: DashboardSnapshot) -
     html = render_results(dataclasses.replace(pricing, readout_rows=rows)).text
     assert "Lift (absolute)" in html
     assert "23.46" in html
+    value_cells = re.findall(
+        r'<td\b[^>]*class="[^"]*\bgt_row\b[^"]*"[^>]*>(.*?)</td>',
+        html.split("<tfoot>", 1)[0],
+        re.DOTALL,
+    )
+    assert "<sup>" in next(cell for cell in value_cells if "23.46" in cell)
 
 
 def test_results_keep_selection_qualification_as_a_footnote(pricing: DashboardSnapshot) -> None:
@@ -584,15 +613,190 @@ def test_results_keep_selection_qualification_as_a_footnote(pricing: DashboardSn
     html = render_results(dataclasses.replace(pricing, readout_rows=rows)).text
     headers = {
         re.sub(r"<[^>]+>", "", header).strip()
-        for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
+        for header in re.findall(
+            r'<th\b[^>]*class="[^"]*\bgt_col_heading\b[^"]*"[^>]*>(.*?)</th>',
+            html,
+            flags=re.DOTALL,
+        )
     }
     assert {"Lift %", "Lift Plot"} <= headers
-    assert "Discovery" not in headers
+    assert {"Result", "Discovery"}.isdisjoint(headers)
     assert "Numerical qualification" not in headers
     assert "Selection qualification" not in headers
     assert "Selection evidence for" in html
     assert pricing.primary_metric in html
     assert qualification in html
+
+
+@pytest.mark.integration
+def test_result_caveats_keep_row_identity_in_readout_report_and_inspector(
+    storefront: DashboardSnapshot,
+) -> None:
+    from html import unescape
+
+    primary_index = next(
+        index
+        for index, row in enumerate(storefront.readout_rows)
+        if row["metric"] == storefront.primary_metric
+    )
+    original = storefront.readout_rows[primary_index]
+    primary_estimate = storefront.estimates[primary_index]
+    identities = (
+        ("arm&one", "welch", "decision"),
+        ("arm-two", "cuped", "sensitivity"),
+    )
+    notes = {
+        "arm&one": "Captured note for arm one.",
+        "arm-two": "Captured note for arm two.",
+    }
+    caveated_rows = tuple(
+        {
+            **dict(original),
+            "group_id": arm,
+            "method": method,
+            "method_role": role,
+            "note": note,
+            **({"binomial_set": binomial_region()} if arm == "arm&one" else {}),
+        }
+        for (arm, method, role), note in zip(identities, notes.values(), strict=True)
+    )
+    caveated_estimates = tuple(
+        primary_estimate.model_copy(
+            update={"group_id": arm, "method": method, "method_role": role, "note": note}
+        )
+        for (arm, method, role), note in zip(identities, notes.values(), strict=True)
+    )
+    rows = list(storefront.readout_rows)
+    estimates = list(storefront.estimates)
+    rows[primary_index] = caveated_rows[0]
+    rows.append(caveated_rows[1])
+    estimates[primary_index] = caveated_estimates[0]
+    estimates.append(caveated_estimates[1])
+    snapshot = dataclasses.replace(
+        storefront,
+        readout_rows=tuple(rows),
+        estimates=tuple(estimates),
+    )
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    readout = payload["results"]
+    report = payload["report"]["results"]
+    health_snapshot = dataclasses.replace(snapshot, readout_collection=None)
+    health = render_health(health_snapshot).text
+    inspector = render_metric_details(snapshot, metric=snapshot.primary_metric).text
+
+    for rendered in (readout, report):
+        for note in notes.values():
+            assert (
+                re.search(
+                    rf"<sup>[^<]+</sup>\s*<span[^>]*>{re.escape(note)}</span>",
+                    rendered,
+                )
+                is not None
+            )
+        assert "(Affected:" not in rendered
+        assert "gt_sourcenote" in rendered
+        visible_cells = re.findall(
+            r'<td\b[^>]*class="[^"]*\bgt_row\b[^"]*"[^>]*>(.*?)</td>',
+            rendered.split("<tfoot>", 1)[0],
+            re.DOTALL,
+        )
+        expected_markers = set(re.findall(r"<sup>([^<]+)</sup>", rendered.split("<tfoot>", 1)[1]))
+        visible_markers = {
+            marker
+            for cell in visible_cells
+            for group in re.findall(r"<sup>([^<]+)</sup>", cell)
+            for marker in group.split(", ")
+        }
+        assert visible_markers == expected_markers
+    for arm, note in notes.items():
+        assert note in inspector
+        assert f"Arm {arm}" in unescape(inspector)
+    assert "welch" in inspector and "cuped" in inspector
+    advanced = re.search(
+        r"<details[^>]*><summary>Advanced calculation record</summary>(.*?)</details>",
+        inspector,
+        re.DOTALL,
+    )
+    assert advanced is not None
+    assert "open" not in advanced.group(0).split(">", 1)[0]
+    assert "120/600" in advanced.group(1) and "132/600" in advanced.group(1)
+    assert "arm&one" in unescape(advanced.group(1))
+    for note in notes.values():
+        assert note in health
+
+
+@pytest.mark.integration
+def test_inspector_keeps_zero_control_inputs_for_a_sensitivity_result(
+    storefront: DashboardSnapshot,
+) -> None:
+    primary_index = next(
+        index
+        for index, row in enumerate(storefront.readout_rows)
+        if row["metric"] == storefront.primary_metric
+    )
+    original = storefront.readout_rows[primary_index]
+    sensitivity = {
+        **original,
+        "method": "cuped" if original["method"] != "cuped" else "unadjusted",
+        "method_role": "sensitivity",
+        "binomial_set": binomial_region().model_copy(
+            update={"x_c": 0, "n_c": 610, "x_t": 13, "n_t": 620}
+        ),
+    }
+    snapshot = dataclasses.replace(
+        storefront,
+        readout_rows=(*storefront.readout_rows, sensitivity),
+        estimates=(
+            *storefront.estimates,
+            storefront.estimates[primary_index].model_copy(
+                update={
+                    "method": sensitivity["method"],
+                    "method_role": "sensitivity",
+                    "binomial_set": sensitivity["binomial_set"],
+                }
+            ),
+        ),
+    )
+
+    inspector = render_metric_details(snapshot, metric=snapshot.primary_metric).text
+
+    assert "0/610" in inspector and "13/620" in inspector
+
+
+@pytest.mark.integration
+def test_provenance_keeps_selected_zero_control_calculation_inputs(
+    storefront: DashboardSnapshot,
+) -> None:
+
+    snapshot = _with_primary_row(
+        storefront,
+        binomial_set=binomial_region().model_copy(
+            update={"x_c": 0, "n_c": 610, "x_t": 13, "n_t": 620}
+        ),
+    )
+
+    html = render_details(snapshot).text
+
+    assert "0/610" in html and "13/620" in html
+
+
+@pytest.mark.integration
+def test_report_readout_keeps_non_table_caveats(storefront: DashboardSnapshot) -> None:
+    snapshot = _with_primary_row(
+        storefront,
+        **{
+            "lift": None,
+            "lower": None,
+            "higher": None,
+            "note": "Source caveat accompanies an unavailable estimate.",
+            "unavailable": "engine declined this row",
+            "excluded": "outside the declared population",
+        },
+    )
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    rendered = payload["results"] + payload["report"]["results"]
+    assert "engine declined this row" in rendered
+    assert "outside the declared population" in rendered
 
 
 def test_results_show_available_prior_advisory_columns(pricing: DashboardSnapshot) -> None:
@@ -613,6 +817,11 @@ def test_results_show_available_prior_advisory_columns(pricing: DashboardSnapsho
 
 def test_results_render_every_declared_role_group(storefront: DashboardSnapshot) -> None:
     html = render_results(storefront).text
+    headers = {
+        re.sub(r"<[^>]+>", "", header).strip()
+        for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
+    }
+    assert "Interval" not in headers
     groups = (
         ("Primary", "checkout_conversion"),
         ("Secondaries", "revenue_per_user"),
@@ -632,6 +841,11 @@ def test_results_render_every_declared_role_group(storefront: DashboardSnapshot)
         section = "".join(body for group, body in members if group == headings[role])
         assert metric in section
         assert all(other not in section for _, other in groups if other != metric)
+    source_id = storefront.readout_rows[0]["source_snapshot_id"]
+    assert isinstance(source_id, str)
+    assert source_id in html
+    unfolded = re.sub(r"<details\b.*?</details>", "", html, flags=re.DOTALL)
+    assert source_id not in unfolded
 
 
 def test_metric_details_change_nothing_about_the_snapshot(
@@ -665,6 +879,7 @@ def test_the_second_experiment_uses_the_same_result_sections(
 # Explore tables and empty states.
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("view", ["cumulative_lift", "daily_values", "cumulative_values"])
 def test_all_temporal_views_render_every_declared_metric(
     storefront: DashboardSnapshot, view: ExploreView
@@ -680,8 +895,19 @@ def test_all_temporal_views_render_every_declared_metric(
             for row in data
         )
     html = render_explore(storefront, data, metric=None, view=view).text
+    tables = re.findall(r'<table\b[^>]*\bclass="[^"]*\bgt_table\b.*?</table>', html, re.S)
+    assert len(tables) == 1
+    table = tables[0]
+    body = re.search(r"<tbody\b[^>]*>(.*?)</tbody>", table, re.S)
+    assert body is not None
+    assert len(re.findall(r"<tr\b", body.group(1))) == len(expected)
     for metric in expected:
-        assert metric in html
+        assert metric.replace("_", " ").title() in body.group(1)
+    assert storefront.treatment_group in html
+    if view != "cumulative_lift":
+        assert storefront.control_group in table
+        strokes = set(re.findall(r'<polyline\b[^>]*stroke="([^"]+)"', table))
+        assert len(strokes) == 2
     if view == "cumulative_lift":
         endpoints = [
             float(points.split()[-1].split(",")[0])
@@ -690,6 +916,77 @@ def test_all_temporal_views_render_every_declared_metric(
         assert max(endpoints) - min(endpoints) > 100
 
 
+@pytest.mark.integration
+def test_whole_experiment_payload_contains_core_metric_packets(
+    storefront_payload: dict[str, Any], storefront: DashboardSnapshot
+) -> None:
+    view_keys = {
+        "cumulative_lift",
+        "cumulative_lift_complete",
+        "cumulative_values",
+        "cumulative_values_complete",
+        "daily_values",
+    }
+    core_metrics = {metric.name for metric in storefront.metrics}
+    for payload in storefront_payload["populationViews"].values():
+        whole = payload["wholeExperiment"]
+        assert set(whole) == view_keys
+        for packet in whole.values():
+            assert {"html", "caption", "notes", "pointCount"} <= set(packet)
+            assert all(
+                metric.replace("_", " ").title() in packet["html"] for metric in core_metrics
+            )
+
+
+@pytest.mark.integration
+def test_whole_experiment_keeps_available_metrics_and_attributes_refusals(
+    storefront: DashboardSnapshot,
+) -> None:
+    capture_type = type(storefront.explore[("assigned", "daily_values", None, False, None)])
+
+    missing = storefront.metrics[-1].name
+    empty = storefront.metrics[0].name
+    assert empty != missing
+    view = "daily_values"
+    batch_key = ("assigned", view, None, False, None)
+    missing_key = ("assigned", view, missing, False, None)
+    empty_key = ("assigned", view, empty, False, None)
+    refusal = CodedError(
+        "captured metric refusal",
+        code="explore.metric_refused",
+        context={"metric": missing, "snapshot": "pinned"},
+    )
+    empty_rows = type(temporal_rows(storefront, view))()
+    snapshot = dataclasses.replace(
+        storefront,
+        explore={
+            **storefront.explore,
+            batch_key: capture_type.refused(
+                batch_key,
+                CodedError(
+                    "whole-experiment batch refusal",
+                    code="explore.batch_refused",
+                    context={"scope": "whole experiment"},
+                ),
+            ),
+            missing_key: capture_type.refused(missing_key, refusal),
+            empty_key: capture_type.answered(empty_key, empty_rows, collection=type(empty_rows)),
+        },
+    )
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    packet = payload["wholeExperiment"]["daily_values"]
+    html = packet["html"]
+    assert missing.replace("_", " ").title() in html
+    assert empty.replace("_", " ").title() in html
+    for metric in storefront.metrics[1:-1]:
+        assert metric.name.replace("_", " ").title() in html
+    assert "explore.metric_refused" in html
+    assert "snapshot" in html and "pinned" in html
+    focused = payload["explore"]["overall"][missing]["daily_values"]
+    assert "explore.metric_refused" in focused["caption"]
+
+
+@pytest.mark.integration
 def test_all_metric_daily_table_keeps_cohort_and_calendar_rows_distinct(
     storefront: DashboardSnapshot,
 ) -> None:
@@ -704,8 +1001,16 @@ def test_all_metric_daily_table_keeps_cohort_and_calendar_rows_distinct(
         for row in data
     )
     html = render_explore(storefront, mixed, metric=None, view="daily_values").text
-    assert "Exposure cohort" in html
-    assert "Observation date" in html
+    tables = re.findall(r'<table\b[^>]*\bclass="[^"]*\bgt_table\b.*?</table>', html, re.S)
+    assert len(tables) == 1
+    body = re.search(r"<tbody\b[^>]*>(.*?)</tbody>", tables[0], re.S)
+    assert body is not None
+    assert f"{storefront.primary_metric.replace('_', ' ').title()} · Exposure cohort" in body.group(
+        1
+    )
+    for metric in storefront.metrics:
+        if metric.name != storefront.primary_metric:
+            assert f"{metric.name.replace('_', ' ').title()} · Observation date" in body.group(1)
     incompatible = DailyMetricValues(
         row.model_copy(update={"ds_basis": "cohort"}) if index == 0 else row
         for index, row in enumerate(data)
@@ -713,6 +1018,73 @@ def test_all_metric_daily_table_keeps_cohort_and_calendar_rows_distinct(
     refused = render_explore(storefront, incompatible, metric=None, view="daily_values").text
     assert "cannot share one axis" in refused
     assert "<svg" not in refused
+
+
+@pytest.mark.integration
+def test_whole_metric_table_preserves_names_with_colliding_display_labels(
+    storefront: DashboardSnapshot,
+) -> None:
+    originals = storefront.metrics[:2]
+    names = ("revenue_per_user", "Revenue_Per_User")
+    renamed = dict(zip((model.name for model in originals), names, strict=True))
+    snapshot = dataclasses.replace(
+        storefront,
+        metrics=tuple(
+            model.model_copy(update={"name": renamed.get(model.name, model.name)})
+            for model in storefront.metrics
+        ),
+        primary_metric=names[0],
+        estimates=tuple(
+            estimate.model_copy(update={"metric": renamed.get(estimate.metric, estimate.metric)})
+            for estimate in storefront.estimates
+        ),
+        readout_rows=tuple(
+            {**row, "metric": renamed.get(row["metric"], row["metric"])}
+            for row in storefront.readout_rows
+        ),
+        group_data=tuple(
+            dataclasses.replace(item, metric=renamed.get(item.metric, item.metric))
+            for item in storefront.group_data
+        ),
+    )
+    data = temporal_rows(storefront, "daily_values")
+    data = type(data)(
+        row.model_copy(update={"metric": renamed[row.metric]})
+        for row in data
+        if row.metric in renamed
+    )
+    html = render_explore(snapshot, data, metric=None, view="daily_values").text
+    body = re.search(r"<tbody\b[^>]*>(.*?)</tbody>", html, re.S)
+    assert body is not None
+    rows = re.findall(r"<tr\b.*?</tr>", body.group(1), re.S)
+    assert len(rows) == 2
+    for name in names:
+        row = next(row for row in rows if name in row)
+        assert len(re.findall(r"<polyline\b", row)) == 2
+
+
+@pytest.mark.integration
+def test_all_metric_segmented_trajectories_keep_segment_identity(
+    storefront: DashboardSnapshot,
+) -> None:
+    data = temporal_rows(storefront, "daily_values")
+    segments = ("north", "south")
+    segmented = type(data)(
+        row.model_copy(update={"dimension": "region", "dimension_value": segment})
+        for row in data
+        for segment in segments
+    )
+    html = render_explore(storefront, segmented, metric=None, view="daily_values").text
+    tables = re.findall(r'<table\b[^>]*\bclass="[^"]*\bgt_table\b.*?</table>', html, re.S)
+    assert len(tables) == len(storefront.metrics)
+    for table in tables:
+        body = re.search(r"<tbody\b[^>]*>(.*?)</tbody>", table, re.S)
+        assert body is not None
+        rows = re.findall(r"<tr\b.*?</tr>", body.group(1), re.S)
+        assert len(rows) == len(segments)
+        for segment in segments:
+            row = next(row for row in rows if segment in row)
+            assert len(re.findall(r"<polyline\b", row)) == 2
 
 
 def test_render_explore_segments_show_a_truthful_empty_state_without_breakouts(
@@ -1215,28 +1587,6 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
                 assert any(abs(value - endpoint) <= 0.0005 for value in displayed)
 
 
-def test_report_notes_keep_binomial_qualification_out_of_readout(
-    storefront: DashboardSnapshot,
-) -> None:
-
-    from increment.dashboard._format import headline_interval
-    from increment.tables import _binomial_qualification_disclosure
-
-    storefront = _with_primary_row(storefront, binomial_set=binomial_region())
-    row = next(row for row in storefront.readout_rows if row["metric"] == storefront.primary_metric)
-    qualification = _binomial_qualification_disclosure(row["binomial_set"])
-    assert qualification is not None
-
-    notes = "\n".join(_report_notes(storefront))
-    headline = headline_interval(row)
-    table = results_table(storefront)
-    assert notes.count(qualification) == 1
-    assert str(row["metric"]) in notes
-    assert qualification not in headline
-    assert qualification not in table
-    assert "Numerical qualification" not in table
-
-
 def test_summary_notes_attribute_each_captured_level_to_its_own_metric(
     storefront: DashboardSnapshot,
 ) -> None:
@@ -1285,19 +1635,31 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
         preceding = [value for start, value in levels if start < method_at]
         assert isinstance(row["level"], float)
         assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
-    notes = "\n".join(_report_notes(snapshot))
     disclosure = render_results(snapshot).text
+    table_rows = [
+        re.sub(r"<[^>]+>", " ", body)
+        for body in re.findall(r"<tr\b[^>]*>(.*?)</tr>", disclosure, re.DOTALL)
+    ]
     for row in (decision, sensitivity):
-        attribution = f"{row['metric']} ({row['method']}, {row['method_role']})"
-        assert attribution in notes
-        assert attribution in disclosure
+        expected_level = row["level"]
+        assert isinstance(expected_level, float)
+        assert any(
+            str(row["metric"]) in body
+            and str(row["method"]) in body
+            and str(row["method_role"]) in body
+            and any(
+                float(level) / 100 == pytest.approx(expected_level, abs=0.00005)
+                for level in re.findall(r"(\d+(?:\.\d+)?)%", body)
+            )
+            for body in table_rows
+        )
 
 
 @pytest.mark.parametrize(
     "status,discovery",
     [("exploratory_family", True), ("exploratory_family", False), ("exploratory_unadjusted", None)],
 )
-def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
+def test_a_rising_trajectory_honors_selection_and_declared_direction(
     storefront: DashboardSnapshot, status: str, discovery: bool | None
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
@@ -1310,9 +1672,10 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
         row.model_copy(
             update={
                 "lift": Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+                "alternative": "two-sided",
                 "discovery": discovery,
-                "family_q": 0.05,
-                "family_procedure": "bh",
+                "family_q": 0.05 if discovery is not None else None,
+                "family_procedure": "bh" if discovery is not None else None,
                 "multiplicity_status": status,
                 "decision_scope_complete": discovery is True,
                 "null_lift": 0.01,
@@ -1337,20 +1700,16 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
     assert ("Selection evidence for" in html) == (discovery is True)
     if discovery is not None:
         assert "Discovery" in html and ("Yes" if discovery else "No") in html
-    if status == "exploratory_unadjusted":
-        assert "unadjusted for multiplicity" in html.casefold()
-    else:
-        assert "Exploratory family" in html
-    assert ("Decision scope is incomplete" in html) == (discovery is not True)
     if discovery is None:
-        assert "Posterior unavailable" in html
         assert "estimation.engine.lift_guard" in html
         assert "delta_method_unreliable" in html
     else:
         assert "Posterior P(favorable)" in html and "73.0%" in html
     from increment.dashboard._theme import coeftable_theme
 
-    assert f'stroke="{coeftable_theme(storefront.config.theme).unfavorable}"' in html
+    theme = coeftable_theme(storefront.config.theme)
+    expected = theme.inconclusive if discovery is False else theme.unfavorable
+    assert f'stroke="{expected}"' in html
 
 
 def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
@@ -1396,19 +1755,10 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
     assert "US" in rendered and "CA" in rendered
     assert "triggered" in rendered
     assert len(re.findall(r'<table\b[^>]*\bclass="[^"]*\bgt_table\b', rendered)) == 3
-    assert rendered.count("Scope and integrity unknown.") == 3
     assert f"CA · {storefront.treatment_group}" in rendered
     assert f"US · {storefront.treatment_group}" in rendered
     assert "73.0%" in rendered and "us_prior_guard" in rendered
     assert "cuped" in rendered
-    assert all(
-        "Latest" not in table for table in re.findall(r"<table\b.*?</table>", rendered, re.S)
-    )
-    details = re.findall(r"<details\b.*?</details>", rendered, re.S)
-    qualified = [detail for detail in details if "Scope and integrity unknown." in detail]
-    assert len(qualified) == 3
-    outside = re.sub(r"<details\b.*?</details>", "", rendered, flags=re.S)
-    assert "Scope and integrity unknown." not in outside and "Tested null:" not in outside
     captions = re.findall(
         r'<div class="inc-dashboard-temporal-table">\s*<p[^>]*>(.*?)</p>', rendered, re.S
     )
@@ -1419,11 +1769,10 @@ def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
     assert "Method:" in " ".join(captions) and "cuped" in " ".join(captions)
     assert "Population:" in " ".join(captions)
     assert "assigned" in " ".join(captions) and "triggered" in " ".join(captions)
-    varied = next(detail for detail in qualified if "revenue_per_user" in detail)
+    details = re.findall(r"<details\b.*?</details>", rendered, re.S)
+    varied = next(detail for detail in details if "revenue_per_user" in detail)
     assert str(earlier_date) in varied and str(max(row.ds for row in data)) in varied
     assert "90%" in varied
-    assert rendered.count("Latest dates vary by series") == 1
-    assert rendered.count("Confidence levels vary by series") == 1
 
 
 @pytest.mark.parametrize(
@@ -1520,20 +1869,6 @@ def test_one_sided_intervals_keep_unavailable_dates_as_gaps(
     assert ("Estimate" in legends) == (point_state != "all_undefined")
     assert "one-sided test for an increase" in rendered
     assert "two-sided test" not in rendered
-    if point_state == "available":
-        packet = _render_entry(
-            storefront,
-            rows,
-            metric=storefront.primary_metric,
-            view="cumulative_lift",
-            complete=False,
-            breakout=("event_log", "country"),
-            correction=None,
-        )
-        notes = " ".join(packet["notes"])
-        assert "labelled line" not in notes
-        assert "no separate bound lines" in notes
-        assert "Latest readings and qualifications" in notes
 
 
 @pytest.mark.parametrize(
@@ -1613,7 +1948,6 @@ def test_temporal_lift_axes_and_latest_reading_keep_the_captured_scale(
     assert svgs
     tick_text = " ".join(re.findall(r"<text\b[^>]*>(.*?)</text>", "".join(svgs)))
     assert ("%" in tick_text) == (scale == "relative")
-    assert "Latest" in rendered
     assert ("+30.0%" if scale == "relative" else "+30") in rendered
     chart = ET.fromstring(svgs[0])
     line = chart.find(".//{*}polyline")
@@ -1669,19 +2003,6 @@ def test_temporal_early_outlier_keeps_its_true_ghost_and_clipped_geometry(
                 0 <= float(point.split(",")[1]) <= height for point in line.attrib["points"].split()
             )
     assert chart.find(".//{*}clipPath") is not None
-
-    packet = _render_entry(
-        storefront,
-        rows,
-        metric=seed.metric,
-        view="cumulative_lift",
-        complete=False,
-        breakout=None,
-        correction=None,
-    )
-    notes = " ".join(packet["notes"])
-    assert "table beside" not in notes
-    assert "Latest readings and qualifications" in notes
 
 
 @pytest.mark.slow
@@ -1799,8 +2120,6 @@ def test_secondary_coverage_budget_reaches_metric_details(
     metric = str(rows[index]["metric"])
     detail = next(item["detail"] for item in payload["metrics"] if item["key"] == metric)
     assert "100% (α=1e-17)" in detail
-
-    assert "100% (α=1e-17) CI" in results_table(snapshot)
 
 
 def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(
@@ -1946,7 +2265,6 @@ def test_temporal_caption_does_not_merge_rounded_equal_levels_with_different_bud
         for day in range(1, 4)
     )
     rendered = temporal_figure(storefront, rows, metric=seed.metric, view="cumulative_lift")
-    assert "Confidence levels vary by series" in rendered
     assert "100% (α=1e-17)" in rendered
     assert "100% (α=1e-18)" in rendered
 

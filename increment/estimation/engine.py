@@ -187,7 +187,7 @@ _REFUSALS = refusals(
         "estimation.engine.cluster.denominator": RefusalSpec(
             "estimation.engine.cluster.denominator",
             CapabilityError,
-            template="metric '{metric}' (type '{metric_type}', contrast '{treatment_group}' vs '{control_group}') carries a populated denominator family (ref_den) with no cluster= declared -- this group_summary was built with cluster=... (so 'n' counts clusters, not units), and reading it here as unit grain would silently mislabel a cluster-level point estimate and SE as unit-level. Pass estimate_lift(cluster=<the same column>, ...).",
+            template="metric '{metric}' (type '{metric_type}', contrast '{treatment_group}' vs '{control_group}') carries a populated denominator family (ref_den) with no cluster= declared; this group_summary was built with cluster=... (so 'n' counts clusters, not units), and reading it here as unit grain would silently mislabel a cluster-level point estimate and SE as unit-level. Pass estimate_lift(cluster=<the same column>, ...).",
             keys=frozenset({"cluster"}),
         ),
         "estimation.engine.ratio.cuped": RefusalSpec(
@@ -195,9 +195,9 @@ _REFUSALS = refusals(
             UnsupportedRequestError,
             template="CUPED cannot be applied to ratio metric '{metric}' from this source: experiment '{experiment}' declares n_pre_periods=0, and the warehouse covariate for a ratio metric is its numerator's pre-period total, so no covariate moments (ref_x/cx1/cx2/cxy) or covariate-denominator cross moment (cxden) can be materialized. Declare n_pre_periods > 0 on the experiment, or supply the covariate through Method.cuped(covariates=...) in the frame's MetricSpec method declaration.",
         ),
-        "estimation.engine.arm.duplicate_rows": "group_summary carries more than one row for (metric, group_id) {keys} -- an unchecked duplicate control row silently overwrites an earlier one in the lookup dict, and an unchecked duplicate treatment row is silently iterated as if it were a second arm, either way returning an arbitrary lift instead of a refusal. Deduplicate group_summary to exactly one row per (metric, group_id) before calling estimate_lift.",
-        "estimation.engine.arm.invalid_count": "{what} is {value!r}, not a finite integer-valued count -- ArmStats.n rejects a fractional value at direct construction, so the untyped dataframe ingress must too instead of silently truncating it (int(2.9) == 2) into a different arm size than the row declared. Round or fix the upstream aggregation so 'n' is integral.",
-        "estimation.engine.ratio.negative_variance": "ratio_abs_diff_se refused these moments: {reason} -- a deficit at this scale means the numerator/denominator moments violate Cauchy-Schwarz (an infeasible covariance), not merely cancelled, so reporting a clamped zero-SE (maximal confidence) would be the most dangerous possible failure mode for a decision number.",
+        "estimation.engine.arm.duplicate_rows": "group_summary carries more than one row for (metric, group_id) {keys}; an unchecked duplicate control row silently overwrites an earlier one in the lookup dict, and an unchecked duplicate treatment row is silently iterated as if it were a second arm, either way returning an arbitrary lift instead of a refusal. Deduplicate group_summary to exactly one row per (metric, group_id) before calling estimate_lift.",
+        "estimation.engine.arm.invalid_count": "{what} is {value!r}, not a finite integer-valued count; ArmStats.n rejects a fractional value at direct construction, so the untyped dataframe ingress must too instead of silently truncating it (int(2.9) == 2) into a different arm size than the row declared. Round or fix the upstream aggregation so 'n' is integral.",
+        "estimation.engine.ratio.negative_variance": "ratio_abs_diff_se refused these moments: {reason}; a deficit at this scale means the numerator/denominator moments violate Cauchy-Schwarz (an infeasible covariance), not merely cancelled, so reporting a clamped zero-SE (maximal confidence) would be the most dangerous possible failure mode for a decision number.",
         "estimation.engine.cuped_linear_unit_evidence": RefusalSpec(
             "estimation.engine.cuped_linear_unit_evidence",
             UnsupportedRequestError,
@@ -234,7 +234,7 @@ _REFUSALS = refusals(
             template="multicovariate CUPED is not available for encouragement design metric {metric!r}; use an encouragement-supported method without CUPED.",
             keys=frozenset({"metric"}),
         ),
-        "estimation.engine.carries_format_moments": "{what} carries format-1 moments (raw additive sums: 'sum_y2' present, 'cy2' absent). increment consumes CENTERED moments -- ref_y/cy1/cy2 and the c-form families -- because raw second moments lose the variance signal to floating-point cancellation once the mean dwarfs the spread, so they are never reinterpreted here. Two ways in: from_moments(...), which adapts stamped or unstamped format-1 rows automatically, or ArmStats.from_raw_sums(...) for hand-built rows.",
+        "estimation.engine.carries_format_moments": "{what} carries format-1 moments (raw additive sums: 'sum_y2' present, 'cy2' absent). increment consumes CENTERED moments: ref_y/cy1/cy2 and the c-form families; raw second moments lose the variance signal to floating-point cancellation once the mean dwarfs the spread, so they are never reinterpreted here. Two ways in: from_moments(...), which adapts stamped or unstamped format-1 rows automatically, or ArmStats.from_raw_sums(...) for hand-built rows.",
         "estimation.engine.carries_unsupported_weighted": "{what} carries unsupported weighted ArmStats fields: {unsupported}; weighted estimands must use ScoreStats.",
         "estimation.engine.x_role_declared": "x_role must be declared when the x family is present; an explicit null x_role is not a legacy declaration",
         "estimation.engine.group_summary_missing": "group_summary missing required columns: {missing}",
@@ -245,7 +245,7 @@ _REFUSALS = refusals(
         "estimation.engine.method_name_observational": "Method(name={m!r}) is an observational adjustment (estimate_ate / Observational design); this randomized path would label an unadjusted randomized estimate with it.",
         "estimation.engine.metric_found_group": "Metric(s) {unknown} found in group_summary but not in the metrics list. Declared metrics: {metric_types}",
         "estimation.engine.control_group_found": "control_group '{control_group}' not found in arms. Available groups: {known_groups}",
-        "estimation.encouragement.cluster.arm_needs_two": "metric '{metric}': cluster contrast ('{cluster}') needs at least 2 clusters in EACH arm to estimate a between-cluster variance for that arm, got {k_t} treatment cluster(s) and {k_c} control cluster(s) -- a single cluster carries no between-cluster variance contribution to estimate its own arm's component from.",
+        "estimation.encouragement.cluster.arm_needs_two": "metric '{metric}': cluster contrast ('{cluster}') needs at least 2 clusters in EACH arm to estimate a between-cluster variance for that arm, got {k_t} treatment cluster(s) and {k_c} control cluster(s); a single cluster carries no between-cluster variance contribution to estimate its own arm's component from.",
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -308,7 +308,7 @@ _register_warning(
     lambda *, metric_name, n_clusters, cluster, floor: (
         f"metric '{metric_name}': {n_clusters} total clusters "
         f"across arms (cluster '{cluster}') is below "
-        f"{floor} -- the cluster-robust variance is "
+        f"{floor}; the cluster-robust variance is "
         f"itself noisy at this K and asymptotic references can "
         f"over-reject; treat borderline "
         f"significance as fragile."
@@ -322,8 +322,8 @@ _register_warning(
     lambda *, metric_name, windows, fix: (
         f"metric '{metric_name}' is open-ended ({windows}): unit "
         "totals are still accruing between analyses, so the "
-        "sequential guarantee -- derived for finalized per-unit "
-        "values -- is approximate and the estimand drifts with "
+        "sequential guarantee, derived for finalized per-unit "
+        "values, is approximate and the estimand drifts with "
         f"the enrollment mix. {fix} to remove the changing-unit "
         "approximation; the plug-in standard error keeps coverage "
         "asymptotic either way."
@@ -335,11 +335,11 @@ _register_warning(
     "estimation.engine.ratio_denominator_skew",
     IncrementRuntimeWarning,
     lambda *, metric, arm, n, skewness, statistic, threshold: (
-        f"metric '{metric}' arm '{arm}': the denominator is too right-skewed for its sample "
-        f"size (sample skewness {skewness:.3g} over sqrt(n={n}) is {statistic:.3g}, above "
-        f"{threshold:.3g}); the delta-method interval undercovers in this region (about 92% "
-        "pooled at nominal 95% in calibration) and is reported unchanged -- add units or check "
-        "the denominator for heavy tails before deciding."
+        f"metric '{metric}' arm '{arm}': a heuristic flags a right-skewed denominator at this "
+        f"sample size (sample skewness {skewness:.3g} over sqrt(n={n}) is {statistic:.3g}, above "
+        f"{threshold:.3g}); the delta-method interval may be unreliable, but this diagnostic "
+        "does not establish coverage for this ratio. The estimate and interval are reported "
+        "unchanged; add units or check the denominator for heavy tails before deciding."
     ),
 )
 
@@ -1376,7 +1376,7 @@ def _ratio_advisories(
     contrast: tuple[ArmStats, ArmStats], strategy: _LiftVarianceStrategy, method: Method
 ) -> tuple[ReadoutAdvisory, ...]:
     """A fixed-horizon unit-grain ratio row's denominator advisories: the precision of the
-    denominator mean *method*'s row divides by, then the skew coverage note or its
+    denominator mean *method*'s row divides by, then the skew heuristic or its
     unavailability; empty for every other row."""
     if strategy.raw_denominator_precisions is None:
         return ()
@@ -1408,17 +1408,8 @@ def _ratio_advisories(
                 message=precision_note,
             )
         )
-    if strategy.ratio_skew_note is not None:
-        advisories.append(
-            ReadoutAdvisory(
-                code="estimation.engine.ratio_denominator_skew",
-                context={
-                    "metric_name": metric_name,
-                    "threshold": RATIO_DENOMINATOR_SKEW_THRESHOLD,
-                },
-                message=strategy.ratio_skew_note,
-            )
-        )
+    if strategy.ratio_skew_advisory is not None:
+        advisories.append(strategy.ratio_skew_advisory)
     return tuple(advisories)
 
 
@@ -2188,11 +2179,11 @@ class _LiftVarianceStrategy:
     absolute_moments: tuple[float, float, float, float] | None
     methods: tuple[_LiftMethodStrategy, ...]
     # For a fixed-horizon unit-grain ratio contrast, each arm's relative standard error of
-    # its raw denominator mean by group, treatment first, and the denominator-skew coverage
-    # note or its unavailability; None for every other contrast. Every method's row carries
-    # the skew note, and its own precision note (`_ratio_notes`).
+    # its raw denominator mean by group, treatment first, and the denominator-skew
+    # advisory or its unavailability; None for every other contrast. Every method's row
+    # carries the same skew advisory and its own precision note (`_ratio_notes`).
     raw_denominator_precisions: Mapping[str, float] | None
-    ratio_skew_note: str | None
+    ratio_skew_advisory: ReadoutAdvisory | None
     # The covariate balance of a fixed-horizon unit-grain contrast a CUPED
     # method adjusts; None for every other contrast or without a covariate.
     cuped_balance: CovariateBalance | None
@@ -2374,12 +2365,12 @@ def _select_lift_variance_strategy(
         abs_c, abs_se_c = _ratio_abs_diff_se(control)
         absolute_moments = (abs_t, abs_se_t, abs_c, abs_se_c)
     raw_denominator_precisions: dict[str, float] | None = None
-    ratio_skew_note: str | None = None
+    ratio_skew_advisory: ReadoutAdvisory | None = None
     if fixed_horizon and cluster is None and metric_type == "ratio":
         raw_denominator_precisions = {
             arm.group_id: ratio_denominator_precision(arm) for arm in (treatment, control)
         }
-        ratio_skew_note = _ratio_denominator_skew_note(treatment, control)
+        ratio_skew_advisory = _ratio_denominator_skew_advisory(treatment, control)
     cuped_balance = (
         _cuped_covariate_balance(treatment, control)
         if fixed_horizon and cluster is None and any(item.use_cuped for item in method_strategies)
@@ -2393,7 +2384,7 @@ def _select_lift_variance_strategy(
         absolute_moments=absolute_moments,
         methods=method_strategies,
         raw_denominator_precisions=raw_denominator_precisions,
-        ratio_skew_note=ratio_skew_note,
+        ratio_skew_advisory=ratio_skew_advisory,
         cuped_balance=cuped_balance,
     )
 
@@ -2414,30 +2405,34 @@ def _ratio_denominator_precision_note(
         for group_id, value in flagged.items()
     )
     return (
-        "ratio_denominator_precision: the denominator is too noisy at this sample size for "
-        f"the interval to hold its stated level (relative standard error of the {mean} "
-        f"{statistics} exceeds {RATIO_DENOMINATOR_PRECISION_THRESHOLD:.3g}). Expect "
-        "under-coverage; add units or check the denominator for heavy tails before deciding"
+        "ratio_denominator_precision: a heuristic flags an imprecise denominator mean at this "
+        f"sample size (relative standard error of the {mean} "
+        f"{statistics} exceeds {RATIO_DENOMINATOR_PRECISION_THRESHOLD:.3g}). The delta-method "
+        "interval may be unreliable; this diagnostic does not establish coverage for this "
+        "ratio. The estimate and interval are reported unchanged; add units or check the "
+        "denominator for heavy tails before deciding"
     )
 
 
-def _ratio_denominator_skew_note(treatment: ArmStats, control: ArmStats) -> str | None:
-    """Coverage advisory for a ratio contrast whose denominator mean is skewed
-    beyond the measured under-covering region in either arm.
+def _ratio_denominator_skew_advisory(
+    treatment: ArmStats, control: ArmStats
+) -> ReadoutAdvisory | None:
+    """A heuristic caution with each flagged arm's denominator-skew diagnostic.
 
-    An arm whose third moment overflowed or is inconsistent with its second cannot be
-    checked; the note reports that gap while valid moments in the other arm are still
-    checked. The estimate proceeds in either case.
+    Unavailable third moments retain their reasons while valid moments in the other
+    arm are still checked. The estimate proceeds in either case.
     """
-    unavailable = [
-        (arm.group_id, arm.skew_den_unavailable())
+    unavailable = {
+        arm.group_id: reason
         for arm in (treatment, control)
-        if arm.skew_den_unavailable() is not None
-    ]
+        if (reason := arm.skew_den_unavailable()) is not None
+    }
     reasons = []
-    missing = [group_id for group_id, reason in unavailable if reason == "missing"]
-    underflow = [group_id for group_id, reason in unavailable if reason == "underflow"]
-    inconsistent = [group_id for group_id, reason in unavailable if reason == "inconsistent"]
+    missing = [group_id for group_id, reason in unavailable.items() if reason == "missing"]
+    underflow = [group_id for group_id, reason in unavailable.items() if reason == "underflow"]
+    inconsistent = [
+        group_id for group_id, reason in unavailable.items() if reason == "inconsistent"
+    ]
     if missing:
         reasons.append(
             f"the moments for {', '.join(missing)} do not carry the denominator's third moment "
@@ -2454,22 +2449,21 @@ def _ratio_denominator_skew_note(treatment: ArmStats, control: ArmStats) -> str 
             "with the second (overflowed or mis-aggregated upstream)"
         )
     unavailable_note = (
-        "ratio_denominator_skew: unavailable -- "
+        "ratio_denominator_skew: unavailable; "
         + "; ".join(reasons)
         + ", so those arms could not be checked"
         if reasons
         else None
     )
-    flagged: list[str] = []
-    unavailable_groups = {group_id for group_id, _reason in unavailable}
+    flagged: dict[str, dict[str, int | float]] = {}
     for arm in (treatment, control):
-        if arm.group_id in unavailable_groups:
+        if arm.group_id in unavailable:
             continue
         statistic = ratio_denominator_mean_skewness(arm)
         if statistic <= RATIO_DENOMINATOR_SKEW_THRESHOLD:
             continue
         skewness = arm.skew_den()
-        flagged.append(f"{arm.group_id}={statistic:.3g} (skewness {skewness:.3g}, n={arm.n})")
+        flagged[arm.group_id] = {"n": arm.n, "skewness": skewness, "statistic": statistic}
         _warn(
             "estimation.engine.ratio_denominator_skew",
             metric=arm.metric,
@@ -2482,16 +2476,32 @@ def _ratio_denominator_skew_note(treatment: ArmStats, control: ArmStats) -> str 
         )
     warning_note = None
     if flagged:
-        warning_note = (
-            "ratio_denominator_skew: the denominator is too right-skewed for its sample size for "
-            "the interval to hold its stated level (standardized skewness of the denominator mean "
-            f"{', '.join(flagged)} exceeds {RATIO_DENOMINATOR_SKEW_THRESHOLD:.3g}; about 92% "
-            "pooled coverage at nominal 95% in calibration). The estimate and interval are "
-            "reported unchanged; add units or check the denominator for heavy tails before deciding"
+        statistics = ", ".join(
+            f"{group_id}={values['statistic']:.3g} "
+            f"(skewness {values['skewness']:.3g}, n={values['n']})"
+            for group_id, values in flagged.items()
         )
-    if unavailable_note and warning_note:
-        return f"{warning_note}; {unavailable_note}"
-    return warning_note or unavailable_note
+        warning_note = (
+            "ratio_denominator_skew: a heuristic flags right-skewed denominators at this sample "
+            "size (standardized skewness of the denominator mean "
+            f"{statistics} exceeds {RATIO_DENOMINATOR_SKEW_THRESHOLD:.3g}). The delta-method "
+            "interval may be unreliable; this diagnostic does not establish coverage for this "
+            "ratio. The estimate and interval are reported unchanged; add units or check the "
+            "denominator for heavy tails before deciding"
+        )
+    message = "; ".join(note for note in (warning_note, unavailable_note) if note is not None)
+    if not message:
+        return None
+    return ReadoutAdvisory(
+        code="estimation.engine.ratio_denominator_skew",
+        context={
+            "metric_name": treatment.metric,
+            "threshold": RATIO_DENOMINATOR_SKEW_THRESHOLD,
+            "arms": flagged,
+            "unavailable_arms": unavailable,
+        },
+        message=message,
+    )
 
 
 def _binomial_eligible(
@@ -4326,10 +4336,10 @@ def estimate_lift(  # noqa: PLR0913
     through ``experiment_id`` but do not provide trustworthy population
     metadata, so population is never inferred from them.
 
-    Ratio metrics use a first-order delta-method SE (``RatioVarianceModel``):
-    under a heavily right-skewed denominator the interval undercovers (see
-    that class). A fixed-horizon unit-grain ratio row is checked against the
-    measured region on each arm's denominator moments. An arm whose
+    Ratio metrics use a first-order delta-method SE (``RatioVarianceModel``),
+    whose finite-sample accuracy can be affected by denominator skew and by
+    numerator-denominator dependence. A fixed-horizon unit-grain ratio row
+    receives a heuristic check of each arm's denominator moments. An arm whose
     denominator-mean skewness ``ratio_denominator_mean_skewness`` exceeds
     ``RATIO_DENOMINATOR_SKEW_THRESHOLD`` raises the coded
     ``estimation.engine.ratio_denominator_skew`` warning (context: metric,

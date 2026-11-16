@@ -52,53 +52,33 @@ def test_census_counts_each_execution_path_exactly():
     backend = ibis.duckdb.connect()
     backend.create_table("census_source", obj=pa.table({"x": [1]}))
     try:
-        counts = {}
 
-        def observed(path, action):
+        def observed(kind, action, *, total=1):
             with count_statements(backend) as census:
-                action()
-            counts[path] = (census.total, census.by_kind.copy())
+                result = action()
+            assert census.total == total, census.statements
+            assert census.by_kind == {name: total if name == kind else 0 for name in census.by_kind}
+            return result
 
-        observed("raw_sql", lambda: backend.raw_sql("SELECT 1"))
-        observed("chained_execute", lambda: backend.raw_sql("SELECT 2").execute("SELECT 3"))
-        observed("expression_execute", lambda: backend.execute(ibis.literal(4)))
-        observed("to_pyarrow", lambda: backend.to_pyarrow(ibis.literal(5)))
-        observed("get_schema", lambda: backend.get_schema("census_source"))
-        observed("backend_sql", lambda: backend.sql("SELECT 6"))
-        observed(
-            "create_table",
-            lambda: backend.create_table("census_created", obj=pa.table({"x": [2]})),
+        assert observed("select", lambda: backend.raw_sql("SELECT 1")).fetchone() == (1,)
+        assert observed(
+            "select", lambda: backend.raw_sql("SELECT 2").execute("SELECT 3"), total=2
+        ).fetchone() == (3,)
+        assert observed("select", lambda: backend.execute(ibis.literal(4))) == 4
+        assert observed("select", lambda: backend.to_pyarrow(ibis.literal(5))).as_py() == 5
+        assert observed("schema", lambda: backend.get_schema("census_source")) == ibis.schema(
+            {"x": "int64"}
         )
-        assert counts == {
-            "raw_sql": (
-                1,
-                {"select": 1, "create_temp": 0, "drop": 0, "schema": 0, "other": 0},
-            ),
-            "chained_execute": (
-                2,
-                {"select": 2, "create_temp": 0, "drop": 0, "schema": 0, "other": 0},
-            ),
-            "expression_execute": (
-                1,
-                {"select": 1, "create_temp": 0, "drop": 0, "schema": 0, "other": 0},
-            ),
-            "to_pyarrow": (
-                1,
-                {"select": 1, "create_temp": 0, "drop": 0, "schema": 0, "other": 0},
-            ),
-            "get_schema": (
-                1,
-                {"select": 0, "create_temp": 0, "drop": 0, "schema": 1, "other": 0},
-            ),
-            "backend_sql": (
-                1,
-                {"select": 0, "create_temp": 0, "drop": 0, "schema": 1, "other": 0},
-            ),
-            "create_table": (
-                6,
-                {"select": 2, "create_temp": 1, "drop": 1, "schema": 1, "other": 1},
-            ),
-        }
+        assert list(observed("schema", lambda: backend.sql("SELECT 6 AS x")).columns) == ["x"]
+        observed(
+            "create_temp",
+            lambda: backend.con.execute("CREATE TEMP TABLE census_created (x INTEGER)"),
+        )
+        observed("other", lambda: backend.con.execute("INSERT INTO census_created VALUES (7)"))
+        assert observed(
+            "select", lambda: backend.con.sql("SELECT x FROM census_created")
+        ).fetchall() == [(7,)]
+        observed("drop", lambda: backend.con.execute("DROP TABLE census_created"))
     finally:
         backend.disconnect()
 
@@ -169,9 +149,8 @@ def test_compatible_metrics_share_executed_reductions(size, occurrence_only, col
         assert census.by_kind["create_temp"] <= 1
         assert census.by_kind["other"] <= 1
         assert not any(name.startswith("component_values_") for name in backend.list_tables())
-        plans = census.plans
-        assert len(plans) == 1
-        assert plans[0].count("SEQ_SCAN") <= 4
+        assert len(census.table_scan_counts) == 1
+        assert census.table_scan_counts[0] <= 4
         from increment.evidence import DayAxisRequest, evidence_provider, request_evidence
 
         for grain in ("daily", "asof"):
@@ -197,6 +176,5 @@ def test_compatible_metrics_share_executed_reductions(size, occurrence_only, col
             assert census.by_kind["create_temp"] <= 1
             assert census.by_kind["other"] <= 1
             assert not any(name.startswith("component_values_") for name in backend.list_tables())
-            plans = census.plans
-            assert len(plans) == 1
-            assert plans[0].count("SEQ_SCAN") <= 4
+            assert len(census.table_scan_counts) == 1
+            assert census.table_scan_counts[0] <= 4

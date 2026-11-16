@@ -106,23 +106,25 @@ def _():
 
 
 @app.cell
+def _(Baseline, MEAN_REVENUE, PowerDesign, VAR_REVENUE, mo):
+    baseline = Baseline(mean=MEAN_REVENUE, var=VAR_REVENUE)
+    design = PowerDesign(power=0.80)
+    mo.show_code(position="above")
+    return baseline, design
+
+
+@app.cell(hide_code=True)
 def _(
     AnalysisAxes,
     ArmPlanningProcedure,
-    Baseline,
     FamilyPolicy,
     FixedInference,
-    MEAN_REVENUE,
     MetricCapabilities,
     ParallelAssignment,
     PlanningFamilyExpansion,
-    PowerDesign,
     RelativeDecisionPolicy,
-    VAR_REVENUE,
     increment,
 ):
-    baseline = Baseline(mean=MEAN_REVENUE, var=VAR_REVENUE)
-    design = PowerDesign(power=0.80)
     procedure = ArmPlanningProcedure(
         assignment=ParallelAssignment(),
         analysis=AnalysisAxes(
@@ -155,7 +157,7 @@ def _(
         sensitivity_methods=(),
         prior_present=False,
     )
-    return baseline, design, procedure
+    return (procedure,)
 
 
 @app.cell
@@ -167,8 +169,14 @@ def _(mo):
 
 
 @app.cell
-def _(TARGET_LIFT, baseline, design, mo, procedure, required_sample_size):
+def _(TARGET_LIFT, baseline, design, procedure, required_sample_size, mo):
     rss = required_sample_size(TARGET_LIFT, baseline, procedure, design)
+    mo.show_code(position="above")
+    return (rss,)
+
+
+@app.cell(hide_code=True)
+def _(TARGET_LIFT, mo, rss):
     mde_display = (
         f"{rss.mde_relative:+.2%} relative to the null"
         if rss.mde_relative is not None
@@ -186,7 +194,7 @@ def _(TARGET_LIFT, baseline, design, mo, procedure, required_sample_size):
     - Effective variance used for asymptotic planning: {rss.effective_var:.4g}
     """
     )
-    return (rss,)
+    return
 
 
 @app.cell
@@ -198,9 +206,10 @@ def _(mo):
 
 
 @app.cell
-def _(BIGGER_N, BUDGET_N, TARGET_LIFT, achieved_power, baseline, design, procedure):
+def _(BIGGER_N, BUDGET_N, TARGET_LIFT, achieved_power, baseline, design, mo, procedure):
     ap = achieved_power(BUDGET_N, TARGET_LIFT, baseline, procedure, design)
     ap_bigger = achieved_power(BIGGER_N, TARGET_LIFT, baseline, procedure, design)
+    mo.show_code(position="above")
     return ap, ap_bigger
 
 
@@ -227,9 +236,10 @@ def _(mo):
 
 
 @app.cell
-def _(BIGGER_N, BUDGET_N, baseline, design, minimum_detectable_effect, procedure):
+def _(BIGGER_N, BUDGET_N, baseline, design, minimum_detectable_effect, mo, procedure):
     mde_small = minimum_detectable_effect(BUDGET_N, baseline, procedure, design)
     mde_big = minimum_detectable_effect(BIGGER_N, baseline, procedure, design)
+    mo.show_code(position="above")
     return mde_big, mde_small
 
 
@@ -268,9 +278,7 @@ def _(mo):
 
 
 @app.cell
-def _(baseline, design, power_curve, procedure):
-    import altair as alt
-
+def _(baseline, design, mo, power_curve, procedure):
     sample_sizes = range(5_000, 55_001, 5_000)
     effect_sizes = [0.01, 0.02, 0.03, 0.05]
     alphas = [0.01, 0.05, 0.10]
@@ -297,9 +305,15 @@ def _(baseline, design, power_curve, procedure):
         design=design,
         units_per_week=30000,
     )
+    mo.show_code(position="above")
+    return (curve,)
+
+
+@app.cell
+def _(curve):
+    import altair as alt
 
     curve_df = curve.to_frame(backend="pandas")
-
     alt.Chart(curve_df).mark_line().encode(
         x=alt.X("duration_days:Q", title="Duration (Days)"),
         y=alt.Y("power:Q", scale=alt.Scale(domain=[0, 1])),
@@ -324,6 +338,7 @@ def _(
     TARGET_LIFT,
     baseline,
     design,
+    mo,
     procedure,
     required_sample_size,
     rss,
@@ -343,6 +358,7 @@ def _(
     rss_mc = required_sample_size(TARGET_LIFT, baseline, procedure_mc, design)
 
     extra = rss_mc.n_per_arm - rss.n_per_arm
+    mo.show_code(position="above")
     return procedure_mc, extra, rss_mc
 
 
@@ -381,6 +397,7 @@ def _(
     VAR_REVENUE,
     design,
     increment,
+    mo,
     procedure,
     required_sample_size,
     rss,
@@ -392,6 +409,7 @@ def _(
     rss_cuped = required_sample_size(TARGET_LIFT, baseline_cuped, procedure_cuped, design)
 
     saved = rss.n_per_arm - rss_cuped.n_per_arm
+    mo.show_code(position="above")
     return procedure_cuped, rss_cuped, saved
 
 

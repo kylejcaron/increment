@@ -63,10 +63,10 @@ _REFUSALS = refusals(
     InvalidRequestError,
     {
         "frame.metric.type_quantile_needs": "metric {name!r} has type='quantile' and needs quantile in (0, 1), got {quantile!r}",
-        "frame.metric.cuped_does_apply": "metric {name!r}: CUPED does not apply to quantile metrics (no mean to adjust) -- remove the method CUPED declaration or use a mean-based metric",
+        "frame.metric.cuped_does_apply": "metric {name!r}: CUPED does not apply to quantile metrics (no mean to adjust); remove the method CUPED declaration or use a mean-based metric",
         "frame.metric.sets_quantile_but": "metric {name!r} sets quantile= but type={type!r}",
         "frame.metric.winsorization_applies_type": "metric {name!r}: winsorization applies only to type='mean', got {type!r}",
-        "frame.metric.type_retention_needs": "metric {name!r}: type='retention' needs threshold_days -- an int N for the unbounded band [N, inf), or [a, b] for the half-open observation band [a, b)",
+        "frame.metric.type_retention_needs": "metric {name!r}: type='retention' needs threshold_days; an int N for the unbounded band [N, inf), or [a, b] for the half-open observation band [a, b)",
         "frame.metric.sets_threshold_days": "metric {name!r} sets threshold_days but type={type!r}; the observation band belongs to type='retention'",
         "frame.metric.window_days_supported": "metric {name!r}: window_days is not supported for quantile metrics on the frame path",
         "frame.metric.type_ratio_but": "metric {name!r} has type='ratio' but is missing {missing}; a ratio metric needs both a numerator and a denominator column",
@@ -88,8 +88,8 @@ _REFUSALS = refusals(
         ),
         "frame.metrics_entries_metricspec": "metrics entries must be a metric name, MetricSpec, or mapping, got {type_name}",
         "frame.duplicate_metric_name": "duplicate metric name {name!r}: moments are keyed by name, so two specs sharing one name silently interleave their rows and cross-pair arms. Give each metric a distinct name.",
-        "frame.metric_type_retention": "metric {name!r}: type='retention' needs threshold_days -- use the explicit MetricSpec form: MetricSpec(name={name!r}, type='retention', threshold_days=...)",
-        "frame.metric_type_quantile": "metric {name!r}: type='quantile' needs quantile -- use the explicit MetricSpec form: MetricSpec(name={name!r}, type='quantile', quantile=...)",
+        "frame.metric_type_retention": "metric {name!r}: type='retention' needs threshold_days; use the explicit MetricSpec form: MetricSpec(name={name!r}, type='retention', threshold_days=...)",
+        "frame.metric_type_quantile": "metric {name!r}: type='quantile' needs quantile; use the explicit MetricSpec form: MetricSpec(name={name!r}, type='quantile', quantile=...)",
         "frame.metric_unknown_type": "metric {name!r}: unknown type {kind!r}; expected one of 'mean', 'conversion', 'ratio'",
     },
 )

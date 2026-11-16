@@ -57,7 +57,7 @@ _REFUSALS = refusals(
         "estimation.adjust_overlap.cross_fitting_needs": "cross-fitting needs at least 2 folds, got k={k}",
         "estimation.adjust_overlap.arms_shape": "arms must be 1-d, got shape {arms}",
         "estimation.adjust_overlap.arms_unit_ids": "arms and unit_ids must have the same length, got {arms} and {unit_ids}",
-        "estimation.adjust_overlap.fold_ids_needs": "_fold_ids needs string-typed unit ids for a stable hash, got dtype {unit_ids!r} -- cast to str before calling (e.g. unit_frame's own unit_id column, which is already String-typed)",
+        "estimation.adjust_overlap.fold_ids_needs": "_fold_ids needs string-typed unit ids for a stable hash, got dtype {unit_ids!r}; cast to str before calling (e.g. unit_frame's own unit_id column, which is already String-typed)",
         "estimation.adjust_overlap.arm_stratified_cross": "arm-stratified cross-fitting needs at least two arm labels, got {unique_arms}",
         "estimation.adjust_overlap.arm_unit_but": "arm {arm!r} has only {indices} unit(s), but cross-fitting with {k} folds needs at least {k} per arm",
         "estimation.adjust_overlap.cluster_ids_one": RefusalSpec(
@@ -66,7 +66,7 @@ _REFUSALS = refusals(
             lambda **_: "cluster_ids must be one-dimensional and align with unit_ids",
         ),
         "estimation.adjust_overlap.arm_cluster_but": "arm {arm!r} has only {clusters} cluster(s), but cross-fitting with {k} folds needs at least {k} per arm",
-        "estimation.adjust_overlap.cluster_arm_needs_two": "treatment-pure cluster contrast needs at least 2 clusters in EACH arm to estimate a between-cluster variance for that arm, got {k_t} treated cluster(s) and {k_c} control cluster(s) -- a single cluster carries no between-cluster variance contribution to estimate its own arm's component from.",
+        "estimation.adjust_overlap.cluster_arm_needs_two": "treatment-pure cluster contrast needs at least 2 clusters in EACH arm to estimate a between-cluster variance for that arm, got {k_t} treated cluster(s) and {k_c} control cluster(s); a single cluster carries no between-cluster variance contribution to estimate its own arm's component from.",
         "estimation.adjust_overlap.cluster_needs_two": "cluster covariance needs at least two independent clusters, got {k}",
     },
 )
@@ -455,7 +455,7 @@ def _overlap_refusal_message(
     ``marginal`` is arm ``a``'s marginal propensity.
     """
     suffix = (
-        " -- set gate.overlap='trim' to analyse the overlap subpopulation \u2014 trimming "
+        "; set gate.overlap='trim' to analyse the overlap subpopulation \u2014 trimming "
         "CHANGES the estimand and is recorded on LiftEstimate.population"
     )
     control_group, treatment_groups = groups[0], groups[1:]
@@ -517,7 +517,7 @@ def _missing_covariate_refusal(
         f"missingness indicator appended to the adjustment set), "
         f"AdjustmentSet(missing='pattern') (propensity fit separately per "
         f"missingness pattern), or AdjustmentSet(missing='allow') (NaN passed "
-        f"through raw -- requires explicitly supplied NaN-native learner(s) via "
+        f"through raw; requires explicitly supplied NaN-native learner(s) via "
         f"Method(propensity_learner=..., outcome_learner=...); the package "
         f"defaults silently emit non-finite predictions under NaN), or repair "
         f"the columns upstream while keeping a missingness indicator (mean "
@@ -570,7 +570,7 @@ def _impute_with_indicators(
             raise IdentificationError(
                 f"{method}: adjustment covariate {name!r} has no observed "
                 f"values for metric {metric_name!r} "
-                f"({_contrast_text(treatment_groups, control_group)}) -- every row is "
+                f"({_contrast_text(treatment_groups, control_group)}); every row is "
                 f"missing, so there is nothing to impute a pooled mean from. "
                 f"Drop it from the adjustment set or repair the column "
                 f"upstream.",
@@ -646,7 +646,7 @@ def _pattern_propensities(
         raise IdentificationError(
             f"{method}: missing='pattern' found {n_patterns} distinct "
             f"missingness patterns for metric {metric_name!r} ({contrast}), above the "
-            f"{_MAX_MISSINGNESS_PATTERNS}-pattern cap -- scattered "
+            f"{_MAX_MISSINGNESS_PATTERNS}-pattern cap; scattered "
             f"per-covariate missingness makes every per-pattern propensity "
             f"fit too thin to trust. Declare missing='impute-indicator' "
             f"instead, or coarsen the missingness upstream (impute the "
@@ -736,7 +736,7 @@ def _allow_requires_learner_refusal(
         f"{method}: AdjustmentSet(missing='allow') passes NaN straight to the "
         f"learner(s), so every learner that consumes X must be explicitly "
         f"supplied (metric {metric_name!r}); defaulted: {', '.join(defaulted)}. "
-        f"The package defaults do not raise on NaN input -- they silently "
+        f"The package defaults do not raise on NaN input; they silently "
         f"return non-finite predictions, which the NaN-blind gates cannot "
         f"catch. Supply {slots} with NaN-native learner(s) (e.g. a LightGBM "
         f"or HistGradientBoosting wrapper). This refusal is unconditional: "
@@ -779,7 +779,7 @@ def _allow_nan_mask(
             f"NaN-native learner(s), but adjustment covariate(s) contain "
             f"non-finite non-NaN (+/-inf) values for metric {metric_name!r} "
             f"({_contrast_text(treatment_groups, control_group)}): {named}. "
-            f"A NaN-native learner's split routing handles NaN only -- "
+            f"A NaN-native learner's split routing handles NaN only; "
             f"repair the +/-inf values upstream.",
             code="adjust.identification.allow_nonfinite_covariates",
             context={
@@ -812,7 +812,7 @@ def _allow_note(miss: np.ndarray, layout: CovariateLayout) -> str:
         f"NaN covariate values passed through to NaN-native learner(s): {named}; "
         "assumes ignorability given observed values and the missingness "
         "pattern, AND that the learner can represent pattern-specific "
-        "(indicator x covariate) structure -- additive or surrogate-split NaN "
+        "(indicator x covariate) structure; additive or surrogate-split NaN "
         f"handling does not deliver this; gates computed on the "
         f"{representation} + indicator representation plus "
         "indicator x covariate interaction SMDs"
@@ -848,7 +848,7 @@ def _probe_nan_capability(
         raise IdentificationError(
             f"{method}: missing='allow' {role} learner {name} failed the "
             f"NaN-capability probe for metric {metric_name!r} "
-            f"({_contrast_text(treatment_groups, control_group)}) -- fit/predict raised "
+            f"({_contrast_text(treatment_groups, control_group)}); fit/predict raised "
             f"on a {_PROBE_ROWS}x{n_cols} matrix with NaN planted in the "
             f"column(s) missing in the data: {err}. Supply a NaN-native "
             f"learner (e.g. a LightGBM or HistGradientBoosting wrapper).",
@@ -868,7 +868,7 @@ def _probe_nan_capability(
         raise IdentificationError(
             f"{method}: missing='allow' {role} learner {name} failed the "
             f"NaN-capability probe for metric {metric_name!r} "
-            f"({_contrast_text(treatment_groups, control_group)}) -- {n_bad} of "
+            f"({_contrast_text(treatment_groups, control_group)}); {n_bad} of "
             f"{pred.shape[0]} probe predictions are non-finite under NaN "
             f"input, and NaN compares False against every gate threshold, so "
             f"this would ship past the overlap and balance gates. Supply a "
@@ -960,7 +960,7 @@ def _prediction_shape_guard(
             f"{method}: learner {learner_name} returned a {what} prediction of "
             f"shape {arr.shape} for metric {metric_name!r} "
             f"({_contrast_text(treatment_groups, control_group)}), expected a 1-D array of "
-            f"length {expected_n} -- a scalar or mis-shaped prediction silently "
+            f"length {expected_n}; a scalar or mis-shaped prediction silently "
             "broadcasts against later elementwise ops",
             code="estimation.adjust.learner.prediction_shape",
             context={
@@ -1001,8 +1001,8 @@ def _finite_guard(
         raise IdentificationError(
             f"{method}: missing='allow' learner {learner_name} produced {bad} "
             f"of {values.shape[0]} non-finite {what} predictions for metric "
-            f"{metric_name!r} ({_contrast_text(treatment_groups, control_group)}) "
-            f"-- NaN compares False against every gate "
+            f"{metric_name!r} ({_contrast_text(treatment_groups, control_group)})"
+            f"; NaN compares False against every gate "
             f"threshold, so non-finite nuisances would silently disable the "
             f"overlap and balance gates. The learner passed the NaN probe but "
             f"emitted non-finite values on the real data; supply a learner "
@@ -1023,7 +1023,7 @@ def _finite_guard(
     raise IdentificationError(
         f"{method}: learner {learner_name} produced {bad} of {values.shape[0]} "
         f"non-finite {what} predictions for metric {metric_name!r} "
-        f"({_contrast_text(treatment_groups, control_group)}) -- NaN compares False "
+        f"({_contrast_text(treatment_groups, control_group)}); NaN compares False "
         f"against every gate threshold, so non-finite nuisances would "
         f"silently disable the overlap and balance gates. Supply a learner "
         f"that produces finite predictions on this data.",
@@ -1067,7 +1067,7 @@ def _propensity_range_guard(
         f"{method}: learner {learner_name} produced {n_bad} propensity "
         f"prediction(s) outside [0, 1] (min={np.min(bad_vals):.3g}, "
         f"max={np.max(bad_vals):.3g}) for metric {metric_name!r} "
-        f"({_contrast_text(treatment_groups, control_group)}) -- this is a broken "
+        f"({_contrast_text(treatment_groups, control_group)}); this is a broken "
         f"propensity model, not a positivity violation; the overlap gate "
         f"only trims values inside [0, 1] near the boundary. Supply a "
         f"propensity learner whose predictions are probabilities.",

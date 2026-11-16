@@ -241,12 +241,12 @@ def refuse_quantile_moments_export(
 _BREAKOUT_COUNTS = _RefusalSpec(
     "source.breakout.assignment_counts",
     _CapabilityError,
-    template="unit_counts() is not supported on a breakout-scoped moments source -- its rows are per (group_id, dimension_value), so a per-group count would silently report one segment's n as the whole arm's. Use DefinitionsMomentSource.moments_source() for total-grain counts.",
+    template="unit_counts() is not supported on a breakout-scoped moments source; its rows are per (group_id, dimension_value), so a per-group count would silently report one segment's n as the whole arm's. Use DefinitionsMomentSource.moments_source() for total-grain counts.",
 )
 _BREAKOUT_COMPLIANCE = _RefusalSpec(
     "source.breakout.compliance_summary",
     _CapabilityError,
-    template="compliance_summary() is not supported on a breakout-scoped moments source -- design-level compliance is a whole-population cohort, never conditioned on a breakout dimension. Read it off the unscoped MomentSource.",
+    template="compliance_summary() is not supported on a breakout-scoped moments source; design-level compliance is a whole-population cohort, never conditioned on a breakout dimension. Read it off the unscoped MomentSource.",
 )
 
 
@@ -375,7 +375,7 @@ _READOUT_METRIC_QUANTILE_GRAIN = _RefusalSpec(
     "readout.metric.quantile_grain",
     _CapabilityError,
     lambda *, metric, grain: (
-        f"quantile metric {metric!r} cannot be estimated at {grain!r} grain -- "
+        f"quantile metric {metric!r} cannot be estimated at {grain!r} grain; "
         + (
             "quantiles do not decompose into per-day moments"
             if grain in ("daily", "asof")

@@ -165,7 +165,7 @@ def _materialize_binding(binding: SourceBinding) -> None:
         "materialize",
         MaterializeOperation,
         message=(
-            "materialize() needs an experiment built by from_definitions -- "
+            "materialize() needs an experiment built by from_definitions; "
             "a frame, warehouse or moments experiment has nothing to materialize."
         ),
     )
