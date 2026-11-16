@@ -35,7 +35,7 @@ jobs:
       - run: >-
           uv run --with nox nox -s tests_floor_full-3.12 --
           'tests/test_evidence_level_parity.py::test_declared_coordinate_acquires_exact_evidence_or_disposition[exact_binomial_beyond_the_former_arm_ceiling--from_definitions]'
-          -n 0 --durations=5 --junitxml=probe-junit.xml
+          -n 0 -m '' --durations=5 --junitxml=probe-junit.xml
       - name: Retain the isolated regression result
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
