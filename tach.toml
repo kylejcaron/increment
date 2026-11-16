@@ -567,6 +567,11 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment.estimation._relative_conjugate"
+layer = "core"
+depends_on = ["increment.estimation._relative_posterior", "increment.estimation.priors"]
+
+[[modules]]
 path = "increment.estimation._relative_posterior"
 layer = "core"
 depends_on = ["increment.errors", "increment.estimation.priors"]
