@@ -1172,9 +1172,15 @@ depends_on = [
   "increment._artifact_identity",
   "increment._assignment_ledger_contract", "increment._frame_ledger",
   "increment.query.artifact_ports",
+  "increment.query._day_offsets",
   "increment.query._summary_sql",
   "increment.query._workflows", "increment.estimation.variance", "increment.estimation.cuped.multicovariate", "increment.estimation.cuped.inference", "increment.estimation.engine", "increment.estimation.cuped._numeric", "increment.estimation._readout_refusals", "increment.estimation.cuped.cells", "increment.estimation.armstats", "increment.estimation.cuped.encoding", "increment.estimation.cuped.types",
 ]
+
+[[modules]]
+path = "increment.query._day_offsets"
+layer = "core"
+depends_on = []
 
 [[modules]]
 path = "increment.query._summary_sql"

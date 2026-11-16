@@ -2193,11 +2193,41 @@ def test_cross_backend_snowflake_sql(exposures, purchase_events, experiment, mea
     ibis.to_sql(summary, dialect="snowflake")
 
 
-def test_panel_renders_snowflake_sql(exposures, purchase_events, experiment, mean_metric):
-    """The panel stage compiles to Snowflake SQL."""
-    events = metric_events(purchase_events, mean_metric, value_column="amount")
-    panel = unit_day_panel(exposures, events, experiment, metric_name=mean_metric.name)
-    ibis.to_sql(panel, dialect="snowflake")
+def test_panel_spine_snowflake_identifiers_resolve():
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.optimizer.qualify import qualify
+
+    exposure_schema = {
+        "unit_id": "string",
+        "experiment_id": "string",
+        "group_id": "string",
+        "first_exposure_ts": "timestamp",
+    }
+    exposures = ibis.table(exposure_schema, name="exposures")
+    experiment = Experiment(
+        name="e",
+        unit="unit_id",
+        exposure="exposures",
+        control_group="c",
+        start=dt.datetime(2025, 8, 1),
+        plan=AnalysisPlan(),
+    )
+    spine = panel_spine(exposures, experiment, end_date=ibis.literal(dt.date(2025, 8, 2)))
+    statement = sqlglot.parse_one(ibis.to_sql(spine, dialect="snowflake"), read="snowflake")
+    # FLATTEN exposes these fixed columns, not a derived-column alias list.
+    for flatten in statement.find_all(exp.Explode):
+        alias = flatten.parent.args.get("alias")
+        if alias is not None:
+            alias.set(
+                "columns",
+                [
+                    exp.to_identifier(name, quoted=True)
+                    for name in ("SEQ", "KEY", "PATH", "INDEX", "VALUE", "THIS")
+                ],
+            )
+    qualified = qualify(statement, dialect="snowflake", schema={"exposures": exposure_schema})
+    assert qualified.named_selects == list(spine.columns)
 
 
 def test_panel_bounded_when_experiment_end_is_none(exposures, page_view_events, experiment):

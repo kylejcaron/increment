@@ -36,9 +36,36 @@ def test_capture_covers_the_scenario_inventory() -> None:
 
 
 def test_population_identity_digest_is_order_independent() -> None:
-    assert population_digest(["z", "a"], population="assigned", arm="control") == population_digest(
-        ["a", "z"], population="assigned", arm="control"
-    )
+    import hashlib
+
+    import pyarrow as pa
+
+    frames = [
+        pa.table({"group_id": ["control"] * 1025, "unit_id": ["é"] * 1025}),
+        pa.table(
+            {
+                "group_id": ["treatment", "control", "control", "control"],
+                "unit_id": ["None", "a\nb", 'a"b', "é"],
+            }
+        ),
+    ]
+    expected_ids = ["a\nb", 'a"b', "é"]
+    expected_payload = '["a\\nb","a\\"b","é"]'.encode()
+    expected = {
+        "control": {
+            "digest": hashlib.sha256(expected_payload).hexdigest(),
+            "unit_count": 3,
+        },
+        "treatment": {
+            "digest": hashlib.sha256(b'["None"]').hexdigest(),
+            "unit_count": 1,
+        },
+    }
+    assert capture_script._population_membership_by_arm(frames) == expected
+    assert capture_script._population_membership_by_arm(list(reversed(frames))) == expected
+    assert population_digest(
+        list(reversed(expected_ids)), population="assigned", arm="control"
+    ) == (expected["control"]["digest"], 3)
 
 
 def test_population_digest_is_length_safe_for_delimiter_ids() -> None:

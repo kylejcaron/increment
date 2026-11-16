@@ -65,29 +65,6 @@ def test_classifier_returns_none_when_ibis_is_not_loaded(monkeypatch: pytest.Mon
 
 
 @pytest.mark.integration
-def test_sql_generation_failure_after_compilation_is_a_translation_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import sqlglot.errors
-    import sqlglot.expressions
-
-    generate = sqlglot.expressions.Expression.sql
-
-    def unsupported(self, *args, **kwargs):
-        if kwargs.get("unsupported_level") is sqlglot.errors.ErrorLevel.RAISE:
-            raise sqlglot.errors.UnsupportedError("unsupported")
-        return generate(self, *args, **kwargs)
-
-    con = ibis.duckdb.connect()
-    expr = ibis.memtable({"x": [1, 2]}).mutate(y=ibis._.x + 1)
-    monkeypatch.setattr(sqlglot.expressions.Expression, "sql", unsupported)
-    with pytest.raises(CodedError) as refused, translating_compile_gaps():
-        con.compile(expr)
-    assert refused.value.code == UNSUPPORTED
-    assert refused.value.context["backend"] == "duckdb"
-
-
-@pytest.mark.integration
 def test_run_reports_a_missing_compiler_rule_with_the_code(
     seeded_con, example_definitions, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -2912,7 +2912,8 @@ class _DuckDBBigQueryResult:
         self._cursor = cursor
 
     def to_arrow(self, **_kwargs):
-        return self._cursor.to_arrow_table()
+        to_arrow = getattr(self._cursor, "to_arrow_table", None)
+        return to_arrow() if to_arrow is not None else self._cursor.fetch_arrow_table()
 
     def __getattr__(self, name):
         return getattr(self._cursor, name)

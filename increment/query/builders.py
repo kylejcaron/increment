@@ -43,6 +43,7 @@ from increment.errors import (
     refusals,
 )
 from increment.errors import warn as _warn_spec
+from increment.query._day_offsets import expand_day_offsets
 from increment.query._summary_sql import SummarySqlStages
 from increment.query.artifact_contract import _aggregate_sum_within_extrema
 from increment.semantics.models import (
@@ -404,7 +405,7 @@ def first_exposures(exposure_events: ir.Table, experiment: Experiment) -> ir.Tab
     # NULL is not an arm. A unit with only NULL assignments has no distinct
     # group, while a real-arm-plus-NULL unit has one; both are invalid.
     status = per_group.group_by(["unit_id", "experiment_id"]).agg(
-        n_groups=per_group.group_id.nunique(),
+        n_groups=per_group.group_id.count(),
         has_null=per_group.group_id.isnull().any(),
     )
     valid_units = status.filter((status.n_groups == 1) & ~status.has_null)
@@ -472,8 +473,11 @@ def mixed_assignment_units(exposure_events: ir.Table, experiment: Experiment) ->
         experiment_id=ibis.coalesce(exposure_events.experiment_id, experiment.name)
     )
     per_group = exposure_events.select("unit_id", "experiment_id", "group_id").distinct()
+    # Each (unit, experiment, group) tuple is already unique. Count only
+    # non-NULL labels so this stays equivalent to nunique(), which ignores
+    # NULL, without building another distinct aggregate state.
     status = per_group.group_by(["unit_id", "experiment_id"]).agg(
-        n_groups=per_group.group_id.nunique(),
+        n_groups=per_group.group_id.count(where=per_group.group_id.notnull()),
         has_null=per_group.group_id.isnull().any(),
     )
     invalid = status.filter((status.n_groups > 1) | status.has_null)
@@ -1302,18 +1306,12 @@ def panel_spine(
     keys = firsts.select(*spine_cols)
     day_count = ibis.greatest(
         ibis.coalesce(
-            cast("ir.DateValue", edge).delta(firsts.first_exposure_date, unit="day") + 1, 0
+            cast("ir.DateValue", edge).delta(keys.first_exposure_date, unit="day") + 1, 0
         ),
         0,
     )
-    # Relational unnest avoids the `_u`/`_u_2` alias pair sqlglot emits for a
-    # projection-embedded unnest, which collides on Snowflake.
-    expanded = firsts.mutate(_day_offsets=ibis.range(0, day_count, 1)).unnest("_day_offsets")
-    days = expanded.select(
-        "unit_id",
-        "experiment_id",
-        "first_exposure_date",
-        day_offset=expanded["_day_offsets"],
+    days = expand_day_offsets(keys, cast("ir.IntegerValue", day_count)).select(
+        "unit_id", "experiment_id", "first_exposure_date", "day_offset"
     )
     # Ibis already types date + interval as a date and drops a plain date cast,
     # but DuckDB evaluates the sum as a timestamp; the round trip keeps `ds` a date.

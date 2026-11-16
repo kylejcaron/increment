@@ -558,6 +558,12 @@ Hypothesis uses the `dev` profile locally (`deadline=None`, suppressing only
 deadline and default health checks).
 Affected selections of up to six direct test files run without xdist workers.
 
+Population identity capture preserves canonical hashes, including duplicate and
+null handling, without exporting outcomes when eligibility needs only membership.
+Keep the large-population cases and their existing memory and timeout limits.
+Count scans from structured `EXPLAIN` output; calibrate SQL instrumentation with
+explicit statements rather than Ibis-private cleanup behavior.
+
 Unit-selected tests run without DuckDB connections, subprocesses, processes or
 Internet sockets. Collection raises `pytest.UsageError` if a unit test requests
 a fixture declared with `backend_fixture`; runtime refusals identify the
