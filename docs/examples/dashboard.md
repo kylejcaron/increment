@@ -39,6 +39,9 @@ The demo defines windows by outcome rather than applying one window everywhere:
 All windows start at assignment in the Assigned population and at the user's
 first trigger in the Triggered population.
 
+The open-ended metrics declare `window_days: null` explicitly. Omitting
+`window_days` instead warns that a fixed window has not been chosen.
+
 **Completed windows only** therefore delays fixed-window outcomes, not the
 operational metrics. It changes Explore only; the main Readout still requires
 complete observation for the fixed-window outcomes.

@@ -149,9 +149,7 @@ def con():
 
 @pytest.fixture
 def analysis(con):
-    with pytest.warns(IncrementWarning) as record:
-        binding = from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
-    assert set(warning_codes(record)) == {"definition.metric.variable_window_days_none"}
+    binding = from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
     return binding
 
 
@@ -229,16 +227,14 @@ def test_triggered_experiment_reports_each_population(con):
     """The shipped triggered experiment, read up to the generated snapshot's
     cutoff, reports its assigned and its triggered population separately."""
     manifest = json.loads((DEFINITIONS.parent / "warehouse" / "manifest.json").read_text())
-    with pytest.warns(IncrementWarning) as record:
-        experiment, reader = from_definitions(
-            DEFINITIONS,
-            con,
-            experiment_name="express_checkout",
-            source_snapshot_evidence=SourceSnapshotEvidence(
-                observation_cutoff_ts=datetime.fromisoformat(manifest["observation_cutoff"])
-            ),
-        )
-    assert set(warning_codes(record)) == {"definition.metric.variable_window_days_none"}
+    experiment, reader = from_definitions(
+        DEFINITIONS,
+        con,
+        experiment_name="express_checkout",
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=datetime.fromisoformat(manifest["observation_cutoff"])
+        ),
+    )
     for population in ("assigned", "triggered"):
         estimates = view_readout(experiment, reader, population=population)
         assert {(e.metric, e.analysis_population) for e in estimates} == {
