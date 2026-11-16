@@ -732,7 +732,9 @@ class RelativeStudentTPosterior:
             lambda: self._invert(tail_probability, survival=True),
         )
 
-    def _coordinates(self, alpha: float) -> tuple[float, float, Callable[[float], float]]:
+    def _coordinates(
+        self, alpha: float
+    ) -> tuple[float, float, Callable[[float], float], Callable[[float], float]]:
         work = self._workspace
         radius = -float(ndtri_exp(math.log(alpha) - _LOG2))
         low = _finite_float(Fraction(min(0, work.x)) - Fraction(work.s) * Fraction(radius))
@@ -764,12 +766,12 @@ class RelativeStudentTPosterior:
                 log_sinh = absolute - _LOG2 + math.log(-math.expm1(-2 * absolute))
                 return math.copysign(min(sys.float_info.max, _exp(math.log(work.a) + log_sinh)), z)
 
-        return coordinate(low), coordinate(high), effect
+        return coordinate(low), coordinate(high), effect, coordinate
 
     def _invert(self, alpha: float, *, survival: bool) -> float:
         if alpha > 0.5:
             alpha, survival = 1 - alpha, not survival
-        low, high, effect = self._coordinates(alpha)
+        low, high, effect, coordinate = self._coordinates(alpha)
 
         def evaluate(z: float) -> _Estimate:
             return self._probability(effect(z), survival=survival, relative=True)
@@ -783,12 +785,17 @@ class RelativeStudentTPosterior:
 
         # First try a local likelihood bracket, retaining the full sufficient
         # bracket if the prior has shifted the requested quantile outside it.
-        if self._workspace.a >= self._workspace.s:
-            radius = -float(ndtri_exp(math.log(alpha) - _LOG2))
-            local_low, local_high = max(low, -radius), min(high, radius)
-            local_left, local_right = evaluate(local_low), evaluate(local_high)
-            if bracketed(local_left, local_right):
-                low, high = local_low, local_high
+        radius = -float(ndtri_exp(math.log(alpha) - _LOG2))
+        work = self._workspace
+        local_low = max(
+            low, coordinate(_finite_float(Fraction(work.x) - Fraction(work.s) * Fraction(radius)))
+        )
+        local_high = min(
+            high, coordinate(_finite_float(Fraction(work.x) + Fraction(work.s) * Fraction(radius)))
+        )
+        local_left, local_right = evaluate(local_low), evaluate(local_high)
+        if bracketed(local_left, local_right):
+            low, high = local_low, local_high
         left, right = evaluate(low), evaluate(high)
         if not bracketed(left, right):
             wrong = (
@@ -811,7 +818,6 @@ class RelativeStudentTPosterior:
         result = effect(root)
         if not math.isfinite(result):
             _unavailable("inversion", "result_unrepresentable")
-        pair = self._probability(result, survival=survival, relative=True)
         tolerance = 1e-9 + 1e-6 * abs(result)
         qlo = math.nextafter(result - tolerance / 4, -math.inf)
         qhi = math.nextafter(result + tolerance / 4, math.inf)
@@ -822,16 +828,44 @@ class RelativeStudentTPosterior:
         minimum = 0 if qlo <= 0 <= qhi else min(abs(qlo), abs(qhi))
         if max(result - qlo, qhi - result) > 1e-9 + 1e-6 * minimum:
             _unavailable("inversion", "accuracy_unresolved")
-        if abs(pair.value - alpha) + pair.error <= min(1e-10, 1e-6 * alpha):
+
+        def accepted(value: float) -> bool:
+            pair = self._probability(value, survival=survival, relative=True)
+            if abs(pair.value - alpha) + pair.error <= min(1e-10, 1e-6 * alpha):
+                return True
+            # A residual may be impossible at every representable effect.
+            previous = math.nextafter(value, -math.inf)
+            following = math.nextafter(value, math.inf)
+            before = self._probability(previous, survival=survival, relative=True)
+            after = self._probability(following, survival=survival, relative=True)
+            adjacent = bracketed(before, pair) or bracketed(pair, after)
+            minimum = 0 if previous <= 0 <= following else min(abs(previous), abs(following))
+            return adjacent and max(value - previous, following - value) <= 1e-9 + 1e-6 * minimum
+
+        if accepted(result):
             return result
-        # A probability residual can be impossible at every representable effect.
-        # Establish an actual adjacent-float enclosure instead of relaxing it.
-        previous, following = math.nextafter(result, -math.inf), math.nextafter(result, math.inf)
-        before = self._probability(previous, survival=survival, relative=True)
-        after = self._probability(following, survival=survival, relative=True)
-        adjacent = bracketed(before, pair) or bracketed(pair, after)
-        if adjacent and max(result - previous, following - result) <= 1e-9 + 1e-6 * min(
-            abs(previous), abs(following)
-        ):
+        # Refine the located root without another logarithmic round trip.
+        center = result
+        unit = max(center - qlo, qhi - center)
+
+        def local_effect(value: float) -> float:
+            return center + unit * value
+
+        try:
+            local_root = brentq(
+                lambda z: (
+                    self._probability(local_effect(z), survival=survival, relative=True).value
+                    - alpha
+                ),
+                (qlo - center) / unit,
+                (qhi - center) / unit,
+                xtol=math.ulp(0.0),
+                rtol=8 * _EPS,
+                maxiter=256,
+            )
+        except (ValueError, RuntimeError):
+            _unavailable("inversion", "accuracy_unresolved")
+        result = local_effect(local_root)
+        if max(result - qlo, qhi - result) <= 1e-9 + 1e-6 * minimum and accepted(result):
             return result
         _unavailable("inversion", "accuracy_unresolved")

@@ -284,13 +284,24 @@ def test_student_t_flat_cdf_refuses_unresolved_value_bracket():
     assert distribution.state.model_dump_json() == defining_state
 
 
-def test_student_t_adjacent_float_median_accepts_value_enclosure():
-    distribution = posterior(1, 1e-8, 4, 0.1)
+@pytest.mark.parametrize(
+    "prior_scale,cdf_lower,cdf_upper",
+    [
+        (0.1, 0.499999997034172067085, 0.500000001463321119067),
+        # Direct density in likelihood coordinates, refined at 60/85 digits.
+        (1e-9, 0.499999997801368760165, 0.500000002230517812146),
+    ],
+)
+def test_student_t_adjacent_float_median_accepts_value_enclosure(prior_scale, cdf_lower, cdf_upper):
+    distribution = posterior(1, 1e-8, 4, prior_scale)
     q = distribution.quantile(0.5)
     assert q in (0.9999999999999994, 0.9999999999999996)
     assert abs(distribution.cdf(q) - 0.5) > 1e-10
-    assert distribution.cdf(0.9999999999999994) < 0.5
-    assert distribution.cdf(0.9999999999999996) > 0.5
+    lower = distribution.cdf(0.9999999999999994)
+    upper = distribution.cdf(0.9999999999999996)
+    assert lower == pytest.approx(cdf_lower, abs=1e-10, rel=0)
+    assert upper == pytest.approx(cdf_upper, abs=1e-10, rel=0)
+    assert lower < 0.5 < upper
 
 
 def test_student_t_construction_failure_context_survives_transport():
