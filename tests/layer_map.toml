@@ -5,8 +5,6 @@ core = [
   "increment._readout_html",
   "increment._warehouse_namespace",
   "increment._compile_gaps",
-  "increment._prior_types",
-  "increment._prior_validation",
   "increment._posterior_projection",
   "increment.semantics*",
   "increment.estimation*",

@@ -1789,6 +1789,9 @@ def test_relative_prior_public_replay_retains_standalone_posterior(family):
     }
     prior = RelativeLiftPrior(distribution=distributions[family])
     results = _relative_prior_run({"revenue": prior})
+    for copied in (copy.deepcopy(results), pickle.loads(pickle.dumps(results))):
+        assert copied.model_dump_json() == results.model_dump_json()
+        assert copied.metadata == results.metadata
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     (row,) = restored
     assert row.posterior_available is True
@@ -1812,6 +1815,8 @@ def test_relative_prior_public_replay_retains_standalone_posterior(family):
     for saved in (
         ResultCell.from_payload(cell.to_payload()),
         ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+        copy.deepcopy(cell),
+        pickle.loads(pickle.dumps(cell)),
     ):
         replay = saved.retained_row()
         assert replay.prior_spec == prior
@@ -1922,6 +1927,9 @@ def test_relative_posterior_metadata_survives_breakout_and_day_views():
     }
     for view in (View(view="breakout", grain="total"), View(view="daily", grain="daily")):
         results = _relative_prior_run(priors, view=view)
+        for copied in (copy.deepcopy(results), pickle.loads(pickle.dumps(results))):
+            assert copied.model_dump_json() == results.model_dump_json()
+            assert copied.metadata == results.metadata
         restored = ReadoutResults.model_validate_json(results.model_dump_json())
         exported = nw.from_native(to_frame(restored, backend="pyarrow"), eager_only=True).iter_rows(
             named=True
@@ -1941,6 +1949,8 @@ def test_relative_posterior_metadata_survives_breakout_and_day_views():
             for saved in (
                 ResultCell.from_payload(cell.to_payload()),
                 ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+                copy.deepcopy(cell),
+                pickle.loads(pickle.dumps(cell)),
             ):
                 assert saved.components["posterior"][0].state == "available"
                 assert saved._projection_row()._posterior().survival(0.31) == pytest.approx(
@@ -1992,10 +2002,15 @@ def test_exported_relative_posterior_rejects_unrecognized_defining_state():
         payload[field].update(change)
         malformed = dict(exported)
         malformed[field] = canonical_json_bytes(payload[field]).decode()
-        with pytest.raises(CodedError):
+        with pytest.raises(CodedError) as decoded:
             LiftEstimate.model_validate(payload)
-        with pytest.raises(CodedError):
+        with pytest.raises(CodedError) as from_frame:
             _posterior_row_from_export(malformed, LiftEstimate)
+        corrupt = row.model_copy(update={field: payload[field]})
+        with pytest.raises(CodedError) as from_pickle:
+            pickle.loads(pickle.dumps(corrupt))
+        assert decoded.value.code == from_frame.value.code == from_pickle.value.code
+        assert decoded.value.context == from_frame.value.context == from_pickle.value.context
     payload = row.model_dump(mode="json")
     payload["posterior_student_t_state"]["prior"]["scale"] = 3
     with pytest.raises(CodedError) as mismatched:

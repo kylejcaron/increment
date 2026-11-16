@@ -469,6 +469,11 @@ def test_student_t_saved_state_requires_its_original_prior_and_available_model(c
     with pytest.raises(InvalidRequestError) as caught:
         LiftEstimate.model_validate(payload)
     assert caught.value.code == "estimation.results.lift.posterior_components_invalid"
+    corrupt = row.model_copy(update=payload)
+    with pytest.raises(InvalidRequestError) as from_pickle:
+        pickle.loads(pickle.dumps(corrupt))
+    assert from_pickle.value.code == caught.value.code
+    assert from_pickle.value.context == caught.value.context
 
 
 def test_student_t_construction_failure_keeps_sampling_original_prior_and_coded_reason():

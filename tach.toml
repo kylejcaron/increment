@@ -81,7 +81,7 @@ depends_on = ["increment.errors"]
 [[modules]]
 path = "increment.semantics"
 layer = "core"
-depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment._prior_types", "increment._prior_validation", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity", "increment._assignment_refusals", "increment._optional"]
+depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity", "increment._assignment_refusals", "increment._optional"]
 
 [[modules]]
 path = "increment._canonical"
@@ -338,16 +338,6 @@ path = "increment._metric_specs"
 layer = "core"
 depends_on = ["increment._finite_sample_refusals", "increment._literals", "increment.errors", "increment.semantics", "increment.estimation.engine", "increment.estimation.priors"]
 
-[[modules]]
-path = "increment._prior_types"
-layer = "core"
-depends_on = ["increment._prior_validation", "increment.errors"]
-
-[[modules]]
-path = "increment._prior_validation"
-layer = "core"
-depends_on = ["increment.errors"]
-
 # Shared source and decision types live in leaf modules, keeping the core
 # decision/plan/source/request/config dependency graph acyclic.
 [[modules]]
@@ -382,8 +372,6 @@ depends_on = [
   "increment.estimation.sequential", "increment.semantics",
   "increment.sequential_state",
   "increment.declarations", "increment.estimation.priors",
-  "increment._prior_types",
-  "increment._prior_validation",
 ]
 
 [[modules]]
@@ -432,7 +420,7 @@ depends_on = [
 [[modules]]
 path = "increment._analysis_config"
 layer = "core"
-depends_on = ["increment._prior_types", "increment.estimation.decision_types", "increment.semantics", "increment.errors", "increment.sequential_state", "increment.estimation.priors", "increment.estimation.engine", "increment.estimation.cuped.scalar", "increment.estimation.adjust"]
+depends_on = ["increment.estimation.decision_types", "increment.semantics", "increment.errors", "increment.sequential_state", "increment.estimation.priors", "increment.estimation.engine", "increment.estimation.cuped.scalar", "increment.estimation.adjust"]
 
 [[modules]]
 path = "increment._moment_plan"
@@ -975,7 +963,7 @@ depends_on = ["increment._literals", "increment._multiplicity"]
 [[modules]]
 path = "increment.estimation.priors"
 layer = "core"
-depends_on = ["increment.errors", "increment._prior_types", "increment._prior_validation"]
+depends_on = ["increment.errors", "increment.semantics"]
 
 [[modules]]
 path = "increment.estimation.quantile"

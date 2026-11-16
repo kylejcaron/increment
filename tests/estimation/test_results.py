@@ -865,6 +865,16 @@ class TestEstimateAdversarialConstruction:
         )
         tampered = result.model_copy(update={"lift": estimate.model_copy(update={"alpha": 0.10})})
         assert tampered.prob_beyond(0.0) is None
+        legacy = result.model_copy()
+        del legacy.__dict__["posterior_relative_model"]
+        del legacy.__dict__["posterior_student_t_state"]
+        restored = pickle.loads(pickle.dumps(legacy))
+        assert restored.model_dump_json() == result.model_dump_json()
+        assert restored.model_fields_set == result.model_fields_set
+        assert restored.posterior_relative_model is None
+        assert restored.posterior_student_t_state is None
+        assert restored.posterior_available is None
+        assert restored.prob_beyond(0.0) is None
 
 
 def test_lift_estimate_carries_winsorization_diagnostics():

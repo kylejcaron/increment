@@ -34,8 +34,6 @@ from increment._literals import (
     ValueScale,
 )
 from increment._multiplicity import guarantee_for_correction
-from increment._prior_types import RelativeLiftPriorSpec
-from increment._prior_validation import validate_relative_prior_tag
 from increment.decision import (
     AbsoluteArmDecisionProcedure,
     CompiledDecisionPlan,
@@ -63,6 +61,8 @@ from increment.semantics.models import (
     CupedCovariate,
     CupedCovariateBinding,
     NormalPriorSpec,
+    RelativeLiftPriorSpec,
+    _validate_relative_prior_tag,
 )
 from increment.semantics.rational import _JSON_RATIONAL_CONTEXT, RATIONAL_INVALID
 from increment.semantics.sequential import (
@@ -218,7 +218,7 @@ class _WireArmProcedure(_WireBase):
     @classmethod
     def _explicit_relative_prior_tag(cls, value: object) -> object:
         if isinstance(value, Mapping) and ("type" in value or "distribution" in value):
-            validate_relative_prior_tag(value)
+            _validate_relative_prior_tag(value)
         return value
 
 

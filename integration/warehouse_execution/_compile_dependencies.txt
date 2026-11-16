@@ -1,4 +1,4 @@
-# Traced on commit: c2f810c94d4303a205ff11a9ef8699484b428560
+# Traced on commit: 70aaa47d126cdb358bb90f9d5aa5a0f0ffc32d31
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -37,8 +37,6 @@ increment._plan_compatibility
 increment._planning_baseline
 increment._policy_alpha
 increment._posterior_projection
-increment._prior_types
-increment._prior_validation
 increment._readout_request
 increment._run
 increment._run_spines

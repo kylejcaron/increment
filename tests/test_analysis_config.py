@@ -595,9 +595,9 @@ def test_frame_bound_relative_prior_survives_experiment_json_and_explicit_reset(
     ],
 )
 def test_relative_prior_invalid_distribution_is_coded_across_declarations(distribution, code):
-    from increment._prior_types import RelativeLiftPriorSpec
     from increment.errors import CodedError
     from increment.estimators import RelativeLiftPrior
+    from increment.semantics.models import RelativeLiftPriorSpec
 
     payload = {"type": "relative_lift", "distribution": distribution}
     with pytest.raises(CodedError) as declared:

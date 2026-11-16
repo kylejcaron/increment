@@ -124,6 +124,7 @@ from increment.estimation.results import (
     _infer_reference_from_legacy_dof,
     _RowIdentity,
     _sequential_display_parts,
+    _StoredPrior,
     _validate_absolute_reference_fields,
     _validate_delta_evidence,
     _validate_joint_relative_row,
@@ -714,7 +715,7 @@ class BreakoutEstimate(_RowIdentity):
     # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.
     excluded: ExclusionReason | None = None
     # Original declaration, separate from the updated posterior state.
-    prior_spec: Prior | None = None
+    prior_spec: _StoredPrior = None
     # Historical prior-present marker; modern sampling/posterior availability fields
     # determine which inference products are available.
     prior_shrunk: bool = False
@@ -1391,7 +1392,7 @@ class DailyLiftEstimate(_RowIdentity):
     """
 
     analysis_population: Literal["assigned", "triggered"] = "assigned"
-    prior_spec: Prior | None = None
+    prior_spec: _StoredPrior = None
     dof: float | None = None
     reference_kind: Literal["normal", "t", "sequential", "binomial"] = "normal"
     reference_df: float | None = None

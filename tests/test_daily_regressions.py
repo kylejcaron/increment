@@ -89,3 +89,44 @@ def test_native_daily_inherited_methods_and_roles_reach_estimator(
         ("purchase_rate", "cuped", "decision", "secondary"),
         ("avg_session_duration", "unadjusted", "decision", "secondary"),
     }
+
+
+@pytest.mark.integration
+def test_daily_missing_date_retains_unavailable_cells_with_relative_student_prior(con):
+    import datetime as dt
+
+    from increment import run
+    from increment.estimators import RelativeLiftPrior, StudentTPrior
+    from increment.results import AnalysisEnvelope, DailyLiftEstimates
+    from tests.test_analysis_daily import _analysis_with_daily_events
+
+    experiment, reader = _analysis_with_daily_events(con)
+    definition = experiment_definition(experiment, reader)
+    missing_day = definition.start_day - dt.timedelta(days=1)
+    experiment, reader = make_binding_like(
+        reader,
+        experiment=definition.model_copy(update={"start": definition.start - dt.timedelta(days=1)}),
+    )
+    scope = View(view="daily", grain="daily")
+    result = run(
+        experiment.with_views(scope),
+        reader,
+        views=(scope,),
+        prior=RelativeLiftPrior(distribution=StudentTPrior(nu=4, scale=0.5)),
+    )
+    daily = result.readout(scope)
+    assert isinstance(daily, DailyLiftEstimates)
+    rows = {row.ds: row for row in daily}
+    observed_days = (dt.date(2025, 6, 1), dt.date(2025, 6, 2))
+    assert set(rows) == {*observed_days, missing_day}
+    assert all(rows[day].posterior_available is True for day in observed_days)
+    gap = rows[missing_day]
+    assert gap.posterior_available is False
+    assert gap.posterior_relative_model is None
+    assert gap.posterior_student_t_state is None
+    restored = type(gap).model_validate_json(gap.model_dump_json())
+    assert restored.sampling_reason_code == "readout.cell.missing_metric_observations"
+    assert restored.posterior_reason_code == restored.sampling_reason_code
+    assert restored.lift is None
+    saved = AnalysisEnvelope.from_arrow(result.envelope.to_arrow())
+    assert len(saved.cells) == len(result.cells) == 3

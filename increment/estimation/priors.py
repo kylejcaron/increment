@@ -36,8 +36,6 @@ from pydantic import (
 )
 from scipy.optimize import brentq
 
-from increment._prior_types import RelativeLiftPriorSpec
-from increment._prior_validation import validate_mixture_prior, validate_relative_prior_tag
 from increment.errors import (
     CodedModel,
     InvalidRequestError,
@@ -45,6 +43,11 @@ from increment.errors import (
     refusals,
     refuse,
     unwrap_coded,
+)
+from increment.semantics.models import (
+    RelativeLiftPriorSpec,
+    _validate_mixture_prior,
+    _validate_relative_prior_tag,
 )
 
 _MIN_POSITIVE_FLOAT = math.nextafter(0.0, 1.0)
@@ -245,7 +248,7 @@ class MixturePrior(CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _consistent(self):
-        validate_mixture_prior(self.weights, self.means, self.sigmas)
+        _validate_mixture_prior(self.weights, self.means, self.sigmas)
         return self
 
     def components(self) -> MixturePrior:
@@ -361,7 +364,7 @@ class RelativeLiftPrior(CodedModel, BaseModel):
 
 def _tagged_relative_prior(value: object) -> object:
     if isinstance(value, Mapping) and ("type" in value or "distribution" in value):
-        validate_relative_prior_tag(value)
+        _validate_relative_prior_tag(value)
         return RelativeLiftPrior.model_validate(value)
     return value
 

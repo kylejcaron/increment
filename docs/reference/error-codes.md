@@ -714,12 +714,14 @@ Retired codes and their replacements are listed below.
 | `estimation.meta.var_a_finite` | `InvalidRequestError` | `var_a` | `increment.estimation.meta` |
 | `estimation.meta.var_b_finite` | `InvalidRequestError` | `var_b` | `increment.estimation.meta` |
 | `estimation.meta.var_finite_strictly` | `InvalidRequestError` | — | `increment.estimation.meta`, `increment.power.core` |
-| `estimation.priors.mixture.every_sigma` | `InvalidRequestError` | — | `increment.estimation.priors` |
-| `estimation.priors.mixture.every_weight` | `InvalidRequestError` | — | `increment.estimation.priors` |
-| `estimation.priors.mixture.every_weight_mean` | `InvalidRequestError` | `means`, `sigmas`, `weights` | `increment.estimation.priors` |
-| `estimation.priors.mixture.prior_needs_least` | `InvalidRequestError` | — | `increment.estimation.priors` |
-| `estimation.priors.mixture.weights_means_sigmas` | `InvalidRequestError` | `k`, `means`, `sigmas` | `increment.estimation.priors` |
-| `estimation.priors.mixture.weights_sum` | `InvalidRequestError` | `total` | `increment.estimation.priors` |
+| `estimation.posterior.invalid_request` | `InvalidRequestError` | `operation`, `reason` | `increment.estimation._relative_posterior` |
+| `estimation.posterior.numerical_unavailable` | `_PosteriorNumericalError` | `operation`, `reason` | `increment.estimation._relative_posterior` |
+| `estimation.priors.mixture.every_sigma` | `InvalidRequestError` | — | `increment.semantics.models` |
+| `estimation.priors.mixture.every_weight` | `InvalidRequestError` | — | `increment.semantics.models` |
+| `estimation.priors.mixture.every_weight_mean` | `InvalidRequestError` | `means`, `sigmas`, `weights` | `increment.semantics.models` |
+| `estimation.priors.mixture.prior_needs_least` | `InvalidRequestError` | — | `increment.semantics.models` |
+| `estimation.priors.mixture.weights_means_sigmas` | `InvalidRequestError` | `k`, `means`, `sigmas` | `increment.semantics.models` |
+| `estimation.priors.mixture.weights_sum` | `InvalidRequestError` | `total` | `increment.semantics.models` |
 | `estimation.priors.mixture_posterior.expected_negative_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.priors` |
 | `estimation.priors.mixture_posterior.expected_positive_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.priors` |
 | `estimation.priors.mixture_posterior.probability` | `InvalidRequestError` | `probability` | `increment.estimation.priors` |
@@ -1140,14 +1142,14 @@ Retired codes and their replacements are listed below.
 | `logged_policy.trace.reward_nonfinite` | `InvalidRequestError` | `decision_index`, `reward`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
 | `logged_policy.trace.unit_id_missing` | `InvalidRequestError` | `row`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
 | `logged_policy.trace.unordered` | `InvalidRequestError` | `decision_indices`, `decision_times`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
-| `model.field.length` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
-| `model.field.literal` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
-| `model.field.missing` | `InvalidRequestError` | `field`, `model` | `increment.errors`, `increment.winsor` |
-| `model.field.nonfinite` | `InvalidRequestError` | `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
-| `model.field.pattern` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
-| `model.field.range` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
-| `model.field.type` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
-| `model.field.unknown` | `InvalidRequestError` | `field`, `model` | `increment.errors`, `increment.winsor` |
+| `model.field.length` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.semantics.models`, `increment.winsor` |
+| `model.field.literal` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.semantics.models`, `increment.winsor` |
+| `model.field.missing` | `InvalidRequestError` | `field`, `model` | `increment.errors`, `increment.semantics.models`, `increment.winsor` |
+| `model.field.nonfinite` | `InvalidRequestError` | `field`, `model`, `value` | `increment.errors`, `increment.semantics.models`, `increment.winsor` |
+| `model.field.pattern` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.semantics.models`, `increment.winsor` |
+| `model.field.range` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.semantics.models`, `increment.winsor` |
+| `model.field.type` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.semantics.models`, `increment.winsor` |
+| `model.field.unknown` | `InvalidRequestError` | `field`, `model` | `increment.errors`, `increment.semantics.models`, `increment.winsor` |
 | `moments.count_field_missing` | `WireFormatError` | `field` | `increment.sources` |
 | `moments.count_not_integer` | `WireFormatError` | `field`, `value` | `increment.sources` |
 | `moments.count_out_of_range` | `WireFormatError` | `field`, `n`, `value` | `increment.sources` |

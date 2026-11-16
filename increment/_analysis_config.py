@@ -17,7 +17,6 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
-from increment._prior_types import RelativeLiftPriorSpec
 from increment.errors import (
     InvalidRequestError,
     RefusalSpec,
@@ -40,6 +39,7 @@ from increment.semantics.models import (
     MethodSpec,
     Metric,
     NormalPriorSpec,
+    RelativeLiftPriorSpec,
 )
 
 if TYPE_CHECKING:

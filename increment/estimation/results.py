@@ -17,6 +17,7 @@ from decimal import Decimal, localcontext
 from fractions import Fraction
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     ClassVar,
     Literal,
@@ -29,6 +30,7 @@ from typing import (
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     PrivateAttr,
@@ -974,6 +976,12 @@ class _RowIdentity(CodedModel, BaseModel):
     mean_control: float | None = Field(default=None, exclude_if=lambda v: v is None)
     mean_treat: float | None = Field(default=None, exclude_if=lambda v: v is None)
 
+    def __setstate__(self, state: dict[str, object]) -> None:
+        """Restore declared defaults and validate saved values without updating inference."""
+        values = cast("dict[str, Any]", state["__dict__"])
+        restored = type(self).model_validate(values)
+        super().__setstate__({**state, "__dict__": {**values, **restored.__dict__}})
+
     def _posterior(self) -> LiftPosterior | None:
         """Reconstruct the stored posterior shared by every decision-row view."""
         if self.posterior_available is not True or self.inference != "fixed":
@@ -1140,7 +1148,6 @@ class _RowIdentity(CodedModel, BaseModel):
     @field_validator(
         "posterior_relative_model",
         "posterior_student_t_state",
-        "prior_spec",
         mode="before",
         check_fields=False,
     )
@@ -1325,6 +1332,11 @@ def _selection_qualification(row: Any) -> str | None:
     return f"{procedure_label}{level}; {family}"
 
 
+_StoredPrior = Annotated[
+    Prior | None, BeforeValidator(_RowIdentity._decode_posterior_defining_state)
+]
+
+
 class LiftEstimate(_RowIdentity):
     """A lift estimate, carrying the metadata to identify which (metric,
     method, group) and its persisted inference reference.
@@ -1456,7 +1468,7 @@ class LiftEstimate(_RowIdentity):
     # Scale on which the underlying posterior law is parameterized.
     # Declared Student-t/MixturePrior input; exact updated posterior state is
     # separately persisted in posterior_components.
-    prior_spec: Prior | None = None
+    prior_spec: _StoredPrior = None
     # Historical persisted marker that an informative prior was supplied.
     # Modern sampling availability and posterior availability are authoritative.
     prior_shrunk: bool = False

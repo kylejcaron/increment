@@ -208,6 +208,12 @@ class PosteriorInference(_ReadoutModel):
         default=None, exclude_if=lambda value: value is None
     )
 
+    def __setstate__(self, state: dict[str, object]) -> None:
+        """Restore declared defaults while retaining the recorded posterior state."""
+        values = cast("dict[str, Any]", state["__dict__"])
+        restored = type(self).model_validate(values)
+        super().__setstate__({**state, "__dict__": {**values, **restored.__dict__}})
+
     @field_validator("prior", mode="before")
     @classmethod
     def _decode_prior(cls, value: object) -> object:
