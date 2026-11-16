@@ -9,6 +9,7 @@ core = [
   "increment._prior_validation",
   "increment.semantics*",
   "increment.estimation*",
+  "increment.estimation._relative_conjugate",
   "increment.estimation._relative_posterior",
   "increment.estimation._adjust.clustered_unadjusted",
   "increment.estimation._adjust.common",
