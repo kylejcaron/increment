@@ -977,9 +977,13 @@ class _RowIdentity(CodedModel, BaseModel):
     mean_treat: float | None = Field(default=None, exclude_if=lambda v: v is None)
 
     def __setstate__(self, state: dict[str, object]) -> None:
-        """Restore declared defaults and validate saved values without updating inference."""
+        """Restore trusted pickle values and missing defaults without recomputing inference."""
         values = cast("dict[str, Any]", state["__dict__"])
-        restored = type(self).model_validate(values)
+        identity = _PickledRowIdentity.model_validate(
+            {name: values[name] for name in _PICKLED_IDENTITY_FIELDS if name in values}
+        )
+        identity_values = {name: getattr(identity, name) for name in _PICKLED_IDENTITY_FIELDS}
+        restored = type(self).model_construct(**{**values, **identity_values})
         super().__setstate__({**state, "__dict__": {**values, **restored.__dict__}})
 
     def _posterior(self) -> LiftPosterior | None:
@@ -1335,6 +1339,19 @@ def _selection_qualification(row: Any) -> str | None:
 _StoredPrior = Annotated[
     Prior | None, BeforeValidator(_RowIdentity._decode_posterior_defining_state)
 ]
+
+
+class _PickledRowIdentity(_RowIdentity):
+    """Validate saved posterior identity without reinverting sampling intervals."""
+
+    prior_spec: _StoredPrior = None
+
+
+_PICKLED_IDENTITY_FIELDS = frozenset(
+    name
+    for name, field in _PickledRowIdentity.model_fields.items()
+    if field.is_required() or name.startswith("posterior_") or name == "prior_spec"
+)
 
 
 class LiftEstimate(_RowIdentity):
