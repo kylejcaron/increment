@@ -1032,6 +1032,8 @@ def test_retained_capture_commit_survives_a_squash_merge(tmp_path, monkeypatch):
                 "-c",
                 "commit.gpgsign=false",
                 "-c",
+                "tag.gpgsign=false",
+                "-c",
                 "core.hooksPath=/dev/null",
                 *args,
             ],
@@ -1041,6 +1043,8 @@ def test_retained_capture_commit_survives_a_squash_merge(tmp_path, monkeypatch):
         ).stdout.strip()
 
     git("init", "--initial-branch=main")
+    git("config", "tag.gpgsign", "true")
+    git("config", "gpg.program", str(tmp_path / "unavailable-gpg"))
     values = tmp_path / "values.json"
     values.write_text('{"control": 10, "treatment": 12}\n')
     git("add", "values.json")
