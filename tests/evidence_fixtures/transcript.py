@@ -889,19 +889,30 @@ def _validate_direct_provenance(
 
 
 @cache
-def _in_history(revision: str) -> bool:
+def _has_capture_tag(repository: Path, revision: str) -> bool:
     completed = subprocess.run(
-        ["git", "-C", str(_REPOSITORY), "merge-base", "--is-ancestor", revision, "HEAD"],
+        [
+            "git",
+            "-C",
+            str(repository),
+            "rev-parse",
+            "--verify",
+            f"refs/tags/evidence-capture/{revision}^{{commit}}",
+        ],
         capture_output=True,
+        text=True,
         check=False,
     )
-    return completed.returncode == 0
+    return completed.returncode == 0 and completed.stdout.strip() == revision
 
 
-def require_ancestor_revision(revision: str) -> None:
-    """Accept a recorded capture base only as a full commit in this checkout's history."""
-    if _FULL_REVISION.fullmatch(revision) is None or not _in_history(revision):
-        raise ValueError("baseline revision is not a full commit in this history")
+def require_capture_revision(revision: str) -> None:
+    """Require the original full capture commit, retained by its matching immutable tag."""
+    if _FULL_REVISION.fullmatch(revision) is None or not _has_capture_tag(_REPOSITORY, revision):
+        raise ValueError(
+            "baseline revision must match its evidence-capture/<full SHA> tag; "
+            "fetch the capture tags before loading frozen inputs"
+        )
 
 
 @dataclass(frozen=True, slots=True)
