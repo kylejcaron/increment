@@ -34,12 +34,6 @@ Install the latest prerelease from PyPI:
 python -m pip install --pre increment polars
 ```
 
-For the API used in these examples, see the repository guides:
-
-[Quickstart](https://github.com/kylejcaron/increment/blob/main/docs/guides/quickstart.md) ·
-[data model](https://github.com/kylejcaron/increment/blob/main/docs/guides/data-model.md) ·
-[metric types](https://github.com/kylejcaron/increment/blob/main/docs/guides/metric-types.md)
-
 Increment needs Python 3.12 or newer. It reads pandas, Polars and PyArrow
 dataframes; this example uses Polars.
 
@@ -99,29 +93,25 @@ zero. Two thousand users are too few to detect an 8% change in a 10%
 conversion rate; [power analysis](https://getincrement.io/docs/guides/power-analysis/)
 tells you how many you need.
 
-- `increment.from_frame` describes the experiment: the column that identifies users
-  (`unit`), the column that holds the variant (`group`), the control variant,
-  and the metrics. `shape="summary"` means one row per user; use
-  `shape="panel"` for one row per user per day; include every assigned unit at
-  least once with its assignment and exposure date ([sparse-panel preparation](https://getincrement.io/docs/guides/data-model/#one-row-per-unit-per-day)).
+- `unit` identifies the user, `group` holds the assigned variant, and `metrics`
+  chooses what to compare. `shape="summary"` means one row per user. For daily
+  data, use `shape="panel"` and include every assigned unit with its assignment
+  and exposure date; see [panel preparation](https://getincrement.io/docs/guides/data-model/#one-row-per-unit-per-day).
 - Each metric's type comes from its column: floating-point numbers use `mean`,
   and Boolean columns use `conversion`. A floating-point 0/1 outcome still uses
   `mean`; if a cast can change a Boolean to float, declare the intended type
   explicitly before inspecting results, for example
   `metrics={"converted": "conversion"}`. Integer columns also need an explicit
   type because they may represent either a count or a binary outcome.
-- `increment.from_frame` also returns a reader, which reads your data when
-  `increment.run` needs it. `increment.run(experiment, reader)` analyzes the
-  experiment. `result.readout()` lists the estimates; `result.to_frame()`
-  returns them as a dataframe.
-- The closing lines name checks that did not run. Here, Increment could not
-  test for a sample ratio mismatch (SRM: a traffic split different from the
-  plan) because the example did not state the planned split.
+- Keep the returned experiment and reader together. `run` analyzes them;
+  `result.to_frame()` returns the results as a dataframe.
+- Read the closing qualifications too. This example omitted the planned
+  allocation, so its sample-ratio mismatch (SRM) check did not run.
 
 Next: [declare the split, a primary metric and guardrails](https://getincrement.io/docs/guides/quickstart/) ·
 [reduce variance with CUPED](https://getincrement.io/docs/guides/cuped/#on-the-dataframe-path) ·
 [monitor while the test runs](https://getincrement.io/docs/guides/sequential-inference/) ·
-[read every result field](https://getincrement.io/docs/guides/reading-results/)
+[interpret the result](https://getincrement.io/docs/guides/reading-results/)
 
 ## Analyze data in your warehouse
 
@@ -148,35 +138,27 @@ with reader:
 print(result.readout())
 ```
 
-Any Ibis SQL backend is supported. DuckDB, PostgreSQL, Snowflake, and BigQuery
-are verified by execution test suites; other backends show a one-time
-`UnverifiedWarehouseWarning`. An analysis runs when Ibis can translate its
-queries for that backend, and stops with `query.backend.operation_unsupported`
-when it cannot. The default captured run needs TEMP tables. Scalar warehouse
-CUPED can use `coherence="live"`; multicovariate CUPED fitting and
-categorical-cell acquisition need TEMP tables. Unit-day artifacts need a
-verified backend. The
-[data-model guide](https://getincrement.io/docs/guides/data-model/) explains
-the YAML and [other warehouses](https://getincrement.io/docs/guides/data-model/#other-warehouses),
-and the
-[warehouse example](https://github.com/kylejcaron/increment/blob/main/examples/analysis_from_a_warehouse.py)
-is a notebook that runs the whole workflow on a local DuckDB database.
+DuckDB, PostgreSQL, Snowflake and BigQuery are verified by execution tests.
+Other Ibis SQL backends warn once and run when Ibis can translate the queries;
+an unsupported translation stops with `query.backend.operation_unsupported`.
+The default captured run needs TEMP tables. Scalar CUPED can use
+`coherence="live"` without them; multicovariate fitting and categorical-cell
+acquisition still need TEMP tables. Unit-day artifacts need a verified backend.
+
+Follow the [warehouse setup guide](https://getincrement.io/docs/guides/data-model/),
+or try the complete [local DuckDB notebook](https://github.com/kylejcaron/increment/blob/main/examples/analysis_from_a_warehouse.py).
 
 ## What else it does
 
-- **Plan**: sample size, power and minimum detectable effect.
-- **Reduce variance**: CUPED with pre-experiment data.
-- **Monitor**: sequential tests that stay valid when you look at results repeatedly.
-- **Correct for many comparisons** across metrics and segments.
-- **Use priors**: Bayesian estimates and the probability that a variant is better.
-- **Break results down** by segment or by day.
-- **Analyze other designs**: switchback, encouragement and observational
-  (IPTW, AIPW, DML) studies.
-- **Report**: readout tables, and an HTML dashboard for warehouse experiments.
+Plan sample size, reduce variance with CUPED, monitor repeatedly with sequential
+inference, adjust for multiple comparisons, or add Bayesian summaries.
+Increment also analyzes switchback, encouragement and observational studies,
+and reports results by segment or day.
 
-The [method guide](https://getincrement.io/docs/guides/choose-a-method/) helps
-you choose; the [compatibility matrix](https://getincrement.io/docs/guides/compatibility/)
-lists which methods combine.
+Start with the [method guide](https://getincrement.io/docs/guides/choose-a-method/).
+Check [method compatibility](https://getincrement.io/docs/guides/compatibility/)
+before combining options. For interactive reporting, see the
+[warehouse dashboard](https://getincrement.io/docs/guides/dashboard/).
 
 ## Optional extras
 

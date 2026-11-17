@@ -5,4 +5,4 @@ variance reduction.
 
 [Open the notebook in a full browser tab](cuped.html)
 
-<iframe src="../cuped.html" style="width:100%; height:80vh; border:1px solid var(--md-default-fg-color--lightest); border-radius:4px;"></iframe>
+<iframe src="../cuped.html" title="CUPED variance-reduction notebook" style="width:100%; height:80vh; border:1px solid var(--md-default-fg-color--lightest); border-radius:4px;"></iframe>

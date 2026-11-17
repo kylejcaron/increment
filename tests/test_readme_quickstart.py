@@ -95,13 +95,14 @@ def test_readme_quickstart_executes_recommended_run() -> None:
         assert render(result, audience) == render(result.envelope, audience)
 
 
-def test_quickstart_guide_reports_the_missing_guardrail_as_unavailable() -> None:
+def test_result_fields_example_reports_the_missing_guardrail_as_unavailable() -> None:
     (example,) = _python_blocks(
-        ROOT / "docs" / "guides" / "quickstart.md", "## Report a guardrail that cannot be checked"
+        ROOT / "docs" / "reference" / "result-fields.md",
+        "## Report a guardrail that cannot be checked",
     )
 
     namespace: dict[str, object] = {}
-    rendered = _execute(example, "quickstart.md missing guardrail", namespace)
+    rendered = _execute(example, "result-fields.md missing guardrail", namespace)
 
     result = namespace["result"]
     assert isinstance(result, RunResult)

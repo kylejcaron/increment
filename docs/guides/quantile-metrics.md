@@ -1,8 +1,9 @@
 # Quantile metrics
 
-A mean describes the center; use a quantile for a tail measure such as p90
-latency or p99 payload size. Quantiles need per-unit values, so they are
-available through `run()` rather than additive moments.
+Use a quantile for a distributional question such as p90 latency, not a mean
+effect. Supply real per-unit values through a supported dataframe, warehouse
+or reopened artifact source. Additive moments cannot reconstruct them.
+Quantile results report relative lift only.
 
 ## Declaring a quantile metric
 
@@ -38,46 +39,38 @@ for r in results:
 p90 relative lift: -7.94% [-13.63%, -1.87%]
 ```
 
-Set `0 < q < 1`. Quantiles do not support `window_days` or `covariate`;
-the YAML equivalent is `QuantileMetric` with the same `quantile` field.
+This synthetic p90 estimate is about 8% lower under treatment. The reported
+interval is for the **relative contrast**, not an interval containing 90% of
+individual latencies. Set `0 < q < 1`. Quantiles do not support `window_days`
+or CUPED covariates; the YAML type is `QuantileMetric`.
 
 ## The Woodruff order-statistic bracket, and tied values
 
-The reported standard error comes from a distribution-free bracket
-`[Y_(a), Y_(b)]` around the sample quantile, evaluated at the request's own
-`alpha`, not from a plug-in delta-method SE (Woodruff 1952). The reported
-two-arm relative-lift interval combines the two bracket-derived standard
-errors; it is asymptotic, not distribution-free exact.
+Each arm starts with a distribution-free order-statistic bracket
+`[Y_(a), Y_(b)]` at the requested alpha (Woodruff 1952). Its derived standard
+error feeds a two-arm relative-lift interval. **That combined interval is
+asymptotic, not distribution-free exact.** Continuous observations do not
+guarantee the sample quantile is the bracket’s log midpoint.
 
-??? info "Statistical details"
-    The bracket covers the population quantile at the nominal rate for every
-    distribution, continuous or not. The classical Woodruff standard error (a
-    symmetric width around the sample quantile) has that coverage only when
-    the quantile lies at the bracket's log midpoint. Continuous data guarantee
-    this; ties do not. Prices, counts, and rounded latencies can place the
-    bracket on different recorded values.
+Ties are accepted. An arm whose 95% bracket spans fewer than 12 distinct
+repeated values can need a wider symmetric interval to contain its bracket.
+Untied brackets and resolved arms retain the classical Woodruff half-width.
+Every widened row records its width ratio in `note`.
 
-    Ranks are checked against independently enclosed binomial tails, not a
-    fixed SciPy CDF accuracy allowance. Certified logarithms enclose mass at a
-    candidate rank; bounded summation and a remainder bound enclose its tail.
-    Unresolved comparisons round the bracket outward. No configuration or
-    sampling-assumption change is needed.
+!!! warning "Rounding can leave wide uncertainty"
+    Coarse rounding and counts produced widths 1.1–3 times the classical
+    width in measured examples, versus about 1.00–1.05 for incidental ties.
+    There is no upper bound: a bracket collapsed onto one value has zero
+    classical width, while the reported width stays positive. If positive
+    spread cannot be established, the numerical backstop is
+    `estimation.quantile.degenerate_spread_order`, not an ordinary ties refusal.
 
-Ties do not cause a refusal. If an arm is not "resolved" (its 95% bracket
-spans at least `RESOLVED_REPEATED_VALUES` = 12 distinct repeated values),
-the reported half-width expands to the smallest symmetric interval around the
-sample quantile that contains the full bracket. Resolved arms and untied
-brackets keep the classical Woodruff half-width bit-identically.
-
-!!! warning "Ties can widen uncertainty"
-    Coincidental ties widen the standard error by at most about 1.00–1.05x.
-    Coarse rounding or count data can produce 1.1–3x widths for brackets
-    spanning two or three recorded values; there is no upper bound. A bracket
-    collapsed onto one recorded value has zero classical width, but the
-    reported width remains positive. If the widened bracket cannot establish
-    positive spread, Increment raises
-    `estimation.quantile.degenerate_spread_order`. That is a numerical
-    backstop, not an ordinary response to ties.
+??? info "How bracket ranks are certified"
+    Certified logarithms enclose candidate-rank mass; bounded summation and
+    a remainder bound enclose its binomial tail. Unresolved comparisons
+    round outward. This does not assume a fixed SciPy CDF accuracy allowance
+    or change the sampling assumptions. Classical symmetric standard errors
+    are an asymptotic approximation, not an exact recentering of every bracket.
 
 ## Feasibility floor per (q, alpha)
 
@@ -95,95 +88,65 @@ coverage. The p-value is different: it inverts the same construction (the
 smallest alpha whose interval excludes the null) and depends only on the data.
 Do not compare intervals or standard errors across analyses with different
 alpha budgets. See [the alpha-dependent interval limitation](../limitations.md#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for).
+The row’s p-value inverts this same interval: `p_value() <= alpha` exactly
+when the interval at that alpha excludes zero.
 
 ## Sequential inference is refused
 
-Quantiles use fixed-horizon Woodruff brackets; no time-uniform boundary exists
-for a per-arm order statistic. `AnalysisPlan(inference=InferenceSpec(
-kind="always_valid"|"asymptotic_mean"))` refuses before reading outcomes with
-`sequential.route.unsupported`. A metric reaching estimation under an explicit
-sequential registration refuses with `arm.metric.quantile_sequential`. Use
-fixed-horizon inference for one planned analysis, not repeated looks.
+Fixed-horizon quantile brackets do not supply a time-uniform process.
+Sequential requests refuse before outcomes with `sequential.route.unsupported`;
+a quantile reaching estimation under explicit registration refuses with
+`arm.metric.quantile_sequential`. Use one planned fixed-horizon analysis,
+not repeated looks.
 
 ## Unsupported combinations
 
-A quantile metric cannot be estimated with a declared `cluster`
-(`arm.metric.quantile_cluster` -- quantiles do not decompose over
-cluster moments), under a `dimension=`/breakout request
-(`readout.metric.quantile_breakout` -- quantiles do not decompose over
-segment moments), with CUPED (`arm.metric.quantile_cuped` -- a
-quantile has no mean to adjust; pass `variance_reduction="none"`), or under
-an `Observational` design (`readout.observational.quantile` -- the
-order-statistic interval assumes independently randomized arms, and no
-observational quantile estimator exists; run the metric under a randomized
-design). Where `readout.observational.quantile` is reached, it is the same on
-`from_definitions`, `from_unit_day_artifact`, and `from_frame` summaries and
-panels, and fixed-horizon inference does not lift it. It is the
-refusal for a two-sided, zero-null request. Any one-sided or shifted-null
-request is refused first by `readout.metric.quantile_alternative` -- a plan
-`alternative="greater"`/`"less"` or an absolute `margin_abs`, including a
-guardrail's. A relative margin never reaches a readout: the observational
-constructors refuse it at construction with `plan.observational.relative_margin`,
-and a guardrail with no margin refuses at construction with
-`plan.guardrail.margin_required`.
+Quantiles support a two-sided, zero-null relative contrast only:
 
-A quantile metric also refuses a one-sided `alternative` and a shifted
-null under the single code `readout.metric.quantile_alternative`
-("one-sided alternative is not supported for quantile metrics"):
-only a two-sided test against `null_lift=0` on the relative axis is
-supported. A non-zero `null_lift` override or a non-inferiority/
-superiority `margin` refuses this way (both resolve to a non-zero
-`null_lift` and an implied one-sided tail). The absolute axis is not
-a second supported mode -- every non-`None` `null_abs`, including a
-hypothetical zero, is refused: a declared `margin_abs` always resolves
-to a non-zero `null_abs` with an implied one-sided tail (so it refuses
-the same way), and a quantile metric can never report on the absolute
-value scale in the first place (`value_scale="absolute"` is refused
-outright for `type="quantile"`). Quantile metrics output relative lift
-only.
+- No declared clusters: `arm.metric.quantile_cluster`.
+- No breakouts: `readout.metric.quantile_breakout`.
+- No CUPED: `arm.metric.quantile_cuped`; request `variance_reduction="none"`.
+- No observational estimator: `readout.observational.quantile`, including
+  fixed-horizon definitions, artifacts, summaries and panels.
+- No one-sided alternatives, shifted nulls or guardrail margins:
+  `readout.metric.quantile_alternative`. Every non-`None` absolute null is
+  unsupported, including zero; `value_scale="absolute"` is refused outright.
+
+Use the [capability matrix](../reference/capabilities-by-entry-point.md) and
+[error-code reference](../reference/error-codes.md) for the applicable route
+and structured context, not a different source as a workaround for an absent
+estimator. An observational relative margin refuses earlier at construction
+with `plan.observational.relative_margin`; a guardrail missing its margin
+refuses with `plan.guardrail.margin_required`. On an otherwise admissible
+read request, the one-sided/absolute-margin check precedes the observational
+quantile refusal.
 
 ## Quantiles and portable moments
 
-A portable moments cube holds additive moments, never the per-unit values an
-order statistic needs, and two different requests reach it:
+Exporting a fixed-horizon quantile refuses with `source.frame.quantile_no_moments`
+from the metric catalog, before reading counts or writing a file—even when
+additive metrics accompany it. Definitions, reopened artifacts, summaries and
+panels share that rule. Observational quantile export instead refuses with
+`readout.observational.quantile`; a clustered quantile cannot be exported
+(`evidence.cluster_unavailable`).
 
-- **Exporting a quantile** refuses at `export_moments()` with
-  `source.frame.quantile_no_moments` (a source limit: a quantile has no moments
-  representation), so no quantile cube ever exists to replay. Every
-  export-capable ingress (`from_definitions`, a reopened unit-day artifact,
-  `from_frame` summaries and panels) refuses a fixed-horizon moments
-  export the same way, from the metric catalog alone, before reading any
-  count or moment or writing a file, even when additive metrics accompany the
-  quantile. An observational design refuses with
-  `readout.observational.quantile` instead, because no estimator could use the
-  cube. A registered sequential plan is the one exception: it exports a
-  checkpoint of unit-record proofs and the declaration, with no moments rows,
-  so an unwindowed catalog quantile no registered model covers does not block
-  it and never appears as mean moments (replay still refuses to estimate that
-  quantile sequentially).
-  The `sequential-mixed-quantile-catalog-checkpoint` parity scenario verifies
-  export and replay on definitions, reopened artifacts, unit summaries and
-  unit panels, including equivalent modeled results and retained state.
-  `from_moments` preserves the checkpoint and catalog but cannot re-export
-  (`evidence.operation_unavailable`); switchback cannot declare this quantile catalog.
-- **Declaring a quantile over a cube that already exists** (for example a
-  `MetricSpec(type="quantile")` over exported scalar moments) constructs, then
-  refuses when read, and the code depends on the request, measured on a real
-  scalar-moments source:
+A declaration over an existing scalar-moments cube can construct but cannot
+recover per-unit outcomes. Its ordinary two-sided randomized read refuses
+with `evidence.unit_rows_unavailable`. One-sided or shifted-null requests
+still refuse first with `readout.metric.quantile_alternative`; an admissible
+observational request instead reaches `readout.observational.quantile`.
+Construction-time margin checks above still apply.
 
-  | Design and request | `run()` raises |
-  |---|---|
-  | randomized, two-sided zero null | `evidence.unit_rows_unavailable` (a moments cube holds no per-unit outcomes) |
-  | randomized, one-sided `alternative`, or relative or absolute margin | `readout.metric.quantile_alternative` (refused first) |
-  | `Observational`, two-sided zero null | `readout.observational.quantile` (the estimator refusal takes precedence over the source limit, because no source could supply it an input) |
-  | `Observational`, one-sided `alternative` or absolute margin (`margin_abs`) | `readout.metric.quantile_alternative` (the one-sided check precedes the observational refusal) |
-  | `Observational`, relative margin | `plan.observational.relative_margin`, at construction, before any read |
-  | either design, a guardrail with no margin | `plan.guardrail.margin_required`, at construction, before any read |
+On that cube, breakout reads refuse with `evidence.breakout_unavailable`;
+daily/as-of values or lift refuse with `evidence.grain_unavailable`;
+`planning_baseline` refuses with `analysis.planning_baseline.quantile_source_unavailable`.
+These view/source checks precede estimator reads under either design.
 
-  A breakout view raises `evidence.breakout_unavailable`, the daily and as-of
-  views (values or lift) raise
-  `evidence.grain_unavailable`, and `planning_baseline` raises
-  `analysis.planning_baseline.quantile_source_unavailable`; these source limits
-  fire before any estimator reads the cube, under either design. A clustered
-  cube cannot be exported for a quantile in the first place
-  (`evidence.cluster_unavailable`).
+A registered sequential export is different: it can checkpoint modeled
+unit-record proofs while retaining an **unmodeled, unwindowed** catalog
+quantile. It writes no quantile moments and still cannot estimate that
+quantile sequentially. The `sequential-mixed-quantile-catalog-checkpoint`
+scenario verifies matching modeled results and retained state across
+definitions, artifacts, summaries and panels. `from_moments` can replay
+that checkpoint/catalog but cannot re-export (`evidence.operation_unavailable`);
+switchback cannot declare that catalog. See [sequential contracts](../reference/sequential-contracts.md).

@@ -1,54 +1,42 @@
 # Encouragement Designs
 
-Use an encouragement design when random assignment changes the chance that people receive treatment, but does not force them to take it. Compare assignment effects directly; estimate effects among people whose uptake changed only when the causal assumptions are credible.
+Use an encouragement design when randomized assignment changes treatment uptake
+but does not force it. You need each unit's assignment and uptake; add outcomes
+to estimate effects on those outcomes.
+
+Choose the question before running:
+
+- **Intent to treat (ITT):** what did being encouraged change?
+- **Compliance:** how much did encouragement change treatment uptake?
+- **Local average treatment effect (LATE):** what did treatment change among
+  people whose uptake changed because of encouragement—not everyone?
+
+ITT and compliance do not require an exclusion restriction. LATE additionally
+requires a relevant first stage, exclusion (assignment affects the outcome
+only through uptake), and monotonicity (no defiers). A declaration records your
+justification; it cannot validate these assumptions.
 
 ## Declare assignment and uptake
+
+This deliberately balanced toy dataset makes the scales easy to read: no control
+unit takes up treatment, half the encouraged units do, and treatment adds 3
+revenue units. Real assignment must be randomized.
 
 ```python
 import numpy as np
 import pandas as pd
+import increment
 
-rng = np.random.default_rng(9)
-n = 300
-variant = np.array(["control"] * (n // 2) + ["encouraged"] * (n // 2))
-rng.shuffle(variant)
-clicked = np.where(variant == "encouraged", rng.random(n) < 0.6, False).astype(int)
+n = 400
+clicked = np.concatenate([np.zeros(200), np.ones(100), np.zeros(100)])
 encouragement_df = pd.DataFrame(
     {
         "user_id": [f"u{i:03d}" for i in range(n)],
-        "variant": variant,
-        "revenue": 8.0 + 3.0 * clicked + rng.normal(0, 2.0, n),
+        "variant": ["control"] * 200 + ["encouraged"] * 200,
         "clicked": clicked,
+        "revenue": 8.0 + 3.0 * clicked + np.tile([-1.0, 1.0], 200),
     }
 )
-
-import increment
-
-design = increment.Encouragement(
-    control_group="control",
-    uptake=increment.UptakeSpec(fact="clicked"),
-    exclusion_restriction=increment.ExclusionRestriction(
-        justification=("the randomized prompt affects revenue only through help-button clicks"),
-    ),
-    one_sided=False,
-)
-
-experiment, reader = increment.from_frame(
-    encouragement_df,
-    shape="summary",
-    unit="user_id",
-    group="variant",
-    metrics={"revenue": "mean"},
-    design=design,
-)
-results = increment.run(experiment, reader).readout()
-```
-
-LATE needs the exclusion restriction: assignment must affect the outcome only through treatment receipt.
-
-ITT and compliance do not require exclusion. Omit it when requesting only those estimands:
-
-```python
 experiment, reader = increment.from_frame(
     encouragement_df,
     shape="summary",
@@ -58,241 +46,116 @@ experiment, reader = increment.from_frame(
     design=increment.Encouragement(
         control_group="control",
         uptake=increment.UptakeSpec(fact="clicked"),
+        one_sided=True,
+        exclusion_restriction=increment.ExclusionRestriction(
+            justification="the prompt affects revenue only through help-button clicks",
+        ),
     ),
 )
-assignment_and_uptake = increment.run(experiment, reader, estimands=("itt", "compliance")).readout()
+results = increment.run(experiment, reader).readout()
+itt = next(row for row in results if row.estimand == "itt")
+compliance = next(row for row in results if row.estimand == "compliance")
+late = next(row for row in results if row.estimand == "late" and row.value_scale == "absolute")
+print(f"ITT revenue lift: {itt.lift.value:+.2%}")
+print(f"Uptake increase: {100 * compliance.lift.value:+.0f} percentage points")
+print(f"LATE revenue difference: {late.lift.value:+.2f}")
 ```
 
-The default requests all three estimands. If exclusion is not declared, any request containing `late` raises `identification.encouragement.exclusion_required` before reading outcomes, even if a weak first stage would later make LATE unavailable. The same omission works in YAML and survives artifact and moments round trips. Supported sequential ITT/compliance monitoring also needs no exclusion declaration; declaring one does not make sequential LATE supported.
+<!-- output -->
+```text
+ITT revenue lift: +18.75%
+Uptake increase: +50 percentage points
+LATE revenue difference: +3.00
+```
 
+Encouragement increases revenue by 18.75% here. Uptake increases by 50 percentage
+points; the additive ITT difference of 1.5 divided by 0.5 gives LATE of 3 revenue
+units per complier. That is not an effect of 3 units on every enrolled person.
+Read each row's interval as well as its point; these toy numbers do not establish
+coverage or validate a real encouragement mechanism.
 
-An exclusion object needs only `justification`; a concise mechanism statement is
-enough. Existing artifacts that serialize the retired exclusion field refuse
-with a route to re-materialize the artifact.
+If exclusion is not credible, omit `exclusion_restriction` and request only
+`estimands=("itt", "compliance")` on `run`. The default requests all three;
+any request including LATE without exclusion fails before outcomes are read
+with `identification.encouragement.exclusion_required`, even if a weak first
+stage would later prevent LATE.
 
 ## Declare on `from_definitions`
 
-The control arm and target allocation come from the experiment's own
-`control_group`/`allocation`, exactly as a randomized experiment declares
-them; `design:` adds only the mechanism-specific facts:
+Keep assignment's `control_group` and `allocation` on the experiment. Its
+`design` declares `mechanism: encouragement`, the uptake fact/window, and,
+for LATE, the exclusion justification. The uptake fact must belong to a
+source containing the experiment's unit.
 
-```yaml
-experiments:
-  - name: help_button_encouragement
-    exposure: assigned_button
-    unit: user_id
-    start: 2026-04-01
-    control_group: control
-    plan:
-      secondaries: [ticket_deflection]
-    design:
-      mechanism: encouragement
-      uptake:
-        fact: clicked_help
-        window_days: 7
-      one_sided: true
-      exclusion_restriction:
-        justification: "the button can only move deflection by being clicked"
-```
-
-See the [capabilities by entry point](../reference/capabilities-by-entry-point.md#what-runs-where) table for supported constructors.
-
-??? info "Warehouse declarations and supported paths"
-    `uptake.fact` must name a fact declared on a source whose `entities` include the experiment's `unit`, validated at load like `exposure`/`trigger`. A guardrail's declared margin (`Metric.margin`/`margin_abs`, or a plan-bound `ExperimentMetric.margin`) applies to its ITT row -- the same non-inferiority construction a randomized design uses; a guardrail with no margin refuses with `plan.guardrail.margin_required`. Statistical tuning (the first-stage weak-instrument threshold, overlap policy) is not a YAML key: declare a full `Encouragement`/`Observational` object on a `from_frame` summary or panel to override it.
-
-    `Observational` parses the same way -- `design: {mechanism: observational, covariates: [{property: tenure_days, source: users}]}` -- and its adjustment covariates run from `from_definitions` identically to a `from_frame` summary; see [observational.md](observational.md#from-definitions-the-warehouse-path). Five entry points support an `Encouragement` design: `from_frame` summaries and panels, `from_definitions`, `from_unit_day_artifact`, and `from_moments`. They retain ITT, compliance, LATE, guardrails, and BH/e-BH-selected secondaries across artifact and moments round trips. `from_switchback_frame` accepts only `identification: Randomized`, never `Encouragement` or `Observational`.
-
+[Definitions and supported inputs](../reference/causal-methods.md#definitions-and-supported-inputs)
+cover dataframe summaries/panels, warehouse definitions, artifacts and moments.
+The [complete daily warehouse example](../reference/causal-methods.md#daily-warehouse-example)
+creates its own data and definitions.
 
 ## Read the estimands
 
-- **ITT**: the effect of being encouraged, whether or not uptake changes.
-- **Compliance**: how much encouragement changes treatment uptake.
-- **LATE**: the effect of treatment on people who comply because of encouragement, not everyone.
+Check `estimand` and `value_scale`: a relative LATE row uses the **complier**
+control mean, while additive LATE uses outcome units. Compliance is design-level,
+using enrolled units and the uptake window; each outcome's LATE uses the first
+stage on its own outcome cohort. Missing outcomes can make those cohorts differ.
 
-!!! warning "When LATE is not available"
-    LATE requires randomized assignment, a relevant first stage, the exclusion restriction, and monotonicity (no defiers). A weak first stage leaves a visible typed failure rather than a numeric estimate. So does a reversed one, where encouragement lowered uptake: the design assumes encouragement raises uptake, so a first-stage z at or below minus the gate fails with its own code. Requesting LATE without declaring exclusion raises `identification.encouragement.exclusion_required`; sequential and per-day LATE are unsupported.
+### When LATE is unavailable
 
-??? info "Statistical details"
-    LATE is ITT divided by the compliance first stage: the effect among compliers whose treatment receipt changed because of encouragement. The relative LATE row states the same effect against the complier control mean; its `p_value()` reads the row's own log-scale reference, so it agrees with its interval, and it adds no decision evidence beyond the additive row.
+A weak first stage retains the requested LATE row with `lift=None` and
+`failure_code="estimation.encouragement.late.weak_first_stage"`.
+Strongly reversed uptake has its own
+`estimation.encouragement.late.negative_first_stage` failure. Neither means
+“no treatment effect,” and neither silently drops the row.
+Inspect the [first-stage context](../reference/causal-methods.md#outcome-cohorts-and-first-stage-failures).
 
-    The notebook's registered uptake confidence sequence is shown in **ratio coordinates**, not as a lift interval. Its default display keeps the bounds, confidence level, and geometry status concise; exact rational endpoints and the endpoint certificates remain available from the result's `sequential_result.bounds` when detailed numerical evidence is needed.
+### Margins and selection
 
-    Discovery and the BH/e-BH-corrected interval level are ITT-based: a selected secondary's LATE row is re-estimated at the same corrected level as its ITT row (both test the same null), but `discovery` itself is reported on the ITT row only -- LATE is a derived presentation, not a second hypothesis test.
+A guardrail margin applies to fixed-horizon whole-window ITT, not LATE or
+design-level compliance. A margined metric requested as LATE without ITT
+refuses. As-of, breakout and sequential margins are unsupported.
+Secondary discovery is ITT-based, not a separate LATE hypothesis test;
+fixed-horizon compliance is outside selection.
+See [selection, margin and binary-ITT details](../reference/causal-methods.md#estimands-selection-and-margins).
 
-    Unadjusted, independent-unit binary ITT takes the same count-routed conversion route as an ordinary arm pair even when the source also carries uptake moments: dense counts the delta-method route (`reference_kind="t"`), sparse counts the exact binomial reference (`"binomial"`; `Method(name="unadjusted", conversion_inference="finite_sample")` selects it at every size). This includes conversion breakouts from `from_definitions`, `from_unit_day_artifact`, and `from_frame` panels and summaries: zero control conversions can leave the point lift unavailable while retaining a confidence set. Summary sources can therefore carry a declared breakout dimension.
+### Uptake without outcomes
 
-    Compliance rows diagnose the first stage. Fixed-horizon compliance rows have `discovery is None`. Registered sequential compliance also stays outside selection unless its own compiled policy explicitly includes it in the retained family. A guardrail reports the same estimands as every other metric on every constructor, and `run(estimands=...)` returns exactly the estimands requested. LATE carries no margin verdict for a margined guardrail -- a plain interval, same construction as an unmargined LATE row. Design-level compliance alone does not apply an outcome margin.
+For fixed-horizon uptake alone, request `estimands=("compliance",)`;
+pass `metrics=[]` to dataframe/portable constructors when there are no outcomes.
+It needs no outcome catalog or sequential policy. Do not replace undefined
+outcomes with zeros to evade the panel's `missing="skip"` refusal;
+mixed ITT/LATE requests still need their outcome data.
 
-!!! warning "Margins and compliance scope"
-    A declared guardrail margin applies to its fixed-horizon, whole-window ITT row. LATE has no margin verdict; requesting `late` without `itt` for a margined metric refuses with `readout.encouragement.margin`. As-of (`readout.metric_declare_non`), breakout (`readout.margin.breakout`), and sequential (`plan.encouragement.margin`) margins are refused. Design-level compliance-only `run(..., by=...)` requests cannot be segmented (`readout.run.segment_unsupported`); per-segment compliance from a breakout view remains supported. In sequential plans compliance is outside selection unless explicitly included by policy; triggered sequential compliance is unavailable.
+### Daily and sequential monitoring
 
-For fixed-horizon uptake alone, use `run(estimands=["compliance"])`; no outcome catalog or sequential policy is needed. Pass `metrics=[]` to dataframe and portable constructors when there are no outcomes.
+Daily uptake is a first-stage rate; per-day and sequential LATE are unsupported.
+Triggered sequential compliance and clustered daily outcome histories are
+unavailable.
 
-!!! warning "Outcome data and sequential monitoring"
-    The unit-panel refusal of `missing="skip"` (`frame.missing_policy.panel_skip`) remains; do not replace undefined outcomes with zeros to bypass it. Mixed ITT/LATE requests still require their outcome data.
+Uptake-only monitoring needs `InferenceSpec(kind="always_valid")`, an explicit
+`SequentialCompliancePolicy`, and matching registration—not just an empty
+catalog. Registered ITT/compliance also require joint finalization and
+immutable-prefix evidence. Use `completed_windows_only=True` for sequential
+as-of readouts. Compliance enters discovery selection only when explicitly
+included by policy.
 
-    For uptake-only sequential monitoring, use `InferenceSpec(kind="always_valid")` and an explicit `SequentialCompliancePolicy`; no scalar outcome law is needed. An empty catalog alone does not enable monitoring: without a compliance policy or an uptake registration it is refused. Request `estimands=("compliance",)`; an `("itt",)` request contains no outcome rows to scope, and the default request also includes unsupported LATE. Outcome-consuming requests still refuse an unbounded retention metric (`sequential.route.unsupported`).
+The binary compliance construction is exact under its conditions; continuous
+ITT uses an asymptotic mean construction. A family containing continuous ITT
+has an asymptotic guarantee even if its compliance member is exact. Declaring
+exclusion does not enable sequential LATE.
 
-    A nonempty catalog with unbounded retention needs explicit uptake-only registration; automatic registration would monitor and refuse that metric. Only `from_definitions`, `from_unit_day_artifact` (metric declared on the experiment), and `from_moments` (metric in `metrics=`) can retain it; dataframe constructors cannot declare it.
-
-??? info "Design and sequential details"
-    Design-level compliance uses the enrolled population and the design's own `uptake.window_days`, independently of outcome missingness, metric order, or metric count. A fixed-horizon `run(estimands=["compliance"])` needs no available outcome arm: `from_definitions`, `from_unit_day_artifact`, a `from_frame` summary and `from_moments` agree even when treatment outcomes are entirely missing. That request skips outcome compatibility checks and reductions, including for a declared triggered population; metric names and source/design state remain validated.
-
-    With no outcome catalog, fixed-horizon compliance also works on `from_definitions`, `from_unit_day_artifact`, `from_frame` summaries and panels, and `from_moments`. Pass `metrics=[]` to the dataframe and portable constructors; only assignment and uptake inputs are needed. Exports retain the complete design-level state without inventing an outcome row.
-
-    The same five constructors support the empty catalog, with `from_moments` replaying the retained checkpoint. A registered compliance-only checkpoint reads uptake and no outcome, so an unbounded retention metric may stay in the catalog when the explicit uptake-only registration is declared over that catalog (an automatic registration would monitor the metric and refuse it, `sequential.route.unsupported`). `from_definitions`, `from_unit_day_artifact` (with the metric declared on the experiment) and `from_moments` (with the metric in `metrics=`) retain it; the dataframe constructors cannot declare it. Requests that consume outcomes, such as ITT, still refuse the retention metric. The empty-catalog path above does not exercise a nonempty catalog.
-
-    For registered `from_frame` panel data, a combined whole-window and completed as-of uptake-only run retains one capture identity, even when no outcome metrics are requested.
-
-    Each metric's LATE uses the first stage on its matching outcome cohort. As-of compliance includes units assigned by the requested day and qualifying uptake through that day; a triggered-population compliance series instead admits units by their first eligible trigger day while retaining assignment-anchored uptake windows.
-
-    In fixed-horizon `run()`, a weak first stage for one metric's outcome cohort suppresses that cohort's LATE estimate but retains its planned LATE row as a typed failure (`failure_code="estimation.encouragement.late.weak_first_stage"` and `lift=None`). A first-stage z at or below minus the gate fails instead with `estimation.encouragement.late.negative_first_stage`. The failure context carries that cohort's first stage: `first_stage_estimate`, `first_stage_se`, `first_stage_z` and `min_first_stage_z`, plus `metric`, `group_id` and `method`. A first stage with no sampling variance (for example, every control unit takes up and no encouraged unit does) has no finite z: `first_stage_z` is `None` and `first_stage_z_reason` is `"first_stage_without_sampling_variance"`. Every requested method's LATE row carries the failure, because the first stage does not depend on the method. A suppressed LATE adds no compliance row; compliance stays design-level. Other metrics use their own outcome cohorts and can still report LATE when their first stages pass.
-
-!!! warning "Daily estimates"
-    Daily encouragement uptake is a first-stage rate; per-day LATE is unsupported. Request only an estimand the daily view supports:
-
-```python
-import datetime as dt
-from pathlib import Path
-
-import ibis
-import pyarrow as pa
-
-import increment
-from increment.artifacts import SourceSnapshotEvidence
-
-definitions = Path("encouragement.yml")
-definitions.write_text(
-    """
-dialect: duckdb
-fact_sources:
-  - name: events
-    sql: SELECT * FROM events
-    timestamp_column: ts
-    entities: [user_id]
-    facts:
-      - name: revenue
-        column: value
-      - name: enrolled
-        column: null
-      - name: saw_surface
-        column: null
-      - name: clicked
-        column: null
-exposures:
-  - name: assignment
-    fact: enrolled
-  - name: saw_surface
-    fact: saw_surface
-metrics:
-  - name: revenue
-    type: mean
-    entity: user_id
-    fact: revenue
-    window_days: 3
-    aggregation: sum
-experiments:
-  - name: encouragement_example
-    exposure: assignment
-    trigger: saw_surface
-    unit: user_id
-    start: 2026-01-01T00:00:00
-    end: 2026-01-03
-    observation_end: 2026-01-04
-    control_group: control
-    plan:
-      secondaries: [revenue]
-    design:
-      mechanism: encouragement
-      uptake:
-        fact: clicked
-    """
-)
-con = ibis.duckdb.connect()
-con.create_table(
-    "events",
-    obj=pa.table(
-        {
-            "experiment_id": ["encouragement_example"] * 8,
-            "user_id": ["c1", "t1", "c1", "t1", "c1", "t1", "c1", "t1"],
-            "group_id": ["control", "encouraged"] * 4,
-            "ts": [
-                dt.datetime(2026, 1, 1),
-                dt.datetime(2026, 1, 1),
-                dt.datetime(2026, 1, 2),
-                dt.datetime(2026, 1, 2),
-                dt.datetime(2026, 1, 2),
-                dt.datetime(2026, 1, 2),
-                dt.datetime(2026, 1, 3),
-                dt.datetime(2026, 1, 3),
-            ],
-            "event": [
-                "enrolled",
-                "enrolled",
-                "saw_surface",
-                "saw_surface",
-                "clicked",
-                "clicked",
-                "revenue",
-                "revenue",
-            ],
-            "value": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0],
-        }
-    ),
-)
-experiment, reader = increment.from_definitions(
-    definitions,
-    con,
-    experiment_name="encouragement_example",
-    source_snapshot_evidence=SourceSnapshotEvidence(
-        dt.datetime(2026, 1, 4, tzinfo=dt.UTC),
-        {"events": dt.datetime(2026, 1, 4, tzinfo=dt.UTC)},
-    ),
-)
-triggered_daily = increment.View.daily(population="triggered")
-with reader:
-    increment.run(
-        experiment.with_views(triggered_daily),
-        reader,
-        views=(triggered_daily,),
-        estimands=("compliance",),
-    ).readout(triggered_daily)
-con.disconnect()
-```
-
-!!! warning "Outcome and compliance caveats"
-    Triggered sequential compliance is unavailable (`triggered_uptake_unsupported`), and clustered daily outcome histories are unavailable. A weak first stage leaves a typed LATE failure (`estimation.encouragement.late.weak_first_stage`, or `estimation.encouragement.late.negative_first_stage` when encouragement lowered uptake); it is never silently dropped.
-
-!!! warning "Sequential request requirements"
-    Registered sequential ITT and relative Bernoulli compliance additionally require joint finalization and immutable prefix proofs; see [Sequential inference](sequential-inference.md). Sequential compliance additionally needs an explicit `SequentialCompliancePolicy` on the plan, matching its registered alpha, direction, null and family membership. The default policy excludes compliance from discovery selection; a registered family must explicitly include it. For sequential as-of readouts, pass `completed_windows_only=True`.
-
-??? info "As-of, sequential, and artifact details"
-    `from_definitions` and `from_unit_day_artifact` apply uptake windows to raw timestamps before day bucketing. For a one-day window starting at noon, uptake at exposure or 21 hours later qualifies; uptake exactly 24 hours later does not. Qualifying uptake after the last outcome day remains visible in as-of readouts. Later uptake alone does not add outcome-observation days, change calendar-day averages, or admit newer outcome cohorts. Completed outcome rows still require outcome data through their last required day. A `from_frame` panel input carries day-reduced flags, not raw event timestamps: use elapsed exposure days when reducing the same events for cross-path comparison.
-
-    With `completed_windows_only=True`, compliance includes only units whose uptake window has closed. Continuous intent-to-treat alone monitors under the public asymptotic mean law (the same construction a randomized design uses): assignment to encouragement is itself randomized, so the confidence-sequence assumptions only need the allocation, not the mechanism label. Binary-uptake LATE remains fixed-horizon because it is not a bivariate Gaussian observation model. A suppressed LATE's failure context reports the affected outcome's first stage, even when design-level compliance gives a different weak/strong classification.
-
-    For `from_definitions` and `from_unit_day_artifact`, completed cumulative outcome rows wait for both outcome and uptake windows, including ITT-only requests. A separate uptake feed is included in the same data snapshot. Without this filter, ITT-only requests need no uptake moments.
-
-    When compliance joins the family, the joint continuous-ITT/Bernoulli-compliance roster is selected by the same e-BH rule as any other in-family sequential secondary -- exact for the Bernoulli compliance member, asymptotic for the continuous ITT member -- with one shared `family_guarantee` (`asymptotic_sequential` whenever the continuous member is present) reported on every row; see [Sequential inference](sequential-inference.md).
-
-    Triggered readouts restrict compliance to the triggered enrollment population. Frame as-of summaries retain the panel's calendar, numeric, or structured string day labels and use the same chronological ordering as metric moments. For open-ended native experiments, compliance dates extend through the latest enrollment or post-enrollment uptake event, including repeats outside the uptake window. Outcome filters and missing values do not shorten this axis, and an explicit observation horizon takes precedence.
-    For custom stores behind a builder's reader, providers implement `compliance_series(ComplianceSeriesRequest)` to supply that design-level timeline independently of outcome metrics. Providers without that evidence receive the shared capability refusal. Outcome dates are not a substitute for the compliance timeline. This typed provider contract also applies to standalone custom stores; direct calls to separate source facades follow their own contracts.
-    For custom acquisition code, see the [evidence-provider guide](../development/adding-an-estimator.md#custom-evidence-providers).
-
-    For clustered assignment, compliance is the ratio of total uptake to total members, with uncertainty from the centered cluster uptake-total/size moments. It does not average cluster uptake rates. The public `ComplianceSummary` type retains immutable sufficient state and separates member counts from independent cluster counts.
-
-    Native, frame, and artifact `export_moments()` preserve compliance points and uncertainty. Reload with the same `Encouragement` design; omit `experiment_id` to recover the exported identity, or supply that same identity explicitly.
-
-    Current cubes carry a version-1 `compliance_summary` payload on every row. New encouragement artifacts include assignment counts, cluster identities when needed, and a version-2 uptake relation with the first qualifying timestamp. The uptake extension also persists its enrollment/uptake observation edge from the publication snapshot. Timestamp-bearing artifacts without that field use enrollment and first qualifying uptake dates as a conservative coverage bound. Artifacts with only a Boolean uptake flag, and cubes without the payload, raise `source.compliance_summary.legacy_uptake_state` with a re-export remedy.
-
-    Malformed current state is rejected separately, including disagreement between compliance member counts and the cube's assignment unit counts. Mixed and unassigned accounting entries are excluded from that comparison. Standalone summary serialization retains ISO calendar dates, numeric values, and tagged string or datetime values so day-axis identity survives a round trip. As-of lift results also preserve these labels through JSON serialization.
+Read [uptake-only request requirements](../reference/causal-methods.md#uptake-only-and-sequential-requests)
+and [windows, timelines and saved state](../reference/causal-methods.md#windows-timelines-and-retained-state)
+before monitoring or replaying results.
 
 ## Run the example
 
-See the [Encouragement notebook](../examples/encouragement.md) for a complete
-simulation and rendered results. The [API reference](../api.md) documents
+The [Encouragement notebook](../examples/encouragement.md) provides a larger
+simulation and rendered results. See the [API reference](../api.md) for
 `Encouragement`, `UptakeSpec`, and `ExclusionRestriction`.
 
 ## References and assumptions
 
-The LATE interpretation follows Imbens and Angrist, [“Identification and Estimation of Local Average Treatment Effects”](https://doi.org/10.2307/2951620). LATE requires random assignment, a relevant first stage, the exclusion restriction, and monotonicity; Increment reports diagnostics and refuses weak first stages but cannot validate these assumptions.
+LATE follows Imbens and Angrist,
+[“Identification and Estimation of Local Average Treatment Effects”](https://doi.org/10.2307/2951620).
+Random assignment, relevance, exclusion and monotonicity are assumptions,
+not conclusions from passing the first-stage check.

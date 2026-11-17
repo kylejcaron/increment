@@ -1,43 +1,41 @@
 # Registered sequential inference
 
-Use sequential monitoring when you need to make decisions as finalized
-experiment data arrives. Register the plan before looking at outcomes. Exact
-Bernoulli monitoring is anytime-valid; continuous means use a qualified
-asymptotic method. Although ratios can be converted to means, the ordinary
-sequential guarantee does not automatically transfer to that conversion.
+You can make repeated decisions as finalized experiment data arrives, but only
+with a sequential plan registered **before looking at outcomes**. Repeated
+fixed-horizon intervals do not provide that protection.
 
 ## Choose the route by the metric and the guarantee you need
 
-| Registered route | Metric types | Treatment arms | CUPED | Sample-size planning | Guarantee |
-|---|---|---:|---|---|---|
-| Exact Bernoulli (`always_valid`) | Conversion or retention | One or more | No | Unsupported; use fixed-horizon planning or asymptotic-route planning | Anytime-valid finite-sample guarantee under the registered sampling and reveal assumptions |
-| Asymptotic mean (`asymptotic_mean`) | Mean, conversion, retention, or ratio | One treatment/control comparison | Yes, when the required per-unit covariate is available | Supported as an asymptotic approximation | Asymptotic; not a finite-sample guarantee |
+- **Conversion or retention — `always_valid`:** finite-sample, anytime-valid
+  under the registered sampling and reveal assumptions.
+- **Mean, ratio, conversion or retention — `asymptotic_mean`:** an asymptotic
+  approximation, not a finite-sample guarantee.
 
-Ratios use the asymptotic route's ratio model, not a ratio-to-mean relabeling;
-the denominator and source requirements still apply. For rare conversion
-rates, exact finite-sample monitoring can require very large samples, so its
-guarantee does not imply useful power at a practical sample size. Planning
-approximations are not runtime guarantees. See the relevant metric section
-below for route-specific assumptions and limitations.
+Exact Bernoulli monitoring supports multiple treatment arms but not CUPED.
+The asymptotic route supports one treatment/control comparison and supported
+CUPED adjustments. Ratios need its ratio model and denominator checks;
+relabeling a ratio as a mean does not transfer the guarantee.
 
-
-!!! warning "Guarantees depend on the data and reveal process"
-    Every observation must follow the registered reveal contract. Outcome-driven
-    choices about when to look can invalidate a family claim. Triggered effects
-    also require treatment-independent trigger membership and timing, plus
-    counterfactual logging; balanced rates do not prove these assumptions.
-    [`increment.workflows.health_check(experiment, reader)`](../api.md#diagnostics-and-robustness)
-    is a sanity check, not proof of causal validity.
+Exact monitoring can have very low power for rare conversions. That does
+not establish the asymptotic route's calibration at those rates.
+[Sample-size planning](power-analysis.md#fixed-and-sequential-planning)
+is a separate approximation, not a runtime guarantee; exact-route planning
+is unsupported.
 
 ## Sequential monitoring of a conversion metric
 
-Declare the sampling law, metric role, inference regime and reveal order
-before analysis. This plan-derived route is the ordinary starting point; the
-library constructs the registration from the plan and frame metadata.
-Unit-summary frames contain finalized unit outcomes, and `exposure_date`
-defines their reveal order.
-The readout table uses the `tables` extra.
+Declare the assignment law, metric role and inference before reading data.
+This example uses independent 50/50 assignment and finalized 0/1 outcomes.
+`exposure_date` sets reveal order: ascending enrollment date, then canonical
+string unit ID for ties—not dataframe row order.
 
+Reveal every registered metric for a unit together, after the longest required
+outcome or uptake window. The order must be outcome-independent and finalized
+values must never change. A summary frame asserts that its outcomes are final;
+panel, warehouse and artifact sources instead require an explicit
+[capture with an `as_of` horizon](../reference/sequential-contracts.md#capture-and-continuation).
+Use an explicit `design=` with fixed `allocation`, not the `control=` shortcut.
+The table requires the `tables` extra.
 
 ```python
 from random import Random
@@ -47,14 +45,19 @@ import polars as pl
 import increment
 from increment.tables import readout_table
 
-rng = Random(21)
-n = 2000
-arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(n)]
 design = increment.Randomized(
     control_group="control",
     allocation={"control": 0.5, "treatment": 0.5},
     allocation_scheme="independent",
 )
+plan = increment.AnalysisPlan(
+    primary="purchase",
+    inference=increment.InferenceSpec(kind="always_valid", baseline_rate=0.03),
+)
+
+rng = Random(21)
+n = 2000
+arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(n)]
 finalized_frame = pl.DataFrame(
     {
         "user_id": [f"u{i:04d}" for i in range(n)],
@@ -62,10 +65,6 @@ finalized_frame = pl.DataFrame(
         "enrolled_on": list(range(n)),
         "purchase": [int(rng.random() < (0.045 if arm == "treatment" else 0.03)) for arm in arms],
     }
-)
-plan = increment.AnalysisPlan(
-    primary="purchase",
-    inference=increment.InferenceSpec(kind="always_valid", baseline_rate=0.03),
 )
 experiment, reader = increment.from_frame(
     finalized_frame,
@@ -80,1043 +79,171 @@ experiment, reader = increment.from_frame(
 )
 results = increment.run(experiment, reader).readout()
 readout_table(results, title="Sequential purchase results")
+print(results[0].stat_sig())
 ```
 
-The table displays relative lift in percent. The authoritative ratio-coordinate
-bounds remain on `results[0].require_sequential_result().bounds`: ratio is
-`1 + lift`, so −31.8461% corresponds to 0.681539. This look does not reject
-the null; it does not establish no effect. Assignment integrity
-was not rejected, not proven. For a finite-sample anytime-valid claim, the
-Bernoulli outcomes, independent fixed-probability assignment, finalized
-outcomes and outcome-independent reveal order must match the declared model.
-The proper Beta prior uses the stated 3% control baseline; omit
-`baseline_rate` when it is not justified by pre-experiment information.
-
-If data are still arriving, do not analyze an incomplete look as finalized.
-On panel, native, and artifact sources, capture only after the declared
-outcome window has closed; see the source capture workflow below.
-
-## Manual registration for low-level integrations
-
-Use hand-written registration only when your declaration is not covered by
-plan-derived registration. A posterior effect prior, estimated log standard
-error, or freshness timestamp cannot replace this sampling declaration.
-The exact public anytime-valid observation model is Bernoulli with a proper
-Beta prior. The Gaussian kernels mentioned below are research diagnostics only,
-not public sequential decisions.
-
-Scalar Gaussian normal–inverse-gamma and paired Gaussian
-normal–inverse-Wishart kernels remain available only through the private
-research-diagnostic route; they do not produce certified `EValueEvidence` or
-public sequential decisions. Gaussian arms may have different unknown
-variances. Declare positive population control means, and positive denominator
-means for ratios; positive observed averages do not establish these assumptions.
-
-```python
-from fractions import Fraction
-
-from increment.estimators import (
-    AlwaysValid,
-    JointReveal,
-    PredictivePrior,
-    SequentialCell,
-    SequentialModel,
-    SequentialRegistration,
-    capture_sequential_snapshot,
-    estimate_sequential,
-)
-
-prior = PredictivePrior(kind="beta", a=1, b=1)
-registration = SequentialRegistration(
-    source_id="checkout-experiment",
-    definitions_id="immutable-observation-definition-v1",
-    control_group="control",
-    committed_before_data=True,
-    reveal=JointReveal(
-        filtration_id="finalized-randomization-units-v1",
-        independent_unit_vectors=True,
-        simultaneous_metrics=True,
-        outcome_independent_order=True,
-        immutable_finalized_outcomes=True,
-        longest_window_days=14,
-    ),
-    models=(
-        SequentialModel(
-            metric="conversion",
-            law="bernoulli",
-            control_prior=prior,
-            treatment_prior=prior,
-            positive_population_control=True,
-        ),
-    ),
-    roster=(
-        SequentialCell(
-            metric="conversion",
-            group_id="treatment",
-            alpha=Fraction(1, 20),
-        ),
-    ),
-)
-policy = AlwaysValid(registration=registration)
-# Read outcomes only after committing the declarations above.
-finalized_joint_records = [
-    {"unit_id": "u-control", "group_id": "control", "values": {"conversion": 0}, "segments": {}},
-    {
-        "unit_id": "u-treatment",
-        "group_id": "treatment",
-        "values": {"conversion": 1},
-        "segments": {},
-    },
-]
-snapshot = capture_sequential_snapshot(
-    registration,
-    finalized_joint_records,
-    source_id=registration.source_id,
-    definitions_id=registration.definitions_id,
-    finalized=True,
-)
-decision = estimate_sequential(snapshot, policy)
-```
-??? info "Model scope for manual registrations"
-    The exact public anytime-valid observation model is Bernoulli with a proper
-    Beta prior. Scalar Gaussian normal–inverse-gamma and paired Gaussian
-    normal–inverse-Wishart kernels remain available only through the private
-    research-diagnostic route; they do not produce certified `EValueEvidence` or
-    public sequential decisions. Gaussian arms may have different unknown
-    variances. Declare positive population control means, and positive denominator
-    means for ratios; positive observed averages do not establish these assumptions.
-
-
-
-Each record supplies canonical string `unit_id` and `group_id`, a `values`
-mapping with every registered metric, and any registered `segments`. The
-continuous public route accepts scalar values, not `(numerator, denominator)`
-pairs. Reveal order must be independent of outcomes. Reveal all relevant
-metrics together after the longest required outcome or uptake window, then
-keep outcomes immutable. These are sampling declarations, not conclusions
-drawn from dates.
-
-For frame analyses, compute `sequential_definition_id` from the synthesized
-metrics, design, `MetricSpec` transformations, and required `source_mapping`
-before constructing the source. For a panel, the mapping is:
-`{"unit": "user_id", "group": "variant", "uptake": None, "date": "ds",
-"exposure_date": "enrolled_on"}`. Summary frames must also provide an
-`exposure_date` role. Reveal records in ascending exposure-date order, with
-ties broken by canonical string unit id, never caller row order or outcomes.
-Null exposure follows the constructor's `on_unassigned` policy. Uptake must
-name its resolved column. Native registrations bind a digest of the full exposure,
-fact, dimension, timestamp, entity, and experiment recipes; artifacts carry that
-same digest in their saved context and never store the recipes themselves. A
-mismatch refuses initial capture, not only continuation.
-
-Bind the registration through `AnalysisPlan(inference=InferenceSpec(
-kind="always_valid", registration=registration))`. Unit-summary frames
-supply finalized outcomes. Panel, native, and artifact sources require
-`increment.workflows.capture_sequential(experiment, reader, finalized=True,
-as_of=...)` before a decision; reading one first refuses with
-`sequential.capture.required`, whose `route` context names that call. The
-reader's source keeps the capture, so a later `run(experiment, reader)` reads
-it. The common window determines which units can enter. Native and artifact
-capture streams bounded Arrow batches through existing source relations.
-
-Use `increment.workflows.sequential_snapshot(experiment, reader)` to retain
-the exact prefix. Supply it as `previous=` when continuing from a new source
-object. The same snapshot is idempotent. An append must preserve every earlier
-unit identity, assignment, value, definition, transformation, and reveal
-position. A changed generation hash alone proves nothing about an append.
-Corrections refuse continuation with `sequential.continuation.rewrite`, whose
-context names the first reveal `position` (counted from 0) whose record differs,
-the `unit_id` the earlier capture revealed there, and what `changed`: `missing`
-(that unit is no longer revealed), `order` (it is revealed later, for example
-after a late-arriving unit), `assignment`, or `values_or_definitions`. When every
-record is unchanged but the retained states differ, `position` and `unit_id`
-are `None`. Never treat a correction as a fresh continuation of the old process.
-
-```python
-import increment
-from increment.estimators import snapshot_from_json
-from increment.workflows import capture_sequential, sequential_snapshot
-
-
-def bind(frame):
-    return increment.from_frame(
-        frame,
-        shape="summary",
-        unit="user_id",
-        group="variant",
-        design=design,
-        metrics=[increment.MetricSpec(name="purchase", type="conversion")],
-        experiment_id="checkout-experiment",
-        plan=plan,
-        exposure_date="enrolled_on",
-    )
-
-
-experiment, reader = bind(finalized_frame.head(1000))
-with reader:
-    saved = sequential_snapshot(experiment, reader).model_dump_json()
-
-experiment, reader = bind(finalized_frame)
-with reader:
-    parent = snapshot_from_json(saved)
-    continued = capture_sequential(experiment, reader, finalized=True, previous=parent)
-    result = increment.run(experiment, reader)
-print(continued.parent_id == parent.prefix_id)
-```
-
+<!-- output -->
 ```text
-True
+False
 ```
 
-Raw-record producers may use `capture_sequential_snapshot(...,
-previous=parent, append=True)` for a batch of new units. Existing unit
-identities cannot appear in that batch. Full-prefix capture checks every
-old record proof and reuses the parent's exact sufficient state.
+This look does not reject the null; it does not establish no effect.
+The table displays relative lift in percent. Authoritative bounds on
+`results[0].require_sequential_result().bounds` use ratios: ratio is
+`1 + lift`, so a ratio of 0.681539 means about −31.8461% lift.
+Bounds may be unbounded, full or empty. A missing point does not erase a
+confidence set; see [sequential result fields](../reference/result-fields.md#sequential-inference-two-coordinate-systems).
 
-`increment.workflows.export_moments(experiment, reader, path)` writes a
-format-10 sequential checkpoint envelope: the version-2
-registration/snapshot/checkpoint, a version-3 compiled plan, and the
-originating source identity. Export with the same reader that captured or
-adopted the finalized checkpoint; a fresh `from_definitions(...)` pair does not
-own that checkpoint. Reload its rows with `from_moments`.
-The preceding sequential format 9 remains readable; fixed-horizon format 12
-carries the same source identity, while the preceding fixed-horizon format 11
-remains readable.
-
-??? info "Checkpoint rational encoding and limits"
-    Every rational in that envelope -- prior hyperparameters, `rho`,
-    `treatment_probability`, cell `alpha` and `null_lift`, `q`, adjustment
-    coefficients and centres, and each retained arm mean and scatter entry -- is
-    spelled as `Fraction` prints it: a signed integer or an integer quotient with
-    a positive denominator (a fixed decimal string such as `"0.05"` is also read).
-    JSON carries a rational as that string or a bounded integer literal, never a
-    boolean or floating literal: `0.05` and `1e-5` have already been rounded by the
-    JSON parser, so spell them `"0.05"` and `"0.00001"` instead. Each integer
-    component may carry at most 4,096 decimal digits, and scientific notation is
-    never a portable spelling. A payload outside that grammar refuses
-    with `sequential.wire.rational_invalid` (an `InvalidRequestError` whose context
-    names the `field`, `reason`, `limit_digits` and `route_forward`) before any
-    arithmetic, so a nine-byte `"1e5000000"` cannot make the reader allocate a
-    five-million-digit integer; text that is not JSON refuses with
-    `sequential.source.invalid`. The ceiling holds every supported capture: a
-    binary64 observation is an exact dyadic rational with at most 309 numerator
-    digits and a 1,075-bit denominator, and retained means and scatters stay near
-    1,300 digits even when the largest and smallest finite values alternate.
-    In-process `Fraction` and finite `Decimal` values keep their exact meaning.
-    A finite Python float normally binds its exact binary64 value; compliance
-    `alpha`/`null_lift` and `InferenceSpec.baseline_rate` instead bind its shortest
-    decimal spelling (`0.05` is `1/20`). Non-finite inputs refuse with the same code.
-    Exporting a state outside the ceiling refuses with `field="export"` instead
-    of writing a checkpoint no reader admits.
-
-
-The retained family is fixed before data: metric × arm × segment cells
-remain members even when no units enroll. Missing cells contribute log
-evidence of minus infinity. Singular or zero-event prefixes retain their
-observations and may become informative later.
-
-`capture_sequential(experiment, reader, finalized=True, freeze=["metric_name"])`
-stops monitoring a metric at that capture. Every registered cell for that
-metric—each treatment arm and segment—keeps that capture's evidence at later
-looks. A cell with no observations on either arm has nothing to freeze and
-stays monitored; name the metric again at a later capture to freeze it.
-Freezing is recorded in the snapshot's hashed prefix identity and carries
-forward on later appends and parent proofs. A caller cannot retroactively
-apply an earlier look's evidence. Raw-record producers call
-`declare_sequential_freeze(snapshot, ["metric_name"])` on a captured
-snapshot for the same effect. `run(experiment, reader)` reads frozen cells
-from the snapshot; it has no run-time override.
-
-Freezing fixes a cell's evidence, not its family verdict. e-BH uses current
-or frozen evidence, never a running maximum, and recomputes it at every
-look over the whole family. A frozen secondary's `discovery` and selected
-interval can therefore change as other members' evidence moves. Reusing an
-earlier verdict would not control FDR: e-BH requires every selected e-value
-to be at least `m / (q R)` for the reported `R` (Wang and Ramdas 2022), and
-a remembered selection can fail that threshold when `R` shrinks. Selected
-intervals are reinverted at `min(q * R / m, nominal_alpha)` using the same
-stopped likelihood state, which keeps the false coverage rate at `q` for
-the selected set (Xu, Wang and Ramdas 2022).
-
-Read `row.require_sequential_result()` for the authoritative confidence set,
-certificate, and checkpoint. Confidence bounds use ratio coordinates; subtract
-one to express lift. Endpoints can be unbounded, and sets can be full or empty.
-A missing relative point estimate does not erase the confidence set. The
-`sequential_lower` and `sequential_upper` frame columns hold those endpoints on
-the lift scale (ratio minus one), rounded outward to numeric floats or nulls;
-see [Reading results](reading-results.md#sequential-inference-two-coordinate-systems).
-On exact Bernoulli (`always_valid`) rows, `sequential_log_e` is the log e-value as a float,
-so it stays usable where the e-value itself would overflow; `sequential_alpha`
-is the decision alpha as a float, and the exact fractions stay on
-`row.require_sequential_result()`. `row.stat_sig()` uses the registered
-null and exact allocated alpha. No equivalent-normal-score p-value is reported.
-A two-sided confidence sequence compares each tail's e-process with the same
-`1 / alpha` the decision uses; there is no central halving. At the true ratio
-both tail e-processes are bounded by one test martingale, so Ville's
-inequality already bounds the union of the two tails by `alpha`, and
-`row.stat_sig()` is exactly "the registered null lies outside the sequence".
-Sequential planning is declared with the same object the runtime reads:
-`ArmPlanningProcedure.standard(inference=InferenceSpec(kind="asymptotic_mean"))`.
-This convenience constructor sizes unsegmented monitoring. It rejects
-`InferenceSpec.segments`: a whole-experiment sample size does not establish
-power for individual segments.
-
-Raw randomized ITT (Bernoulli law), asymptotic scalar-mean ITT
-(continuous outcomes under a Randomized or Encouragement design), and
-two-sided-design Bernoulli relative uptake are supported. Uptake also
-requires `AnalysisPlan(compliance=SequentialCompliancePolicy(
-alpha=Fraction(1, 20), alternative="two-sided", null_lift=0, family=False), ...)`.
-Registered compliance cells must match this policy; its alpha is divided
-across retained treatment arms. Request `estimands=("itt",)` or
-`estimands=("compliance",)` explicitly. Encouragement as-of calls require
-`completed_windows_only=True`, even before a checkpoint exists.
-
-These explicit ITT/compliance requests may omit `ExclusionRestriction`; it is
-required only when requesting LATE. Omitting `estimands` still requests LATE
-and refuses without that declaration. Declaring it does not enable sequential
-LATE.
-
-Binary-uptake LATE, quantiles, clustered sequential inference, and
-observational sequential causal identification require matching proofs and
-refuse before source reads. Reusing a registered construction requires
-choices predictable when each unit is revealed and observations that obey
-the registered sampling law; predictability alone is insufficient. A fixed
-winsorization threshold meets the predictability requirement, not
-automatically the law requirement. A percentile threshold computed from
-accumulated data refuses with `sequential.transform.unpredictable`.
-
-A CUPED coefficient fixed from pre-period data
-(`InferenceSpec.adjustments`, `ScalarMeanModel.adjustment`) applies at
-capture on the asymptotic scalar-mean route, not the exact Bernoulli route.
-Its common centering shift cancels at a zero-effect null, but changes
-relative lift and nonzero-null margins when the experiment covariate mean
-differs from the declared center. That bias does not vanish with sample
-size. A coefficient fitted from in-experiment outcomes is admitted on
-`AsymptoticMean` through the `adjusted_mean` and `adjusted_ratio_mean` laws
-below; their confidence sequence accounts for the estimated coefficient.
-The exact e-process route (`AlwaysValid`) refuses it because refitting
-re-weights past increments and breaks its martingale (see
-[`cuped.md`](cuped.md)).
-
-Structural-zero control uptake is a rate target; use the fixed-horizon
-compliance path. On `from_frame` summaries and panels, declare a
-randomized segmented family before observing outcomes with ordinary frame metadata:
-
-```python
-import increment
-
-increment.InferenceSpec(kind="always_valid", segments={"country": ("US", "CA", "GB")})
-```
-
-Use a categorical column and list every level to monitor, including levels
-with no observations yet. Only the declared levels enter this family; other
-values join no cell. Membership must be determined before assignment for
-asymptotic monitoring, not chosen from outcomes. The package derives the
-registration and retains empty cells; read it with a breakout view, not the
-whole-window or as-of lift view, which refuses with `sequential.source.invalid`
-and a `route` naming `View.breakout(...)` over the declared dimension. Exact
-monitoring uses the declared breakout correction (e-BH by default); asymptotic
-monitoring uses fixed-roster Bonferroni by default and still refuses BH. Both
-retain the existing explicit uncorrected option. A manually built registration
-remains available but cannot be combined with `InferenceSpec.segments`.
-
-Segment labels are canonical strings on both frame routes: Boolean values are
-`true`/`false`, missing values are `__null__`, string labels keep their exact
-case and content (`"True"` is not `"true"`), and numeric labels follow the
-existing string conversion. Declare Boolean levels as `"true"` and `"false"`
-and a missing level as `"__null__"`. A Boolean column whose declared levels
-include none of these could never fill a cell, so building the experiment refuses
-with `sequential.registration.invalid`, naming the `dimension`, the `declared`
-levels and the `canonical` ones; string columns are not checked, because their
-undeclared and unseen levels are legal. Unit-summary, unit-panel and
-fixed-horizon breakouts read the same labels, so a Boolean column and its
-string equivalent give identical cells, counts and readouts on pandas, Polars
-and Arrow. A declared level with no observations stays a retained empty cell.
-
-This corrects earlier releases, which recorded unit-summary Boolean and null
-labels under backend-specific spellings such as `True` or `None` and left the
-declared `true`/`false`/`__null__` cells empty. A checkpoint captured under
-those spellings still replays unchanged through `from_moments`, but a source
-that labels the same units canonically is refused with
-`sequential.continuation.rewrite`: the recorded prefix is not silently
-relabelled. A refusal is not permission to restart monitoring and spend alpha
-again on the same experiment. Keep the earlier checkpoint as the experiment's
-evidence, or design and register a new monitoring protocol whose validity you
-can defend. Continuing with the earlier spellings as string labels remains
-valid.
-
-Predeclared segments cannot be combined with a compliance policy's
-`family=True`. Use `family=False` to retain separately allocated uptake cells,
-or omit segments for the existing joint whole-window family. This does not
-remove the existing encouragement breakout-readout restrictions.
-
-`from_definitions` and `from_unit_day_artifact` still refuse segmented capture
-because relational segment capture needs an immutable property-relation
-contract. `from_moments` can replay retained segmented state but carries no
-breakout catalog, so a breakout view refuses with `evidence.breakout_unavailable`.
-As-of output does not infer segmented historical checkpoints from a moment
-cube. Automatic registration does not change these source boundaries.
-
-Native capture and artifact publication pin assignment, outcomes, uptake,
-property streams, freshness, and coverage in one backend execution. Subsequent
-reductions read those pinned inputs. Cluster identity checks run on the raw
-admitted assignments before reduction; cluster-grain inference remains fixed-horizon.
-
-Current labeled checkpoints round-trip through moments and as-of readouts.
-Frame day labels may be dates, datetimes, numeric days, ISO date strings, or
-structured labels such as `d14`; the reveal label's representation is preserved.
-Compliance-only monitoring uses the uptake declaration and finalized enrollment
-cohort and does not need the outcome table. Compliance date series use enrollment
-and uptake coverage; an outcome timestamp cannot extend that series.
-
-Sequential segment heterogeneity and contrasts require a separate covariance
-proof and are refused. Use the registered per-segment likelihood confidence sets
-or the existing fixed-horizon heterogeneity and contrast routes.
-
-## Error control by plan role
-
-A sequentially monitored plan reports every declared role. Nothing must be
-dropped to monitor a primary. Each role makes a different claim, so each
-gets its own budget and procedure. The table below is the complete promise;
-no implicit correction occurs downstream.
-
-| Role | Level per metric | Guarantee | Procedure |
-| --- | --- | --- | --- |
-| primary | `alpha / n_primaries`, split again across the metric's own non-control arms | FWER `<= alpha` over every look for exact laws; asymptotic approximation otherwise, with the both-tails excess below for one-sided cells | Exact e-process or asymptotic confidence sequence |
-| guardrail | `alpha`, never divided across guardrails | Per-guardrail type-I `<= alpha` over every look for exact laws; asymptotic approximation with the both-tails excess otherwise | One-sided non-inferiority using the registered law |
-| secondary | nominal level, then e-BH at `q` for every law | FDR `<= q` at a stopping time for exact families; an asymptotic approximation otherwise, not a union-over-dates guarantee | e-BH selection, selected intervals reinverted at `min(q * R / m, nominal_alpha)` |
-| unassigned | `alpha` | Per-metric only, in the registered law's validity regime; no multiplicity claim | Exact e-process or asymptotic confidence sequence |
-
-Register each roster cell at or below its role's level.
-`validate_sequential_plan` refuses a cell registered above that level and
-names the allowance. The compiled procedure is the ceiling: a cell may be
-registered tighter, never looser.
-
-### Guardrails: one-sided non-inferiority, uncorrected across guardrails
-
-A guardrail asks, "did this get materially worse?" It is a one-sided
-non-inferiority test on the adverse side implied by the metric's
-`preferred_direction` and margin, never the plan's `alternative`, which is
-scoped to primaries and secondaries. "Materially" is the margin, so every
-guardrail declares one: `margin` or `margin_abs` on the metric, or on its
-`ExperimentMetric` plan entry. A guardrail with neither refuses before any
-data is read, with `plan.guardrail.margin_required`. Rejecting the null (harm
-at least as large as the margin) certifies the guardrail.
-
-`alpha` is **not** divided across guardrails. Each guardrail's type-I error
-(certifying a guardrail that is harmed by at least its margin) is bounded by
-`alpha` regardless of guardrail count because the allocation is per test. The
-compound decision "ship only if every declared guardrail is certified" is an
-intersection-union test (Berger 1982): the probability of shipping while any
-guardrail is truly harmful is bounded by that same `alpha`. Dividing `alpha`
-by the guardrail count would tighten the compound bound to `alpha / k`, but
-would make each individual test harder to reject, reducing power without
-improving the IUT bound at plain `alpha`.
-
-Those finite-sample bounds require exact-law guardrails. Asymptotic guardrails
-inherit the approximation and one-sided both-tails qualification below; the
-intersection-union argument does not remove either qualification.
-
-Each guardrail row reports its own verdict: it rejects (certified) or it does
-not. `run()` also reports an aggregate program verdict in `result.decisions`,
-but returns `pass` only when every required primary rejects on its favorable
-side, every guardrail result is available and certified, and assignment
-integrity is qualified. A primary that rejects on its adverse side blocks with
-`decision.primary.adverse`, and a guardrail that is not certified blocks with
-`decision.guardrail.not_certified` (see
-[Program verdict](reading-results.md#program-verdict)). The test is one-sided,
-so a guardrail that is not certified is not a finding of harm. A caller using
-only the per-row verdicts must apply the compound "ship only if every guardrail
-is certified" rule. Reading several guardrail verdicts without applying that
-rule (for example, shipping when most, but not all, guardrails are certified)
-has only the weaker union bound (`k * alpha` across `k` guardrails) on the
-joint probability that at least one is falsely certified, not the tighter
-single-`alpha` IUT bound.
-
-### Secondaries: false discovery rate control at `q` for every in-family secondary
-
-A secondary is tested at its nominal level, then its family controls FDR at
-`q`: Benjamini-Hochberg over p-values for fixed-horizon inference, and e-BH
-over exact e-values under `AlwaysValid` or plug-in mixture values under
-`AsymptoticMean`. A selected interval is reinverted at
-`min(q * R / m, nominal_alpha)`. Bernoulli families have a finite-sample
-stopping-time guarantee; continuous or mixed families have an asymptotic
-approximation. Estimated variance does not make a plug-in value an exact
-e-value, so the oracle martingale theorem cannot provide a finite-sample
-bound. There is no separate toggle or fixed-roster split.
-
-Every family row reports `family_guarantee`: `finite_sample` only when all
-members are exact, and `asymptotic_sequential` when any member is
-asymptotic. A member without usable evidence—a missing arm, fewer than two
-observations in an arm, or zero observed variance—contributes log evidence
-of minus infinity, counts in the family size, and is never selected.
-Guardrails share neither this budget nor its selection step; they test at
-the full plan `alpha`. Structural prior/inference combinations remain refused; for
-supported fixed-horizon prior-bound rows, declared secondary membership follows sampling evidence.
-
-This is the metric/arm secondary family. A registered breakout family is a
-separate axis whose correction is declared per registration: a continuous
-(scalar-mean) breakout uses fixed per-cell Bonferroni with no reselection,
-while a discrete (Bernoulli) breakout uses this e-BH-at-`q` family.
-
-Asymptotic metric/arm families were Bonferroni-corrected (familywise error)
-before they moved to e-BH. A registration records which rule its asymptotic
-family commits to, so a snapshot, moments export or compiled plan stored under
-the Bonferroni rule refuses with `sequential.continuation.legacy` instead of
-continuing under the weaker false-discovery guarantee; start a new
-registration by capturing without `previous=`.
-
-### Choosing the Beta prior weight for a declared baseline rate
-The default weight is `DEFAULT_BERNOULLI_PRIOR_WEIGHT = 10`: prior weight
-affects power, not the anytime-valid guarantee. The measurements and
-rare-conversion limitations are folded below.
-
-??? info "Prior calibration measurements and interpretation"
-    An automatic exact Bernoulli registration built from
-    `InferenceSpec(kind="always_valid", baseline_rate=p0)` commits `Beta(w * p0, w * (1 - p0))`
-    on both arms. The e-process is valid for every proper prior, so `w` only moves power;
-    `calibration/bernoulli_prior.py` measured it on the grid below (200 replications
-    per cell, one look every 250 units per arm to 4000, `alpha = 0.05`; "type I" is the fraction
-    of null replications that ever crossed, "power" the fraction that crossed by the stated look).
-
-    | p0 | prior | type I @4000 | power @2000, lift .05 | lift .10 | lift .20 | power @4000, lift .10 | true p0 = 2x: type I @4000 | power @2000, lift .10 |
-    | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-    | 0.02 | Beta(1,1) | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | - | - |
-    | 0.02 | w=2 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-    | 0.02 | w=10 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-    | 0.02 | w=50 | 0.015 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.005 |
-    | 0.02 | w=200 | 0.005 | 0.005 | 0.000 | 0.010 | 0.000 | 0.000 | 0.000 |
-    | 0.1 | Beta(1,1) | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | - | - |
-    | 0.1 | w=2 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-    | 0.1 | w=10 | 0.000 | 0.000 | 0.005 | 0.015 | 0.005 | 0.000 | 0.000 |
-    | 0.1 | w=50 | 0.005 | 0.010 | 0.010 | 0.080 | 0.010 | 0.000 | 0.005 |
-    | 0.1 | w=200 | 0.010 | 0.005 | 0.015 | 0.105 | 0.030 | 0.000 | 0.000 |
-    | 0.3 | Beta(1,1) | 0.000 | 0.000 | 0.015 | 0.335 | 0.065 | - | - |
-    | 0.3 | w=2 | 0.000 | 0.000 | 0.010 | 0.405 | 0.035 | 0.000 | 0.280 |
-    | 0.3 | w=10 | 0.000 | 0.010 | 0.020 | 0.520 | 0.140 | 0.000 | 0.165 |
-    | 0.3 | w=50 | 0.000 | 0.010 | 0.015 | 0.685 | 0.185 | 0.000 | 0.000 |
-    | 0.3 | w=200 | 0.005 | 0.025 | 0.100 | 0.685 | 0.250 | 0.000 | 0.000 |
-
-    Every weight is valid: the largest null crossing rate anywhere on the grid, including the
-    misdeclared cells, is `0.015` against `alpha = 0.05`, so the weight is a power choice only.
-    The probe's own rule reads power alone (the smallest weight within five points of the best
-    at lift 0.10 after 2000 units per arm at every declared rate) and selects `w=200`, which at
-    `p0 = 0.3` and 4000 units per arm reaches `0.250` at lift 0.10 against `0.140` for `w=10`
-    and `0.065` for the flat prior. The default is not that weight. It is
-    `DEFAULT_BERNOULLI_PRIOR_WEIGHT = 10`, a robustness choice read off the last two columns:
-    with the true control rate at twice the declared one (`0.3` declared, `0.6` true), power at
-    lift 0.10 after 2000 units per arm is `0.280` for `w=2`, `0.165` for `w=10` and `0.000` for
-    both `w=50` and `w=200`. So `w=10` is clearly better than the flat prior when the declared
-    rate is right (`0.520` against `0.335` at lift 0.20 after 2000 units per arm; `0.140`
-    against `0.065` at lift 0.10 after 4000), and it is the largest weight on the grid that
-    still has power when the rate is wrong by a factor of two. Weights of 50 and above buy
-    more power only when the caller is certain of the rate and give none when they are not. A
-    caller who is confident in the declared rate may take that power by declaring the heavier
-    `Beta` prior on an explicit `SequentialRegistration` (`SequentialModel.control_prior` and
-    `treatment_prior`), which the automatic route then leaves untouched.
-
-    The grid also shows what the exact route cannot do at these sample sizes: at a declared rate
-    of `0.1` the best cell is `0.105` (w=200, lift 0.20 after 2000 units per arm), at `0.02` it is
-    `0.010`, and most cells at both rates are `0.000`. These are power measurements,
-    not calibration evidence for an alternative method. The asymptotic route
-    (`kind="asymptotic_mean"`) is available, but rare-conversion calibration at
-    base rates `0.10` or below is unverified by this grid and the bounded release audit.
-
-
-## Exact conversion route details
-
-The plan-derived example at the start of this guide uses this automatic
-registration route; no manual registration is needed for the declared frame.
-
-`baseline_rate` is the conversion rate you expect in the control arm: read it off the
-same metric over the weeks before the experiment (the number the power analysis used).
-It only sharpens monitoring; a wrong value costs power, never validity (the table above
-shows the cost of declaring half the true rate). Leave it out if you do not know it.
-For an uptake-only encouragement plan with no outcome metrics, the rate describes
-control uptake instead. With outcome metrics present, it tunes only their priors;
-the additional compliance model retains its flat uptake prior.
-
-Before any outcome is read the source binds a `SequentialRegistration` with one
-`bernoulli` model per metric and the same `Beta(w * p0, w * (1 - p0))` prior
-in each arm (`w = DEFAULT_BERNOULLI_PRIOR_WEIGHT`, chosen above; `Beta(1, 1)`
-without a `baseline_rate`). Exact monitoring accepts the declared treatment
-arms and creates a cell for each metric/arm pair, or metric/arm/level for a
-segmented frame. A primary's error allocation is split across treatment arms;
-whole-window secondaries share `q` over their complete metric-by-arm family,
-capped at each procedure's allocation. Segmented e-BH shares the breakout
-view's `q` over its complete cell roster, including absent levels.
-
-The registration identity binds the metrics, design, source mapping,
-`baseline_rate` and declared roster. An unchanged declaration continues an
-existing process; a changed roster or prefix refuses continuation. Existing
-two-arm declarations retain their identities. Multi-arm asymptotic monitoring
-and multi-arm sequential-secondary power planning remain unsupported.
-A YAML plan writes
-`inference: {kind: always_valid, baseline_rate: 0.03}`; the float binds the decimal it
-was typed as. A mean or ratio metric under a registration-less `always_valid` plan
-refuses with `definition.inference.always_valid_metric_type`, naming the metric and
-the `asymptotic_mean` route; `baseline_rate` with any other kind or with an explicit
-registration refuses with `definition.inference.baseline_rate_route`.
-
-Exact or asymptotic: the exact route is anytime-valid for every sample size and every
-proper prior, and its power depends on the prior only through the weight measured in
-the table above; the asymptotic route (`kind="asymptotic_mean"`) needs no prior, tunes
-from `expected_decision_sample_size`, and is an asymptotic approximation. Prefer the
-exact route when its finite-sample guarantee is needed. The asymptotic route
-also admits binary and mean metrics in one registration and CUPED adjustment.
-Low power of the exact route at rare conversion rates does not establish the
-asymptotic route's calibration there.
+The finite-sample claim requires Bernoulli outcomes, independent
+fixed-probability assignment and the reveal rules above. An assignment check
+marked `not_rejected` does not prove those assumptions.
+`baseline_rate=0.03` uses a proper Beta prior centered on a pre-experiment 3%
+control rate. Omit it when that information is not justified. It changes
+power, not validity.
 
 ## Ordinary continuous monitoring
 
-Mean, ratio, conversion and retention metrics can use the ordinary plan/source
-flow without constructing a registration or supplying proof-like population
-flags. When an asymptotic mean inference is selected, Increment derives the
-immutable source and definition identity, fixed treatment allocation, metric
-roster, and per-cell nominal alpha allocations for the e-BH secondary family
-from the plan and source metadata before reading outcomes. Tuning is frozen
-from a planned expected decision sample size (`5000` by default) and each
-compiled procedure's allocated alpha: with `t=N*rho^2`, `rho` solves `t-log1p(t)=-2*log(alpha)`.
-The operational per-arm withholding threshold starts at the mathematical
-minimum of two observations; neither choice is a finite-sample guarantee or a
-heavy-tail safeguard.
+<a id="continuous-scalar-means"></a>
 
-The method assumes iid stationary potential-outcome vectors, independent fixed
-Bernoulli assignment, finalized scalar outcomes, finite moments of order
-`2+delta`, positive limiting arm variances, a positive population control mean,
-consistency/no interference, and outcome-independent joint reveal. These are
-documented scope assumptions, not facts inferred or certified from observed
-data. Registration is frozen before capture; changed mappings, assignments,
-rosters, or continuation prefixes refuse before outcomes are read.
+Use `asymptotic_mean` for a continuous mean. It also accepts conversion and
+retention as scalar 0/1 outcomes, and ratios through the dedicated ratio
+model. The source derives the registration; no manual population flags are
+needed.
 
-## Continuous scalar means
+The method assumes independent, identically distributed stationary
+potential-outcome vectors; independent fixed Bernoulli assignment; finite
+absolute moments of order `2+delta` for some `delta>0`; positive limiting
+arm variances; a positive population control mean; consistency and no
+interference; and finalized, outcome-independent joint reveal.
+Treatment means may be negative. Adaptive allocation, calendar drift and
+outcome-dependent reveal do not meet this contract.
 
-Use `InferenceSpec(kind="asymptotic_mean")` for mean metrics and for conversion
-or retention metrics whose 0/1 outcome is monitored as a rate; the retained
-centered scatter of a 0/1 outcome is its Bernoulli variance, so no separate
-binary law is needed on this route.
-The source constructs the registered `AsymptoticMean` runtime before capture.
-This is a distinct asymptotic sequential construction. It does not reinterpret
-NIG/NIW priors, `AlwaysValid`, or a Gaussian planning effect scale.
-
-The declared model is iid stationary unit potential-outcome vectors, independent
-Bernoulli assignment at a fixed probability in (0, 1), finalized scalar outcomes,
-finite absolute moments of order 2+delta for some delta>0, positive limiting arm
-variances, and a fixed positive population control mean. Treatment means may be
-negative. Outcome-independent joint reveal, consistency and no interference are
-assumptions; timestamps and checksums cannot establish them. A single randomized
-treatment/control comparison is admitted; adaptive assignment, arbitrary
-allocation schedules, calendar drift and outcome-dependent reveal are not.
-Registered segments must be fixed by pre-assignment attributes; post-treatment
-segmentation does not preserve this assignment model.
-
-Declare the plan and assignment before reading outcomes:
+Reuse the assignment and unit IDs above, but declare a new continuous-outcome
+experiment before reading its outcomes:
 
 ```python
-specs = [increment.MetricSpec(name="purchase", type="conversion")]
-plan = increment.AnalysisPlan(
-    primary="purchase",
+mean_plan = increment.AnalysisPlan(
+    primary="revenue",
     inference=increment.InferenceSpec(
         kind="asymptotic_mean",
         expected_decision_sample_size=5000,
     ),
 )
-experiment, reader = increment.from_frame(
-    finalized_frame,
+revenue_frame = finalized_frame.select("user_id", "variant", "enrolled_on").with_columns(
+    pl.Series("revenue", [10.0 + rng.uniform(-2, 2) + (arm == "treatment") for arm in arms])
+)
+mean_experiment, mean_reader = increment.from_frame(
+    revenue_frame,
     shape="summary",
     unit="user_id",
     group="variant",
     design=design,
-    metrics=specs,
-    experiment_id="checkout-asymptotic-experiment",
-    plan=plan,
+    metrics=[increment.MetricSpec(name="revenue", type="mean")],
+    experiment_id="revenue-experiment",
+    plan=mean_plan,
     exposure_date="enrolled_on",
 )
-row = increment.run(experiment, reader).readout()[0]
-result = row.require_asymptotic_sequential_result()
+mean_row = increment.run(mean_experiment, mean_reader).readout()[0]
+confidence_set = mean_row.require_asymptotic_sequential_result().bounds
 ```
-!!! warning "Plan targets below the calibration range raise early-look risk"
-    Smaller `expected_decision_sample_size` values increase early-look
-    approximation risk; this is not only a power choice. Selected calibration
-    checks start at 40 units per arm, rather than the operational withholding
-    minimum of two, and do not verify every smaller planning target.
 
+Read `confidence_set.components`, not just two endpoints: the set can be
+disconnected or unbounded, with no −1 lift floor. A zero observed variance
+or fewer than two observations in an arm withholds an informative result;
+it does not establish zero population variance.
 
-Definitions-based experiments supply the same fixed weights through
-`Experiment.allocation`, and the same inference policy in their plan. Published
-artifacts store the bound registration; reopening or extending one never retunes it
-from outcomes. `ScalarMeanModel` and explicit registrations remain available for
-inspection and replay, not as prerequisites for this workflow.
+!!! warning "Two observations are not a calibration guarantee"
+    The operational minimum is two per arm. Selected calibration checks start
+    at 40 per arm; smaller `expected_decision_sample_size` targets increase
+    early-look approximation risk. Neither the default target of 5000 nor a
+    minimum count protects against every heavy-tailed distribution.
 
-The library enforces commitment before its own observation capture. It cannot
-establish that nobody examined the outcomes elsewhere beforehand.
+For ratios, population denominator means must be positive and bounded away
+from zero. CUPED needs a supported per-unit pre-period covariate: panels
+support bounded-window unadjusted ratios, not adjusted laws; artifacts need
+the published `cuped_preperiod` extension. See
+[joint-law requirements](../reference/sequential-contracts.md#adjusted-means-and-ratio-metrics-the-joint-laws).
+The library commits before its own capture; it cannot know whether someone
+looked at outcomes elsewhere.
 
-??? info "Boundary, calibration, and evidence fields"
-    The actual clock is N=nc+nt finalized independent units. With centered sums of
-    squares M2a, the empirical variance convention is sa²=M2a/na and Va=sa²/na.
-    For a relative null lift ell0, r=1+ell0, the shifted contrast and boundary are
+## Error control by plan role
 
-    ```text
-    Dhat_r = meanT - r * meanC
-    Vr = VT + r² * VC
-    lambda = rho^-2
-    K_N = (1 + lambda/N) * (log1p(N/lambda) - 2*log(alpha))
-    boundary² = Vr * K_N
-    ```
-
-    The ratio confidence set inverts `(meanT-r*meanC)² <= K_N*(VT+r²*VC)` over
-    all real r. `result.bounds.components` retains bounded intervals, rays,
-    disconnected sets, full sets and empty sets in ratio coordinates; subtract one
-    from finite endpoints for lift. There is no -1 lift floor. Rational centered
-    moments, outward logarithms and rational root enclosures avoid raw-sum
-    cancellation, overflow and arbitrary near-singularity tolerances. A displayed
-    numeric point can be unavailable while the confidence set remains available.
-    Before both arm starts, with fewer than two observations in either arm, or with
-    zero observed variance, the result is a full set with a precise availability
-    reason. This is not evidence of zero population variance.
-
-    The start is a per-arm operational withholding threshold, **not finite-sample
-    calibration**. Fixed rho and start are frozen in model, registration and checkpoint
-    identity. The validity regime is asymptotic CS approximation for each fixed
-    supported distribution, following the time-uniform linearization argument for
-    the arm-mean contrast and the AsympCS framework of
-    [Waudby-Smith et al.](https://arxiv.org/html/2103.06476v7).
-    No delayed-start coverage-limit claim or universal finite start guarantee is
-    made.
-    For `greater`, discovery requires Dhat_r>sqrt(Vr*K_N); for `less`, it
-    requires Dhat_r<-sqrt(Vr*K_N). A one-sided cell outside a family builds `K_N`
-    at `2*alpha` and spends one tail of that symmetric two-sided boundary; by
-    symmetry that tail crosses with probability at most `alpha` plus half the
-    chance of crossing both tails at different looks (simulated at `alpha = 0.05`
-    over 20,000 Gaussian null paths to 20,000 units: upper tail 0.033, both tails
-    never). Its reported set is a ray whose finite endpoint equals the two-sided
-    endpoint at `2*alpha`. A family member builds `K_N` at `alpha` itself: its set,
-    at the registered level or reinverted after selection, holds exactly the
-    ratios whose sign-gated plug-in mixture value stays below `1/alpha`, the evidence e-BH
-    selects on, so `row.stat_sig()` and the family verdict read the same evidence.
-    Planning (`ArmPlanningProcedure.standard(inference=InferenceSpec(kind="asymptotic_mean"))`)
-    builds the same boundary: a one-sided sequential secondary, a family member, is
-    sized against `K_N` at its own `alpha`, and a one-sided primary or guardrail
-    against `K_N` at `2*alpha`.
-    A one-sided cell outside a family registered at `alpha >= 1/2` refuses with
-    `sequential.asymptotic_mean.invalid`. Empty geometry withholds decisions.
-
-    `AsymptoticSequentialEvidence` carries the checkpoint, actual arm counts, model,
-    null, direction, allocation, start, tuning, geometry and decision. Its
-    `result.log_e` is sign-gated asymptotic log evidence, capped for ratio laws by
-    denominator stability as described below; family selection also masks ratios
-    unresolved at its nominal reporting ceiling. It has no finite-sample p-value.
-    Frame/readout exports include
-    `sequential_validity_regime`, `sequential_alpha` (a float), `sequential_components`, and
-    a numeric-null `sequential_log_e`: the plug-in value is not a finite-sample
-    e-value, so it is not exported as one. JSON replay recomputes geometry and rejects
-    changed evidence. Identical capture is idempotent; frozen results require a
-    verified ancestor prefix. The same model follows the existing frame, panel,
-    native, artifact, moments-export, current as-of and registered breakout paths.
-    Native/artifact segment capture retains its immutable-property-relation refusal.
-
-
-
-Continuous (metric/arm) secondary families are selected by **e-BH** at the
-plan's `q`, labeled `asymptotic_sequential` whenever any member is asymptotic
-(`finite_sample` only if every member is exact -- see Secondaries above).
-Register every member with `family=True` and its nominal `alpha`; a selected
-member's interval is reinverted at `min(q * R / m, nominal_alpha)`, and every
-row in the family reports the same `family_guarantee`/`family_nominal_alpha`
-and its member count `m` as `family_size`.
-A member without usable evidence contributes log evidence of minus infinity
-and is never selected; a recorded failure in place of evidence refuses the
-whole family.
-
-Registered breakout (segment/view) families split by construction. A
-continuous breakout -- every family cell under a count-clock asymptotic law
-(`scalar_mean` or a linearised joint law below), each judged against the
-same boundary at its own registered allocation -- registers
-`correction="bonferroni"` and uses **predeclared Bonferroni**, labeled FWER with
-`validity_regime="asymptotic_sequential"`: register every member with
-`family=True` and its fixed `alpha`; the sum must not exceed registration
-`q`. Missing members retain their budgets and make no discovery. View
-families require `MultiplicitySpec(correction="bonferroni")` and a
-registered segment roster. There is no e-BH, p-value conversion or `R*q/m`
-selected-interval reinversion on this axis.
-The asymptotic label does not promise finite-start FWER. A discrete
-(Bernoulli) breakout instead registers `correction="bh"` and is dispatched
-to the SAME e-BH-at-`q` family selection as an ordinary metric/arm
-secondary above -- `m` is the full retained roster, with missing cells at log
-evidence minus infinity, and e-value evidence and
-`min(q * R / m, nominal_alpha)` reinversion apply exactly as they do there.
-One asymptotic registration may also carry an exact Bernoulli uptake cell:
-under an encouragement design, whole-window automatic registration composes scalar-mean
-ITT cells with a Bernoulli compliance cell, and a compliance policy declared
-with `family=True` joins the same e-BH family, labeled `asymptotic_sequential`.
-Other exact and continuous models require separate registrations.
-
-### Adjusted means and ratio metrics: the joint laws
-
-The same route generalises to three further laws that share the scalar law's
-contract, boundary and geometry and differ only in the per-unit vector each
-arm retains with its full centered scatter:
-
-| law | retained per unit | contrast | selected automatically when |
-| --- | --- | --- | --- |
-| `scalar_mean` | $(Y)$ | ratio of arm means | a mean, conversion or retention metric |
-| `adjusted_mean` | $(Y, X)$ | ratio of CUPED-adjusted arm means | a mean metric using `Method.cuped(covariates=CupedCovariate(...))` |
-| `ratio_mean` | $(N, D)$ | ratio of arm ratios $E[N]/E[D]$ | a ratio metric |
-| `adjusted_ratio_mean` | $(N, D, X)$ | ratio of adjusted arm ratios | a ratio metric using `Method.cuped(covariates=CupedCovariate(...))` |
-
-!!! warning "Check source support before choosing a joint law"
-    Unit panels support bounded-window, unadjusted `ratio_mean`; they refuse
-    `adjusted_mean` and `adjusted_ratio_mean` because they carry no per-unit
-    pre-period covariate. `from_unit_day_artifact` additionally requires each
-    adjusted metric's published `cuped_preperiod` extension; default publication
-    does not include it. See [CUPED](cuped.md#the-standard-coefficient-on-the-asymptotic-route)
-    for extension selection.
-
-
-??? info "Construction details for adjusted and ratio metrics"
-    Each is a delta-method linearisation at the observed means: the contrast
-    `f_t - r * f_c` has, with respect to the two retained mean vectors, gradients
-    affine in `r`, so `V(r)` is the quadratic form of those gradients over each
-    arm's scatter divided by `n_a²`, and `(f_t - r f_c)² <= K_N V(r)` is inverted
-    with the scalar law's solver and boundary. The adjusted laws fit $\theta$ from
-    the retained within-arm cross moments at every look (the standard CUPED
-    coefficient, the same inverse-n weighted slope the fixed-horizon fit uses) and
-    anchor both arms on the pooled covariate mean, whose coupling the gradients
-    carry; the ratio laws carry the $-2\,\mathrm{Cov}(N, D)$ term through the
-    cross scatter, and the adjusted ratio law the covariance the shared covariate
-    induces between the adjusted components. What is exact: the retained state,
-    the coefficient, the anchor, every gradient and quadratic coefficient, and
-    $K_N$. What is asymptotic: the boundary itself and the linearisation with its
-    nuisance plug-ins, whose error is an order below the boundary width under the
-    contract (Lindon, Ham, Tingley and Bojinov 2022,
-    [arXiv:2210.08589](https://arxiv.org/abs/2210.08589); Schmit and Miller
-    2022, [pdf](https://svenschmit.com/assets/pdf/code_2022_ci.pdf)). The
-    `adjusted_*` laws are admitted on `AsymptoticMean` only; the exact Bernoulli
-    route admits neither fitted nor predeclared CUPED. The adjusted laws need a
-    per-unit covariate: a `from_frame` summary supplies it through a metric's
-    `decision_method=Method.cuped(covariates=CupedCovariate(...))`, while
-    `from_definitions` derives it from `n_pre_periods > 0`.
-    The ratio laws declare
-    `positive_population_denominators=True`; a zero or insufficiently separated
-    observed denominator leaves that cell unavailable at the requested level
-    (`zero_denominator_mean` or `denominator_near_zero`), not its whole family.
-    For registered scalar and ratio observations, `MetricSpec(missing="zero")`
-    applies to outcome coordinates before they enter the retained sequential
-    state: null and NaN numerator values become exact zeroes (and the same
-    policy applies to a ratio denominator when declared). This outcome policy is
-    independent of method covariate preparation: `CupedCovariate.missing`
-    controls how each registered method handles its pre-period covariate and
-    never changes the metric outcome.
-    The sequential route does not silently clip infinities.
-
-    Ratio-family log evidence depends on the stopped state, not its current
-    inversion alpha, and is capped by denominator stability. This capped evidence
-    is dominated by the underlying mixture value, not itself a martingale.
-    The family keeps every roster slot and masks a ratio unresolved at the
-    nominal reporting ceiling; selection then requires resolved denominators
-    at the selected reporting level too.
-
-    A ratio unavailable at a tighter registered allocation can therefore become
-    reportable at a later, wider selected level, even when its checkpoint is
-    frozen. Reinversion uses that same stopped state and refreshes its availability
-    note. Alpha-independent failures -- before-start or missing-arm states,
-    nonpositive denominators, and degenerate variances -- still abstain.
-    New laws retain new state shapes, so no snapshot version bump or migration of
-    existing `scalar_mean` checkpoints was needed.
-
-
-Percentile winsorization, clustering, repeated units, switchback,
-observational inference and additive sequential decisions remain unsupported.
-Power solvers explicitly refuse `AsymptoticMean` with
-`sequential.route.unsupported`; their log-SE Gaussian planning approximations
-are not power for this count boundary. Tests of deterministic stopping and
-replay verify implementation contracts, not empirical calibration or a theorem.
+Primaries share the plan's `alpha`; guardrails test at full `alpha` and must
+all be certified for the compound safety claim. Secondaries use e-BH at `q`,
+with a finite-sample guarantee only when every member is exact.
+Filtering does not shrink the family. Freezing a secondary stops its
+evidence, not its family selection: its discovery can change at later looks.
+See [Multiplicity](multiplicity.md) and the
+[exact role allocations](../reference/family-inference.md#error-control-by-plan-role).
 
 ## Triggered populations
 
-An experiment that declares a `trigger` monitors two populations under one
-registered plan. The assigned chain is what the sections above describe. The
-triggered chain is a second, independently identified chain in the same
-checkpoint (`snapshot.triggered`): its members are the units whose first
-eligible trigger has been observed and whose registered joint reveal window has
-closed by the capture horizon. That window can include a longer assignment-
-anchored uptake window even though uptake is not part of the triggered chain.
-Members are revealed in `(first trigger, unit)` order, with outcomes measured
-from each unit's trigger and pre-period covariates kept assignment-anchored,
-exactly as the fixed-horizon triggered readout measures them.
-`capture_sequential(finalized=True, as_of=d)` captures both chains in one pinned
-execution on `from_definitions` and `from_unit_day_artifact`
-(the artifact needs its `trigger_population`, `trigger_measure_stats` and
-triggered `assignment_counts` extensions); `from_moments` replays an exported
-checkpoint carrying both chains and cannot start one; frame sources have no
-trigger declaration. A view declared with
-`View.overall(population="triggered")` or `View.asof(population="triggered")`
-reads the triggered checkpoint rows; declare an assigned view beside it to read both
-populations in one run.
+Triggered monitoring is available on declared warehouse/artifact sources;
+frames have no trigger declaration, and moments can only replay an existing
+chain. Assigned and triggered results describe separate populations and
+separate families.
 
-Keep three states separate when a triggered row is absent or unavailable. A
-missing or late trigger feed / certified watermark means the source cannot yet
-establish trigger completeness for the capture; an observed trigger whose
-longest outcome window has not matured is not yet eligible for that triggered
-look. A null point after capture is instead a result-level availability state
-with its own reason and may coexist with interval evidence. Wait for feed
-completeness and outcome maturity as applicable, then read the row's persisted
-reason; neither condition establishes treatment-independent triggering. The
-trigger must be counterfactually logged under a rule that would record it
-without regard to treatment, because equal observed trigger rates cannot show
-which units would have triggered in either arm.
+Trigger membership and timing must be treatment-independent, with
+counterfactual logging and no pre-trigger treatment effect. Trigger timing
+must carry no information about the retained outcome/covariate vector.
+Balanced trigger rates cannot establish these assumptions.
 
-The triggered chain is monitored under its own `SequentialRegistration`, derived
-from the assigned one before any observation is read: the same outcome models
-and roster (tuning included, so the count boundary is wider than optimal by the
-trigger rate and still valid), a `triggered` population, its own definitions and
-filtration identity, and no uptake model. It is never declared by hand;
-`InferenceSpec.triggered_registration` holds the derivation and refuses anything
-else.
+Choose triggered family looks, stops and freezes using only information
+already revealed by its joint triggered chain. Assigned results—including
+the same metric—can expose future triggered outcomes and invalidate a
+family claim. Review `increment.workflows.health_check(experiment, reader)`,
+feed completeness, outcome maturity and each unavailable reason; a health
+check is not proof of causal validity.
+See [triggered capture and guarantees](../reference/sequential-contracts.md#triggered-populations).
 
-### What the triggered claim assumes
+## Registration and method reference
 
-Each triggered cell's confidence sequence (asymptotic laws) or e-process
-threshold (exact Bernoulli) holds uniformly over every look under three
-declared assumptions. `A1`: Bernoulli randomization independent of everything
-else, as on the assigned route. `A2` (causal): neither whether nor when a unit
-triggers depends on its arm, so that the triggered contrast is an intent-to-treat
-effect on the triggered subpopulation. This is stronger than equal trigger rates
-across arms: treatment can change *which* units trigger while leaving both arms'
-trigger rates equal, and no sample-ratio or trigger-rate diagnostic can see
-that. `srm(experiment, reader, population="triggered")` and
-`trigger_rates(experiment, reader)` from `increment.workflows` can reject some
-violations; a passing check is not evidence that `A2` holds. `A3`
-(trigger-order stationarity): among triggered units, trigger timing carries no
-information about the complete retained vector -- outcome, ratio numerator and
-denominator, and the pre-period covariate -- so the sequence is identically
-distributed in trigger order. Under `A1`-`A3` the triggered sequence is one
-fixed i.i.d. sequence whose revealed prefix grows with calendar time, like the
-assigned sequence, and every calendar look is a prefix of it.
+<a id="manual-registration-for-low-level-integrations"></a>
 
-### A practical triggered-health review
+- [Manual registration](../reference/sequential-contracts.md#manual-registration):
+  exact declarations, source identity, capture, continuation and checkpoint encoding.
 
-Before interpreting a triggered result, call
-`increment.workflows.health_check(experiment, reader)` and read
-each entry by population. First review `assigned_allocation` for assignment
-integrity; then inspect `triggered_balance` and descriptive `trigger_rates` as
-separate cohort diagnostics. Check each metric's retained maturity and each
-feed's certified completeness watermark. An unavailable or not-applicable row
-is not a pass, and observed event times do not certify a feed. Finally read
-`trigger_assumptions`: balanced rates establish neither counterfactual trigger
-invariance, absence of pre-trigger treatment effects nor trigger-order stationarity.
-The structured `triggered_look_predictability` condition is also assumed, not
-verified: choose triggered family looks, stops and freezes using only information
-already revealed by its joint triggered chain. Do not use assigned results that
-reveal future triggered outcomes, including the same metric's assigned results.
-The family guarantee is conditional on these assumptions. The report is a sanity
-check, not a causal validity or ship verdict.
-See the [health-check API](../api.md#diagnostics-and-robustness).
+<a id="exact-conversion-route-details"></a>
+<a id="choosing-the-beta-prior-weight-for-a-declared-baseline-rate"></a>
 
-Assignment-window uptake is not covered by `A3`: a unit that triggers late has
-less of its uptake window after the trigger, so uptake is mechanically tied to
-trigger timing and the single-rate Bernoulli argument does not apply. Triggered
-compliance cells of an encouragement plan therefore stay unavailable
-(`readout.cell.unsupported_request`, reason `triggered_uptake_unsupported`), and
-a plan that monitors only uptake derives no triggered registration.
+- [Exact conversion registration and prior weight](../reference/sequential-contracts.md#exact-conversion-route-details).
 
-### Per-cell coverage and the family verdict
+<a id="adjusted-means-and-ratio-metrics-the-joint-laws"></a>
 
-The per-cell guarantee is a statement about the whole path, so it holds for
-any look schedule under `A1`-`A3`. The family verdict needs more: e-BH's FDR
-control and the selected-interval reinversion require each stopped evidence
-value to remain an e-value. Optional stopping establishes this when the looks,
-stops and freezes are stopping times with respect to the registered **joint
-triggered filtration**: decisions may use already-revealed triggered records,
-but not information about later triggered records. A predeclared schedule also
-meets this condition.
+- [Adjusted means and ratio laws](../reference/sequential-contracts.md#adjusted-means-and-ratio-metrics-the-joint-laws).
 
-Correct triggering -- arm-independent trigger propensity and timing, with no
-treatment effect before the trigger -- does not by itself establish this stopping
-condition. The assigned chain can reveal a unit's outcome before its triggered
-window closes. For example, with three-day windows, every unit triggering one day
-after assignment, and outcomes only on its trigger day, assigned and triggered
-outcomes are identical. The assigned window closes one day earlier, exposing the
-next triggered block's arm-specific outcomes. Freezing the triggered metric
-before an unfavorable block uses future information even though triggering is
-arm-independent and there is no pre-trigger effect.
+<a id="guardrails-one-sided-non-inferiority-uncorrected-across-guardrails"></a>
 
-Therefore do not time a triggered family look, stop or freeze using **any**
-assigned-population result that reveals future triggered outcomes, including the
-same metric's result as well as other metrics' results. Such lookahead can inflate
-the stopped e-value's expectation without changing the per-cell crossing bound
-(`tests/estimation/test_triggered_sequential_validity.py`). Under `A1`-`A3`, correct
-triggering and this stopping condition, the triggered family keeps the assigned
-family's e-BH guarantee: its `MultiplicityFamily` reports `guarantee="fdr"` and
-its rows carry the same `multiplicity_status` and `family_guarantee`. These labels
-state a conditional guarantee; neither capture nor a health check verifies the
-analyst's decision rule. No joint error control across the two populations is
-claimed; the families remain separate, population-qualified scopes.
+- [Guardrail allocation and the all-guardrails rule](../reference/family-inference.md#guardrails-one-sided-non-inferiority-uncorrected-across-guardrails).
 
-### Certified feeds, not evidence presence
+<a id="secondaries-false-discovery-rate-control-at-q-for-every-in-family-secondary"></a>
 
-A trigger-declared capture refuses unless every contributing feed -- the trigger
-feed and every registered outcome, denominator and uptake feed -- carries a
-`SourceSnapshotEvidence` watermark whose certified whole day reaches `as_of`
-(`sequential.source.invalid`, context naming the feed and its certified day). An
-inclusive timestamp cutoff is not a completed day: a cutoff during `as_of`
-certifies only the day before. A trigger declared through SQL has no feed to
-certify and refuses; declare the trigger exposure through a fact. The rule
-exists because a later look must only append: a trigger or outcome that arrives
-inside already-certified days changes an earlier record and refuses continuation
-with `sequential.continuation.rewrite`, which cannot retract a decision already
-reported.
+- [Secondary selection and unavailable members](../reference/family-inference.md#e-bh-under-sequential-inference).
 
-### Processes begun without a triggered commitment
+<a id="what-the-triggered-claim-assumes"></a>
 
-A checkpoint captured before triggered monitoring existed holds no triggered
-chain. Continuing it keeps the process assigned-only and reports its triggered
-cells as `triggered_chain_uncommitted`; attaching a triggered chain to it refuses
-with `sequential.continuation.legacy`, because the decision to monitor the
-triggered family would then be made after assigned outcomes were seen. To
-monitor the triggered population, start a new registered process. The
-triggered registration is a derivation of content the assigned recipe already
-binds and is kept out of it, so the assigned chain's record and checkpoint
-identities are the same with or without a triggered commitment, and a unit-day
-artifact published before the derivation existed opens and derives the same
-triggered registration from its stored context.
+- [Triggered assumptions](../reference/sequential-contracts.md#what-the-triggered-claim-assumes).
 
-## Explicit research campaign
+<a id="a-practical-triggered-health-review"></a>
 
-The retained stopping, family, and numerical stress cases are an explicit
-research campaign rather than an implicit unbounded pytest tier. Run the
-sequential-specific CLI with a new output directory:
+- [Triggered health review](../reference/sequential-contracts.md#a-practical-triggered-health-review).
 
-```bash
-uv run python -m calibration.sequential \
-  --output /tmp/sequential-campaign \
-  --profile smoke \
-  --budget-seconds 3600 \
-  --case-seconds 60
-```
+<a id="per-cell-coverage-and-the-family-verdict"></a>
 
-The CLI uses the shared hard-budget runner, allocates bounded per-case
-deadlines, and writes an immutable manifest plus one checkpoint per declared
-case. Each checkpoint records completed, failed, timeout, or unresolved status;
-failures and unavailable numerical cases are retained rather than relabeled as
-success. This campaign does not add support for models or transformations
-outside the registered raw-likelihood contract.
+- [Per-cell coverage versus family decisions](../reference/sequential-contracts.md#per-cell-coverage-and-the-family-verdict).
 
-Replication journals retain the simulator's selection, availability,
-certified-interval, and point-reason counters. They do not measure interim
-finite-look confidence coverage.
+<a id="certified-feeds-not-evidence-presence"></a>
 
-For a one-draw diagnostic, add `--case 0 --repetitions 1`. A completed draw is
-not campaign certification: the CLI exits 2 while the campaign remains
-incomplete, even when its controller and workers exit 0.
+- [Certified feed requirements](../reference/sequential-contracts.md#certified-feeds-not-evidence-presence).
 
-## Primary references
+<a id="processes-begun-without-a-triggered-commitment"></a>
 
-The public Bernoulli e-process is qualified by a predeclared common
-joint-unit filtration: every relevant outcome for a unit is revealed together,
-in committed order, and the process may stop at any observed prefix. This is
-the setting of [Ville's maximal inequality](https://doi.org/10.1007/BF01503646)
-and the time-uniform concentration framework of
-[Howard et al.](https://arxiv.org/abs/1810.08240). Gaussian kernels in this
-package remain private numerical diagnostics and are not covered by the public
-anytime-valid contract.
+- [Continuing an assigned-only checkpoint](../reference/sequential-contracts.md#processes-begun-without-a-triggered-commitment).
+
+<a id="explicit-research-campaign"></a>
+
+- [Research campaign interpretation](../reference/sequential-contracts.md#explicit-research-campaign).
+
+<a id="primary-references"></a>
+
+- [Primary references](../reference/sequential-contracts.md#primary-references).

@@ -71,7 +71,8 @@ nav:
       - Reading Results: guides/reading-results.md
       - Which Method Should I Use?: guides/choose-a-method.md
       - Refusal Navigation: guides/refusals.md
-      - Data Model & YAML Definitions: guides/data-model.md
+      - Warehouse Analysis: guides/data-model.md
+      - Experiment Specifications: guides/experiment-specifications.md
       - Metric Types: guides/metric-types.md
       - CUPED: guides/cuped.md
       - Switchback Contrasts: guides/switchback.md
@@ -93,9 +94,24 @@ nav:
       - Capabilities by Entry Point: reference/capabilities-by-entry-point.md
       - Error Codes: reference/error-codes.md
       - Method Compatibility Reference: guides/compatibility.md
+      - Result Fields: reference/result-fields.md
+      - Variance Reduction: reference/variance-reduction.md
+      - Bayesian Results: reference/bayesian-results.md
+      - Sequential Registration: reference/sequential-contracts.md
+      - Family Inference: reference/family-inference.md
+      - Planning Methods: reference/planning-methods.md
+      - Causal Methods: reference/causal-methods.md
+      - Switchback Inference: reference/switchback-inference.md
+      - Sitewide Calculation: reference/sitewide-calculation.md
+      - Dashboard Output: reference/dashboard-output.md
+      - Validation Evidence: reference/validation-evidence.md
+      - Release History: reference/release-history.md
+      - Warehouse Definitions: reference/warehouse-definitions.md
+      - Saved Data and Replay: reference/artifacts-and-replay.md
       - Saved Formats: reference/saved-formats.md
   - Development:
       - Extending Estimators and Evidence: development/adding-an-estimator.md
+      - Retained State: development/retained-state.md
   - API Reference: api.md
   - Examples:
       - DataFrame Analysis Tutorial: examples/analysis_from_a_dataframe.md
