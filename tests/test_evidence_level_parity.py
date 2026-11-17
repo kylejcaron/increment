@@ -41,7 +41,7 @@ from tests.evidence_fixtures.transcript import (
     _REQUEST_CLASSES,
     Transcript,
     _digest,
-    require_ancestor_revision,
+    require_capture_revision,
 )
 from tests.warning_codes import warning_codes
 
@@ -1004,13 +1004,76 @@ def test_materialized_breakout_transcript_preserves_legacy_wire_identity():
 
 
 @pytest.mark.integration
-def test_recorded_revision_must_be_a_full_commit_in_this_history():
+def test_recorded_revision_must_be_a_full_tagged_capture_commit():
     root = Path(__file__).parent / "fixtures" / "evidence_identity"
     recorded = json.loads((root / "scalar_checkpoint.json").read_text())["baseline_revision"]
-    require_ancestor_revision(recorded)
+    require_capture_revision(recorded)
     for revision in (recorded[:12], "f" * 40):
         with pytest.raises(ValueError):
-            require_ancestor_revision(revision)
+            require_capture_revision(revision)
+
+
+@pytest.mark.integration
+def test_retained_capture_commit_survives_a_squash_merge(tmp_path, monkeypatch):
+    import subprocess
+
+    from tests.evidence_fixtures import transcript
+
+    def git(*args):
+        return subprocess.run(
+            [
+                "git",
+                "-C",
+                str(tmp_path),
+                "-c",
+                "user.name=Fixture test",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                *args,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "--initial-branch=main")
+    values = tmp_path / "values.json"
+    values.write_text('{"control": 10, "treatment": 12}\n')
+    git("add", "values.json")
+    git("commit", "-m", "Original data")
+    git("switch", "-c", "capture")
+    expected = {"control": 10, "treatment": 15}
+    values.write_text(json.dumps(expected))
+    git("add", "values.json")
+    git("commit", "-m", "Capture updated data")
+    revision = git("rev-parse", "HEAD")
+    ref = f"refs/tags/evidence-capture/{revision}"
+    git("tag", "-a", ref.removeprefix("refs/tags/"), "-m", "Retain original capture")
+    git("switch", "main")
+    git("merge", "--squash", "capture")
+    git("commit", "-m", "Squashed change")
+    assert git("merge-base", revision, "HEAD") != revision
+    squashed = git("rev-parse", "HEAD")
+    git("tag", f"evidence-capture/{squashed}", revision)
+    checkout = tmp_path / "checkout"
+    git("clone", "--no-local", "--branch", "main", str(tmp_path), str(checkout))
+    monkeypatch.setattr(transcript, "_REPOSITORY", checkout)
+
+    require_capture_revision(revision)
+    captured = subprocess.run(
+        ["git", "-C", str(checkout), "show", f"{ref}:values.json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(captured.stdout) == expected
+    for unretained in (squashed, git("merge-base", revision, "HEAD")):
+        with pytest.raises(ValueError):
+            require_capture_revision(unretained)
 
 
 def _historical_input(name):
@@ -1024,7 +1087,7 @@ def _historical_input(name):
         expected_scenario_id=payload["scenario_id"],
         expected_ingress=payload["ingress"],
     )
-    require_ancestor_revision(transcript.baseline_revision)
+    require_capture_revision(transcript.baseline_revision)
     producer_pins = {
         "tests/parity_harness/cases.py": "d161e60cd18d584f067a19ba05312e86c584f296fa641e3e24af237c0a62f8a4",
         "tests/parity_harness/matrix_cases.py": "bef4af953e44d337ef9882f1762f78d65fb0a882da95500ffd022a20c518258e",
@@ -1284,7 +1347,7 @@ def _frozen_coordinate(scenario_id, ingress):
         expected_scenario_id=scenario_id,
         expected_ingress=ingress,
     )
-    require_ancestor_revision(coordinate.baseline_revision)
+    require_capture_revision(coordinate.baseline_revision)
     _assert_daily_consumer_inputs(coordinate)
     _audit_warehouse_input_receipts(coordinate)
     return coordinate

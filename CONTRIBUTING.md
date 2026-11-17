@@ -498,8 +498,14 @@ for end-to-end assembly rather than repeating every estimator on every loader.
 Consumer-input capture is separate from expected-output capture. It runs only when
 the committed `increment/` is identical to the capturing change's base main commit
 (`git merge-base HEAD origin/main`, or `--baseline <sha>`) and stamps each new input
-with that commit; loaders accept an input's recorded commit when it is in the
-current history.
+with that commit. Before publishing new inputs, retain the original commit with
+an annotated `evidence-capture/<full SHA>` tag and push that tag to `origin`.
+Never move or delete capture tags. Frozen-input checks require the exact tagged
+commit, not ancestry from the current checkout: squash merges intentionally
+remove branch commits from `main`'s ancestry. Fetch the tags with
+`git fetch origin 'refs/tags/evidence-capture/*:refs/tags/evidence-capture/*'`
+when running those checks in an existing checkout; CI's full-history checkout
+fetches them. Capture SHAs, fixture contents and integrity checks stay unchanged.
 
 Hash receipts must own the preimage of their actual protocol, not a similarly
 named digest. Preserve complete archived metadata while independently checking
