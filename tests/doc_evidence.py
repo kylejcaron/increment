@@ -258,8 +258,9 @@ def _declared_evidence_ids(root: Path) -> set[str]:
     docs = root / "docs"
     if docs.is_dir():
         for path in docs.rglob("*.md"):
-            for match in re.finditer(r"^\|\s*`(EV-[A-Z0-9-]+)`\s*\|", path.read_text(), re.M):
-                ids.add(match.group(1))
+            text = path.read_text()
+            ids.update(re.findall(r"^\|\s*`(EV-[A-Z0-9-]+)`\s*\|", text, re.M))
+            ids.update(re.findall(r"^#{1,6}[ \t]+(EV-[A-Z0-9-]+)[ \t]*$", text, re.M))
     return ids
 
 

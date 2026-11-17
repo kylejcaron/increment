@@ -1,4 +1,4 @@
-"""Render the three evidence-backed capability tables in the reference page."""
+"""Render capability indexes and records in three delimited reference regions."""
 
 from __future__ import annotations
 
@@ -36,30 +36,37 @@ TABLES = (
 )
 
 
-def _display_text(display: CellDisplay) -> str:
-    text = display.status.replace("_", " ")
-    details = ([display.classification] if display.classification else []) + [
-        f"`{code}`" for code in display.codes
-    ]
-    if details:
-        text += " (" + ", ".join(details) + ")"
-    if display.reason:
-        text += " — " + display.reason
-    if display.tracker:
-        text += f" — tracked as `{display.tracker}`"
-    return text
+def _record_anchor(row: EntryRow, ingress: str) -> str:
+    return f"capability-{row.table}-{row.id}-{ingress}"
 
 
 def _cell_text(row: EntryRow, ingress: str) -> str:
     clauses = resolve_cell(row.bindings[ingress])
-    rendered = []
+    statuses = dict.fromkeys(display.status.replace("_", " ") for _, display in clauses)
+    label = " / ".join(statuses)
+    if len(clauses) > 1 or any(condition for condition, _ in clauses):
+        label += " (conditional)"
+    return f"[{label}](#{_record_anchor(row, ingress)})"
+
+
+def _record_lines(clauses: Sequence[tuple[str, CellDisplay]]) -> list[str]:
+    lines = []
     for condition, display in clauses:
-        value = _display_text(display)
-        rendered.append(f"{condition}: {value}" if condition else value)
-    note = row.notes.get(ingress)
-    if note:
-        rendered.append(note)
-    return "; ".join(rendered).replace("|", "\\|")
+        if condition:
+            lines.extend((f"**Condition:** {condition}", ""))
+        lines.extend((f"**Status:** {display.status.replace('_', ' ')}", ""))
+        fields = (
+            ("Classification", display.classification),
+            ("Codes", ", ".join(f"`{code}`" for code in display.codes)),
+            ("Reason", display.reason),
+            ("Operation", f"`{display.operation}`" if display.operation else ""),
+            ("Stage", display.stage),
+            ("Tracked issue", f"`{display.tracker}`" if display.tracker else ""),
+        )
+        for label, value in fields:
+            if value:
+                lines.extend((f"**{label}:** {value}", ""))
+    return lines
 
 
 def _render_table(table: str, rows: Sequence[EntryRow]) -> str:
@@ -67,19 +74,48 @@ def _render_table(table: str, rows: Sequence[EntryRow]) -> str:
     headers = TABLE_HEADERS[table]
     first_header = "Read" if table == "triggered-auxiliary" else "Capability"
     lines = [
+        "Select a status for its conditions, codes and reason. "
+        "A conditional cell is not a claim about every request.",
+        "",
         "| " + " | ".join((first_header, *headers)) + " |",
         "|" + "|".join("---" for _ in range(len(headers) + 1)) + "|",
     ]
     for row in rows:
         cells = [row.label, *(_cell_text(row, column) for column in columns)]
-        lines.append("| " + " | ".join(value.replace("\n", " ") for value in cells) + " |")
+        lines.append(
+            "| "
+            + " | ".join(value.replace("\n", " ").replace("|", "\\|") for value in cells)
+            + " |"
+        )
     for row in rows:
+        lines.extend(
+            ("", f'<span id="capability-{table}-{row.id}"></span>', "", f"### {row.label}", "")
+        )
+        for column, header in zip(columns, headers, strict=True):
+            lines.extend(
+                (
+                    f'<span id="{_record_anchor(row, column)}"></span>',
+                    "",
+                    f"#### {header}",
+                    "",
+                    f"**Recorded path:** `{column}`",
+                    "",
+                    *_record_lines(resolve_cell(row.bindings[column])),
+                )
+            )
+            if note := row.notes.get(column):
+                lines.extend((f"**Note:** {note}", ""))
         if row.family_clauses:
-            lines.extend(("", f"**{row.label}: family-owned operations**"))
-            for condition, display in resolve_cell(row.family_clauses):
-                value = _display_text(display)
-                lines.append(f"- {condition}: {value}" if condition else f"- {value}")
-    return "\n".join(lines)
+            lines.extend(
+                (
+                    f'<span id="{_record_anchor(row, "family")}"></span>',
+                    "",
+                    f"#### {row.label}: family-owned operations",
+                    "",
+                    *_record_lines(resolve_cell(row.family_clauses)),
+                )
+            )
+    return "\n".join(lines).rstrip()
 
 
 def render_document(existing: str, rows: Sequence[EntryRow]) -> str:

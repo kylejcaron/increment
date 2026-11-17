@@ -1,0 +1,882 @@
+# Planning methods and numerical qualifications
+
+Use this reference to interpret a solver result or diagnose a refused plan.
+Start with [Power analysis](../guides/power-analysis.md) for a complete sizing workflow.
+Planning is conditional on the selected decision rule and model; numerical bounds
+do not establish the model or future trial calibration.
+
+
+## Solver arguments
+
+The solver signatures are:
+
+```text
+required_sample_size(relative_lift, baseline, procedure=None, design=None, *, planned_looks=None)
+achieved_power(n_per_arm, relative_lift, baseline, procedure=None, design=None, *, planned_looks=None)
+minimum_detectable_effect(n_per_arm, baseline, procedure=None, design=None, *, planned_looks=None)
+```
+
+When `procedure` is omitted, the baseline's declared metric type determines
+the standard procedure; clustered baselines also select the clustered standard.
+An explicit procedure always takes precedence. Pass an explicit procedure to
+change the decision method, inference regime, or other planning choices.
+`inference=`, `alpha=`, `alternative=`, and method-list arguments are not solver
+parameters; put those decisions in the procedure. `PowerDesign` supplies only
+the target `power` (default `0.80`) and treatment `allocation` (default `0.5`).
+`n_per_arm` is the treatment-arm size; the control-arm size follows from
+`allocation`, and `PowerResult.n_total` is the assigned total across the
+contrast. Each solver returns a complete `PowerResult` at the actual integer
+size, including `power`, `mde_relative`, and `effective_var`.
+
+## Baseline fields and pilot data
+
+`Baseline.metric_type` defaults to `"mean"` and is omitted from dumps at that
+default, so existing mean baselines keep their serialized form. Conversion,
+ratio, and quantile constructors declare their respective metric types;
+`planning_baseline()` carries the declared metric type through the selected
+pilot route so the standard solver procedure matches the metric.
+
+### What `planning_baseline` reads
+
+Outcome moments describe the analyzed population: under a declared
+`trigger` that is the triggered population, with `trigger_rate` its
+observed share of the assigned control arm; with no trigger declared, the
+assigned population at `trigger_rate=1.0`. A declared trigger whose
+evidence the source does not carry (a unit-day artifact published without
+the `trigger_population` and `assignment_counts` extensions) refuses with
+`analysis.planning_baseline.trigger_evidence_unavailable`.
+
+From that population's control arm: per-unit mean/var (or a ratio's
+linearized moments); `cuped_rho` when this metric declares CUPED, as the
+control arm's variance reduction under the runtime's own CUPED fit;
+`compliance` from the source's design-level uptake when the design is
+`Encouragement`; and `cluster_icc`/`cluster_size_cv` from contributing
+clusters when a `cluster` is declared, with ICC on the analyzed score
+(for a ratio, `y - R*y_den`). Recruitment metadata stays on the assigned
+population: `avg_cluster_size` is assigned control units per randomized
+cluster, and `cluster_participation` is contributing control clusters
+divided by assigned control clusters. The artifact route also needs
+`cluster_identity` for a clustered pilot.
+
+The variance is not the plain control-arm variance. As in
+`Baseline.from_summary`, every mean, conversion, retention and ratio
+variance is raised to its 80% one-sided chi-square upper bound,
+`var * df / chi2.isf(0.80, df)` on the ddof=1 variance, so a small pilot
+plans for more variance than it measured: about 21% more at 50 control
+units and under 2% more at 5,000. `df` is the control unit count minus 1,
+or the contributing control cluster count minus 1 when a `cluster` is
+declared, so a few-cluster pilot plans for much more: 1.67 times its
+variance at 10 clusters and 2.43 times at 5. A quantile baseline is not
+bounded, because its solvers re-read the pilot values at each candidate
+size instead of planning from `var`.
+
+Both clustered trigger routes require the metric's outcomes for every
+trigger-eligible control unit in the pilot. Missing metric rows raise
+`analysis.planning_baseline.trigger_metric_population_unavailable`, with
+observed and eligible counts. Complete unfinished windows. If an outcome
+is structurally undefined, such as `avg_event` for a unit with no events,
+choose a metric defined for every eligible unit; waiting or republishing
+cannot define that outcome.
+
+## What `power` and `power_lower` mean
+
+An unadjusted, unclustered, fixed-horizon conversion or retention plan without
+CUPED, absorbed factors, winsorization, or priors can replay the runtime's own
+accept/reject decisions over plausible control and treatment counts. Adding
+up the rejecting counts' probabilities gives a narrow range, `power_lower`
+to `power_upper`, rather than just a single number:
+
+- When the computed point is within `1e-6` of both enclosure endpoints,
+  `power` is that point and `power_basis="exact"`.
+- When the computation budget leaves it wider, `power` is the bottom of the
+  range and `power_basis="lower_bound"`. The enumerated count decision's
+  rejection probability is at least `power` under the stated numerical
+  qualification. A secondary's composite p-value can be more restrictive;
+  see [secondary-member power](#secondary-member-power).
+- For an enumerated plan, a target is reached only when `power_lower`
+  reaches it. A size the range straddles is not reached.
+- Mean metrics and supported binary plans outside the conditions above use
+  a model-based calculation: `power_basis="asymptotic"`, with `power_lower`
+  and `power_upper` set to `None`. Dense eligible binary plans can also
+  use a closed-form model when their count lattice is too large to enumerate.
+
+!!! warning "Power is conditional on the decision rule and planning model"
+    Every result depends on the selected decision rule and planning
+    assumptions. A model-based result estimates power; it does not bound the
+    runtime's rejection probability. An enumerated result's numerical range
+    addresses evaluation accuracy, not model misspecification or calibration.
+
+## Conversion and retention: planning follows the runtime's route
+
+For the unadjusted, unclustered fixed-horizon conversion and retention plans
+above (no CUPED, absorbed factors, winsorization, or priors), planning follows
+the runtime's count-based decision. With the default
+`conversion_inference="auto"`, the runtime uses a delta-method test for dense
+arm success/failure counts and the exact Berger–Boos risk-ratio test
+otherwise. The planner sums the combined decision's rejection probability
+over the count law. This route uses the baseline rate, not `Baseline.var`;
+other supported binary plans retain the model-based calculation.
+
+- **`power_basis="exact"`:** `power` is the enumerated rejection mass, with the
+  computed point within `1e-6` of each endpoint. The range is reported in
+  `power_lower` and `power_upper`.
+- **`power_basis="lower_bound"`:** `power` is `power_lower`, the bottom of a range
+  where the computed point is farther than `1e-6` from an endpoint. Nothing
+  inside the range is claimed: no midpoint, no substitute approximation.
+  Both `power_lower` and `power_upper` are reported.
+- **`power_basis="asymptotic"`:** `power` is the closed-form model's own probability,
+  used where counts route to the delta method with near certainty (unrouted
+  mass at most `1e-6`) and the lattice has more than 100,000 cells. The range
+  fields are `None`.
+
+For an enumerated plan, `required_sample_size` returns the smallest size of
+its bracket whose lower end reaches the target; `minimum_detectable_effect`
+and a companion `mde_relative` certify the returned effect the same way.
+Enumerating the count lattice is deterministic work and can take about a
+minute per call.
+
+For secondary metrics, the enumerated count decision can have a larger
+rejection set than the runtime composite p-value; see
+[secondary-member power](#secondary-metrics-and-guardrails).
+
+`cuped_rho` reduces planning variance by `(1 - cuped_rho**2)` only when the
+effective decision method uses CUPED. A CUPED sensitivity readout does not
+reduce an unadjusted decision's sample requirement. Mixed power/MDE curves
+apply this rule independently to each procedure.
+
+Power planning does not construct the mixed `cuped_linear` estimator and
+refuses procedures that request it with `power.cuped_linear_unavailable`.
+Plan without variance reduction, or use scalar CUPED on one covariate from the
+set as an approximation. The scalar plan is not a `cuped_linear` power claim:
+with many covariates or small arms, the extra fitted columns cost degrees of
+freedom, so it is not guaranteed to be conservative.
+
+### Numerical enclosure
+
+An enumerated result carries the computed enclosure of the rejection
+probability, `power_lower` and `power_upper` (both `None` for a
+closed-form or sequential plan). Internal bounds account for summation
+error, omitted support and unresolved count pairs. The point is published
+when the enclosure resolves to absolute error at most `1e-6`, conditional
+on the deployed SciPy/Boost special-function error model; this is not a
+cross-build floating-point proof. `"exact"` describes the decision-law
+calculation, not error-free arithmetic or a finite-sample guarantee for
+the hybrid delta-method route. Under `"lower_bound"`, the enumerated count
+decision's rejection probability is at least `power` conditional on the same
+error model, and `power_upper` bounds it from above. The dense validation
+tolerance remains `0.005`; it is a comparison criterion, not a universal
+error bound for every design or data-generating process.
+
+An explicit point request refuses an unresolved enclosure with `power.binomial_probability_unresolved` (context
+`point`, `lower`, `upper`, `error`, `tolerance`). `required_sample_size`
+refuses with the same code, adding `n_per_arm`, when its search reaches
+the ceiling with an enclosure holding the target; a ceiling whose upper
+end falls short refuses with the replay-bound or size-limit code naming
+the certified lower end. No accuracy tuning parameter is exposed.
+
+### Enumeration budgets and search limits
+
+Enumeration uses deterministic work and memory limits, not timing-dependent
+answers: 100,000 delta-decision count pairs or 150,000 directional finite-sample
+replays per evaluation. Each solve stores at most 10,000,000 control/treatment
+count cells across its null and evaluated alternative windows.
+
+A supplied effect, an MDE search and each `power_curve` row have separate
+budgets. Reusing an already computed count decision does not change those
+decisions or bounds; an MDE's bounds use only its own evaluated requests.
+Exceeding the cell bound raises
+`power.binomial_replay_bound_exceeded`; an MDE search may return
+`mde_relative=None` with `mde_unavailable_reason="numerical_resolution"`.
+These are planner limits; the runtime's finite-sample ceiling remains
+1,000,000,000 units per arm. Dense `auto` plans using the closed form do
+not enumerate the count lattice.
+
+The runtime's bounded finite-sample search can produce nonmonotone
+decisions. Planning does not infer one count pair from its neighbour, and
+power need not be monotone in sample size or effect. A required size
+meets the target under the selected calculation; it does not prove no
+smaller size could. `minimum_detectable_effect` searches for the earliest
+detectable region to an effect tolerance of `1e-8` absolute plus `1e-8`
+relative, measured on the relative-effect scale, not the first
+IEEE-representable effect. The result's `power` is evaluated at the
+reported effect, not copied from the target. A band whose evaluated ends
+fall short with resolved enclosures refuses with `numerical_resolution`.
+A band whose evaluated ends both have unresolved enclosures straddling the
+target is passed over without interior probes; at tolerance width, either
+straddling end suffices.
+Thus `mde_relative` certifies its own target but may lie above an unprobed
+effect that would already certify it under the same evaluation budgets.
+This is a conservative bounded search, not a global minimum certificate.
+A target excluded over every admissible effect is `unattainable`. If no
+evaluated effect certifies the target and any skipped band remains
+unexcluded, or an earlier region remains unresolved at numerical tolerance,
+or the far end's enclosure straddles the target, a companion MDE is
+unavailable with `numerical_resolution`; a standalone call refuses with
+`power.minimum_detectable_effect.numerical_resolution`. A supplied
+effect's own answer still stands without a companion MDE.
+
+With a shifted null and partial compliance, early candidate effects can
+imply unrepresentable absolute lifts even when larger effects are
+representable. The planner bounds those candidates before excluding
+them; unresolved candidates yield `numerical_resolution`, not an
+assumption that a detectable effect exists outside the representable
+range. Calibration is a separate diagnostic, not a prerequisite for
+planning.
+
+### When it refuses
+
+A design the runtime refuses in full decides no count pair, so it has no
+power to plan and is never replayed:
+
+#### `power.binomial_arm_ceiling_exceeded`
+
+An arm is beyond the runtime's one-billion-unit ceiling.
+
+#### `power.binomial_arm_ceiling_below_smallest_design`
+
+The allocation is so lopsided that the smallest design already has an arm above the ceiling.
+
+#### `power.binomial_tail_level_unrepresentable`
+
+`alpha` is too small for the decision: the nuisance budget (`alpha / 32`) is below the endpoint solver's floor (an alpha under `3.2e-8`), or the float margin dominates the tail level (a two-sided alpha below about `9.5e-7` at a billion units per arm).
+
+#### `power.binomial_replay_bound_exceeded`
+
+A size search reached its enumeration ceiling before reaching the target.
+
+#### `power.binomial_size_search_unreachable`
+
+A size search reached the arm ceiling, or the size where the float margin starts dominating, without reaching the target.
+
+
+### Refusal contexts
+
+`achieved_power`, `minimum_detectable_effect` and every `power_curve` row
+that reaches a refused design raise `power.binomial_arm_ceiling_exceeded`
+(context `n_c`, `n_t`, `max_arm_size`) or
+`power.binomial_tail_level_unrepresentable` (`scope="requested"`). Under
+a dominating margin the runtime still decides a count pair whose control
+count alone rejects a shifted null (its Clopper-Pearson lower bound above
+`1 / (1 + null_lift)`, for a two-sided or "less" test); the context's
+`decided_from` is the smallest such count (`None` when there is none). A
+`finite_sample` plan whose control window at the baseline rate holds
+smaller counts, which the runtime refuses, is refused rather than planned
+with them as non-rejections; an `auto` plan is refused when the counts
+the count rule keeps on the finite-sample route below `decided_from`
+carry more than half of `1e-6`, and otherwise carries them as undecided
+mass. The margin grows with the arm, so a smaller size of the same alpha
+can be planned; the solver floor refuses every size.
+
+`required_sample_size` can end a replayed search with:
+
+#### `power.binomial_replay_bound_exceeded`
+
+**When**: the search reached its ceiling: about 1/128 under the crossing of a bisection for the largest size whose null and supplied-effect rectangles fit the replay bound (the cell count is not monotone in the size, so a size above the ceiling may fit and may reach more)
+
+**Context**: `power`, `power_reached`, `n_c`, `n_t`, `p_c`, `p_t` (when the alternative exceeds), `cells`, `max_cells`, `max_arm_size`
+
+#### `power.binomial_size_search_unreachable`
+
+**When**: the search reached the runtime's arm ceiling, or the size where the float margin starts dominating the tail level, without reaching the target
+
+**Context**: `power`, `maximum_power`, `n_per_arm`, `max_arm_size`
+
+#### `power.binomial_tail_level_unrepresentable`
+
+**When**: the decision is refused even at the smallest design: the nuisance budget is below the solver floor, or the float margin already dominates the tail level there, so no size reads the treatment arm; raised before any search
+
+**Context**: `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `p_c`, `decided_from`, `solver_floor`, `cause` (`solver_floor` or `float_margin`), `scope` (`smallest`)
+
+#### `power.binomial_arm_ceiling_below_smallest_design`
+
+**When**: the allocation is so lopsided that the smallest design already has an arm above the runtime's ceiling; raised before any search
+
+**Context**: `n_t`, `n_c`, `allocation`, `max_arm_size`
+
+
+### Comparing with statsmodels
+
+[`TTestIndPower.power`](https://www.statsmodels.org/stable/generated/statsmodels.stats.power.TTestIndPower.power.html)
+and [`NormalIndPower.power`](https://www.statsmodels.org/stable/generated/statsmodels.stats.power.NormalIndPower.power.html)
+return model-based point rejection probabilities for independent-sample t-
+and z-tests with standardized mean differences. Increment's `power` is the
+same kind of quantity, but a relative-lift binomial risk-ratio test can
+legitimately have different power. Compare only after aligning the decision
+rule, effect scale, baseline/variance assumptions, alpha, sidedness and arm
+allocation.
+
+### Planning model versions
+
+The current binomial planning model is `hybrid_finite_plus_delta_v3`.
+Persisted results labelled `hybrid_finite_plus_delta_v2` or its v1
+predecessor must be recomputed; they do not acquire point-power
+semantics by relabelling.
+
+## Adjust the baseline for your design
+
+Build the procedure with `ArmPlanningProcedure.standard(metric_type)` and
+pass the same `Baseline` to the solver. Compliance, triggering, and factor
+absorption are derived from non-default baseline fields; CUPED credit follows
+the effective decision method. A procedure explicitly built with a
+conflicting axis raises `CapabilityError` naming the field and the conflict.
+
+### `cuped_rho`
+
+Reduces planning variance by `(1 - cuped_rho**2)` only when the effective decision method uses CUPED. A CUPED sensitivity readout does not reduce an unadjusted decision's requirement. CUPED composes with `inference=InferenceSpec(kind='asymptotic_mean')`.
+
+### `compliance`
+
+Rescales a diluted encouragement effect.
+
+### `trigger_rate`
+
+The fraction of assigned units entering a triggered analysis.
+
+### `avg_cluster_size`, `cluster_icc`, `cluster_size_cv`
+
+Clustered randomization: assigned mean size, ICC on analyzed scores, and the size CV across contributing clusters.
+
+### `cluster_participation`
+
+For a triggered cluster design, the fraction of recruited clusters that contributed at least one analyzed unit in a comparable pilot. `planning_baseline()` derives it on the definitions and sufficiently published artifact routes.
+
+
+!!! warning "Measure the cluster size CV across contributing clusters only"
+    Do not substitute the variation in assigned sizes, and set
+    `cluster_participation` to the contributing fraction, not the unit
+    trigger fraction.
+
+### Cluster design effect and reference
+
+Writing assigned mean size as $m$, unit trigger fraction as $q$, contributing
+cluster fraction as $p$, and analyzed size CV as $c$, the analyzed mean size is
+$m q/p$ and the design effect is $1 + ((1+c^2)m q/p - 1)\rho$.
+For example, 100 assigned units in ten clusters with 20 triggered units have
+$m=10$, $q=0.2$. If five clusters contribute, set $p=0.5$, not $0.2$:
+the analyzed mean size is four. At ICC 0.2 and equal analyzed sizes, the
+design effect is 1.6; if all ten clusters contribute, it is 1.2 instead.
+
+Results report recruited cluster counts in `n_clusters_per_arm` and
+`n_clusters_total`, using assigned mean size. Inference uses the floored
+expected represented counts $K'_a=\lfloor K_a p\rfloor$, with roundoff
+allowance at integer boundaries, and requires at least two per arm.
+The relative t reference uses $\min(K'_T-1,K'_C-1)$ degrees of freedom.
+Analysis retains separate Welch degrees of freedom for its additive
+interval. This is a pilot-conditioned planning approximation, not a
+guarantee that a future trial will realize the pilot participation rate
+or achieve finite-sample coverage. There is no ten-cluster admission
+floor; small-cluster calibration remains a limitation. The noncentral-t
+log-scale power calculation is a planning approximation, not an exact
+forecast of Fieller-set rejection under weak denominators.
+
+The `segment_pairwise_*` solvers are separate: they retain a
+baseline-only four-arm Normal approximation with cluster design effects
+and the same two-per-arm structural minimum within each segment; they do
+not share the arm solver's t reference or its numerical power model. Do
+not use the three arm solvers as numerical oracles for that model. Mixed
+power/MDE curves apply the CUPED rule independently to each procedure.
+
+### Secondary metrics and guardrails
+
+A secondary metric plans at `role='secondary', secondaries=<count>,
+q=<FDR target>`, sized as a conservative Bonferroni-at-`q/m` bound. A
+guardrail plans at `role='guardrail', preferred_direction='increase'/'decrease'`
+(or an explicit one-sided `alternative`), always at full alpha, never
+arm-split.
+
+### Secondary-member power
+
+`m` is secondaries × comparisons under fixed-horizon inference, and
+secondaries alone under `inference=InferenceSpec(kind='asymptotic_mean')`,
+which supports one treatment arm. For a conversion or retention
+secondary, the runtime member is routed at its own level and read at
+`q/m` through its composite p-value, whose rejection set is contained in
+the count-routed decision at `q/m` the planner enumerates, so the planned
+power of such a member is an upper bound on its rejection probability
+(measured equal on the calibrated designs). A replay-bound refusal names
+both counts: the runtime's `dense_min_count` at the member's own tail and
+the `planned_dense_min_count` the closed form reads from.
+
+## Alternative-arm variance model
+
+The three arm solvers evaluate each arm's log-scale variance at its own
+mean under the alternative. For mean-like metrics, planning assumes the
+treatment arm keeps the control arm's absolute effective variance. For
+conversion and retention metrics the runtime does not decide with this
+model (below), it rescales that variance by the Bernoulli shape at the
+implied treatment rate. For quantile metrics, the treatment arm's own
+order-statistic construction is evaluated at its own analyzed count,
+reusing the pilot's recording grid (a property of the instrument, not of
+the hypothesized shift), an exact identity under this module's
+multiplicative-effect convention rather than the "same absolute
+variance" approximation. These are planning assumptions, not claims
+about every future data-generating process. Bounded baselines, nulls,
+and alternatives must imply rates in `(0, 1]`; a requested rate above 1
+is refused. Every such result reports `power_basis="asymptotic"`.
+
+## Quantile planning
+
+`QuantileBaseline` carries the pilot's real per-unit control values, not a
+single variance: at each candidate size the solver re-evaluates the readout's
+own order-statistic construction over them, and its `var` is the per-unit
+variance the pilot's standard error implies. The baseline declares its metric
+type, so the solver can infer the matching standard procedure; an explicit
+procedure can still be supplied when different planning choices are needed.
+Results echo `PowerResult.planned_metric_name`/`planned_quantile`, so reusing
+one metric's baseline for another is visible in the answer. There is no CUPED
+route for quantiles. Its `var` carries no pilot-variance bound, since the
+solvers plan from the values themselves, and the values are part of the
+baseline's saved form.
+
+!!! warning "Quantile power has a ceiling and is not monotone"
+    On rounded data the readout's interval never narrows below the gap from
+    the quantile to the next recorded value, so a target above the ceiling is
+    refused with `power.quantile_size_search_unreachable` (context
+    `maximum_power`, `limiting_condition="recording_grid"`). Power can dip
+    past the pilot's size, and a planned size within about a quarter of the
+    pilot's size measured 0.71-0.76 power against a planned 0.80 on rounded
+    data. The readout also reports no relative lift when the combined
+    log-scale standard error is 0.5 or more, so a quantile size keeps the
+    projected one below that, and a recording grid as coarse as the quantile
+    itself (a median of 1 whose next recorded value is 3) is refused with
+    `power.quantile_size_search_delta_method_unreliable`; see
+    [checking a quantile plan against the readout](#checking-a-quantile-plan-against-the-readout).
+
+### Projecting the order-statistic construction
+
+Quantile planning follows the quantile readout: at each candidate size it
+applies the readout's own half-width rule (`quantile_half_width`) to a
+bracket projected from the pilot, and at the pilot's own size the planned
+standard error is the readout's on the pilot. A pilot whose bracket holds
+no tied values (continuous data) plans the classical standard error,
+shrinking as `1/sqrt(n)`. On rounded data the readout's point and bracket
+ends are recorded values, so planning reads them from the pilot's
+recorded distribution. At any other size than the pilot's, where the
+quantile falls within its recording cell is known only to the pilot's
+precision, and that position decides whether a narrow bracket spans one
+cell or two, so the planned standard error averages over it, integrating
+exactly over the recorded values the bracket can reach: between adjacent
+sizes the average moves by no more than the mass a bracket end can carry
+across one recorded value. The averaged shift is that of a sample sharing
+its units with the pilot, so it vanishes at the pilot's size and is
+smallest near it.
+
+Power is not monotone in the sample size: it passes through the pilot's
+own power at the pilot's size, an arm whose bracket stops spanning twelve
+repeated values switches to the readout's wider tied interval so power
+dips past that size, and on a coarse grid it wavers slightly with the
+readout's own bracket ranks. The search evaluates a fine grid of sizes
+in order and settles the crossing between the first grid size that both
+reaches the target and keeps the planned combined log-scale standard
+error below 0.5 and the one before, so the planned size meets both while
+the size below it misses one; a smaller size can meet both only within
+that rank-level waver. A size at which the projected bracket
+reaches a non-positive recorded value has no log-scale interval, as at
+the readout, and `achieved_power` refuses it with the readout's own
+code; the size search passes over such sizes. The search counts assigned
+units and evaluates each candidate as `achieved_power` does: the
+allocation's control size, both arms analyzed at `assigned *
+trigger_rate`. It starts at the first size whose two arms each have the
+readout's order-statistic bracket, so at an extreme quantile and unequal
+allocation the treatment arm grows until the smaller arm has one, and
+every planned size is one `achieved_power` can evaluate. The quantile
+readout tests two-sided against a zero null and has no breakouts, so
+planning refuses a one-sided alternative, a shifted null or a guardrail
+role with `readout.metric.quantile_alternative`, and the
+`segment_pairwise_*` solvers refuse a quantile metric with
+`readout.metric.quantile_breakout`.
+
+## Power and MDE curves
+
+The full curve signature is:
+
+```text
+power_curve(*, n_per_arm, baseline, procedure=None, relative_lift=None,
+            target_power=None, design=None, units_per_week=None,
+            planned_looks=None, max_workers=None)
+```
+
+Rows preserve input product order, including duplicates. `units_per_week`
+adds `duration_days` based on assigned units; omit it to leave duration
+unset. For sequential procedures, `expected_n_total` and
+`expected_duration_days` describe expected early stopping alongside the
+worst-case `n_total`/`duration_days`.
+
+## Fixed and sequential planning
+
+The prospective `asymptotic_mean` solver evaluates a planned look schedule
+under a Gaussian approximation. Its `inference_to_declare` aligns the
+runtime declaration with the planned sample size; it is not a power
+certificate for the data-dependent continuous construction.
+
+Refused on this route:
+
+- `AlwaysValid`, which carries a registered raw-likelihood runtime policy, and
+  continuous sequential `AsymptoticMean` inference, which uses actual
+  finalized arm counts and a shifted-contrast variance: both refuse with
+  `sequential.route.unsupported` (see
+  [continuous sequential means](../guides/sequential-inference.md#continuous-scalar-means)).
+  This prospective route does not size registered likelihood policies.
+- Clustered sequential planning; use fixed-horizon clustered planning or
+  unit-randomized sequential planning.
+
+Scalar CUPED is admitted for the prospective asymptotic procedure. This does
+not add an exact `AlwaysValid` planning route or multicovariate CUPED planning.
+
+### Sequential crossing calculation
+
+The prospective Gaussian calculation evaluates the declared boundary at
+planned information fractions. Its numerical bounds apply to that model,
+not to arbitrary future outcomes.
+Sequential inversion recomputes the alternative-arm standard error and
+boundary at every candidate. The crossing evaluator uses composite
+Gauss–Legendre integration with propagated derivative-remainder,
+floating arithmetic, and normal-tail bounds; expected information is
+bounded independently. Internal arm-planning paths carry the log
+variance into both the boundary and standardized drift, avoiding a
+zero/infinite intermediate at extreme scales. An MDE is returned only
+when those bounds certify the first crossing at the solver's declared
+distance resolution. If quadrature, subdivision, float resolution, or
+the work or evaluation ceiling cannot distinguish the target, direct MDE
+calculation refuses with
+`power.minimum_detectable_effect.numerical_resolution`; an otherwise
+valid sample-size or achieved-power result remains available and records
+the missing companion MDE through `mde_unavailable_reason`.
+
+The Gaussian recursion is bounded to 256 planned looks, 300,000,000
+estimated kernel-work units, and 4,096 nodes. A design beyond these
+limits is refused with `power.boundary_crossing_quadrature`,
+`power.sequential_sample_size`, or
+`power.minimum_detectable_effect.numerical_resolution`, as appropriate;
+it is not assigned a midpoint estimate or called statistically
+unattainable. Use fewer planned looks or group looks only if that changed
+schedule matches the design. The Gaussian log-SE planning approximations
+do not estimate power for the continuous `AsymptoticMean` construction.
+
+## Reading `PowerResult`
+
+### `n_per_arm`
+
+Assigned units in the treatment arm
+
+### `n_total`
+
+Assigned units across the two-arm contrast
+
+### `power`
+
+Planned power at the returned integer size, read with `power_basis`
+
+### `power_lower`, `power_upper`
+
+The computed range holding an enumerated binomial power; `None` for a closed-form or sequential plan
+
+### `power_basis`
+
+`exact`, `lower_bound`, or `asymptotic`; see [above](#what-power-and-power_lower-mean)
+
+### `numerical_qualification`
+
+`closed_form_model_only_v1` for the asymptotic model; `scipy_special_function_error_model_conditional_v1` for either enumerated basis (conditional on the deployed SciPy/Boost special-function error model, not a cross-build proof)
+
+### `mde_relative`
+
+Detectable relative effect at the target power, rescaled for `compliance`, relative to the declared `null_lift`, not to control; the matching `relative_lift` is `(1 + null_lift) * (1 + mde_relative) - 1` at `compliance=1`; `None` when no admissible numeric answer is certified
+
+### `mde_unavailable_reason`
+
+When `mde_relative` is `None`: `unattainable` (no admissible effect reaches the target power), `unrepresentable` (the answer has no float64 relative lift), `numerical_resolution` (the search could not resolve it), `delta_method_unreliable` (every effect reaching the target has a planned log-scale standard error the runtime refuses; see [below](#small-samples-and-the-runtimes-log-scale-guard)), or `at_or_below_null_power` (the target is at or below the null's own rejection probability, so no nonzero effect is the minimum); otherwise `None`
+
+### `effective_var`
+
+Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Enumerated binomial power uses event rates and counts, not this variance.
+
+### `n_clusters_per_arm`, `n_clusters_total`
+
+Ceiled randomization-cluster counts, or `None` for unit randomization
+
+### `n_triggered_per_arm`, `n_triggered_total`
+
+Analyzed units when `trigger_rate < 1`, otherwise `None`
+
+### `expected_n_total`
+
+Expected sequential stopping size, or `None` for fixed horizon
+
+### `inference_to_declare`
+
+The `InferenceSpec` to declare at runtime registration for the same boundary, or `None` for fixed horizon
+
+
+Read the result at its actual integer size and check `power_basis` and
+`numerical_qualification` before quoting it as a runtime-power claim. See
+[Reading results](../guides/reading-results.md) and [Multiplicity](../guides/multiplicity.md)
+for interpreting the analysis the plan feeds.
+
+### Small samples and the runtime's log-scale guard
+
+A fixed-horizon plan the runtime analyzes with its log-ratio lift estimate
+(unclustered, randomized, with no absorbed factor, and not a conversion or
+retention plan decided from its counts, which includes every quantile metric)
+cannot be read when the estimate's combined log-scale standard error is 0.5 or
+more: the runtime refuses it with the `delta_method_unreliable` reason.
+Planning keeps to the same limit. The size `required_sample_size` returns is
+the smallest that both reaches the target power and keeps the planned standard
+error below 0.5, so a noisy metric planned for a large lift can need more units
+than power alone asks for:
+
+```python
+from increment.estimators import Baseline
+from increment.power import required_sample_size
+
+noisy = Baseline(mean=1.0, var=100.0)  # standard deviation ten times the mean
+# 316 per arm reach 80% power for a fivefold mean, but below 417 per arm the
+# planned log-scale standard error is 0.5 or more.
+assert required_sample_size(4.0, noisy).n_per_arm == 417
+```
+
+`minimum_detectable_effect` likewise returns the smallest effect that meets
+both, and refuses with
+`power.minimum_detectable_effect.delta_method_unreliable` when none does, such
+as `minimum_detectable_effect(50, noisy)`, where the control arm alone has a
+log-scale standard error of 1.41. A supplied-effect answer keeps its planned
+power and reports `mde_relative=None` with that reason. The runtime judges the
+standard error of the sample it sees, so near the limit it refuses only some
+samples, and heavy-tailed outcomes often pass; planning uses the planned value.
+
+### Checking a quantile plan against the readout
+
+A quantile readout passes its two arms' order-statistic standard errors to the
+same log-ratio estimate, and a quantile plan keeps to the same limit with the
+standard errors it projects from the pilot. That makes two statements easy to
+confuse. *The planned size passes the projected guard*: the projection keeps
+the combined log-scale standard error below 0.5. *A readout at that size
+reports a lift*: that depends on the standard error of the sample the
+experiment collects, and at small sizes the readout's own standard error is
+often larger than the projection (see the
+[projection's limitation](../limitations.md#a-quantile-metrics-planned-variance-is-a-projection-from-the-pilot-not-a-certified-bound)).
+So where the limit, not the target power, sets the size, many readouts at that
+size still report no lift, and `required_sample_size` warns with
+`power.quantile_size_at_delta_method_limit` (context `n_per_arm`, `log_se`,
+`log_se_limit`).
+
+Check such a size against the pilot: draw two arms of that size from the
+pilot's values, scale the treatment arm by the planned lift, run the readout
+on them and count how often it reports no lift. Drawing without replacement
+gives each simulated arm distinct units, as a real experiment has; repeated
+values would make the readout widen its interval for ties the experiment
+would not have, so the pilot needs at least twice the size checked. A quantile
+cell the readout cannot report a relative lift for is an unavailable row with
+`failure_code` `estimation.engine.lift_guard` and reason
+`delta_method_unreliable`, as a mean cell refused by the same limit is, and
+the run warns with `readouts.run.cell_refused`:
+
+```python
+import warnings
+
+import numpy as np
+import pandas as pd
+
+import increment
+from increment.errors import IncrementWarning
+from increment.power import required_sample_size
+from increment.workflows import planning_baseline
+
+heavy_metric = [{"name": "latency", "type": "quantile", "quantile": 0.5}]
+heavy_pilot = np.random.default_rng(0).lognormal(0.0, 2.0, 1_000)  # heavy-tailed
+
+
+def latency_experiment(groups, values):
+    frame = pd.DataFrame({"unit": range(len(values)), "group": groups, "latency": values})
+    return increment.from_frame(
+        frame, shape="summary", unit="unit", group="group", control="control", metrics=heavy_metric
+    )
+
+
+heavy_baseline = planning_baseline(*latency_experiment("control", heavy_pilot), "latency")
+with warnings.catch_warnings(record=True) as planning_warnings:
+    warnings.simplefilter("always")
+    heavy_plan = required_sample_size(5.0, heavy_baseline)  # a sixfold median
+print(heavy_plan.n_per_arm, [w.message.code for w in planning_warnings])
+
+
+def unavailable_share(n_per_arm, relative_lift, draws=40, seed=1):
+    """Share of readouts at n_per_arm that report no relative lift, each on two
+    arms drawn from the pilot without replacement, treatment scaled by the lift."""
+    rng = np.random.default_rng(seed)
+    unavailable = 0
+    for _ in range(draws):
+        drawn = rng.choice(heavy_pilot, 2 * n_per_arm, replace=False)
+        drawn[n_per_arm:] *= 1.0 + relative_lift
+        groups = ["control"] * n_per_arm + ["treatment"] * n_per_arm
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)  # the per-cell refusal notice
+            (cell,) = increment.run(*latency_experiment(groups, drawn)).readout()
+        if cell.failure_code == "estimation.engine.lift_guard":
+            unavailable += cell.reason == "delta_method_unreliable"
+    return unavailable / draws
+
+
+for n_per_arm in (heavy_plan.n_per_arm, 100):
+    print(f"{n_per_arm} per arm: {unavailable_share(n_per_arm, 5.0):.0%} report no lift")
+```
+
+<!-- output -->
+```text
+45 ['power.quantile_size_at_delta_method_limit']
+45 per arm: 78% report no lift
+100 per arm: 2% report no lift
+```
+
+Power alone needs 28 per arm here; the projected limit raises the plan to 45,
+yet about four in five readouts at 45 per arm still report no lift. Raise the
+size until the share that reports no lift is one you accept, here 100 per arm.
+A quantile metric reports relative lift only, so there is no absolute-difference
+readout to plan instead. When no size passes the projected limit, as on a
+recording grid as coarse as the quantile itself, `required_sample_size` refuses
+with `power.quantile_size_search_delta_method_unreliable` (context `power`,
+`log_se`, `log_se_limit`); record the metric at a finer resolution.
+
+### An MDE against a shifted null
+
+A procedure with a nonzero `null_lift`, such as `null_lift=0.03`, which tests
+the lift against 3% rather than zero, measures `mde_relative` from that null,
+not from control. Compose the two before passing the effect back to a solver as
+a `relative_lift`:
+
+```python
+import math
+from increment.estimators import Baseline
+from increment.power import ArmPlanningProcedure, achieved_power, minimum_detectable_effect
+
+baseline = Baseline(mean=20.0, var=400.0)
+null_lift = 0.03
+shifted = ArmPlanningProcedure.standard("mean", null_lift=null_lift)
+shifted_mde = minimum_detectable_effect(5_000, baseline, shifted)
+relative_lift = (1 + null_lift) * (1 + shifted_mde.mde_relative) - 1
+assert math.isclose(
+    achieved_power(5_000, relative_lift, baseline, shifted).power, 0.80, abs_tol=1e-9
+)
+```
+
+With this positive `null_lift`, passing `mde_relative` back alone plans a
+smaller lift than the one the design detects, at far lower power; under a
+negative `null_lift` it plans a larger one.
+
+## Switchback contrasts
+
+Switchback planning uses a `ContrastDecisionProcedure` and a frozen
+`SwitchbackBaseline`, usually `planning_baseline(experiment, reader, metric)`
+on a pilot built by `from_switchback_frame(...)`, or
+`source.planning_baseline(source.metrics[0])` on a source built by
+`increment.frame.from_switchback_panel(...)`; both return the same baseline.
+These approximate functions are exported from both `increment` and
+`increment.power`:
+
+```text
+switchback_achieved_power(n, delta, baseline, procedure)
+switchback_minimum_detectable_effect(n, baseline, procedure, *, target_power)
+switchback_required_blocks_or_units(delta, baseline, procedure, *, target_power)
+```
+
+`n` counts independent **units** for independent Bernoulli orders and
+independent **blocks** for shared schedules, with `df = n - 1` and
+`2 <= n <= 2**53`. Neither cycles nor roster size multiply `n`; the summary
+already averages within the independent replicate, and one cycle per unit is
+valid. `delta` and the MDE are **absolute** effects; there is no relative or
+standardized MDE. `power` already multiplies by `admission_probability`, the
+exact probability a shared-schedule design at that block count realizes both
+cycle orders (`1.0` for an independent-order baseline), so every solver
+reports or targets *available* power.
+
+!!! warning "A pilot fit is an approximation, not a certificate"
+    The noncentral-t reference is a planning approximation, not an exact
+    finite-branch randomization law. Predictions condition on the fitted
+    moments and reference effect (`moment_source="pilot_estimated"`) and do
+    not integrate uncertainty from estimating the pilot; a pilot sample
+    variance is not a prospective variance envelope, and the fit neither
+    establishes population moments nor validates no residual carryover.
+    Conversion aggregation (`"any"`) is refused with
+    `power.switchback.bounded_model_required`.
+
+For a two-sided MDE query, `procedure.preferred_direction="decrease"`
+searches below the null, including decrease-only `effect_bounds`;
+`"increase"`, `"neutral"`, or an unspecified direction searches above it.
+This does not change two-sided alpha; one-sided queries follow their declared
+`alternative`.
+
+
+### Switchback baseline
+
+A producer supplies the original `SwitchbackAssignment` (including its
+window, probability, law and assignment grain), `metric`, distinct
+`control_group` and `treatment_group`, matching `aggregation`/`estimand`,
+and the identifying assumption
+`no_residual_carryover_after_discarded_steps`. Independent orders require
+positive integer `cycles_per_unit` and no roster; shared schedules
+require a nonempty, duplicate-free `shared_roster: tuple[str, ...]` and
+no cycle count. The metric must match the decision procedure. The
+procedure has no group label fields; the producer must preserve the
+control-to-treatment orientation.
+
+The numerical fields are `delta_ref`, `sd_a`, `sd_g`, and `rho`. They
+encode centered `VarA = sd_a²`, `VarG = sd_g²`, `CovAG = rho*sd_a*sd_g`
+at the independent grain. `A` is the reference-effect contribution and
+`G` its slope under a constant additive retained-window shift, with
+`E[G] = 1`. Thus for `d = delta - delta_ref`, variance is
+`VarA + 2*d*CovAG + d²*VarG`, and `SE = sqrt(variance/n)`. All four
+inputs are finite; SDs are nonnegative and `-1 <= rho <= 1`. Singular
+PSD covariance is valid. Set `rho=0` if either SD is zero. A true zero
+variance at the requested effect is unavailable. Changing the
+assignment, window, cycles, roster or shift model requires a newly
+derived summary. The power layer takes no raw observations and does no
+source reduction.
+
+Ordinary planning fits the reference effect from the pilot mean. On the
+source, a caller may provide `delta_ref=reference_effect` for a
+deliberately matched scenario, but need not provide specialist reference
+moments or a population variance certificate. For ordinary unit-cycle
+inference, source construction chooses the qualified
+`UnitCycleTApproximation` from the declared assignment. The fit reduces
+the same retained-window contributions as inference and preserves their
+joint covariance with the assignment-dependent shift slopes; at least two
+independent units or blocks are required.
+
+The `effect_model="constant_additive"` contract describes additive total
+effects: bounds on the effect do not establish this variance model for
+binary outcomes. Optional finite `effect_bounds` may restrict the
+additive total-effect domain and must contain `delta_ref`.
+
+### `SwitchbackPowerResult` and MDE inversion
+
+`SwitchbackPowerResult` retains `baseline`, `procedure`, `n`, `df`,
+`delta`, `standard_error`, `power`, `mde_abs`, and
+`admission_probability`. Every missing number has its own
+`*_unavailable_reason` (the MDE reason is `mde_unavailable_reason`).
+Achieved-power and required-N queries leave `mde_abs=None` with reason
+`not_requested`; neither uses an implicit target power. An MDE query
+reports the first representable favorable absolute effect, including the
+null itself when its variance is positive and its power meets the
+explicit target. The result and its nested metadata are immutable and
+serialize to JSON with numeric nulls.
+
+MDE inversion classifies the variance quadratic analytically and solves
+its noncentrality equation with a cancellation-safe quadratic formula.
+It checks both the returned public float and its predecessor through
+achieved power. `unattained` means the target cannot be attained in the
+declared model/domain (including equality with an excluded asymptote);
+`unrepresentable` means a mathematical solution lies outside the
+representable planning domain; `numerical_resolution` means the
+numerical reference could not resolve the answer (for a runtime-binomial
+plan, also that the effect search would have stored more cells than the
+replay bound allows). `degenerate_zero_variance` identifies deterministic
+effects, and `non_favorable_effect` refuses required-N queries at or
+inside the null.
+
+For calibrated unit-cycle inference, a prospective `UnitCycleVarianceEnvelope`
+supplies a certified power lower bound, and `UnitCycleJointLaw` adds a
+complete population model for `unit_cycle_model_power`,
+`unit_cycle_model_mde`, and `unit_cycle_model_required_units`. Their Monte
+Carlo bounds and search statuses are distinct from moment-t approximations;
+see the [switchback guide](../guides/switchback.md) for the model, admission budget,
+numerical availability and certification limits.

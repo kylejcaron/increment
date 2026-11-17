@@ -17,7 +17,13 @@ from tests.doc_evidence import (
 
 def _documents(root: Path) -> tuple[Path, ...]:
     return tuple(
-        root / name for name in ("docs/validation.md", "docs/limitations.md", "docs/llms.txt")
+        root / name
+        for name in (
+            "docs/validation.md",
+            "docs/reference/validation-evidence.md",
+            "docs/limitations.md",
+            "docs/llms.txt",
+        )
     )
 
 

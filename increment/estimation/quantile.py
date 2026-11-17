@@ -8,27 +8,28 @@ recovery simulation is documented in the tests.
 Tied order statistics. The bracket ``[Y_(a), Y_(b)]`` itself covers the
 population quantile with probability at least ``1 - alpha`` for every
 distribution, discrete or not (Thompson 1936; Scheffé & Tukey 1945).
-Woodruff's symmetric interval around ``Q̂`` relies on ``Q̂`` sitting at the
-bracket's log midpoint. Continuous data keeps it there, but ties quantize
-the bracket: ``Q̂`` sticks to one recorded value while the bracket reaches a
-whole recording cell further on the other side, and on a grid with a few
-off-grid values, or prices ending in both .99 and .00, no fixed step says
+Woodruff's symmetric interval around ``Q̂`` matches the bracket only when
+``Q̂`` sits at its log midpoint. Smooth continuous data motivate an
+asymptotic approximation, not exact centering. Ties quantize the bracket:
+``Q̂`` sticks to one recorded value while the bracket reaches a whole
+recording cell further on the other side. On a grid with a few off-grid
+values, or prices ending in both .99 and .00, no fixed step says
 how far. So when a bracket holds a tie and its arm is not resolved (below),
 the reported half-width is the smallest symmetric one around ``Q̂`` that
 contains the bracket, which inherits the bracket's own coverage whatever
 the recording grid. Each bracket end is first pushed out by a quarter of a
-recording cell, a continuity allowance that keeps the two-arm lift at or
-below its nominal size when both quantiles move in whole cells (a quarter
-cell was the smallest allowance measured to do so; with none, whole-rounded
+cell (at most a quarter of the bracket's own width), a continuity allowance
+that kept the measured two-arm whole-cell grids at or below nominal size
+(the smallest allowance measured to do so; with none, whole-rounded
 medians at n=30000 rejected a true null about 6% of the time at
 alpha=0.05), and the half-width is floored by the log gap from ``Q̂`` to
 its nearest other recorded value, so a bracket collapsed onto one value
 keeps a positive width (`quantile_half_width`, `QuantileArm`).
 
-An arm is resolved when its 95% bracket spans at least
-``RESOLVED_REPEATED_VALUES`` distinct repeated values: the classical
-formula covers there, so a resolved arm, like any bracket without a tie, is
-reported by the classical Woodruff formula, bit-identically. Only values
+An arm is considered resolved when its 95% bracket spans at least
+``RESOLVED_REPEATED_VALUES`` distinct repeated values. A resolved arm,
+like any bracket without a tie, uses the classical Woodruff approximation,
+bit-identically. Only values
 that repeat count, so an off-grid value recorded once cannot make a coarse
 grid look resolved.
 

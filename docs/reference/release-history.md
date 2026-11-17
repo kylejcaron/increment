@@ -1,0 +1,1634 @@
+# Release history
+
+This archive preserves earlier prerelease API change notes from the API reference.
+It is a historical record, not a second ongoing changelog. See
+[GitHub releases](https://github.com/kylejcaron/increment/releases) for release
+notes, or the API reference for [current changes](../api.md#current-changes),
+[compatibility policy](../api.md#compatibility-policy) and
+[migration instructions](../api.md#migrating-from-analysis).
+
+The notes describe behavior at the time each change was made. Later changes may
+supersede them; old names and call forms below are historical, not runnable
+instructions for the current API.
+
+## Earlier release notes
+
+- Release note (performance): dashboard preparation shares eager Explore lift
+  reads across metric selections and applies each selection's own correction
+  to its captured evidence. Each distinct runtime warning is shown once per
+  preparation. The snapshot remains immutable and usable after its source is
+  disconnected; estimates and corrections are unchanged. Preparation still
+  captures all Explore views, so large metric lists remain expensive.
+- Release note (usability): the dashboard's Readout table no longer has a
+  **Discovery** column. Family selection remains in the metric inspector,
+  Report notes and qualifications; Explore keeps its Discovery column.
+- Release note (usability): the dashboard header no longer repeats the full
+  readout qualifications. Readout, Health and Report retain them for the
+  selected population.
+- Release note (usability): printed readouts, `render(result)` and dashboard
+  tables write infinite interval endpoints open, such as `[-4.2%, ∞)` or
+  `(−∞, 3.1%]`. Relative effects, confidence sets, relative nulls and
+  relative-scale posterior estimates read in percent. Confidence levels read
+  as percentages too; absolute-scale quantities and estimates are unchanged.
+- Release note (usability): the dashboard's Explore **Focus metric** list has
+  a bounded height with its own scrolling. With nine or more metrics, a text
+  filter narrows it by metric name or role without changing the selection.
+- Release note (usability): comparison and scope notes above the dashboard's
+  Readout, Explore and Report tables are muted captions instead of large bold
+  titles. Printing retains the configured minimum font size.
+- Release note (documentation): `examples/dashboard.py` replaces the separate
+  A/B and triggered-population dashboard notebooks. An **Experiment**
+  dropdown chooses `checkout_redesign` or the triggered `express_checkout`;
+  the same dashboard adapts to the experiment and opens the latter on its
+  triggered population.
+- Release note (documentation): the realistic demo declares its 50/50
+  allocation, so the analysis assignment and sample-ratio checks run.
+  Generator version 4 keeps `checkout_redesign` data unchanged, adds separate
+  users for `express_checkout`, and records the event-time cutoff in its
+  manifest. Notebooks regenerate the warehouse on their next run.
+- Release note (documentation): the encouragement notebook now includes
+  staggered enrollment, the as-of LATE maturing as observation windows close,
+  and the per-day view's refusal
+  (`facade.analysis.encouragement_daily_late`). It replaces the separate
+  `late_over_time.py` notebook.
+
+- Release note (bug fix): a registered panel (`from_frame(shape="panel", ...)`
+  with a sequential plan) that has no rows yet and declares an
+  `observation_end` on a string day-label column (labels such as `"d1"`,
+  `"d2"`) now builds, and `workflows.capture_sequential` before enrollment
+  returns a checkpoint with no records dated at the requested `as_of`, as date
+  and numeric day columns already did. Before, construction failed with a raw
+  Python `ValueError`. A capture as of a label before a non-empty string-day
+  panel's first day likewise returns no records on Polars and PyArrow inputs;
+  before, it failed with a raw Polars `InvalidOperationError` or PyArrow
+  `ArrowTypeError`.
+- Release note (bug fix): panel inputs (`from_frame(shape="panel", ...)`) with a
+  numeric day column now refuse an `observation_end` outside the signed 64-bit
+  range (-9223372036854775808 to 9223372036854775807) at construction with
+  `source.panel.observation_end` (context `value`, `axis_kind="numeric"`,
+  `issue="out_of_range"`), and `workflows.capture_sequential` refuses an `as_of`
+  outside that range with `sequential.source.invalid` before reading the panel,
+  retaining no checkpoint. Before, such a value failed with a raw Python
+  `OverflowError` on pandas and PyArrow inputs, and on Polars inputs was either
+  accepted or misreported as a missing control group. An integer
+  `observation_end` too large to convert to a float no longer fails with a raw
+  `OverflowError` either.
+- Release note (bug fix): a fixed-horizon ratio cell whose denominator mean's
+  relative standard error is beyond the floating-point range (a standard error
+  more than about 1.8e308 times its mean, such as a standard error of 1e109 on
+  a mean of 1e-200) no longer fails the readout with a validation error while
+  building its `estimation.engine.ratio_denominator_precision` advisory. The
+  advisory is emitted: its context reports that arm's value as null in
+  `relative_standard_errors`, and a new key,
+  `relative_standard_error_unavailable_reasons`, gives `past_float_range` for it.
+  The new key is present on every precision advisory, with the same arms as
+  `relative_standard_errors` and null for each arm whose value is reported. The
+  note says the relative standard error is more than 1e308. Estimates,
+  intervals and the denominator-precision check are unchanged: such an arm is
+  still too poorly resolved for the additive difference to stand in for a
+  blocked log scale.
+- Release note (bug fix): `WarehouseResultsStore` now reports a saved run whose
+  manifest version this release cannot read with `store.run.manifest_unsupported`
+  (context `found`, `supported`) on every lookup, as `ParquetResultsStore` does.
+  Before, only `open_run` with a `run_id` did; `open_run` without a `run_id` and
+  `history` reported the same run as `store.run.corrupt`. Because such a run's
+  experiment cannot be read, it stops `open_run` without a `run_id` and `history`
+  from reading the store's schema, whichever experiment is requested; opening a
+  different run by its `run_id` still works. Upgrade Increment to read it.
+  Records that are genuinely unreadable still report `store.run.corrupt`.
+- Release note (bug fix): `runnable()` now refuses a breakout selection
+  qualified by a fact source the experiment does not declare for that property,
+  as `run()` already did. For example, when `region` is declared on `events`
+  and `profiles`, a view selecting `BreakoutIdentity("region", source="ghost")`
+  reports `facade.analysis.undeclared_breakout` (context `requested`,
+  `declared`) in its offline refusals, with the same context `run()` raises,
+  instead of reporting no refusal. A selection by property alone still matches
+  every declared source of that property, and a source that names no fact
+  sources still refuses a qualifier with `evidence.breakout_unavailable`.
+- Release note (bug fix): a ratio metric with scalar CUPED whose log-scale lift
+  is blocked (`delta_method_unreliable` or `zero_variance`) now keeps its
+  additive CUPED row when the CUPED-adjusted denominator means are well
+  resolved. The denominator-precision check reads the adjusted denominator mean
+  each arm divides by, with an uncertainty that includes the covariate mean
+  pooled over both arms, instead of the unadjusted denominator; a CUPED row's
+  `ratio_denominator_precision` note and advisory follow the same rule, so each
+  method's row carries its own and the note names the CUPED-adjusted
+  denominator mean. Unadjusted rows are unchanged.
+- Release note (bug fix): the joint covariate-balance advisory of a
+  mixed-covariate CUPED cell now names a covariate whose only tested column is
+  its missing-value indicator (an observed column that was constant after
+  filling); previously the advisory and its warning could name no covariate.
+- Release note (bug fix): a fixed-horizon scalar CUPED cell whose covariate
+  differs between arms by more standard errors than a float can hold is now
+  flagged with `estimation.cuped.covariate_imbalance`; its context reports
+  `statistic` as null with `statistic_unavailable_reason="past_float_range"`
+  (the key is present and null on every other fixed-horizon scalar CUPED
+  advisory), and its warning says the difference is more than 1e308 standard
+  errors. Previously such a cell carried no advisory. Estimates and intervals
+  are unchanged.
+- Release note (breaking bug fix): a prospectively bounded switchback contrast
+  (`method="switchback_unit_variance_envelope"`) now records which side of its
+  null the evidence rejects on, in a new `ContrastResult.residual_side` field
+  (`"greater"`, `"less"`, or `"split"` for a residual of exactly zero). JSON
+  serialization, `ContrastResults.to_frame()` (a new `residual_side` column
+  after `residual_p_value`) and readout rows (`estimates_to_readout`,
+  `contrast_results_to_readout`) carry it. The side is the sign of the exact
+  residual the p-value tests, so a result whose displayed point and slope round
+  across the null now reports the direction its p-value tested; before, the
+  side was rebuilt from those rounded values, and a rejection on the adverse
+  side could be labeled favorable by the program verdict. A contrast's readout
+  interpretation now states the contrast's own verdict and side. An envelope
+  contrast that rejects while its outward-rounded interval still includes the
+  null reads as a rejection, never as an exclusion: for example "rejects zero
+  at 95.0% confidence; the displayed interval is rounded outward and still
+  includes zero; effect direction supported (increase)", labeled "Rejects zero
+  — increase established (displayed interval rounded outward)" in
+  `readout_table`. Before, it read "does not reject; inconclusive" beside
+  `stat_sig=True`. Bounds that exclude the null keep their "excludes zero" and
+  "rejects the null" wording. Estimates, intervals, p-values and `stat_sig()`
+  are unchanged. t-reference contrasts (`switchback_unit_t_approximation`,
+  `switchback_block_t`) never carry the field, and their saved form is
+  byte-for-byte unchanged; a t result that carries it refuses with
+  `estimation.contrast.reference_metadata`, as does an envelope result whose
+  side contradicts its p-value (a `"split"` side, or a side off a one-sided
+  alternative, with a p-value below one). Envelope results saved by an earlier
+  release do not carry the field and no longer load: reopening a saved run that
+  holds one, from `ParquetResultsStore` or `WarehouseResultsStore`, or a saved
+  `ContrastResults` collection, refuses with the new
+  `estimation.contrast.legacy_envelope` (context
+  `missing_fields=("residual_side",)`, `remedy="recompute_from_source"`)
+  instead of `store.run.corrupt`. Re-run the analysis from the source data to
+  replace them. `WarehouseResultsStore` now also keeps the codes
+  `ParquetResultsStore` keeps for a saved run in a format this release cannot
+  read: a result kind it does not know reports
+  `results.cell.schema_unsupported`, and a run whose manifest version is
+  unknown reports `store.run.manifest_unsupported` on every lookup, instead of
+  `store.run.corrupt`.
+- Release note (bug fix): looking up saved results in a `WarehouseResultsStore`
+  whose schema does not exist now behaves like a store with no runs: `open_run`
+  refuses with `store.run.not_found` and `history` returns an empty history
+  table, instead of exposing the warehouse's missing-schema error. A schema
+  counts as missing only when the warehouse's own error says it does not exist.
+  A schema that the role's schema listing merely leaves out is not treated as
+  missing, and any other error from listing the schema's tables, including a
+  permissions error or Snowflake's "does not exist or not authorized", is
+  raised unchanged. A lookup still never creates the schema.
+- Release note (bug fix): a moments export now records which metrics were
+  declared `missing="skip"`, in an optional `metric_missingness` field on every
+  row of a format-12 or format-13 export. Reopening it with `from_moments` by
+  metric name and type therefore keeps the observed-only population label,
+  instead of presenting the estimate as covering every assigned unit. A replay
+  of an export that records skipped metrics now refuses a `missing="skip"`
+  declaration for a metric the export did not skip with
+  `moments.plan.conflict`, because the export reduced that metric over every
+  unit. The moments format numbers are unchanged, and the field is absent when
+  no metric skips: such an export replays as before, without that check. An
+  export written before this change reopens exactly as before; declare
+  `missing="skip"` on replay to qualify its population. A replay of a new
+  export records the skip policy in its source declaration, so its `to_json()`,
+  `hash()` and `analysis_spec_hash` equal those of a replay that declares
+  `missing="skip"`. Exports also now write each column with one fixed type and
+  in one fixed order, whichever metrics they hold, so exports of different
+  metrics concatenate into one table. Increment 0.1.0a2 already refuses every
+  format-12 and format-13 export as newer than it reads
+  (`moments.format.unsupported_future`), so the new field changes nothing
+  there. A development build from before this change reads a new format-12
+  export and ignores the field, but refuses a new format-13 export of a skipped
+  metric with `moments.cuped_evidence.invalid`.
+- Release note (bug fix): `readout_table(..., nest_by="segment")` now keeps a
+  segment written as two quote characters (`'""'`) distinct from an
+  empty-string segment, which reads `""`: the two-quote segment reads `\""` (a
+  spelling already made of backslashes and two quotes gains one more leading
+  backslash), so distinct segments always get distinct labels. Before, the two
+  collided and the table refused with `tables.readout_table_ambiguous`. A
+  whole-window row, which has no segment, still shows no segment label, and a
+  trend aligned to the same segments puts each sparkline on its own row.
+- Release note (bug fix): portable result cells now keep the reason a report
+  estimate is unavailable: an empty targeting selection's sampling status
+  carries `estimation.targeting.empty_group` as its `reason` and
+  `context["reason"]` (code `results.component.unavailable`) after
+  serialization, instead of an empty context. A legacy breakout or day row
+  whose sampling availability was never recorded (`sampling_available=None`)
+  now stays unavailable in portable readouts, with
+  `readout.legacy.sampling_unreconstructible` and its recompute-from-source
+  context (`cell_key`, `missing_fields`, `remedy="recompute_from_source"`),
+  instead of being labelled available from its point estimate alone. Its point
+  and interval are still shown, but `readout_table`, `render`, run summaries
+  and saved-run decisions no longer draw a significance verdict or
+  interpretation from it (`stat_sig` is unavailable and the decision is not
+  evaluated). A reopened run's summary prints it as `status=unavailable` with
+  that code, and readout text lists it as unavailable with its reason. Its cell
+  no longer supports `compare_margin` or supplies evidence to a family
+  combination, live or after serialization. Reports that carry no such marker,
+  such as a CATE validation's `holdout_ate`, and sequential rows keep their
+  availability.
+- Release note (bug fix): a low-reliability breakout or daily row's
+  interpretation now ends with "Caveat: low reliability, an arm has fewer units
+  than the configured reliability threshold." Before, it named 50 units, the
+  default threshold; a row records that it was flagged, not the threshold that
+  flagged it. Compact run summaries (`repr(result)`) now label an additive
+  fallback with `scale=absolute` and print its qualification, which says why
+  the requested relative result was unavailable (for example
+  `nonpositive_arm_mean`); before, the additive difference was printed as if it
+  were the requested relative lift.
+- Release note (bug fix): a run's `to_frame(backend="polars")` and
+  `to_frame(backend="pyarrow")` now export whole-window results together with
+  as-of results whose day labels are numeric. The whole-window rows, which have
+  no day, read a null `ds` in the as-of rows' numeric type. Before, the export
+  failed with a Polars `SchemaError` or a PyArrow `ArrowTypeError`, because the
+  whole-window rows' empty `ds` column was typed as a datetime. When no row in
+  the export has a day, `ds` keeps its datetime type. pandas exports are
+  unchanged.
+- Release note (bug fix): as-of sequential results (`DailyLiftEstimate` rows of
+  an as-of readout) now carry `family_size`, the number of hypotheses in the
+  row's registered correction family, on each family row, as whole-window
+  results already did, and `to_frame()` exports it in the `family_size` column.
+  Before, an as-of family row had no `family_size` attribute and its exported
+  tables had no such column, so the member count the sequential-inference guide
+  promises was missing from as-of results. Rows outside a registered family
+  keep `family_size=None`.
+- Release note (bug fix): panel inputs (`from_frame(shape="panel", ...)`) with
+  unsigned integer day and exposure columns now count exposure-eligible days
+  correctly. Before, a day earlier than a unit's exposure wrapped to a huge
+  offset instead of a negative one, so the panel reported a negative number of
+  zero-filled cells and could misjudge which days fall on or after each
+  exposure; results now match the same panel with signed day columns. An
+  unsigned day or exposure value above 9223372036854775807 (the signed 64-bit
+  maximum) refuses at construction with `source.panel.day_grain_columns`
+  (context `columns`, `route`) instead of wrapping or failing inside the day
+  arithmetic. Separately, a registered panel that has no rows yet and declares
+  an `observation_end` on a date, numeric or string day column now builds and
+  can be captured as an empty pre-enrollment prefix, instead of failing with a
+  raw Python `ValueError`.
+- Release note (bug fix): sequential panel captures
+  (`workflows.capture_sequential` on a `from_frame(shape="panel", ...)` source
+  with a declared `observation_end`) now date their checkpoint and as-of
+  results at the declared observation end when the capture is requested for a
+  later day. Before, the checkpoint's `reveal_cursor` and the as-of result row
+  carried the requested later day although the evidence stopped at the
+  observation end. Results no longer claim evidence beyond the observation
+  window, and a source whose observation end is later extended continues from
+  the correct checkpoint. Captures requested on or before the observation end
+  are unchanged.
+- Release note (bug fix): warehouse reads over `from_definitions` no longer
+  lose the NULL refusal when their result has no rows. When the rows a
+  sequential capture (`capture_sequential`), a dashboard's group data or a
+  whole-site read consumed hold a NULL value under `missing: error`, the read
+  now refuses with `source.native.fact_null_values` (context `fact`, `column`,
+  `null_rows`) even when filtering or aggregation leaves it no rows to return,
+  as a read with rows does; a sequential capture refuses before it records any
+  unit. Reads whose rows hold no NULL value return as before.
+- Release note (bug fix): a calendar trend's `to_table()` and `sql()` and the
+  SQL previews `increment.query.panel_sql` and `summary_sql` now apply a fact's
+  NULL rule as the frame and readout paths do. Under `missing: error`, the
+  default, each refuses with `source.native.fact_null_values` (context `fact`,
+  `column`, `null_rows`) when the rows its table or SQL reads hold a NULL
+  value: for a panel, every day it exports through the observation end, a
+  ratio's numerator only; for a summary, the metric windows, a ratio's
+  denominator and the CUPED pre-period. Before, each returned a table or SQL
+  that silently left those rows out, so its aggregates could be biased. To
+  check, `to_table()`, `sql()` and each preview now run one read that counts
+  those NULL values before returning; the SQL they return is not checked again
+  when you run it. Under `missing: skip` or `zero` they return as before.
+- Release note (breaking bug fix): a readout's `source_snapshot_id`, and every
+  family ID built from it, no longer changes when a message is reworded. A
+  snapshot keeps reason codes and their structured context but not rendered
+  messages or notes. A health report's `source_snapshot_id` keeps each check's
+  codes, statuses and evidence (counts, rates, thresholds, refusal context) but
+  not its rendered reasons, routes, descriptions, risks or assumption
+  statements, which the report itself still carries. A dataframe readout's
+  `source_snapshot_id` and `source_content_digest` no longer change with row
+  order, engine threading or the dataframe library (pandas, polars or
+  pyarrow): its moment and per-unit sums are exact, rounded once, and a
+  multicovariate fit is identified by its unit rows. Previously saved IDs for
+  these runs change once. Dataframe moments can move in their last bits, within
+  the parity tolerance on the pinned baseline cases. Where values cancel, as in
+  a unit's daily values 1e16, 1, -1e16 and 1, the exact total (2) replaces a
+  floating-point sum that could lose the small values (0 or 1), so estimates
+  from such data can change by more.
+- Release note (breaking): an observational run whose unadjusted contrast
+  meets an arm of one unit, or a ratio arm whose denominator mean is not
+  positive, returns that cell as an unavailable row with its own
+  `failure_code` and context, as a randomized run does, instead of refusing
+  the whole run with that code. Each unadjusted, unclustered contrast now reads
+  only its treatment arm and the control arm, which gives the estimate it gave
+  over every arm; a one-unit control arm leaves every cell of its metric
+  unavailable. The adjusted methods (`iptw`, `aipw`, `dml`) fit their models
+  across every arm and still refuse such a run with their own refusal, also
+  when they are a sensitivity method beside an unadjusted decision method. In
+  a declared secondary family, a metric whose control arm has enrolled units
+  but no values stays in the family: each of its cells is a non-rejection with
+  p-value 1, an unavailable row carrying `readout.cell.missing_metric_observations`
+  with `unobserved_arm` naming the control, where the run refused with
+  `estimation.engine.control_group_found` (or
+  `estimation.adjust_common.control_group_found` under an adjusted method). A
+  family member whose cell is refused for either reason refuses the run with
+  `family.evidence.incomplete`, as under a randomized design, where it refused
+  with the cell's own code. A cell whose two arms each hold one constant
+  value is an unavailable row carrying `estimation.engine.lift_guard` with
+  reason `zero_variance` and warns, as under a randomized design, where it
+  carried `readout.cell.unsupported_request` or the run refused with
+  `estimation.adjust.estimate_ate_every`; in a declared secondary family it is
+  a non-rejection with p-value 1 that `family_size` counts, where the family
+  left it out.
+  `estimation.adjust.estimate_ate_every` is raised only when the adjustment
+  method refuses every metric. Observational family rows now report
+  `family_size`, and a selected row reissued at the family's FCR level reports
+  `family_nominal_alpha`, as randomized rows do. Migration: where code caught
+  these refusals from an observational `run`, read each row's `failure_code`
+  and `failure_context`. A run that used to refuse has a snapshot ID for the
+  first time; estimates of runs that did not refuse, their snapshot IDs and
+  experiment identity are unchanged.
+- Release note (breaking numerical correction): a fixed-horizon secondary
+  family under a randomized design now counts every arm the source's unit or
+  assignment counts enroll, as an observational family already did. A cell of
+  an arm the counts list but a metric's moments read lacks, such as an arm that
+  started after that read, is a member with p-value 1, a non-rejection, and
+  its row carries `readout.cell.missing_metric_observations`. Before, the
+  family was sized by the arms each metric's read held, so `family_size` fell
+  short of the scope's members, the threshold was too loose, and the family
+  could report a discovery the full family does not support. A primary's alpha
+  is likewise split across every counted treatment arm and every arm its own
+  read holds, under randomized and observational designs, 0.025 for each of
+  two arms at `alpha=0.05`, where an arm missing from the read left 0.05. An
+  arm the design's allocation declares but no unit enrolled in is a count
+  exclusion, as in a breakout family: its cells stay unavailable rows with
+  `readout.cell.missing_arm`, but leave the run's family scope
+  (`FamilyScope.members`) and carry no `family_id`, so `family_size` equals the
+  member count. A source without enrollment counts still sizes the split and
+  the family from the arms each metric's values reach; a declared arm that none
+  of its metrics observed leaves the family scope, and its cells carry no
+  `family_id`. Migration: none needed; in an affected family the threshold,
+  the discoveries and the intervals of selected cells follow the larger
+  family, and an affected primary's interval follows its split. Snapshot IDs,
+  family IDs and experiment identity are unchanged.
+- Release note (bug fix): when a sequential plan's
+  `SequentialCompliancePolicy(family=True)` registers the uptake cell in the
+  secondaries' e-BH family, the family now lists that cell, which its
+  selection already counted. The `secondary` family in
+  `results.metadata.scope.families` holds the uptake cell among its members,
+  so the member count equals the rows' `family_size`. A registered as-of
+  look's families list every registered cell, including those a request
+  narrowed to `estimands=("itt",)`, `("compliance",)` or some metrics leaves
+  out, as whole-window readouts already did; only the requested rows are
+  returned. The uptake row carries the family's `family_id`, `family_axes`,
+  `family_procedure`, `family_q` and `family_guarantee`, and its
+  `multiplicity_status` is `declared_plan` instead of `undeclared_plan`; its
+  `role` stays `None`. With no secondaries, the uptake cell is the one member
+  of a `secondary` family, whose `family_guarantee` is `finite_sample`.
+  A decision on a stored run selects over the same members: the uptake cell's
+  own verdict stays `not_evaluated`
+  (`decision.not_evaluated.monitoring_view`), its discovery counts toward the
+  family's rejections, and it no longer makes a whole-window family's verdict
+  `not_evaluated`. Before, that decision selected over the secondaries alone,
+  a smaller family than the rows report. A run that requests
+  `estimands=("itt",)` lists the uptake cell as an unselected member, so its
+  family verdict is `not_evaluated` with `decision.family.member_missing`, as
+  for any narrowed registered family; request `("itt", "compliance")` to
+  decide the family. Estimates, thresholds and discoveries are unchanged. An
+  as-of readout that returns the uptake row gets a new snapshot ID once, and
+  with it new family IDs, because its snapshot covers that row's
+  `family_guarantee`, which was empty before; every other snapshot and family
+  ID is unchanged. Saved run envelopes and readout metadata record the added
+  member; an envelope saved before this change keeps the family scope it
+  recorded, without the uptake cell, when it is decided. Migration: none needed.
+- Release note (breaking bug fix): a quantile cell whose combined log-scale standard
+  error is 0.5 or more is now an unavailable row instead of refusing the whole
+  `run` with the estimator's internal `LiftGuardError`. The row keeps its
+  `metric`, `group_id` and `method`, for a decision and a sensitivity method
+  alike, with `failure_code` `estimation.engine.lift_guard`
+  and reason `delta_method_unreliable`, as a mean cell refused by the same
+  limit has, and the run warns with `readouts.run.cell_refused`; the other
+  cells of the run, including other arms of the same quantile metric, are
+  estimated. A secondary family reissues only its selected arms at its
+  false-coverage level, so an arm it did not select keeps its nominal row.
+  Migration: where code caught that exception from a quantile run,
+  read each row's `failure_code` and `reason`. Experiment identity is
+  unchanged.
+- Release note (breaking numerical correction): quantile
+  `required_sample_size` searches assigned units and evaluates each candidate
+  as `achieved_power` does, with the allocation's control size and both arms
+  analyzed at `assigned * trigger_rate`, so `achieved_power` at the planned
+  size reports the planned power. A triggered quantile plan moves by a few
+  units (34,427 to 34,425 per arm for a 3% lift on a log-normal median pilot
+  at a 30% trigger rate) and no longer reports a power `achieved_power` puts
+  below the target. At an extreme quantile and unequal allocation the search
+  starts at the first size whose two arms each have the readout's
+  order-statistic bracket, instead of planning a control arm `achieved_power`
+  refused with `estimation.quantile.too_small_bound`: a 1st percentile at
+  allocation 0.8 plans 1,469 treatment and 368 control units instead of 368
+  and 368. Readout estimates and experiment identity are unchanged.
+- Release note (breaking numerical correction): quantile
+  `required_sample_size` now keeps the planned combined log-scale standard
+  error below 0.5, the level at which the quantile readout reports no relative
+  lift (`delta_method_unreliable`), as mean plans already did. Where that limit
+  binds, quantile plans grow: a heavy-tailed median planned for a sixfold lift
+  sizes 45 per arm instead of 28, and one planned for a target at or below the
+  null's own rejection probability 45 instead of 20. When the limit, not the
+  target power, sets the size, `required_sample_size` warns with an
+  `IncrementRuntimeWarning`, code `power.quantile_size_at_delta_method_limit`
+  (context `n_per_arm`, `log_se`, `log_se_limit`): at such sizes the projected
+  standard error can understate the readout's, so many readouts can still report
+  no lift, and
+  [Checking a quantile plan against the readout](planning-methods.md#checking-a-quantile-plan-against-the-readout)
+  shows how to check a size against the pilot. A pilot on a recording grid as
+  coarse as the quantile itself, where no size passes the limit, is refused with
+  the new `power.quantile_size_search_delta_method_unreliable`
+  (`InvalidRequestError`, context `power`, `log_se`, `log_se_limit`) instead of
+  sized. Quantile `minimum_detectable_effect` refuses with
+  `power.minimum_detectable_effect.delta_method_unreliable` at a size the limit
+  refuses, and a companion effect there is `None` with reason
+  `delta_method_unreliable`; `achieved_power` still reports planned power.
+  Quantile plans the limit does not bind are unchanged. Migrate code that sized
+  quantile metrics for large lifts or small samples to expect the larger sizes,
+  the warning and the refusal. Readout estimates and experiment identity are
+  unchanged.
+- Release note (breaking bug fix): the `from_definitions` SQL previews
+  `increment.query.panel_sql` and `summary_sql` now load the Ibis compiler of
+  the dialect named by `backend=`, as connecting to that backend does.
+  `backend="singlestoredb"` over another connection therefore reaches Ibis's
+  SingleStoreDB compiler, which refuses today's analysis SQL with
+  `query.backend.operation_unsupported` as MySQL's does, instead of raising
+  `ValueError: Unknown dialect singlestoredb`. A name the installed Ibis cannot
+  write SQL for refuses with the new `CapabilityError` code
+  `query.backend.compiler_unavailable` (context `backend`, `route`) before the
+  preview reads anything. Migration: where code caught `ValueError` from these
+  previews, catch `CodedError` and branch on its code.
+- Release note (bug fix): on a backend other than DuckDB, PostgreSQL, Snowflake
+  and BigQuery, an analysis whose event times carry a time zone still stops
+  with `query.backend.operation_unsupported`, and its `detail` now reads
+  "converting event times that carry a time zone to UTC (convert them to UTC
+  timestamps without a time zone in the source SQL)" in every session, instead
+  of naming an internal operation. Ordinary Databricks tables take this route:
+  Ibis reads a plain Databricks `TIMESTAMP` as carrying a time zone.
+  [Event times with a time zone](warehouse-definitions.md#event-times-with-a-time-zone)
+  explains the conversion to make in the source SQL. The code and its context
+  keys, estimates and experiment identity are unchanged.
+- Release note (breaking bug fix): `WarehouseResultsStore` names each run's
+  table `increment_run_` plus the first 49 hex digits of its run key, 63
+  characters on every warehouse, within PostgreSQL's 63-byte identifier limit.
+  PostgreSQL cut the 78-character names written before to 63 bytes, so on
+  PostgreSQL `run(..., results_store=...)` stopped with `store.run.not_found`
+  after saving, a saved run never reopened or appeared in `history`, and saving
+  the same run again failed with an uncoded backend error instead of
+  `store.run.duplicate`. Runs PostgreSQL already saved, including those whose
+  `run` stopped with `store.run.not_found`, now reopen by ID and as the latest
+  run and appear in `history`, with no migration; a run whose `run` stopped has
+  no logged decisions. Migration: tables a development build before this change
+  saved on DuckDB, Snowflake, BigQuery or SQLite keep 78-character names, which
+  this release does not read; rename each such `increment_run_` table to its
+  first 63 characters. No release wrote them. A schema or catalog name longer
+  than the warehouse allows (63 bytes on PostgreSQL, 255 characters on
+  Snowflake, 1,024 bytes on BigQuery) now refuses when a `WarehouseResultsStore`
+  or `WarehouseArtifactStore` is created, before it reads or writes anything,
+  with `store.schema_name_too_long` (`InvalidRequestError`, context `store`,
+  `schema`, `backend`, `limit`); before, PostgreSQL shortened it, so two long
+  names sharing their first 63 bytes used one schema. An artifact store schema
+  name over the Snowflake or BigQuery limit, which refused with
+  `artifact.store.namespace`, now refuses with this code. Estimates and
+  experiment identity are unchanged.
+- Release note (feature): analyses run on any Ibis SQL backend. DuckDB,
+  PostgreSQL, Snowflake and BigQuery remain the verified warehouses. The first
+  time Increment uses a connection to any other backend, it shows one
+  `UnverifiedWarehouseWarning` (code `query.session.unverified_warehouse`,
+  context `backend`), exported from `increment`, `increment.errors` and
+  `increment.estimators`; silence it by category once you have checked the
+  backend. Results, renders, `analysis_context` and experiment identity do not
+  record it. Warehouse CUPED tests for NaN with Ibis's own `isnan()`, which
+  also translates for ClickHouse, Trino and Databricks, where CUPED stopped with
+  Ibis's `OperationNotDefinedError`. When Ibis cannot translate a query for the
+  SQL dialect in use, `run`, the `from_definitions` SQL previews
+  `increment.query.panel_sql` and `summary_sql`, and the SQL-computed summary
+  preview `increment.query.source.SqlPanelSource.summary_sql` raise
+  `CapabilityError` code `query.backend.operation_unsupported` (context
+  `backend`, `detail`, `route`) instead of Ibis's own exception. It is raised
+  where that query is reached, so earlier queries in the run may already have
+  read data; no result is produced. The same failure while Increment writes a
+  TEMP table raises this code too, instead of a materialization warning or
+  `query.session.snapshot.materialization_failed`, whose message now says what
+  needs TEMP tables and names `from_frame` as the route. Publishing and opening
+  unit-day artifacts still refuse on unverified backends with
+  `query.session.warehouse_artifact.verification_unavailable`.
+  [Other warehouses](../guides/data-model.md#other-warehouses) explains the notice,
+  TEMP tables, and how to add a missing Ibis translation. Migration: where code
+  caught Ibis's `OperationNotDefinedError` from these calls, catch `CodedError`
+  and branch on this code. Estimates and experiment identity are unchanged.
+- Release note (breaking): an exact conversion or retention row
+  (`reference_kind="binomial"`) now cuts its additive `abs_lb`/`abs_ub` as the
+  Miettinen-Nurminen score interval for the difference of rates and labels it
+  `abs_reference_kind="score"`; it was an unlabeled Normal-Wald interval. An
+  absolute margin (`margin_abs`, `null_abs`) on such a row is decided by the
+  matching score test, so `p_value()`, `stat_sig()` and guardrail verdicts
+  change at sparse counts, where the Wald test rejected too often (exact size
+  0.0785 against 0.05 at two expected treatment events per 1,000 units; the
+  score test's is 0.0432). The row's displayed `abs_diff` and `abs_se` are
+  unchanged, and a row without a Wald standard error (both arms constant, or
+  an arm of one unit) now has a finite additive interval. A family reissue,
+  including a delta-route row rerouted to the exact route, cuts the same score
+  interval. Because these rows now name their additive reference, the snapshot
+  and family IDs of breakout, daily and as-of lift readouts that contain them
+  change once. Migration: none needed to read saved results; a row saved
+  before this release keeps its stored Wald bounds and Normal margin test, and
+  reissuing it rebuilds the score interval from its counts. In
+  `select_exploratory_family`, such a margin row is read with its score
+  interval, so it is selected on the test its reissued interval inverts.
+  Experiment identity is unchanged.
+- Release note (breaking numerical correction): a run whose every requested
+  cell fails returns each cell as an unavailable row that keeps its `metric`,
+  `group_id` and its own `failure_code`, as a run with one healthy cell already
+  did, instead of refusing with `readout.estimate_lift_every`. This covers an
+  undeclared plan and cells outside a declared secondary family. A declared
+  secondary family with a member cell refused for a one-unit arm or a zero
+  control denominator still refuses the run with `family.evidence.incomplete`,
+  as before. `readout.estimate_lift_every` (`UnsupportedRequestError`) is
+  retired, and `RETIRED_CODES` maps it to no replacement. A single ratio
+  metric whose control denominator total is zero, for example, returns one row
+  carrying `estimation.variance.ratio_moments_nonpositive_denominator_mean`.
+  Observational readouts take their arms from the source's unit or assignment
+  counts, as randomized readouts do. A run with every cell present now reports
+  `decision_scope_complete=True` with roster source `experiment_counts`,
+  instead of an incomplete `observed_union` roster. An arm the source counts
+  but whose metric has no outcome rows is a
+  `readout.cell.missing_metric_observations` cell listed in `missing_cells`.
+  In a declared secondary family that cell now counts toward the family size
+  as a non-rejection with p-value 1, as it does under a randomized design.
+  Before, an observational family was sized by its estimated cells alone, so
+  its threshold was too loose and it could report a discovery the full family
+  does not support. Assignment integrity stays unchecked under an
+  observational design. An observational readout gets a new snapshot ID once,
+  because its snapshot now digests those counts. Migration: where code caught
+  `readout.estimate_lift_every`, read each row's `failure_code` and
+  `failure_context`. Estimates and experiment identity are unchanged. In an
+  observational family with such a cell, the threshold, the discoveries and
+  the intervals of selected cells follow the larger family.
+- Release note (breaking): an ordinary unclustered lift row whose arm mean is
+  close to zero relative to its standard error, or one of whose arms has
+  constant outcomes, now keeps its additive Welch result instead of failing
+  with `estimation.engine.lift_guard`. It has `lift=None` and
+  `relative_unavailable_reason` `"delta_method_unreliable"` or
+  `"zero_variance"`, the shape a non-positive arm mean already had
+  (`"nonpositive_arm_mean"`). With no declared margin, `p_value()`,
+  `stat_sig()` and family selection read the additive difference against
+  zero; a declared relative margin stays a non-rejection with p-value 1. A
+  constant arm's interval is the other arm's one-sample t when that arm varies.
+  When both arms are constant, the cell fails with `estimation.engine.lift_guard`
+  and reason `"zero_variance"`, whether the means are positive, zero or negative.
+  A ratio metric whose denominator mean is
+  too noisy in either arm (relative standard error above 0.15, where the
+  `ratio_denominator_precision` note applies; on a scalar CUPED row, the
+  CUPED-adjusted denominator mean) still fails with these guards.
+  With such a denominator, a ratio row with a zero or negative numerator mean,
+  which kept an additive row, now fails the same way (`reason`
+  `"non_positive_mean"`): its additive difference shares that denominator. A
+  declared prior no longer turns an otherwise estimable non-positive-mean
+  decision row into that failure: the row keeps its sampling interval, p-value
+  and verdict and marks only its posterior unavailable (`posterior_reason_code`
+  `"estimation.engine.lift_guard"`). Breakout and daily cells previously excluded
+  as `zero_variance` or `extreme_ratio` can retain additive inference when the
+  combined uncertainty is positive; both-constant cells remain unavailable.
+  Migration: where an additive row is present, read
+  `relative_unavailable_reason` and the `abs_*` fields; the row's note names
+  the condition. Where code read a noisy-denominator ratio's
+  `"nonpositive_arm_mean"` row, handle the `estimation.engine.lift_guard`
+  failure instead. Experiment identity is unchanged.
+- Release note (breaking): every guardrail needs a margin. A guardrail asks
+  whether the treatment is worse than control by its margin or more, so one with
+  no `margin` or `margin_abs` on the metric or its `ExperimentMetric` plan entry
+  refuses before any data is read with `plan.guardrail.margin_required`
+  (`InvalidRequestError`, context `metric`, `route`). Under a sequential
+  encouragement plan, which builds no shifted null, the route names the
+  secondary role or a fixed-horizon plan instead of a margin; under another
+  sequential plan it names only the relative `margin`, because sequential
+  inference refuses `margin_abs`. Previously such a
+  guardrail tested against zero and could pass only on a significant
+  improvement. An experiment saved by an earlier release with a margin-less
+  guardrail refuses the same way when `Experiment.from_json` reads it back, with
+  the route its saved design and inference compile to, and so does a moments
+  cube exported with one when `from_moments` replays its recorded plan; its
+  route names a new export with the margin, or a `plan=` that declares it, and
+  for a sequential checkpoint cube, which replays only its registered plan, a
+  new export with a relative margin or, under encouragement, a secondary role
+  or a fixed-horizon plan. Migrate with
+  `guardrails=[ExperimentMetric(metric="latency", margin=0.02)]`,
+  or `- metric: latency` with `margin: 0.02` in definitions. The program reason
+  for a guardrail that does not reject is renamed from `decision.guardrail.unsafe`
+  to `decision.guardrail.not_certified`: the test is one-sided, so it is not a
+  finding of harm, and the guides no longer promise a SAFE/HARM label. A
+  guardrail's LATE rows carry no margin verdict and no longer decide the
+  program; its ITT row does. Views that build no shifted null now refuse a
+  guardrail, because every guardrail declares a margin: a fixed-horizon
+  breakout (`readout.margin.breakout`), an encouragement LATE-only request
+  (`readout.encouragement.margin`) and an encouragement as-of view
+  (`readout.metric_declare_non`). Exclude the guardrail with `metrics=` to read
+  those views. A saved segmented run of an experiment with a guardrail has no
+  route yet. Experiment identity changes only for experiments whose guardrails
+  gained a margin.
+- Release note (breaking numerical correction): a posterior chance is reported
+  on the metric's favorable side everywhere it is shown. For a metric that
+  declares `preferred_direction`, the readout and `render(result, "full")`
+  print `chance_to_beat_favorable=` and the `posterior_chance_to_beat` column
+  of `estimates_to_readout` and `readout_table` shows the same value, read from
+  `preferred_direction` alone. Previously the readout printed the
+  direction-free chance that lift is positive under `chance_to_beat=` while the
+  table showed the favorable side under the same label, so a clearly improving
+  decrease metric read about 0 in one and 1 in the other. A metric without a
+  direction keeps `chance_to_beat=`, and under a one-sided `alternative` its
+  table column now shows `chance_to_beat()` instead of `None`.
+  `chance_to_beat_favorable()` on a decrease metric reads the posterior's lower
+  tail rather than `1 - chance_to_beat()`, so a vanishing probability keeps its
+  size (about 5e-112 where it showed 0.0). `prob_favorable()` on a sequential
+  row refuses with `CapabilityError` code `sequential.route.unsupported`, as
+  `p_value()` does, instead of returning `None`. A prior declared on a metric
+  (`MetricSpec(prior=...)` or a YAML binding) under sequential inference
+  refuses with `sequential.route.unsupported` (context `reason`, `metric`,
+  `inference`), the code a `run(prior=...)` override already raised;
+  `plan.metric_informative_priors` (`UnsupportedRequestError`) is retired and
+  `RETIRED_CODES` maps it to `sequential.route.unsupported`. To migrate, catch
+  `CapabilityError` with that code where `plan.metric_informative_priors` was
+  caught, and handle the refusal where `prob_favorable()` on a sequential row
+  was read as `None`. Estimates, intervals, p-values, the stored
+  `posterior_prob_favorable` and experiment identity are unchanged.
+- Release note (breaking API cutover): `increment.query.build_panel_for_metric`
+  is `build_panel_for_metric(experiment, reader, metric, population=...)`; it
+  no longer takes an `exposures` relation, which only private state could
+  supply, and instead reads the assigned or triggered population itself, as a
+  readout does. Drop the `exposures` argument. Panel relations from
+  `panel_sql` and `build_panel_for_metric` now type `ds` as a date, where
+  DuckDB returned a timestamp, and carry `day_offset`, as the data-model guide
+  documents. `WarehouseResultsStore(backend, schema=...)` creates a missing
+  schema when it first saves a run, and refuses that save, before writing
+  anything, with `store.run.schema_unavailable` (`CapabilityError`, context
+  `schema`) when the schema can be neither found nor created; previously the
+  save failed with an uncoded backend error. `run(..., results_store=...)`
+  reaches that refusal after the analysis, with nothing saved. A dotted
+  `catalog.schema` is found and created in that catalog, where the store's
+  tables are written, and on PostgreSQL a mixed-case schema is created as
+  written. Opening a run or reading history never creates a schema; a missing
+  one holds no runs, as before. `WarehouseArtifactStore` likewise no longer
+  creates its declared schema when it is constructed: its first publication
+  or `abandon_generation` creates the schema and the store's tables, and a
+  store whose schema does not exist lists no manifests and refuses
+  `open_snapshot` with `artifact.refresh.invalid_ref`. Publication still
+  refuses with `artifact.store.namespace` before the source is read when the
+  schema can be neither found nor created. Estimates and experiment identity
+  are unchanged.
+- Release note (breaking): `to_frame()`, breakout frames and readout rows
+  export `sequential_alpha` and `sequential_log_e` as `Float64` numbers instead
+  of exact-fraction strings, so they can be filtered, sorted and plotted;
+  `sequential_log_e` is `-inf` or `inf` once a boundary is certain. The exact
+  fractions stay on `row.require_sequential_result()`. Asymptotic rows keep a
+  null `sequential_log_e`, because their plug-in log evidence is not a
+  finite-sample e-value. Rows of a registered sequential e-BH or Bonferroni
+  family, including breakout rows, now report the family's member count in
+  `family_size`. The brief render names a family's procedure as its selection
+  qualification does, for example "4-member e-BH" where it printed
+  "4-member E Bh", and reads "family" for an unrecorded procedure. Migration:
+  code that parsed these columns as strings should read them as floats, or read
+  `Fraction` values from `row.require_sequential_result()`. Estimates, decisions
+  and experiment identity are unchanged.
+- Release note (documentation): the limitations page states how conservative
+  the default conversion interval is at small arms and when it is the default.
+  At a 10% rate it covers 97.5% at 1,000 units per arm with 1.36 times the Katz
+  interval's log width, and 99.5% at 200, where its lower endpoint is a -100%
+  lift for 43% of outcomes. A row takes the delta-method route only with 2,140
+  successes and 2,140 failures per arm at a two-sided 5% level, so the
+  finite-sample route is the default below about 21,400 units per arm at a 10%
+  rate. The page also records that a mean's relative interval covered 93.5% on
+  skewed gamma outcomes at 30 units per arm, where the same rows' additive
+  Welch interval covered 95.6%. The `AnalysisPlan` docstring now says that
+  secondary families use Benjamini-Hochberg at a fixed horizon and e-BH under
+  sequential inference, including `AsymptoticMean`, not Bonferroni. Estimates,
+  refusals and experiment identity are unchanged.
+- Release note (breaking bug fix): `runnable()` now reports two refusals that
+  `run()` raised only at execution, with the same code and context. A
+  triggered view, such as `View.overall(population="triggered")`, on a source
+  that declares no trigger, such as a `from_frame` source, and a fixed-horizon
+  triggered whole-window view on `from_moments` rows that record a trigger but
+  no triggered population refuse with
+  `facade.analysis.trigger_unsupported` for every estimator, where `runnable()`
+  reported `evidence.operation_unavailable` for the arm estimators; its
+  `experiment` now names the experiment, `"frame"` for `from_frame`, instead of
+  `'<unknown>'`. A breakout view on an experiment that declares no breakouts
+  refuses with `evidence.breakout_unavailable`, whose `constructor` is the
+  builder, such as `from_frame`; `requested` holds the view's selected
+  properties, or a registered sequential segment family's dimension, empty
+  when it has neither, `offered` is empty and the `route` names
+  `breakouts=[...]`. On such an experiment this code now precedes the
+  `sequential.route.unsupported` refusal a sequential breakout view could
+  raise while it ran. For a view without a selection `runnable()`
+  reported nothing, and `from_frame(shape="panel")`, `from_definitions` and
+  `from_unit_day_artifact` returned an empty breakout readout. Branch on
+  `facade.analysis.trigger_unsupported` for a triggered view, and declare
+  `breakouts=[...]` or drop the breakout view. Pickling or deep-copying a
+  reader refuses with `kernel.run.reader_unportable` (context `experiment_id`)
+  instead of raising a `TypeError`: a reader holds the frame or connection it
+  reads, so pickle the experiment and build a new reader where it runs.
+  Estimates and experiment identity are unchanged.
+- Release note (breaking numerical correction): a breakout or daily row
+  flagged `low_reliability` (fewer than 50 units in its control or treatment
+  arm) now keeps its verdict. `stat_sig()`, `rejection_side()`, the readout
+  frame's `stat_sig` and `decision_available`, and decisions rebuilt from a
+  run's cells decide it from its own interval, as for any other row; before,
+  a flagged segment selected by its BH family still reported
+  `stat_sig() == False` and was called inconclusive. Its interpretation line
+  now ends with a low-reliability caveat, and
+  [Result fields](result-fields.md#small-segments-are-flagged-not-withheld)
+  states it. A fixed-horizon Bonferroni breakout divides each metric's alpha
+  by its (treatment arm, segment) cells estimable by their arm counts under
+  its decision method, so a sensitivity method never changes it, and its
+  family lists only those cells: with four segments, one of them a single
+  unit per arm, the other three are read at `1 - 0.05/3` instead of
+  `1 - 0.05/4`, and the sparse one is an unavailable `few_units` row outside
+  the family. With several treatment arms every arm of every segment counts,
+  so the familywise guarantee holds over all of them: three segments of two
+  arms are read at `1 - 0.05/6`, not `1 - 0.05/3`, and the family and its
+  rows report `family_axes == ("arm", "segment")` instead of `("segment",)`.
+  Under `conversion_inference="auto"` a conversion or retention comparison
+  takes the delta-method or exact binomial route by comparing its counts with
+  a threshold that depends on its level, so a comparison near that threshold
+  can change route, interval and p-value with the corrected level.
+  Daily-breakout Bonferroni, point estimates, BH families and experiment
+  identity are unchanged.
+  Migration: read `r.low_reliability` for the caveat; a flagged row's
+  `stat_sig()` is no longer a withheld verdict.
+- Release note (breaking): sequential refusals say where and what. A
+  continuation that rewrites a finalized record still refuses with
+  `sequential.continuation.rewrite`, and its context now names the first
+  differing reveal `position`, the `unit_id` the earlier capture revealed there
+  and what `changed` (`missing`, `order`, `assignment` or
+  `values_or_definitions`). Reading a panel, native, artifact or moments source
+  before it holds a finalized checkpoint refuses with the new
+  `sequential.capture.required` (context `reason`, `route`) instead of
+  `sequential.continuation.legacy`, which keeps meaning a checkpoint, plan or
+  cube from an earlier format. A registered segment on a Boolean column whose
+  declared levels include none of `"true"`, `"false"` and `"__null__"` refuses
+  when the experiment is built with `sequential.registration.invalid` (context
+  `dimension`, `declared`, `canonical`) instead of retaining only empty cells,
+  and a whole-window or as-of read of a segmented family names the
+  `View.breakout(...)` route in its `sequential.source.invalid` context. To
+  migrate, catch `sequential.capture.required` where code caught
+  `sequential.continuation.legacy` before a first capture, and declare Boolean
+  segment levels as `"true"`, `"false"` and `"__null__"`.
+- Release note (breaking bug fix): a `from_frame(shape="panel")` or
+  `increment.frame.from_unit_panel` panel checks `observation_end=` when it is
+  built, and the end bounds every result. On a calendar date column an ISO-8601
+  string such as `"2026-02-04"` names that day on every backend; Polars used to
+  fail at `run` with a backend `InvalidOperationError`. A string day column takes
+  a label spelled like its own, which may name a day with no rows (`"d9"` after
+  `"d1"` to `"d8"`), and a numeric day index a number. An end that cannot be
+  read, is of the wrong kind, lies outside a numeric day index's signed 64-bit
+  range, falls before the panel's first day or cannot be ordered among a string
+  column's labels refuses with `source.panel.observation_end` (context `value`,
+  `axis_kind`, `issue`), which replaces the run-time
+  `frame.panel.observable_end_dtype`. Values dated after the end no longer enter
+  unwindowed whole-window, open-ended retention, daily or as-of results; daily
+  and as-of rows stop at the end; units exposed after it are not analysed and
+  leave the unit counts; and a sequential capture or as-of compliance read at a
+  later `as_of` stops at it. Results move for panels whose end precedes their
+  last day; metrics with a bounded window keep their numbers. `densified_cells`
+  now counts only cells inside each unit's eligible days, from its exposure date
+  (or the first day) through the end (or the last day), so a staggered panel
+  without pre-exposure rows no longer counts its pre-exposure cells. A sequential
+  plan on a panel without `exposure_date=` refuses at construction with
+  `source.frame.sequential_exposure_date`, as the summary shape does, instead of
+  failing at `run`. Experiment `to_json()` and `hash()` are unchanged. To
+  migrate, set `observation_end` to the last day whose data should count.
+- Release note (breaking bug fix): breakout, daily, as-of, contrast,
+  sensitivity and other report cells now report the sampling status of their
+  own row. In `envelope.to_payload()`, `render(result)` and a saved run's
+  `reason_code`, a report cell is `available` when its row carries usable
+  inference evidence (a point, a confidence set, including an exact conversion
+  row with zero control events, or additive bounds; for a CATE, targeting or
+  sensitivity report, its retained estimate, such as the average effect, the
+  policy value or the observed risk ratio), and otherwise `unavailable`
+  with the row's failure code, or `results.component.unavailable` with its
+  exclusion as `context["reason"]` (for example `few_units`); a breakout or day
+  row that never recorded its sampling availability is `unavailable` with
+  `readout.legacy.sampling_unreconstructible`. Every report cell
+  was `unavailable` with `results.operation.unsupported` before; that no
+  portable operation is registered remains a property of the row kind and its
+  `supports`. A saved run's `reason_code` column is the sampling status code,
+  as the history table's already is, so it is null for every available cell,
+  including an available lift cell, which stored its posterior's code (such as
+  `"posterior state is not retained"`). `DailyMetricValue` gains a fixed
+  `value_scale="absolute"` field, so a daily-values row's identity matches its
+  cell and render no longer lists those cells as hidden; a values collection
+  pickled or saved as JSON by an earlier release loads with that scale. A daily
+  or as-of lift view now has a row for each treatment arm on each day,
+  including every arm the design's allocation declares: a day with no units in
+  an arm is an unavailable row with `no_treatment_arm` and counts among the
+  required cells, where it was left out. To migrate, read a report cell's
+  availability from its status rather than from `row_kind`, and a saved cell's
+  missing posterior from its `posterior` status rather than from
+  `reason_code`. Estimates and experiment identity are unchanged.
+- Release note (usability): `render(result)` prints each cell's effect and
+  interval at six significant digits (percent for relative effects) instead of
+  raw floats, labels each cell as `print(result)` does, and no longer prints an
+  empty `reason={}`. `Warning:` marks only a qualification that weakens the
+  claim: a disclosed code, live or provider-owned evidence, a failed integrity
+  check, an incomplete decision scope or population roster, or a partial view;
+  the other qualifications print without it. The payload
+  `components.sampling.status.reason` of a failed cell is its failure text, the
+  registered explanation or else the failure context's `display`, instead of a
+  description of its interval construction. In a collection's readout, each
+  `Unavailable` line names the cell's arm, segment and day, and explains a
+  failure without a registered explanation by its `display` text before its raw
+  context. Codes, estimates and experiment identity are unchanged.
+- Release note (documentation): the switchback guide names the codes its
+  refusals carry. Duplicate metric specifications refuse with
+  `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
+  `ValueError`. A shared schedule declared over one block refuses with
+  `source.frame.switchback.schedule`, and
+  `estimation.contrast.switchback_block_inference` applies when combined
+  shared-schedule partitions hold fewer than two blocks. The data-model and
+  metric-types guides state that a warehouse outcome event counts only when it
+  is strictly after the unit's `first_exposure_ts`, so an event at that exact
+  instant, such as a first-purchase exposure's enrolling order, counts in
+  neither the outcome nor the CUPED window. Refusals, estimates and experiment
+  identity are unchanged.
+- Release note (usability): `readout_table` renders a breakout view by
+  default. `nest_by` now defaults to `None`, which nests by `"segment"` when
+  rows of one method carry more than one segment and by `"arm"` otherwise, so
+  `readout_table(result.readout(view))` on a one-method breakout view gives
+  each segment its own row instead of refusing with
+  `tables.readout_table_ambiguous`. An explicit `nest_by` behaves as before.
+  That refusal now carries a `route` context field: `nest_by="segment"` when
+  the colliding rows differ by segment, otherwise distinct
+  `analysis_population` values. Segment labels render as written, so the
+  missing-value segment reads `__null__` rather than a bold "null",
+  Markdown in a segment label shows as text, an empty-string segment reads
+  `""`, and a row without a segment, such as a run's whole-window row, shows
+  a blank segment label rather than `nan`, so the two stay distinct rows.
+  Table qualification cells show `>` as written rather than `&gt;`.
+  Readout estimates and experiment identity are unchanged.
+- Release note (usability): an arm with one unit no longer aborts the run.
+  Each of its cells comes back as an unavailable row carrying
+  `estimation.armstats.arm_stats.least_compute_metric`, or
+  `estimation.variance.ratio_moments_least_two_units` for a ratio metric, with
+  context `group_id`, `metric` and `n`, and the other arms are still
+  estimated. Outside a declared secondary family, a one-unit control arm
+  leaves every treatment cell of its metric unavailable with that same code.
+  Both messages name the route "drop or merge arm".
+  An unavailable sensitivity row carries its metric's declared margin and
+  direction (`null_lift`, `null_abs`, `preferred_direction`), as its decision
+  row does. Unclustered ratio rows now report `n_control` and `n_treat` as
+  arm unit counts and `mean_control` and `mean_treat` as each arm's ratio, its
+  numerator total over its denominator total, including a row whose numerator
+  total is zero or negative and so reports only the additive effect; quantile
+  rows report the counts and leave the means empty. A readout holding such a
+  row gets a new snapshot ID once, because snapshots digest arm counts.
+  Estimates, intervals and experiment identity are unchanged.
+- Release note (breaking numerical correction): `required_sample_size` returns
+  the smallest fixed-horizon size whose power, evaluated as `achieved_power`
+  evaluates it, reaches the target. At a
+  treatment-heavy allocation sizes shrink by a few units (199,376 to 199,369
+  per arm at allocation 0.9 for a 2% lift on `Baseline(mean=20, var=400)`). A
+  triggered plan is sized in assigned units analyzed at
+  `assigned * trigger_rate`, as `achieved_power` plans it, so its size moves by
+  a few units and its reported power is `achieved_power`'s at that size; a
+  clustered size follows the same rule, and a very large size whose rounding
+  left its power a few ulps under the target now reaches it. Where the runtime
+  estimates the lift with its log-ratio delta-method contrast (fixed horizon,
+  unclustered, randomized, no absorbed factor, not decided from conversion
+  counts), planning also keeps the planned combined log-scale standard error
+  below 0.5, where the runtime refuses the estimate (`delta_method_unreliable`):
+  a noisy baseline at a large lift sizes larger (417 per arm instead of 316 for
+  a fivefold mean on `Baseline(mean=1, var=100)`), so one unit fewer fails
+  either the power target or that limit; `minimum_detectable_effect`
+  returns the smallest effect that meets both or refuses with the new
+  `power.minimum_detectable_effect.delta_method_unreliable` (context
+  `target_power`, `direction`, `log_se`, `log_se_limit`), and a companion
+  effect is `None` with reason `delta_method_unreliable`; `achieved_power`
+  still reports planned power. A companion effect at a target at or below the
+  null's own rejection probability is `None` with reason
+  `at_or_below_null_power` instead of `0.0`, including from
+  `segment_pairwise_required_sample_size` and `segment_pairwise_achieved_power`;
+  a sequential `achieved_power` or
+  `required_sample_size` at such a target used to raise
+  `power.sequential_mde.design_search_minimum`, which
+  `minimum_detectable_effect` still raises. At such a target
+  `segment_pairwise_minimum_detectable_effect` refuses with
+  `power.minimum_detectable_effect.design_search_minimum` (context `estimate`,
+  `target`) instead of returning `0.0`, and
+  `segment_pairwise_required_sample_size` returns the smallest size whose
+  segments split into two arms instead of sizing for the magnitude of a
+  negative `z_alpha + z_power`. A conversion or retention null at a
+  rate of exactly one as written, such as `null_lift=0.25` on a baseline of
+  0.8, is planned instead of refused with `power.bounded_metric.rate_above_one`.
+  Migrate code that compared a companion `mde_relative` with `0.0` to read
+  `mde_unavailable_reason`. Readout estimates and experiment identity are
+  unchanged.
+- Release note (documentation): the power guide's `PowerResult` table states
+  that `mde_relative` is relative to the declared `null_lift`, not to control,
+  and that the matching `relative_lift` is
+  `(1 + null_lift) * (1 + mde_relative) - 1` at `compliance=1`; a new example
+  shows that round trip. Under a nonzero `null_lift`, passing `mde_relative`
+  back alone plans a different lift, and so a different power, than the design
+  detects. The `required_sample_size`
+  docstring states that a sequential procedure with a `trigger_rate < 1`
+  baseline is refused with `sequential.route.unsupported`, and that a triggered
+  experiment is sized at a fixed horizon, where `n_triggered_total` reports its
+  analyzed units. Planning results are unchanged.
+- Release note (breaking numerical correction): `workflows.planning_baseline`
+  applies one pilot-variance bound to every moment metric. Mean, conversion
+  and retention variances were already raised to their 80% one-sided
+  chi-square upper bound on control units minus 1 degrees of freedom; ratio
+  variances now are too, and a clustered pilot's variance is bounded on
+  contributing control clusters minus 1 instead of units minus 1. Ratio and
+  clustered plans from `planning_baseline` therefore size larger: a 50-unit
+  ratio pilot plans about 21% more variance, and a pilot of 50 control
+  clusters of 4 units plans 1.21 times its variance where it planned 1.09
+  times. Quantile baselines stay unbounded. A `QuantileBaseline` now saves
+  its pilot values in `pilot_values` (left out of the repr), and
+  `Baseline.model_validate` and `model_validate_json` restore a quantile
+  dump as a `QuantileBaseline` that plans as the original did; previously
+  the exported `Baseline` returned a plain baseline whose power differed
+  (0.7975 against 0.8004 in one plan). A quantile dump without pilot values,
+  such as one saved by an earlier release, and
+  `Baseline(..., metric_type="quantile")` refuse with
+  `power.quantile_baseline.pilot_values_missing` (context `metric_name`,
+  `n_values`, `route`); rebuild such a baseline with `planning_baseline`. A
+  saved pilot value that is not finite refuses on restore with
+  `estimation.quantile.values_contain_non`, as it does at construction.
+  `Baseline.from_summary` and `Baseline.from_ratio` are unchanged, so passing
+  a pilot's ratio moments to `from_ratio` still plans the unbounded variance.
+  Readout estimates and experiment identity are unchanged.
+- Release note (usability): refusals of hand-built summaries, moments rows and
+  dataframes now name the input mistake. `moments.summaries.invalid` carries a
+  `reason`, such as `unknown_field`, `not_integer`, `below_two` or
+  `missing_control_row`, and a `route`, plus `expected` (the accepted row
+  fields, metric types or declared metrics) where one exists.
+  `moments.plan.invalid` carries a `reason`: `metric_without_rows` for a
+  declared metric the rows do not carry, with the `available` metrics, and
+  `plan_missing_metric` when the rows carry the metric but their embedded plan
+  does not cover it. `estimation.binomial.exact_counts_required` names the
+  `declared_type`. `from_moments` refuses a pandas or Polars dataframe, or an
+  Arrow table or record batch, with `source.frame.input_type`, whose `route`
+  names the conversion to rows, such as `.to_pylist()`; it previously raised an
+  `AttributeError`. A dataframe that repeats a column name refuses with
+  `source.frame.duplicate_columns` (context `columns`) instead of a narwhals
+  `DuplicateError`. A metric whose value or denominator column is the unit,
+  group, date, exposure-date or cluster column refuses with
+  `frame.validation.metric_overlaps_column` (context `name`, `role`) before its
+  dtype is checked; a Boolean group column used as a metric previously reported
+  `source.frame.column_dtype`. On `from_switchback_frame` the same mistake
+  refuses with `source.frame.switchback.columns`, reason
+  `metric_overlaps_column`. Estimates and experiment identity hashes are
+  unchanged.
+- Release note (breaking API cutover): printing a `RunResult` shows a compact
+  readout instead of every stored field: the run id, the program verdict and
+  its reason codes, then one line per cell with its metric, arm, segment, day
+  and any coordinate that differs between the cells of its view, its effect and
+  interval at six significant digits, any retained confidence set the interval
+  does not show, with its geometry, and whether its estimate is available,
+  ending with where to read the full result. A run of several views lists each
+  view under its own heading, at most 20 cells per view.
+  `RunResult.to_frame(columns="summary")` returns each view's compact preset
+  with the scope columns and `view_partial`, and refuses with
+  `results.frame.summary_unavailable` when a view's collection has no preset.
+  The whole-window, breakout and daily lift `"summary"` presets, of
+  `RunResult.to_frame` and of `readout(view).to_frame`, gain a `population`
+  column: a population qualification, including skipped outcomes and
+  identification restrictions. A single column name passed as a string to any
+  `to_frame(columns=)` refuses with the new `results.frame.columns_string`
+  instead of `results.frame.unknown_columns` listing its letters; pass a list
+  such as `columns=["lift"]`. Results, saved cells and experiment identity
+  hashes are unchanged.
+- Release note (bug fix): a fact source whose SQL lacks a declared fact value
+  column or property column refuses with
+  `definition.fact_source.missing_columns` before any data is read, naming the
+  source and the declared column names; SQL the connection cannot resolve, such
+  as a misspelled table, refuses with `definition.fact_source.sql_unresolved`,
+  naming the source, with the backend error chained. Both previously raised an
+  uncoded backend error when the experiment ran. When an experiment's exposure,
+  metric, trigger, uptake and CUPED sources, and every source of a unit
+  property taken before exposure, mix timestamps with and without a time zone,
+  the ones with a time zone are converted to UTC when they
+  are read, so windows and pre-exposure property values compare instants in UTC
+  rather than in the connection's session time zone. Such experiments run under
+  a non-UTC session move to their UTC-correct values (a numerical
+  correction). A published uptake extension
+  reads an uptake timestamp without a time zone as UTC, as the exposure and
+  trigger timestamps beside it already were. Experiments whose sources share
+  one timestamp kind read their sources with the same SQL, and experiment
+  identity is unchanged.
+- Release note (breaking bug fix): a warehouse enrollment that matches nothing
+  names its cause. When the exposure rows carry `experiment_id` keys but none
+  equals the experiment's `name`, counting enrolled units and running refuse
+  with `source.native.experiment_key_unmatched` (context `experiment`,
+  `observed_keys`: up to five keys the rows carry) instead of returning empty
+  counts and then refusing with `readout.arms.no_treatment`. A SQL exposure
+  whose `experiment_id` is NULL on every row now enrolls every row, as a
+  fact-based exposure and a SQL exposure without the column already did. A
+  run whose enrollment counts no unit refuses with the new
+  `readout.arms.none_enrolled` (context `control_group`, `counts`), for
+  example `from_moments([])` or an exposure that selects no row, with or
+  without a declared allocation; `readout.arms.no_treatment` remains for an
+  enrollment with only the control arm, and its route now names
+  `increment.workflows.srm`. Enrolled arms without usable outcomes, under any
+  design, such as a lone all-NULL `missing="skip"` metric or a panel or
+  warehouse run whose every unit is censored, return unavailable rows with
+  `readout.cell.missing_metric_observations` instead of refusing, and an
+  encouragement run still estimates compliance; such a row names the control
+  arm in `unobserved_arm` when the control arm has no observations. A fact a
+  metric reads that has no loaded rows still scores every unit zero, and now
+  warns with `source.native.fact_no_rows` (context `fact`, `fact_source`,
+  `observed_events`: up to five event labels in that source). Estimates of runs
+  that previously succeeded and experiment identity are unchanged.
+- Release note (breaking bug fix): a warehouse fact declares one rule for a
+  NULL in its value column, `missing: error | skip | zero`, and every metric on
+  the fact follows it, counts, conversion and retention included. Previously a
+  `count`, conversion or retention metric counted a NULL-valued row that `sum`
+  and the averages dropped, so revenue per order as a purchase `sum` over a
+  purchase `count` (14.5 in one case) disagreed with the mean order value
+  (29.0). Under the default, `error`, a read whose rows hold a NULL value
+  refuses with the new `source.native.fact_null_values` (context `fact`,
+  `column`, `null_rows`): an enrolled unit's rows inside a metric window or
+  retention band, counted from its trigger in a triggered read, or its CUPED
+  window, whole-site volume rows, and the rows with a unit a `MetricTrends`
+  trend reads, even when the read returns no row; a row the read leaves out,
+  such as one after the date a pinned snapshot's feed is complete through,
+  never refuses. Publishing a unit-day artifact refuses the same way for the
+  rows it stores, its triggered rows included. SQL previews (`panel_sql`,
+  `summary_sql`) and a trend's `to_table()` and `sql()` refuse the same way:
+  before returning, each runs one read that counts the NULL values in the rows
+  its SQL reads. To migrate, fill the NULL values or declare the fact's
+  `missing`: `skip` leaves those rows out of every aggregation, `zero` reads
+  the value as 0 and keeps the row. Definitions without `missing` keep their
+  identity, and runs over facts without NULL values keep their estimates.
+- Release note (usability): importing `increment.dashboard` without the
+  `dashboard` extra refuses with `install.dashboard_extra_missing`, and
+  `increment.tables.readout_table` or `trend_table` without the `tables` extra
+  refuses with `install.tables_extra_missing`, instead of raising a bare
+  `ModuleNotFoundError`. As with `install.warehouse_extra_missing`, the
+  `feature` and `install` context fields name the requested feature and the
+  install command, such as `pip install "increment[dashboard]"`. All three
+  refusals are now also `ImportError`s, so `except ImportError` handlers catch
+  them; `install.warehouse_extra_missing` keeps its code and context.
+- Release note (usability): definition errors name the YAML file that holds
+  the bad item, including in a directory of definition files. Each
+  `definition.validation` error carries `file`, and its `field` gives the
+  item's position in that file with its name, for example
+  `metrics[0] (name 'converted')` rather than the merged-list `metrics.1`. A
+  `definition.invalid` refusal carries `items`, the `(kind, name)` declaration
+  behind each listed error, and, when loaded from YAML, `files`, the file that
+  declares it; the message names that file before each error. Refusal codes
+  are unchanged.
+- Release note (bug fix): power planning accepts a numpy integer wherever it
+  takes a size or count, such as a size read from a dataframe column, and plans
+  exactly as with the Python int it holds: `n_per_arm` in `achieved_power`,
+  `minimum_detectable_effect` and `power_curve` (which also takes a
+  one-dimensional array such as `np.arange(1000, 3001, 1000)`), `planned_looks`,
+  the switchback `n`, and the unit-cycle `n`, `max_n`, `repetitions`, `seed` and
+  `batch_size`. Floats, integral ones such as `5000.0` included, and bools are
+  still refused with the same codes, and a `power_curve` `n_per_arm` array with
+  more than one dimension refuses with `power.scalar_numeric_sequence`. A
+  conversion or retention rate is now judged on the baseline and lift as
+  written, each number read as its shortest decimal, so an alternative at a
+  rate of exactly one, such as a lift of 0.25 on a baseline of 0.8, is planned;
+  it used to be refused with `power.bounded_metric.rate_above_one` whenever
+  rounding put its logarithm just above zero. Any rate above one as written is
+  refused, even one as close as the next float lift above 1.0 on a baseline of
+  0.5, and the refusal prints the implied rate in full. `minimum_detectable_effect`
+  and `power_curve` judge their candidate effects by the same rule, so a target
+  that the rate-one effect reaches is no longer reported unattainable, and no
+  returned effect implies a rate above one as written. A shifted null above
+  one as written is refused too, and so, as before, is a null whose computed
+  logarithm rounds above zero. Other results and experiment identity hashes are
+  unchanged.
+- Release note (breaking API cutover): `increment.estimators.validate_cate`,
+  `targeting_rule` and `select_targeting_rule` default `control` to the
+  experiment's declared control arm, as `estimate_cate` does; omitting it
+  previously raised `TypeError`. Results, report identity and cell identity
+  are the same whether the declared control is passed or omitted. On a
+  dataframe experiment all four operations refuse a covariate that is a column
+  the metric's value reads (its `value_column`, or a ratio's numerator and
+  denominator) with `cate.covariate.is_outcome` (context `caller`, `metric`
+  and `covariate`) before any data is read; previously such a fit returned an
+  effect of about zero with a near-zero standard error. Migrate by removing the
+  outcome from `interact` and `adjust`.
+  Other estimates, experiment JSON and identity hashes are unchanged.
+- Release note (usability): reading a public submodule such as
+  `increment.workflows` from the package before importing it raises an
+  `AttributeError` that names the import, `from increment.workflows import ...`;
+  the submodule is not imported for you. Guides and examples call top-level
+  names as `increment.<name>` after `import increment`, import submodule names
+  with `from increment.<submodule> import ...`, and name a builder's pair
+  `experiment, reader`.
+- Release note (bug fix): a `from_frame` reader keeps the rows its dataframe
+  held when the builder ran. Previously a quantile or other raw-row read of a
+  summary, or a CUPED covariate of a panel, could read a Polars dataframe
+  changed in place after the build, such as with `replace_column`. A Polars
+  dataframe is cloned without copying its columns, an Arrow table is kept as
+  is, a pandas 3 dataframe is shallow-copied under copy-on-write, and other
+  pandas-like dataframes are copied. Estimates from unchanged dataframes and
+  experiment identity hashes are unchanged.
+- Release note (bug fix): a `missing="skip"` metric's breakout and daily lift
+  rows now state that they cover only the units with a value, as its
+  whole-window rows do, in a new optional `population` field on
+  `BreakoutEstimate` and `DailyLiftEstimate` (as-of lift rows included) that
+  reaches `to_frame()`, the rendered row, saved cells and pickles. No source
+  records a segment's or a day's enrolled units, so the label reads
+  `observed-only population; counts not recorded per segment` (or `per day`);
+  the row's `n_control` and `n_treat` are its observed units. Rows of other
+  metrics keep `population=None` and an unchanged saved payload; estimates,
+  source snapshots and experiment identity are unchanged.
+- Release note (bug fix): a fixed-horizon BH breakout no longer refuses with
+  `family.evidence.incomplete` because one segment is sparse. A cell with an
+  arm missing, or with fewer than two units in an arm under a method that
+  estimates its variance (exact-binomial conversion and retention cells stay
+  eligible at one unit), comes back as an
+  unavailable row with its reason, outside the family; when every segment is
+  excluded this way, every row is unavailable and the view has no family.
+  Cells excluded for an outcome reason (zero variance, a non-positive mean, an
+  extreme ratio, no usable observations) stay in the family as non-rejections,
+  and breakout rows in a BH family now record its size in `family_size`. A
+  segment with a control row but no treatment row is labelled
+  `no_treatment_arm` instead of `no_control_arm`, and a comparison whose
+  control was dropped for a non-positive mean carries `nonpositive_mean` on
+  breakout, daily and as-of rows instead of `no_control_arm`; so
+  `select_exploratory_family` counts it in `family_size`,
+  `segment_heterogeneity` withholds `tau2` and `i2` for its metric, and
+  `segment_rollout_recommendation` counts it among outcome exclusions, as an
+  outcome-based exclusion requires. `family.evidence.incomplete` is now a
+  registered refusal for cells that fail for any other reason; its context
+  always holds `failed`, `missing` and `invalid`. Decisions rebuilt from a
+  run's cells (`result.decisions`, `RunResult.from_handle`) now select such a
+  breakout family as its rows do, instead of leaving every member undecided,
+  and each outcome-excluded member's verdict lists its own reason. A relabelled
+  cell changes its readout's snapshot ID once; runs saved earlier still reopen.
+  Experiment identity hashes and published estimates are unchanged.
+- Release note (bug fix): the program verdict no longer passes a primary that
+  is significant on its adverse side. `result.decisions.program` blocks with
+  `decision.primary.adverse` when a primary rejects on the side opposite its
+  declared `preferred_direction`, and with
+  `decision.primary.direction_not_established` when its confidence set lies on
+  both sides of the null. Under a two-sided plan, a rejecting primary that
+  declares no direction reports `not_evaluated` with
+  `decision.primary.direction_unspecified`; a one-sided `alternative` names the
+  favorable side of such a primary. A one-sided plan whose `alternative` is the
+  adverse side of a primary's declared direction refuses before any data is
+  read with `plan.primary.alternative_direction`, naming `metric`,
+  `alternative` and `preferred_direction`. Each `Verdict` gains `direction`
+  (`favorable`, `adverse`, `not_established`, `unspecified`, or `None` when the
+  cell does not reject), result rows gain `rejection_side()`, and sequential
+  rows now carry the metric's `preferred_direction`; see
+  [Program verdict](result-fields.md#program-verdict). Estimates,
+  intervals, p-values and `stat_sig()` are unchanged. The decision plan bound
+  to a run now records each metric's favorable side, so an experiment that
+  declares a direction or uses a one-sided plan changes its `to_json()`,
+  `hash()`, `analysis_spec_hash`, registration hash and the cell identities of
+  its runs once, and its runs bind a version-2 plan that an earlier release
+  cannot read. Its rows keep their `source_snapshot_id`, and its exported
+  moments cube records the favorable sides in its plan. Other experiments keep
+  their identity and bind version 1. Such an experiment saved earlier no longer
+  runs against a resolver built by this release
+  (`kernel.run.execution_unavailable`, field `registration`); build it again.
+  A run saved earlier still reopens, and deciding it again reads
+  `decision.primary.direction_unspecified` for a rejecting primary, as does
+  `from_moments` on a cube exported by an earlier release.
+- Release note (breaking bug fix): a `from_frame(shape="panel")` or
+  `increment.frame.from_unit_panel` panel without `exposure_date=` no longer
+  guesses when each unit's days start. Its daily and as-of views, including
+  daily and as-of breakouts, treated every unit as exposed on the panel's first
+  date, so a treatment arm with late enrollees read low: on a panel whose true
+  lift is about +12%, a third of the treatment units enrolling three days late
+  gave about −25% on the first day. These views now refuse before any read,
+  alike in `runnable()` and `run()`, with `evidence.grain_unavailable`,
+  `offered=("total",)` and a `route` naming `exposure_date`. An encouragement
+  uptake window (`UptakeSpec(window_days=...)`) counted from each unit's first
+  row and now refuses at construction with `source.panel.exposure_date`; as-of
+  compliance refuses with `evidence.operation_unavailable`. Whole-window results
+  of unwindowed metrics, unbounded uptake and whole-window compliance are
+  unchanged. To migrate, pass `exposure_date=<column>` naming each unit's
+  exposure date; if every unit was exposed on the same day, add a column holding
+  that date. Free-form day labels such as `"2025-9"` also need an orderable day
+  axis (ISO dates such as `"2025-09-01"` or midnight timestamps such as
+  `"2025-09-01T00:00:00"`), so declaring `exposure_date` alone is not enough for
+  them. Daily compliance rows now carry the same `datetime.date` as daily outcome
+  rows, so a daily readout of `estimands=("itt", "compliance")` on string or
+  timestamp day labels no longer fails; as-of rows keep the panel's own labels.
+  Panels that declare `exposure_date` keep their numbers, `to_json()`
+  and `hash()`. A panel without it now declares only the total grain, so its
+  `to_json()` and `hash()` change once: the source capabilities record
+  `grains=["total"]`, `compliance_axis="total"` and the new `grain_route`. An
+  experiment saved before this release refuses a freshly built reader with
+  `kernel.provider.capability_mismatch`; rebuild it with
+  `from_frame(shape="panel", ...)` and save it again. `EvidenceCapabilities`
+  gains an optional `grain_route`, a source's route to an undeclared day axis,
+  left out of saved JSON when unset.
+- Release note (feature): the covariate-imputation warning
+  `frame.validation.metric_covariate_missing_imputed` also reports, for each
+  group, how many units have no covariate value and how many units it has:
+  its context gains `n_missing_by_arm` and `n_units_by_arm`, keyed by group
+  like `frame.validation.metric_missing_differs_by_arm`. A panel unit counts
+  once however many days it has; `n_missing` still counts missing values. The
+  counts are descriptive and add no check. The code, estimates, and experiment
+  `to_json()` and `hash()` are unchanged.
+- Release note (feature): a mixed-covariate CUPED cell
+  (`Method.cuped_multicovariate`) whose encoded covariate means differ between
+  its two groups (Hotelling's $T^2$ in F form on the two groups' pooled
+  within-group covariance, nominal p < 0.001) carries the advisory
+  `estimation.cuped.covariate_imbalance`, and the run emits a runtime warning
+  with the same code. Its context reports `statistic_kind="hotelling"`, the
+  `covariates` tested, the F `statistic`, `numerator_dof`, `denominator_dof`
+  and `p_value`. Fitted `fitted_multicovariate` evidence now retains each
+  group's within-group covariate scatter (`within_arm_scatter`); evidence
+  exported before carries none, still reads, and is not checked. Estimates,
+  intervals and decisions are unchanged, and experiment `to_json()` and
+  `hash()` are unchanged.
+- Release note (breaking): an encouragement LATE cell suppressed because
+  encouragement lowered uptake (a first-stage z at or below minus
+  `min_first_stage_z`) now fails with
+  `estimation.encouragement.late.negative_first_stage`;
+  `estimation.encouragement.late.weak_first_stage` keeps the first stages
+  between. Both failures' context reports the outcome cohort's
+  `first_stage_estimate`, `first_stage_se`, `first_stage_z` and
+  `min_first_stage_z` beside `metric` and `group_id`; a first stage without
+  sampling variance reports `first_stage_z=None` with
+  `first_stage_z_reason="first_stage_without_sampling_variance"`, where such a
+  cell used to fail the readout. In `run()`, every
+  requested method's LATE cell carries the failure, and a failure from an
+  outcome metric's estimation also names the `method` it belongs to. A
+  suppressed LATE no longer adds a compliance row keyed to the outcome metric,
+  so the number of `estimand == "compliance"` rows no longer depends on the
+  data: read the cohort's first stage from the LATE failure instead. The same
+  holds in breakout, daily and as-of views, where a `late`-only request no
+  longer returns an unrequested compliance row; there each requested method's
+  suppressed LATE cell is an unavailable row (`lift=None`) carrying the same
+  failure code and context, with `method`. The relative LATE row carries
+  its log-scale reference, so `p_value()` returns the p-value that matches its
+  interval instead of refusing with
+  `estimation.results.lift.p_value_missing_log_mean_or_se`, and the cell's
+  sampling evidence in the readout metadata reports that p-value; a relative
+  LATE whose complier means have no sampling variance is withheld with a note
+  on the additive row. LATE estimates and intervals are unchanged, the relative
+  LATE stays out of decision evidence, and experiment `to_json()` and `hash()`
+  are unchanged.
+- Release note (feature): a fixed-horizon scalar CUPED cell whose covariate
+  means differ between groups (a two-sided Welch t test on the covariate as
+  adjusted, nominal p < 0.001, the automatic sample-ratio check's threshold)
+  carries the advisory `estimation.cuped.covariate_imbalance`, and the run emits
+  a runtime warning with the same code. Its context reports each group's
+  covariate mean, the `difference` with its `standard_error`, `statistic`
+  (null past the float range, with `statistic_unavailable_reason`), `dof`
+  and `p_value`, the fitted `theta` (`theta_numerator` and `theta_denominator`
+  for a ratio metric), the `constant_arms`, and for a mean metric
+  `adjustment_shift`, how far the adjustment moved the absolute difference (not
+  the relative lift): the unadjusted difference minus the adjusted one, `theta`
+  times the covariate `difference`. A CUPED-adjusted LATE reports
+  `itt_adjustment_shift`, that move on the ITT difference, and
+  `late_adjustment_shift`, the unadjusted LATE minus the adjusted LATE, instead.
+  Breakout segments and daily cells are each tested on their own data.
+  An asymptotic sequential `adjusted_mean` or `adjusted_ratio_mean` cell carries
+  the same advisory at a look where its squared covariate difference exceeds its
+  variance times the count-clock boundary the cell's intervals use, at nominal
+  level 0.001; like those intervals the boundary is asymptotic, so early looks
+  can flag more often (about 0.0055 at a first look of two units per group with
+  normally distributed covariates, `rho = 0.1` and `start_count = 2`). Its
+  context also reports that `boundary` in standard errors and the look's unit
+  `count`. A look without inference for the cell, such as one before
+  `start_count`, is not checked, and a predeclared pre-period adjustment
+  retains no covariate to check.
+  Estimates, intervals, sequential evidence and decisions are unchanged, and the
+  advisory never withholds a result. Breakout, daily, as-of and sequential cells
+  now carry every advisory their own estimate produced, for example a segment's
+  own mixed-covariate CUPED fit advisory; before, they carried only the two
+  ratio-denominator advisories, rebuilt from row notes. Those keep their codes
+  and messages, and their context now carries `threshold` (plus, for
+  `estimation.engine.ratio_denominator_precision`, `relative_standard_errors`,
+  null past the float range with its reason in
+  `relative_standard_error_unavailable_reasons`) in place of the row's `note`
+  text. Each advisory stays with the method that
+  produced it on run, breakout, daily, as-of and encouragement cells: a
+  covariate-balance advisory reaches only the CUPED method's cells, also where
+  an unadjusted method is estimated beside it for the same day, a method whose
+  cell fails keeps its advisory on that unavailable cell, and no other method's
+  cell receives it. The covariate-imputation warning
+  `frame.validation.metric_covariate_missing_imputed` now states when the fill
+  it applied keeps the adjusted estimate unbiased, separately for a zero fill
+  and a mean fill; its code and context are unchanged. Experiment `to_json()`,
+  `hash()` and `analysis_spec_hash` are unchanged.
+- Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
+  spelled `missing="skip"`, with the same computation: the metric uses only the
+  units with a value, and those units stay in every other metric. Estimates are
+  unchanged. `missing="drop"` refuses with `frame.metric.missing_drop_renamed`,
+  whose `route` names `missing='skip'`; the panel refusal
+  `frame.missing_policy.panel_drop` is retired to
+  `frame.missing_policy.panel_skip`. A skip metric's whole-window rows state in
+  `LiftEstimate.population` how many units each group observed, for example
+  `observed score only (control 150 of 200 units, treatment 100 of 200 units)`;
+  the label reaches `RunResult.to_frame()` and the rendered row, and a row that
+  already carries an observational population restriction keeps both, the skip
+  label first, joined by `"; "`. A `from_moments` experiment records no unit
+  counts, so its rows say the counts were not recorded. When the share of
+  missing values differs between groups (Pearson chi-square, p < 0.001), the
+  warning `frame.validation.metric_missing_differs_by_arm` reports each group's
+  `n_missing` and `n_units` and the `p_value`; the check counts units, so it is
+  not run when `cluster=` is declared or when an expected count is below 5. The
+  per-metric warning
+  `frame.validation.metric_missing_drop` is removed without replacement. When
+  every value in one group is missing, the metric's comparisons with that group
+  are unavailable with `readout.cell.missing_metric_observations` while other
+  metrics still estimate, and in a multiplicity family such a comparison counts
+  as a non-rejection, so the family keeps its size on both the whole-window and
+  the breakout readout. Under `"drop"`, missing control values aborted the run
+  and missing treatment values shrank the family. An experiment loaded with
+  `from_moments` records no unit counts, so a moments input with no row for a
+  secondary's treatment group drops that comparison from the family, and one
+  with no control row refuses: `estimation.engine.control_group_found` on the
+  whole window, `family.evidence.incomplete` for a secondary family.
+  Experiments that declared `missing="drop"` now declare `"skip"`, so their
+  `to_json()`, `hash()` and `analysis_spec_hash` change once, and a
+  `from_moments` experiment declaring `"skip"` also records the policy in its
+  source declaration. Experiments with any other policy keep their identity.
+- Release note (bug fix): an `ExperimentDefinition` prints as
+  `ExperimentDefinition(...)`, the name it is imported under, instead of
+  `Experiment(...)`, the name of the execution specification. Its fields, saved
+  JSON and identity hashes are unchanged.
+- Release note (feature): an `Experiment` now pickles and deep-copies, keeping
+  its scopes, source references and implementation references typed. An
+  in-memory-only experiment that declares a raw learner factory copies too when
+  the factory itself pickles, such as a module-level function or class.
+  `hash(experiment)` now works and agrees with `==`, so equal experiments are
+  one dictionary key; it is not `experiment.hash()`, the portable identity,
+  which can tell apart declarations that compare equal, such as `Fraction(1, 2)`
+  and `0.5`. Readers still do not pickle. `to_json()`, `hash()` and
+  `analysis_spec_hash` are unchanged.
+- Release note (bug fix): an experiment's `hash()` and `analysis_spec_hash`, and
+  the identities of its runs, no longer include the column types recorded for
+  its sources. A connected and an offline `from_definitions` experiment now
+  keep one identity before and after the first run records those types;
+  `to_json()` still saves them and `Experiment.provides()` lists the recorded columns.
+  Identities of definitions-built experiments, and of experiments declared with
+  `SourceReference(schema=...)`, change once, and so do the cell identities of
+  their new runs, because a cell's identity includes its run's
+  `analysis_spec_hash`. Runs saved earlier still reopen from their saved
+  `store.open_run` coordinates with `RunResult.from_handle`. Dataframe, moments,
+  switchback and artifact experiments record no column types, so their
+  identities are unchanged.
+- Release note (bug fix): after the definitions behind a `from_definitions`
+  reader change, `run(experiment, reader)` and every function that reads
+  data through that reader refuse with `kernel.definitions.catalog_stale`
+  before reading anything, instead of reading the data and then refusing.
+  Comment and whitespace edits no longer count as changes. The offline catalog
+  format moves to schema 2; a schema-1 catalog refuses offline with
+  `kernel.definitions.catalog_stale`, and rebinding the definitions with a
+  connection rebuilds it. Experiment identity hashes are unchanged.
+- Release note (bug fix): an exact binomial conversion or retention row reports
+  its arm unit counts and observed rates in `n_control`, `n_treat`,
+  `mean_control` and `mean_treat`, as other unclustered conversion rows do.
+  Estimates, intervals and p-values are unchanged. Because those rows now carry
+  arm counts, the snapshot and family IDs of daily and as-of lift readouts that
+  contain them change once; runs saved before the change still reopen.
+- Release note (breaking API cutover): every builder returns an
+  `increment.ExperimentReader` with the experiment, including an offline
+  `from_definitions(path)`, whose object previously had a default repr and no
+  `with` support. Its public members are `experiment`, `closed` and `close()`,
+  and it is a context manager; the `binding`, `resolve`, `verify`,
+  `validate_experiment`, `run_experiment` and `catalog_writer` attributes are
+  private. A closed reader stays closed: after `close()` or a `with` block, `run`
+  and every function that reads data refuse with `kernel.run.reader_closed`
+  (context `experiment_id`) instead of reopening the source; build a new reader
+  to read again. An offline reader refuses every read with
+  `kernel.run.reader_offline`. `run` and the data-reading functions refuse
+  anything but a reader, such as `None`, swapped arguments, a `BoundResolver` or
+  another object with `resolve` and `verify` methods, with
+  `kernel.run.reader_required`, whose `received` context names the type passed.
+  `increment.errors.RETIRED_CODES` maps the retired `kernel.run.resolver_missing`
+  to `kernel.run.reader_required` and `kernel.run.reader_offline`, and
+  `kernel.run.provider_execution_unavailable` to `kernel.run.reader_required`.
+  `repr(reader)` reads `ExperimentReader(experiment_id=..., reads=...,
+  closed=...)`, where `reads` is `"dataframe snapshot"`, `"warehouse, read live"`,
+  `"artifact"`, `"moments file"` or `"offline: cannot read"`. Results and
+  experiment identity hashes are unchanged.
+- Release note (breaking API cutover): `run` and every function that reads data
+  name their second parameter `reader`, the `ExperimentReader` a builder
+  returns, instead of `resolver`; positional calls are unchanged, and refusal
+  and health-check routes that name a call, such as `run(experiment, reader)`,
+  use the new name. Because a health report's `source_snapshot_id` covers its
+  checks, a report whose allocation check carries that route gets a new ID once.
+  `Resolver` and `BoundResolver` move from the package root to
+  `increment.evidence` under the same names. The four `kernel.resolver.*`
+  codes, which readers and `BoundResolver` raise for the same hazards, become
+  `kernel.provider.digest_mismatch`, `kernel.provider.capability_mismatch`,
+  `kernel.provider.mismatch` (was `kernel.resolver.provider_mismatch`) and
+  `kernel.provider.capabilities_missing`; `increment.errors.RETIRED_CODES` maps
+  each retired code to its replacement. `kernel.provider.digest_mismatch` now
+  carries one context from every source, `source_refs` (the names of the
+  source references that did not verify); the recorded and provider digests,
+  previously the `source_ref`, `expected` and `actual` keys, are in its message.
+  The other three codes keep their context keys.
+  When the experiment passed with a reader is not the one the reader was built
+  for, `kernel.run.execution_unavailable` now names the first differing
+  declaration in `field` (`experiment_id`, `design`, `registration`,
+  `analysis_context` or `metrics`, previously `declarations`) and the reader's
+  experiment in a new `reader_experiment_id` context key. Results and
+  experiment identity hashes are unchanged.
+- Release note (breaking API cutover): `Scope` is renamed `View` and its
+  overall constructor `Scope.run()` is now `View.overall()`; `View.daily`,
+  `View.asof`, `View.breakout` and `View.switchback` and every constructor
+  keyword are unchanged. `Experiment.scopes` is now `Experiment.views`, also as
+  the `Experiment(...)` keyword, and `RunResult.readout(scope)` is now
+  `readout(view)`; positional calls are unchanged. `Experiment.with_views(*views)`
+  now adds views after the declared ones instead of replacing them:
+  `experiment.with_views(View.daily())` declares the builder's overall view and
+  the daily view, and `run` returns both. Pass `views=` to `run` to execute a
+  subset. An empty call, or a view already declared, refuses with
+  `kernel.request.invalid`, so omit the builder's `View.overall()` from the
+  views you add. Refusal routes that named a `Scope(...)` construction, such as
+  the `route` of a day-axis refusal, now name the `View` constructor, such as
+  `View.asof()`. Saved experiment JSON keeps its `"scopes"` key, and every view
+  hash, the identity of an experiment whose views did not change, and the
+  `RunResult.to_frame()` columns `scope_view`, `scope_values` and `scope_key`
+  are unchanged; an experiment that used `with_views` to replace the builder's
+  view now also declares that view, so its hash changes.
+
+- Release note (typing): public signatures and fields no longer use `Any`;
+  `make lint` now refuses any new `Any` in a promised name. Results, refusal
+  codes, saved formats and identity hashes are unchanged; a recorded `source_name`
+  that is not a string now raises `TypeError`. Type checkers now see the precise
+  types, so custom providers and callers may need to
+  narrow values they previously treated as `Any`: moment and breakout row cells
+  are typed scalars, `UnitRows` is a dataframe, `MethodFitAnswer.envelope` is a
+  protocol with `fit`, `arm_order` and `withheld`, saved payloads are JSON
+  values, and `EvidenceExecutionContext.open()`/`borrow()` return the evidence
+  source a scope yields. `RunResult.run` exposes `analysis_spec_hash`.
+
+- Release note (bug fix): `Experiment.from_json` now refuses unknown design
+  mechanisms with `design.mechanism_unsupported` before accepting the saved
+  declaration.
+
+- Release note (breaking API cutover): the public manifest now covers every
+  promised namespace, including `errors`, `tables`, `store`, `simulate`, and
+  the three `query` workflows. The following names leave the import promise;
+  their defining modules continue to serve library internals. No refusal
+  codes, structured context keys, validation order, saved formats, or identity
+  hashes change.
+
+    | Namespace | Names no longer promised | Criterion and supported route |
+    | --- | --- | --- |
+    | `increment.estimators` | `ESTIMATORS`, `estimator_id`, `load`, `observational_estimator_id`, `randomized_estimator_id`, `routes`, `resolve` | Registry and dispatch plumbing; use `runnable` for offline preflight and `Method` for method selection. |
+    | `increment.estimators` | `refuse`, `warn`, `WarningSpec` | Refusal/warning emission plumbing; catch `CodedError` or filter `IncrementWarning` instead. Custom providers may return `RefusalSpec` with their breakout rows. |
+    | `increment.artifacts` | `compile_unit_day_artifact_context` | Context-compilation plumbing; use `artifact_context(experiment, reader)`. |
+    | `increment.evidence` | `BreakoutRoute`, `BreakoutSlice`, `BreakoutSlices`, `BreakoutSlicesRequest`, `BreakoutUnitRows`, `BreakoutUnitRowsRequest`, `DayAxisRequest`, `DayAxisRoute`, `DayAxisRows`, `MetricEvidence`, `MetricEvidenceRequest`, `PreparedMulticovariateFit`, `EvidenceSource`, `warehouse_cuped_fit_evidence` | Compound-request and acquisition plumbing; custom providers implement the primitive `EvidenceProvider` requests. |
+    | `increment.errors` | `CodedValidationMixin`, `MODEL_FIELD_REFUSALS`, `PACKAGE_FRAMES`, `WarningSpec`, `raiser`, `refusals`, `refuse`, `warn`, `unwrap_coded_serialization` | Model-validation, registry, and emission plumbing; use catchable errors and warnings, `CodedModel`, and `unwrap_coded`. |
+
+- Release note (API addition): import priors, fixed inference, dataframe
+  sequential-registration helpers, and exploratory-family operations from
+  `increment.estimators`; saved readout decoders, `AnalysisEnvelope`, and `ResultCell` from
+  `increment.results`; `WarehouseArtifactStore` from `increment.artifacts`;
+  planning-procedure field types from `increment.power`; and `ComplianceArm`
+  from `increment.evidence`. `ExperimentDefinition` at the root names the
+  semantic declaration separately from the execution `Experiment`.
+  These are re-exports of the existing objects, not new statistical behavior.
+
+- Release note (breaking API cutover): specialist names are no longer exported
+  from the package root. Import artifact, digest, estimator, and evidence names
+  from `increment.artifacts`, `increment.digest`, `increment.estimators`, and
+  `increment.evidence` respectively. Source-loading estimation facades remain
+  available without deprecation warnings; data-only estimation kernels do not
+  load sources.
+- Release note (breaking API cutover): artifact declarations are no longer
+  re-exported by `increment.semantics.models`. Use `increment.artifacts` for
+  documented artifact workflows. Schema definitions remain in
+  `increment.semantics.artifact`; that defining module is not a promised import
+  surface. Artifact formats and class identities are unchanged.
+- Release note (bug fix): portable cell summaries follow the row's requested
+  effect scale and retain an available relative lift when an additive sidecar
+  cannot be projected. A different-scale fallback is labeled explicitly.
+- Release note (bug fix): re-issuing a row beyond its registered plan or selected
+  family alpha refuses with `results.operation.alpha_above_allocation`; register
+  the new alpha in the analysis plan and rerun instead.
+- Release note (API addition): `Experiment` and `SourceReference` describe a registered
+  analysis and its recorded evidence declarations; `runnable()` reports offline
+  unknowns and deferred data checks. Module builders `from_frame`,
+  `from_definitions`, `from_unit_day_artifact`, `from_switchback_frame`, and
+  `from_moments` return an experiment/reader pair, and top-level
+  `run(experiment, reader)` returns `RunResult`. See the
+  [experiment specification guide](../guides/experiment-specifications.md).
+- Release note (breaking API cutover): the `Analysis` class, its
+  `increment.Analysis` export and the `increment.analysis` module are removed
+  without an alias. Build an experiment and reader with a module builder and
+  read results with `run(experiment, reader)`; source operations moved to
+  `increment.workflows`, `increment.query`, `increment.artifacts`,
+  `increment.estimators` and `increment.dashboard`. The narrow builder aliases
+  `increment.builders.from_unit_summary` and `from_unit_panel`, the
+  experiment-name-first `from_definitions(experiment_name, definitions_path,
+  con)` form, the `run(analysis, registration, compiled_plan, ...)` overload and
+  `increment.readouts.run_scoped` are removed too. Results, refusal codes and
+  context keys are unchanged. Context values that named an `Analysis` member
+  (`route`, `constructor`, `reason`) now name the replacement builder, `run`
+  view or workflow function, and refusal messages name the replacement call.
+  No refusal code is retired with `Analysis`, so `increment.errors.RETIRED_CODES`
+  is unchanged.
+  `repr(experiment)` is one bounded line naming the experiment, its design,
+  metrics, view count and identity prefix; `repr(reader)` names its source
+  and whether it is closed without reopening it. See
+  [Migrating from `Analysis`](../api.md#migrating-from-analysis) for every replacement.
+- Release note (breaking API cutover): `ResultsStore.persist_results`,
+  `ParquetResultsStore.persist_results`, `WarehouseResultsStore.persist_results`
+  and the `increment.store.producer` module with its `PersistenceIdentity` are
+  removed without an alias; save a run with
+  `run(experiment, reader, results_store=store)`. The saved run
+  and cell identities are on `RunResult.run` and `RunResult.cells` rather than
+  on the returned rows. A compliance-only selection made with a call-time
+  `estimands=("compliance",)` cannot be saved, and a live percentile-winsorized
+  confidence set refuses to save with `wire.result.raw_outcomes_unavailable`
+  before any read. Readout JSON written with persisted cells stays readable.
+  `dashboard.prepare_dashboard` replaces the dashboard capture members; a
+  dataframe or moments experiment refuses with `dashboard.unsupported_experiment`.
+- Release note (breaking API cutover): the module-builder reader no longer
+  has a `capture_sequential` method. Call
+  `increment.workflows.capture_sequential(experiment, reader, ...)`, and read
+  the retained checkpoint with `increment.workflows.sequential_snapshot`.
+- Release note (breaking API cutover): `increment.estimators.estimate_cate`,
+  `validate_cate`, `targeting_rule`, and `select_targeting_rule` take the
+  `(experiment, reader)` pair returned by a builder such as `from_frame` or
+  `from_definitions` instead of a source. Their remaining parameters, defaults,
+  results, and refusal codes are unchanged; `estimate_cate`'s `control` defaults
+  to the declared control arm, and a declared trigger restricts every operation
+  to triggered units.
+- Release note (breaking API cutover): `increment.workflows.planning_baseline(experiment, reader, metric)`
+  and `increment.estimators.sitewide(experiment, reader, metric, *, arm=None, alpha=0.05, population="assigned")`
+  replace `Analysis.planning_baseline` and `Analysis.sitewide`. Results,
+  trigger/CUPED/cluster/quantile/compliance handling, switchback baselines,
+  calendar-window site volume, randomized-only restrictions, and refusal codes
+  are unchanged. `increment.power` gains no source-reading function.
+- Release note (breaking API cutover): `run(experiment, reader, ...)` no
+  longer accepts `analysis_options`. Pass the same readout options as keywords:
+  `decision_method`, `sensitivity_methods`, `prior`, `metrics`, `estimands`,
+  `value_scale`, `exploratory_metrics`, `population` and `coherence`; only the
+  options you pass apply, so `prior=None` still differs from an omitted prior.
+  Pass a sequential capture as `capture=SequentialCaptureRequest(...)` and an
+  open shared evidence capture as `execution_context=`. The `store` option is
+  not accepted. A `population` that differs from a selected scope refuses with
+  `kernel.request.population_scope_only`; declare it on `Scope(population=...)`.
+- Release note (API addition): `run(experiment, reader, ...)` saves and logs
+  runs. `results_store=`, `decision_log=` and `run_id=` are checked against the
+  experiment's registration before any data is read, and a refused run writes
+  nothing; an ID is generated when `run_id` is omitted.
+  `RunResult.from_handle(handle, registration=...)` decides a saved run again
+  and refuses a registration the run was not saved under.
+- Release note (API addition): `RunResult` is read directly. `result.readout(scope)`
+  returns the full typed collection one executed view produced, including live
+  confidence sets; omit `scope` only for a one-view run. It refuses with
+  `results.readout.scope_required` when several views ran,
+  `results.readout.scope_unknown` for a view the run did not execute, and
+  `results.readout.not_retained` on a result restored by `RunResult.from_handle`
+  or a pickle. `result.metadata`, `result.envelope` and
+  `result.to_frame(backend=..., columns=...)` read the run's metadata, portable
+  envelope and one qualified frame of every row; `readout_table` accepts a
+  `RunResult`. Every `result.to_frame()` row leads with `scope_view` (string)
+  and `scope_values` (nullable boolean), the `view` and `values` of the scope
+  that produced it, and `scope_key` (string), which identifies the view a row
+  came from: `Scope.hash()` of the row's scope without its day, segment and
+  population. Rows of several views stay distinct in live, stored and pickled
+  results, and a `columns` selection keeps all three. Write full-row JSON with
+  `result.readout(scope).model_dump_json()` and portable cells with
+  `result.envelope.to_payload()` or `.to_arrow()`; constructing
+  `AnalysisEnvelope(result.cells, result.run.metadata)` is no longer needed.
+- Release note (bug fix): `DecisionLog.replay` accepts the logged decisions of a
+  Bonferroni breakout family instead of refusing them with
+  `store.decision.reference_invalid`. Existing decision logs replay unchanged.
+- Release note (bug fix): a breakout read under a registered sequential plan
+  refuses with `sequential.route.unsupported` when the declared or selected
+  breakouts include a property other than the registered segment, instead of
+  returning only the registered segment's rows.
+- Release note (bug fix): a one-view `run(..., capture=SequentialCaptureRequest(...))`
+  takes the capture inside the run's own shared evidence capture, as a
+  several-view run does, so a registered sequential breakout read reports the
+  run's `coherence` and `effective_modes` in its metadata.
+- Release note: compliance-only as-of and daily views run through `run`
+  request no outcome metrics, so their `source_snapshot_id` differs from the
+  removed `Analysis.run_asof_lift(estimands=("compliance",))`; the estimates
+  are unchanged.
+- Release note (bug fix): a breakout view of an experiment that declares no
+  breakouts returns no rows when it runs beside other views, as it does alone,
+  instead of refusing a metric that only a breakout read could not serve.
+- Release note (API addition): `run(..., results_store=)` saves switchback
+  contrast runs, replacing `Analysis.run(store=)`. A saved switchback run keeps
+  its cells, metadata and method identities for `store.query` and
+  `store.history`, but no decision plan: `RunResult.from_handle` refuses it
+  with `store.decision.reference_invalid`, and `decision_log=` refuses with
+  `wire.procedure.contrast_context`. Runs saved by `Analysis.run(store=)`
+  remain readable, except one holding a prospectively bounded contrast
+  (`estimation.contrast.legacy_envelope`); history does not join them with
+  new runs, because the registration, scope and method identities differ.
+- Release note (bug fix): an experiment saved with `to_json` keeps the view
+  parameters it declared, so its hash does not change with a private executor
+  parameter and it runs against a new reader. A `coherence` saved in an
+  experiment's request options applies to every selected view, and a
+  `coherence` passed to `run` replaces the saved one in either direction.
+- Release note (breaking packaging change): Ibis and SQLGlot are optional.
+  Install `increment` for dataframe and moments builders; they do not import
+  either package. For `from_definitions`, `from_unit_day_artifact`, SQL previews,
+  artifact publication, metric trends, and warehouse-only workflows, install
+  `pip install "increment[warehouse]"` plus your Ibis backend driver, such as
+  `"ibis-framework[snowflake]"`. The `demo` extra includes warehouse support
+  and DuckDB. Without warehouse support, those entry points and direct imports
+  from `increment.query.session` or `increment.query.artifact_digest` refuse with
+  `install.warehouse_extra_missing`; its `feature` and `install` context fields
+  identify the requested feature or module and the install command.
+- Compatibility policy is the same across methods; guarantees and evidence
+  differ. See [Evidence status](../validation.md#evidence-status).

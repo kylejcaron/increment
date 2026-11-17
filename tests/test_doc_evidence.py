@@ -109,6 +109,34 @@ def test_static_checks_evidence_id_campaign_module_script_and_helpers(tmp_path: 
     assert any("EV-MISSING" in error for error in report.errors)
 
 
+def test_relocated_labeled_record_declares_a_usable_evidence_id(tmp_path: Path) -> None:
+    record = tmp_path / "docs/reference/validation-evidence.md"
+    record.parent.mkdir(parents=True)
+    record.write_text("### EV-WELCH-T\n\n**Method:** Welch mean difference.\n")
+    refs = extract_references("`evidence-id:EV-WELCH-T`", source="docs/validation.md")
+
+    assert check_static(tmp_path, refs).errors == ()
+
+
+def test_checker_rejects_invalid_selector_in_relocated_evidence_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from scripts import check_doc_references
+
+    record = tmp_path / "docs/reference/validation-evidence.md"
+    record.parent.mkdir(parents=True)
+    record.write_text("### EV-WELCH-T\n\n**Test selector:** `tests/test_mean.py::test_missing`\n")
+    sample = tmp_path / "tests/test_mean.py"
+    sample.parent.mkdir()
+    sample.write_text("def test_mean():\n    raise RuntimeError('must not execute')\n")
+    monkeypatch.setattr(
+        check_doc_references, "__file__", str(tmp_path / "scripts/check_doc_references.py")
+    )
+
+    assert check_doc_references.main(["--check"]) == 1
+    assert "docs/reference/validation-evidence.md:3" in capsys.readouterr().err
+
+
 def test_pending_parameterized_selector_requires_exact_collected_id(tmp_path: Path) -> None:
     sample = tmp_path / "tests" / "test_sample.py"
     sample.parent.mkdir()

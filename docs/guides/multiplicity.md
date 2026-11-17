@@ -1,11 +1,32 @@
 # Multiplicity
 
-When you test many metrics, chance can produce a false positive. Assign roles in `AnalysisPlan`: primaries share familywise `alpha` across metrics and then treatment arms; guardrails test adverse effects at full `alpha`; secondaries use false-discovery-rate level `q`.
+Testing more metrics gives chance more opportunities to look convincing.
+Declare which results drive your decision before reading outcomes, then keep
+the whole tested family when interpreting a selected result.
 
 ## Declaring families: primary, guardrails, secondaries
-With the `tables` extra installed, render the result as a table and expand
-**Table evidence and checks** to inspect the declared families.
 
+`AnalysisPlan` assigns three jobs:
+
+- **Primary:** the result your experiment is meant to establish. Primaries
+  share familywise `alpha`, divided across primary metrics and then treatment
+  arms. Five primaries and one treatment arm each receive `0.01` when
+  `alpha=0.05`.
+- **Guardrail:** an unacceptable loss to rule out. Declare a `margin` or
+  `margin_abs`; each guardrail uses full `alpha`, not a share. The compound
+  safety claim requires **every** guardrail to be available and certified.
+  An inconclusive guardrail establishes neither safety nor harm.
+- **Secondary:** a discovery among additional metrics. The family uses
+  false discovery rate (FDR) level `q`: a bound on the expected fraction of
+  discoveries that are false positives, not a per-metric error rate.
+
+With fixed-horizon inference, secondaries use Benjamini–Hochberg (BH). Its
+FDR claim assumes independence or positive dependence (PRDS) across the
+family; Increment does not check that condition.
+
+This example declares one primary and one secondary. Both illustrative
+columns are continuous means, not individual binary signup indicators.
+The table requires the `tables` extra.
 
 ```python
 import numpy as np
@@ -13,6 +34,12 @@ import polars as pl
 import increment
 from increment.tables import readout_table
 
+design = increment.Randomized(
+    control_group="control",
+    allocation={"control": 0.5, "treatment": 0.5},
+    allocation_scheme="independent",
+)
+plan = increment.AnalysisPlan(primary="sessions", secondaries=["signups"], q=0.10)
 rng = np.random.default_rng(9)
 n = 3000
 variant = np.where(rng.random(n) < 0.5, "treatment", "control")
@@ -27,12 +54,6 @@ df = pl.DataFrame(
         "signups": signups,
     }
 )
-design = increment.Randomized(
-    control_group="control",
-    allocation={"control": 0.5, "treatment": 0.5},
-    allocation_scheme="independent",
-)
-plan = increment.AnalysisPlan(primary="sessions", secondaries=["signups"], q=0.10)
 experiment, reader = increment.from_frame(
     df,
     shape="summary",
@@ -47,109 +68,80 @@ experiment, reader = increment.from_frame(
 )
 results = increment.run(experiment, reader).readout()
 readout_table(results, title="Metric families")
+print(sorted((row.metric, row.role) for row in results))
 ```
+
+<!-- output -->
+```text
+[('sessions', 'primary'), ('signups', 'secondary')]
+```
+
+Expand **Table evidence and checks** to inspect the families.
+The primary uses its allocated test and has `discovery=None`; `discovery`
+records selection of secondaries or breakouts. Selection does not turn an
+exploratory finding into a confirmatory one.
 
 ## Reading multiplicity provenance
 
-Check `multiplicity_status` and `family_id` to see which correction applies. Filtering changes what you see, not the family that was tested.
+Check `multiplicity_status`, `family_id`, population and source scope.
+`declared_plan` means a role was declared, not that every role shares joint
+error control. Without a declared plan, metrics remain unadjusted; none is
+silently promoted to primary.
 
-!!! warning "A selected result is not automatically confirmatory"
-    Guardrails use unsplit alpha; `declared_plan` does not mean every role has joint error control. Exploratory discoveries stay exploratory. Assigned and triggered populations have separate families; concatenating readouts does not create an experiment-wide correction.
+**Filtering changes what you see, not the family that was tested.**
+`results.filter(...)` and slicing retain the full family member lists and
+partial-view qualifications. Choosing metrics for a read is not permission
+to redefine a registered decision family; adding another metric does not
+reallocate the primary family's alpha.
 
-    A triggered sequential family's guarantees are conditional: triggering must be arm-independent, there must be no pre-trigger treatment effect, trigger order must be stationary, and looks, stops, and freezes must follow the joint triggered filtration. Do not time these decisions using assigned results that reveal future triggered outcomes, including the same metric's result. See [Triggered populations](sequential-inference.md#triggered-populations).
+Assigned and triggered results have separate family identities. Switching
+population or concatenating readouts does not create experiment-wide error
+control. See [family metadata and metric selection](../reference/family-inference.md#family-metadata-and-metric-selection).
 
-??? info "Family metadata and disclosure"
-    Lift, breakout and daily/as-of lift rows expose `multiplicity_status` alongside the existing `role`, interval alpha and (where the route has a source-scoped family) `family_id`. The status discloses how the metric was declared or selected; it does not apply a new correction:
-
-    | `role` | `multiplicity_status` | Interpretation |
-    |---|---|---|
-    | `None` | `undeclared_plan` | No metric role was declared; unadjusted. |
-    | `None`, a sequential uptake cell whose compliance policy has `family=True` | `declared_plan` | Registered in the secondary e-BH family, which lists it and counts it in `family_size`. |
-    | `unassigned` | `unassigned_in_plan` | A plan exists, but this metric has no assigned role; unadjusted. |
-    | `primary`, `secondary`, `guardrail` | `declared_plan` | Retains the existing role-specific allocation and procedure. |
-    | `exploratory`, outside a BH/e-BH or Bonferroni family | `exploratory_unadjusted` | Exploratory, without family adjustment. |
-    | `exploratory`, inside a BH/e-BH or Bonferroni family | `exploratory_family` | Member of the named adjusted family: BH/e-BH selection or Bonferroni alpha division. |
-
-    `readout_table` keeps this disclosure in the header when all rows share an informative status. For mixed statuses, it adds a superscript marker to each known unadjusted or exploratory row and explains the marker and row count in the header; declared-plan rows need no marker. The original `multiplicity_status` and family fields remain available on result objects and in `to_frame()`.
-
-    For example, five metrics without a declared plan each retain alpha `0.05` and report `undeclared_plan`; five declared primaries share alpha `0.05`, so each receives `0.01` for a single treatment arm. `declared_plan` is not a blanket claim of joint error control: guardrails still use their existing unsplit alpha. No metric is silently promoted to primary.
-
-    Family membership comes from the original source-scoped readout, never the number of visible rows. `results.filter(...)` and slicing retain the full `results.metadata.scope.families` member lists; `to_frame()` carries the row status and `family_id`, and saved readout envelopes preserve them. Adding an exploratory metric does not enlarge the declared primary family or reallocate its alpha.
-
-    Assigned and triggered populations have separate family identities. Switching the visible population only changes the rows shown, not either population's allocation or membership. Concatenating readouts preserves each source's families; it does not create one jointly controlled experiment-wide family. Use `family_id` and the source/population scope, not a shared family name, to identify which guarantee applies.
-
-    Under a registered sequential plan the triggered secondary family is selected by e-BH on its own chain with the assigned family's guarantee and status labels, conditional on arm-independent triggering, no pre-trigger treatment effect, trigger-order stationarity, and looks/stops/freezes adapted to the joint triggered filtration.
-
-    An affirmative selection is still not automatically confirmatory. A fixed Benjamini-Hochberg exploratory family retains its q level, whole-family size, FCR-adjusted selected intervals, and the independence/positive-dependence qualification for its FDR statement; it is shown as exploratory, not as an unadjusted result or a confirmatory discovery. A triggered sequential family's guarantee labels state conditional control, not verification of the analyst's look, stopping or freezing rule. Filtering a result view does not shrink either family or remove its partial-view indication.
-
-
-
-??? info "What the secondary q level means"
-    Testing several metrics at once inflates the chance that at least one looks significant by pure noise. Increment's `AnalysisPlan` separates metrics into roles with different multiplicity treatment: a `primary` takes a share `alpha / n_primaries` of the familywise `alpha`, split again across every non-control arm with an enrolled unit, whether or not that metric's values for the arm have arrived; a `guardrail` tests unsplit, at the full `alpha`, since it must not move adversely; a `secondaries` family is judged as a false-discovery-rate problem at level `q` instead of a per-metric significance test.
-
-    A fixed-horizon secondary family holds each secondary metric's cell in every treatment arm with an enrolled unit, and `family_size` counts them all. A cell without an estimate because that arm's or the control's values for the metric have not arrived counts as a non-rejection, with p-value 1. An arm the allocation declares but no unit enrolled in is left out of the family, as a breakout family leaves out an arm missing from a segment; its cells are unavailable rows with `readout.cell.missing_arm`. A source without enrollment counts sizes the split and the family from the arms each metric's values reach.
-
-    `q=0.10` is a false-discovery level, not a second `alpha` or a quantile. It bounds the expected fraction of *discovered* secondaries that are false positives, not each metric's type-I rate. A `primary` row always has `discovery=None`: family selection applies only to secondaries and breakouts.
+Missing results are not automatically removable. Some unavailable cells stay
+in the family as non-rejections; other failures stop family selection with
+`family.evidence.incomplete`. Read the reason instead of silently dropping a
+cell. The reference includes runnable
+[unavailable-member and incomplete-family examples](../reference/family-inference.md#missing-and-incomplete-families).
 
 ## `correction` and `MultiplicitySpec` for segmented views
 
-Use `AnalysisPlan.view_multiplicity` to choose the correction for segmented breakout and as-of views, separately from the whole-experiment secondary family.
+`AnalysisPlan.view_multiplicity` controls segmented breakout/as-of views,
+separately from the whole-experiment secondary family.
 
-Leaving `view_multiplicity=None` keeps the per-route defaults: randomized breakout BH at `q` (fixed-roster Bonferroni for a sequential `AsymptoticMean` registration), encouragement breakout uncorrected, and as-of uncorrected unless segmented.
+- **Exploratory FDR selection:** `MultiplicitySpec(correction="bh", q=0.10)`.
+- **Divide alpha across eligible cells:** `MultiplicitySpec(correction="bonferroni")`.
+- **No view correction:** `MultiplicitySpec(correction="none")`.
 
-!!! warning "Choose a supported view correction"
-    `q` is accepted only with `correction="bh"`; setting it with `"bonferroni"` or `"none"` is refused. Sequential dataframe breakouts require a complete `InferenceSpec.segments` roster before outcomes. Asymptotic breakouts refuse BH. Encouragement cannot combine predeclared segments with `SequentialCompliancePolicy(family=True)`; use separately allocated uptake cells (`family=False`) or an unsegmented joint family.
+`q` is accepted only with `"bh"` and defaults to `0.10` there. With no
+`view_multiplicity`, randomized breakouts default to BH, encouragement
+breakouts to no correction, and as-of views to no correction unless segmented.
+Sequential asymptotic breakouts instead use fixed-roster Bonferroni.
 
-Fixed-horizon randomized breakouts use each metric's declared hypothesis,
-including its one-sided alternative and relative or absolute margin. A
-guardrail's hypothesis does not turn a segment into a registered ship decision:
-every segment remains exploratory and cannot change the headline verdict.
-Absolute margins are tested in metric units on the additive reference, not by
-asking whether the relative interval excludes zero.
+Fixed-horizon randomized breakouts use each metric's declared alternative
+and relative or absolute margin. Absolute margins use metric units, not
+relative-interval exclusion of zero. Segments remain exploratory—even for a
+guardrail—and cannot change the headline verdict.
 
-The nominal segment level is `AnalysisPlan.alpha`, without the whole-window
-primary/arm split. With no correction each cell uses that level. Bonferroni
-divides it once by each metric's count-eligible arm/segment cells; for example,
-five eligible cells still use `alpha / 5`, even with several primary metrics.
-BH selects one flat metric × arm × segment family at `q` and caps selected
-interval alpha at `min(q * R / m, alpha)`. Scalar CUPED, supported ratio metrics
-and fixed declared winsor caps retain their existing estimators. Clustered,
-quantile, estimated-percentile-cap and observational restrictions remain;
-shifted multi-covariate linear-CUPED and encouragement segments are not
-implemented. Registered sequential breakouts retain their separate
-checkpoint-based route.
-
-Forwarding the declared alternative corrects previously two-sided compiled
-one-sided zero-null segment results. Two-sided zero-null segment allocation and
-standalone defaults are unchanged. Adding a margin member or correcting a
-member's tail can also change BH selection and selected intervals of its
-siblings; not every zero-margin output is therefore unchanged.
-
-??? info "View defaults and family construction"
-    `AnalysisPlan.view_multiplicity: MultiplicitySpec | None` governs segmented breakout and as-of views specifically, independent of the top-level `secondaries`/`q` family above. `MultiplicitySpec(correction="bh", q=0.10)`, `MultiplicitySpec(correction="bonferroni")`, and `MultiplicitySpec(correction="none")` are the three options; `q` is only accepted under `correction="bh"` (and defaults to `0.10` there if omitted) -- setting `q` under `"bonferroni"` or `"none"` is refused.
-
-    In a fixed-horizon breakout family, a cell with an arm missing from the segment, or with fewer than two units in an arm under a method that estimates its variance, comes back as an unavailable row with its reason (`few_units`, `no_control_arm` or `no_treatment_arm`) and is not counted in `family_size`; an exact-binomial conversion or retention comparison needs no estimated variance and stays in the family at one unit per arm. Under randomization the arm counts carry no information about outcomes, so leaving such a cell out conditions BH on those counts without weakening its FDR statement. Fixed-horizon Bonferroni applies the same rule: each metric's alpha is divided by `k`, the number of that metric's (treatment arm, segment) cells left in the family, so with several treatment arms every arm of every segment counts, and its family lists only those cells; the familywise statement holds over all of them, conditionally on the counts. A segment with fewer than 50 units in an arm stays in either family; its `low_reliability` flag is a caveat that does not withhold its verdict (see [Result fields](../reference/result-fields.md#small-segments-are-flagged-not-withheld)). A cell excluded for an outcome reason (zero variance, a non-positive mean, including a control arm lost to one, an extreme ratio, or no usable observations) counts in `family_size` and is never selected, at any `q`. Under `MetricSpec(missing="skip")` the counts are the units with a value, so a segment arm left with one observed unit is excluded by count (`few_units`), while an arm with none counts as a non-rejection; this treats missingness as unrelated to the outcome within each arm, the assumption the skipped metric's estimate already makes. Any other cell that cannot be estimated refuses the whole family with `family.evidence.incomplete`, naming each cell; read the view with `MultiplicitySpec(correction="none")` to see each cell's reason. Registered sequential families keep every rostered cell, missing ones included; see [Sequential inference](sequential-inference.md).
-
-    For randomized sequential dataframe breakouts, `InferenceSpec.segments` declares the complete level roster before outcomes; automatic registration keeps absent levels in the family. Exact e-BH uses the breakout view's `q`, including a `MultiplicitySpec` override, not a second family inferred from observed rows. Asymptotic breakouts retain fixed-roster Bonferroni and refuse BH. Exact multi-arm whole-window monitoring counts every secondary metric/arm cell in the family and splits each primary's allocation across its treatment arms. An encouragement plan cannot combine predeclared segments with `SequentialCompliancePolicy(family=True)`: its breakout policy is uncorrected. Use separately allocated uptake cells (`family=False`) or an unsegmented joint family; existing encouragement breakout-readout restrictions remain.
+Sequential dataframe breakouts need a complete `InferenceSpec.segments`
+declaration before outcomes. Asymptotic breakouts refuse BH. Encouragement
+cannot combine segments with `SequentialCompliancePolicy(family=True)`:
+use separately allocated uptake (`family=False`) or an unsegmented joint
+family. See [eligible cells and source limits](../reference/family-inference.md#segmented-views).
 
 ## e-BH under sequential inference
 
-Sequential plans use e-BH to select secondaries. Declare the sampling and reveal rules before reading outcomes, as in this example.
+Sequential secondaries use e-BH rather than p-value BH. Its finite-sample
+stopping-time guarantee requires **valid e-processes**: evidence valid at
+every stopping time under the registered joint reveal rules. The selector
+cannot establish those assumptions. `always_valid` supplies the supported
+exact conversion/retention route; `asymptotic_mean` supplies an asymptotic
+approximation, not finite-sample error control.
 
-!!! warning "The guarantee depends on the inputs"
-    e-BH does not make an invalid sequential estimate valid. The asymptotic-mean route has an asymptotic, empirical guarantee, not a finite-sample one; exact `kind="always_valid"` is limited to supported conversion and retention routes.
-
-??? info "e-BH construction"
-    Under `AnalysisPlan(inference=InferenceSpec(kind="asymptotic_mean"))` or `InferenceSpec(kind="always_valid")`, the secondary family uses e-BH (Wang & Ramdas 2022: ordinary BH applied to `1/e`) instead of ordinary p-value BH. e-BH controls FDR at `<= q` under arbitrary dependence and stopping time, but only when every input is a valid e-process: an e-value that remains valid at every stopping time, not just at one fixed look. `e_bh_select` assumes that property; it does not establish it. The asymptotic-mean route builds its e-process from the same delta-method sampling distribution as the fixed-horizon interval, so its time-uniform guarantee is asymptotic and empirical, not finite-sample. The exact `kind="always_valid"` route, limited to conversion and retention metrics, is the finite-sample alternative.
+For continuous outcomes, declare the following plan before collecting them.
+Here the synthetic frame above is reused only to illustrate the call:
 
 ```python
-import increment
-
-design = increment.Randomized(
-    control_group="control",
-    allocation={"control": 0.5, "treatment": 0.5},
-    allocation_scheme="independent",
-)
 av_plan = increment.AnalysisPlan(
     primary="sessions",
     secondaries=["signups"],
@@ -173,48 +165,37 @@ av_results = increment.run(experiment, reader).readout()
 readout_table(av_results, title="Sequential metric families")
 ```
 
-!!! warning "Sequential dataframe inputs"
-    A sequential `AnalysisPlan` needs a `design=` with an explicit `allocation` (not the dataframe shortcut `control=`), since the registered asymptotic-mean runtime must be declared before any outcome is read. A unit summary also names each unit's `exposure_date` (a date or day index); units are revealed in that order, never in row order. See [Sequential inference](sequential-inference.md) for the registration, capture and error-control mechanics this route shares with an ordinary (non-multiplicity) sequential primary.
+This needs explicit fixed allocation, finalized unit outcomes, and
+outcome-independent exposure-date ordering—not the `control=` shortcut or
+caller row order. Follow the [sequential route's assumptions and capture steps](sequential-inference.md)
+before using it for decisions. The discovery set is controlled at the current
+stopping date; **the union of discoveries across dates is not controlled**.
+
+For triggered families, triggering must be arm-independent, there must be no
+pre-trigger treatment effect, and trigger order must be stationary.
+Looks/stops/freezes may use only already-revealed joint triggered information.
+Assigned results can expose future triggered outcomes, including the same
+metric's result. See [the triggered stopping condition](../reference/sequential-contracts.md#per-cell-coverage-and-the-family-verdict).
 
 ## FCR re-estimation of discovered cells
 
-A discovered secondary or breakout already carries a selection-adjusted interval. Do not treat it as the same width as an unselected row's interval.
-
-For routes that filter estimation evidence to selected hypotheses, only selected
-hypotheses are re-estimated. A quantile family filters its unit frame to the
-control and selected arms, so an unselected arm keeps its nominal estimate even
-where its interval at the stricter corrected level would be too wide to report.
-
-??? info "FCR interval construction"
-    A secondary or breakout cell selected under BH (fixed-horizon p-values) or e-BH (sequential e-values) gets a reported interval re-estimated at `fcr_alpha = min(q * R / m, nominal_alpha)`. Here, `R` is the number of selected cells and `m` is the family size. The interval is wider than the nominal interval when few cells are selected from a large family, and narrower as more cells are selected, up to the nominal-alpha cap.
-
-    Treat a discovered secondary's interval as already carrying this correction; it is not the same width as a non-discovered row's interval. `family_guarantee` reports `"finite_sample"` only when every family member is exact (`always_valid`) and `"asymptotic_sequential"` when any member is asymptotic.
+A selected secondary or breakout already carries a selection-adjusted
+interval. It is not generally the same width as an unselected row's interval.
+Read `discovery` together with the interval and family level, not as a
+synonym for the row's individual test.
+The [FCR reference](../reference/family-inference.md#fcr-re-estimation-of-discovered-cells)
+defines the adjustment, nominal cap, quantile behavior and sequential geometry.
 
 ## Caveats
 
-!!! warning "Dependence and repeated discovery sets"
-    Fixed-horizon BH assumes independence or positive dependence (PRDS) across the metric x arm x segment family, and this is not checked -- read [Fixed-horizon FDR control assumes a dependence condition that is not checked](../limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked). An always-valid discovery set's guarantee holds for the current date; the union across dates is not controlled -- read [Stopping-date guarantees require the registered reveal contract](../limitations.md#stopping-date-guarantees-require-the-registered-reveal-contract).
-
-The decision plan fixes hypotheses, alternatives, margins, and sequential
-registration before evidence is read. A final family verdict uses the complete
-stored roster after estimation; it does not authorize a new hypothesis or
-change the registered inference. BH, e-BH, and Bonferroni here are fixed-roster
-procedures, not online FDR control across experiments.
+These are fixed-family procedures, not online FDR across experiments.
+The plan fixes hypotheses, alternatives, margins and sequential registration
+before data is read; final evaluation does not authorize changing them.
+See the [fixed-horizon dependence condition](../limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked)
+and [stopping-date limits](../limitations.md#stopping-date-guarantees-require-the-registered-reveal-contract).
 
 ## Two-phase stored runs
 
-`increment.run(experiment, reader, results_store=..., decision_log=...)`
-checks the experiment's hash-only `Registration` and portable compiled plan
-before reading any data, then creates a validated `Run` from the resulting
-cells. Passing a `ResultsStore` persists and reopens that pinned run before
-final verdicts are computed; without a store, the same evaluator uses the
-validated in-memory run. `RunResult` exposes the cells, effect projections,
-final decisions and, through `readout(view)`, each view's full result rows with
-their family fields; `RunResult.from_handle(handle, registration=...)` decides a
-saved run again from its pinned cells.
-
-An optional `DecisionLog` records fixed-family events only after the run and
-decisions validate. Its replay resolves each event's pinned run and uses the
-versioned compiled-plan payload stored with the run and event. The source
-family roster remains fixed for replay; this is not online FDR across runs.
-
+Saving and replaying a run preserves its registered family, compiled plan and
+decision inputs. It does not create a new family or online correction across
+runs. See [stored-run contracts](../reference/family-inference.md#two-phase-stored-runs).

@@ -24,5 +24,17 @@ separate event store.
 - [Saved formats](https://getincrement.io/docs/reference/saved-formats/): Readable versions, refusal codes and migration routes.
 - [Observational causal inference](https://getincrement.io/docs/guides/observational/): Use IPTW, DML, and AIPW with explicit causal assumptions.
 - [CUPED](https://getincrement.io/docs/guides/cuped/): Reduce variance with pre-treatment data.
+- [Variance reduction](https://getincrement.io/docs/reference/variance-reduction/): CUPED formulas, source contracts, missingness and sequential restrictions.
+- [Priors and Bayesian decisions](https://getincrement.io/docs/guides/priors-and-decisions/): Declare relative-lift beliefs and interpret posterior probabilities separately from sampling inference.
+- [Bayesian results](https://getincrement.io/docs/reference/bayesian-results/): Prior scales, historical predictions, approximation, availability and saved posterior state.
+- [Sequential registration](https://getincrement.io/docs/reference/sequential-contracts/): Sampling assumptions, capture, continuation and checkpoint formats.
+- [Family inference](https://getincrement.io/docs/reference/family-inference/): Multiplicity membership, error allocation, selection and stored-run contracts.
+- [Causal methods](https://getincrement.io/docs/reference/causal-methods/): Observational adjustment, encouragement and logged-policy assumptions and calculations.
+- [Switchback inference](https://getincrement.io/docs/reference/switchback-inference/): Assignment laws, independent replicate grain, carryover and qualified inference.
+- [Sitewide calculation](https://getincrement.io/docs/reference/sitewide-calculation/): Observed-window rollout calculations, completeness, population and artifact examples.
+- [Dashboard output](https://getincrement.io/docs/reference/dashboard-output/): Static versus live reports, capture identity, confidence-set display and export contracts.
+- [Validation evidence](https://getincrement.io/docs/reference/validation-evidence/): Method assumptions, frozen comparisons, calibration scope and reproducible evidence records.
+- [Release history](https://getincrement.io/docs/reference/release-history/): Archived development changes; current compatibility and migration guidance remains in the API reference.
 - [Power analysis](https://getincrement.io/docs/guides/power-analysis/): Calculate sample size, power, and MDE.
+- [Planning methods](https://getincrement.io/docs/reference/planning-methods/): Solver inputs, numerical qualifications, missing answers and planning approximations.
 - [API reference](https://getincrement.io/docs/api/): Public Python API.

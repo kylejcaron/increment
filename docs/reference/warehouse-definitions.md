@@ -447,7 +447,11 @@ Supports randomized experiments; observational unadjusted, IPTW, DML and AIPW; e
 
 ### Decision statistics
 
-Read the sampling interval. `chance_to_beat` and `prob_favorable` are unavailable on every clustered row: sampling intervals do not provide a Normal posterior.
+`chance_to_beat` and `prob_favorable` are unavailable on clustered rows.
+A declared prior, including Normal, refuses with `arm.adjustment.cluster_prior`.
+This is a cluster restriction, not a general restriction on t references:
+eligible unclustered delta-method results can retain a separate working-model
+posterior. See [prior support](bayesian-results.md#mutual-exclusions-prior-vs-sequential-inference-prior-vs-cluster).
 
 ### Exports
 

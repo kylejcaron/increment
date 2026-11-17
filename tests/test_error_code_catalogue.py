@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 from collections import Counter
 
 import pytest
@@ -14,26 +16,38 @@ pytestmark = pytest.mark.tooling
 def test_every_registered_code_appears_once() -> None:
     entries = render_error_codes.collect_refusal_specs()
     counts = Counter(entry.code for entry in entries)
+    registrations_by_code = walk_refusal_registries()
     assert counts == Counter(
         {
             code: 1
-            for code, registrations in walk_refusal_registries().items()
+            for code, registrations in registrations_by_code.items()
             if any(isinstance(spec, RefusalSpec) for _, spec in registrations)
         }
     )
     page = render_error_codes.render(entries)
-    registered_rows = [
-        line for line in page.splitlines() if line.startswith("| `") and line.count("|") == 5
-    ]
-    assert len(registered_rows) == len(counts)
-    assert {line.split("|", maxsplit=2)[1].strip() for line in registered_rows} == {
-        f"`{code}`" for code in counts
-    }
-    metadata = {
-        columns[1].strip(): tuple(column.strip() for column in columns[2:-1])
-        for line in registered_rows
-        if (columns := line.split("|"))
-    }
+    registered = page.split("## Retired codes", 1)[0]
+    records = re.findall(r"^### (`[^`]+`)\n(.*?)(?=^<span id=|\Z)", registered, re.M | re.S)
+    assert Counter(code for code, _ in records) == Counter({f"`{code}`": 1 for code in counts})
+    anchors = set(re.findall(r'<span id="([^"]+)"></span>', registered))
+    assert set(counts) <= anchors
+    assert set(re.findall(r"\]\(#([^)]+)\)", registered)) <= anchors
+    metadata = {}
+    for code, record in records:
+        fields = dict(re.findall(r"^\*\*([^:]+):\*\* (.+)$", record, re.M))
+        metadata[code] = tuple(
+            fields[field] for field in ("Error class", "Context keys", "Registering modules")
+        )
+    by_code = dict(records)
+    for entry in entries:
+        record = by_code[f"`{entry.code}`"]
+        specs = [
+            spec for _, spec in registrations_by_code[entry.code] if isinstance(spec, RefusalSpec)
+        ]
+        if specs[0].template is not None:
+            assert html.escape(specs[0].template) in record
+        else:
+            assert re.search(r"\[Message rule\]\(https://github.com/[^)]+#L\d+\)", record)
+        assert "[Recovery guidance](../guides/refusals.md" in record
     expected = {
         "`evidence.operation_unavailable`": (
             "`CapabilityError`",

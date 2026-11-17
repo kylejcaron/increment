@@ -482,6 +482,11 @@ assignment-law evidence.
   the valid sampling interval if that is the question, or choose a supported
   posterior route if a Bayesian decision is required.
 
+`posterior_estimate` is the posterior median, not necessarily its mean.
+[`RelativeLiftPrior`](bayesian-results.md#relativeliftprior-specify-fractional-relative-lift)
+uses fractional relative change; unwrapped priors retain their route-specific
+units, including log lift on randomized relative-lift routes.
+
 When a prior is supplied and the posterior is available, the readout also
 prints its posterior estimate and one probability: for a metric that declares
 `preferred_direction`, `chance_to_beat_favorable()`, the posterior probability
@@ -490,6 +495,13 @@ that the lift lies on its favorable side of zero; otherwise the direction-free
 `posterior_prob_favorable_reason_code` distinguishes an absolute-margin null,
 missing direction, and a neutral direction; it is null when a favorable
 probability is available or the posterior itself is unavailable.
+
+The frame's `posterior_prob_favorable` uses the declared null; the displayed
+`posterior_chance_to_beat` uses zero. See the
+[probability definitions](bayesian-results.md#prob_favorable-p_value-and-stat_sig).
+Saved results replay the retained update once. A numerical failure in one
+posterior query preserves other successful queries and their recorded values
+or reasons; see [availability and replay](bayesian-results.md#availability-replay-and-approximation).
 
 - **A triggered result answers a different population question.** It includes
   units at their first eligible trigger and anchors their outcome window there.

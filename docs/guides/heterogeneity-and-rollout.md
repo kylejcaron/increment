@@ -1,11 +1,13 @@
 # Heterogeneity and rollout
 
-After reading a breakout view, use `segment_heterogeneity` to ask whether effects differ across segments, and `segment_rollout_recommendation` to rank segments against a rollout cost. Both require estimates from the same breakout readout; combining runs silently merges the analysis.
+Use one breakout readout to ask whether segment effects differ and whether
+segment-level rollout looks worthwhile. Do not combine estimates from
+different runs: the consumers would silently merge their analyses.
 
-For trigger-declared experiments, breakout output includes assigned and triggered populations. The functions keep these populations separate. Filter to one population when that is the question you intend to answer.
-
-??? info "Population and summary fields"
-    Both consumers include `analysis_population` in their grouping keys and preserve it on summary and segment outputs, so the two populations are never pooled.
+For individual targeting rather than segment summaries, use the
+[separate targeting route](#categorical-adjustment-in-individual-targeting).
+Assigned and triggered populations stay separate through `analysis_population`;
+filter to the population your question concerns.
 
 ## `segment_heterogeneity`: are segment effects different?
 
@@ -50,34 +52,56 @@ breakout_estimates = increment.run(
 ).readout(breakout_view)
 summary, segments = segment_heterogeneity(breakout_estimates)
 for row in summary:
-    print(f"{row.metric} dim={row.dimension} Q={row.q:.2f} tau2={row.tau2} i2={row.i2}")
+    print(
+        f"{row.metric} dim={row.dimension} scale={row.scale} Q={row.q:.2f} tau2={row.tau2} i2={row.i2}"
+    )
 ```
 
 <!-- output -->
 ```text
-revenue dim=segment Q=26.15 tau2=0.0031985694898157... i2=None
-revenue dim=segment Q=27.14 tau2=1.36529161872605... i2=None
+revenue dim=segment scale=relative Q=26.15 tau2=0.0031985694898157... i2=None
+revenue dim=segment scale=absolute Q=27.14 tau2=1.36529161872605... i2=None
 ```
 
-The summary has separate relative (log-RR) and absolute-scale rows; they can disagree. Outcome-based exclusions suppress `tau2` and all `i2` fields because excluding outcomes can bias heterogeneity estimates. The `i2` point estimate is unavailable below five live segments; `i2` bounds are available from three, but not two.
+Relative-primary families get independent relative (log-RR) and absolute
+passes; absolute-primary families get only the absolute pass. They can
+disagree because percentage and additive effects have different spread.
+`value_scale` identifies the input family; `scale` identifies the computed
+pass. Both consumers also group by `estimand` and population.
 
-??? info "Heterogeneity statistics and exclusions"
-    The function returns two rows: one for the relative (log-RR) heterogeneity pass and one for the absolute pass. They can disagree because a between-segment spread that looks large on one scale can look small on the other. `tau2`, `i2`, `i2_lb`, and `i2_ub` all return `None` when an outcome-based exclusion affects that (key, scale); an outcome exclusion would bias `tau^2`, so none of the four is trustworthy. Independently, `i2`'s point estimate is also `None` below `k=5` live segments on a scale, even with zero exclusions (as in this example's `k=3`). Under a true null, P(I² > 25%) is still ~25--26% with so few segments, so the point estimate produces false positives too often to report. `i2_lb`/`i2_ub` remain available down to `k=3`; they are undefined (`None`) only at `k=2`, where the Higgins-Thompson interval has no closed form.
+`tau2` measures between-segment spread. An outcome-based exclusion withholds
+`tau2`, `i2`, `i2_lb` and `i2_ub` for that group/scale: selecting outcomes
+would bias those summaries. Independently, `i2` is unavailable below five
+live segments; its bounds remain available at three or four, but not two.
+This example has three, so `i2=None` does not mean zero heterogeneity.
+Under a true null, few-segment checks still gave roughly 25–26% probability
+of `I² > 25%`, motivating withholding the point estimate.
 
 ## Shrinkage and numerical integration
 
-For each estimable segment and scale, `segments` includes a raw estimate and a shrunken estimate. Shrinkage uses a random-effects model; its reported interval summarizes posterior moments, not posterior quantiles.
+Each estimable segment/scale gets `estimator="raw"` and `"shrunken"` rows.
+The shrunken interval is a Wald summary of posterior moments, **not posterior
+quantiles**. It mixes Morris’s conditional segment posterior over a REML
+likelihood for tau times a `HalfNormal(tau_prior_scale)` prior. The HKSJ
+pooled mean belongs to `HeterogeneitySummary`, not this segment posterior.
 
-??? info "Statistical details"
-    `segments` carries two rows per estimable `(segment, scale)`: `estimator="raw"` (the segment's own estimate) and `estimator="shrunken"` (a posterior estimate integrated by adaptive quadrature: a REML marginal likelihood for tau, times a `HalfNormal(tau_prior_scale)` prior, mixed against Morris's (1983) conditional posterior for each segment -- not the HKSJ pooled mean, which feeds only the *pooled* row in `HeterogeneitySummary` above). The reported interval is a Wald summary of the posterior moments, not a posterior-quantile interval.
+Integration adapts support and resolution, checking posterior tails and
+moments. Crossing eight prior scales is not itself a clipping or refusal
+rule. The same integration supplies shrinkage and rollout pricing.
 
-    Integration adapts both support and resolution, with posterior-tail and moment convergence checks. A posterior extending beyond eight prior scales is no longer clipped or withheld merely for crossing that boundary. The same integration supplies shrinkage and rollout pricing.
+!!! warning "Choose the prior scale in the units you interpret"
+    `tau_prior_scale` changes the model, not the integration ceiling. The
+    default 0.30 is on the log-RR scale. Heterogeneity shares this one setting
+    across its passes; choose deliberately for the relative or absolute
+    units you interpret. A narrow absolute prior can strongly shrink large
+    effects despite accurate integration.
 
-
-!!! warning "Prior scale and unresolved integration"
-    `tau_prior_scale` sets the prior width and changes the model; it is not an integration ceiling. The default `0.30` is on the log-RR scale. For absolute effects, choose a value in the metric's units; a narrow prior can strongly shrink large absolute effects even when it is integrated accurately.
-
-    If the numerical budget cannot resolve a posterior, heterogeneity keeps the raw rows but withholds that scale's shrunken values with `excluded="estimation_failed"` and warning code `breakout.heterogeneity.posterior_integration_unresolved`. The rollout functions instead propagate `InvalidRequestError` with code `estimation.meta.posterior_integration_unresolved`; this numerical failure is not an ordinary noise-offset refusal or a recommendation against rollout.
+An unresolved posterior preserves raw heterogeneity rows but withholds
+shrunken values on that scale with `excluded="estimation_failed"` and warning
+`breakout.heterogeneity.posterior_integration_unresolved`. Rollout instead
+raises `InvalidRequestError` with `estimation.meta.posterior_integration_unresolved`.
+That is a numerical failure, not a noise-offset refusal or a recommendation
+against rollout.
 
 ## `segment_rollout_recommendation`: pricing the rollout
 
@@ -97,31 +121,30 @@ revenue dim=segment
   us     selected=True excluded=None
 ```
 
-Both APIs group by `estimand` and `value_scale`. `segment_heterogeneity` reports relative and absolute results for relative-primary families, but only absolute results for absolute-primary families. `segment_rollout_recommendation` prices only relative-primary families and skips absolute-scale families, including encouragement LATE.
+This toy example selects eu and us at the default zero rollout cost. It is
+not a launch rule independent of its prior, metric and cost assumptions.
+Rollout prices **relative-primary families only**, skipping every
+`value_scale="absolute"` family, including encouragement LATE—even if shared
+`lift.log_mean`/`lift.log_se` fields hold additive moments.
 
-??? info "Grouping and computed scale"
-    Both APIs group by `estimand` and upstream `value_scale`. `segment_heterogeneity` identifies its computed scale with `scale`: relative-primary families can produce relative and absolute results; absolute-primary families produce only absolute results, using their additive moments. `segment_rollout_recommendation` prices only relative-primary families. It skips every `value_scale="absolute"` family, including encouragement LATE, even when the shared `lift.log_mean`/`lift.log_se` fields contain additive moments.
+Cost precedence is:
 
-Cost precedence is: explicit `rollout_cost=`; the matching metric's declared `rollout_cost`; then `0.0` (select any segment estimated favorable). A mapping with an unknown metric is refused. Frame-path `MetricSpec` has no `rollout_cost` field, so passing its `increment.workflows.metrics(experiment, reader)` resolves to `0.0`. Costs are not weighted by exposure; small and large segments count equally.
+1. Explicit `rollout_cost=`; a mapping with an unknown metric is refused.
+2. The matching `Metric` object’s declared `rollout_cost`, supplied through `metrics=`.
+3. Zero: select any segment estimated favorable.
 
-??? info "Supplying declared costs and reading recommendations"
-    Cost resolution is highest-precedence-first: an explicit `rollout_cost=` argument (a mapping's unknown metric name is refused), then the metric's own declared `rollout_cost` -- read from whichever `Metric` objects are passed via `metrics=`, matched to each estimate's metric name -- then `0.0` (ship any segment estimated favorable at all). This guide's own `increment.workflows.metrics(experiment, reader)` (synthesized from the frame-path `MetricSpec` the example declares) can never carry a declared cost: `MetricSpec` has no `rollout_cost` field to set, so passing `metrics=increment.workflows.metrics(experiment, reader)` here always resolves to `0.0` too. An arbitrary matching `Metric` object built with its own `rollout_cost` set is honored the same way regardless of how the estimates themselves were produced. Values are unweighted by exposure: a segment with few units and a wide interval is treated the same as a well-powered one on this pass. Read `RolloutRecommendation`'s field docs before quoting a rollout number in a launch review.
+Frame `MetricSpec` has no `rollout_cost` field, so this example’s
+`increment.workflows.metrics(experiment, reader)` supplies no declared cost
+and also resolves to zero. A separately supplied matching `Metric` with a
+cost is honored regardless of the estimates’ source. Costs are unweighted
+by exposure: small and large segments count equally. Read
+`RolloutRecommendation`’s field definitions before quoting a rollout value.
 
 ## Scale dependence
 
-For relative-primary families, `segment_heterogeneity` runs independent relative
-and absolute passes over the same segments. They can disagree about which
-segments look heterogeneous because percentage and dollar effects measure
-different quantities with different natural spread. Absolute-primary families
-have only the absolute pass. Its `tau_prior_scale` is one
-setting shared by both passes, so choose a value in the units of the axis
-you are interpreting (relative log-RR or the metric's absolute units).
-
-`segment_rollout_recommendation` has no absolute pass to share that setting.
-Its `tau_prior_scale` is always interpreted on the log-RR scale (see the
-pricing section above), never in a metric's absolute units, even though its
-result rows carry the same `value_scale` label as
-`segment_heterogeneity` rows.
+Rollout has no absolute pass: its `tau_prior_scale` always uses log-RR units,
+never the metric’s absolute units. Do not infer otherwise from its
+`value_scale` label shared with heterogeneity rows.
 
 ## Caveats
 
