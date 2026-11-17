@@ -172,7 +172,7 @@ def test_selected_cuped_fcr_row_respects_plan_alpha_on_reissue():
 @pytest.mark.integration
 @pytest.mark.slow
 def test_complete_cuped_yaml_guide_examples_execute(tmp_path):
-    """Execute both experiment YAML examples in the guide against real DuckDB facts."""
+    """Execute both experiment YAML examples in the reference against real DuckDB facts."""
     import datetime as dt
     import re
     import warnings
@@ -183,10 +183,10 @@ def test_complete_cuped_yaml_guide_examples_execute(tmp_path):
     from tests.parity_harness import matrix_data
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
-    guide = (Path(__file__).parents[1] / "docs/guides/cuped.md").read_text()
+    reference = (Path(__file__).parents[1] / "docs/reference/variance-reduction.md").read_text()
     examples = [
         yaml.safe_load(block)
-        for block in re.findall(r"```yaml\n(.*?)```", guide, flags=re.DOTALL)
+        for block in re.findall(r"```yaml\n(.*?)```", reference, flags=re.DOTALL)
         if "experiments:" in block
     ]
     assert len(examples) == 2
