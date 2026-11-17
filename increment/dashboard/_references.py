@@ -216,8 +216,13 @@ def build_reference_catalog(snapshot: DashboardSnapshot) -> ReferenceCatalog:
                     ),
                 )
             for family in metadata.scope.families:
-                field = "captured_correction" if selection is not None else "correction"
-                identity = shared_group({field: family.model_dump(mode="json")})
+                identity = shared_group(
+                    {
+                        "captured_correction" if selection is not None else "correction": (
+                            family.model_dump(mode="json")
+                        )
+                    }
+                )
                 for cell in family.members:
                     family_groups.setdefault((family.source_snapshot_id, cell), []).append(identity)
         members: list[str] = []
@@ -259,11 +264,13 @@ def build_reference_catalog(snapshot: DashboardSnapshot) -> ReferenceCatalog:
             members.append(identity)
             seen.add((source, cell))
 
-        interpretation = interpret_readout(collection, metadata)
+        # Scoped readout rows already include the portable evidence columns.
+        interpretation = interpret_readout(collection, None) if metadata is None else None
         for original, row in zip(collection, estimates_to_readout(collection), strict=True):
             cell = CellKey.from_row(original)
             source = getattr(original, "source_snapshot_id", None)
-            row.update(readout_evidence_columns(interpretation, original))
+            if interpretation is not None:
+                row.update(readout_evidence_columns(interpretation, original))
             retain(source, cell, row, records.get((source, cell)), original.model_dump(mode="json"))
         if metadata is not None:
             for source, scope in metadata.scope.by_source.items():
