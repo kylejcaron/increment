@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date
 from types import MappingProxyType, TracebackType
-from typing import Any, Literal, cast
+from typing import Literal, cast
 from uuid import uuid4
 
+from increment._evidence_scopes import (
+    prepare_provider_scope,
+    revalidate_scope_inventory,
+    scope_owner,
+    scope_source_identity,
+    scope_stream_inventory,
+)
 from increment._evidence_types import (
     AssignmentEvidence,
     AssignmentRequest,
@@ -15,9 +22,8 @@ from increment._evidence_types import (
     EvidenceScope,
     EvidenceSource,
     EvidenceStream,
-    evidence_streams_for_scope,
 )
-from increment._source_types import EvidenceProvider, _loader_owner, is_custom_source
+from increment._source_types import EvidenceProvider
 from increment.errors import _advisory_run_scope
 from increment.kernel.contracts import _refuse
 
@@ -67,7 +73,7 @@ class EvidenceExecutionContext:
         self._breakout_streams = MappingProxyType({})
         self._covariate_streams = MappingProxyType({})
         requested_coherence = self.coherence
-        self._source_identity = id(_loader_owner(self.provider))
+        self._source_identity = scope_source_identity(self.provider)
         if requested_coherence not in ("captured", "live"):
             _refuse("kernel.request.invalid", field="coherence")
         self._requested_coherence = requested_coherence
@@ -78,46 +84,27 @@ class EvidenceExecutionContext:
         if self._state != "unopened":
             _refuse("kernel.context.closed")
         self._state = "opening"
-        source = _loader_owner(cast(EvidenceProvider, self.provider))
-        provider_owned = is_custom_source(source) or bool(
-            getattr(self.provider, "provider_owned", False)
-        )
-        effective_coherence: ExecutionMode = (
-            "captured"
-            if getattr(getattr(source, "evidence", None), "kind", None) == "artifact"
-            else cast(ExecutionMode, self.coherence)
-        )
-        effective_mode: EffectiveMode = "provider" if provider_owned else effective_coherence
-        scope = self.scope
-        requested = replace(
-            scope,
-            snapshot=(
-                scope.snapshot if provider_owned else self._requested_coherence == "captured"
-            ),
-            execution=True,
-        )
         try:
             self._stack.enter_context(_advisory_run_scope())
-            result = cast(EvidenceProvider, self.provider).scope(requested)
+            prepared = prepare_provider_scope(
+                cast(EvidenceProvider, self.provider),
+                self.scope,
+                requested_coherence=self._requested_coherence,
+            )
+            result = prepared.result
             scoped = self._stack.enter_context(result.source)
             self._stream_resolver = result.stream_resolver
             self._scoped_provider = scoped
             self._breakout_streams = result.breakout_streams
             self._covariate_streams = result.covariate_streams
-            streams = result.streams or (
-                result.stream_resolver(scoped) if result.stream_resolver is not None else ()
-            )
-            if not streams:
-                if provider_owned:
-                    streams = (EvidenceStream("provider", "provider"),)
-                else:
-                    streams = evidence_streams_for_scope(
-                        cast(Any, _loader_owner(scoped)),
-                        requested,
-                    )
+            streams = scope_stream_inventory(prepared, scoped)
             capture_status = result.capture_status or "live"
-            effective_coherence: ExecutionMode | None = None if provider_owned else capture_status
-            effective_mode: EffectiveMode = "provider" if provider_owned else capture_status
+            effective_coherence: ExecutionMode | None = (
+                None if prepared.provider_owned else capture_status
+            )
+            effective_mode: EffectiveMode = (
+                "provider" if prepared.provider_owned else capture_status
+            )
             self.coherence = effective_coherence
             self._effective_modes = MappingProxyType(
                 dict.fromkeys((stream.identity for stream in streams), effective_mode)
@@ -186,13 +173,14 @@ class EvidenceExecutionContext:
                     )
 
     def validate_source(self, source: object) -> None:
-        if id(_loader_owner(source)) not in {self._source_identity, *self._source_aliases}:
+        if scope_source_identity(source) not in {self._source_identity, *self._source_aliases}:
             _refuse("kernel.context.undeclared_stream", stream="source_ref")
 
     def declare_source_alias(self, source: object, *, parent: object) -> None:
         """Authorize a derived declaration without expanding its permitted requests."""
         self.validate_source(parent)
-        self._source_aliases[id(_loader_owner(source))] = _loader_owner(source)
+        owner = scope_owner(source)
+        self._source_aliases[id(owner)] = owner
 
     def validate_population(self, population: str) -> None:
         declared_populations = set(self.scope.populations) or {self.scope.population}
@@ -248,7 +236,7 @@ class EvidenceExecutionContext:
 
     def validate_assignment_request(self, request: AssignmentRequest) -> None:
         """Require assignment selection to have been inventoried before scope capture."""
-        self.validate_source(_loader_owner(self.provider))
+        self.validate_source(self.provider)
         if request not in self.scope.assignment_requests:
             _refuse("kernel.context.undeclared_stream", stream="assignment")
 
@@ -289,13 +277,9 @@ class EvidenceExecutionContext:
     ) -> Iterator[EvidenceSource]:
         provider = self._require_open()
         if self._snapshot_manifest:
-            if self._stream_resolver is None:
-                current_inventory = self._pinned_stream_inventory
-            else:
-                streams = self._stream_resolver(provider)
-                current_inventory = MappingProxyType(
-                    {stream.identity: stream.physical for stream in streams}
-                )
+            current_inventory = revalidate_scope_inventory(
+                self._stream_resolver, provider, self._pinned_stream_inventory
+            )
             if current_inventory != self._pinned_stream_inventory:
                 stream = next(
                     (

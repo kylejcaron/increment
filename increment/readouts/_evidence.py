@@ -7,6 +7,8 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+from increment._analysis_config import overlay_configs, resolve_configs
+from increment._evidence_loaders import day_axis_grains as _declared_day_axis_grains
 from increment._evidence_loaders import (
     load_moments,
     load_moments_batch,
@@ -14,7 +16,12 @@ from increment._evidence_loaders import (
     require_request_evidence,
     source_for_population,
 )
+from increment._evidence_loaders import load_native_trigger_rates as _load_native_trigger_rates
+from increment._evidence_loaders import (
+    load_triggered_observation_edge as _load_triggered_observation_edge,
+)
 from increment._evidence_loaders import route_provider_request as _route_provider_request
+from increment._evidence_loaders import view_population as _view_population
 from increment._evidence_refusals import (
     refuse_assignment_invalid,
     refuse_joint_grouping,
@@ -22,6 +29,7 @@ from increment._evidence_refusals import (
     require_population,
 )
 from increment._evidence_scopes import SCOPE_OWNERS, loader_source
+from increment._evidence_scopes import day_axis_requires_preflight as _requires_day_axis_preflight
 from increment._evidence_types import (
     ArtifactProvenance,
     AssignmentEvidence,
@@ -44,6 +52,8 @@ from increment._evidence_types import (
     DayAxisRows,
     EvidenceScope,
     EvidenceScopeResult,
+    HealthDiagnosticEvidence,
+    HealthObservationEdgeAnswer,
     MethodFitAnswer,
     MethodFitRequest,
     MissingValueAccount,
@@ -54,6 +64,7 @@ from increment._evidence_types import (
     SequentialCaptureRequest,
     SequentialSnapshotRequest,
     SourceContext,
+    TriggeredHealthFeedEvidence,
     UnitRows,
     UnitRowsRequest,
     day_axis_source_partitions,
@@ -61,19 +72,26 @@ from increment._evidence_types import (
     validate_compliance_source_match,
 )
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
+from increment._source_admission import _require_analysis_operation
+from increment._source_operations import (
+    AllocationHistoryOperation,
+)
 from increment._source_types import (
     EvidenceCapabilities,
     EvidenceProvider,
     _BuiltinMomentSource,
     compliance_summary_series,
+    declared_day_axis_metric_objects_supported,
     declared_evidence,
+    effective_capabilities,
     is_builtin_source,
     is_custom_source,
 )
 from increment._trigger_integrity import (
     validate_trigger_fires_in_every_arm as _validate_trigger,
 )
-from increment.errors import CodedError
+from increment.decision import DefinitionsArmAnalysisState
+from increment.errors import CapabilityError, CodedError, refuse
 from increment.semantics.models import Breakout
 from increment.sources import BreakoutMomentsSource, EvidenceSource, require_operation
 
@@ -144,9 +162,29 @@ def retains_cuped_relation(src: EvidenceSource) -> bool:
 
 def fits_uncovered_cells_locally(src: EvidenceSource) -> bool:
     """Whether cells without retained or warehouse fits can be fitted from unit rows."""
-    return (
-        is_custom_source(src) and declared_evidence(src).unit_rows and retains_cuped_relation(src)
+    if not is_custom_source(src):
+        return False
+    evidence = declared_evidence(src)
+    return evidence.unit_rows and (evidence.method_fit == "local" or retains_cuped_relation(src))
+
+
+def allows_local_metric_fit(
+    src: EvidenceSource,
+    answers: Sequence[tuple[MethodFitRequest, MethodFitAnswer]],
+) -> bool:
+    """Whether an unavailable custom fit answer permits fitting metric rows locally."""
+    return fits_uncovered_cells_locally(src) and any(
+        answer.origin == "unavailable" and answer.failure is None for _, answer in answers
     )
+
+
+def local_metric_fit_components(
+    src: EvidenceSource,
+    categorical_components: tuple[tuple[str, str, int], ...],
+    fit_components: tuple[tuple[str, str, int], ...],
+) -> tuple[tuple[str, str, int], ...]:
+    """Return retained-fit identity components when local custom fits combine with them."""
+    return (*categorical_components, *fit_components) if is_custom_source(src) else ()
 
 
 def validates_populations(src: EvidenceSource) -> bool:
@@ -186,6 +224,11 @@ def prior_exclusions(src: EvidenceSource) -> tuple[str, ...]:
     return tuple(getattr(src, "_legacy_prior_exclusions", ()))
 
 
+def effective_source_capabilities(src: EvidenceSource) -> EvidenceCapabilities:
+    """Resolve one source's declared capabilities for preflight interpretation."""
+    return effective_capabilities(declared_evidence(src))
+
+
 def source_route(src: EvidenceSource) -> SourceRoute:
     return declared_source_route(declared_evidence(src))
 
@@ -207,6 +250,30 @@ def declared_day_axis_route(evidence: EvidenceCapabilities) -> DayAxisRoute:
     """Select the day-axis view without acquiring a source."""
     route = declared_source_route(evidence)
     return MOMENTS_ROUTE if route == PANEL_ROUTE else route
+
+
+def declared_day_axis_dimensions(
+    evidence: EvidenceCapabilities, experiment: Any | None
+) -> tuple[str, ...]:
+    """Preserve the legacy dimension context for this declared day-axis view."""
+    if declared_day_axis_route(evidence) == MOMENTS_ROUTE:
+        return tuple(evidence.breakouts)
+    if experiment is None:
+        return ()
+    breakouts = (
+        experiment.get("breakouts", ())
+        if isinstance(experiment, Mapping)
+        else getattr(experiment, "breakouts", ())
+    )
+    return tuple(
+        sorted(
+            {
+                property_name
+                for item in breakouts
+                if (property_name := _declared_breakout_property(item)) is not None
+            }
+        )
+    )
 
 
 def is_artifact_route(src: EvidenceSource) -> bool:
@@ -257,6 +324,69 @@ def breakout_route(src: EvidenceSource) -> BreakoutRoute:
         return PANEL_ROUTE
     route = source_route(src)
     return UNSUPPORTED_ROUTE if route == MOMENTS_ROUTE else route
+
+
+def require_breakout_source_support(
+    src: EvidenceSource,
+    experiment: Any | None,
+    breakouts: Sequence[BreakoutIdentity] | None,
+) -> None:
+    """Refuse a breakout request when the selected source has no breakout route."""
+    if breakout_route(src) != UNSUPPORTED_ROUTE:
+        return
+    declaration = declared_evidence(src)
+    requested = (
+        tuple(identity.property for identity in breakouts)
+        if breakouts is not None
+        else tuple(item.property for item in experiment.breakouts)
+        if experiment is not None
+        else tuple(declaration.breakouts)
+    )
+    from increment._evidence_refusals import refuse_breakout
+
+    refuse_breakout(
+        src,
+        requested,
+        declaration.breakouts,
+        route="use a source with the requested breakout dimensions",
+    )
+
+
+def validate_breakout_populations(
+    src: EvidenceSource,
+    experiment: Any | None,
+    populations: Sequence[Literal["assigned", "triggered"]],
+) -> None:
+    """Validate breakout population support using the selected source declaration."""
+    if "triggered" not in populations:
+        return
+    route = breakout_route(src)
+    if not serves_custom_breakouts(src) and (
+        route not in (ARTIFACT_ROUTE, NATIVE_ROUTE)
+        or experiment is None
+        or experiment.trigger is None
+    ):
+        from increment._evidence_refusals import _TRIGGER_UNSUPPORTED
+
+        refuse(
+            _TRIGGER_UNSUPPORTED,
+            method="run_breakout",
+            experiment="<unknown>" if experiment is None else experiment.name,
+            trigger=None if experiment is None else experiment.trigger,
+            route=route,
+            supported_sources=("from_definitions", "from_unit_day_artifact"),
+        )
+    validate_populations(src, populations, operation="run_breakout")
+
+
+def breakout_uses_scoped_execution(src: EvidenceSource) -> bool:
+    """Whether breakout acquisition binds its slices to one source scope."""
+    return breakout_route(src) == NATIVE_ROUTE or serves_custom_breakouts(src)
+
+
+def breakout_uses_owned_execution_context(src: EvidenceSource, population: str) -> bool:
+    """Whether this breakout should open the normal run-owned execution context."""
+    return not serves_custom_breakouts(src) and population != "triggered"
 
 
 def require_breakout_identity(src: EvidenceSource, identities: Sequence[BreakoutIdentity]) -> None:
@@ -327,6 +457,15 @@ def evidence_scope(
     return acquire_evidence_scope(src, scope, lambda scoped: scoped).source
 
 
+def breakout_readout_scope(
+    src: EvidenceSource, scope: EvidenceScope
+) -> AbstractContextManager[EvidenceSource]:
+    """Pin custom breakout reads; built-in sources already own their read scope."""
+    if is_custom_source(src):
+        return evidence_scope(src, scope)
+    return nullcontext(src)
+
+
 def has_verified_sequential_checkpoint(src: EvidenceSource) -> bool:
     """Return whether the source retains a finalized, integrity-checked checkpoint."""
     snapshot = getattr(src, "_sequential_snapshot", None)
@@ -389,9 +528,175 @@ def acquire_evidence_scope(
     return load_evidence_scope(src, scope, provider_factory)
 
 
+def acquire_dashboard_scope(
+    src: EvidenceSource, scope: EvidenceScope
+) -> AbstractContextManager[_BuiltinMomentSource]:
+    """Pin dashboard evidence and expose its loader view inside that scope."""
+    return cast(
+        AbstractContextManager[_BuiltinMomentSource],
+        acquire_evidence_scope(src, scope, _builtin_source).source,
+    )
+
+
+def acquire_health_scope(
+    src: EvidenceSource, scope: EvidenceScope
+) -> AbstractContextManager[_BuiltinMomentSource]:
+    """Pin health diagnostics to one source snapshot."""
+    return cast(
+        AbstractContextManager[_BuiltinMomentSource],
+        acquire_evidence_scope(src, scope, _builtin_source).source,
+    )
+
+
+def health_population(src: EvidenceSource) -> Literal["assigned", "triggered"]:
+    """Select the health report's capture population from its declaration."""
+    return _view_population(src)
+
+
+def load_health_diagnostics(
+    src: EvidenceSource,
+    *,
+    context: Any,
+    state: Any,
+    runtime_inference: Any,
+    session: Any,
+) -> HealthDiagnosticEvidence:
+    """Resolve health declarations and cutoff fallback without reading diagnostics."""
+    experiment = getattr(src, "artifact_experiment", None)
+    trigger_name = getattr(experiment, "trigger", None) or getattr(context, "trigger_name", None)
+    declared_plan = getattr(experiment, "plan", None)
+    if declared_plan is None and isinstance(state, DefinitionsArmAnalysisState):
+        declared_plan = state.experiment.plan
+    inference = getattr(declared_plan, "inference", runtime_inference)
+    registration = getattr(inference, "triggered_registration", None)
+    snapshot_evidence = session.source_snapshot_evidence if session is not None else None
+    health_cutoff = (
+        None if snapshot_evidence is None else snapshot_evidence.observation_cutoff_ts.isoformat()
+    )
+    return HealthDiagnosticEvidence(
+        False,
+        None,
+        (),
+        False,
+        {},
+        trigger_name,
+        registration,
+        health_cutoff,
+    )
+
+
+def load_health_observation_edges(
+    src: EvidenceSource,
+    metrics: Sequence[Any],
+    evidence: HealthDiagnosticEvidence,
+) -> HealthDiagnosticEvidence:
+    """Acquire maturity edges for the health check that consumes them."""
+    if evidence.trigger_name is None:
+        return evidence
+    edge_operation = getattr(src, "triggered_observation_edges", None)
+    edge_available = callable(edge_operation)
+    edges: dict[str, HealthObservationEdgeAnswer] = {}
+    if edge_available:
+        for metric in sorted(metrics, key=lambda item: item.name):
+            edges[metric.name] = _load_triggered_observation_edge(src, metric)
+    else:
+        from increment._evidence_refusals import refuse_operation
+
+        for metric in sorted(metrics, key=lambda item: item.name):
+            try:
+                refuse_operation(
+                    src,
+                    "triggered_observation_edges",
+                    tuple(sorted(declared_evidence(src).operations)),
+                    route="This source does not retain trigger maturity evidence.",
+                )
+            except CapabilityError as refusal:
+                edges[metric.name] = HealthObservationEdgeAnswer(failure=refusal)
+    return replace(evidence, edge_operation_available=edge_available, edges=edges)
+
+
+def load_health_feed_diagnostics(
+    src: EvidenceSource,
+    evidence: HealthDiagnosticEvidence,
+    *,
+    session: Any,
+) -> HealthDiagnosticEvidence:
+    """Acquire feed completeness and apply its source-cutoff precedence."""
+    health_operation = getattr(src, "triggered_health_evidence", None)
+    if not callable(health_operation):
+        snapshot_evidence = session.source_snapshot_evidence if session is not None else None
+        health_cutoff = (
+            None
+            if snapshot_evidence is None
+            else snapshot_evidence.observation_cutoff_ts.isoformat()
+        )
+        return replace(evidence, health_cutoff=health_cutoff)
+    feed_evidence = health_operation()
+    feeds = tuple(
+        TriggeredHealthFeedEvidence(
+            item.evidence_kind,
+            item.feed,
+            item.metric,
+            item.complete_through,
+        )
+        for item in feed_evidence.feeds
+    )
+    health_cutoff = (
+        None
+        if feed_evidence.observation_cutoff is None
+        else feed_evidence.observation_cutoff.isoformat()
+    )
+    return replace(
+        evidence,
+        feed_operation_available=True,
+        observation_cutoff=feed_evidence.observation_cutoff,
+        feeds=feeds,
+        health_cutoff=health_cutoff,
+    )
+
+
+def validate_execution_population(source: EvidenceSource, population: str) -> None:
+    """Validate triggered-population support at the evidence acquisition boundary."""
+    if population != "triggered":
+        return
+    if is_custom_source(source):
+        require_population(source, population)
+        return
+    _require_analysis_operation(
+        cast(Any, source),
+        "triggered_source",
+        message=(
+            "A triggered readout requires a source retaining the raw event stream "
+            "and its declared trigger."
+        ),
+    )
+
+
 def _builtin_source(src: EvidenceSource) -> _BuiltinMomentSource:
     """Bridge typed scoped providers to the loader-shaped acquisition seam."""
     return loader_source(src)
+
+
+def day_axis_scoped_source(provider: EvidenceSource) -> _BuiltinMomentSource:
+    """Resolve a scoped day-axis provider to its built-in loader at acquisition."""
+    return _builtin_source(provider)
+
+
+def day_axis_grains(src: object) -> frozenset[str]:
+    """Return directly declared and source-acquirable day-axis grains."""
+    return _declared_day_axis_grains(src)
+
+
+def day_axis_requires_preflight(
+    source: EvidenceSource, request: Any, *, execution_active: bool
+) -> bool:
+    """Decide whether day-axis declaration checks must run before a scope opens."""
+    return _requires_day_axis_preflight(source, request, execution_active=execution_active)
+
+
+def day_axis_metric_objects_supported(source: EvidenceSource) -> bool:
+    """Whether day-axis requests can select undeclared metric definitions."""
+    return declared_day_axis_metric_objects_supported(declared_evidence(source))
 
 
 def load_missing_value_account(src: EvidenceSource, metric: Any) -> MissingValueAccount | None:
@@ -470,6 +775,92 @@ def load_counts(src: EvidenceSource, request: CountsRequest) -> CountEvidence:
         return CountEvidence(request.population, "unit", source.unit_counts())
     grain, counts, units = cast(Any, source).triggered_counts()
     return CountEvidence("triggered", grain, counts, units)
+
+
+def load_trigger_rates(src: EvidenceSource) -> Mapping[str, float]:
+    """Acquire trigger-rate evidence using the source's declared route."""
+    if is_artifact_route(src):
+        operations = declared_evidence(src).operations
+        if "triggered_counts" not in operations:
+            from increment._evidence_refusals import refuse_operation
+
+            refuse_operation(
+                src,
+                "triggered_counts",
+                tuple(sorted(operations)),
+                route="trigger_rates() requires complete trigger evidence",
+            )
+        return cast(Any, src).trigger_rates()
+
+    return _load_native_trigger_rates(src)
+
+
+def load_allocation_history(
+    src: EvidenceSource, *, population: Literal["assigned", "triggered"]
+) -> Any:
+    """Acquire the declared unit-grain enrollment history."""
+    source = _require_acquisition_operation(
+        src,
+        "allocation_history",
+        (
+            "allocation_history() needs an experiment built by from_definitions; "
+            "a frame, warehouse or moments experiment retains no raw event stream "
+            "to build a daily enrollment timeline from."
+        ),
+    )
+    return source.allocation_history(population=population)
+
+
+def _require_acquisition_operation(src: EvidenceSource, operation: str, message: str) -> Any:
+    """Validate a declared diagnostic operation before handing out its adapter."""
+    if operation == "allocation_history":
+        protocol = AllocationHistoryOperation
+    else:
+        protocol = None
+    return _require_analysis_operation(
+        cast(Any, src), cast(Any, operation), protocol, message=message
+    )
+
+
+def load_unit_counts(src: EvidenceSource) -> CountEvidence:
+    """Acquire enrolled-unit counts through the source's existing count path."""
+    if not is_custom_source(src):
+        src = _require_acquisition_operation(
+            src,
+            "unit_counts",
+            "unit_counts() requires a source with enrolled total-grain counts.",
+        )
+    request = CountsRequest(kind="unit", population=getattr(src, "population", "assigned"))
+    return load_counts(src, request)
+
+
+def acquire_custom_triggered_population(
+    src: EvidenceSource, *, trigger: str, control_group: str, metric: Any
+) -> tuple[AbstractContextManager[_BuiltinMomentSource], float] | None:
+    """Acquire a custom provider's scoped triggered population and control rate."""
+    if not is_custom_source(src):
+        return None
+    assigned = load_counts(src, CountsRequest(kind="unit"))
+    triggered = load_counts(src, CountsRequest(kind="triggered"))
+
+    observed = triggered.unit_counts if triggered.grain == "cluster" else triggered.counts
+    rates = {
+        group: float(observed.get(group, 0)) / count
+        for group, count in assigned.counts.items()
+        if count > 0 and group not in {MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL}
+    }
+    _validate_trigger(rates, trigger)
+    scoped = evidence_scope(src, EvidenceScope(metrics=(metric,), population="triggered"))
+    return cast(AbstractContextManager[_BuiltinMomentSource], scoped), rates[control_group]
+
+
+def baseline_trigger(
+    src: EvidenceSource, declared_trigger: str | None, context_trigger: str | None
+) -> str | None:
+    """Resolve a legacy provider-only trigger name outside statistical assembly."""
+    return (
+        context_trigger if declared_trigger is None and is_custom_source(src) else declared_trigger
+    )
 
 
 def load_assignment(src: EvidenceSource, request: AssignmentRequest) -> AssignmentEvidence:
@@ -565,10 +956,26 @@ def method_fit_input_digest(src: EvidenceSource, request: MethodFitRequest) -> s
     return digest.hexdigest()
 
 
+def trigger_integrity_requests(src: EvidenceSource) -> tuple[CountsRequest, CountsRequest]:
+    """Select uptake counts at the source's declared randomization grain."""
+    declaration = declared_evidence(src)
+    if "assignment" in declaration.count_grains:
+        kind = "assignment"
+    elif src.context.cluster is not None:
+        kind = "cluster"
+    else:
+        kind = "unit"
+    return (
+        CountsRequest(kind=kind, population="assigned"),
+        CountsRequest(kind=kind, population="triggered"),
+    )
+
+
 def validate_trigger_fires_in_every_arm(src: EvidenceSource, trigger: str | None) -> None:
     """Validate trigger uptake from the same evidence source used by the readout."""
-    assigned = load_counts(src, CountsRequest(kind="assignment", population="assigned"))
-    triggered = load_counts(src, CountsRequest(kind="assignment", population="triggered"))
+    assigned_request, triggered_request = trigger_integrity_requests(src)
+    assigned = load_counts(src, assigned_request)
+    triggered = load_counts(src, triggered_request)
     rates = {
         arm: triggered.counts.get(arm, 0) / count if count else 0.0
         for arm, count in assigned.counts.items()
@@ -1015,21 +1422,31 @@ def _complete_breakout_request(
     experiment = getattr(source, "_experiment", None) or getattr(
         source, "artifact_experiment", None
     )
+    if not definitions and experiment is not None:
+        definitions = tuple(experiment.breakouts)
     if request.breakouts:
         from increment.semantics.models import Breakout
 
         declared = {BreakoutIdentity(item.property, item.source): item for item in definitions}
-        definitions = tuple(
-            declared.get(
-                identity,
-                Breakout(property=identity.property, source=identity.source),
+        selected: list[Any] = []
+        for identity in request.breakouts:
+            definition = declared.get(identity)
+            if definition is None and identity.source is None:
+                matches = [
+                    item
+                    for candidate, item in declared.items()
+                    if candidate.property == identity.property
+                ]
+                if len(matches) == 1:
+                    definition = matches[0]
+            selected.append(
+                definition
+                if definition is not None
+                else Breakout(property=identity.property, source=identity.source)
             )
-            for identity in request.breakouts
-        )
+        definitions = tuple(selected)
         identities = request.breakouts
     else:
-        if not definitions and experiment is not None:
-            definitions = tuple(experiment.breakouts)
         identities = (
             tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
             if definitions
@@ -1067,6 +1484,7 @@ def load_breakout_evidence(
     fallback_source: EvidenceSource | None = None,
 ) -> BreakoutSlices | BreakoutUnitRows:
     """Acquire one typed breakout evidence request."""
+    src = _builtin_source(src)
     request, identities = _complete_breakout_request(src, request)
     require_request_evidence(src, request)
     require_breakout_identity(src, identities)
@@ -1101,10 +1519,9 @@ def load_breakout_evidence(
                         population=request.population,
                     ),
                 )
-            return BreakoutUnitRows(request.breakout, PANEL_ROUTE, frame, True)
+            return BreakoutUnitRows(request.breakout, frame, True)
         definitions = request.breakout_definitions
         return BreakoutSlices(
-            PANEL_ROUTE,
             tuple(
                 BreakoutSlice(
                     identity,
@@ -1113,6 +1530,7 @@ def load_breakout_evidence(
                     identity.source
                     if identity.source is not None or index >= len(definitions)
                     else definitions[index].source,
+                    tuple(metric.name for metric in request.metrics),
                 )
                 for index, identity in enumerate(request.breakouts)
             ),
@@ -1127,7 +1545,7 @@ def load_breakout_evidence(
             covariates = tuple(dict.fromkeys((request.breakout.property, *request.covariates)))
             frame = source.unit_frame(request.metric, covariates=covariates)
             dimension_in_frame = True
-        return BreakoutUnitRows(request.breakout, breakout_route(src), frame, dimension_in_frame)
+        return BreakoutUnitRows(request.breakout, frame, dimension_in_frame)
 
     route = breakout_route(src)
     if route == ARTIFACT_ROUTE:
@@ -1146,11 +1564,26 @@ def load_breakout_evidence(
             configs=request.configs,
         )
         slices = tuple(
-            BreakoutSlice(identity, scoped, None, scoped.source_name)
+            BreakoutSlice(
+                identity,
+                scoped,
+                None,
+                scoped.source_name,
+                tuple(metric.name for metric in request.metrics),
+            )
             for identity, scoped in zip(request.breakouts, sources, strict=True)
         )
     elif route == PANEL_ROUTE:
-        slices = tuple(BreakoutSlice(identity, src, None, None) for identity in request.breakouts)
+        slices = tuple(
+            BreakoutSlice(
+                identity,
+                src,
+                None,
+                None,
+                tuple(metric.name for metric in request.metrics),
+            )
+            for identity in request.breakouts
+        )
     elif route == NATIVE_ROUTE:
         declaration = declared_evidence(src)
         if "breakout_sources" not in declaration.operations:
@@ -1197,12 +1630,13 @@ def load_breakout_evidence(
                 if sum(item.property == identity.property for item in request.breakouts) > 1
                 else None,
                 scoped.source_name,
+                tuple(metric.name for metric in request.metrics),
             )
             for identity, scoped in zip(request.breakouts, sources, strict=True)
         )
     else:
         slices = ()
-    return BreakoutSlices(route, slices)
+    return BreakoutSlices(slices)
 
 
 def _groups(req: DayAxisRequest) -> list[tuple[Any, tuple[Any, ...]]]:
@@ -1292,11 +1726,13 @@ def _validate_daily_readout(src: EvidenceSource, req: DayAxisRequest, metric: An
         return
     from increment._readout_request import ReadoutRequest, validate_request
 
-    configs = {config.metric.name: config for config in src.context.configs}
+    config = next((item for item in src.context.configs if item.metric.name == metric.name), None)
+    if config is None:
+        (config,) = resolve_configs((metric,), None, None, methods=None, prior=None)
     readout_request = ReadoutRequest.from_source(
         src,
         metrics=(metric,),
-        configs=(configs[metric.name],),
+        configs=(config,),
         view="daily",
         grain="daily",
         by=req.by,
@@ -1304,7 +1740,7 @@ def _validate_daily_readout(src: EvidenceSource, req: DayAxisRequest, metric: An
         population=req.population,
         daily_lift=req.caller == "run_daily_lift",
     )
-    validate_request(readout_request)
+    validate_request(replace(readout_request, capabilities=_declared_day_axis_grains(src)))
 
 
 def _trigger_edge_source(src: Any) -> Any:
@@ -1645,6 +2081,7 @@ def load_builtin_day_moments(src: EvidenceSource, request: MomentsRequest) -> Mo
         completed_windows_only=request.completed_windows_only,
         population=request.population,
         experiment=experiment,
+        declared_dimensions=declared_day_axis_dimensions(declared_evidence(src), experiment),
         covariate_metrics=(
             frozenset((request.metric.name,)) if request.include_covariate else frozenset()
         ),
@@ -1722,7 +2159,6 @@ def load_breakout_method_moments(
         )
     method_source = _builtin_source(src)
     if callable(getattr(src, "breakout_source", None)):
-        from increment._analysis_config import overlay_configs
         from increment.semantics.models import Breakout
 
         configs = overlay_configs(

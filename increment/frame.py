@@ -330,6 +330,12 @@ class FrameTotalsSource(SequentialSourceMixin):
             ),
             available_covariates=frozenset(self._frame.columns),
             assignment_relation="reduced",
+            value_scale_overrides=True,
+            fixed_triggered=False,
+            windowed_breakout_quantiles=True,
+            temporal_quantiles=True,
+            temporal_clusters=True,
+            dimensioned_daily_metrics="any",
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -1564,6 +1570,12 @@ class FramePanelSource(SequentialSourceMixin):
             available_covariates=frozenset(frame.columns),
             assignment_relation="reduced",
             grain_route=None if clocked else _PANEL_EXPOSURE_DATE_ROUTE,
+            value_scale_overrides=True,
+            fixed_triggered=False,
+            windowed_breakout_quantiles=True,
+            temporal_quantiles=True,
+            temporal_clusters=True,
+            dimensioned_daily_metrics="any",
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:

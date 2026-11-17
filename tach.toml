@@ -131,7 +131,7 @@ depends_on = ["increment.compatibility"]
 [[modules]]
 path = "increment._source_operations"
 layer = "core"
-depends_on = ["increment.errors"]
+depends_on = ["increment._source_types", "increment.errors"]
 
 
 [[modules]]
@@ -149,11 +149,8 @@ path = "increment._health"
 layer = "core"
 depends_on = [
   "increment._evidence_types",
-  "increment._source_operations",
   "increment.decision",
   "increment.errors",
-  "increment.evidence",
-  "increment.query",
   "increment.readouts",
   "increment.sources", "increment.estimation.assignment_integrity", "increment.estimation.diagnostics", "increment.estimation.family", "increment.estimation.health",
 ]
@@ -225,9 +222,13 @@ depends_on = ["increment.errors"]
 path = "increment._evidence_loaders"
 layer = "core"
 depends_on = [
+  "increment._canonical",
   "increment._evidence_types",
   "increment._evidence_refusals",
   "increment._source_types",
+  "increment._source_operations",
+  "increment.decision",
+  "increment.errors",
 ]
 
 
@@ -1407,13 +1408,14 @@ depends_on = [
   "increment._source_types", "increment._day_axis",
   "increment._exploratory", "increment._source_admission",
   "increment.breakout.estimates", "increment.errors", "increment.readouts",
+  "increment._evidence_loaders",
   "increment.readouts._whole_window",
   "increment._metric_specs",
   "increment._evidence_refusals",
   "increment.sequential_state",
   "increment.sequential_source",
   "increment.readouts._execution_context",
-  "increment.decision", "increment._evidence_scopes",
+  "increment.decision",
   "increment.kernel.context", "increment.estimation.multiplicity",
 ]
 
@@ -1421,9 +1423,9 @@ depends_on = [
 path = "increment._sitewide"
 layer = "core"
 depends_on = [
-  "increment._binding", "increment._source_operations", "increment._source_types", "increment._source_admission", "increment.readouts._whole_window", "increment.errors",
+  "increment._binding", "increment._source_admission", "increment._evidence_loaders", "increment._source_operations", "increment._source_types", "increment.readouts._whole_window", "increment.errors",
   "increment._evidence_refusals",
-  "increment._evidence_types", "increment.evidence", "increment.query", "increment.semantics", "increment.estimation.sitewide", "increment.estimation.diagnostics",
+  "increment.evidence", "increment.query", "increment.semantics", "increment.estimation.sitewide", "increment.estimation.diagnostics",
 ]
 
 [[modules]]
@@ -1451,6 +1453,7 @@ path = "increment._exploratory"
 layer = "core"
 depends_on = [
   "increment._analysis_config",
+  "increment._evidence_loaders",
   "increment._source_admission",
   "increment._source_operations",
   "increment.breakout.estimates",
@@ -1477,7 +1480,6 @@ depends_on = [
   "increment._run_spines",
   "increment._runnability",
   "increment._source_admission",
-  "increment._source_types",
   "increment.breakout.estimates",
   "increment.decision",
   "increment.errors",
@@ -1518,16 +1520,13 @@ depends_on = [
   "increment._analysis_config",
   "increment._binding",
   "increment._evidence_refusals",
-  "increment._evidence_types",
   "increment._health",
   "increment._optional",
   "increment._planning_baseline",
   "increment._source_admission",
-  "increment._source_operations",
-  "increment._source_types",
   "increment.errors",
+  "increment._evidence_loaders",
   "increment.evidence",
-  "increment.query",
   "increment.readouts",
 ]
 
@@ -1555,8 +1554,8 @@ depends_on = [
   "increment._source_operations",
   "increment._source_types",
   "increment.decision",
+  "increment._evidence_loaders",
   "increment.errors",
-  "increment.evidence",
   "increment.readouts",
 ]
 
@@ -1593,6 +1592,7 @@ depends_on = [
   "increment._sequential_readouts", "increment.estimation.sequential",
   "increment.declarations", "increment._source_admission",
   "increment.sequential_state", "increment.sequential_source", "increment.estimation.sequential_result", "increment.estimation._readout_refusals", "increment.estimation.assignment_integrity", "increment.estimation.results", "increment.estimation.readout_types", "increment.estimation.family", "increment.estimation.cuped", "increment.estimation.encouragement", "increment.estimation.winsor", "increment.estimation.conversion_route", "increment.estimation.diagnostics", "increment.estimation.quantile", "increment.estimation.multiplicity", "increment.estimation.adjust", "increment.estimation.engine", "increment.estimation.contrast_results", "increment.estimation.inference",
+  "increment._source_operations",
 ]
 
 [[modules]]
@@ -1791,6 +1791,7 @@ expose = [
   "IncrementRuntimeWarning",
   "IncrementWarning",
   "InvalidRequestError",
+  "_ArtifactContractErrorMarker",
   "MissingExtraError",
   "RefusalSpec",
   "PACKAGE_FRAMES",
@@ -1866,6 +1867,7 @@ expose = [
   "unit_frame_covariate_columns", "raise_legacy_compliance_state",
   "validate_compliance_completion", "validate_compliance_design_match",
   "validate_compliance_source_match", "invalid_compliance_state",
+  "TriggeredHealthFeedEvidence", "HealthObservationEdgeAnswer", "HealthDiagnosticEvidence",
 ]
 
 [[interfaces]]
@@ -1994,8 +1996,8 @@ depends_on = ["increment.errors"]
 path = "increment.kernel.context"
 layer = "core"
 depends_on = [
-  "increment._evidence_types", "increment._source_types", "increment.kernel.contracts",
-  "increment.errors",
+  "increment._evidence_types", "increment._source_types", "increment._evidence_scopes",
+  "increment.kernel.contracts", "increment.errors",
 ]
 
 [[modules]]
@@ -2004,8 +2006,11 @@ layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._canonical", "increment._day_axis",
   "increment._evidence_refusals", "increment._evidence_types", "increment._readout_request",
+  "increment._evidence_loaders",
+  "increment._metric_specs",
   "increment._source_types", "increment._window", "increment.decision", "increment.kernel.contracts",
-  "increment.declarations", "increment.errors", "increment.query.artifact_ports", "increment.readouts", "increment.semantics",
+  "increment.plan",
+  "increment.declarations", "increment.errors", "increment.readouts", "increment.semantics",
   "increment.sequential_source", "increment.readouts._whole_window", "increment.estimation.priors", "increment.estimation._readout_refusals", "increment.estimation.engine",
 ]
 

@@ -33,7 +33,10 @@ from tests.parity_harness.cases import Bound, _close_parity_binding, _triggered_
 from tests.parity_harness.comparison import nested_close
 from tests.parity_harness.views import read
 
-IDENTITY_FIELDS = {"source_snapshot_id", "family_id"}
+# Only result-row.source_snapshot_id and result-row.family_id are provenance: forwarding
+# bindings have distinct snapshots, and family IDs hash that snapshot. Nested identities stay
+# semantic.
+_FORWARDING_ROW_PROVENANCE_FIELDS = frozenset({"source_snapshot_id", "family_id"})
 
 
 class ForwardingProvider:
@@ -112,27 +115,39 @@ def _unnamed_breakout_sources(builtin: Bound, mode: str) -> bool:
 
 
 def _without_source(payload: Any) -> Any:
-    if isinstance(payload, list):
-        return [_without_source(item) for item in payload]
-    if isinstance(payload, dict):
-        return {key: _without_source(item) for key, item in payload.items() if key != "source"}
-    return payload
+    """Project only BreakoutEstimate.source for unnamed, self-scoped breakouts.
+
+    The provider declares breakout properties but not the built-in catalog's default source.
+    Nested `source` values and every other row field remain part of parity.
+    """
+    if not isinstance(payload, list):
+        return payload
+    return [
+        {key: value for key, value in row.items() if key != "source"}
+        if isinstance(row, dict)
+        else row
+        for row in payload
+    ]
 
 
-def _payload(value: Any) -> Any:
+def _payload(value: Any, *, result_rows: bool = False) -> Any:
     if isinstance(value, (list, tuple)):
-        return [_payload(item) for item in value]
+        return [_payload(item, result_rows=result_rows) for item in value]
     if hasattr(value, "model_dump"):
         result = value.model_dump(mode="python")
-        return {key: _payload(item) for key, item in result.items() if key not in IDENTITY_FIELDS}
+        return {
+            key: _payload(item)
+            for key, item in result.items()
+            if not result_rows or key not in _FORWARDING_ROW_PROVENANCE_FIELDS
+        }
     if is_dataclass(value):
         return {
             field.name: _payload(getattr(value, field.name))
             for field in fields(value)
-            if field.name not in IDENTITY_FIELDS
+            if not result_rows or field.name not in _FORWARDING_ROW_PROVENANCE_FIELDS
         }
     if isinstance(value, dict):
-        return {key: _payload(item) for key, item in value.items() if key not in IDENTITY_FIELDS}
+        return {key: _payload(item) for key, item in value.items()}
     return value
 
 
@@ -145,11 +160,11 @@ def _leg_read(bound: Bound, cell: matrix.Cell, method: str) -> Any:
 
 def _outcome(bound: Bound, cell: matrix.Cell, method: str) -> tuple[str, Any]:
     try:
-        return "result", _payload(_leg_read(bound, cell, method))
+        return "result", _payload(_leg_read(bound, cell, method), result_rows=True)
     except TypeError as exc:
         pytest.fail(f"{cell.id}/{method}: harness TypeError: {exc}", pytrace=True)
     except CodedError as exc:
-        return "refusal", exc.code
+        return "refusal", (type(exc), exc.code, tuple(exc.context.items()))
     except Exception as exc:  # compared on both sides; unexpected paths are divergences
         return "exception", (type(exc).__qualname__, str(exc))
 
@@ -237,8 +252,9 @@ def test_forwarding_provider_matches_matrix_cell(cell: matrix.Cell) -> None:
         matrix.Cell("mean", "run", "cuped", "utc", "error"),
         matrix.Cell("mean", "run", "winsor_percentile", "utc", "error"),
         matrix.Cell("mean", "run", "cluster", "utc", "error"),
+        matrix.Cell("mean", "run", "sequential", "utc", "error"),
     ],
-    ids=["run", "breakout", "daily", "asof", "cuped", "winsor", "cluster"],
+    ids=["run", "breakout", "daily", "asof", "cuped", "winsor", "cluster", "sequential-refusal"],
 )
 def test_forwarding_provider_boundary_cell(cell: matrix.Cell) -> None:
     for mode in ("self", "adapter"):
@@ -285,8 +301,8 @@ def test_forwarding_provider_sequential_checkpoint_rows_match(con) -> None:
         checkpoint = workflows.capture_sequential(*native, finalized=True, as_of=date(2025, 7, 1))
         adopt_source_snapshot(source, checkpoint)
         provider_pair = _provider_pair(_forwarding(native, "self"))
-        expected = _payload(view_readout(*native))
-        actual = _payload(view_readout(*provider_pair))
+        expected = _payload(view_readout(*native), result_rows=True)
+        actual = _payload(view_readout(*provider_pair), result_rows=True)
         assert expected, "built-in sequential checkpoint produced no rows"
         assert nested_close(expected, actual), (
             f"sequential checkpoint parity: built-in={expected!r}, provider={actual!r}"
@@ -316,11 +332,11 @@ def test_forwarding_provider_triggered_population_boundary(case) -> None:
 
                 def capture(analysis, ingress=ingress):
                     try:
-                        return "result", _payload(_read(analysis, ingress, case))
+                        return "result", _payload(_read(analysis, ingress, case), result_rows=True)
                     except TypeError as exc:
                         pytest.fail(f"{case.id}: harness TypeError: {exc}", pytrace=True)
                     except CodedError as exc:
-                        return "refusal", exc.code
+                        return "refusal", (type(exc), exc.code, tuple(exc.context.items()))
                     except Exception as exc:
                         return "exception", (type(exc).__qualname__, str(exc))
 

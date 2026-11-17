@@ -42,6 +42,55 @@ This required method set is a compatibility contract: never add a required
 `EvidenceProvider` method. New evidence capabilities must remain optional or be
 served through an explicitly versioned contract.
 
+Source declarations and provider adapters own differences in available evidence.
+The same analyst request keeps the same interpretation across sources; when a
+source cannot provide required evidence, the existing refusal remains the
+result. Do not move source-specific selection into the estimator or change
+analysis behavior to accommodate an adapter.
+
+`EvidenceCapabilities.value_scale_overrides` declares whether a source accepts
+a nonempty per-metric `value_scale=` mapping, including an explicit default.
+`fixed_triggered` declares fixed-horizon whole-window triggered evidence; the
+experiment must still declare a trigger and the source must validate the
+requested populations. Registered replay follows its separate capture rule.
+Both fields are optional for saved/custom declarations: omitted values retain
+the legacy meaning derived from the declaration kind and operations. New
+providers should set the semantic values explicitly; recorded declarations
+and runtime provider verification compare their effective capabilities.
+
+`windowed_breakout_quantiles` declares whether breakout requests may use a
+windowed quantile metric. Omitted values retain the legacy default: false for
+artifact declarations and true for other source declarations. Metric
+validation still precedes this capability refusal.
+
+`temporal_quantiles` and `temporal_clusters` declare whether the provider can
+supply quantile and clustered-outcome evidence on daily or as-of axes.
+`dimensioned_daily_metrics` is `"declared"` when dimensioned daily requests
+must use catalog-declared metrics, and `"any"` when they may select other
+metrics. Omitted values keep the legacy defaults. A native moments declaration
+is a non-artifact declaration whose `operations` include `moments_source`.
+For these declarations, temporal quantiles are unavailable and dimensioned
+daily requests require catalog-declared metrics. Temporal clusters are
+unavailable for these declarations and for artifact or definitions declarations.
+Explicit values override these defaults; new providers should declare these
+semantic capabilities explicitly.
+
+Native moments declarations accept undeclared metric definitions through
+`metrics=` on day-axis views without creating an exploratory sibling.
+`exploratory_metrics=` still requires separately declared `exploratory_source`
+support. Dimensioned daily selection still follows `dimensioned_daily_metrics`.
+Saved daily/as-of requests use the same selection rule in `runnable()`. Requested
+metric configurations are resolved even if the provider retains its original
+`SourceContext`.
+
+For scalar multicovariate CUPED, distinguish a missing fit from a failed one.
+An unavailable `MethodFitAnswer` without a failure may be fit from `unit_rows`
+when the provider declares local, retained or warehouse fit support and unit rows.
+An answer carrying a coded failure, including an arm withheld by the fit, keeps
+that failure and its context; unit-row availability does not authorize replacing
+it with a local estimate. Other methods with available fit evidence remain
+unchanged.
+
 For a source that computes moments from rows (dataframes and definitions), a
 total `MomentsRequest` without a method returns outcome moments only. Covariate
 moments require `include_covariate=True`; declaring pre-period data alone does
@@ -101,6 +150,14 @@ identity, nested inside one snapshot scope; each slice's reads must stay bound
 to its identity and the same snapshot. Breakout rows name the source the
 experiment declares for each breakout; when the experiment leaves a breakout's
 source unnamed, a provider's rows leave it unnamed too.
+
+Execution owns the lifetime of a selected scope, not its ingress policy. Built-in
+providers derive `snapshot` from the run's requested coherence; custom providers
+receive the original scope's `snapshot` value unchanged. A custom provider that
+forwards artifact reads remains provider-owned and does not inherit the artifact's
+capture guarantee. Keep provider selection, ownership classification and stream
+inventory acquisition below the execution-context boundary; the context validates
+authorized source identities and closes only the scope it entered.
 
 Triggered daily and as-of readouts need two separate kinds of evidence:
 trigger observation edges for each metric, and the experiment reconstruction
@@ -265,7 +322,7 @@ This evidence is not a moment: aggregates cannot restore unit membership or feed
 
 ### Trace dispatch, independent checks and consumers
 
-1. Trace `increment.workflows.health_check()` to `check_health()` in `increment/_health.py`. It pins one source snapshot, combines the allocation, trigger-rate, maturity, feed and assumption checks, retains source identity and cutoff, and builds the report. Dashboard capture reuses the same collection inside its own pinned snapshot rather than duplicating its policy.
+1. Trace `increment.workflows.health_check()` to `check_health()` in `increment/_health.py`. Acquisition returns typed feed, cutoff and per-metric edge answers inside the existing snapshot scope; `_health.py` combines them with allocation, trigger-rate and assumption checks. It pins one source snapshot, retains source identity and cutoff, and builds the report. Dashboard capture reuses the same collection inside its own pinned snapshot rather than duplicating its policy.
 2. `tests/test_experiment_health.py::test_balanced_trigger_rates_do_not_clear_assumption_risk` calculates each arm's expected trigger share directly from the fixture's raw `enrolled` and `saw_surface` user IDs, then compares that independent count to the report. The same test confirms that balanced rates leave assumption-risk fields marked as assumed. `test_health_missing_certificates_are_unknown` checks the refusal and missing watermark.
 3. Sentinel tests cover unavailable and not-applicable paths: `test_untriggered_summary_has_explicit_unavailable_triggered_rows`, `test_health_unit_panel_reports_only_supported_population`, `test_health_switchback_does_not_substitute_unit_arm_srm`, `test_health_moments_replay_does_not_reconstruct_trigger_population`, and `test_health_artifact_without_trigger_extensions_is_unavailable`. `test_health_artifact_trigger_extensions_are_optional_but_explicit` compares retained native/artifact evidence.
 4. Preserve identity and provenance through frozen models, JSON/pickle/deepcopy round trips, and dashboard projection. `test_health_json_replay_preserves_checks_and_risks` and `test_health_models_round_trip_pickle_deepcopy_and_nested_immutability` check restoration; dashboard tests check rendering. Serialization restores a report; it cannot make an unavailable check available.

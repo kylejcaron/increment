@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -15,26 +15,30 @@ from increment._analysis_config import (
     effective_methods,
     normalize_display_correction,
     overlay_configs,
+    resolve_configs,
     select_metrics,
 )
 from increment._canonical import declaration_value
+from increment._evidence_loaders import day_axis_grains, source_context_payload
+from increment._evidence_refusals import _DeclaredEvidence
 from increment._evidence_types import SourceContext
+from increment._metric_specs import validate_windowed_quantile_support
 from increment._readout_request import ReadoutRequest, validate_request
-from increment._source_types import EvidenceCapabilities
+from increment._readout_request import _raise as _raise_readout
+from increment._source_types import (
+    EvidenceCapabilities,
+    declared_day_axis_metric_objects_supported,
+    effective_capabilities,
+)
 from increment.decision import (
     CompiledDecisionPlan,
     margin_less_guardrail_route,
     refuse_margin_less_procedures,
 )
 from increment.declarations import VARIANCE_REDUCTION, estimator_refs, thaw
-from increment.errors import (
-    CapabilityError,
-    CodedError,
-    InvalidRequestError,
-    RefusalSpec,
-    refuse,
-)
+from increment.errors import CapabilityError, CodedError, InvalidRequestError, RefusalSpec, refuse
 from increment.estimation.priors import prior_from_payload
+from increment.plan import with_unassigned_procedures
 from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
 
 if TYPE_CHECKING:
@@ -43,10 +47,14 @@ if TYPE_CHECKING:
 _CONFIGS = TypeAdapter(tuple[ResolvedMetricConfig, ...])
 
 
-@dataclass(frozen=True)
-class _DeclaredSource:
-    context: SourceContext
-    evidence: EvidenceCapabilities
+class _DeclaredSource(_DeclaredEvidence):
+    __slots__ = ("context",)
+
+    def __init__(
+        self, context: SourceContext, evidence: EvidenceCapabilities, constructor: str
+    ) -> None:
+        super().__init__(evidence, constructor)
+        self.context = context
 
 
 def _compliance_only_request(
@@ -182,10 +190,10 @@ def _declared_capabilities(experiment: Any) -> tuple[EvidenceCapabilities, ...] 
 def _refuse_trigger(experiment: Any, scope: Any, operation: str) -> None:
     """Refuse a triggered view that no source can read.
 
-    Without a recorded trigger every view refuses. A recorded trigger keeps day-axis
-    and breakout views, a registered replay (which answers a missing triggered state
-    as unavailable rows) and a native or artifact whole-window run; a fixed-horizon
-    whole-window run over moments or a panel still refuses.
+    Without a recorded trigger every view refuses. Declared populations govern
+    day-axis and breakout views. Whole-window reads require effective
+    ``fixed_triggered`` support or registered replay, whose missing triggered
+    state remains an unavailable row.
     """
     if scope.population != "triggered":
         return
@@ -197,27 +205,21 @@ def _refuse_trigger(experiment: Any, scope: Any, operation: str) -> None:
         route = "switchback"
     else:
         capabilities = _declared_capabilities(experiment)
-        if (
-            capabilities is None
-            or "trigger_name" not in recorded
-            or any("triggered" in declared.populations for declared in capabilities)
-        ):
+        if capabilities is None or "trigger_name" not in recorded:
             return
-        from increment.readouts._evidence import (
-            ARTIFACT_ROUTE,
-            NATIVE_ROUTE,
-            declared_day_axis_route,
-        )
+        from increment.readouts._evidence import declared_day_axis_route
 
         route = declared_day_axis_route(capabilities[0])
         inference = recorded.get("plan", {}).get("inference") or {}
-        if recorded["trigger_name"] is not None and (
-            operation != "run"
-            or inference.get("registration") is not None
-            or route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
+        registered = inference.get("registration") is not None
+        if operation != "run":
+            if any("triggered" in declared.populations for declared in capabilities):
+                return
+        elif recorded["trigger_name"] is not None and (
+            registered or effective_capabilities(capabilities[0]).fixed_triggered
         ):
             return
-    from increment._day_axis import _TRIGGER_UNSUPPORTED
+    from increment._evidence_refusals import _TRIGGER_UNSUPPORTED
 
     refuse(
         _TRIGGER_UNSUPPORTED,
@@ -369,26 +371,9 @@ def operation_options(
 
 
 def context_payload(source: Any) -> dict[str, Any]:
-    """Record only construction state required by static request validation."""
-    context = source.context
-    from increment.decision import ContrastContext
+    """Resolve source-owned declaration metadata through evidence acquisition."""
 
-    if isinstance(context, ContrastContext):
-        return {"family": "contrast", "context": context.model_dump(mode="json")}
-    experiment = getattr(source, "_experiment", None) or getattr(
-        source, "artifact_experiment", None
-    )
-    identity = getattr(source, "declaration_identity", None)
-    return {
-        "source_declaration": declaration_value(identity()) if callable(identity) else None,
-        "study_id": context.study_id,
-        "plan": context.plan,
-        "configs": context.configs,
-        "cluster": context.cluster,
-        "trigger_name": context.trigger_name,
-        "source_name": type(source).__name__,
-        "experiment": None if experiment is None else experiment.model_dump(mode="json"),
-    }
+    return source_context_payload(source)
 
 
 def refuse_recorded_margin_less_guardrail(
@@ -410,25 +395,6 @@ def refuse_recorded_margin_less_guardrail(
             and design.get("mechanism") == "encouragement",
         ),
     )
-
-
-def _validate_artifact_metrics(declaration: Mapping[str, Any]) -> None:
-    import json
-
-    from increment.query.artifact_ports import artifact_query_ports
-    from increment.semantics.artifact import MetricMeasure
-
-    artifact_reader = artifact_query_ports().reader
-    _declared_metric_definitions = artifact_reader._declared_metric_definitions
-    _metric_spec_from_binding = artifact_reader._metric_spec_from_binding
-
-    identity = declaration["source_declaration"]
-    definitions = _declared_metric_definitions(json.dumps(identity["context"]))
-    for binding in identity["metric_measures"]:
-        _metric_spec_from_binding(
-            TypeAdapter(MetricMeasure).validate_python(binding),
-            definitions[binding["metric_name"]],
-        )
 
 
 def _estimator_config(
@@ -516,6 +482,8 @@ def _request_config(
     estimator_id: str,
     operation: str,
     metric_name: str,
+    *,
+    capabilities: EvidenceCapabilities,
 ) -> tuple[dict[str, Any], tuple[ResolvedMetricConfig, ...], tuple[ResolvedMetricConfig, ...]]:
     values = typed_request_options(options)
     recorded_configs = tuple(
@@ -528,12 +496,25 @@ def _request_config(
     )
     base = _CONFIGS.validate_python(recorded_configs)
     metrics = select_metrics(
-        tuple(config.metric for config in base), values.get("metrics"), caller=operation
+        tuple(config.metric for config in base),
+        values.get("metrics"),
+        caller=operation,
+        allow_undeclared_objects=(
+            operation in {"run_daily", "run_daily_lift", "run_asof", "run_asof_lift"}
+            and declared_day_axis_metric_objects_supported(capabilities)
+        ),
     )
     overrides = {} if operation in _VALUE_OPERATIONS else values
+    base_names = {config.metric.name for config in base}
+    missing = tuple(metric for metric in metrics if metric.name not in base_names)
+    request_base = (
+        (*base, *resolve_configs(missing, None, None, methods=None, prior=None))
+        if missing
+        else base
+    )
     configs = overlay_configs(
         metrics,
-        base,
+        request_base,
         methods=None,
         prior=None,
         decision_method=overrides.get("decision_method", UNSET),
@@ -557,10 +538,15 @@ def _validate_declared_day_axis(
 ) -> None:
     from increment._day_axis import validate_day_axis, validate_lift_request
     from increment._evidence_types import DayAxisRequest
-    from increment.readouts._evidence import declared_day_axis_route
+    from increment.readouts._evidence import (
+        declared_day_axis_dimensions,
+        declared_day_axis_route,
+    )
     from increment.semantics.models import Experiment
 
     experiment = declaration.get("experiment")
+    typed_experiment = None if experiment is None else Experiment.model_validate(dict(experiment))
+
     validate = validate_lift_request if operation.endswith("_lift") else validate_day_axis
     validate(
         DayAxisRequest(
@@ -574,12 +560,13 @@ def _validate_declared_day_axis(
             population=request.population,
             estimands=request.estimands,
             completed_windows_only=request.completion_policy,
+            declared_dimensions=declared_day_axis_dimensions(capabilities, typed_experiment),
         ),
-        src=_DeclaredSource(request.context, capabilities),
+        src=_DeclaredSource(request.context, capabilities, declaration["source_name"]),
         design=request.design,
         plan=request.plan,
         route=declared_day_axis_route(capabilities),
-        experiment=None if experiment is None else Experiment.model_validate(dict(experiment)),
+        experiment=typed_experiment,
     )
 
 
@@ -622,6 +609,25 @@ def _validate_scope_request(
         check(validate_request, request)
     elif scope.view == "asof":
         check(_validate_declared_day_axis, declaration, request, operation, capabilities)
+    elif scope.view == "breakout":
+        registration = getattr(request.plan.inference, "registration", None)
+        if registration is not None and request.by:
+            from increment.sequential_source import require_registered_breakout_selection
+
+            check(
+                require_registered_breakout_selection,
+                registration,
+                request.by,
+                population=scope.population,
+            )
+        if not refusals:
+            check(
+                validate_windowed_quantile_support,
+                request.metrics,
+                supported=effective_capabilities(capabilities).windowed_breakout_quantiles,
+            )
+        if not refusals:
+            check(validate_request, request)
     else:
         check(validate_request, request)
     if operation == "run_asof_lift" and not refusals:
@@ -649,11 +655,23 @@ def readout_refusals(
     decoded_design = parse_design(declaration_value(design))
     try:
         options, base_configs, configs = _request_config(
-            declaration, options, decoded_design, estimator_id, operation, metric_name
+            declaration,
+            options,
+            decoded_design,
+            estimator_id,
+            operation,
+            metric_name,
+            capabilities=capabilities,
         )
+        plan = CompiledDecisionPlan.model_validate(dict(declaration["plan"]))
+        if scope.view in {"daily", "asof"} and declared_day_axis_metric_objects_supported(
+            capabilities
+        ):
+            plan = with_unassigned_procedures(
+                plan, tuple(config.metric for config in configs), design=None
+            )
     except CodedError as refusal:
         return (refusal,)
-    plan = CompiledDecisionPlan.model_validate(dict(declaration["plan"]))
     context = SourceContext(
         study_id=declaration["study_id"],
         design=decoded_design,
@@ -684,8 +702,12 @@ def readout_refusals(
         scalar_anonymous_metrics=frozenset() if scalar is None else scalar.anonymous_metrics,
         scalar_method_evidence=False if scalar is None else scalar.method_evidence,
         scalar_breakout_evidence=False if scalar is None else scalar.breakout_evidence,
-        capabilities=capabilities.grains,
-        grain_route=capabilities.grain_route,
+        capabilities=(
+            day_axis_grains(_DeclaredSource(context, capabilities, declaration["source_name"]))
+            if scope.view in {"daily", "asof"}
+            else capabilities.grains
+        ),
+        grain_route=capabilities.grain_route or "use a source with the requested day axis",
         source_breakouts=capabilities.breakouts,
         source_name=declaration["source_name"],
         shape=capabilities.shape,
@@ -715,18 +737,18 @@ def readout_refusals(
             ):
                 refusals.append(error)
 
-    # Breakouts bind artifact metric columns before validating the readout.
-    if capabilities.kind == "artifact" and scope.view == "breakout":
-        check(_validate_artifact_metrics, declaration)
-        if refusals:
-            return tuple(refusals)
     _validate_scope_request(declaration, request, scope, operation, capabilities, check, refusals)
     if refusals:
         return tuple(refusals)
-    if capabilities.kind == "artifact" and scope.view != "breakout":
-        check(_validate_artifact_metrics, declaration)
-        if refusals:
-            return tuple(refusals)
+    if (
+        options.get("value_scale")
+        and not effective_capabilities(capabilities).value_scale_overrides
+    ):
+        try:
+            _raise_readout("readout.randomized.value_scale")
+        except CodedError as error:
+            refusals.append(error)
+
     from increment.readouts._common import _sequential_inference
 
     inference = _sequential_inference(plan)
@@ -743,15 +765,6 @@ def readout_refusals(
             request=SequentialCaptureRequest(finalized=True),
         )
         capture = options.get("capture")
-        if scope.view == "breakout":
-            from increment.sequential_source import require_registered_breakout_selection
-
-            check(
-                require_registered_breakout_selection,
-                inference.registration,
-                by,
-                population=scope.population,
-            )
         if capture is not None:
             from increment._window import resolve_window_days
             from increment.sequential_source import (

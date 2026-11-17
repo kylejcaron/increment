@@ -1604,6 +1604,24 @@ class MomentsSource(SequentialSourceMixin):
             ),
             available_covariates=None,
             assignment_relation="reduced" if self._assignment_counts is not None else "none",
+            value_scale_overrides=(
+                "artifact_experiment" in self.operations or "moments_source" not in self.operations
+            ),
+            fixed_triggered="artifact_experiment" in self.operations,
+            windowed_breakout_quantiles="artifact_experiment" not in self.operations,
+            temporal_quantiles=(
+                "artifact_experiment" not in self.operations
+                and "moments_source" not in self.operations
+            ),
+            temporal_clusters="artifact_experiment" not in self.operations,
+            dimensioned_daily_metrics=(
+                "declared"
+                if (
+                    "artifact_experiment" not in self.operations
+                    and "moments_source" in self.operations
+                )
+                else "any"
+            ),
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -2467,9 +2485,13 @@ class BreakoutMomentsSource(SequentialSourceMixin):
 
     @property
     def evidence(self) -> EvidenceCapabilities:
-        from increment._source_types import declared_evidence
+        from increment._source_types import declared_evidence, effective_capabilities
 
-        backing = declared_evidence(self._source) if self._source is not None else None
+        backing = (
+            effective_capabilities(declared_evidence(self._source))
+            if self._source is not None
+            else None
+        )
         return EvidenceCapabilities(
             kind="breakout",
             grains=self.capabilities,
@@ -2498,6 +2520,16 @@ class BreakoutMomentsSource(SequentialSourceMixin):
                 covariate_grains=None,
             ),
             available_covariates=None,
+            value_scale_overrides=True,
+            fixed_triggered=False,
+            windowed_breakout_quantiles=(
+                backing.windowed_breakout_quantiles if backing is not None else True
+            ),
+            temporal_quantiles=backing.temporal_quantiles if backing is not None else True,
+            temporal_clusters=backing.temporal_clusters if backing is not None else False,
+            dimensioned_daily_metrics=(
+                backing.dimensioned_daily_metrics if backing is not None else "any"
+            ),
         )
 
     @property

@@ -572,6 +572,82 @@ def test_whole_window_assigned_and_triggered_reads_share_capture(tmp_path, monke
 
 
 @pytest.mark.integration
+def test_triggered_whole_window_capture_authorizes_integrity_counts(tmp_path):
+    from increment.evidence import EvidenceScope, evidence_provider
+    from increment.kernel.context import EvidenceExecutionContext
+
+    (experiment, resolver), _ = definitions_source(tmp_path, trigger=True, return_binding=True)
+    source = cast(Any, held_source(resolver))
+    provider = evidence_provider(source)
+    scope = EvidenceScope(
+        populations=("assigned", "triggered"),
+        metrics=tuple(source.context.metrics),
+        configs=tuple(source.context.configs),
+        execution=True,
+    )
+    context = EvidenceExecutionContext(provider, scope, run_id="triggered-only")
+    try:
+        context.open()
+        result = run_views(experiment.with_views(_TRIGGERED), resolver, execution_context=context)
+        assert result.readout(_TRIGGERED)
+    finally:
+        context.close()
+        resolver.close()
+
+
+@pytest.mark.integration
+def test_assigned_only_whole_window_accepts_assigned_execution_scope(tmp_path):
+    from increment.evidence import EvidenceExecutionContext, EvidenceScope, evidence_provider
+
+    (experiment, resolver), _ = definitions_source(tmp_path, trigger=True, return_binding=True)
+    source = cast(Any, held_source(resolver))
+    context = EvidenceExecutionContext(
+        evidence_provider(source),
+        EvidenceScope(
+            metrics=tuple(source.context.metrics),
+            population="assigned",
+            populations=("assigned",),
+            configs=tuple(source.context.configs),
+            snapshot=True,
+            execution=True,
+        ),
+        run_id="assigned-only",
+    )
+    try:
+        context.open()
+        result = run_views(
+            experiment,
+            resolver,
+            views=(_ASSIGNED,),
+            execution_context=context,
+        )
+        rows = result.readout(_ASSIGNED)
+        assert rows
+        assert {row.analysis_population for row in rows} == {"assigned"}
+    finally:
+        context.close()
+        resolver.close()
+
+
+@pytest.mark.integration
+def test_triggered_whole_window_family_capture_authorizes_integrity_counts(tmp_path):
+    (experiment, resolver), _ = definitions_source(tmp_path, trigger=True, return_binding=True)
+    whole = View(view="run", grain="total", population="triggered")
+    daily = View(view="daily", grain="daily", values=True, population="triggered")
+    try:
+        result = run_views(
+            experiment.with_views(whole, daily),
+            resolver,
+            views=(whole, daily),
+        )
+        assert result.readout(whole)
+        assert result.readout(daily)
+        assert {row.analysis_population for row in result.readout(whole)} == {"triggered"}
+    finally:
+        resolver.close()
+
+
+@pytest.mark.integration
 def test_borrowed_context_rejects_a_different_source_before_read(tmp_path):
     from increment.errors import CodedError
     from increment.evidence import EvidenceScope, evidence_provider
@@ -1374,11 +1450,17 @@ def test_triggered_native_wrapper_preserves_physical_stream_inventory(tmp_path):
 
 
 @pytest.mark.integration
-def test_custom_provider_preserves_snapshot_after_update(tmp_path):
+@pytest.mark.parametrize("original_snapshot", (False, True))
+@pytest.mark.parametrize("coherence", ("captured", "live"))
+def test_custom_provider_preserves_original_snapshot_request_after_update(
+    tmp_path, original_snapshot, coherence
+):
     from increment.evidence import EvidenceProvider, EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
 
-    (experiment, resolver), _ = definitions_source(tmp_path, return_binding=True)
+    (experiment, resolver), (_, connection) = definitions_source(
+        tmp_path, return_binding=True, return_connection=True
+    )
     source = cast(Any, held_source(resolver))
     adapter = evidence_provider(source)
 
@@ -1424,20 +1506,28 @@ def test_custom_provider_preserves_snapshot_after_update(tmp_path):
         EvidenceScope(
             metrics=tuple(source.context.metrics),
             configs=tuple(source.context.configs),
-            snapshot=True,
+            snapshot=original_snapshot,
         ),
         run_id="custom-snapshot",
+        coherence=coherence,
     )
     try:
+        before = run(provider, coherence=coherence)
+        before_value = before[0].require_lift().value
+        provider.requests.clear()
         context.open()
-        assert provider.requests[0].snapshot is True
-        source._con.raw_sql(
+        assert provider.requests[0].snapshot is original_snapshot
+        connection.raw_sql(
             "UPDATE raw_events SET revenue = revenue + 100 "
             "WHERE event = 'purchase' AND group_id IS NULL"
         )
-        rows = run(provider, execution_context=context)
+        rows = run(provider, coherence=coherence, execution_context=context)
         assert rows
-        assert rows[0].require_lift().value == pytest.approx(2.0)
+        value = rows[0].require_lift().value
+        if original_snapshot:
+            assert value == pytest.approx(before_value)
+        else:
+            assert value != pytest.approx(before_value)
     finally:
         context.close()
         resolver.close()

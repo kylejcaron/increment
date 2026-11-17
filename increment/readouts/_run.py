@@ -26,7 +26,6 @@ from increment.readouts._common import (
 from increment.readouts._design_scope import _config_snapshot
 from increment.readouts._encouragement import encouragement_rows
 from increment.readouts._evidence import (
-    _builtin_source,
     acquire_observational_inputs,
     artifact_provenance,
     load_missing_value_account,
@@ -160,7 +159,7 @@ def run(
         return _as_collection(
             _label_skipped_populations(
                 _run_prepared(
-                    _builtin_source(src),
+                    RunAcquisitionOwner.loader_for(src),
                     selected,
                     configs,
                     prior=prior,
@@ -181,7 +180,7 @@ def run(
         context.validate_observational_streams(src, design)
         with context.borrow(source=src, metrics=selected, configs=configs) as scoped:
             rows = _run_prepared(
-                _builtin_source(scoped),
+                RunAcquisitionOwner.loader_for(scoped),
                 selected,
                 configs,
                 prior=prior,

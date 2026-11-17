@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from increment._source_types import _BuiltinMomentSource
 from increment.errors import CodedError, _freeze
 
 if TYPE_CHECKING:
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from increment.estimation.results import LiftEstimate
     from increment.semantics.models import Breakout, Metric
     from increment.sequential_state import SequentialCheckpoint
-    from increment.sources import EvidenceSource
+    from increment.sources import EvidenceSource, SourceOperation
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +221,46 @@ class PanelSQLOperation(Protocol):
 @runtime_checkable
 class NativePanelSqlOperation(Protocol):
     def panel_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
+
+    def build_panel_for_metric(
+        self,
+        metric: Metric,
+        *,
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, Scalar]: ...
+
+
+@runtime_checkable
+class NativeCoreSource(_BuiltinMomentSource, Protocol):
+    """Source-owned native core workflows."""
+
+    operations: frozenset[SourceOperation]
+
+    def materialize(self) -> None: ...
+
+    def triggered_counts(
+        self,
+    ) -> tuple[Literal["unit", "cluster"], dict[str, int], dict[str, int]]: ...
+
+    def triggered_source(self) -> _BuiltinMomentSource: ...
+
+    def trigger_rates(self) -> dict[str, float]: ...
+
+    def export_moments(self, path: str | Path) -> None: ...
+
+    def moments_source(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        methods: list[Any] | None = None,
+        prior: Any | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
+        narrow_cuped: bool = False,
+    ) -> _BuiltinMomentSource: ...
+
+    def panel_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
+
+    def summary_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
 
     def build_panel_for_metric(
         self,

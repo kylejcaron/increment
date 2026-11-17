@@ -1572,9 +1572,20 @@ def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_p
     adopted = None
     try:
         adopted = _publish_and_adopt(con, native, kinds=("breakout_dimension", "assignment_counts"))
-        with pytest.raises(InvalidRequestError) as raised:
+        with pytest.raises(CapabilityError) as triggered:
             view_readout(*adopted, View(view="breakout", grain="total", population="triggered"))
-        assert raised.value.code == "frame.metric.window_days_supported"
+        assert triggered.value.code == "facade.analysis.trigger_unsupported"
+        assert triggered.value.context == {
+            "method": "run_breakout",
+            "experiment": "exp",
+            "trigger": None,
+            "route": "artifact",
+            "supported_sources": ("from_definitions", "from_unit_day_artifact"),
+        }
+
+        with pytest.raises(InvalidRequestError) as assigned:
+            view_readout(*adopted, View(view="breakout", grain="total", population="assigned"))
+        assert assigned.value.code == "frame.metric.window_days_supported"
     finally:
         if adopted is None:
             native[1].close()
@@ -3123,7 +3134,7 @@ def _clustered_trigger_events(
     "method_name",
     ("run_daily", "run_daily_lift", "run_asof", "run_asof_lift"),
 )
-def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_name):
+def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_name, monkeypatch):
     from tests.capability_consumers_auxiliary import assert_refusal
 
     con = ibis.duckdb.connect()
@@ -3147,9 +3158,21 @@ def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_na
         ),
     )
     try:
+
+        def fail(*args, **kwargs):
+            raise AssertionError("cluster refusal performed a warehouse read")
+
+        monkeypatch.setattr(con, "raw_sql", fail)
+        monkeypatch.setattr(con, "execute", fail)
+        monkeypatch.setattr(con, "to_pyarrow", fail)
         with pytest.raises(CapabilityError) as raised:
             view_readout(experiment, resolver, _day_axis_scope(method_name, population="triggered"))
         assert raised.value.code == "facade.analysis.clustered_day_axis"
+        assert raised.value.context == {
+            "method": method_name,
+            "experiment": "exp",
+            "cluster": "store_id",
+        }
         assert_refusal(
             "triggered_clustered_day_axis",
             "clustered_outcome_history_refused",

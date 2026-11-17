@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from increment._canonical import declaration_value
 from increment._evidence_refusals import refuse_grain, refuse_operation, require_evidence
 from increment._evidence_types import (
     BreakoutMethodMomentsRequest,
@@ -12,20 +13,31 @@ from increment._evidence_types import (
     CountsRequest,
     EvidenceScope,
     EvidenceSource,
+    HealthObservationEdgeAnswer,
     MethodFitRequest,
     MomentRows,
     MomentsRequest,
     SequentialCaptureRequest,
+    SourceContext,
     UnitRows,
     UnitRowsRequest,
 )
+from increment._source_operations import (
+    DashboardGroupDataOperation,
+    ExploratorySourceOperation,
+    NativeCoreSource,
+)
 from increment._source_types import (
     MOMENTS_BATCH_OWNERS,
+    EvidenceProvider,
     _BuiltinMomentSource,
     declared_evidence,
     is_builtin_source,
     is_custom_source,
+    source_class_name,
 )
+from increment.decision import ContrastContext
+from increment.errors import CapabilityError, _ArtifactContractErrorMarker
 
 if TYPE_CHECKING:
     from increment.kernel.context import EvidenceExecutionContext
@@ -51,6 +63,38 @@ def view_population(src: EvidenceSource) -> Literal["assigned", "triggered"]:
     return (
         "triggered" if "triggered" in populations and "assigned" not in populations else "assigned"
     )
+
+
+def load_native_trigger_rates(src: EvidenceSource) -> dict[str, float]:
+    """Acquire rates only from sources satisfying the legacy native core contract."""
+    declaration = declared_evidence(src)
+    offered = tuple(sorted(declaration.operations))
+    route = (
+        "trigger_rates() needs an experiment built by from_definitions with a warehouse connection"
+    )
+    if not isinstance(getattr(src, "context", None), SourceContext):
+        refuse_operation(src, "triggered_counts", offered, route=route)
+    if "triggered_counts" not in offered:
+        refuse_operation(src, "triggered_counts", offered, route=route)
+    if not isinstance(src, NativeCoreSource):
+        refuse_operation(
+            src,
+            "triggered_counts",
+            offered,
+            route="use a source that implements the requested operation",
+        )
+    return src.trigger_rates()
+
+
+def load_triggered_observation_edge(
+    src: EvidenceSource, metric: Any
+) -> HealthObservationEdgeAnswer:
+    """Acquire one maturity edge, retaining only established unavailable failures."""
+    try:
+        observed, finalized = cast(Any, src).triggered_observation_edges(metric)
+    except (CapabilityError, _ArtifactContractErrorMarker) as failure:
+        return HealthObservationEdgeAnswer(failure=failure)
+    return HealthObservationEdgeAnswer(observed, finalized)
 
 
 def require_request_evidence(
@@ -107,6 +151,14 @@ def source_for_population(src: _BuiltinMomentSource, population: str) -> _Builti
     ):
         return cast(Any, src).triggered_source()
     return src
+
+
+def day_axis_grains(src: object) -> frozenset[str]:
+    """Return declared day grains plus those the declared day-source operation can acquire."""
+    evidence = declared_evidence(src)
+    if "day_source" not in evidence.operations:
+        return frozenset(evidence.grains)
+    return frozenset((*evidence.grains, "daily", "asof"))
 
 
 def _validate_moments_request(src: EvidenceSource, request: MomentsRequest) -> None:
@@ -190,3 +242,83 @@ def load_unit_rows(src: EvidenceSource, request: UnitRowsRequest) -> UnitRows:
     if request.outcome_stage == "raw":
         kwargs["outcome_stage"] = "raw"
     return cast(Any, source).unit_frame(request.metric, **kwargs)
+
+
+def load_exploratory_source(
+    operation: ExploratorySourceOperation, metrics: Sequence[Any]
+) -> EvidenceSource:
+    """Acquire a sibling source for declared exploratory metrics."""
+    return operation.exploratory_source(metrics=metrics)
+
+
+def load_dashboard_group_data(
+    operation: DashboardGroupDataOperation,
+    *,
+    metrics: Sequence[Any],
+    checkpoints: Mapping[str, Any] | None,
+    population: Literal["assigned", "triggered"],
+) -> tuple[Any, ...]:
+    """Acquire dashboard group evidence through its declared source operation."""
+    return tuple(
+        operation.dashboard_group_data(
+            metrics=metrics, checkpoints=checkpoints, population=population
+        )
+    )
+
+
+def build_triggered_srm_provider(
+    source: EvidenceSource, provider_factory: Callable[[object], EvidenceProvider]
+) -> EvidenceProvider:
+    """Build the adapter consumed by triggered SRM after caller authorization."""
+    return provider_factory(source)
+
+
+def load_sitewide_evidence(
+    operation: Any,
+    metric: Any,
+    *,
+    include_ratio: bool,
+    population: Literal["assigned", "triggered"],
+) -> Any:
+    """Acquire whole-site evidence after request validation."""
+    return operation.sitewide_evidence(metric, include_ratio=include_ratio, population=population)
+
+
+def load_triggered_sitewide_counts(
+    source: EvidenceSource, provider_factory: Callable[[object], EvidenceProvider]
+) -> Any:
+    """Acquire typed triggered counts for whole-site allocation diagnostics."""
+    return provider_factory(source).counts(CountsRequest(kind="triggered"))
+
+
+def load_assignment_diagnostic(source: Any) -> Any:
+    """Acquire source-owned switchback assignment-integrity diagnostics."""
+    return source.diagnostics
+
+
+def breakout_readout_source(source: EvidenceSource) -> Any:
+    """Select the panel's restricted summary reducer for whole-window breakouts."""
+    summary = getattr(source, "summary_breakout_source", None)
+    return source if summary is None else summary
+
+
+def source_context_payload(source: Any) -> dict[str, Any]:
+    """Acquire source-owned declaration metadata for static request validation."""
+
+    context = source.context
+    if isinstance(context, ContrastContext):
+        return {"family": "contrast", "context": context.model_dump(mode="json")}
+    experiment = getattr(source, "_experiment", None) or getattr(
+        source, "artifact_experiment", None
+    )
+    identity = getattr(source, "declaration_identity", None)
+    return {
+        "source_declaration": declaration_value(identity()) if callable(identity) else None,
+        "study_id": context.study_id,
+        "plan": context.plan,
+        "configs": context.configs,
+        "cluster": context.cluster,
+        "trigger_name": context.trigger_name,
+        "source_name": source_class_name(source),
+        "experiment": None if experiment is None else experiment.model_dump(mode="json"),
+    }

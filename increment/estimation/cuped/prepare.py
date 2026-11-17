@@ -26,7 +26,15 @@ def prepare_multicovariate_fit(
         ),
         None,
     )
-    if answer is None or answer.origin == "unavailable":
+    if answer is None:
+        return PreparedMulticovariateFit(origin="local")
+    if answer.failure is not None:
+        return PreparedMulticovariateFit(
+            origin="local",
+            failure=answer.failure,
+            fit_identity=answer.fit_identity,
+        )
+    if answer.origin == "unavailable":
         return PreparedMulticovariateFit(origin="local")
     return PreparedMulticovariateFit(
         origin=answer.origin,

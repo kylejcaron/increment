@@ -220,6 +220,41 @@ values.
   depend on aggregate order. The numerical reference remains
   `tests/fixtures/parity_baseline.json`; ordinary estimates retain their
   existing tolerances.
+- Supported whole-window, breakout, daily/as-of, triggered, and registered
+  analyses retain their existing behavior. Source declarations and provider
+  adapters own differences in available evidence; unsupported requests keep
+  their existing refusals. Estimator behavior and numeric baselines are
+  unchanged.
+- `runnable()` honors a saved source's support for quantiles with an outcome
+  window in breakout views. An unsupported window reports
+  `frame.metric.window_days_supported`, matching execution before data is read.
+- Daily views honor a custom provider's declared day-level access even when
+  its aggregate data lists only a total.
+- A failed custom-provider CUPED fit no longer prevents a valid comparison
+  method from using available unit-level data. The failed method retains its
+  original reason.
+- Saved experiments retain triggered analyses for legacy custom providers that
+  offer triggered moments. Explicitly disabling triggered support still refuses
+  before data is read.
+- Unclustered triggered analyses accept a custom provider's declared unit counts
+  when assignment counts are unavailable. Clustered analyses still require counts
+  at the randomization grain.
+- Fresh warehouse and demo installations exclude SQLGlot 30.32.0, which produces
+  invalid SQL when Ibis creates a DuckDB table from Arrow data.
+- Unavailable CUPED results contribute their fit identity and structured reason
+  to readout snapshot identity. Changing that evidence no longer reuses an
+  identity; valid comparison-method estimates are unchanged.
+- Clustered daily/as-of requests honor custom-provider support declarations
+  even when cluster metadata is supplied without an experiment definition.
+  Older declarations retain their existing early refusals.
+- Saved daily/as-of metric definitions now agree between `runnable()` and
+  execution. Providers can answer these requests through their moments operation
+  without creating an exploratory sibling; `exploratory_metrics=` still requires
+  separately declared support.
+- Missing-breakout refusals retain their full structured context in `runnable()`
+  and `run`, including the original guidance for declaring breakouts.
+- `runnable()` retains daily quantile refusals for saved artifacts when another
+  validation check also refuses; execution's reason is no longer omitted.
 - `View.breakout(segment, *, population="assigned", metrics=())` accepts an
   optional tuple of registered metric definitions. An empty tuple selects the
   experiment's metrics. Save or log a selective breakout alongside the complete

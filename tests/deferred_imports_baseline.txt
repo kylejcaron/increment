@@ -14,13 +14,10 @@ increment._binding -> increment.kernel.experiment
 increment._binding -> increment.kernel.resolver
 increment._binding -> increment.semantics
 increment._binding -> increment.semantics.models
-increment._breakout_readouts -> increment._evidence_refusals
-increment._breakout_readouts -> increment._evidence_scopes
 increment._breakout_readouts -> increment._metric_specs
 increment._breakout_readouts -> increment._source_types
 increment._breakout_readouts -> increment.breakout
 increment._breakout_readouts -> increment.breakout.estimates
-increment._breakout_readouts -> increment.decision
 increment._breakout_readouts -> increment.estimation
 increment._breakout_readouts -> increment.estimation.multiplicity
 increment._breakout_readouts -> increment.kernel
@@ -44,8 +41,6 @@ increment._cuped_evidence -> increment.estimation.cuped.multicovariate
 increment._cuped_evidence -> increment.estimation.cuped.types
 increment._cuped_evidence -> increment.estimation.variance
 increment._dashboard_capture -> increment._evidence_refusals
-increment._dashboard_capture -> increment.readouts
-increment._dashboard_capture -> increment.readouts._evidence
 increment._day_axis -> increment._analysis_config
 increment._day_axis -> increment._evidence_refusals
 increment._day_axis -> increment._evidence_types
@@ -91,8 +86,6 @@ increment._execute -> increment.estimation.engine
 increment._execute -> increment.kernel
 increment._execute -> increment.kernel.contracts
 increment._execute -> increment.kernel.experiment
-increment._execute -> increment.readouts
-increment._execute -> increment.readouts._evidence
 increment._execute -> increment.semantics
 increment._execute -> increment.semantics.models
 increment._execute -> increment.sequential_source
@@ -111,10 +104,6 @@ increment._health -> increment.estimation
 increment._health -> increment.estimation.assignment_integrity
 increment._health -> increment.estimation.diagnostics
 increment._health -> increment.estimation.family
-increment._health -> increment.query
-increment._health -> increment.query.artifact_contract
-increment._health -> increment.readouts
-increment._health -> increment.readouts._evidence
 increment._immutable -> increment._display
 increment._lift_options -> increment.estimation
 increment._lift_options -> increment.estimation.engine
@@ -125,8 +114,6 @@ increment._planning_baseline -> increment.estimation.cuped
 increment._planning_baseline -> increment.estimation.engine
 increment._planning_baseline -> increment.power
 increment._planning_baseline -> increment.power.core
-increment._planning_baseline -> increment.readouts
-increment._planning_baseline -> increment.readouts._design_scope
 increment._predeclared_adjustment -> increment.estimation
 increment._predeclared_adjustment -> increment.estimation.cuped
 increment._predeclared_adjustment -> increment.estimation.engine
@@ -168,15 +155,11 @@ increment._runnability -> increment._day_axis
 increment._runnability -> increment._evidence_refusals
 increment._runnability -> increment._evidence_types
 increment._runnability -> increment._window
-increment._runnability -> increment.decision
 increment._runnability -> increment.estimation
 increment._runnability -> increment.estimation._readout_refusals
 increment._runnability -> increment.estimation.engine
-increment._runnability -> increment.estimation.inference
 increment._runnability -> increment.kernel
 increment._runnability -> increment.kernel.contracts
-increment._runnability -> increment.query
-increment._runnability -> increment.query.artifact_ports
 increment._runnability -> increment.readouts
 increment._runnability -> increment.readouts._common
 increment._runnability -> increment.readouts._daily
@@ -184,20 +167,15 @@ increment._runnability -> increment.readouts._evidence
 increment._runnability -> increment.readouts._requests
 increment._runnability -> increment.readouts._whole_window
 increment._runnability -> increment.semantics
-increment._runnability -> increment.semantics.artifact
 increment._runnability -> increment.semantics.models
 increment._runnability -> increment.sequential_source
 increment._sequential_readouts -> increment.estimation
 increment._sequential_readouts -> increment.estimation.sequential_runtime
-increment._sitewide -> increment._evidence_refusals
 increment._sitewide -> increment.estimation
 increment._sitewide -> increment.estimation.diagnostics
 increment._sitewide -> increment.query
 increment._sitewide -> increment.query.builders
 increment._source_admission -> increment._evidence_refusals
-increment._source_diagnostics -> increment._evidence_refusals
-increment._source_diagnostics -> increment.query
-increment._source_diagnostics -> increment.query.native_contract
 increment._source_sequential -> increment.readouts
 increment._source_sequential -> increment.readouts._evidence
 increment._source_sequential -> increment.readouts._execution_context
@@ -689,7 +667,6 @@ increment.readouts._run -> increment.readouts._design_scope
 increment.readouts._run -> increment.readouts._evidence
 increment.readouts._run -> increment.readouts._sequential_scope
 increment.readouts._run_acquisition -> increment._evidence_scopes
-increment.readouts._run_acquisition -> increment.decision
 increment.readouts._run_acquisition -> increment.estimation
 increment.readouts._run_acquisition -> increment.estimation.sequential
 increment.readouts._run_acquisition -> increment.kernel
@@ -816,12 +793,9 @@ increment.winsor -> increment._winsor_rank
 
 # cycle
 increment._analysis_config
-increment._binding
-increment._breakout_readouts
 increment._cuped_evidence
 increment._day_axis
 increment._evidence_dispatch
-increment._execute
 increment._exploratory
 increment._frame_panel
 increment._frame_validation
@@ -852,8 +826,6 @@ increment.kernel
 increment.kernel.experiment
 increment.kernel.resolver
 increment.plan
-increment.query
-increment.query._workflows
 increment.readouts
 increment.readouts._asof
 increment.readouts._breakout

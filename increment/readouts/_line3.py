@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from increment._evidence_scopes import sequential_populations
 from increment._evidence_types import EvidenceScope
 from increment._source_admission import _arm_experiment
-from increment._source_types import declared_evidence, is_custom_source
 
 if TYPE_CHECKING:
     from increment._binding import SourceBinding
@@ -33,12 +33,9 @@ def sequential_scope(binding: SourceBinding, *, include_breakouts: bool = False)
             if expanded not in declared_configs:
                 declared_configs.append(expanded)
     experiment = _arm_experiment(binding)
-    populations = (
-        ("assigned", "triggered")
-        if getattr(experiment, "trigger", None) is not None
-        else tuple(sorted(declared_evidence(source).populations))
-        if is_custom_source(source)
-        else ()
+
+    populations = sequential_populations(
+        source, has_trigger=getattr(experiment, "trigger", None) is not None
     )
     return EvidenceScope(
         metrics=tuple(source.context.metrics),

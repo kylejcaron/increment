@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeGuard, runtime_checkable
 
@@ -208,6 +208,59 @@ class EvidenceCapabilities:
     capture: Literal["snapshot", "immutable", "live"] = "live"
     assignment_relation: Literal["none", "ledger", "reduced"] = "none"
     grain_route: str | None = None
+    value_scale_overrides: bool | None = None
+    fixed_triggered: bool | None = None
+    windowed_breakout_quantiles: bool | None = None
+    temporal_quantiles: bool | None = None
+    temporal_clusters: bool | None = None
+    dimensioned_daily_metrics: Literal["declared", "any"] | None = None
+
+
+def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:
+    """Resolve legacy declarations to their current semantic capabilities."""
+    artifact = value.kind == "artifact" or "artifact_experiment" in value.operations
+    native_moments = not artifact and "moments_source" in value.operations
+    dimensioned_daily_declared = native_moments
+    definition_source = value.kind == "definitions"
+    return replace(
+        value,
+        value_scale_overrides=(
+            value.value_scale_overrides
+            if value.value_scale_overrides is not None
+            else not native_moments
+        ),
+        fixed_triggered=(
+            value.fixed_triggered
+            if value.fixed_triggered is not None
+            else artifact or definition_source or native_moments
+        ),
+        windowed_breakout_quantiles=(
+            value.windowed_breakout_quantiles
+            if value.windowed_breakout_quantiles is not None
+            else not artifact
+        ),
+        temporal_quantiles=(
+            value.temporal_quantiles if value.temporal_quantiles is not None else not native_moments
+        ),
+        temporal_clusters=(
+            value.temporal_clusters
+            if value.temporal_clusters is not None
+            else not (artifact or definition_source or native_moments)
+        ),
+        dimensioned_daily_metrics=(
+            value.dimensioned_daily_metrics
+            if value.dimensioned_daily_metrics is not None
+            else "declared"
+            if dimensioned_daily_declared
+            else "any"
+        ),
+    )
+
+
+def declared_day_axis_metric_objects_supported(evidence: EvidenceCapabilities) -> bool:
+    """Whether the declaration permits direct metric definitions on day axes."""
+    operations = evidence.operations
+    return "moments_source" in operations and "artifact_experiment" not in operations
 
 
 MOMENTS_BATCH_OWNERS: dict[
@@ -291,6 +344,11 @@ def declared_evidence(source: object) -> EvidenceCapabilities:
     if not isinstance(declaration, EvidenceCapabilities):
         refuse_provider_unavailable(source)
     return declaration
+
+
+def source_class_name(source: object) -> str:
+    """Return the concrete source label used in existing refusal provenance."""
+    return type(source).__name__
 
 
 PROVIDER_UNAVAILABLE = RefusalSpec(
@@ -394,7 +452,9 @@ class BoundResolver:
         if not isinstance(declared, EvidenceCapabilities):
             return [provider_refusal("kernel.provider.capabilities_missing")]
         for ref in source_refs:
-            if ref.capabilities is not None and ref.capabilities != declared:
+            if ref.capabilities is not None and effective_capabilities(
+                ref.capabilities
+            ) != effective_capabilities(declared):
                 return [
                     provider_refusal("kernel.provider.capability_mismatch", source_ref=ref.name)
                 ]

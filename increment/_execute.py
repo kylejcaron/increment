@@ -14,7 +14,6 @@ from increment._analysis_config import UNSET, _Unset, overlay_configs, select_me
 from increment._breakout_readouts import plan_breakout_request, run_breakout
 from increment._canonical import declaration_value
 from increment._day_axis import (
-    _TRIGGER_UNSUPPORTED,
     day_axis_readouts,
     require_arm_state,
     run_asof,
@@ -23,6 +22,7 @@ from increment._day_axis import (
     run_daily_lift,
 )
 from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastReadoutRequest
+from increment._evidence_refusals import _TRIGGER_UNSUPPORTED
 from increment._evidence_types import SequentialCaptureRequest
 from increment._exploratory import exploratory_sibling, select_exploratory
 from increment._run_spines import run_spines
@@ -32,17 +32,12 @@ from increment._runnability import (
     scope_operation,
     validate_breakout_identities,
 )
-from increment._source_admission import (
-    _arm_experiment,
-    _require_analysis_operation,
-    _require_arm_binding,
-)
-from increment._source_types import is_custom_source
+from increment._source_admission import _arm_experiment
 from increment.decision import ContrastAnalysisState
 from increment.errors import CodedError, refuse
 from increment.estimation.engine import Method
 from increment.estimation.readout_types import ScopedReadout
-from increment.readouts._evidence import retained_sequential_capture
+from increment.readouts._evidence import retained_sequential_capture, validate_execution_population
 from increment.readouts._execution_context import (
     current_execution_context,
     execution_context_scope,
@@ -119,33 +114,8 @@ def readout_source(
 ) -> _BuiltinMomentSource:
     """Validate a requested population; the evidence request selects it."""
     source = binding.source
-    if population == "triggered":
-        if is_custom_source(source):
-            from increment._evidence_refusals import require_population
-
-            require_population(source, population)
-        else:
-            _require_analysis_operation(
-                source,
-                "triggered_source",
-                message=(
-                    "A triggered readout requires a source retaining the raw event stream "
-                    "and its declared trigger."
-                ),
-            )
+    validate_execution_population(source, population)
     return source
-
-
-def _validate_trigger_fires_in_every_arm(
-    binding: SourceBinding, source: object | None = None
-) -> None:
-    from increment.readouts._evidence import validate_trigger_fires_in_every_arm
-
-    _require_arm_binding(binding, "experiment")
-    validate_trigger_fires_in_every_arm(
-        cast(Any, binding.source if source is None else source),
-        binding.experiment.trigger,
-    )
 
 
 def whole_window_readouts(binding: SourceBinding) -> WholeWindowReadouts:
@@ -158,7 +128,6 @@ def whole_window_readouts(binding: SourceBinding) -> WholeWindowReadouts:
         experiment=_arm_experiment(binding),
         experiment_id=binding.experiment_name,
         readout_source=partial(readout_source, binding),
-        validate_trigger=partial(_validate_trigger_fires_in_every_arm, binding),
         arm_moments=readouts.arm_moments,
         execution_context_scope=execution_context_scope,
         registered_run=readouts.run,

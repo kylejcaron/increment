@@ -5,7 +5,7 @@
     "functions": [
       {
         "name": "_extract_facts",
-        "complexity": 60
+        "complexity": 58
       },
       {
         "name": "SelectionGraph::from_tree",
@@ -29,7 +29,7 @@
     "functions": [
       {
         "name": "extract_references",
-        "complexity": 57
+        "complexity": 56
       }
     ]
   },
@@ -171,7 +171,7 @@
       },
       {
         "name": "_validate_raw_moment_rows",
-        "complexity": 79
+        "complexity": 77
       }
     ]
   },
@@ -212,12 +212,8 @@
         "complexity": 43
       },
       {
-        "name": "_validate_day_axis",
-        "complexity": 44
-      },
-      {
         "name": "_plain",
-        "complexity": 50
+        "complexity": 48
       }
     ]
   },
@@ -387,7 +383,7 @@
     "functions": [
       {
         "name": "test_loader_routes_stay_inside_acquisition_and_facades",
-        "complexity": 137
+        "complexity": 136
       }
     ]
   },
@@ -559,7 +555,7 @@
       },
       {
         "name": "_Source::resolve",
-        "complexity": 54
+        "complexity": 52
       },
       {
         "name": "_Source::_bind_control",
@@ -571,7 +567,7 @@
       },
       {
         "name": "_Source::class_sites",
-        "complexity": 66
+        "complexity": 65
       },
       {
         "name": "_Source::sites",
@@ -585,7 +581,7 @@
     "functions": [
       {
         "name": "_tests",
-        "complexity": 92
+        "complexity": 89
       }
     ]
   },

@@ -27,6 +27,13 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   writes them. `work.*` on closed issues is meaningless.
 <!-- END KATA -->
 
+## Terminal orchestration
+
+- In a Rex session, use Rex only; do not invoke Orca CLI, automation, or GUI tools unless the owner explicitly requests Orca. Inherited environment variables and workspace paths are not authorization.
+- Reuse existing panes. Do not create windows, tabs, or splits for commands, retries, tests, reviews, or launched processes without an explicit owner request.
+- One session owner controls terminal layout; every launched process receives the same restrictions and a launcher guard rejecting Orca and terminal-creation commands.
+- If existing exited command panes cannot be reused, use captured tool output rather than creating more panes. Do not close panes, clear scrollback, or send input to an active command without permission.
+
 # Contributor guidelines
 
 Increment turns experiment data into decisions. Six public builder routes load

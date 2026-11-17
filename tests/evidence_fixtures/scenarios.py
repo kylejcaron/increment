@@ -32,7 +32,7 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
-from increment.readouts._evidence import artifact_provenance, day_axis_route
+from increment.readouts._evidence import artifact_provenance, breakout_route, day_axis_route
 from increment.semantics.design import Encouragement
 from tests.evidence_fixtures.temporal import (
     acquire_contrast,
@@ -1295,7 +1295,6 @@ def _acquire_breakout_scope_inputs(  # noqa: PLR0915
                         "answer_type": "BreakoutUnitRows",
                         "answer": {
                             "identity": _plain(answer.identity),
-                            "route": answer.route,
                             "frame": _frame_payload(answer.frame),
                             "unit_frame_has_dimension": answer.unit_frame_has_dimension,
                         },
@@ -1437,7 +1436,6 @@ def _acquire_breakout_scope_inputs(  # noqa: PLR0915
 
 
 def _day_capture_options(source, case, request, configuration):
-    from increment._analysis_config import UNSET
     from increment._lift_options import LiftOptions
 
     request = replace(request, estimands=case.estimands)
@@ -1897,7 +1895,6 @@ def acquire_scenario(  # noqa: PLR0915
                                 "metrics": breakout_request.metrics,
                                 "configs": breakout_request.configs,
                             },
-                            "route": slices.route,
                             "slices": [
                                 {
                                     "identity": item.identity,
@@ -1942,6 +1939,7 @@ def acquire_scenario(  # noqa: PLR0915
             scoped_unit_records: dict[int, Mapping[str, Any]] = {}
             if breakout_request is not None:
                 slices = cast(Any, request_evidence(cast(Any, provider), breakout_request))
+                route = breakout_route(source)
                 materialized_slices = tuple(slices.slices)
                 scope_inputs = _breakout_scope_receipts(
                     source,
@@ -1953,7 +1951,7 @@ def acquire_scenario(  # noqa: PLR0915
                 )
                 if scope_inputs:
                     consumer_configuration["assembly"]["breakout_scope_inputs"] = scope_inputs
-                if slices.route == "artifact":
+                if route == "artifact":
                     scoped_unit_records = _artifact_breakout_unit_records(
                         materialized_slices,
                         requests,
@@ -1974,7 +1972,6 @@ def acquire_scenario(  # noqa: PLR0915
                                 "metrics": breakout_request.metrics,
                                 "configs": breakout_request.configs,
                             },
-                            "route": slices.route,
                             "slices": [
                                 {
                                     "identity": item.identity,
