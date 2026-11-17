@@ -1670,6 +1670,7 @@ depends_on = [
 path = "increment.dashboard"
 layer = "core"
 depends_on = [
+  "increment.dashboard._references",
   "increment._binding",
   "increment._breakout_readouts",
   "increment._canonical",
@@ -1690,6 +1691,15 @@ depends_on = [
   "increment.estimation.readout_types",
   "increment.errors",
   "increment.tables", "increment.estimation.health", "increment.estimation.diagnostics", "increment.estimation.exploratory_family",
+]
+
+[[modules]]
+path = "increment.dashboard._references"
+layer = "core"
+depends_on = [
+  "increment._interpretation",
+  "increment.estimation.readout_types",
+  "increment.tables",
 ]
 
 [[modules]]

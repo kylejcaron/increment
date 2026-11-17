@@ -48,6 +48,7 @@ core = [
   "increment.absorption",
   "increment.tables",
   "increment.dashboard",
+  "increment.dashboard._references",
   "increment.reporting",
   "increment.logged_policy",
   "increment.rational*",

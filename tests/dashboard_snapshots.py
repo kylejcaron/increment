@@ -290,6 +290,37 @@ def snapshot(**overrides: Any) -> DashboardSnapshot:
     )
 
 
+def captured_snapshot(
+    base: DashboardSnapshot,
+    *,
+    explore: Mapping[tuple[Any, ...], Any],
+    readout: LiftEstimates | None = None,
+    overview: tuple[LiftEstimate, ...] | None = None,
+) -> DashboardSnapshot:
+    """Build a reading from independently captured collections and corrected overview rows."""
+    values: dict[str, Any] = {
+        "explore": {
+            key: DashboardExploreCapture.answered(
+                key,
+                rows,
+                collection=functools.partial(type(rows), metadata=rows.metadata),
+            )
+            for key, rows in explore.items()
+        }
+    }
+    if readout is not None:
+        values.update(
+            estimates=tuple(readout),
+            readout_rows=enriched_rows(readout),
+            readout_collection=readout,
+        )
+    if overview is not None:
+        values["overview"] = DashboardOverview(
+            exploratory=overview, segments={}, family_size=len(overview), family_q=0.1
+        )
+    return replace(base, **values)
+
+
 def _collection(estimates, arms) -> LiftEstimates:
     source_id = "presentation"
     cells = tuple(sorted((CellKey.from_row(row) for row in estimates), key=cell_order))

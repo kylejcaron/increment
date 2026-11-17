@@ -150,6 +150,18 @@
   white-space: normal;
 }
 
+.inc-dashboard-root .diagnostic-select {
+  margin-top: 6px;
+  padding: 7px 10px;
+  color: var(--inc-dashboard-text);
+  background: transparent;
+  border: 1px solid var(--inc-dashboard-rule);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .inc-dashboard-diagnostic-records {
   max-height: min(28rem, 65vh);
   overflow: auto;

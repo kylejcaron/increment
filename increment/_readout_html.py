@@ -10,6 +10,65 @@ from typing import Any
 from increment._display import _readout_interval, format_coverage
 from increment._interpretation import _assignment_check_warning
 
+
+def render_reference_group(group: Mapping[str, Any]) -> str:
+    """Explain one shared source/check/correction group; raw records are rendered on selection."""
+    correction = group.get("correction") or group.get("captured_correction")
+    body = ""
+    source = group.get("source")
+    if isinstance(source, Mapping):
+        capture = next(iter(group["captures_by_view"].values()))[0]
+        body = (
+            '<dl class="inc-readout-kv">'
+            + "".join(
+                _evidence_pair(label, value)
+                for label, value in (
+                    ("Source snapshot", source.get("source_snapshot_id")),
+                    ("Capture mode", capture.get("coherence")),
+                    ("Run reference", capture.get("run_id")),
+                )
+            )
+            + "</dl>"
+        )
+        checks = source.get("integrity", ())
+        if checks:
+            fields = ("analysis_population", "status", "construction", "alpha")
+            rows = "".join(
+                "<tr>"
+                + "".join(
+                    f"<td>{html.escape(_metadata_value(check.get(field)))}</td>" for field in fields
+                )
+                + "</tr>"
+                for check in checks
+            )
+            body += (
+                "<table><thead><tr><th>Population</th><th>Recorded outcome</th>"
+                "<th>Check</th><th>Error budget</th></tr></thead><tbody>"
+                + rows
+                + "</tbody></table>"
+            )
+    if isinstance(correction, Mapping):
+        members = correction.get("members", ())
+        label = (
+            "Original captured correction" if "captured_correction" in group else "Correction group"
+        )
+        body += (
+            f"<p>{label}: {html.escape(str(correction.get('name')))}</p>"
+            '<dl class="inc-readout-kv">'
+            + _evidence_pair("Recorded comparisons", len(members))
+            + "".join(
+                _evidence_pair(title, correction[key])
+                for key, title in (
+                    ("q", "Selection threshold"),
+                    ("size", "Retained group size"),
+                )
+                if key in correction
+            )
+            + "</dl>"
+        )
+    return body
+
+
 MULTIPLICITY_LABELS = {
     "declared_plan": "Declared multiple-testing plan",
     "undeclared_plan": "No multiple-testing adjustment (no plan)",
@@ -475,11 +534,15 @@ def _status_summary(
             statuses[plan] = f"{markers.get(plan, '')} {MULTIPLICITY_LABELS[plan]}".strip()
     if not statuses:
         return ""
+    return _status_list(statuses)
+
+
+def _status_list(statuses: Mapping[str, str]) -> str:
     items = "".join(
         f'<li data-inc-status="{html.escape(code, quote=True)}">{html.escape(label)}</li>'
         for code, label in statuses.items()
     )
-    return f'<ul class="inc-readout-status">{items}</ul>'
+    return f'<ul class="inc-readout-status">{items}</ul>' if items else ""
 
 
 def readout_header(
@@ -489,6 +552,8 @@ def readout_header(
     level_note: str | None = None,
     empty: bool = False,
     markers: Mapping[str, str] | None = None,
+    reference_href: str | None = None,
+    show_status: bool = True,
 ) -> str:
     """Keep safety status visible and the complete evidence expandable."""
     caption = "".join(
@@ -496,13 +561,31 @@ def readout_header(
         for text in (subtitle, level_note)
         if text
     )
+    evidence = (
+        '<p><a href="'
+        + html.escape(reference_href, quote=True)
+        + '">Select a result to inspect its evidence</a></p>'
+        if reference_href is not None
+        else "<details><summary>Table evidence and checks</summary>"
+        + _readout_evidence(rows, "")
+        + "</details>"
+    )
     body = (
         '<div class="inc-readout-evidence">'
         + caption
-        + _status_summary(rows, empty=empty, markers=markers or {})
-        + "<details><summary>Table evidence and checks</summary>"
-        + _readout_evidence(rows, "")
-        + "</details></div>"
+        + (
+            _status_summary(rows, empty=empty, markers=markers or {})
+            if show_status
+            else _status_list(
+                {
+                    code: f"{marker} {MULTIPLICITY_LABELS[code]}"
+                    for code, marker in (markers or {}).items()
+                    if code in MULTIPLICITY_LABELS
+                }
+            )
+        )
+        + evidence
+        + "</div>"
     )
     # Great Tables treats double braces as units, including inside HTML headers.
     # Encode data braces, not the raw-text CSS rules.

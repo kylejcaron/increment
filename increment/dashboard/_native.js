@@ -380,11 +380,14 @@ function createNativeAdapter(dependencies) {
       const rendered = mark.textContent.trim();
       const label = rendered === metric.key ? str(metric.label) || metric.key : rendered || str(metric.label) || metric.key;
       const control = metricControl(metric, interactive, label);
+      const references = mark.getAttribute('data-inc-result-refs') || '[]';
+      control.dataset.incResultRefs = references;
       if (mark === cell) cell.replaceChildren(control);
       else mark.replaceWith(control);
       if (interactive) {
         const row = cell.closest('tr');
         row.dataset.metric = metric.key;
+        row.dataset.incResultRefs = references;
         row.classList.add('metric-row');
       }
     }
@@ -449,7 +452,8 @@ function createNativeAdapter(dependencies) {
       if (entry.cell.querySelector('svg')) charts.add(entry.col);
     }
     for (const col of charts) widths[col] *= 0.7;
-    const headTop = (col) => cells.find((entry) => entry.inHead && entry.col <= col && col < entry.col + entry.colspan);
+    // A full-width caption does not identify a column or a method group.
+    const headTop = (col) => cells.find((entry) => entry.inHead && entry.colspan < columns && entry.col <= col && col < entry.col + entry.colspan);
     let fixed = 0;
     while (fixed < columns - 1) {
       const head = headTop(fixed);

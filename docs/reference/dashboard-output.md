@@ -75,8 +75,9 @@ metric's checkpoint, including an earlier checkpoint for a stopped secondary.
 
 A successful preparation combines repeated ratio cautions into one
 `dashboard.statistical_cautions` summary, not one warning per date, segment,
-or arm. **Diagnostics** retains the affected results and arm-level values;
-affected rows expose **Uncertainty caution**. An early-date caution does not
+or arm. **Results needing caution** groups distinct affected readings by metric
+and explains their consequences. Search or filter its result picker to inspect
+the original date, segment, arm, and check values. An early-date caution does not
 qualify an unaffected headline. These checks are heuristics, not measured
 coverage for the experiment; estimates and intervals are unchanged. Unrelated
 warnings remain visible, and Python warning filters still apply, including
@@ -97,7 +98,7 @@ comparison completeness, and original multiple-testing family. Switching
 populations does not change either population's analyzed family. Hiding a
 failed guardrail does not complete the primary metric's required comparisons.
 
-Readout and Report distinguish two checks:
+Health distinguishes two checks:
 
 - **Analysis-design assignment check:** uses the analysis's recorded integrity
   evidence. No declared allocation means **not run**, never a pass.
@@ -108,8 +109,10 @@ Readout and Report distinguish two checks:
   effect summaries. Observed allocation is reported separately from the
   analysis-design check.
 
-The Triggered view still shows the assigned population's integrity result as
-the assignment check; triggered integrity metadata does not replace it.
+The Triggered view still warns if the assigned population's check failed or
+could not be verified; passing triggered balance never replaces assignment
+evidence. Routine passes, complete-result counts, and detailed check values
+stay in Health, not Readout or Report.
 Assigned allocation describes assignment integrity; triggered allocation
 only describes cohort balance. Triggered inference requires treatment not to
 affect trigger membership or timing. Balance cannot establish this condition;
@@ -212,11 +215,10 @@ one declared metric or all of them. See [CSV exports](#csv-exports).
 
 ## Readout tables and disclosures
 
-Dashboard tables retain metric and arm identity, lift, and an effect plot, with
-failure and prior-advisory columns when applicable. Readout, Explore, and
-Report omit **Result**; ordinary `readout_table()` and analysis notebooks keep
-it by default. Inspectors, **Methods & assumptions**, original results, and
-CSV retain test and result details.
+Dashboard tables retain metric and arm identity, lift, uncertainty, and a
+readable outcome. Failure and prior-advisory columns appear when applicable.
+Colors support the outcome; they do not replace it. Original results and CSV
+retain full test and result details.
 
 Plot color uses the recorded family selection when applicable, otherwise the
 comparison's own test. Green/red require an established favorable/adverse
@@ -227,29 +229,32 @@ if its own test rejects. The dashboard makes no ship/no-ship decision.
 
 ### Evidence disclosures
 
-- **Readout qualifications and evidence:** assignment checks, availability,
-  expected comparisons, and multiple-testing groups. Source identifiers,
-  recorded check contexts, and capture settings expand separately. Report
-  uses the same presentation.
-- **Table evidence and checks:** labeled records grouped by population,
-  source, and comparison. Counts, completeness, and testing groups stay
-  distinct; source references and diagnostic context expand separately.
-  **Per-result evidence** retains metric/segment confidence levels and
-  noncoverage budgets, family selection, interval qualifications, methods,
-  and posterior-unavailability codes and contexts. An unselected segment's
-  nominal interval cannot color it as a selected discovery.
+- Select a metric's name to inspect its result. When it represents several
+  methods, sources, dates, or segments, use the result picker; the inspector
+  never substitutes a headline estimate.
+  Picker labels distinguish the original analysis from Overview correction
+  and identify the views that use each reading.
+- **Test and interval details:** the selected result's estimate, exact interval,
+  confidence level and retained budget, individual test verdict, and
+  multiple-testing selection. **Technical record for this result** retains
+  original records and links to matching source, check, and correction groups.
+  These records are not repeated beneath every table.
 - **How to read these intervals:** metric-specific exceptions, numeric set
   endpoints, and shared explanations. Construction and numerical
   qualifications have a separate reference.
-- **Methods & assumptions:** declared tests, boundaries, confidence levels,
-  and stored test outcomes, grouped by role.
+- **Methods & assumptions:** shared tests, boundaries, and confidence levels
+  grouped by role. Individual verdicts belong to the selected result.
 - **Technical details:** one diagnostic per card, with nested context as
   labeled fields/lists; inapplicable trigger checks share an explanation.
+- **Results needing caution:** distinct affected readings, grouped by metric
+  with consequences and a searchable result picker.
+- **Experiment provenance & definitions:** a brief experiment summary, with
+  reproduction settings and source records available separately.
 
 Missing evidence, incomplete decisions, adverse results, unavailability,
 exclusion, reliability, and safety warnings stay visible outside disclosures.
 Routine numerical assumptions remain in technical evidence and the inspector's
-**Advanced calculation record**, not warnings.
+**Technical record for this result**, not warnings.
 
 Result-specific caveats use numbered markers beside the affected lift and
 short notes below the table. Identical full caveats share a marker; distinct
@@ -257,9 +262,11 @@ technical details get separate numbers. Notes do not repeat row coordinates.
 They survive column filtering in Readout, Explore, and printed Report. CSV
 and saved results retain original evidence rather than display markers.
 
-The inspector's **Advanced calculation record** retains assumptions, result
-identity, and captured control/treatment successes and trials when available.
-It is separate from result-specific caveats in **Definition and analysis policy**.
+The inspector's **Technical record for this result** retains assumptions,
+result identity, and captured control/treatment successes and trials when
+available. The standalone `render_metric_details()` remains self-contained.
+The metric summary and selected result both keep the declared measurement
+window or retention band, even when the metric has no written description.
 
 ### Guardrails
 
@@ -304,8 +311,8 @@ interval: a 5% one-sided test has a 90% central interval. The interval
 disclosure and Report also keep the 95% directional set. A directional row
 selected for false-coverage-rate (FCR) adjustment instead keeps its
 re-estimated open display interval. Tested-null verdicts and family selection
-are disclosed separately in **Methods & assumptions** and Report, identified
-by method, role, and arm where needed.
+are disclosed separately in **Test and interval details** and Report,
+identified by method, role, and arm where needed.
 
 Confidence levels normally use up to two decimal places: 98.333…% becomes
 98.33%. Fractional levels near 0% or 100% keep enough precision not to round
@@ -345,10 +352,11 @@ Cells share units and the control arm;
 [the required dependence condition is not checked](../limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked).
 Re-preparation on more data is a new look, not continuation of that family.
 Ineligible cells, such as quantile metrics or informative priors, keep their
-exclusion reason in **Overview notes**, shown or not. They never become
-discoveries or block other cells. Notes separate correction settings,
-comparison coverage, assumptions, and exclusions. Under registered sequential
-plans, added metrics and uncorrected segments are refused with their codes.
+stored intervals. Their exclusion reasons appear beside the relevant visible
+metric and breakout, never another source's same-named segment. They cannot
+become discoveries or block other cells. Correction settings remain in
+**How Explore comparisons work**. Under registered sequential plans, added
+metrics and uncorrected segments are refused with their codes.
 
 ### Added exploratory metrics
 
@@ -364,8 +372,8 @@ Exploratory group and Time series, never Readout or Report. **Added metrics**
 lists them; **+ Add metrics** searches the saved definitions. Applying a change
 re-renders the snapshot and reopens Explore; results and correction cannot
 change. An unoffered name is refused and leaves the current page intact.
-Selecting an added row shows its corrected Overview result. Only declared
-metrics have captured group data and group-data downloads.
+Selecting an added metric's name shows its corrected Overview result. Only
+declared metrics have captured group data and group-data downloads.
 
 Offered metrics are read together where corrections do not span metrics:
 one read per time-series state and scope (five states for the whole experiment
@@ -518,15 +526,23 @@ smaller, muted interval text. Tables omit a standalone **Interval** column
 but retain forest plots; exact bounds and levels remain in inspection, notes,
 and CSV.
 
-Report includes every captured metric result and interval, compact allocation
-health, essential inference notes, and source/capture context. **Print / Save
-PDF** uses one A4 page only if prose and numeric evidence stay at or above
-`theme.printing.min_font_size_pt` (default 8pt). Larger families paginate with
-repeated headers. Over-wide tables split into column bands repeating metric
-and arm identity; page whitespace is bounded and axes retain native styling.
-Printing expands folded groups and restores them afterwards. Detailed policies,
-observed arm data, allocation history, and provenance remain in Readout,
-inspection, Explore, and Health rather than filling the PDF.
+Report includes every captured metric result and interval, visible material
+limitations, displayed confidence levels, and shared interpretation. Individual
+tests and group selections have a compact comparison table. Stored budgets
+remain in a separate reference; routine check passes and allocation values
+stay in Health.
+Material check warnings precede the primary effect and results table,
+including in printed reports.
+
+**Print / Save PDF** uses one A4 page only if prose and numeric evidence stay
+at or above `theme.printing.min_font_size_pt` (default 8pt). Larger families
+paginate with repeated headers. Over-wide tables split into column bands
+repeating metric and arm identity; page whitespace is bounded and axes retain
+native styling. Printing expands folded groups and individual test decisions,
+then restores them afterwards. Material qualifications and complete
+confidence-set geometry remain on paper; routine specifications and raw
+records do not. Observed arm data, allocation history, and reproduction
+records remain in the dashboard rather than filling the PDF.
 
 ## Theme presets
 

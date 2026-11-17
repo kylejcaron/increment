@@ -167,8 +167,8 @@ def test_dashboard_snapshot_retains_population_specific_headline_and_group_evide
     assert payload["defaultPopulation"] == "triggered"
     assert payload["populationOptions"] == ["assigned", "triggered"]
     assert payload["populationViews"]["triggered"]["population"] == "triggered"
-    triggered_qualifications = payload["populationViews"]["triggered"]["report"]["qualifications"]
-    assert "inc-dashboard-status--warn" not in triggered_qualifications.split("<details", 1)[0]
+    triggered_checks = payload["populationViews"]["triggered"]["report"]["healthHtml"]
+    assert triggered_checks == ""
     assert payload["populationViews"]["assigned"]["population"] == "assigned"
     assert (
         payload["populationViews"]["triggered"]["readoutCsv"]
@@ -384,13 +384,11 @@ def test_triggered_sequential_qualification_uses_selected_population(tmp_path):
             ("triggered", triggered_evidence),
         ):
             view = payload["populationViews"][population]
-            assert evidence in view["report"]["qualifications"]
-            assert evidence in html.unescape(view["results"])
-        assigned = payload["populationViews"]["assigned"]["report"]["qualifications"]
-        triggered = payload["populationViews"]["triggered"]["report"]["qualifications"]
-        assert "Dashboard allocation check (assigned" in assigned
-        assert "Dashboard triggered-population balance check (triggered" in triggered
-        assert "Dashboard allocation check (assigned" not in triggered
+            health = html.unescape(view["health"])
+            assert assigned_evidence in health
+            assert triggered_evidence in health
+            assert evidence not in html.unescape(view["report"]["healthHtml"])
+            assert evidence not in html.unescape(view["results"])
     finally:
         resolver.close()
 
@@ -417,12 +415,9 @@ def test_triggered_sequential_view_retains_failed_assigned_integrity(tmp_path):
         )
         assert assigned_integrity.status == "failed"
 
-        expected = "Analysis assignment check (assigned population): failed."
         payload = build_payload(experiment, snapshot=snapshot)
-        triggered_report = payload["populationViews"]["triggered"]["report"]["qualifications"]
-        assert expected in triggered_report
-        assert "Analysis assignment check (assigned population): unknown" not in triggered_report
-        assert expected in document(payload)
+        triggered_report = payload["populationViews"]["triggered"]["report"]["healthHtml"]
+        assert "inc-dashboard-status--bad" in triggered_report
     finally:
         resolver.close()
 
@@ -458,3 +453,44 @@ def test_triggered_sequential_group_data_decodes_the_triggered_checkpoint(tmp_pa
         assert captured.triggered.assignment_counts != captured.assignment_counts
     finally:
         resolver.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "flag", ["unassigned_units", "mixed_assignment_units", "low_expected_count"]
+)
+def test_report_keeps_each_populations_non_mismatch_allocation_cautions(flag):
+    import dataclasses
+    import re
+
+    saved = frozen("triggered")
+    snapshot = saved.snapshot
+    values = (2.5, 3.5) if flag == "low_expected_count" else (7, 13)
+    allocations = []
+    for allocation, value in zip(
+        (snapshot.allocation, snapshot.triggered_allocation), values, strict=True
+    ):
+        assert allocation is not None
+        updates = {
+            "is_srm": False,
+            "unassigned_units": 0,
+            "mixed_assignment_units": 0,
+            "low_expected_count": flag == "low_expected_count",
+        }
+        updates["min_expected_count" if flag == "low_expected_count" else flag] = value
+        allocations.append(allocation.model_copy(update=updates))
+    snapshot = dataclasses.replace(
+        snapshot, allocation=allocations[0], triggered_allocation=allocations[1]
+    )
+    payload = build_payload(saved.experiment, snapshot=snapshot)
+    for population, value, other in (
+        ("assigned", values[0], values[1]),
+        ("triggered", values[1], values[0]),
+    ):
+        health = payload["populationViews"][population]["report"]["healthHtml"]
+        visible = re.sub(r"<details\b.*?</details>", "", health, flags=re.DOTALL)
+        assert "inc-dashboard-status--warn" in visible
+        expected = str(value) if flag == "low_expected_count" else f"{value} units"
+        unexpected = str(other) if flag == "low_expected_count" else f"{other} units"
+        assert expected in visible
+        assert unexpected not in visible

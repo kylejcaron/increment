@@ -10,18 +10,23 @@ function render({ model, el }) {
   frame.title = "Experiment dashboard";
   let reopen = null;
   let selectedPopulation = null;
+  let peer = null;
 
   const post = (message) => {
-    if (frame.contentWindow) {
-      frame.contentWindow.postMessage({ source: "inc-dashboard-host", ...message }, "*");
+    if (peer) {
+      peer.postMessage({ source: "inc-dashboard-host", ...message }, "*");
     }
   };
 
   const onMessage = (event) => {
-    if (event.source !== frame.contentWindow) return;
+    if (event.source !== frame.contentWindow) {
+      // Shadow hosts can retarget WindowProxy identity; the exact iframe remains authoritative.
+      try { if (event.source?.frameElement !== frame) return; } catch (error) { return; }
+    }
     const message = event.data;
     if (!message || message.source !== "inc-dashboard") return;
     if (message.type === "ready") {
+      peer = event.source;
       post({ type: "bridge" });
       const restore = { type: "restore" };
       if (reopen) restore.view = reopen;
@@ -40,12 +45,16 @@ function render({ model, el }) {
   model.on("change:status", () => post({ type: "status", status: model.get("status") }));
   model.on("change:document", () => {
     reopen = "explore";
+    peer = null;
     frame.srcdoc = model.get("document");
   });
 
   frame.srcdoc = model.get("document");
   el.appendChild(frame);
-  return () => window.removeEventListener("message", onMessage);
+  return () => {
+    peer = null;
+    window.removeEventListener("message", onMessage);
+  };
 }
 
 export default { render };

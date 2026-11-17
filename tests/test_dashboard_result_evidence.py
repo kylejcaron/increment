@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+from html.parser import HTMLParser
 from typing import Any
 
 import pytest
@@ -20,7 +21,6 @@ from increment._source_operations import DashboardExploreCapture
 from increment.dashboard import (
     DashboardSnapshot,
     render_dashboard,
-    render_details,
     render_header,
     render_metric_details,
     render_results,
@@ -32,6 +32,7 @@ from increment.dashboard._format import (
     outcome_label,
     primary_method,
 )
+from increment.declarations import CellKey
 from increment.estimation.inference import _joint_additive_bounds
 from increment.estimation.results import (
     Estimate,
@@ -46,6 +47,34 @@ storefront = dashboard_tests.storefront
 
 
 PRIMARY, SECONDARY, GUARDRAIL = "checkout_conversion", "revenue_per_user", "session_seconds"
+
+
+class _TableRows(HTMLParser):
+    def __init__(self, markup):
+        super().__init__()
+        self.rows: list[str] = []
+        self.depth = 0
+        self.text: list[str] = []
+        self.feed(markup)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.depth += 1
+        elif self.depth and tag == "span":
+            metric = dict(attrs).get("data-inc-metric")
+            if metric:
+                self.text.append(metric)
+
+    def handle_endtag(self, tag):
+        if tag == "tr":
+            self.depth -= 1
+            if self.depth == 0:
+                self.rows.append(" ".join(self.text))
+                self.text = []
+
+    def handle_data(self, data):
+        if self.depth:
+            self.text.append(data.strip())
 
 
 def _rebuilt(snapshot: DashboardSnapshot, estimates: tuple[Any, ...]) -> DashboardSnapshot:
@@ -79,6 +108,29 @@ def _row(snapshot: DashboardSnapshot, metric: str, method_role: str = "decision"
         for r in snapshot.readout_rows
         if r["metric"] == metric and r["method_role"] == method_role
     )
+
+
+def _rendered_payload(snapshot: DashboardSnapshot) -> dict[str, Any]:
+    page = render_dashboard(experiment_for(snapshot), snapshot=snapshot).widget.get_state()[
+        "document"
+    ]
+    (embedded,) = re.findall(
+        r"""<script[^>]*id=["']dashboard-data["'][^>]*>(.*?)</script>""", page, re.S
+    )
+    return json.loads(embedded)
+
+
+def _selected_reading(snapshot: DashboardSnapshot, metric: str) -> str:
+    estimate = _decision(snapshot, metric)
+    cell = CellKey.from_row(estimate).model_dump(mode="json")
+    references = _rendered_payload(snapshot)["references"]
+    (selected,) = (
+        references["results"][identity]
+        for identity in references["views"]['["readout"]']
+        if references["results"][identity]["sourceId"] == estimate.source_snapshot_id
+        and references["results"][identity]["cell"] == cell
+    )
+    return selected["readingHtml"]
 
 
 # A row whose engine produced no point, no interval and no set.
@@ -151,12 +203,7 @@ def test_point_backed_one_sided_fieller_set_keeps_its_direction_and_own_coverage
         assert interval.group(1) == headline
         assert primary_method(row).startswith("95% ")
         snapshot = dataclasses.replace(snapshot, primary_metric=metric)
-        widget = render_dashboard(experiment_for(snapshot), snapshot=snapshot).widget
-        document = widget.get_state("document")["document"]
-        (embedded,) = re.findall(
-            r"""<script[^>]*id=["']dashboard-data["'][^>]*>(.*?)</script>""", document, re.S
-        )
-        primary = json.loads(embedded)["primary"]
+        primary = _rendered_payload(snapshot)["primary"]
         assert primary["interval"] == headline
         assert primary["levelLabel"] == "95%"
         assert row["level"] == pytest.approx(0.9)
@@ -296,7 +343,7 @@ def test_outcome_label_does_not_add_row_identity_to_layout_text(
 
 
 @pytest.mark.integration
-def test_interval_levels_keep_two_decimals_in_every_disclosure(
+def test_result_surfaces_retain_precise_interval_levels(
     storefront: DashboardSnapshot,
 ) -> None:
     level = 1 - 0.05 / 3
@@ -307,7 +354,6 @@ def test_interval_levels_keep_two_decimals_in_every_disclosure(
     )
     surfaces = (
         render_results(snapshot).text,
-        render_details(snapshot).text,
         render_metric_details(snapshot, metric=PRIMARY).text,
     )
     for text in surfaces:
@@ -415,25 +461,21 @@ def test_guardrail_metric_label_states_declared_direction_and_scale(
 
 @pytest.mark.integration
 def test_standalone_metric_policies_retain_the_tested_boundary_and_units(storefront):
+    collection = storefront.readout_collection
+    assert collection is not None
+
     for relative, absolute, expected, unit in (
         (-0.02, None, -2.0, "% relative"),
         (0.0, 2.0, 2.0, "absolute"),
     ):
-        rows = tuple(
-            {
-                **row,
-                "null_lift": relative,
-                "null_abs": absolute,
-                "decision_scale": "relative" if absolute is None else "absolute",
-            }
-            if row["metric"] == GUARDRAIL
-            else row
-            for row in storefront.readout_rows
+        snapshot = _with(storefront, GUARDRAIL, null_lift=relative, null_abs=absolute)
+        snapshot = dataclasses.replace(
+            snapshot,
+            readout_collection=type(collection)(snapshot.estimates, metadata=collection.metadata),
         )
-        snapshot = dataclasses.replace(storefront, readout_rows=rows)
         for rendered in (
             render_metric_details(snapshot, metric=GUARDRAIL).text,
-            render_details(snapshot).text,
+            _selected_reading(snapshot, GUARDRAIL),
         ):
             boundaries = re.findall(r"<dt>Test boundary</dt><dd>(.*?)</dd>", rendered, re.S)
             values = {
@@ -476,11 +518,10 @@ def test_guardrail_disclosures_distinguish_captured_verdict_and_availability(sto
         )
         snapshot = dataclasses.replace(storefront, readout_rows=rows)
         rendered = render_results(snapshot).text
-        methods = rendered.split("<summary>Methods &amp; assumptions</summary>", 1)[1]
         readout_row = next(
             body
-            for body in re.findall(r"<tr\b[^>]*>(.*?)</tr>", methods, re.S)
-            if GUARDRAIL in body
+            for body in re.findall(r"<tr\b[^>]*>(.*?)</tr>", rendered, re.S)
+            if f'data-inc-metric="{GUARDRAIL}"' in body
         )
         detail = render_metric_details(snapshot, metric=GUARDRAIL).text
         outcome = re.search(r"<dt>Test outcome</dt><dd>(.*?)</dd>", detail, re.S)
@@ -493,11 +534,42 @@ def test_guardrail_disclosures_distinguish_captured_verdict_and_availability(sto
 
 
 @pytest.mark.integration
+def test_selected_result_keeps_individual_verdict_when_family_did_not_select(storefront):
+    collection = storefront.readout_collection
+    assert collection is not None
+    estimate = _decision(storefront, SECONDARY)
+    assert estimate.lift is not None
+    outcomes = []
+    for rejects in (False, True):
+        snapshot = _with(
+            storefront,
+            SECONDARY,
+            discovery=False,
+            lift=estimate.lift.model_copy(update={"lb": 0.1 if rejects else -0.1}),
+        )
+        snapshot = dataclasses.replace(
+            snapshot,
+            readout_collection=type(collection)(snapshot.estimates, metadata=collection.metadata),
+        )
+        assert _decision(snapshot, SECONDARY).stat_sig() is rejects
+        rendered = _selected_reading(snapshot, SECONDARY)
+        outcome = re.search(r"<dt>Test outcome</dt><dd>(.*?)</dd>", rendered, re.S)
+        assert outcome is not None
+        outcomes.append(outcome.group(1))
+    assert outcomes[0] != outcomes[1]
+
+
+@pytest.mark.integration
+def test_selected_relative_comparison_does_not_get_raw_proportion_units(storefront):
+    rendered = _selected_reading(storefront, storefront.primary_metric)
+    assert "proportion (0–1)" not in rendered
+
+
+@pytest.mark.integration
 def test_early_trajectory_caution_keeps_its_date_and_arm_without_flagging_clean_results(
     storefront: DashboardSnapshot,
 ) -> None:
     from functools import partial
-    from html.parser import HTMLParser
 
     from increment.breakout.estimates import DailyLiftEstimates
     from increment.dashboard import render_header, render_health
@@ -505,29 +577,6 @@ def test_early_trajectory_caution_keeps_its_date_and_arm_without_flagging_clean_
     from increment.estimation.advisory import ReadoutAdvisory
     from increment.estimation.readout_types import CellRecord, cell_order
     from tests.dashboard_snapshots import temporal_rows
-
-    class Rows(HTMLParser):
-        def __init__(self, html):
-            super().__init__()
-            self.rows: list[str] = []
-            self.depth = 0
-            self.text: list[str] = []
-            self.feed(html)
-
-        def handle_starttag(self, tag, attrs):
-            if tag == "tr":
-                self.depth += 1
-
-        def handle_endtag(self, tag):
-            if tag == "tr":
-                self.depth -= 1
-                if self.depth == 0:
-                    self.rows.append(" ".join(self.text))
-                    self.text = []
-
-        def handle_data(self, data):
-            if self.depth:
-                self.text.append(data.strip())
 
     advisory = ReadoutAdvisory(
         code="estimation.engine.ratio_denominator_skew",
@@ -592,22 +641,26 @@ def test_early_trajectory_caution_keeps_its_date_and_arm_without_flagging_clean_
                     collection=partial(DailyLiftEstimates, metadata=selected.metadata),
                 )
     snapshot = dataclasses.replace(storefront, explore=captures)
-    widget = render_dashboard(experiment_for(snapshot), snapshot=snapshot).widget
-    document = widget.get_state("document")["document"]
-    (embedded,) = re.findall(
-        r"""<script[^>]*id=["']dashboard-data["'][^>]*>(.*?)</script>""", document, re.S
-    )
-    payload = json.loads(embedded)
+    payload = _rendered_payload(snapshot)
     packet = payload["explore"]["country"][SECONDARY]["cumulative_lift"]
     assert packet["pointCount"] == 4
     rendered = packet["html"]
-    parsed = Rows(rendered)
+    parsed = _TableRows(rendered)
     affected = next(row for row in parsed.rows if "US" in row)
     clean = next(row for row in parsed.rows if "CA" in row)
     assert "Uncertainty caution" in affected and "some dates" in affected.lower()
     assert "Uncertainty caution" not in clean
+    selected = [
+        reference
+        for reference in payload["references"]["results"].values()
+        if reference["cell"]["metric"] == SECONDARY
+        and reference["cell"]["ds"] == "2025-01-15"
+        and reference["cell"]["dimension"] == "country"
+        and reference["cell"]["dimension_value"] == "US"
+        and advisory.code in reference["diagnosticCodes"]
+    ]
+    assert selected
     for value in (
-        "Diagnostics",
         SECONDARY,
         "2025-01-15",
         "country",
@@ -624,22 +677,25 @@ def test_early_trajectory_caution_keeps_its_date_and_arm_without_flagging_clean_
         "treatment",
         "denominator third moment unavailable",
     ):
-        assert value in affected
+        assert all(value in reference["readingHtml"] for reference in selected)
     assert "Uncertainty caution" not in render_header(snapshot).text
     assert "Uncertainty caution" not in render_results(snapshot).text
-    disclosures = re.findall(r"<details\b([^>]*)>\s*<summary>Diagnostics[^<]*</summary>", rendered)
-    assert disclosures and all("open" not in attributes for attributes in disclosures)
+    report_ids = re.findall(r'data-result-ref="([^"]+)"', payload["report"]["limitationsHtml"])
+    assert all(
+        payload["references"]["results"][identity]["cell"]["ds"] is None
+        and payload["references"]["results"][identity]["cell"]["dimension"] is None
+        for identity in report_ids
+    )
     whole_packet = payload["wholeExperiment"]["cumulative_lift"]
     assert whole_packet["pointCount"] == 6
-    whole_rows = Rows(whole_packet["html"])
+    whole_rows = _TableRows(whole_packet["html"])
     whole_affected = next(row for row in whole_rows.rows if SECONDARY in row)
     assert "Uncertainty caution" in whole_affected and "some dates" in whole_affected.lower()
-    assert "2025-01-15" in whole_affected and "137" in whole_affected
     assert all("Uncertainty caution" not in row for row in whole_rows.rows if row != whole_affected)
     health = render_health(snapshot).text
-    assert "<summary>Diagnostics" in health
+    assert SECONDARY in payload["health"] and "affected result" in payload["health"]
     assert SECONDARY in health and "2025-01-15" in health and "137" in health
-    central = Rows(health)
+    central = _TableRows(health)
     assert len([row for row in central.rows if SECONDARY in row and "137" in row]) == 2
     clean_points = points.filter(lambda point: point.dimension_value == "CA")
     key = ("assigned", "cumulative_lift", None, False, ("event_log", "country"))
@@ -647,7 +703,7 @@ def test_early_trajectory_caution_keeps_its_date_and_arm_without_flagging_clean_
         key, clean_points, collection=partial(type(points), metadata=clean_points.metadata)
     )
     clean_health = render_health(dataclasses.replace(snapshot, explore={key: clean_capture})).text
-    assert "<summary>Diagnostics" not in clean_health
+    assert "denominator third moment unavailable" not in clean_health
 
 
 @pytest.mark.integration
@@ -656,7 +712,6 @@ def test_computed_ratio_diagnostics_keep_segment_labels_literal_in_native_tables
 ) -> None:
     from collections.abc import Mapping
     from datetime import date
-    from html.parser import HTMLParser
 
     from increment.breakout.estimates import (
         BreakoutEstimate,
@@ -797,13 +852,12 @@ def test_computed_ratio_diagnostics_keep_segment_labels_literal_in_native_tables
     "surface",
     (
         "results",
+        "report",
         "overview",
         "segments",
         "segment_overview",
         "inspector",
-        "policies",
         "inspector_sensitivity",
-        "policies_sensitivity",
     ),
 )
 def test_precision_caution_replaces_only_its_duplicate_note_in_native_result_tables(
@@ -830,6 +884,7 @@ def test_precision_caution_replaces_only_its_duplicate_note_in_native_result_tab
         message="Recorded denominator precision caution.",
     )
     unrelated = "A separate measurement qualification remains."
+    diagnostics_html = None
     snapshot = _with(
         storefront,
         SECONDARY,
@@ -922,10 +977,19 @@ def test_precision_caution_replaces_only_its_duplicate_note_in_native_result_tab
         snapshot = dataclasses.replace(
             snapshot, readout_collection=collection, readout_rows=enriched_rows(collection)
         )
-        if surface.startswith("inspector"):
+        if surface == "report":
+            payload = _rendered_payload(snapshot)
+            report = payload["report"]
+            rendered = report["results"] + report["limitationsHtml"]
+            identities = re.findall(r'data-result-ref="([^"]+)"', report["limitationsHtml"])
+            assert len(identities) == 1
+            reference = payload["references"]["results"][identities[0]]
+            assert reference["cell"]["metric"] == SECONDARY
+            assert reference["cell"]["ds"] is None
+            assert reference["cell"]["dimension"] is None
+            diagnostics_html = reference["readingHtml"]
+        elif surface.startswith("inspector"):
             rendered = render_metric_details(snapshot, metric=SECONDARY).text
-        elif surface.startswith("policies"):
-            rendered = render_details(snapshot).text
         else:
             rendered = (
                 render_results(snapshot).text
@@ -936,7 +1000,6 @@ def test_precision_caution_replaces_only_its_duplicate_note_in_native_result_tab
     assert advisory.message not in rendered
     assert unrelated in rendered
     for value in (
-        "Diagnostics",
         SECONDARY,
         "control",
         "211",
@@ -945,8 +1008,28 @@ def test_precision_caution_replaces_only_its_duplicate_note_in_native_result_tab
         "0.1",
         "past_float_range",
     ):
-        assert value in rendered
+        assert value in (rendered if diagnostics_html is None else diagnostics_html)
     if sensitivity_only:
         assert "cuped" in rendered and "sensitivity" in rendered
-    assert "not a passing check" in rendered
+    assert "not a passing check" in (rendered if diagnostics_html is None else diagnostics_html)
     assert "Uncertainty caution" not in render_header(snapshot).text
+
+
+@pytest.mark.integration
+def test_selected_early_result_retains_its_low_reliability_caution(storefront):
+    from datetime import date
+
+    from increment.breakout.estimates import DailyLiftEstimate, DailyLiftEstimates
+    from tests.dashboard_snapshots import captured_snapshot
+
+    early = DailyLiftEstimate(
+        **_decision(storefront, SECONDARY).model_dump(exclude={"ds"}),
+        ds=date(2025, 1, 15),
+        low_reliability=True,
+    )
+    key = ("assigned", "cumulative_lift", None, False, None)
+    value = captured_snapshot(storefront, explore={key: DailyLiftEstimates((early,))})
+    references = _rendered_payload(value)["references"]
+    (identity,) = references["views"][json.dumps(["explore", *key], separators=(",", ":"))]
+    reading = references["results"][identity]["readingHtml"]
+    assert re.search(r"low reliability|small.sample", reading.split("<details", 1)[0], re.I)

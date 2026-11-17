@@ -22,6 +22,7 @@ import anywidget
 import marimo as mo
 import traitlets
 
+from increment._readout_html import render_reference_group
 from increment.dashboard._data import (
     DashboardSnapshot,
     ExploreView,
@@ -63,25 +64,36 @@ from increment.dashboard._format import (
     timestamp_label,
 )
 from increment.dashboard._html import (
-    _qualification_block,
-    overview_notes,
+    _UNCERTAINTY_CODES,
+    _allocation_warnings,
+    _dashboard_health,
+    _dashboard_results,
+    _table,
+    overview_explanation,
     overview_table,
+    render_comparison_summary,
     render_details,
-    render_health,
-    render_metric_details,
-    render_results,
+    render_metric_summary,
+    render_result_reference,
     results_table,
     results_warnings,
     temporal_figure,
     temporal_refusal_table,
     unavailable_point_note,
 )
+from increment.dashboard._references import (
+    ReferenceCatalog,
+    build_reference_catalog,
+)
+from increment.dashboard._references import (
+    view_key as reference_view_key,
+)
 from increment.dashboard._theme import theme_css, theme_from_payload
+from increment.declarations import thaw
 from increment.errors import CodedError
 from increment.tables import _binomial_qualification_disclosure
 
 if TYPE_CHECKING:
-    from increment.estimation.diagnostics import SRMResult
     from increment.kernel.experiment import Experiment
 
 __all__ = ["build_payload", "document", "health_status", "render_dashboard"]
@@ -170,6 +182,16 @@ def document(payload: Mapping[str, Any]) -> str:
     """
     template = resources.files(__package__).joinpath("_shell.html").read_text(encoding="utf-8")
     assert template.count(_MARKER) == 1, "the packaged dashboard shell requires one data marker"
+    views = payload.get("populationViews")
+    if isinstance(views, Mapping) and payload.get("defaultPopulation") in views:
+        payload = {
+            **payload,
+            "populationViews": {
+                population: view
+                for population, view in views.items()
+                if population != payload["defaultPopulation"]
+            },
+        }
     text = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     for raw, escaped in (
         ("<", "\\u003c"),
@@ -254,7 +276,11 @@ def _build_payload_for_population(
     for key, (source, dimension), label in _declared_scopes(snapshot):
         scopes[key] = {"label": label, "dimension": dimension, "source": source}
         breakouts[key] = (source, dimension)
-    table = results_table(snapshot) + results_warnings(snapshot)
+    catalog = build_reference_catalog(snapshot)
+    table = results_table(
+        snapshot, catalog=catalog, reference_href="#report-table"
+    ) + results_warnings(snapshot)
+    explanation = report_explanation(snapshot, catalog=catalog)
     return {
         "title": snapshot.title,
         "theme": asdict(snapshot.config.theme),
@@ -267,21 +293,18 @@ def _build_payload_for_population(
         ),
         "report": {
             "results": _styled(table),
-            "qualifications": _styled(_qualification_block(snapshot, table_footnotes=True)),
-            "notes": _report_notes(snapshot),
+            **{key: _styled(value) if value else "" for key, value in explanation.items()},
             "context": _report_context(snapshot),
         },
-        "results": _styled(render_results(snapshot).text),
-        "health": _styled(render_health(snapshot).text),
-        "provenance": _styled(render_details(snapshot).text),
+        "results": _styled(_dashboard_results(snapshot, catalog).text),
+        "references": _reference_payload(snapshot, catalog),
+        "health": _styled(_dashboard_health(snapshot, catalog).text),
+        "provenance": _styled(render_details(snapshot).text + _source_reference_picker(catalog)),
         "metrics": [_metric_payload(snapshot, model.name) for model in all_metrics(snapshot)],
         "readoutCsv": readout_csv(snapshot).decode("utf-8"),
         "scopes": scopes,
         "overview": {
-            key: {
-                "html": _styled(overview_table(snapshot, breakout)),
-                "notes": overview_notes(snapshot, breakout),
-            }
+            key: _overview_payload(snapshot, breakout, catalog)
             for key, breakout in breakouts.items()
         },
         "exploratory": {
@@ -296,15 +319,112 @@ def _build_payload_for_population(
             "selected": [model.name for model in snapshot.exploratory_metrics],
         },
         "explore": {
-            key: _explore_scope(experiment, snapshot, breakout, correction)
+            key: _explore_scope(experiment, snapshot, breakout, correction, catalog)
             for key, breakout in breakouts.items()
         },
-        "wholeExperiment": _whole_explore_scope(experiment, snapshot, correction),
+        "wholeExperiment": _whole_explore_scope(experiment, snapshot, correction, catalog),
     }
 
 
+def _overview_payload(
+    snapshot: DashboardSnapshot, breakout: tuple[str | None, str] | None, catalog: ReferenceCatalog
+) -> dict[str, Any]:
+    explanation = overview_explanation(snapshot, breakout)
+    return {
+        "html": _styled(overview_table(snapshot, breakout, catalog=catalog)),
+        "limitationsHtml": _styled(explanation["limitationsHtml"]),
+        "methodsHtml": _styled(explanation["methodsHtml"]),
+        "hiddenMetrics": explanation["hiddenMetrics"],
+    }
+
+
+def _reference_payload(snapshot: DashboardSnapshot, catalog: ReferenceCatalog) -> dict[str, Any]:
+    memberships: dict[str, list[str]] = {}
+    for key, identities in catalog.views.items():
+        coordinates = json.loads(key)
+        kind = coordinates[0]
+        if kind == "readout":
+            label = "Readout"
+        elif kind == "overview":
+            label = "Explore Overview"
+            if coordinates[2] is not None:
+                label += f" · {coordinates[1] or 'unspecified source'} · {coordinates[2]}"
+        else:
+            label = _VIEW_TITLES.get(coordinates[2], "Original Overview input")
+            label += f" · {coordinates[1]}"
+            if coordinates[4]:
+                label += " · completed windows only"
+            if coordinates[5] is not None:
+                label += " · " + " · ".join(str(value) for value in coordinates[5])
+        for identity in identities:
+            memberships.setdefault(identity, []).append(label)
+    results = {}
+    for identity, reference in catalog.results.items():
+        raw = {
+            "reading": dict(reference.original) if reference.original is not None else None,
+            "record": reference.record.model_dump(mode="json") if reference.record else None,
+        }
+        results[identity] = {
+            "cell": reference.cell.model_dump(mode="json"),
+            "sourceId": reference.source_snapshot_id,
+            "viewLabels": memberships.get(identity, ()),
+            "selectionLabel": (
+                "Overview correction"
+                if any("correction" in catalog.groups[group] for group in reference.group_ids)
+                else "Original analysis"
+            ),
+            "groupIds": reference.group_ids,
+            "readingHtml": _styled(
+                render_result_reference(
+                    snapshot,
+                    reference,
+                    views=memberships.get(identity, ()),
+                )
+            ),
+            "diagnosticCodes": reference.diagnostic_codes,
+            "recordJson": json.dumps(raw, indent=2, ensure_ascii=False, default=str),
+        }
+    return {
+        "results": results,
+        "diagnosticLabels": {code: text.label for code, text in _UNCERTAINTY_CODES.items()},
+        "groups": {
+            identity: {
+                "previewHtml": render_reference_group(group),
+                "recordJson": json.dumps(dict(group), indent=2, ensure_ascii=False, default=str),
+            }
+            for identity, group in catalog.groups.items()
+        },
+        "views": dict(catalog.views),
+        "refusals": thaw(catalog.view_refusals),
+    }
+
+
+def _source_reference_picker(catalog: ReferenceCatalog) -> str:
+    groups = dict.fromkeys(
+        group
+        for identity in catalog.views.get(reference_view_key(("readout",)), ())
+        for group in catalog.results[identity].group_ids
+        if "source" in catalog.groups[group]
+    )
+    if not groups:
+        return '<p class="inc-dashboard-note">No source or check records were captured.</p>'
+    options = "".join(
+        f'<option value="{esc(identity)}">Capture {index}</option>'
+        for index, identity in enumerate(groups, 1)
+    )
+    return (
+        "<details><summary>Source and capture records</summary>"
+        '<label>Captured source <select class="source-record-choice">'
+        '<option value="">Choose a capture…</option>' + options + "</select></label>"
+        '<div class="source-record-output native-output"></div></details>'
+    )
+
+
 def _whole_explore_scope(
-    experiment: Experiment, snapshot: DashboardSnapshot, correction: str | None
+    experiment: Experiment,
+    snapshot: DashboardSnapshot,
+    correction: str | None,
+    catalog: ReferenceCatalog,
 ) -> dict[str, dict[str, Any]]:
     """Render one captured whole-experiment packet per temporal view."""
     packets: dict[str, dict[str, Any]] = {}
@@ -313,6 +433,7 @@ def _whole_explore_scope(
     for view_key, (view, complete) in _VIEWS.items():
         refusals: dict[str, dict[str, str]] = {}
         metric_rows: dict[str, Any] = {}
+        reference_metrics: set[str | None] = set()
         if view == "cumulative_lift":
             # Each captured lift family retains its metric-specific declared multiplicity.
             for metric in (*declared, *selected):
@@ -330,6 +451,7 @@ def _whole_explore_scope(
                     refusals[label] = _whole_refusal_detail(exc)
                 else:
                     metric_rows[label] = series
+                    reference_metrics.add(metric)
         else:
             try:
                 batch = load_explore(
@@ -347,6 +469,7 @@ def _whole_explore_scope(
                     metric_rows[metric] = batch.filter(
                         lambda row, metric=metric: row.metric == metric
                     )
+                reference_metrics.add(None)
             if batch is None:
                 for metric in declared:
                     try:
@@ -362,6 +485,7 @@ def _whole_explore_scope(
                         refusals[metric] = _whole_refusal_detail(exc)
                     else:
                         metric_rows[metric] = series
+                        reference_metrics.add(metric)
             for metric in selected:
                 label = metric
                 try:
@@ -377,6 +501,7 @@ def _whole_explore_scope(
                     refusals[label] = _whole_refusal_detail(exc)
                 else:
                     metric_rows[label] = series
+                    reference_metrics.add(metric)
         for metric, series in metric_rows.items():
             metric_rows[metric] = series.filter(
                 lambda row: getattr(row, "method_role", "decision") == "decision"
@@ -405,6 +530,15 @@ def _whole_explore_scope(
             correction=correction,
             whole=True,
             refusals=refusals,
+            reference_context=(
+                catalog,
+                tuple(
+                    reference_view_key(
+                        ("explore", data[0].analysis_population, view, name, complete, None)
+                    )
+                    for name in reference_metrics
+                ),
+            ),
         )
     return packets
 
@@ -561,43 +695,6 @@ def health_status(snapshot: DashboardSnapshot) -> dict[str, str]:
     }
 
 
-def _allocation_warnings(
-    snapshot: DashboardSnapshot,
-    allocation: SRMResult,
-    *,
-    population: str,
-) -> list[str]:
-    warnings = []
-    population_label = "triggered cohort" if population == "triggered" else "assigned units"
-    if allocation.is_srm:
-        warnings.append(f"Population imbalance detected in {population_label}.")
-    if allocation.unassigned_units:
-        warnings.append(
-            f"{count_text(allocation.unassigned_units)} units are outside a declared arm."
-        )
-    if allocation.mixed_assignment_units:
-        warnings.append(
-            f"{count_text(allocation.mixed_assignment_units)} units appear in more than one arm."
-        )
-    if allocation.low_expected_count:
-        warnings.append("A small expected arm count limits the population balance check.")
-    history_refusal = (
-        snapshot.triggered_allocation_history_refusal
-        if population == "triggered"
-        else snapshot.allocation_history_refusal
-    )
-    history = (
-        snapshot.triggered_allocation_history
-        if population == "triggered"
-        else snapshot.allocation_history
-    )
-    if history_refusal is not None:
-        warnings.append(f"{population_label.capitalize()} history is unavailable.")
-    elif not history:
-        warnings.append(f"No {population_label} history was captured.")
-    return warnings
-
-
 def _metric_payload(snapshot: DashboardSnapshot, metric: str) -> dict[str, Any]:
     declared = metric in metric_names(snapshot)
     row = row_for_metric(snapshot, metric)
@@ -611,7 +708,7 @@ def _metric_payload(snapshot: DashboardSnapshot, metric: str) -> dict[str, Any]:
             if declared
             else "exploratory"
         ),
-        "detail": _styled(render_metric_details(snapshot, metric=metric).text),
+        "detail": _styled(render_metric_summary(snapshot, metric)),
         # Group data is captured for declared metrics only; no download is offered otherwise.
         "csv": group_data_csv(snapshot, metric=metric).decode("utf-8") if declared else "",
     }
@@ -633,46 +730,68 @@ def _report_context(snapshot: DashboardSnapshot) -> str:
 
 
 _INFERENCE_STATEMENTS = {
-    "always_valid": "Always-valid intervals remain valid at every look.",
+    "always_valid": "You can monitor repeatedly under the stated assumptions without invalidating these intervals.",
     "asymptotic_mean": (
-        "Asymptotic sequential intervals support repeated monitoring under the registered "
-        "assumptions, without a finite-sample guarantee."
+        "You can monitor repeatedly under the stated assumptions, but the guarantee is "
+        "approximate rather than valid for every sample size."
     ),
-    "fixed": "Fixed-horizon intervals are not corrected for repeated looks.",
+    "fixed": "These intervals assume analysis at the planned stopping point; repeatedly checking and stopping early can invalidate them.",
 }
 
 
-def _guardrail_display_note(row: Mapping[str, Any], label: str, alpha: float | None) -> str | None:
-    level = row.get("level")
-    retained = None if level is None or is_missing(level) else (float(level), alpha)
-    shown = displayed_coverage({**row, "coverage_alpha": alpha})
-    if row.get("role") == "guardrail" and shown is not None and shown != retained:
-        return f"Displayed guardrail interval for {label}: {percent_text(*shown)} one-sided."
-    return None
+def _report_interval_reference(
+    groups: Mapping[tuple[tuple[float, float | None] | None, str, str], list[str]],
+    displayed_groups: Mapping[tuple[tuple[float, float | None] | None, str, str], list[str]],
+) -> str:
+    """Keep displayed confidence visible and exact captured budgets in reference."""
+    if not groups:
+        return ""
+    rows = []
+    for (coverage, kind, tail), names in groups.items():
+        interval = f"{kind} intervals, {tail}"
+        budget = "Not recorded"
+        if coverage is not None:
+            interval = f"{percent_text(*coverage)} {interval}"
+            budget = repr(coverage[1]) if coverage[1] is not None else "Not recorded"
+        rows.append([esc(interval), esc(", ".join(dict.fromkeys(names))), esc(budget)])
+    displayed_rows = [
+        [
+            esc(
+                f"{percent_text(*coverage)} {kind} intervals, {tail}"
+                if coverage is not None
+                else f"Confidence not recorded; {kind} intervals, {tail}"
+            ),
+            esc(", ".join(dict.fromkeys(names))),
+        ]
+        for (coverage, kind, tail), names in displayed_groups.items()
+    ]
+    return (
+        _table(["Displayed interval", "Applies to"], displayed_rows)
+        + '<details class="report-reference"><summary>Stored interval specifications</summary>'
+        + _table(["Stored interval", "Applies to", "Retained error budget (α)"], rows)
+        + "</details>"
+    )
 
 
-def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
-    """The inference statements a reader needs beside the report table, as plain text.
-
-    Captured interval budgets stay distinct from directional guardrail display coverage.
-    Retained confidence sets keep every endpoint, and each unavailability reason is kept
-    as the engine reported it.
-    """
+def report_explanation(
+    snapshot: DashboardSnapshot, *, catalog: ReferenceCatalog | None = None
+) -> dict[str, str]:
+    """Keep material qualifications visible and routine specifications in reference."""
     rows: tuple[Mapping[str, Any], ...] = snapshot.readout_rows
-    notes: list[str] = []
-    if not rows:
-        return []
+    methods: list[str] = []
+    limitations: list[str] = []
     several_arms = len({row.get("group_id") for row in rows}) > 1
     several_methods = len({(row.get("method"), row.get("method_role")) for row in rows}) > 1
 
     def name(row: Mapping[str, Any]) -> str:
-        metric = str(row.get("metric"))
         qualifiers = [str(row.get("group_id"))] if several_arms else []
         if several_methods:
             qualifiers.append(f"{row.get('method')}, {row.get('method_role')}")
-        return f"{metric} ({'; '.join(qualifiers)})" if qualifiers else metric
+        return str(row.get("metric")) + (f" ({'; '.join(qualifiers)})" if qualifiers else "")
 
     groups: dict[tuple[tuple[float, float | None] | None, str, str], list[str]] = {}
+    qualifications: dict[str, list[str]] = {}
+    displayed_groups: dict[tuple[tuple[float, float | None] | None, str, str], list[str]] = {}
     for row in rows:
         level = row.get("level")
         coverage = (
@@ -680,83 +799,86 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
             if level is None or is_missing(level)
             else (float(level), retained_coverage_alpha_for_row(snapshot, row))
         )
-        kind = inference_word(str(row.get("inference", "fixed")))
-        key = (coverage, kind, tail_word(row))
-        names = groups.setdefault(key, [])
-        if name(row) not in names:
-            names.append(name(row))
-
-    def group_label(key: tuple[tuple[float, float | None] | None, str, str]) -> str:
-        coverage, kind, tail = key
-        prefix = "" if coverage is None else f"{percent_text(*coverage)} "
-        return f"{prefix}{kind} intervals, {tail}"
-
-    if len(groups) == 1:
-        notes.append(f"Retained intervals for all results: {group_label(next(iter(groups)))}.")
-    else:
-        notes.append(
-            "Retained intervals by metric: "
-            + "; ".join(f"{group_label(key)} ({', '.join(names)})" for key, names in groups.items())
-            + "."
+        key = (coverage, inference_word(str(row.get("inference", "fixed"))), tail_word(row))
+        groups.setdefault(key, []).append(name(row))
+        shown = displayed_coverage(
+            {**row, "coverage_alpha": None if coverage is None else coverage[1]}
         )
-    levels = {
-        (float(row["level"]), retained_coverage_alpha_for_row(snapshot, row))
-        for row in rows
-        if not is_missing(row.get("level"))
-    }
-    if len(levels) > 1:
-        notes.append("Interval levels differ; compare each interval only with its own level.")
-    for row in rows:
-        note = _guardrail_display_note(
-            row, name(row), retained_coverage_alpha_for_row(snapshot, row)
-        )
-        if note is not None:
-            notes.append(note)
-    kinds = dict.fromkeys(str(row.get("inference", "fixed")) for row in rows)
-    notes.extend(
-        _INFERENCE_STATEMENTS.get(kind, f"Inference: {inference_word(kind)}.") for kind in kinds
+        displayed_groups.setdefault((shown, key[1], key[2]), []).append(name(row))
+        confidence_set = complete_confidence_set_text(row)
+        qualification = _binomial_qualification_disclosure(row.get("binomial_set"), technical=False)
+        details = []
+        if confidence_set:
+            details.append(confidence_set)
+        if qualification and qualification != "No numerical qualification claim":
+            qualifications.setdefault(qualification, []).append(name(row))
+        if details:
+            limitations.append(f"<p><strong>{esc(name(row))}.</strong> {' '.join(details)}</p>")
+    limitations.extend(
+        f"<p><strong>{esc(', '.join(names))}.</strong> {esc(qualification)}</p>"
+        for qualification, names in qualifications.items()
     )
+
+    reference = _report_interval_reference(groups, displayed_groups)
+    for kind in dict.fromkeys(str(row.get("inference", "fixed")) for row in rows):
+        methods.insert(
+            0, esc(_INFERENCE_STATEMENTS.get(kind, f"Inference: {inference_word(kind)}."))
+        )
     if any(row.get("alternative") in ("greater", "less") for row in rows):
-        notes.append(
-            "A one-sided test constrains only the tested direction; the opposite direction is "
-            "unconstrained."
+        limitations.insert(
+            0,
+            "<p>A one-sided limit answers only the stated directional question; the opposite direction remains unconstrained.</p>",
         )
     if any(row.get("role") == "guardrail" for row in rows):
-        notes.append("A guardrail that does not reject is not evidence of no harm.")
-    shifted = [
-        f"{name(row)} {null_text(row)}"
-        for row in rows
-        if not is_missing(row.get("null_abs"))
-        or not (is_missing(row.get("null_lift")) or row.get("null_lift") == 0)
-    ]
-    if shifted:
-        notes.append(f"Non-zero null boundaries: {'; '.join(shifted)}.")
-    axes = next((row.get("family_axes") for row in rows if row.get("family_axes")), None)
-    q = next((row.get("family_q") for row in rows if row.get("family_q") is not None), None)
-    if axes or q is not None:
-        family = "; ".join(
-            ([f"axes {', '.join(str(axis) for axis in axes)}"] if axes else [])
-            + ([f"q = {float(q):.3g}"] if q is not None else [])
-        )
-        notes.append(
-            f"Family selection ({family}) is separate from each row's tested-alternative verdict."
+        limitations.insert(
+            0, "<p>An inconclusive guardrail does not establish that the change is safe.</p>"
         )
     if any(row.get("family_guarantee") == "asymptotic_sequential" for row in rows):
-        notes.append("The sequential family guarantee is asymptotic, not finite-sample.")
-    reported_qualifications: set[tuple[str, str]] = set()
-    for row in rows:
-        notes.append(f"{name(row)}: {outcome_label(row)}")
-        qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
-        if qualification and qualification != "No numerical qualification claim":
-            identity = (name(row), qualification)
-            if identity not in reported_qualifications:
-                notes.append(f"Numerical qualification for {identity[0]}: {qualification}.")
-                reported_qualifications.add(identity)
-        confidence_set = complete_confidence_set_text(row)
-        retained = _plain(confidence_set) if confidence_set else ""
-        if retained:
-            notes.append(f"{name(row)}: {retained}")
-    return notes
+        limitations.insert(
+            0,
+            "<p>When these results are judged together, the repeated-monitoring guarantee is approximate, not valid for every sample size.</p>",
+        )
+    if any(row.get("family_axes") or row.get("family_q") is not None for row in rows):
+        methods.append(
+            "When several results are judged together, the group's finding and an individual test can disagree."
+        )
+    if len({coverage for coverage, _, _ in groups}) > 1:
+        methods.append("Interval levels differ; use each result's own confidence level.")
+    catalog = build_reference_catalog(snapshot) if catalog is None else catalog
+    decisions = (
+        _table(
+            ["Result", "Individual test and group selection", "Test boundary"],
+            [[esc(name(row)), esc(outcome_label(row)), esc(null_text(row))] for row in rows],
+        )
+        if rows
+        else ""
+    )
+    if decisions:
+        reference = (
+            '<details class="report-decisions"><summary>Individual tests and group selections</summary>'
+            + decisions
+            + "</details>"
+            + reference
+        )
+    for identity in catalog.views.get(reference_view_key(("readout",)), ()):
+        result = catalog.results[identity]
+        if not result.diagnostic_codes:
+            continue
+        consequences = " ".join(
+            dict.fromkeys(_UNCERTAINTY_CODES[code].consequence for code in result.diagnostic_codes)
+        )
+        label = name(result.row or {"metric": result.cell.metric})
+        limitations.append(
+            f"<p><strong>{esc(label)}.</strong> {esc(consequences)} "
+            f'<button type="button" class="evidence-select report-check-link" data-result-ref="{esc(identity)}">'
+            "Inspect this result's checks</button></p>"
+        )
+    health = render_comparison_summary(snapshot, catalog)
+    return {
+        "limitationsHtml": "".join(limitations),
+        "methodsHtml": "".join(f"<p>{text}</p>" for text in dict.fromkeys(methods)) + reference,
+        "healthHtml": health,
+    }
 
 
 # Scoped HTML
@@ -809,6 +931,7 @@ def _explore_scope(
     snapshot: DashboardSnapshot,
     breakout: tuple[str | None, str] | None,
     correction: str | None,
+    catalog: ReferenceCatalog,
 ) -> dict[str, dict[str, Any]]:
     names = [model.name for model in all_metrics(snapshot)]
     entries: dict[str, dict[str, Any]] = {name: {} for name in names}
@@ -844,6 +967,7 @@ def _explore_scope(
                 breakout=breakout,
                 correction=correction,
                 batch=batch_by_metric.get(metric) if metric in declared else None,
+                catalog=catalog,
             )
     return entries
 
@@ -865,6 +989,7 @@ def _explore_entry(
     breakout: tuple[str | None, str] | None,
     correction: str | None,
     batch: Any,
+    catalog: ReferenceCatalog,
 ) -> dict[str, Any]:
     view, complete = _VIEWS[view_key]
     scope = "the whole experiment" if breakout is None else f"{breakout[1]} segments"
@@ -888,6 +1013,23 @@ def _explore_entry(
             complete=complete,
             breakout=breakout,
             correction=correction,
+            reference_context=(
+                catalog,
+                (
+                    reference_view_key(
+                        (
+                            "explore",
+                            data[0].analysis_population,
+                            view,
+                            None if batch is not None else metric,
+                            complete,
+                            breakout,
+                        )
+                    ),
+                ),
+            )
+            if data
+            else None,
         )
     except CodedError as exc:
         return _refusal_entry(
@@ -947,6 +1089,7 @@ def _render_entry(
     correction: str | None,
     whole: bool = False,
     refusals: Mapping[str, Mapping[str, str]] | None = None,
+    reference_context: tuple[ReferenceCatalog, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     data = data.filter(lambda row: getattr(row, "method_role", "decision") == "decision")
     rows = list(data)
@@ -969,7 +1112,12 @@ def _render_entry(
             "pointCount": 0,
         }
     figure = temporal_figure(
-        snapshot, data, metric=metric, view=view, metric_refusals=refusals if whole else None
+        snapshot,
+        data,
+        metric=metric,
+        view=view,
+        metric_refusals=refusals if whole else None,
+        reference_context=reference_context,
     )
     notes = _notes(
         snapshot, rows, metric=metric, view=view, complete=complete, correction=correction
@@ -990,6 +1138,7 @@ def _render_entry(
         "caption": caption,
         "notes": notes,
         "pointCount": len(rows),
+        "referenceViews": reference_context[1] if reference_context is not None else (),
     }
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 
 import pytest
@@ -11,9 +12,10 @@ pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
 
 from increment.breakout.estimates import BreakoutEstimates
-from increment.dashboard import render_explore
-from increment.dashboard._data import decision_rows
+from increment.dashboard import render_dashboard, render_explore
+from increment.dashboard._data import _OverviewExclusion
 from increment.dashboard._html import overview_rows, overview_table
+from increment.declarations import CellKey
 from tests.dashboard_snapshots import ADDED, COUNTRY, experiment_for, overview_snapshot
 
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
@@ -33,11 +35,31 @@ def _identity(row) -> tuple:
     return (row["metric"], row["group_id"], row["lift"], row["lower"], row["higher"])
 
 
+def _overview_payload(snapshot, breakout=None, *, experiment=None):
+    experiment = experiment_for(snapshot) if experiment is None else experiment
+    page = render_dashboard(experiment, snapshot=snapshot).widget.get_state()["document"]
+    (embedded,) = re.findall(
+        r"""<script[^>]*id=["']dashboard-data["'][^>]*>(.*?)</script>""", page, re.S
+    )
+    payload = json.loads(embedded)
+    source, dimension = (None, None) if breakout is None else breakout
+    key = next(
+        key
+        for key, scope in payload["scopes"].items()
+        if scope["source"] == source and scope["dimension"] == dimension
+    )
+    return payload["overview"][key]
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapshot):
     snapshot = _saved_added_snapshot
-    readout = {_identity(row): row["stat_sig"] for row in decision_rows(snapshot)}
+    readout = {
+        _identity(row): row["stat_sig"]
+        for row in snapshot.readout_rows
+        if row["method_role"] == "decision" and row["analysis_population"] == "assigned"
+    }
     for scope in (None, COUNTRY):
         shown = {
             _identity(row): row["stat_sig"]
@@ -48,10 +70,11 @@ def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapsh
     assert ADDED not in {row["metric"] for row in snapshot.readout_rows}
 
 
-def test_explore_tables_keep_core_columns_without_a_result_column(_family_presentation_snapshot):
+@pytest.mark.integration
+def test_explore_tables_keep_result_plot_and_correction_legend(_family_presentation_snapshot):
 
     snapshot = _family_presentation_snapshot
-    overview_html = overview_table(snapshot, COUNTRY)
+    overview_html = _overview_payload(snapshot, COUNTRY)["html"]
     headers = {
         re.sub(r"<[^>]+>", "", header).strip()
         for header in re.findall(
@@ -60,8 +83,11 @@ def test_explore_tables_keep_core_columns_without_a_result_column(_family_presen
             flags=re.DOTALL,
         )
     }
-    assert {"Result", "Discovery", "Interval"}.isdisjoint(headers)
-    assert "Lift Plot" in headers
+    assert {"Discovery", "Interval"}.isdisjoint(headers)
+    assert {"Result", "Lift Plot"} <= headers
+    legend = re.search(r'data-inc-status="exploratory_family">([¹²³⁴])\s', overview_html)
+    assert legend is not None
+    assert legend.group(1) in re.sub(r"<thead\b.*?</thead>", "", overview_html, flags=re.S)
 
 
 def test_overview_qualification_footnotes_name_rows_and_family(_family_presentation_snapshot):
@@ -92,7 +118,6 @@ def test_overview_family_status_keeps_raw_stat_sig_separate(_family_presentation
     import dataclasses
 
     from increment.dashboard._html import overview_table
-    from increment.dashboard._theme import coeftable_theme
     from increment.estimation.results import Estimate
 
     snapshot = _family_presentation_snapshot
@@ -124,19 +149,19 @@ def test_overview_family_status_keeps_raw_stat_sig_separate(_family_presentation
     selected, improvement_html = displayed(True)
     assert not_selected["stat_sig"] is source_stat_sig
     assert selected["stat_sig"] is source_stat_sig
-    theme = coeftable_theme(snapshot.config.theme)
 
-    def colored_plots(markup, color):
+    def colored_plots(markup, role):
+        color = re.escape(f"var(--inc-dashboard-theme-{role},")
         return sum(
-            re.search(r'<rect\b[^>]*\bfill="' + re.escape(color) + '"', plot) is not None
+            re.search(r'<rect\b[^>]*\bfill="' + color, plot) is not None
             for plot in re.findall(r"<svg\b[^>]*>.*?</svg>", markup, re.DOTALL)
         )
 
-    assert colored_plots(improvement_html, theme.favorable) == (
-        colored_plots(inconclusive_html, theme.favorable) + 1
+    assert colored_plots(improvement_html, "favorable") == (
+        colored_plots(inconclusive_html, "favorable") + 1
     )
-    assert colored_plots(inconclusive_html, theme.inconclusive) == (
-        colored_plots(improvement_html, theme.inconclusive) + 1
+    assert colored_plots(inconclusive_html, "muted") == (
+        colored_plots(improvement_html, "muted") + 1
     )
 
 
@@ -167,19 +192,21 @@ def test_an_unexpected_update_failure_rolls_the_widget_back(monkeypatch):
 def test_an_added_metric_with_a_display_unit_can_be_removed_and_re_added(
     _family_presentation_snapshot,
 ):
-    from increment.dashboard._app import DashboardWidget
-
     snapshot = _family_presentation_snapshot
     snapshot = dataclasses.replace(
         snapshot, config=dataclasses.replace(snapshot.config, metric_units={ADDED: "orders"})
     )
-    widget = DashboardWidget(experiment_for(snapshot), snapshot=snapshot)
-    widget.exploratory_metrics = []
-    assert widget.status == ""
-    assert widget.exploratory_metrics == []
-    widget.exploratory_metrics = [ADDED]
-    assert widget.status == ""
-    assert [model.name for model in widget._snapshot.exploratory_metrics] == [ADDED]
+    widget = render_dashboard(experiment_for(snapshot), snapshot=snapshot).widget
+    widget.set_trait("exploratory_metrics", [])
+    assert widget.get_state()["status"] == ""
+    assert widget.get_state()["exploratory_metrics"] == []
+    widget.set_trait("exploratory_metrics", [ADDED])
+    state = widget.get_state()
+    assert state["status"] == ""
+    (embedded,) = re.findall(
+        r"""<script[^>]*id=["']dashboard-data["'][^>]*>(.*?)</script>""", state["document"], re.S
+    )
+    assert ADDED in {metric["key"] for metric in json.loads(embedded)["metrics"]}
 
 
 def test_added_metric_inspector_shows_its_overview_result():
@@ -355,8 +382,11 @@ def test_overview_table_caveats_follow_the_visible_scope_without_generic_duplica
     assert snapshot.overview is not None
     original = snapshot.overview.segments[COUNTRY][0]
     note = "Residual precision target missed: residual 0.03."
+    device = (COUNTRY[0], "device")
+    device_row = original.model_copy(update={"dimension": "device", "dimension_value": "mobile"})
     changed = dataclasses.replace(
         snapshot,
+        breakouts=(*snapshot.breakouts, device),
         overview=dataclasses.replace(
             snapshot.overview,
             segments={
@@ -365,7 +395,20 @@ def test_overview_table_caveats_follow_the_visible_scope_without_generic_duplica
                     estimate.model_copy(update={"note": note}) if estimate is original else estimate
                     for estimate in snapshot.overview.segments[COUNTRY]
                 ),
+                device: BreakoutEstimates([device_row]),
             },
+            exclusions=(
+                _OverviewExclusion(
+                    original.source_snapshot_id,
+                    CellKey.from_row(original),
+                    "country-specific exclusion",
+                ),
+                _OverviewExclusion(
+                    device_row.source_snapshot_id,
+                    CellKey.from_row(device_row),
+                    "device-specific exclusion",
+                ),
+            ),
         ),
     )
 
@@ -378,3 +421,80 @@ def test_overview_table_caveats_follow_the_visible_scope_without_generic_duplica
     assert "gt_sourcenote" in scoped
     assert original.metric in scoped
     assert str(original.dimension_value) in scoped
+    country_limitations = _overview_payload(changed, COUNTRY)["limitationsHtml"]
+    device_limitations = _overview_payload(changed, device)["limitationsHtml"]
+    assert "country-specific exclusion" in country_limitations
+    assert "device-specific exclusion" not in country_limitations
+    assert "device-specific exclusion" in device_limitations
+    assert "country-specific exclusion" not in device_limitations
+
+    hidden = dataclasses.replace(changed, exploratory_metrics=())
+    before, after = (_overview_payload(value, COUNTRY) for value in (changed, hidden))
+    assert before["methodsHtml"] == after["methodsHtml"]
+    assert ADDED not in before["hiddenMetrics"] and ADDED in after["hiddenMetrics"]
+
+
+@pytest.mark.integration
+def test_exclusion_is_attached_only_to_its_original_breakout_source():
+    from increment._source_operations import DashboardExploreCapture
+    from increment.dashboard._data import _overview
+    from tests.dashboard_snapshots import frozen
+
+    saved = frozen("explore")
+    snapshot = saved.snapshot
+    original = next(
+        row
+        for row in snapshot.explore[("assigned", "overview_segments", None, False, COUNTRY)].load()
+        if row.metric == "checkout_conversion" and row.dimension_value == "US"
+    )
+    other = ("profiles", "country")
+    excluded = original.model_copy(update={"inference": "always_valid"})
+    eligible = original.model_copy(update={"source": other[0]})
+    captures: dict[tuple[str | None, str], DashboardExploreCapture] = {}
+    retained = dict(snapshot.explore)
+    for scope, row in ((COUNTRY, excluded), (other, eligible)):
+        key = ("assigned", "overview_segments", None, False, scope)
+        captures[scope] = DashboardExploreCapture.answered(
+            key, BreakoutEstimates([row]), collection=BreakoutEstimates
+        )
+        retained[key] = captures[scope]
+    overview = _overview(None, captures, refusals=(), q=0.05)
+    assert overview.family_refusal is None
+    assert len(overview.exclusions) == 1
+    exclusion = overview.exclusions[0]
+    assert exclusion.cell == CellKey.from_row(excluded)
+    assert exclusion.source_snapshot_id == excluded.source_snapshot_id
+    reason = exclusion.reason
+    changed = dataclasses.replace(
+        snapshot,
+        explore=retained,
+        overview=overview,
+        overviews={},
+        breakouts=(*snapshot.breakouts, other),
+    )
+    assert (
+        reason
+        in _overview_payload(changed, COUNTRY, experiment=saved.experiment)["limitationsHtml"]
+    )
+    assert (
+        reason
+        not in _overview_payload(changed, other, experiment=saved.experiment)["limitationsHtml"]
+    )
+
+
+@pytest.mark.integration
+def test_visible_family_refusal_preserves_original_scope_text(_family_presentation_snapshot):
+    from html import unescape
+
+    from increment.errors import CapabilityError
+
+    snapshot = _family_presentation_snapshot
+    term = "A & B"
+    refusal = CapabilityError(
+        f"Unavailable for {term}", code="test.exploratory.refusal", context={"scope": term}
+    )
+    changed = dataclasses.replace(
+        snapshot, overview=dataclasses.replace(snapshot.overview, family_refusal=refusal)
+    )
+    visible = _overview_payload(changed)["limitationsHtml"].split("<details", 1)[0]
+    assert term in unescape(re.sub(r"<[^>]*>", "", visible))

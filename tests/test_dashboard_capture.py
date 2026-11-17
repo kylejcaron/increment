@@ -54,7 +54,7 @@ from increment.dashboard import (
 )
 from increment.dashboard._app import DashboardWidget, build_payload, document
 from increment.dashboard._data import _each_warning_once, enriched_rows, show_exploratory_metrics
-from increment.dashboard._html import overview_notes, overview_rows, overview_table
+from increment.dashboard._html import overview_explanation, overview_rows, overview_table
 from increment.errors import (
     CapabilityError,
     CodedError,
@@ -1238,9 +1238,9 @@ def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_pa
     assert isinstance(refusal, CapabilityError)
     assert refusal.code == "readout.metric.quantile_breakout"
     assert refusal.context["metric"] == QUANTILE
-    assert any(
-        QUANTILE in note and refusal.code in note for note in overview_notes(snapshot, COUNTRY)
-    )
+    visible = show_exploratory_metrics(snapshot, (QUANTILE,))
+    explanation = overview_explanation(visible, COUNTRY)["limitationsHtml"]
+    assert QUANTILE in explanation and refusal.code in explanation
 
 
 # A ratio over the purchase count: its denominator is a rare 0/1 count, so the estimator warns
@@ -2236,19 +2236,23 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories():
 
     readout_html = render_results(snapshot).text
     payload = build_payload(saved.experiment, snapshot=snapshot)
-    report_text = payload["report"]["qualifications"]
-    for surface in (readout_html, report_text):
-        assert reason["code"] in surface
-        assert advisory["code"] in surface
-        assert "below 40" in surface
+    report_text = payload["report"]["healthHtml"] + payload["report"]["limitationsHtml"]
+    references = [
+        item["recordJson"]
+        for kind in ("results", "groups")
+        for item in payload["references"][kind].values()
+    ]
+    for code in (reason["code"], advisory["code"]):
+        assert code in readout_html
+        assert any(code in record for record in references)
+    assert "below 40" in report_text
     assert advisory["message"] in unescape(report_text)
-    assert "integrity.allocation_missing_or_nonconstant" in report_text
+    assert any("integrity.allocation_missing_or_nonconstant" in record for record in references)
     shell = document(payload)
     assert "hero-meta').textContent = str(data.meta)" in shell
     # The hero leaves the qualifications to Readout and Report.
     assert "hero-qualifications" not in shell
     assert payload["meta"]
-    assert shell.index('id="report-qualifications"') < shell.index('id="report-primary-effect"')
     _assert_added_exploratory_readout(snapshot)
 
     exported = list(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
@@ -2289,14 +2293,14 @@ def test_a_refused_added_metric_keeps_every_other_metrics_overview_rows():
     }
     refusal = next(item for item in overview.refusals if item[0] == "p90_revenue")
     assert refusal[2].code == "arm.metric.quantile_cluster"
-    assert any("p90_revenue" in note for note in overview_notes(snapshot, None))
+    assert "p90_revenue" in overview_explanation(snapshot, None)["limitationsHtml"]
 
     details = render_metric_details(snapshot, metric="added_revenue").text
     assert "added_revenue" in details
     assert render_dashboard(saved.experiment, snapshot=snapshot) is not None
     payload = build_payload(saved.experiment, snapshot=snapshot)
-    notes = payload["overview"]["overall"]["notes"]
-    assert any("p90_revenue" in note and refusal[2].code in note for note in notes)
+    limitations = payload["overview"]["overall"]["limitationsHtml"]
+    assert "p90_revenue" in limitations and refusal[2].code in limitations
 
 
 def test_one_family_covers_added_metrics_and_every_segment_cell():

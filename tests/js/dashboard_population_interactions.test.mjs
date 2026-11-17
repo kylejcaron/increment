@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { loadDashboardFromFile } from "./dashboard_population_fixture.mjs";
 
-const population = (dashboard, name) => dashboard.payload.populationViews[name];
+const population = (dashboard, name) => name === dashboard.payload.defaultPopulation
+  ? dashboard.payload : dashboard.payload.populationViews[name];
 
 function selectPopulation(dashboard, name) {
   dashboard.populationSelect.value = name;
@@ -26,9 +27,9 @@ test("population switching updates visible readouts and downloads without losing
   const dashboard = loadDashboardFromFile(process.env.INCREMENT_DASHBOARD_DOCUMENT, (payload) => {
     payload.primary.tone = "inconclusive";
     payload.primary.result = "Inconclusive";
-    payload.populationViews.triggered.primary.tone = "inconclusive";
-    payload.populationViews.triggered.primary.result = "Inconclusive";
     payload.populationViews.assigned.primary.tone = "detected";
+    payload.populationViews.assigned.report.healthHtml =
+      '<p class="inc-dashboard-status inc-dashboard-status--warn">Assignment could not be verified.</p>';
     payload.populationViews.assigned.primary.result = "Difference detected";
   });
   const triggered = population(dashboard, "triggered");
@@ -49,6 +50,16 @@ test("population switching updates visible readouts and downloads without losing
     dashboard.readoutTable.querySelector("tr[data-metric]").getAttribute("data-selected"),
     ""
   );
+  const references = triggered.references;
+  const selectedId = references.views['["readout"]'].find(
+    (id) => references.results[id].cell.metric === metric.key
+  );
+  const choice = dashboard.document.getElementById("result-choice");
+  choice.value = selectedId;
+  choice.dispatch("change");
+  assert.ok(dashboard.document.getElementById("readout-inspector").innerHTML.includes(
+    references.results[selectedId].readingHtml
+  ));
 
   selectPopulation(dashboard, "assigned");
   assertViewSelected(dashboard, "readout");
@@ -61,6 +72,8 @@ test("population switching updates visible readouts and downloads without losing
     dashboard.readoutTable.querySelector("tr[data-metric]").getAttribute("data-selected"),
     ""
   );
+  assert.equal(dashboard.document.getElementById("result-choice").value, "");
+  assert.equal(dashboard.document.getElementById("readout-inspector").innerHTML, "");
 
   selectPopulation(dashboard, "triggered");
   assertViewSelected(dashboard, "readout");
@@ -84,18 +97,19 @@ test("population switching updates visible readouts and downloads without losing
   assertViewSelected(dashboard, "report");
   const triggeredUrl = dashboard.reportDownload.href;
   assert.equal(await dashboard.objectUrls.get(triggeredUrl).text(), triggered.readoutCsv);
-  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications"]);
+  assert.equal(dashboard.document.getElementById("report-health-section").hidden, true);
   selectPopulation(dashboard, "assigned");
   assertViewSelected(dashboard, "report");
   const assignedUrl = dashboard.reportDownload.href;
   assert.notEqual(assignedUrl, triggeredUrl);
   assert.equal(await dashboard.objectUrls.get(assignedUrl).text(), assigned.readoutCsv);
   assert.equal(dashboard.document.getElementById("report-primary-box").classList.contains("tone-detected"), true);
-  assert.deepEqual(holders(dashboard, assigned.report.qualifications), ["report-qualifications"]);
+  assert.deepEqual(holders(dashboard, assigned.report.healthHtml), ["report-health"]);
+  assert.equal(dashboard.document.getElementById("report-health-section").hidden, false);
   selectPopulation(dashboard, "triggered");
   assertViewSelected(dashboard, "report");
   assert.equal(await dashboard.objectUrls.get(dashboard.reportDownload.href).text(), triggered.readoutCsv);
-  assert.deepEqual(holders(dashboard, triggered.report.qualifications), ["report-qualifications"]);
+  assert.equal(dashboard.document.getElementById("report-health-section").hidden, true);
 });
 
 test("population selection survives a host refresh restore", () => {
@@ -111,11 +125,19 @@ test("population selection survives a host refresh restore", () => {
   );
 
   const refreshed = loadDashboardFromFile(process.env.INCREMENT_DASHBOARD_DOCUMENT);
+  const parentDocument = {};
+  refreshed.context.window.parent.document = parentDocument;
   refreshed.dispatchHostMessage({
     source: "inc-dashboard-host",
     type: "restore",
     population: "assigned",
-  });
+  }, { document: {} });
+  assert.equal(refreshed.populationSelect.value, "triggered");
+  refreshed.dispatchHostMessage({
+    source: "inc-dashboard-host",
+    type: "restore",
+    population: "assigned",
+  }, { document: parentDocument });
 
   assert.equal(refreshed.populationSelect.value, "assigned");
   assert.equal(refreshed.heroEffect.textContent, assigned.primary.effect);

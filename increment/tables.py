@@ -483,6 +483,7 @@ def _report_projection_to_readout(est: Any) -> dict[str, ReadoutValue]:
         qualification = effect.qualification
     return {
         "metric": est.metric,
+        "source_snapshot_id": getattr(est, "source_snapshot_id", None),
         "method": getattr(est, "method", None) or "report",
         "method_role": getattr(est, "method_role", "decision"),
         "lift": point,
@@ -1047,7 +1048,7 @@ def _literal_segments(frame: Any) -> Any:
     )
 
 
-def _binomial_qualification_disclosure(value: Any) -> str:
+def _binomial_qualification_disclosure(value: Any, *, technical: bool = True) -> str:
     if _is_missing(value):
         return ""
     qualification = (
@@ -1056,9 +1057,17 @@ def _binomial_qualification_disclosure(value: Any) -> str:
         else getattr(value, "numerical_qualification", None)
     )
     if qualification == "scipy_special_function_error_model_conditional_v1":
-        return "Computed enclosure conditional on deployed SciPy/Boost special-function error model"
+        return (
+            "Computed enclosure conditional on deployed SciPy/Boost special-function error model"
+            if technical
+            else "The numerical guarantee depends on assumptions about the math software's calculation errors."
+        )
     if qualification == "legacy_unrecorded_v1":
-        return "Numerical qualification not recorded in legacy result"
+        return (
+            "Numerical qualification not recorded in legacy result"
+            if technical
+            else "The numerical guarantee was not recorded for this result."
+        )
     return "No numerical qualification claim"
 
 

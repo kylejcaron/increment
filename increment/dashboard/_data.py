@@ -81,7 +81,7 @@ from increment.estimation.exploratory_family import (
     select_exploratory_family,
 )
 from increment.estimation.health import ExperimentHealth
-from increment.estimation.readout_types import partial_metadata
+from increment.estimation.readout_types import CellKey, partial_metadata
 from increment.tables import _retained_coverage_alpha, estimates_to_readout
 
 if TYPE_CHECKING:
@@ -246,6 +246,13 @@ class DashboardConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class _OverviewExclusion:
+    source_snapshot_id: str | None
+    cell: CellKey
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardOverview:
     """The Explore overview's exploratory cells, captured with the headline.
 
@@ -253,9 +260,9 @@ class DashboardOverview:
     breakout's segment rows, all corrected as one BH family of
     ``family_size`` cells at ``family_q``. When the family itself is refused, ``family_refusal``
     holds that refusal and no exploratory cell is shown. ``refusals`` names each metric whose
-    read was refused as ``(metric, place, refusal)``. ``exclusions`` names each cell left out
-    of the family as ``(metric, place, reason)``; such a cell is shown uncorrected and never
-    marked as a discovery. Every offered metric's cells are kept, shown or not.
+    read was refused as ``(metric, place, refusal)``. Exclusions retain their source and cell
+    coordinates with the reason they were not used. Their stored intervals are retained,
+    rather than receiving this group's correction. Offered metrics are kept, shown or not.
     """
 
     exploratory: tuple[LiftEstimate, ...]
@@ -264,7 +271,7 @@ class DashboardOverview:
     family_q: float
     family_refusal: CodedError | None = None
     refusals: tuple[tuple[str, str, CodedError], ...] = ()
-    exclusions: tuple[tuple[str, str, str], ...] = ()
+    exclusions: tuple[_OverviewExclusion, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "exploratory", tuple(self.exploratory))
@@ -632,7 +639,7 @@ _STATISTICAL_CAUTIONS = WarningSpec(
     lambda *, metrics, codes: (
         "Some dashboard results have statistical cautions for "
         f"{', '.join(metric.replace('_', ' ') for metric in metrics)}. "
-        "See Diagnostics for affected dates, segments and arms."
+        "Inspect the affected results for their dates, segments, arms and recorded checks."
     ),
 )
 
@@ -1442,7 +1449,7 @@ def _overview(
     cells = [*exploratory, *(row for rows in scoped.values() for row in rows)]
     reasons = [exploratory_family_exclusion(cell) for cell in cells]
     exclusions = tuple(
-        (str(cell.metric), _cell_place(cell), reason)
+        _OverviewExclusion(cell.source_snapshot_id, CellKey.from_row(cell), reason)
         for cell, reason in zip(cells, reasons, strict=True)
         if reason is not None
     )
