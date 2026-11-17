@@ -163,3 +163,26 @@ test("table data stays inert while metric names open result evidence", () => {
     assert.equal(byId(dashboard, "inspector").hidden, false, target);
   }
 });
+
+test("result choices distinguish original and Overview-corrected readings", () => {
+  const cell = { metric: "revenue_01", analysis_population: "assigned", group_id: "T",
+    method: "unadjusted", method_role: "decision", dimension: "country",
+    dimension_value: "US", source: "events", ds_basis: null, ds: null };
+  const dashboard = dashboardWith(1, {
+    results: {
+      original: { cell, sourceId: "capture", viewLabels: ["Original segment analysis"], selectionLabel: "Original analysis" },
+      corrected: { cell, sourceId: "capture", viewLabels: ["Explore Overview"], selectionLabel: "Overview correction" },
+    },
+    views: { '["readout"]': ["original", "corrected"] },
+  });
+  dashboard.tabs.readout.dispatch("click");
+  dashboard.readoutTable.dispatch("click", {
+    target: dashboard.readoutTable.querySelector(".metric-select"), detail: 0,
+  });
+  const choices = byId(dashboard, "result-choice").children.slice(1);
+  assert.notEqual(choices[0].textContent, choices[1].textContent);
+  const search = byId(dashboard, "result-filter");
+  search.value = "Overview correction";
+  search.dispatch("input");
+  assert.deepEqual(byId(dashboard, "result-choice").children.map(x => x.getAttribute("value")), ["", "corrected"]);
+});

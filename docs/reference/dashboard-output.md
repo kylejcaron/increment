@@ -232,6 +232,8 @@ if its own test rejects. The dashboard makes no ship/no-ship decision.
 - Select a metric's name to inspect its result. When it represents several
   methods, sources, dates, or segments, use the result picker; the inspector
   never substitutes a headline estimate.
+  Picker labels distinguish the original analysis from Overview correction
+  and identify the views that use each reading.
 - **Test and interval details:** the selected result's estimate, exact interval,
   confidence level and retained budget, individual test verdict, and
   multiple-testing selection. **Technical record for this result** retains
@@ -263,6 +265,8 @@ and saved results retain original evidence rather than display markers.
 The inspector's **Technical record for this result** retains assumptions,
 result identity, and captured control/treatment successes and trials when
 available. The standalone `render_metric_details()` remains self-contained.
+The metric summary and selected result both keep the declared measurement
+window or retention band, even when the metric has no written description.
 
 ### Guardrails
 
@@ -527,6 +531,8 @@ limitations, displayed confidence levels, and shared interpretation. Individual
 tests and group selections have a compact comparison table. Stored budgets
 remain in a separate reference; routine check passes and allocation values
 stay in Health.
+Material check warnings precede the primary effect and results table,
+including in printed reports.
 
 **Print / Save PDF** uses one A4 page only if prose and numeric evidence stay
 at or above `theme.printing.min_font_size_pt` (default 8pt). Larger families

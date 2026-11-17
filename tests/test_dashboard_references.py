@@ -165,7 +165,7 @@ def test_trajectory_references_keep_original_arm_and_segment_identity(view):
 @pytest.mark.integration
 def test_corrected_overview_keeps_its_original_capture_checks():
     template = snapshot(explore={})
-    metric = template.metrics[0].model_copy(update={"name": "overview_only"})
+    metric = template.metrics[1].model_copy(update={"name": "overview_only"})
     base = snapshot(explore={}, offered_metrics=(metric,), exploratory_metrics=(metric,))
     original = _source_collection(
         base, "overview-source", lower=-0.2, alpha=0.05, metric=metric.name
@@ -175,7 +175,8 @@ def test_corrected_overview_keeps_its_original_capture_checks():
     )
     key = ("assigned", "overview_whole", None, False, None)
     value = captured_snapshot(base, explore={key: original}, overview=(corrected,))
-    references = _payload(value)["references"]
+    payload = _payload(value)
+    references = payload["references"]
     reference = next(
         references["results"][identity]
         for identity in _view(references, ["overview", None, None])
@@ -187,6 +188,12 @@ def test_corrected_overview_keeps_its_original_capture_checks():
     assert raw["reading"] is not None
     (reading,) = estimates_to_readout([LiftEstimate.model_validate(raw["reading"])])
     assert reading["coverage_alpha"] == pytest.approx(0.01)
+    assert "14 days" in unescape(reference["readingHtml"])
+    detail = next(item["detail"] for item in payload["metrics"] if item["key"] == metric.name)
+    assert "14 days" in unescape(detail)
+    original_reference = references["results"][_view(references, ["explore", *key])[0]]
+    assert reference["viewLabels"] != original_reference["viewLabels"]
+    assert reference["selectionLabel"] != original_reference["selectionLabel"]
     source = next(
         group["source"]
         for identity in reference["groupIds"]
@@ -286,3 +293,28 @@ def test_diagnostic_counts_union_result_identities_across_codes_and_views():
     assert len(affected(1, 2)["results"]) == 2
     retain(cautioned("source-a", lower=-0.4), original[0].metric, True)
     assert len(affected(2, 3)["results"]) == 3
+
+
+@pytest.mark.integration
+def test_triggered_trajectory_keeps_references_without_headline_estimates():
+    saved = frozen("triggered")
+    base = saved.snapshot
+    key = ("triggered", "cumulative_lift", None, False, None)
+    capture = base.explore[key]
+    value = replace(
+        base,
+        estimates=(),
+        readout_rows=(),
+        readout_collection=LiftEstimates(()),
+        population_estimates={**base.population_estimates, "triggered": ()},
+        population_collections={**base.population_collections, "triggered": LiftEstimates(())},
+        explore={key: capture},
+    )
+    payload = _payload(value, experiment=saved.experiment)
+    references = payload["references"]
+    identities = _view(references, ["explore", *key])
+    expected = capture.load()[0].model_dump(mode="json")
+    assert any(
+        json.loads(references["results"][identity]["recordJson"])["reading"] == expected
+        for identity in identities
+    )

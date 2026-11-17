@@ -1013,3 +1013,23 @@ def test_precision_caution_replaces_only_its_duplicate_note_in_native_result_tab
         assert "cuped" in rendered and "sensitivity" in rendered
     assert "not a passing check" in (rendered if diagnostics_html is None else diagnostics_html)
     assert "Uncertainty caution" not in render_header(snapshot).text
+
+
+@pytest.mark.integration
+def test_selected_early_result_retains_its_low_reliability_caution(storefront):
+    from datetime import date
+
+    from increment.breakout.estimates import DailyLiftEstimate, DailyLiftEstimates
+    from tests.dashboard_snapshots import captured_snapshot
+
+    early = DailyLiftEstimate(
+        **_decision(storefront, SECONDARY).model_dump(exclude={"ds"}),
+        ds=date(2025, 1, 15),
+        low_reliability=True,
+    )
+    key = ("assigned", "cumulative_lift", None, False, None)
+    value = captured_snapshot(storefront, explore={key: DailyLiftEstimates((early,))})
+    references = _rendered_payload(value)["references"]
+    (identity,) = references["views"][json.dumps(["explore", *key], separators=(",", ":"))]
+    reading = references["results"][identity]["readingHtml"]
+    assert re.search(r"low reliability|small.sample", reading.split("<details", 1)[0], re.I)

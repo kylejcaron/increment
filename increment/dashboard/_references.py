@@ -280,7 +280,7 @@ def build_reference_catalog(snapshot: DashboardSnapshot) -> ReferenceCatalog:
     )
     for key, capture in snapshot.explore.items():
         if capture.population != (
-            snapshot.estimates[0].analysis_population if snapshot.estimates else "assigned"
+            "triggered" if "triggered" in snapshot.population_estimates else "assigned"
         ):
             continue
         parts = ("explore", *key)

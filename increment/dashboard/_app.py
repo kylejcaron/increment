@@ -367,6 +367,12 @@ def _reference_payload(snapshot: DashboardSnapshot, catalog: ReferenceCatalog) -
         results[identity] = {
             "cell": reference.cell.model_dump(mode="json"),
             "sourceId": reference.source_snapshot_id,
+            "viewLabels": memberships.get(identity, ()),
+            "selectionLabel": (
+                "Overview correction"
+                if any("correction" in catalog.groups[group] for group in reference.group_ids)
+                else "Original analysis"
+            ),
             "groupIds": reference.group_ids,
             "readingHtml": _styled(
                 render_result_reference(

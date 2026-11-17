@@ -777,6 +777,9 @@ button.metric-select { cursor: pointer; }
 
         <div class="rpt-card">
           <div class="rpt-paper" id="report-paper">
+            <section class="rpt-section" id="report-health-section" aria-label="Warnings" hidden>
+              <div class="native-output" id="report-health"></div>
+            </section>
             <header>
               <div class="rpt-masthead">
                 <p class="rpt-brand">increment <span>/ experiment report</span></p>
@@ -804,9 +807,6 @@ button.metric-select { cursor: pointer; }
             <section class="rpt-section" id="report-limitations-section" aria-labelledby="rpt-h-limitations" hidden>
               <h2 class="rpt-h2" id="rpt-h-limitations">What needs care</h2>
               <div class="native-output" id="report-limitations"></div>
-            </section>
-            <section class="rpt-section" id="report-health-section" aria-label="Warnings" hidden>
-              <div class="native-output" id="report-health"></div>
             </section>
             <section class="rpt-section" id="report-methods-section" aria-labelledby="rpt-h-methods" hidden>
               <h2 class="rpt-h2" id="rpt-h-methods">How to read these results</h2>
@@ -986,7 +986,7 @@ button.metric-select { cursor: pointer; }
     const date = cell.ds && typeof cell.ds === 'object' ? cell.ds.datetime ?? cell.ds.label : cell.ds;
     const arm = cell.control_group ? (cell.treatment_group || cell.group_id) + ' vs ' + cell.control_group :
       cell.treatment_group || cell.group_id;
-    return [cell.analysis_population, arm,
+    return [...(reference.viewLabels || []), reference.selectionLabel, cell.analysis_population, arm,
       cell.method, cell.method_role, cell.dimension, cell.dimension_value,
       date, cell.ds_basis, reference.sourceId].filter((value) => value !== null && value !== undefined).join(' · ');
   }

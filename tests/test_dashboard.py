@@ -2450,3 +2450,22 @@ def test_daily_value_without_alpha_keeps_its_retained_level(storefront: Dashboar
 
     assert row["level"] == 0.95
     assert row["coverage_alpha"] is None
+
+
+@pytest.mark.integration
+def test_report_reading_order_qualifies_primary_and_results_with_warnings(storefront):
+    from html.parser import HTMLParser
+
+    order = []
+
+    class ReportOrder(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            identity = dict(attrs).get("id")
+            if identity in ("report-health-section", "report-primary-box", "report-table"):
+                order.append(identity)
+
+    page = render_dashboard(experiment_for(storefront), snapshot=storefront).widget.get_state()[
+        "document"
+    ]
+    ReportOrder().feed(page)
+    assert order == ["report-health-section", "report-primary-box", "report-table"]

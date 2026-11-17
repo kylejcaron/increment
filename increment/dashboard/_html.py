@@ -2429,10 +2429,17 @@ def render_details(snapshot: DashboardSnapshot) -> mo.Html:
     )
 
 
+def _metric_definition(model: Any) -> str:
+    description = f"<p>{esc(model.description)}</p>" if model.description else ""
+    return description + _kv(
+        [("Metric type", esc(model.type)), ("Measurement window", _metric_window(model))]
+    )
+
+
 def render_metric_summary(snapshot: DashboardSnapshot, metric: str) -> str:
     """Definition and observed groups, without substituting a headline result."""
     model = require_metric(snapshot, metric)
-    definition = f"<p>{esc(model.description or 'No metric description was recorded.')}</p>"
+    definition = _metric_definition(model)
     groups = (
         _group_data_disclosure(snapshot, metric)
         if metric in {item.name for item in snapshot.metrics}
@@ -2474,7 +2481,14 @@ def render_result_reference(
             else None,
         ),
     ]
-    context = _kv([(name, esc(value)) for name, value in identity if value is not None])
+    definition = (
+        _metric_definition(model)
+        if model is not None
+        else "<p>The metric definition was not captured.</p>"
+    )
+    context = definition + _kv(
+        [(name, esc(value)) for name, value in identity if value is not None]
+    )
     if reference.row is None:
         reason = reference.record.failure if reference.record is not None else None
         return (
@@ -2499,7 +2513,12 @@ def render_result_reference(
             ),
         ]
     )
-    caveats = _caveats_list(_result_table_caveats([row]))
+    caveat_row = (
+        without_advisory_notes(row, (item.message for item in reference.record.advisories))
+        if reference.record
+        else row
+    )
+    caveats = _caveats_list(result_caveats([caveat_row]))
     advisories = (
         _list(
             [esc(item.message) for item in reference.record.advisories],
@@ -2540,8 +2559,7 @@ def render_result_reference(
         "Recorded calculation inputs remain in the technical record.</p>"
     )
     return (
-        f"<p>{esc(model.description or '') if model is not None else 'The metric definition was not captured.'}</p>"
-        + context
+        context
         + reading
         + caveats
         + advisories
