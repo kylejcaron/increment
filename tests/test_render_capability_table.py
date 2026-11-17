@@ -183,6 +183,7 @@ def test_linked_records_keep_distinct_paths_and_all_conditional_outcomes() -> No
         for ingress, anchor in zip(INGRESSES, links, strict=True):
             record = records[anchor]
             assert ingress in record
+            assert row.label in record
             for condition, display in resolve_cell(row.bindings[ingress]):
                 assert condition in record
                 assert display.status.replace("_", " ") in record

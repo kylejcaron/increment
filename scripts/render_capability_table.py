@@ -96,7 +96,7 @@ def _render_table(table: str, rows: Sequence[EntryRow]) -> str:
                 (
                     f'<span id="{_record_anchor(row, column)}"></span>',
                     "",
-                    f"#### {header}",
+                    f"#### {row.label} — {header}",
                     "",
                     f"**Recorded path:** `{column}`",
                     "",

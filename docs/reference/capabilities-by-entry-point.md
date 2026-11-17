@@ -116,7 +116,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-exploratory-from_unit_summary"></span>
 
-#### Unit summary
+#### Declared + exploratory metrics in one physical capture — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -134,7 +134,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-exploratory-from_unit_panel"></span>
 
-#### Unit panel
+#### Declared + exploratory metrics in one physical capture — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -152,7 +152,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-exploratory-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Declared + exploratory metrics in one physical capture — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -170,7 +170,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-exploratory-from_definitions"></span>
 
-#### Definitions
+#### Declared + exploratory metrics in one physical capture — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -184,7 +184,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-exploratory-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Declared + exploratory metrics in one physical capture — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -202,7 +202,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-exploratory-from_moments"></span>
 
-#### Portable moments
+#### Declared + exploratory metrics in one physical capture — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -225,7 +225,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-multiview-from_unit_summary"></span>
 
-#### Unit summary
+#### Whole-window + daily scopes in one physical capture — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -243,7 +243,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-multiview-from_unit_panel"></span>
 
-#### Unit panel
+#### Whole-window + daily scopes in one physical capture — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -257,7 +257,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-multiview-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Whole-window + daily scopes in one physical capture — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -275,7 +275,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-multiview-from_definitions"></span>
 
-#### Definitions
+#### Whole-window + daily scopes in one physical capture — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -291,7 +291,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-multiview-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Whole-window + daily scopes in one physical capture — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -305,7 +305,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-shared-capture-multiview-from_moments"></span>
 
-#### Portable moments
+#### Whole-window + daily scopes in one physical capture — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -328,7 +328,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-fixed-horizon-from_unit_summary"></span>
 
-#### Unit summary
+#### Mean CUPED, fixed horizon — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -336,7 +336,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-fixed-horizon-from_unit_panel"></span>
 
-#### Unit panel
+#### Mean CUPED, fixed horizon — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -344,7 +344,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-fixed-horizon-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mean CUPED, fixed horizon — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -360,7 +360,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-fixed-horizon-from_definitions"></span>
 
-#### Definitions
+#### Mean CUPED, fixed horizon — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -368,7 +368,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-fixed-horizon-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mean CUPED, fixed horizon — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -376,7 +376,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-fixed-horizon-from_moments"></span>
 
-#### Portable moments
+#### Mean CUPED, fixed horizon — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -389,7 +389,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-fixed-horizon-from_unit_summary"></span>
 
-#### Unit summary
+#### Ratio CUPED, fixed horizon — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -397,7 +397,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-fixed-horizon-from_unit_panel"></span>
 
-#### Unit panel
+#### Ratio CUPED, fixed horizon — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -405,7 +405,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-fixed-horizon-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Ratio CUPED, fixed horizon — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -421,7 +421,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-fixed-horizon-from_definitions"></span>
 
-#### Definitions
+#### Ratio CUPED, fixed horizon — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -429,7 +429,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-fixed-horizon-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Ratio CUPED, fixed horizon — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -437,7 +437,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-fixed-horizon-from_moments"></span>
 
-#### Portable moments
+#### Ratio CUPED, fixed horizon — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -450,7 +450,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED, fixed-horizon mean/ratio — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -464,7 +464,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED, fixed-horizon mean/ratio — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -478,7 +478,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED, fixed-horizon mean/ratio — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -496,7 +496,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED, fixed-horizon mean/ratio — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -510,7 +510,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED, fixed-horizon mean/ratio — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -524,7 +524,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED, fixed-horizon mean/ratio — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -551,7 +551,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_summary"></span>
 
-#### Unit summary
+#### Ratio denominator-precision advisory, fixed horizon — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -565,7 +565,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_panel"></span>
 
-#### Unit panel
+#### Ratio denominator-precision advisory, fixed horizon — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -579,7 +579,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Ratio denominator-precision advisory, fixed horizon — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -595,7 +595,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_definitions"></span>
 
-#### Definitions
+#### Ratio denominator-precision advisory, fixed horizon — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -609,7 +609,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Ratio denominator-precision advisory, fixed horizon — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -623,7 +623,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_moments"></span>
 
-#### Portable moments
+#### Ratio denominator-precision advisory, fixed horizon — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -642,7 +642,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-log-lift-priors-from_unit_summary"></span>
 
-#### Unit summary
+#### Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -660,7 +660,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-log-lift-priors-from_unit_panel"></span>
 
-#### Unit panel
+#### Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -678,7 +678,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-log-lift-priors-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -708,7 +708,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-log-lift-priors-from_definitions"></span>
 
-#### Definitions
+#### Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -726,7 +726,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-log-lift-priors-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -744,7 +744,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-log-lift-priors-from_moments"></span>
 
-#### Portable moments
+#### Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -767,7 +767,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-relative-lift-priors-from_unit_summary"></span>
 
-#### Unit summary
+#### Relative Normal/Student-t/mixture priors, fixed-horizon mean/ratio/conversion/mean CUPED — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -785,7 +785,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-relative-lift-priors-from_unit_panel"></span>
 
-#### Unit panel
+#### Relative Normal/Student-t/mixture priors, fixed-horizon mean/ratio/conversion/mean CUPED — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -803,7 +803,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-relative-lift-priors-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Relative Normal/Student-t/mixture priors, fixed-horizon mean/ratio/conversion/mean CUPED — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -833,7 +833,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-relative-lift-priors-from_definitions"></span>
 
-#### Definitions
+#### Relative Normal/Student-t/mixture priors, fixed-horizon mean/ratio/conversion/mean CUPED — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -851,7 +851,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-relative-lift-priors-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Relative Normal/Student-t/mixture priors, fixed-horizon mean/ratio/conversion/mean CUPED — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -869,7 +869,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-informative-relative-lift-priors-from_moments"></span>
 
-#### Portable moments
+#### Relative Normal/Student-t/mixture priors, fixed-horizon mean/ratio/conversion/mean CUPED — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -892,7 +892,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-breakout-from_unit_summary"></span>
 
-#### Unit summary
+#### Relative Normal prior on breakout rows — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -900,7 +900,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-breakout-from_unit_panel"></span>
 
-#### Unit panel
+#### Relative Normal prior on breakout rows — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -908,7 +908,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-breakout-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Relative Normal prior on breakout rows — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -920,7 +920,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-breakout-from_definitions"></span>
 
-#### Definitions
+#### Relative Normal prior on breakout rows — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -928,7 +928,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-breakout-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Relative Normal prior on breakout rows — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -936,7 +936,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-breakout-from_moments"></span>
 
-#### Portable moments
+#### Relative Normal prior on breakout rows — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -955,7 +955,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-retention-from_unit_summary"></span>
 
-#### Unit summary
+#### Relative Normal prior on mature retention breakouts — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -969,7 +969,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-retention-from_unit_panel"></span>
 
-#### Unit panel
+#### Relative Normal prior on mature retention breakouts — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -977,7 +977,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-retention-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Relative Normal prior on mature retention breakouts — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -989,7 +989,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-retention-from_definitions"></span>
 
-#### Definitions
+#### Relative Normal prior on mature retention breakouts — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -997,7 +997,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-retention-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Relative Normal prior on mature retention breakouts — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1005,7 +1005,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-retention-from_moments"></span>
 
-#### Portable moments
+#### Relative Normal prior on mature retention breakouts — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1024,7 +1024,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-quantile-from_unit_summary"></span>
 
-#### Unit summary
+#### Relative Normal prior on quantiles — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1032,7 +1032,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-quantile-from_unit_panel"></span>
 
-#### Unit panel
+#### Relative Normal prior on quantiles — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1040,7 +1040,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-quantile-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Relative Normal prior on quantiles — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1052,7 +1052,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-quantile-from_definitions"></span>
 
-#### Definitions
+#### Relative Normal prior on quantiles — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1060,7 +1060,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-quantile-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Relative Normal prior on quantiles — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1068,7 +1068,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-quantile-from_moments"></span>
 
-#### Portable moments
+#### Relative Normal prior on quantiles — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1087,7 +1087,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-daily-from_unit_summary"></span>
 
-#### Unit summary
+#### Relative Normal prior on triggered daily lift — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1099,7 +1099,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-daily-from_unit_panel"></span>
 
-#### Unit panel
+#### Relative Normal prior on triggered daily lift — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1111,7 +1111,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-daily-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Relative Normal prior on triggered daily lift — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1123,7 +1123,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-daily-from_definitions"></span>
 
-#### Definitions
+#### Relative Normal prior on triggered daily lift — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1131,7 +1131,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-daily-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Relative Normal prior on triggered daily lift — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1139,7 +1139,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-daily-from_moments"></span>
 
-#### Portable moments
+#### Relative Normal prior on triggered daily lift — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1156,7 +1156,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-asof-from_unit_summary"></span>
 
-#### Unit summary
+#### Relative Normal prior on triggered as-of lift — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1168,7 +1168,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-asof-from_unit_panel"></span>
 
-#### Unit panel
+#### Relative Normal prior on triggered as-of lift — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1180,7 +1180,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-asof-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Relative Normal prior on triggered as-of lift — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1192,7 +1192,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-asof-from_definitions"></span>
 
-#### Definitions
+#### Relative Normal prior on triggered as-of lift — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1200,7 +1200,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-asof-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Relative Normal prior on triggered as-of lift — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1208,7 +1208,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-relative-prior-asof-from_moments"></span>
 
-#### Portable moments
+#### Relative Normal prior on triggered as-of lift — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1225,7 +1225,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-fixed-threshold-winsor-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### Fixed-threshold winsorization under sequential inference — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1241,7 +1241,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-fixed-threshold-winsor-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### Fixed-threshold winsorization under sequential inference — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1249,7 +1249,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-fixed-threshold-winsor-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Fixed-threshold winsorization under sequential inference — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1265,7 +1265,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-fixed-threshold-winsor-sequential-from_definitions"></span>
 
-#### Definitions
+#### Fixed-threshold winsorization under sequential inference — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1273,7 +1273,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-fixed-threshold-winsor-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Fixed-threshold winsorization under sequential inference — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1281,7 +1281,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-fixed-threshold-winsor-sequential-from_moments"></span>
 
-#### Portable moments
+#### Fixed-threshold winsorization under sequential inference — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1308,7 +1308,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-pooled-percentile-winsor-routes-from_unit_summary"></span>
 
-#### Unit summary
+#### Pooled percentile winsorization, fixed horizon, default size route — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1328,7 +1328,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-pooled-percentile-winsor-routes-from_unit_panel"></span>
 
-#### Unit panel
+#### Pooled percentile winsorization, fixed horizon, default size route — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1364,7 +1364,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-pooled-percentile-winsor-routes-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Pooled percentile winsorization, fixed horizon, default size route — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1380,7 +1380,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-pooled-percentile-winsor-routes-from_definitions"></span>
 
-#### Definitions
+#### Pooled percentile winsorization, fixed horizon, default size route — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1398,7 +1398,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-pooled-percentile-winsor-routes-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Pooled percentile winsorization, fixed horizon, default size route — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1416,7 +1416,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-pooled-percentile-winsor-routes-from_moments"></span>
 
-#### Portable moments
+#### Pooled percentile winsorization, fixed horizon, default size route — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1457,7 +1457,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### Ratio metric under sequential inference — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1465,7 +1465,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### Ratio metric under sequential inference — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1473,7 +1473,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Ratio metric under sequential inference — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1489,7 +1489,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-sequential-from_definitions"></span>
 
-#### Definitions
+#### Ratio metric under sequential inference — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1497,7 +1497,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Ratio metric under sequential inference — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1505,7 +1505,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-sequential-from_moments"></span>
 
-#### Portable moments
+#### Ratio metric under sequential inference — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1520,7 +1520,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### CUPED under sequential inference — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1546,7 +1546,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### CUPED under sequential inference — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1560,7 +1560,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### CUPED under sequential inference — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1574,7 +1574,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-sequential-from_definitions"></span>
 
-#### Definitions
+#### CUPED under sequential inference — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1584,7 +1584,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### CUPED under sequential inference — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1594,7 +1594,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-mean-cuped-sequential-from_moments"></span>
 
-#### Portable moments
+#### CUPED under sequential inference — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1625,7 +1625,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### Ratio CUPED under sequential inference — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1641,7 +1641,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### Ratio CUPED under sequential inference — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1667,7 +1667,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Ratio CUPED under sequential inference — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1683,7 +1683,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-sequential-from_definitions"></span>
 
-#### Definitions
+#### Ratio CUPED under sequential inference — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1699,7 +1699,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Ratio CUPED under sequential inference — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1715,7 +1715,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-cuped-sequential-from_moments"></span>
 
-#### Portable moments
+#### Ratio CUPED under sequential inference — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1736,7 +1736,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-asymptotic-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### Bounded conversion under asymptotic sequential inference — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1752,7 +1752,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-asymptotic-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### Bounded conversion under asymptotic sequential inference — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1766,7 +1766,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-asymptotic-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Bounded conversion under asymptotic sequential inference — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1782,7 +1782,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-asymptotic-sequential-from_definitions"></span>
 
-#### Definitions
+#### Bounded conversion under asymptotic sequential inference — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1796,7 +1796,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-asymptotic-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Bounded conversion under asymptotic sequential inference — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1810,7 +1810,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-asymptotic-sequential-from_moments"></span>
 
-#### Portable moments
+#### Bounded conversion under asymptotic sequential inference — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1831,7 +1831,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-asymptotic-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### Bounded retention (a start and end threshold) under asymptotic sequential inference — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1847,7 +1847,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-asymptotic-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### Bounded retention (a start and end threshold) under asymptotic sequential inference — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1859,7 +1859,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-asymptotic-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Bounded retention (a start and end threshold) under asymptotic sequential inference — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1875,7 +1875,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-asymptotic-sequential-from_definitions"></span>
 
-#### Definitions
+#### Bounded retention (a start and end threshold) under asymptotic sequential inference — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1887,7 +1887,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-asymptotic-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Bounded retention (a start and end threshold) under asymptotic sequential inference — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1899,7 +1899,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-asymptotic-sequential-from_moments"></span>
 
-#### Portable moments
+#### Bounded retention (a start and end threshold) under asymptotic sequential inference — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1916,7 +1916,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-exact-bernoulli-from_unit_summary"></span>
 
-#### Unit summary
+#### Bounded conversion under automatic exact Bernoulli monitoring without a registration — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -1932,7 +1932,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-exact-bernoulli-from_unit_panel"></span>
 
-#### Unit panel
+#### Bounded conversion under automatic exact Bernoulli monitoring without a registration — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -1946,7 +1946,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-exact-bernoulli-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Bounded conversion under automatic exact Bernoulli monitoring without a registration — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -1962,7 +1962,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-exact-bernoulli-from_definitions"></span>
 
-#### Definitions
+#### Bounded conversion under automatic exact Bernoulli monitoring without a registration — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -1976,7 +1976,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-exact-bernoulli-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Bounded conversion under automatic exact Bernoulli monitoring without a registration — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -1990,7 +1990,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-conversion-exact-bernoulli-from_moments"></span>
 
-#### Portable moments
+#### Bounded conversion under automatic exact Bernoulli monitoring without a registration — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -2011,7 +2011,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-exact-bernoulli-from_unit_summary"></span>
 
-#### Unit summary
+#### Bounded retention under automatic exact Bernoulli monitoring without a registration — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -2027,7 +2027,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-exact-bernoulli-from_unit_panel"></span>
 
-#### Unit panel
+#### Bounded retention under automatic exact Bernoulli monitoring without a registration — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -2039,7 +2039,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-exact-bernoulli-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Bounded retention under automatic exact Bernoulli monitoring without a registration — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -2055,7 +2055,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-exact-bernoulli-from_definitions"></span>
 
-#### Definitions
+#### Bounded retention under automatic exact Bernoulli monitoring without a registration — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -2067,7 +2067,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-exact-bernoulli-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Bounded retention under automatic exact Bernoulli monitoring without a registration — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -2079,7 +2079,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-bounded-retention-exact-bernoulli-from_moments"></span>
 
-#### Portable moments
+#### Bounded retention under automatic exact Bernoulli monitoring without a registration — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -2096,7 +2096,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-conversion-exact-from_unit_summary"></span>
 
-#### Unit summary
+#### Automatic exact multi-arm bounded-conversion monitoring — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -2106,7 +2106,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-conversion-exact-from_unit_panel"></span>
 
-#### Unit panel
+#### Automatic exact multi-arm bounded-conversion monitoring — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -2114,7 +2114,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-conversion-exact-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Automatic exact multi-arm bounded-conversion monitoring — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -2144,7 +2144,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-conversion-exact-from_definitions"></span>
 
-#### Definitions
+#### Automatic exact multi-arm bounded-conversion monitoring — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -2152,7 +2152,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-conversion-exact-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Automatic exact multi-arm bounded-conversion monitoring — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -2160,7 +2160,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-conversion-exact-from_moments"></span>
 
-#### Portable moments
+#### Automatic exact multi-arm bounded-conversion monitoring — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -2175,7 +2175,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-retention-exact-from_unit_summary"></span>
 
-#### Unit summary
+#### Automatic exact multi-arm bounded-retention monitoring — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -2191,7 +2191,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-retention-exact-from_unit_panel"></span>
 
-#### Unit panel
+#### Automatic exact multi-arm bounded-retention monitoring — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -2201,7 +2201,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-retention-exact-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Automatic exact multi-arm bounded-retention monitoring — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -2231,7 +2231,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-retention-exact-from_definitions"></span>
 
-#### Definitions
+#### Automatic exact multi-arm bounded-retention monitoring — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -2241,7 +2241,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-retention-exact-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Automatic exact multi-arm bounded-retention monitoring — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -2251,7 +2251,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-multi-arm-bounded-retention-exact-from_moments"></span>
 
-#### Portable moments
+#### Automatic exact multi-arm bounded-retention monitoring — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -2266,7 +2266,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-conversion-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### Unbounded conversion under sequential inference — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -2284,7 +2284,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-conversion-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### Unbounded conversion under sequential inference — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -2302,7 +2302,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-conversion-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Unbounded conversion under sequential inference — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -2318,7 +2318,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-conversion-sequential-from_definitions"></span>
 
-#### Definitions
+#### Unbounded conversion under sequential inference — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -2336,7 +2336,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-conversion-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Unbounded conversion under sequential inference — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -2354,7 +2354,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-conversion-sequential-from_moments"></span>
 
-#### Portable moments
+#### Unbounded conversion under sequential inference — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -2375,7 +2375,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-retention-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### Unbounded retention (an integer threshold) under sequential inference — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -2393,7 +2393,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-retention-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### Unbounded retention (an integer threshold) under sequential inference — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -2401,7 +2401,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-retention-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Unbounded retention (an integer threshold) under sequential inference — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -2419,7 +2419,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-retention-sequential-from_definitions"></span>
 
-#### Definitions
+#### Unbounded retention (an integer threshold) under sequential inference — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -2437,7 +2437,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-retention-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Unbounded retention (an integer threshold) under sequential inference — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -2445,7 +2445,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unbounded-retention-sequential-from_moments"></span>
 
-#### Portable moments
+#### Unbounded retention (an integer threshold) under sequential inference — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -2468,7 +2468,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unit-summary-whole-window-breakouts-from_unit_summary"></span>
 
-#### Unit summary
+#### Whole-window breakouts from one-row-per-unit summaries — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -2478,7 +2478,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unit-summary-whole-window-breakouts-from_unit_panel"></span>
 
-#### Unit panel
+#### Whole-window breakouts from one-row-per-unit summaries — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -2486,7 +2486,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unit-summary-whole-window-breakouts-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Whole-window breakouts from one-row-per-unit summaries — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -2498,7 +2498,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unit-summary-whole-window-breakouts-from_definitions"></span>
 
-#### Definitions
+#### Whole-window breakouts from one-row-per-unit summaries — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -2506,7 +2506,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unit-summary-whole-window-breakouts-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Whole-window breakouts from one-row-per-unit summaries — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -2514,7 +2514,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-unit-summary-whole-window-breakouts-from_moments"></span>
 
-#### Portable moments
+#### Whole-window breakouts from one-row-per-unit summaries — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -2535,7 +2535,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-registered-segmented-sequential-family-from_unit_summary"></span>
 
-#### Unit summary
+#### Randomized registered segmented sequential family (automatic predeclared levels or explicit roster) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -2557,7 +2557,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-registered-segmented-sequential-family-from_unit_panel"></span>
 
-#### Unit panel
+#### Randomized registered segmented sequential family (automatic predeclared levels or explicit roster) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -2579,7 +2579,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-registered-segmented-sequential-family-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Randomized registered segmented sequential family (automatic predeclared levels or explicit roster) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -2595,7 +2595,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-registered-segmented-sequential-family-from_definitions"></span>
 
-#### Definitions
+#### Randomized registered segmented sequential family (automatic predeclared levels or explicit roster) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -2641,7 +2641,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-registered-segmented-sequential-family-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Randomized registered segmented sequential family (automatic predeclared levels or explicit roster) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -2687,7 +2687,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-registered-segmented-sequential-family-from_moments"></span>
 
-#### Portable moments
+#### Randomized registered segmented sequential family (automatic predeclared levels or explicit roster) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -2740,7 +2740,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-boolean-null-segment-labels-from_unit_summary"></span>
 
-#### Unit summary
+#### Boolean and null segment labels in a registered segmented sequential family (canonical true/false/null spellings matching the string-labelled oracle) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -2764,7 +2764,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-boolean-null-segment-labels-from_unit_panel"></span>
 
-#### Unit panel
+#### Boolean and null segment labels in a registered segmented sequential family (canonical true/false/null spellings matching the string-labelled oracle) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -2788,7 +2788,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-boolean-null-segment-labels-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Boolean and null segment labels in a registered segmented sequential family (canonical true/false/null spellings matching the string-labelled oracle) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -2804,7 +2804,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-boolean-null-segment-labels-from_definitions"></span>
 
-#### Definitions
+#### Boolean and null segment labels in a registered segmented sequential family (canonical true/false/null spellings matching the string-labelled oracle) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -2850,7 +2850,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-boolean-null-segment-labels-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Boolean and null segment labels in a registered segmented sequential family (canonical true/false/null spellings matching the string-labelled oracle) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -2896,7 +2896,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-boolean-null-segment-labels-from_moments"></span>
 
-#### Portable moments
+#### Boolean and null segment labels in a registered segmented sequential family (canonical true/false/null spellings matching the string-labelled oracle) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -2949,7 +2949,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-registration-from_unit_summary"></span>
 
-#### Unit summary
+#### Registered sequential monitoring of the triggered population (Experiment.trigger with InferenceSpec; assigned and triggered chains) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -2967,7 +2967,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-registration-from_unit_panel"></span>
 
-#### Unit panel
+#### Registered sequential monitoring of the triggered population (Experiment.trigger with InferenceSpec; assigned and triggered chains) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -2985,7 +2985,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-registration-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Registered sequential monitoring of the triggered population (Experiment.trigger with InferenceSpec; assigned and triggered chains) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3003,7 +3003,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-registration-from_definitions"></span>
 
-#### Definitions
+#### Registered sequential monitoring of the triggered population (Experiment.trigger with InferenceSpec; assigned and triggered chains) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3049,7 +3049,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-registration-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Registered sequential monitoring of the triggered population (Experiment.trigger with InferenceSpec; assigned and triggered chains) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3073,7 +3073,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-registration-from_moments"></span>
 
-#### Portable moments
+#### Registered sequential monitoring of the triggered population (Experiment.trigger with InferenceSpec; assigned and triggered chains) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3102,7 +3102,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-uptake-from_unit_summary"></span>
 
-#### Unit summary
+#### Triggered encouragement compliance under a registered plan — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3120,7 +3120,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-uptake-from_unit_panel"></span>
 
-#### Unit panel
+#### Triggered encouragement compliance under a registered plan — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -3138,7 +3138,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-uptake-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Triggered encouragement compliance under a registered plan — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3156,7 +3156,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-uptake-from_definitions"></span>
 
-#### Definitions
+#### Triggered encouragement compliance under a registered plan — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3176,7 +3176,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-uptake-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Triggered encouragement compliance under a registered plan — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3196,7 +3196,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-sequential-uptake-from_moments"></span>
 
-#### Portable moments
+#### Triggered encouragement compliance under a registered plan — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3221,7 +3221,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-impute-pooled-mean-roles-from_unit_summary"></span>
 
-#### Unit summary
+#### Pooled-mean imputation helper with declared roles; a frame metric declaring an impute missing policy — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3261,7 +3261,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-impute-pooled-mean-roles-from_unit_panel"></span>
 
-#### Unit panel
+#### Pooled-mean imputation helper with declared roles; a frame metric declaring an impute missing policy — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -3301,7 +3301,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-impute-pooled-mean-roles-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Pooled-mean imputation helper with declared roles; a frame metric declaring an impute missing policy — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3341,7 +3341,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-impute-pooled-mean-roles-from_definitions"></span>
 
-#### Definitions
+#### Pooled-mean imputation helper with declared roles; a frame metric declaring an impute missing policy — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3365,7 +3365,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-impute-pooled-mean-roles-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Pooled-mean imputation helper with declared roles; a frame metric declaring an impute missing policy — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3389,7 +3389,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-impute-pooled-mean-roles-from_moments"></span>
 
-#### Portable moments
+#### Pooled-mean imputation helper with declared roles; a frame metric declaring an impute missing policy — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3422,7 +3422,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-design-readouts-from_unit_summary"></span>
 
-#### Unit summary
+#### Encouragement ITT, compliance and LATE, fixed horizon, declared as the study design — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3430,7 +3430,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-design-readouts-from_unit_panel"></span>
 
-#### Unit panel
+#### Encouragement ITT, compliance and LATE, fixed horizon, declared as the study design — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -3438,7 +3438,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-design-readouts-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Encouragement ITT, compliance and LATE, fixed horizon, declared as the study design — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3456,7 +3456,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-design-readouts-from_definitions"></span>
 
-#### Definitions
+#### Encouragement ITT, compliance and LATE, fixed horizon, declared as the study design — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3464,7 +3464,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-design-readouts-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Encouragement ITT, compliance and LATE, fixed horizon, declared as the study design — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3472,7 +3472,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-design-readouts-from_moments"></span>
 
-#### Portable moments
+#### Encouragement ITT, compliance and LATE, fixed horizon, declared as the study design — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3485,7 +3485,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-no-exclusion-from_unit_summary"></span>
 
-#### Unit summary
+#### Explicit ITT/compliance without a LATE exclusion declaration (fixed horizon or sequential monitoring) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3499,7 +3499,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-no-exclusion-from_unit_panel"></span>
 
-#### Unit panel
+#### Explicit ITT/compliance without a LATE exclusion declaration (fixed horizon or sequential monitoring) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -3513,7 +3513,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-no-exclusion-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Explicit ITT/compliance without a LATE exclusion declaration (fixed horizon or sequential monitoring) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3531,7 +3531,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-no-exclusion-from_definitions"></span>
 
-#### Definitions
+#### Explicit ITT/compliance without a LATE exclusion declaration (fixed horizon or sequential monitoring) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3545,7 +3545,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-no-exclusion-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Explicit ITT/compliance without a LATE exclusion declaration (fixed horizon or sequential monitoring) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3559,7 +3559,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-no-exclusion-from_moments"></span>
 
-#### Portable moments
+#### Explicit ITT/compliance without a LATE exclusion declaration (fixed horizon or sequential monitoring) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3580,7 +3580,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-empty-outcome-catalog-from_unit_summary"></span>
 
-#### Unit summary
+#### Fixed-horizon design-level compliance with an empty outcome catalog — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3588,7 +3588,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-empty-outcome-catalog-from_unit_panel"></span>
 
-#### Unit panel
+#### Fixed-horizon design-level compliance with an empty outcome catalog — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -3596,7 +3596,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-empty-outcome-catalog-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Fixed-horizon design-level compliance with an empty outcome catalog — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3614,7 +3614,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-empty-outcome-catalog-from_definitions"></span>
 
-#### Definitions
+#### Fixed-horizon design-level compliance with an empty outcome catalog — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3622,7 +3622,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-empty-outcome-catalog-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Fixed-horizon design-level compliance with an empty outcome catalog — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3630,7 +3630,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-empty-outcome-catalog-from_moments"></span>
 
-#### Portable moments
+#### Fixed-horizon design-level compliance with an empty outcome catalog — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3645,7 +3645,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-margin-guardrail-from_unit_summary"></span>
 
-#### Unit summary
+#### Encouragement guardrail with a declared non-inferiority margin — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3667,7 +3667,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-margin-guardrail-from_unit_panel"></span>
 
-#### Unit panel
+#### Encouragement guardrail with a declared non-inferiority margin — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -3689,7 +3689,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-margin-guardrail-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Encouragement guardrail with a declared non-inferiority margin — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3707,7 +3707,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-margin-guardrail-from_definitions"></span>
 
-#### Definitions
+#### Encouragement guardrail with a declared non-inferiority margin — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3729,7 +3729,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-margin-guardrail-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Encouragement guardrail with a declared non-inferiority margin — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3751,7 +3751,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-margin-guardrail-from_moments"></span>
 
-#### Portable moments
+#### Encouragement guardrail with a declared non-inferiority margin — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3778,7 +3778,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-late-fcr-reestimated-from_unit_summary"></span>
 
-#### Unit summary
+#### Encouragement BH-selected secondary's LATE row re-estimated at the corrected level — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3786,7 +3786,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-late-fcr-reestimated-from_unit_panel"></span>
 
-#### Unit panel
+#### Encouragement BH-selected secondary's LATE row re-estimated at the corrected level — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -3794,7 +3794,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-late-fcr-reestimated-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Encouragement BH-selected secondary's LATE row re-estimated at the corrected level — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3812,7 +3812,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-late-fcr-reestimated-from_definitions"></span>
 
-#### Definitions
+#### Encouragement BH-selected secondary's LATE row re-estimated at the corrected level — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3820,7 +3820,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-late-fcr-reestimated-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Encouragement BH-selected secondary's LATE row re-estimated at the corrected level — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3828,7 +3828,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-late-fcr-reestimated-from_moments"></span>
 
-#### Portable moments
+#### Encouragement BH-selected secondary's LATE row re-estimated at the corrected level — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3841,7 +3841,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-itt-conversion-route-from_unit_summary"></span>
 
-#### Unit summary
+#### Encouragement ITT on a conversion metric takes the count-routed conversion route — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3855,7 +3855,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-itt-conversion-route-from_unit_panel"></span>
 
-#### Unit panel
+#### Encouragement ITT on a conversion metric takes the count-routed conversion route — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -3869,7 +3869,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-itt-conversion-route-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Encouragement ITT on a conversion metric takes the count-routed conversion route — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3887,7 +3887,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-itt-conversion-route-from_definitions"></span>
 
-#### Definitions
+#### Encouragement ITT on a conversion metric takes the count-routed conversion route — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3901,7 +3901,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-itt-conversion-route-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Encouragement ITT on a conversion metric takes the count-routed conversion route — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3915,7 +3915,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-itt-conversion-route-from_moments"></span>
 
-#### Portable moments
+#### Encouragement ITT on a conversion metric takes the count-routed conversion route — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3934,7 +3934,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-threshold-from_unit_summary"></span>
 
-#### Unit summary
+#### Conversion/retention counts one below, at and one above the dense threshold, on the success and failure side, route identically and report the same interval and p-value — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3942,7 +3942,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-threshold-from_unit_panel"></span>
 
-#### Unit panel
+#### Conversion/retention counts one below, at and one above the dense threshold, on the success and failure side, route identically and report the same interval and p-value — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -3950,7 +3950,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-threshold-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Conversion/retention counts one below, at and one above the dense threshold, on the success and failure side, route identically and report the same interval and p-value — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -3962,7 +3962,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-threshold-from_definitions"></span>
 
-#### Definitions
+#### Conversion/retention counts one below, at and one above the dense threshold, on the success and failure side, route identically and report the same interval and p-value — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -3970,7 +3970,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-threshold-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Conversion/retention counts one below, at and one above the dense threshold, on the success and failure side, route identically and report the same interval and p-value — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -3978,7 +3978,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-threshold-from_moments"></span>
 
-#### Portable moments
+#### Conversion/retention counts one below, at and one above the dense threshold, on the success and failure side, route identically and report the same interval and p-value — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -3991,7 +3991,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-breakout-route-from_unit_summary"></span>
 
-#### Unit summary
+#### Conversion breakout with dense, sparse and threshold-straddling segments in one metric: each segment row is routed by its own counts — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -3999,7 +3999,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-breakout-route-from_unit_panel"></span>
 
-#### Unit panel
+#### Conversion breakout with dense, sparse and threshold-straddling segments in one metric: each segment row is routed by its own counts — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4007,7 +4007,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-breakout-route-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Conversion breakout with dense, sparse and threshold-straddling segments in one metric: each segment row is routed by its own counts — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4019,7 +4019,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-breakout-route-from_definitions"></span>
 
-#### Definitions
+#### Conversion breakout with dense, sparse and threshold-straddling segments in one metric: each segment row is routed by its own counts — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4027,7 +4027,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-breakout-route-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Conversion breakout with dense, sparse and threshold-straddling segments in one metric: each segment row is routed by its own counts — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4035,7 +4035,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-breakout-route-from_moments"></span>
 
-#### Portable moments
+#### Conversion breakout with dense, sparse and threshold-straddling segments in one metric: each segment row is routed by its own counts — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4056,7 +4056,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-encouragement-family-from_unit_summary"></span>
 
-#### Unit summary
+#### Encouragement ITT rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4064,7 +4064,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-encouragement-family-from_unit_panel"></span>
 
-#### Unit panel
+#### Encouragement ITT rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4072,7 +4072,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-encouragement-family-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Encouragement ITT rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4090,7 +4090,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-encouragement-family-from_definitions"></span>
 
-#### Definitions
+#### Encouragement ITT rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4098,7 +4098,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-encouragement-family-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Encouragement ITT rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4106,7 +4106,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-encouragement-family-from_moments"></span>
 
-#### Portable moments
+#### Encouragement ITT rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4119,7 +4119,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-observational-family-from_unit_summary"></span>
 
-#### Unit summary
+#### Observational unadjusted rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4127,7 +4127,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-observational-family-from_unit_panel"></span>
 
-#### Unit panel
+#### Observational unadjusted rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4135,7 +4135,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-observational-family-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Observational unadjusted rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4151,7 +4151,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-observational-family-from_definitions"></span>
 
-#### Definitions
+#### Observational unadjusted rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4159,7 +4159,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-observational-family-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Observational unadjusted rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4167,7 +4167,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-conversion-route-observational-family-from_moments"></span>
 
-#### Portable moments
+#### Observational unadjusted rows of a BH secondary family are routed at their own level and carry composite p-value evidence — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4180,7 +4180,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-readouts-from_unit_summary"></span>
 
-#### Unit summary
+#### Encouragement design with a retention metric (ITT and LATE readouts) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4198,7 +4198,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-readouts-from_unit_panel"></span>
 
-#### Unit panel
+#### Encouragement design with a retention metric (ITT and LATE readouts) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4216,7 +4216,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-readouts-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Encouragement design with a retention metric (ITT and LATE readouts) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4234,7 +4234,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-readouts-from_definitions"></span>
 
-#### Definitions
+#### Encouragement design with a retention metric (ITT and LATE readouts) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4252,7 +4252,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-readouts-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Encouragement design with a retention metric (ITT and LATE readouts) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4270,7 +4270,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-readouts-from_moments"></span>
 
-#### Portable moments
+#### Encouragement design with a retention metric (ITT and LATE readouts) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4293,7 +4293,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-compliance-only-from_unit_summary"></span>
 
-#### Unit summary
+#### Encouragement design with a retention metric, compliance-only request (which ignores the retention outcome) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4313,7 +4313,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-compliance-only-from_unit_panel"></span>
 
-#### Unit panel
+#### Encouragement design with a retention metric, compliance-only request (which ignores the retention outcome) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4333,7 +4333,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-compliance-only-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Encouragement design with a retention metric, compliance-only request (which ignores the retention outcome) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4351,7 +4351,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-compliance-only-from_definitions"></span>
 
-#### Definitions
+#### Encouragement design with a retention metric, compliance-only request (which ignores the retention outcome) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4377,7 +4377,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-compliance-only-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Encouragement design with a retention metric, compliance-only request (which ignores the retention outcome) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4387,7 +4387,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-retention-compliance-only-from_moments"></span>
 
-#### Portable moments
+#### Encouragement design with a retention metric, compliance-only request (which ignores the retention outcome) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4402,7 +4402,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-conversion-breakout-zero-control-from_unit_summary"></span>
 
-#### Unit summary
+#### Encouragement conversion ITT breakouts retain exact confidence sets at zero control counts — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4410,7 +4410,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-conversion-breakout-zero-control-from_unit_panel"></span>
 
-#### Unit panel
+#### Encouragement conversion ITT breakouts retain exact confidence sets at zero control counts — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4418,7 +4418,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-conversion-breakout-zero-control-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Encouragement conversion ITT breakouts retain exact confidence sets at zero control counts — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4430,7 +4430,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-conversion-breakout-zero-control-from_definitions"></span>
 
-#### Definitions
+#### Encouragement conversion ITT breakouts retain exact confidence sets at zero control counts — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4438,7 +4438,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-conversion-breakout-zero-control-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Encouragement conversion ITT breakouts retain exact confidence sets at zero control counts — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4446,7 +4446,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-conversion-breakout-zero-control-from_moments"></span>
 
-#### Portable moments
+#### Encouragement conversion ITT breakouts retain exact confidence sets at zero control counts — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4465,7 +4465,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-retention-breakout-cohorts-from_unit_summary"></span>
 
-#### Unit summary
+#### Bounded-retention breakouts with mature exposure cohorts — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4479,7 +4479,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-retention-breakout-cohorts-from_unit_panel"></span>
 
-#### Unit panel
+#### Bounded-retention breakouts with mature exposure cohorts — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4489,7 +4489,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-retention-breakout-cohorts-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Bounded-retention breakouts with mature exposure cohorts — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4501,7 +4501,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-retention-breakout-cohorts-from_definitions"></span>
 
-#### Definitions
+#### Bounded-retention breakouts with mature exposure cohorts — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4511,7 +4511,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-retention-breakout-cohorts-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Bounded-retention breakouts with mature exposure cohorts — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4521,7 +4521,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-retention-breakout-cohorts-from_moments"></span>
 
-#### Portable moments
+#### Bounded-retention breakouts with mature exposure cohorts — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4540,7 +4540,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-joint-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### Encouragement continuous ITT + Bernoulli uptake compliance, jointly monitored (composed sequential family, e-BH selected) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4554,7 +4554,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-joint-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### Encouragement continuous ITT + Bernoulli uptake compliance, jointly monitored (composed sequential family, e-BH selected) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4568,7 +4568,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-joint-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Encouragement continuous ITT + Bernoulli uptake compliance, jointly monitored (composed sequential family, e-BH selected) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4598,7 +4598,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-joint-sequential-from_definitions"></span>
 
-#### Definitions
+#### Encouragement continuous ITT + Bernoulli uptake compliance, jointly monitored (composed sequential family, e-BH selected) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4612,7 +4612,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-joint-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Encouragement continuous ITT + Bernoulli uptake compliance, jointly monitored (composed sequential family, e-BH selected) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4626,7 +4626,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-encouragement-joint-sequential-from_moments"></span>
 
-#### Portable moments
+#### Encouragement continuous ITT + Bernoulli uptake compliance, jointly monitored (composed sequential family, e-BH selected) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4647,7 +4647,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-empty-catalog-from_unit_summary"></span>
 
-#### Unit summary
+#### Uptake-only sequential compliance with an empty outcome catalog — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4655,7 +4655,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-empty-catalog-from_unit_panel"></span>
 
-#### Unit panel
+#### Uptake-only sequential compliance with an empty outcome catalog — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4663,7 +4663,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-empty-catalog-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Uptake-only sequential compliance with an empty outcome catalog — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4693,7 +4693,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-empty-catalog-from_definitions"></span>
 
-#### Definitions
+#### Uptake-only sequential compliance with an empty outcome catalog — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4701,7 +4701,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-empty-catalog-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Uptake-only sequential compliance with an empty outcome catalog — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4709,7 +4709,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-empty-catalog-from_moments"></span>
 
-#### Portable moments
+#### Uptake-only sequential compliance with an empty outcome catalog — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4724,7 +4724,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-unbounded-retention-catalog-from_unit_summary"></span>
 
-#### Unit summary
+#### Uptake-only sequential compliance that retains an unbounded retention metric in the outcome catalog — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4738,7 +4738,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-unbounded-retention-catalog-from_unit_panel"></span>
 
-#### Unit panel
+#### Uptake-only sequential compliance that retains an unbounded retention metric in the outcome catalog — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4752,7 +4752,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-unbounded-retention-catalog-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Uptake-only sequential compliance that retains an unbounded retention metric in the outcome catalog — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4782,7 +4782,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-unbounded-retention-catalog-from_definitions"></span>
 
-#### Definitions
+#### Uptake-only sequential compliance that retains an unbounded retention metric in the outcome catalog — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -4824,7 +4824,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-unbounded-retention-catalog-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Uptake-only sequential compliance that retains an unbounded retention metric in the outcome catalog — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -4868,7 +4868,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-uptake-only-sequential-unbounded-retention-catalog-from_moments"></span>
 
-#### Portable moments
+#### Uptake-only sequential compliance that retains an unbounded retention metric in the outcome catalog — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -4917,7 +4917,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-weight-diagnostics-from_unit_summary"></span>
 
-#### Unit summary
+#### Observational weight diagnostics (IPTW/AIPW; unit-level mean and conversion parity) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -4947,7 +4947,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-weight-diagnostics-from_unit_panel"></span>
 
-#### Unit panel
+#### Observational weight diagnostics (IPTW/AIPW; unit-level mean and conversion parity) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -4969,7 +4969,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-weight-diagnostics-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Observational weight diagnostics (IPTW/AIPW; unit-level mean and conversion parity) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -4999,7 +4999,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-weight-diagnostics-from_definitions"></span>
 
-#### Definitions
+#### Observational weight diagnostics (IPTW/AIPW; unit-level mean and conversion parity) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5029,7 +5029,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-weight-diagnostics-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Observational weight diagnostics (IPTW/AIPW; unit-level mean and conversion parity) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5051,7 +5051,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-weight-diagnostics-from_moments"></span>
 
-#### Portable moments
+#### Observational weight diagnostics (IPTW/AIPW; unit-level mean and conversion parity) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5102,7 +5102,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-assignment-integrity-scope-from_unit_summary"></span>
 
-#### Unit summary
+#### Assignment-integrity scope (status, observed counts, randomization grain and retained metadata; triggered populations are not assignment-law evidence) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5122,7 +5122,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-assignment-integrity-scope-from_unit_panel"></span>
 
-#### Unit panel
+#### Assignment-integrity scope (status, observed counts, randomization grain and retained metadata; triggered populations are not assignment-law evidence) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5144,7 +5144,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-assignment-integrity-scope-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Assignment-integrity scope (status, observed counts, randomization grain and retained metadata; triggered populations are not assignment-law evidence) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5156,7 +5156,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-assignment-integrity-scope-from_definitions"></span>
 
-#### Definitions
+#### Assignment-integrity scope (status, observed counts, randomization grain and retained metadata; triggered populations are not assignment-law evidence) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5166,7 +5166,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-assignment-integrity-scope-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Assignment-integrity scope (status, observed counts, randomization grain and retained metadata; triggered populations are not assignment-law evidence) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5176,7 +5176,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-assignment-integrity-scope-from_moments"></span>
 
-#### Portable moments
+#### Assignment-integrity scope (status, observed counts, randomization grain and retained metadata; triggered populations are not assignment-law evidence) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5203,7 +5203,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-confounding-sensitivity-from_unit_summary"></span>
 
-#### Unit summary
+#### Observational confounding sensitivity (conversion RR) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5217,7 +5217,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-confounding-sensitivity-from_unit_panel"></span>
 
-#### Unit panel
+#### Observational confounding sensitivity (conversion RR) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5231,7 +5231,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-confounding-sensitivity-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Observational confounding sensitivity (conversion RR) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5249,7 +5249,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-confounding-sensitivity-from_definitions"></span>
 
-#### Definitions
+#### Observational confounding sensitivity (conversion RR) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5263,7 +5263,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-confounding-sensitivity-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Observational confounding sensitivity (conversion RR) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5277,7 +5277,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-confounding-sensitivity-from_moments"></span>
 
-#### Portable moments
+#### Observational confounding sensitivity (conversion RR) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5300,7 +5300,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-iptw-mean-from_unit_summary"></span>
 
-#### Unit summary
+#### Observational IPTW covariate adjustment — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5308,7 +5308,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-iptw-mean-from_unit_panel"></span>
 
-#### Unit panel
+#### Observational IPTW covariate adjustment — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5316,7 +5316,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-iptw-mean-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Observational IPTW covariate adjustment — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5332,7 +5332,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-iptw-mean-from_definitions"></span>
 
-#### Definitions
+#### Observational IPTW covariate adjustment — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5340,7 +5340,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-iptw-mean-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Observational IPTW covariate adjustment — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5348,7 +5348,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-iptw-mean-from_moments"></span>
 
-#### Portable moments
+#### Observational IPTW covariate adjustment — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5367,7 +5367,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-aipw-dml-from_unit_summary"></span>
 
-#### Unit summary
+#### Observational AIPW/DML covariate adjustment — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5375,7 +5375,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-aipw-dml-from_unit_panel"></span>
 
-#### Unit panel
+#### Observational AIPW/DML covariate adjustment — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5383,7 +5383,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-aipw-dml-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Observational AIPW/DML covariate adjustment — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5399,7 +5399,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-aipw-dml-from_definitions"></span>
 
-#### Definitions
+#### Observational AIPW/DML covariate adjustment — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5407,7 +5407,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-aipw-dml-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Observational AIPW/DML covariate adjustment — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5415,7 +5415,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-aipw-dml-from_moments"></span>
 
-#### Portable moments
+#### Observational AIPW/DML covariate adjustment — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5434,7 +5434,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-observational-adjustment-from_unit_summary"></span>
 
-#### Unit summary
+#### Categorical observational adjustment (string covariates) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5442,7 +5442,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-observational-adjustment-from_unit_panel"></span>
 
-#### Unit panel
+#### Categorical observational adjustment (string covariates) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5450,7 +5450,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-observational-adjustment-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Categorical observational adjustment (string covariates) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5466,7 +5466,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-observational-adjustment-from_definitions"></span>
 
-#### Definitions
+#### Categorical observational adjustment (string covariates) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5474,7 +5474,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-observational-adjustment-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Categorical observational adjustment (string covariates) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5482,7 +5482,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-observational-adjustment-from_moments"></span>
 
-#### Portable moments
+#### Categorical observational adjustment (string covariates) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5501,7 +5501,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-missing-policy-from_unit_summary"></span>
 
-#### Unit summary
+#### Categorical nulls with a nondefault missing-value policy — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5509,7 +5509,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-missing-policy-from_unit_panel"></span>
 
-#### Unit panel
+#### Categorical nulls with a nondefault missing-value policy — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5517,7 +5517,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-missing-policy-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Categorical nulls with a nondefault missing-value policy — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5533,7 +5533,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-missing-policy-from_definitions"></span>
 
-#### Definitions
+#### Categorical nulls with a nondefault missing-value policy — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5549,7 +5549,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-missing-policy-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Categorical nulls with a nondefault missing-value policy — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5565,7 +5565,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-categorical-missing-policy-from_moments"></span>
 
-#### Portable moments
+#### Categorical nulls with a nondefault missing-value policy — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5584,7 +5584,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-role-multiplicity-from_unit_summary"></span>
 
-#### Unit summary
+#### Observational primary + secondary + guardrail together (role multiplicity) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5592,7 +5592,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-role-multiplicity-from_unit_panel"></span>
 
-#### Unit panel
+#### Observational primary + secondary + guardrail together (role multiplicity) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5600,7 +5600,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-role-multiplicity-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Observational primary + secondary + guardrail together (role multiplicity) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5616,7 +5616,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-role-multiplicity-from_definitions"></span>
 
-#### Definitions
+#### Observational primary + secondary + guardrail together (role multiplicity) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5624,7 +5624,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-role-multiplicity-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Observational primary + secondary + guardrail together (role multiplicity) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5632,7 +5632,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-role-multiplicity-from_moments"></span>
 
-#### Portable moments
+#### Observational primary + secondary + guardrail together (role multiplicity) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5651,7 +5651,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-tied-rounded-outcomes-from_unit_summary"></span>
 
-#### Unit summary
+#### Quantile inference on tied/rounded outcomes — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5659,7 +5659,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-tied-rounded-outcomes-from_unit_panel"></span>
 
-#### Unit panel
+#### Quantile inference on tied/rounded outcomes — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5685,7 +5685,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-tied-rounded-outcomes-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Quantile inference on tied/rounded outcomes — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5701,7 +5701,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-tied-rounded-outcomes-from_definitions"></span>
 
-#### Definitions
+#### Quantile inference on tied/rounded outcomes — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5709,7 +5709,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-tied-rounded-outcomes-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Quantile inference on tied/rounded outcomes — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5717,7 +5717,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-tied-rounded-outcomes-from_moments"></span>
 
-#### Portable moments
+#### Quantile inference on tied/rounded outcomes — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5774,7 +5774,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-checkpoint-retention-from_unit_summary"></span>
 
-#### Unit summary
+#### Registered conversion checkpoint retaining an unmodeled, unwindowed quantile catalog — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5784,7 +5784,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-checkpoint-retention-from_unit_panel"></span>
 
-#### Unit panel
+#### Registered conversion checkpoint retaining an unmodeled, unwindowed quantile catalog — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5794,7 +5794,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-checkpoint-retention-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Registered conversion checkpoint retaining an unmodeled, unwindowed quantile catalog — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5806,7 +5806,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-checkpoint-retention-from_definitions"></span>
 
-#### Definitions
+#### Registered conversion checkpoint retaining an unmodeled, unwindowed quantile catalog — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -5816,7 +5816,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-checkpoint-retention-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Registered conversion checkpoint retaining an unmodeled, unwindowed quantile catalog — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -5826,7 +5826,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-quantile-checkpoint-retention-from_moments"></span>
 
-#### Portable moments
+#### Registered conversion checkpoint retaining an unmodeled, unwindowed quantile catalog — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -5853,7 +5853,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-quantile-refusal-from_unit_summary"></span>
 
-#### Unit summary
+#### Quantile metric under an Observational design (two-sided, zero-null request) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -5905,7 +5905,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-quantile-refusal-from_unit_panel"></span>
 
-#### Unit panel
+#### Quantile metric under an Observational design (two-sided, zero-null request) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -5957,7 +5957,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-quantile-refusal-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Quantile metric under an Observational design (two-sided, zero-null request) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -5973,7 +5973,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-quantile-refusal-from_definitions"></span>
 
-#### Definitions
+#### Quantile metric under an Observational design (two-sided, zero-null request) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -6025,7 +6025,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-quantile-refusal-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Quantile metric under an Observational design (two-sided, zero-null request) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -6075,7 +6075,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-observational-quantile-refusal-from_moments"></span>
 
-#### Portable moments
+#### Quantile metric under an Observational design (two-sided, zero-null request) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -6194,7 +6194,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-negative-mean-from_unit_summary"></span>
 
-#### Unit summary
+#### Clustered ratio metric with a non-positive control-arm numerator — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -6202,7 +6202,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-negative-mean-from_unit_panel"></span>
 
-#### Unit panel
+#### Clustered ratio metric with a non-positive control-arm numerator — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -6220,7 +6220,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-negative-mean-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Clustered ratio metric with a non-positive control-arm numerator — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -6232,7 +6232,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-negative-mean-from_definitions"></span>
 
-#### Definitions
+#### Clustered ratio metric with a non-positive control-arm numerator — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -6240,7 +6240,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-negative-mean-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Clustered ratio metric with a non-positive control-arm numerator — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -6248,7 +6248,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-negative-mean-from_moments"></span>
 
-#### Portable moments
+#### Clustered ratio metric with a non-positive control-arm numerator — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -6267,7 +6267,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-zero-relative-variance-from_unit_summary"></span>
 
-#### Unit summary
+#### Clustered zero relative variance retains its point and any available additive interval — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -6275,7 +6275,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-zero-relative-variance-from_unit_panel"></span>
 
-#### Unit panel
+#### Clustered zero relative variance retains its point and any available additive interval — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -6293,7 +6293,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-zero-relative-variance-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Clustered zero relative variance retains its point and any available additive interval — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -6305,7 +6305,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-zero-relative-variance-from_definitions"></span>
 
-#### Definitions
+#### Clustered zero relative variance retains its point and any available additive interval — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -6313,7 +6313,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-zero-relative-variance-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Clustered zero relative variance retains its point and any available additive interval — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -6321,7 +6321,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-clustered-zero-relative-variance-from_moments"></span>
 
-#### Portable moments
+#### Clustered zero relative variance retains its point and any available additive interval — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -6340,7 +6340,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-mean-from_unit_summary"></span>
 
-#### Unit summary
+#### Planning baseline, mean metric — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -6354,7 +6354,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-mean-from_unit_panel"></span>
 
-#### Unit panel
+#### Planning baseline, mean metric — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -6368,7 +6368,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-mean-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Planning baseline, mean metric — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -6384,7 +6384,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-mean-from_definitions"></span>
 
-#### Definitions
+#### Planning baseline, mean metric — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -6398,7 +6398,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-mean-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Planning baseline, mean metric — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -6412,7 +6412,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-mean-from_moments"></span>
 
-#### Portable moments
+#### Planning baseline, mean metric — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -6431,7 +6431,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-quantile-from_unit_summary"></span>
 
-#### Unit summary
+#### Planning baseline, quantile metric — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -6445,7 +6445,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-quantile-from_unit_panel"></span>
 
-#### Unit panel
+#### Planning baseline, quantile metric — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -6461,7 +6461,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-quantile-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Planning baseline, quantile metric — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -6479,7 +6479,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-quantile-from_definitions"></span>
 
-#### Definitions
+#### Planning baseline, quantile metric — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -6493,7 +6493,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-quantile-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Planning baseline, quantile metric — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -6507,7 +6507,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-quantile-from_moments"></span>
 
-#### Portable moments
+#### Planning baseline, quantile metric — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -6540,7 +6540,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-cluster-from_unit_summary"></span>
 
-#### Unit summary
+#### Planning baseline with a declared cluster (per-unit mean/var; ICC on the metric's per-unit score) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -6554,7 +6554,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-cluster-from_unit_panel"></span>
 
-#### Unit panel
+#### Planning baseline with a declared cluster (per-unit mean/var; ICC on the metric's per-unit score) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -6572,7 +6572,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-cluster-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Planning baseline with a declared cluster (per-unit mean/var; ICC on the metric's per-unit score) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -6588,7 +6588,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-cluster-from_definitions"></span>
 
-#### Definitions
+#### Planning baseline with a declared cluster (per-unit mean/var; ICC on the metric's per-unit score) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -6602,7 +6602,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-cluster-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Planning baseline with a declared cluster (per-unit mean/var; ICC on the metric's per-unit score) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -6616,7 +6616,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-cluster-from_moments"></span>
 
-#### Portable moments
+#### Planning baseline with a declared cluster (per-unit mean/var; ICC on the metric's per-unit score) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -6639,7 +6639,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-trigger-from_unit_summary"></span>
 
-#### Unit summary
+#### Planning baseline under a declared trigger (triggered-population moments and trigger rate) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -6659,7 +6659,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-trigger-from_unit_panel"></span>
 
-#### Unit panel
+#### Planning baseline under a declared trigger (triggered-population moments and trigger rate) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -6677,7 +6677,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-trigger-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Planning baseline under a declared trigger (triggered-population moments and trigger rate) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -6695,7 +6695,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-trigger-from_definitions"></span>
 
-#### Definitions
+#### Planning baseline under a declared trigger (triggered-population moments and trigger rate) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -6709,7 +6709,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-trigger-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Planning baseline under a declared trigger (triggered-population moments and trigger rate) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -6737,7 +6737,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-planning-baseline-trigger-from_moments"></span>
 
-#### Portable moments
+#### Planning baseline under a declared trigger (triggered-population moments and trigger rate) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -6760,7 +6760,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-day-axis-histories-from_unit_summary"></span>
 
-#### Unit summary
+#### Triggered daily/as-of outcome value and lift history (membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -6814,7 +6814,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-day-axis-histories-from_unit_panel"></span>
 
-#### Unit panel
+#### Triggered daily/as-of outcome value and lift history (membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -6868,7 +6868,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-day-axis-histories-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Triggered daily/as-of outcome value and lift history (membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -6922,7 +6922,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-day-axis-histories-from_definitions"></span>
 
-#### Definitions
+#### Triggered daily/as-of outcome value and lift history (membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -6946,7 +6946,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-day-axis-histories-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Triggered daily/as-of outcome value and lift history (membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -6970,7 +6970,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-day-axis-histories-from_moments"></span>
 
-#### Portable moments
+#### Triggered daily/as-of outcome value and lift history (membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -7029,7 +7029,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-encouragement-compliance-from_unit_summary"></span>
 
-#### Unit summary
+#### Triggered encouragement compliance (daily and as-of lift, compliance only; uptake stays assignment-anchored while membership enters at first eligible trigger) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -7043,7 +7043,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-encouragement-compliance-from_unit_panel"></span>
 
-#### Unit panel
+#### Triggered encouragement compliance (daily and as-of lift, compliance only; uptake stays assignment-anchored while membership enters at first eligible trigger) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -7057,7 +7057,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-encouragement-compliance-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Triggered encouragement compliance (daily and as-of lift, compliance only; uptake stays assignment-anchored while membership enters at first eligible trigger) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -7071,7 +7071,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-encouragement-compliance-from_definitions"></span>
 
-#### Definitions
+#### Triggered encouragement compliance (daily and as-of lift, compliance only; uptake stays assignment-anchored while membership enters at first eligible trigger) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -7081,7 +7081,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-encouragement-compliance-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Triggered encouragement compliance (daily and as-of lift, compliance only; uptake stays assignment-anchored while membership enters at first eligible trigger) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -7091,7 +7091,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-encouragement-compliance-from_moments"></span>
 
-#### Portable moments
+#### Triggered encouragement compliance (daily and as-of lift, compliance only; uptake stays assignment-anchored while membership enters at first eligible trigger) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -7110,7 +7110,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-clustered-day-axis-from_unit_summary"></span>
 
-#### Unit summary
+#### Triggered clustered daily/as-of outcome readouts — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -7164,7 +7164,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-clustered-day-axis-from_unit_panel"></span>
 
-#### Unit panel
+#### Triggered clustered daily/as-of outcome readouts — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -7218,7 +7218,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-clustered-day-axis-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Triggered clustered daily/as-of outcome readouts — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -7272,7 +7272,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-clustered-day-axis-from_definitions"></span>
 
-#### Definitions
+#### Triggered clustered daily/as-of outcome readouts — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -7306,7 +7306,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-clustered-day-axis-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Triggered clustered daily/as-of outcome readouts — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -7332,7 +7332,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-triggered-clustered-day-axis-from_moments"></span>
 
-#### Portable moments
+#### Triggered clustered daily/as-of outcome readouts — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -7391,7 +7391,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-logged-policy-contrast-from_unit_summary"></span>
 
-#### Unit summary
+#### Logged-policy contrast — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -7407,7 +7407,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-logged-policy-contrast-from_unit_panel"></span>
 
-#### Unit panel
+#### Logged-policy contrast — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -7423,7 +7423,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-logged-policy-contrast-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Logged-policy contrast — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -7439,7 +7439,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-logged-policy-contrast-from_definitions"></span>
 
-#### Definitions
+#### Logged-policy contrast — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -7455,7 +7455,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-logged-policy-contrast-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Logged-policy contrast — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -7471,7 +7471,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-logged-policy-contrast-from_moments"></span>
 
-#### Portable moments
+#### Logged-policy contrast — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -7504,7 +7504,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-tabular-policy-persistence-from_unit_summary"></span>
 
-#### Unit summary
+#### TabularPolicy persistence (JSON dump and validate) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -7520,7 +7520,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-tabular-policy-persistence-from_unit_panel"></span>
 
-#### Unit panel
+#### TabularPolicy persistence (JSON dump and validate) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -7536,7 +7536,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-tabular-policy-persistence-from_switchback_panel"></span>
 
-#### Switchback panel
+#### TabularPolicy persistence (JSON dump and validate) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -7552,7 +7552,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-tabular-policy-persistence-from_definitions"></span>
 
-#### Definitions
+#### TabularPolicy persistence (JSON dump and validate) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -7568,7 +7568,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-tabular-policy-persistence-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### TabularPolicy persistence (JSON dump and validate) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -7584,7 +7584,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-tabular-policy-persistence-from_moments"></span>
 
-#### Portable moments
+#### TabularPolicy persistence (JSON dump and validate) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -7637,7 +7637,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED × scalar cuped — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -7649,7 +7649,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED × scalar cuped — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -7661,7 +7661,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-scalar_cuped-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED × scalar cuped — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -7677,7 +7677,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-scalar_cuped-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED × scalar cuped — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -7689,7 +7689,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED × scalar cuped — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -7701,7 +7701,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-scalar_cuped-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED × scalar cuped — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -7718,7 +7718,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-ratio-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED × ratio — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -7728,7 +7728,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-ratio-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED × ratio — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -7738,7 +7738,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-ratio-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED × ratio — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -7754,7 +7754,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-ratio-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED × ratio — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -7764,7 +7764,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-ratio-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED × ratio — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -7774,7 +7774,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-ratio-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED × ratio — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -7791,7 +7791,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-clustering-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED × clustering — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -7807,7 +7807,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-clustering-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED × clustering — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -7823,7 +7823,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-clustering-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED × clustering — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -7839,7 +7839,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-clustering-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED × clustering — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -7855,7 +7855,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-clustering-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED × clustering — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -7871,7 +7871,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-clustering-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED × clustering — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -7892,7 +7892,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-sequential-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED × sequential — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -7908,7 +7908,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-sequential-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED × sequential — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -7924,7 +7924,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-sequential-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED × sequential — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -7940,7 +7940,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-sequential-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED × sequential — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -7956,7 +7956,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-sequential-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED × sequential — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -7972,7 +7972,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-sequential-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED × sequential — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -7993,7 +7993,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_fixed_value-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED × winsorization fixed value — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -8005,7 +8005,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_fixed_value-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED × winsorization fixed value — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -8017,7 +8017,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_fixed_value-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED × winsorization fixed value — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -8033,7 +8033,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_fixed_value-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED × winsorization fixed value — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8045,7 +8045,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_fixed_value-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED × winsorization fixed value — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8057,7 +8057,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_fixed_value-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED × winsorization fixed value — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -8072,7 +8072,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_percentile-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED × winsorization percentile — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -8088,7 +8088,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_percentile-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED × winsorization percentile — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -8104,7 +8104,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_percentile-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED × winsorization percentile — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -8120,7 +8120,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_percentile-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED × winsorization percentile — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8136,7 +8136,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_percentile-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED × winsorization percentile — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8152,7 +8152,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-winsorization_percentile-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED × winsorization percentile — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -8173,7 +8173,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-breakouts-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED × breakouts — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -8189,7 +8189,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-breakouts-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED × breakouts — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -8199,7 +8199,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-breakouts-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED × breakouts — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -8215,7 +8215,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-breakouts-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED × breakouts — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8225,7 +8225,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-breakouts-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED × breakouts — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8235,7 +8235,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-breakouts-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED × breakouts — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -8256,7 +8256,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED × multiplicity roles — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -8266,7 +8266,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED × multiplicity roles — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -8276,7 +8276,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED × multiplicity roles — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -8292,7 +8292,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED × multiplicity roles — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8302,7 +8302,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED × multiplicity roles — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8312,7 +8312,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED × multiplicity roles — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -8329,7 +8329,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-triggered_population-from_unit_summary"></span>
 
-#### Unit summary
+#### Mixed-covariate CUPED × triggered population — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -8345,7 +8345,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-triggered_population-from_unit_panel"></span>
 
-#### Unit panel
+#### Mixed-covariate CUPED × triggered population — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -8361,7 +8361,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-triggered_population-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Mixed-covariate CUPED × triggered population — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -8377,7 +8377,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-triggered_population-from_definitions"></span>
 
-#### Definitions
+#### Mixed-covariate CUPED × triggered population — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8387,7 +8387,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-triggered_population-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Mixed-covariate CUPED × triggered population — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8397,7 +8397,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-cuped-linear-interaction-triggered_population-from_moments"></span>
 
-#### Portable moments
+#### Mixed-covariate CUPED × triggered population — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -8453,7 +8453,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-breakout-from_definitions"></span>
 
-#### Definitions
+#### breakout view / `breakout_summaries()` with a declared trigger — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8467,7 +8467,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-breakout-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### breakout view / `breakout_summaries()` with a declared trigger — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8505,7 +8505,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-breakout-other_entry_points"></span>
 
-#### Other entry points
+#### breakout view / `breakout_summaries()` with a declared trigger — Other entry points
 
 **Recorded path:** `other_entry_points`
 
@@ -8564,7 +8564,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-factor-summaries-from_definitions"></span>
 
-#### Definitions
+#### `factor_summaries()` with a declared trigger — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8578,7 +8578,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-factor-summaries-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### `factor_summaries()` with a declared trigger — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8616,7 +8616,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-factor-summaries-other_entry_points"></span>
 
-#### Other entry points
+#### `factor_summaries()` with a declared trigger — Other entry points
 
 **Recorded path:** `other_entry_points`
 
@@ -8675,7 +8675,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-dashboard-group-from_definitions"></span>
 
-#### Definitions
+#### `prepare_dashboard()` group data per population — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8689,7 +8689,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-dashboard-group-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### `prepare_dashboard()` group data per population — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8707,7 +8707,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-dashboard-group-other_entry_points"></span>
 
-#### Other entry points
+#### `prepare_dashboard()` group data per population — Other entry points
 
 **Recorded path:** `other_entry_points`
 
@@ -8766,7 +8766,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-allocation-history-from_definitions"></span>
 
-#### Definitions
+#### `allocation_history(population=...)` — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8780,7 +8780,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-allocation-history-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### `allocation_history(population=...)` — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8806,7 +8806,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-allocation-history-other_entry_points"></span>
 
-#### Other entry points
+#### `allocation_history(population=...)` — Other entry points
 
 **Recorded path:** `other_entry_points`
 
@@ -8865,7 +8865,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-sitewide-assigned-from_definitions"></span>
 
-#### Definitions
+#### `sitewide(population='assigned')` with a declared trigger — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -8915,7 +8915,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-sitewide-assigned-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### `sitewide(population='assigned')` with a declared trigger — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -8953,7 +8953,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-sitewide-assigned-other_entry_points"></span>
 
-#### Other entry points
+#### `sitewide(population='assigned')` with a declared trigger — Other entry points
 
 **Recorded path:** `other_entry_points`
 
@@ -9012,7 +9012,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-sitewide-from_definitions"></span>
 
-#### Definitions
+#### `sitewide(population='triggered')` with a declared trigger — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -9050,7 +9050,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-sitewide-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### `sitewide(population='triggered')` with a declared trigger — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -9088,7 +9088,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-sitewide-other_entry_points"></span>
 
-#### Other entry points
+#### `sitewide(population='triggered')` with a declared trigger — Other entry points
 
 **Recorded path:** `other_entry_points`
 
@@ -9147,7 +9147,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-cate-from_definitions"></span>
 
-#### Definitions
+#### `estimate_cate()`, `validate_cate()`, `targeting_rule()`, `select_targeting_rule()` with a declared trigger — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -9197,7 +9197,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-cate-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### `estimate_cate()`, `validate_cate()`, `targeting_rule()`, `select_targeting_rule()` with a declared trigger — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -9271,7 +9271,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-triggered-read-cate-other_entry_points"></span>
 
-#### Other entry points
+#### `estimate_cate()`, `validate_cate()`, `targeting_rule()`, `select_targeting_rule()` with a declared trigger — Other entry points
 
 **Recorded path:** `other_entry_points`
 
@@ -9322,7 +9322,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-callable-experiment-health-from_definitions"></span>
 
-#### Definitions
+#### `health_check()` source diagnostics — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -9338,7 +9338,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-callable-experiment-health-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### `health_check()` source diagnostics — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -9362,7 +9362,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-triggered-auxiliary-callable-experiment-health-other_entry_points"></span>
 
-#### Other entry points
+#### `health_check()` source diagnostics — Other entry points
 
 **Recorded path:** `other_entry_points`
 
@@ -9568,7 +9568,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-triggered-sequential-continuation-from_unit_summary"></span>
 
-#### Unit summary
+#### Registered process committed without a triggered chain continued under a declared trigger — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -9586,7 +9586,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-triggered-sequential-continuation-from_unit_panel"></span>
 
-#### Unit panel
+#### Registered process committed without a triggered chain continued under a declared trigger — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -9604,7 +9604,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-triggered-sequential-continuation-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Registered process committed without a triggered chain continued under a declared trigger — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -9622,7 +9622,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-triggered-sequential-continuation-from_definitions"></span>
 
-#### Definitions
+#### Registered process committed without a triggered chain continued under a declared trigger — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -9654,7 +9654,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-triggered-sequential-continuation-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Registered process committed without a triggered chain continued under a declared trigger — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -9686,7 +9686,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-triggered-sequential-continuation-from_moments"></span>
 
-#### Portable moments
+#### Registered process committed without a triggered chain continued under a declared trigger — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -9723,7 +9723,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-stored-boolean-null-continuation-from_unit_summary"></span>
 
-#### Unit summary
+#### Continuing a checkpoint recorded under earlier raw Boolean/null spellings with canonically labelled units — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -9751,7 +9751,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-stored-boolean-null-continuation-from_unit_panel"></span>
 
-#### Unit panel
+#### Continuing a checkpoint recorded under earlier raw Boolean/null spellings with canonically labelled units — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -9769,7 +9769,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-stored-boolean-null-continuation-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Continuing a checkpoint recorded under earlier raw Boolean/null spellings with canonically labelled units — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -9785,7 +9785,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-stored-boolean-null-continuation-from_definitions"></span>
 
-#### Definitions
+#### Continuing a checkpoint recorded under earlier raw Boolean/null spellings with canonically labelled units — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -9811,7 +9811,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-stored-boolean-null-continuation-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Continuing a checkpoint recorded under earlier raw Boolean/null spellings with canonically labelled units — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -9837,7 +9837,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-stored-boolean-null-continuation-from_moments"></span>
 
-#### Portable moments
+#### Continuing a checkpoint recorded under earlier raw Boolean/null spellings with canonically labelled units — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -9858,7 +9858,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-context-formats-from_unit_summary"></span>
 
-#### Unit summary
+#### Artifact context format 2 (hash-only source recipes; no source SQL) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -9870,7 +9870,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-context-formats-from_unit_panel"></span>
 
-#### Unit panel
+#### Artifact context format 2 (hash-only source recipes; no source SQL) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -9882,7 +9882,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-context-formats-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Artifact context format 2 (hash-only source recipes; no source SQL) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -9894,7 +9894,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-context-formats-from_definitions"></span>
 
-#### Definitions
+#### Artifact context format 2 (hash-only source recipes; no source SQL) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -9904,7 +9904,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-context-formats-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Artifact context format 2 (hash-only source recipes; no source SQL) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -9926,7 +9926,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-context-formats-from_moments"></span>
 
-#### Portable moments
+#### Artifact context format 2 (hash-only source recipes; no source SQL) — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -9943,7 +9943,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-experiment-window-day-boundary-from_unit_summary"></span>
 
-#### Unit summary
+#### Experiment window days (start, end and observation-horizon days) follow the day boundary: a naive value is the wall clock at the boundary, an aware value is converted — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -9965,7 +9965,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-experiment-window-day-boundary-from_unit_panel"></span>
 
-#### Unit panel
+#### Experiment window days (start, end and observation-horizon days) follow the day boundary: a naive value is the wall clock at the boundary, an aware value is converted — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -9987,7 +9987,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-experiment-window-day-boundary-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Experiment window days (start, end and observation-horizon days) follow the day boundary: a naive value is the wall clock at the boundary, an aware value is converted — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -10009,7 +10009,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-experiment-window-day-boundary-from_definitions"></span>
 
-#### Definitions
+#### Experiment window days (start, end and observation-horizon days) follow the day boundary: a naive value is the wall clock at the boundary, an aware value is converted — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -10045,7 +10045,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-experiment-window-day-boundary-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Experiment window days (start, end and observation-horizon days) follow the day boundary: a naive value is the wall clock at the boundary, an aware value is converted — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -10081,7 +10081,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-experiment-window-day-boundary-from_moments"></span>
 
-#### Portable moments
+#### Experiment window days (start, end and observation-horizon days) follow the day boundary: a naive value is the wall clock at the boundary, an aware value is converted — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -10108,7 +10108,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-publication-abort-from_unit_summary"></span>
 
-#### Unit summary
+#### Publication abort after the manifest insert began invalidates the generation (tombstone first, then relation erase; if the tombstone cannot be written the relations are kept and named, and a fresh process hides the generation before they are dropped) — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -10124,7 +10124,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-publication-abort-from_unit_panel"></span>
 
-#### Unit panel
+#### Publication abort after the manifest insert began invalidates the generation (tombstone first, then relation erase; if the tombstone cannot be written the relations are kept and named, and a fresh process hides the generation before they are dropped) — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -10140,7 +10140,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-publication-abort-from_switchback_panel"></span>
 
-#### Switchback panel
+#### Publication abort after the manifest insert began invalidates the generation (tombstone first, then relation erase; if the tombstone cannot be written the relations are kept and named, and a fresh process hides the generation before they are dropped) — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
@@ -10156,7 +10156,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-publication-abort-from_definitions"></span>
 
-#### Definitions
+#### Publication abort after the manifest insert began invalidates the generation (tombstone first, then relation erase; if the tombstone cannot be written the relations are kept and named, and a fresh process hides the generation before they are dropped) — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -10172,7 +10172,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-publication-abort-from_unit_day_artifact"></span>
 
-#### Unit-day artifact
+#### Publication abort after the manifest insert began invalidates the generation (tombstone first, then relation erase; if the tombstone cannot be written the relations are kept and named, and a fresh process hides the generation before they are dropped) — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -10190,7 +10190,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-stored-state-artifact-publication-abort-from_moments"></span>
 
-#### Portable moments
+#### Publication abort after the manifest insert began invalidates the generation (tombstone first, then relation erase; if the tombstone cannot be written the relations are kept and named, and a fresh process hides the generation before they are dropped) — Portable moments
 
 **Recorded path:** `from_moments`
 
