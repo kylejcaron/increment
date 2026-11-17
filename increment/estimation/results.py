@@ -978,7 +978,7 @@ class _RowIdentity(CodedModel, BaseModel):
 
     def __setstate__(self, state: dict[str, object]) -> None:
         """Restore trusted pickle values and missing defaults without recomputing inference."""
-        values = cast("dict[str, Any]", state["__dict__"])
+        values = cast("dict[str, Any]", _infer_reference_from_legacy_dof(state["__dict__"]))
         identity = _PickledRowIdentity.model_validate(
             {name: values[name] for name in _PICKLED_IDENTITY_FIELDS if name in values}
         )
