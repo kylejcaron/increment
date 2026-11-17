@@ -1,14 +1,14 @@
 # When a request is refused
 
-Increment refuses a request when it cannot interpret or support it honestly.
-A refusal is not a result; do not change the request just to make the error
-disappear. Check the design and estimand first.
+A refusal explains why a request cannot run. Read its code, check the named
+input or assumption, then correct the cause. Do not change the experiment you
+claim to have run just to make an error disappear.
 
 ## Start with the code and context
 
 Catch `CodedError` and branch on its stable `code`; use `context` to inspect
 the relevant fields. The human-readable message can change, so do not parse
-it. See the [API error reference](../api.md#errors-and-refusals) for typed
+it. See the [API error reference](../api.md#errors) for typed
 refusals and examples.
 
 ```python
@@ -25,103 +25,30 @@ The first code segment helps you find a family; it is not a separate public
 enum. Check the specific refusal's message, context, and linked contract:
 similar codes can mean different things.
 
-| Code family | What to check next |
-| --- | --- |
-| `analysis.*`, `facade.*`, `plan.*`, `power.*`, `arm_planning.*` | Check the declared analysis, population, method, planning inputs, and supported source path in the [capability reference](../reference/capabilities-by-entry-point.md), [power analysis](power-analysis.md), or [method guide](choose-a-method.md). Correct the request or use a supported entry point. |
-| `source.*`, `frame.*`, `query.*`, `artifact.*`, `artifact_contract.*`, `definition.*`, `model.*`, `compatibility.*` | Check the reported column, grain, identity, assignment, artifact version, or source capability. Repair the input at its source, then follow the [data model guide](data-model.md), [API reference](../api.md), or [compatibility policy](../api.md#compatibility-policy). |
-| `evidence.*` | Check `requested`, `offered`, and `route` in the refusal context. Grain, breakout, unit-row, raw-outcome, cluster, covariate, assignment, and operation codes identify which evidence is unavailable; use a source that retains it or choose an operation it supports. `evidence.assignment.unavailable` means the source has no assignment evidence; `evidence.assignment.selection_unavailable` means the requested experiment, version, period, or population is not retained; `evidence.assignment.identity_unavailable` means a replay, whole-ledger exposure, or allocation-history request needs row-level assignment records; supply a row-level ledger through `from_definitions` with `experiment.assignment_ledger`, or a `FrameLedger`. `evidence.assignment.invalid` names malformed roles, duplicate identities, inconsistent cluster membership, invalid periods, or invalid replay specifications; `evidence.assignment.replay_mismatch` means replay disagrees with the selected ledger. Compliance declarations distinguish total from as-of evidence; operation codes name unavailable product operations; `evidence.operation_unavailable` covers an operation that the source does not retain. Follow the route in the context rather than fabricating missing evidence. |
-| `query.session.warehouse_artifact.verification_unavailable` | The stored relation format cannot be verified by this warehouse route; refusal context names the relation and digest format. Do not read or relabel its hashes. Republish from trusted definitions with warehouse-side integrity enabled. |
-| `query.backend.operation_unsupported` | Ibis could not translate a query for this warehouse's SQL dialect: `backend` names the dialect and `detail` repeats Ibis's message, which names the operation. When `detail` instead describes converting event times that carry a time zone to UTC, the backend is not one of the four verified ones; convert those event times in the source SQL as [Event times with a time zone](data-model.md#event-times-with-a-time-zone) describes. The run stops where that query is reached, so earlier queries may already have read data, but no result is produced. Analyze from a dataframe with `from_frame`, or add the missing translation as [Other warehouses](data-model.md#when-ibis-cannot-translate-an-operation) describes. |
-| `query.backend.compiler_unavailable` | A SQL preview named a dialect, through `from_definitions(..., backend=...)`, that the installed Ibis cannot write SQL for; `backend` names it. The preview stops before it reads anything. Pass the name of an Ibis SQL backend, or install an Ibis release that supports that dialect. |
-| `readout.*`, `readouts.*`, `estimation.*`, `integrity.*`, `breakout.*`, `contrast.*`, `conversion_inference.*`, `arm.*`, `moments.*`, `decision.*`, `design.*`, `identification.*`, `sequential.*`, `absorption.*`, `adjust.*`, `allocation.*`, `impute.*`, `unit_cycle.*`, `sensitivity.*` | Check the requested estimand, inference and multiplicity scope in [reading results](reading-results.md), [multiplicity](multiplicity.md), and the [method guide](choose-a-method.md). For SRM integrity codes, declare the actual target allocation and, for always-valid checks, the assignment law. For `sensitivity.*`, check the row's estimand, declared metric type and scale in the [observational guide](observational.md#how-strong-would-an-omitted-confounder-need-to-be). Use the route named in the refusal; do not treat an omitted or refused cell as a null effect. |
-| `family.*` | `family.evidence.incomplete` means a multiplicity family has a cell with no usable test result; `failed`, `missing` and `invalid` in the context name the cells. A fixed-horizon breakout family leaves out cells with a too-small or missing arm and keeps outcome-based exclusions as non-rejections, so there it names any other failure; a whole-window family refuses for any cell without evidence, including one with no control arm. For a breakout or as-of view, read it with `MultiplicitySpec(correction="none")` to see each cell's reason ([multiplicity](multiplicity.md)); then correct the cause and rerun. |
-| `cate.*`, `logged_policy.*` | Check identification and support assumptions in [heterogeneity](heterogeneity-and-rollout.md) or [logged policies](logged-policy.md); select a supported estimand rather than weakening a validity gate. |
-| `results.*`, `dashboard.*`, `report.*`, `reporting.*`, `tables.*` | Check result-frame projection columns and the dashboard's documented input/view requirements in the [dashboard guide](dashboard.md); use the underlying readout directly if that view is unavailable. `results.operation.alpha_above_allocation` means a reissued interval exceeds its stored declared or selected family allocation; request an equal or smaller alpha, or use an unadjusted row. For `results.readout.*`, pass `readout(view)` one of the views the run executed (listed by hash in `scope_hashes`); a result restored from a store or a pickle keeps its saved cells only, so run the experiment again for its full collections ([reading results](reading-results.md)). |
-| `simulate.*` | Check the simulated design and requested operating characteristic in the [power analysis guide](power-analysis.md); simulated behavior is not a guarantee for a different design. |
-| `package.*` | Bundled support is missing or inconsistent in the installed package. Reinstall a complete, matching Increment distribution; changing the experiment or data will not repair the installation. |
-| `install.*` | A feature needs an optional extra that is not installed. Check `feature` in the context and run its `install` command. `install.warehouse_extra_missing` means a warehouse feature needs Ibis and SQLGlot: `pip install "increment[warehouse]"`; install your Ibis backend driver separately. `install.dashboard_extra_missing` means `increment.dashboard` needs `pip install "increment[dashboard]"`, and `install.tables_extra_missing` means `readout_table` or `trend_table` needs `pip install "increment[tables]"`. Dataframe and moments builders need none of these extras. These refusals are also `ImportError`s. |
-| `kernel.*` | Check the saved or shared analysis description named in the refusal context (`field`, `kind`). A scope, request or method description is inconsistent or cannot be saved portably. Request identity datetimes must include a timezone; aware offsets are normalized to UTC. For `kernel.definitions.catalog_missing`, bind the definitions with a connection to write the offline catalog; for `kernel.definitions.catalog_stale`, rebind after changing the definitions. Rebuild the description from the analysis rather than editing stored identifiers. |
-| `store.*` | The saved run manifest, cell roster, scope map or immutable publication is inconsistent. Keep run IDs unique, publish a complete roster once, and use the pinned `RunHandle` for reads; correct the source run and write a new ID rather than replacing a committed run. |
-| `wire.*` | A result cannot be represented in the portable wire format. `wire.procedure.contrast_context` means a switchback contrast run has cells and decisions but no portable arm decision plan, so its decisions cannot be logged or restored; save its cells with `run(..., results_store=...)` alone, keep the result in memory, or read its `ContrastResults` collection with `result.readout()`. |
+| What failed? | Start here |
+|---|---|
+| Data or definitions | [Warehouse and dataframe inputs](data-model.md) |
+| Method or required data | [Choose a method](choose-a-method.md), [supported inputs](../reference/capabilities-by-entry-point.md) |
+| A warehouse query | [Backend translation](data-model.md#when-ibis-cannot-translate-an-operation) |
+| An estimate or comparison family | [Reading results](reading-results.md), [multiplicity](multiplicity.md) |
+| A saved run | [Saved formats](../reference/saved-formats.md) |
+| A display or export | [Dashboard requirements](dashboard.md) |
 
-`store.run.empty` means an empty metric selection has no result cells to
-persist. Select at least one metric before saving the run; an empty result may
-still be inspected in memory.
+Search the full code in the [error reference](../reference/error-codes.md).
+The recovery cases below explain choices that need more than a corrected argument.
 
-`store.run.manifest_unsupported` means a saved run was written by a newer
-release; its context lists the versions `found` in the file and the versions
-this release reads (`supported`). Upgrade Increment to open it. The
-[saved-format table](../reference/saved-formats.md) lists the versions each
-reader accepts.
-
-`store.run.schema_unavailable` means `WarehouseResultsStore` could neither
-find its declared `schema` nor create it when saving a run, so nothing was
-saved. Create the schema, or connect with permission to create schemas.
-
-`store.schema_name_too_long` means a schema or catalog name given to
-`WarehouseResultsStore` or `WarehouseArtifactStore` (named in `store`) is
-longer than the warehouse allows for a name: `limit` is 63 bytes on
-PostgreSQL, 255 characters on Snowflake and 1,024 bytes on BigQuery. The store
-refuses when it is created, before it reads or writes anything; PostgreSQL
-would otherwise shorten the name, so two long names that share their first 63
-bytes would save to and read from one schema. Choose a shorter name.
-
-`kernel.request.capture_not_supported` means sequential capture or checkpoint
-adoption was placed in saved request options. Call
-`increment.workflows.capture_sequential(experiment, reader, ...)` with the
-module-builder pair, then run the experiment, or pass
-`capture=SequentialCaptureRequest(...)` to `run`.
-`kernel.request.population_scope_only` means population was placed in request
-options, or `run(population=...)` differs from a selected scope's population;
-set it on the view, such as `View.overall(population=...)`, instead.
-`kernel.run.reader_required` means `run` or a function that reads data received
-something other than the reader a builder returns; its `received` context names
-the type. A `BoundResolver` only verifies a custom provider, so build a reader
-with a module builder to run an experiment. `kernel.run.reader_closed` means the
-reader was closed; build a new one. `kernel.run.reader_offline` means the reader
-came from an offline catalog; build it with a connection.
-`kernel.run.execution_unavailable` with a `reader_experiment_id` means the
-experiment passed with a reader is not the one the reader was built for;
-`field` names the first declaration that differs. Pass the experiment the
-builder returned with the reader, or build a new pair from the changed
-declarations. `kernel.provider.digest_mismatch` and
-`kernel.provider.capability_mismatch` mean a source no longer matches the
-declarations its experiment recorded; build the experiment and its reader again.
-
-`kernel.scope.family_mismatch` means a switchback view was requested from an
-ordinary arm experiment. Build a switchback experiment with
-`from_switchback_frame`, or choose its existing run, daily, asof, or breakout view.
-
-`evidence.joint_grouping_unavailable` means the requested grouping properties
-are not all available from one source; declare all grouping properties together on one source
-or use a source that retains them.
-An `estimation.estimator.adjustment.callback_contract` refusal means a
-registered covariate-adjustment callback does not accept the shared
-`AdjustmentInputs`, metric, design, and keyword-argument contract. Migrate it
-to the current callback shape described in the
-[estimator extension guide](../development/adding-an-estimator.md#custom-evidence-providers);
-do not work around the check by registering the legacy positional signature.
-
-A missing treatment arm, for example, means an arm-level contrast cannot be
-estimated; it does not prevent reading arm counts or a separate allocation
-diagnostic. A triggered readout refusal does not license interpreting the
-assigned-population result as a triggered-population estimate. See
-[reading results](reading-results.md) for interpretation and next actions.
-
-Warehouse-backed CUPED can refuse with `query.cuped.magnitude_range` when an
-arm's root-mean-square outcome component (including a ratio denominator) or
-continuous covariate is outside `[1e-50, 1e50]`. The refusal context identifies
-the metric, arm, component, and bound. Change units to rescale the values, or
-use explicitly supplied per-unit data with `from_frame(..., shape="summary")` or
-`from_frame(..., shape="panel")`; local per-unit fitters are unchanged.
+A missing treatment arm can prevent a contrast without preventing arm counts
+or a separate allocation check. An unavailable or refused estimate is **not a
+zero effect**. Likewise, a refused triggered-population result does not make an
+assigned-population estimate a substitute for it.
 
 ## Recover from a missing sequential allocation
 
-Automatic sequential registration fixes its inference boundary using the
-assignment probabilities. When a public frame analysis has no allocation, pass
-the **actual** allocation used to assign units; do not add a declaration that
-does not match the experiment. This runnable example shows the refusal and the
-corrected rerun:
+Sequential registration uses the assignment probabilities. If a frame analysis
+omitted them, declare the **actual** allocation; do not invent a convenient split.
+This example catches the refusal, then reruns with its real 1:1 assignment.
+It uses the asymptotic mean method: four observations illustrate recovery,
+not reliable inference.
 
 ```python
 import pandas as pd
@@ -180,3 +107,180 @@ results = increment.run(experiment, reader).readout()
 assert len(results) == 1
 assert results[0].metric == "outcome"
 ```
+
+## Specific recovery cases
+
+### The source cannot supply the requested data
+
+For `evidence.*`, read `requested`, `offered` and `route` in the context.
+The code identifies missing grouping, unit rows, raw outcomes, clusters,
+covariates, assignment records or an operation. Use a source that contains
+the required data, or an operation it supports; do not fabricate missing data.
+Compliance declarations distinguish total from as-of data.
+
+- `evidence.assignment.unavailable`: the source has no assignment evidence.
+- `evidence.assignment.selection_unavailable`: the requested experiment,
+  version, period or population was not retained.
+- `evidence.assignment.identity_unavailable`: replay, whole-ledger exposure or
+  allocation history needs row-level assignment records. Supply a ledger through
+  `from_definitions` with `experiment.assignment_ledger`, or a `FrameLedger`.
+- `evidence.assignment.invalid`: inspect the reported malformed roles,
+  duplicate identities, inconsistent cluster membership, invalid periods or
+  replay specification.
+- `evidence.assignment.replay_mismatch`: replay disagrees with the selected ledger.
+- `evidence.joint_grouping_unavailable`: declare all requested grouping
+  properties together on one source, or use a source that already retains them.
+- `evidence.operation_unavailable`: the source does not retain the requested
+  operation.
+
+For `source.*`, `frame.*`, `artifact.*`, `artifact_contract.*`, `definition.*`,
+`model.*` and `compatibility.*`, repair the reported column, grain, identity,
+assignment or version at its source. Follow [data preparation](data-model.md)
+and the [compatibility policy](../api.md#compatibility-policy).
+
+### A warehouse cannot compile or verify a query
+
+**`query.backend.operation_unsupported`** means Ibis cannot translate a query.
+`backend` names the dialect; `detail` names the failed operation. If the detail
+instead describes converting timezone-aware event times to UTC, the backend
+is not one of the four verified ones. Convert times in the source SQL as
+[event-time handling](data-model.md#event-times-with-a-time-zone) describes.
+Earlier queries may already have read data, but no result is produced.
+Use `from_frame`, or add the [missing translation](data-model.md#when-ibis-cannot-translate-an-operation).
+
+**`query.backend.compiler_unavailable`** means a SQL preview requested a
+dialect the installed Ibis cannot write. It refuses before reading anything.
+Pass an Ibis SQL backend name to `from_definitions(..., backend=...)`, or
+install an Ibis release supporting that dialect.
+
+**`query.session.warehouse_artifact.verification_unavailable`** means this
+warehouse route cannot verify the stored relation format. Context names the
+relation and digest format. Do not read or relabel its hashes; republish from
+trusted definitions with warehouse-side integrity enabled.
+
+**`query.cuped.magnitude_range`** means an arm's root-mean-square outcome
+component (including a ratio denominator) or continuous covariate is outside
+`[1e-50, 1e50]`. Context identifies the metric, arm, component and bound.
+Rescale the units, or supply per-unit data with `from_frame(shape="summary")`
+or `from_frame(shape="panel")`; local per-unit fitters are unchanged.
+
+### A comparison family has an unusable result
+
+**`family.evidence.incomplete`** names unusable cells in `failed`, `missing`
+and `invalid`. Whole-window families refuse for any cell without evidence,
+including a missing control arm. Fixed-horizon breakout families instead
+leave out cells with too-small or missing arms and keep outcome-based
+exclusions as non-rejections; the refusal names other failures.
+
+For breakout or as-of views, inspect cell reasons with
+`MultiplicitySpec(correction="none")`, then repair the cause and rerun the
+intended family. This diagnostic view is not a replacement for the
+[multiple-comparison procedure](multiplicity.md).
+
+For other inference refusals, check the effect, population, method and
+comparison scope in [Reading results](reading-results.md). SRM integrity
+codes require the actual target allocation and, for always-valid checks,
+the assignment law. `sensitivity.*` also requires the row's metric type and
+scale; see [omitted-confounder sensitivity](observational.md#how-strong-would-an-omitted-confounder-need-to-be).
+
+### The experiment and reader do not match
+
+- `kernel.run.reader_required`: `received` names the wrong input type.
+  Pass the reader returned by a builder. A `BoundResolver` verifies a custom
+  provider; it is not a reader.
+- `kernel.run.reader_closed`: build a new reader.
+- `kernel.run.reader_offline`: build it with a connection.
+- `kernel.run.execution_unavailable` with `reader_experiment_id`: the reader
+  was built for a different experiment; `field` names the first differing
+  declaration. Pass the original pair, or rebuild both from the changed declarations.
+- `kernel.provider.digest_mismatch` or `kernel.provider.capability_mismatch`:
+  the source no longer matches the recorded declarations. Rebuild the pair.
+- `kernel.definitions.catalog_missing`: bind definitions with a connection
+  to write the offline catalog.
+- `kernel.definitions.catalog_stale`: rebind after changing definitions.
+
+Other `kernel.*` codes name an inconsistent or nonportable description through
+`field` and `kind`. Rebuild it from the analysis rather than editing stored
+identifiers. Request identity datetimes need a timezone; aware offsets are
+normalized to UTC.
+
+### A request option belongs elsewhere
+
+**`kernel.request.capture_not_supported`**: remove sequential capture or
+checkpoint adoption from saved request options. Call
+`increment.workflows.capture_sequential(experiment, reader, ...)` with the
+builder pair, then run; or pass `capture=SequentialCaptureRequest(...)` to `run`.
+
+**`kernel.request.population_scope_only`**: set population on the view, such
+as `View.overall(population=...)`, not in request options. A call-wide
+`run(population=...)` must not disagree with a selected scope.
+
+**`kernel.scope.family_mismatch`**: a switchback view was requested from an
+ordinary arm experiment. Use `from_switchback_frame`, or choose the ordinary
+experiment's run, daily, asof or breakout view.
+
+### A saved run or interval cannot be reused
+
+**`results.operation.alpha_above_allocation`**: the reissued interval exceeds
+its stored declared or selected family allocation. Request an equal or
+smaller alpha, or use an unadjusted row.
+
+For **`results.readout.*`**, request a view the run executed; `scope_hashes`
+lists them. A stored or pickled result keeps only its saved cells. Run the
+experiment again for its full collections.
+
+For **`store.*`**, keep run IDs unique, publish a complete roster once, and
+read with the pinned `RunHandle`. Correct the source run and write a new ID
+rather than replacing a committed run.
+
+- `store.run.empty`: select at least one metric before saving. An empty
+  result can still be inspected in memory.
+- `store.run.manifest_unsupported`: a newer release wrote the run. Compare
+  `found` with `supported` in context and upgrade Increment; see [format versions](../reference/saved-formats.md).
+- `store.run.schema_unavailable`: `WarehouseResultsStore` could neither
+  find nor create its schema; nothing was saved. Create it or grant permission.
+- `store.schema_name_too_long`: shorten the schema or catalog name. The
+  limit is 63 bytes on PostgreSQL, 255 characters on Snowflake and 1,024 bytes
+  on BigQuery. The store named in context refuses at construction, before
+  reads or writes; PostgreSQL would otherwise silently truncate names.
+
+**`wire.procedure.contrast_context`**: a switchback run's decisions have no
+portable arm decision plan. Save cells alone with `run(..., results_store=...)`,
+keep the result in memory, or read `ContrastResults` with `result.readout()`.
+Other `wire.*` refusals mean the result cannot be represented in that wire format.
+
+### An optional package is missing
+
+For `install.*`, context gives `feature` and the install command. These errors
+are also `ImportError`s.
+
+- `install.warehouse_extra_missing`: install `increment[warehouse]` for Ibis
+  and SQLGlot, plus your Ibis backend driver separately.
+- `install.dashboard_extra_missing`: install `increment[dashboard]`.
+- `install.tables_extra_missing`: install `increment[tables]` for
+  `readout_table` or `trend_table`.
+
+Use `python -m pip install --pre "increment[<extra>]"` for the current
+prerelease. Dataframe and moments builders need none of these extras.
+`package.*` instead means the distribution is incomplete or inconsistent:
+reinstall a matching package, rather than changing the experiment.
+
+### A specialized method or extension refuses
+
+For `analysis.*`, `facade.*`, `plan.*`, `power.*` or `arm_planning.*`,
+check inputs and supported methods in [capabilities](../reference/capabilities-by-entry-point.md),
+[power planning](power-analysis.md) or [method selection](choose-a-method.md).
+For `cate.*` and `logged_policy.*`, check identification and support
+assumptions in [heterogeneity](heterogeneity-and-rollout.md) or [logged policies](logged-policy.md).
+Choose a supported effect to estimate, not a weaker validity check.
+
+For `simulate.*`, check the simulated design and operating characteristic.
+Simulation results do not establish a guarantee for a different design.
+For `dashboard.*`, `report.*`, `reporting.*` and `tables.*`, check projection
+columns and the view's [input requirements](dashboard.md); use the underlying
+readout if the display is unavailable.
+
+**`estimation.estimator.adjustment.callback_contract`** means a registered
+callback does not accept `AdjustmentInputs`, metric, design and the required
+keyword arguments. Migrate to the [current callback contract](../development/adding-an-estimator.md#custom-evidence-providers);
+do not register the legacy positional signature to bypass the check.

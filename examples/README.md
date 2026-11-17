@@ -1,21 +1,16 @@
 # Examples
 
-Runnable [marimo](https://marimo.io) notebooks exercising the public API end
-to end. Most of these run against an in-memory DuckDB warehouse; no
-external services are needed. `analysis_from_a_dataframe.py` and
-`observational.py` need no warehouse at all. Each notebook's own intro cell
-explains the scenario in detail; this is just a map of what's here.
+Run these [marimo](https://marimo.io) notebooks locally; no external services
+are needed. Start with **`analysis_from_a_dataframe.py`** for a first result,
+or **`analysis_from_a_warehouse.py`** for YAML and SQL.
 
-Readout tables put estimates and plots first. Expand **Table evidence and
-checks** for labeled assignment checks, source references, multiple-testing
-plans, and per-result qualifications. Unchecked or incomplete evidence stays
-visible above the table.
+Tables show estimates first, with unchecked or incomplete evidence above them.
+Expand **Table evidence and checks** for assignment checks, multiple-testing
+plans, source references and result qualifications.
 
-Tutorials show the executed API calls above their results in run mode:
-loading data, running analyses, requesting views, and planning power. Displayed
-code uses descriptive variable names. Imports, sample-data generation, styling,
-and plotting details stay hidden. Open a notebook with `marimo edit` to inspect
-or change its full source.
+Run mode shows the analysis calls alongside their results. Use `marimo edit`
+to inspect the full source, including imports, sample-data generation and plots.
+The commands below run from this repository.
 
 - **`analysis_from_a_dataframe.py`**: a guided dataframe tutorial covering
   a baseline readout, CUPED, an informative prior, a ratio metric, and
@@ -69,23 +64,17 @@ or change its full source.
   uv run --extra demo --extra tables marimo edit examples/data_model.py
   ```
 
-- **`breakout.py`**: per-segment lift breakdowns and per-day metric/lift
-  trends: the same estimator `analysis_from_a_warehouse.py` uses, sliced by a
-  declared breakout dimension (`country`) and by calendar day instead of
-  collapsing the experiment into one top-line number. Needs the `demo` and
-  `tables` extras for every table, including the per-day views with
-  `coeftable`'s inline sparkline column:
+- **`breakout.py`**: compare declared country segments and daily trends using
+  the warehouse example's estimator. Needs `demo` and `tables`, including for
+  daily tables with inline sparklines:
 
   ```bash
   uv run --extra demo --extra tables marimo edit examples/breakout.py
   ```
 
-- **`dashboard.py`** — the complete interactive dashboard over one bound
-  experiment, picked from a dropdown: `checkout_redesign`, or
-  `express_checkout`, whose declared trigger gives it separate assigned and
-  triggered populations. The same calls adapt to each; the notebook is one
-  readable composition over the packaged renderers against the bundled
-  realistic-demo fixture. Needs the `demo` and `dashboard` extras:
+- **`dashboard.py`**: explore `checkout_redesign` or `express_checkout` through
+  the same dashboard calls. The latter has separate assigned and triggered
+  populations. Uses synthetic warehouse data; needs `demo` and `dashboard`:
 
   ```bash
   uv run --extra dashboard --extra demo marimo edit examples/dashboard.py
@@ -96,24 +85,19 @@ or change its full source.
   does not, because the notebook's `# /// script` metadata makes uv treat it
   as an isolated script environment.
 
-- **`observational.py`**: no-warehouse, straight from a dataframe like
-  `analysis_from_a_dataframe.py`: a naive (confounded) comparison side by
-  side with an `Observational` + IPTW-adjusted one, against a known synthetic
-  truth, so the bias and the correction are visible in the same run. Needs
-  the `tables` extra:
+- **`observational.py`**: compare a naive, confounded dataframe estimate with
+  an `Observational` + IPTW-adjusted estimate against known synthetic truth.
+  No warehouse needed; uses the `tables` extra:
 
   ```bash
   uv run --extra tables marimo edit examples/observational.py
   ```
 
-- **`hte.py`**: heterogeneous treatment effects: `estimate_cate`,
-  `validate_cate` and `targeting_rule` over a simulated cohort whose per-unit
-  effect is known, so every estimate is printed beside its truth. The centre
-  of the notebook is a second cohort with *no* heterogeneity at all, where
-  the in-sample top group reads well above the truth and the held-out
-  re-estimation does not. This is why the targeting rule refuses to hand
-  back a threshold unless the honest split earned one. Needs the `tables`
-  extra:
+- **`hte.py`**: estimate and validate conditional effects, then evaluate a
+  targeting rule on simulated cohorts with known effects. A second cohort has
+  no real heterogeneity: its apparently strong in-sample top group disappears
+  under held-out re-estimation, and targeting is refused. Uses `estimate_cate`,
+  `validate_cate` and `targeting_rule`; needs the `tables` extra:
 
   ```bash
   uv run --extra tables marimo edit examples/hte.py

@@ -7,7 +7,7 @@ group overstates the effect; held-out re-estimation corrects it, and
 
 [Open the notebook in a full browser tab](hte.html)
 
-<iframe src="../hte.html" style="width:100%; height:80vh; border:1px solid var(--md-default-fg-color--lightest); border-radius:4px;"></iframe>
+<iframe src="../hte.html" title="Heterogeneous treatment effects notebook" style="width:100%; height:80vh; border:1px solid var(--md-default-fg-color--lightest); border-radius:4px;"></iframe>
 
 ## References and assumptions
 

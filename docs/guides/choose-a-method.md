@@ -1,6 +1,7 @@
 # Which experiment analysis method should I use?
 
-Choose a method from how treatment was assigned, how often you will look, and what decision you need to make. Start with the route below; check its assumptions before acting on the result.
+Start with how treatment was assigned, when you need to decide, and what you
+want to measure. Follow the matching guide; check its assumptions before acting.
 
 ## I have a randomized A/B test
 
@@ -8,14 +9,16 @@ Use the randomized design and compare treatment arms against the declared contro
 
 ## My arm sizes look imbalanced
 
-Use [SRM diagnostics](srm-diagnostics.md) to check for a sample-ratio mismatch. Compare counts in the full assigned population with the population used by your metric: a mismatch that appears only downstream points to selection or telemetry, not necessarily broken assignment.
-
-!!! warning "SRM cannot identify the cause"
-    It detects an observed-count imbalance only; it cannot determine whether a broken assignment mechanism or an asymmetric downstream selection or telemetry gap caused it.
+Use [SRM diagnostics](srm-diagnostics.md) to check whether group counts differ
+from the planned allocation. Compare all assigned users with the users included
+in the metric. An imbalance only in the latter may come from selection or
+missing events. **The check cannot identify the cause** or prove assignment
+was correct.
 
 ## I have pre-treatment data correlated with the outcome
 
-Use [CUPED variance reduction](cuped.md). CUPED uses pre-experiment information to reduce outcome variance; it does not change the treatment assignment or estimand.
+Use [CUPED](cuped.md) to reduce variance with pre-experiment information.
+It does not change treatment assignment or the quantity being estimated.
 
 ## I need sample size, power, or MDE before launch
 
@@ -23,14 +26,16 @@ Use [Power analysis](power-analysis.md). Solve for required sample size, achieve
 
 ## I need a percentile, not a mean
 
-Use [Quantile metrics](quantile-metrics.md). Quantiles are not additive across units and use a different interval method; only `run()` supports them.
-
-??? info "Quantile interval construction"
-    A quantile is not additive across units, so it needs a distribution-free order-statistic interval instead of the moments-based method every other metric type shares, and only `run()` serves it.
+Use [quantile metrics](quantile-metrics.md) through `run()`. They need the
+outcome distribution, not just sums and counts, and use a distribution-free
+order-statistic interval.
 
 ## I will inspect the experiment repeatedly
 
-Use sequential or always-valid inference declared in the analysis plan. These methods are designed for repeated looks; repeatedly checking a fixed-horizon interval is not a substitute. Register the sampling model, priors, and joint reveal law before reading outcomes. See [Registered sequential inference](sequential-inference.md) and [Power analysis](power-analysis.md).
+Use [sequential inference](sequential-inference.md), declared before you inspect
+outcomes. Register the sampling model, priors and how observations arrive
+together. Repeatedly checking a fixed-horizon interval is not a substitute.
+See [power analysis](power-analysis.md) for planning the experiment.
 
 ## I want a decision framed with probabilities, not just a p-value
 
@@ -38,26 +43,48 @@ Use [Priors and Bayesian decisions](priors-and-decisions.md) when you want poste
 
 ## Treatment was self-selected, phased, or opt-in
 
-Use an `Observational` design for self-selected, phased, or opt-in treatment. Declare and justify the adjustment set. Increment checks overlap and post-adjustment balance, but cannot validate conditional ignorability. Choose IPTW, DML, or AIPW only when their causal assumptions are defensible; see [Observational comparisons](observational.md).
+Use an `Observational` design only if the measured adjustment variables account
+for confounding. Overlap and balance checks cannot establish that assumption.
+The [observational guide](observational.md) explains when IPTW, AIPW or DML
+can support a causal comparison.
 
 ## Assignment changed treatment uptake but did not force treatment
 
-Use an encouragement design when random assignment changes treatment uptake but does not force it. Report ITT, compliance, and LATE only when random assignment, a relevant first stage, exclusion, and monotonicity are defensible. See [Encouragement designs](encouragement.md) and the [encouragement example](../examples/encouragement.md), which also monitors LATE over time.
+Use an [encouragement design](encouragement.md). Check random assignment,
+a real effect on uptake, exclusion (assignment affects outcomes only through
+treatment), and monotonicity (no defiers). The guide distinguishes the effect
+of assignment (ITT), uptake (compliance), and treatment among compliers (LATE).
+The [notebook](../examples/encouragement.md) also monitors LATE over time.
 
 ## Treatment alternates within units or a shared roster over time
 
-Use a [fixed-horizon switchback contrast](switchback.md) when treatment order is randomized independently within each unit-cycle, or a shared schedule when one order is drawn per two-period block for a fixed roster. Declare the two-period `SwitchbackAssignment` and washout (and optional `carryover_order`, 0–2, when enough observation steps remain). The estimate is the mean-unit additive difference over retained windows; it assumes no residual carryover after washout. Unit-cycle inference uses a prospective variance envelope or the default approximate `UnitCycleTApproximation()`; shared schedules use a block-level Student-t interval. This route does not support sequential inference, CUPED, multiplicity adjustment, or arm-method overrides.
+Use a [fixed-horizon switchback](switchback.md) when randomized treatment order
+alternates over time. Declare a two-period `SwitchbackAssignment` and washout;
+the result is an additive difference, not relative lift. Inference assumes no
+residual carryover after washout.
+
+Two schedule types are supported: independent orders within each unit-cycle,
+or one shared order per two-period block for a fixed roster. The
+[switchback guide](switchback.md#supported-contract) covers their different
+intervals, optional carryover adjustment, and restrictions. This route does
+not support sequential inference, CUPED, multiplicity adjustment or arm-method
+overrides.
 
 ## Choosing decision and sensitivity methods
-For parallel-arm evidence, choose one `decision_method` and optional reporting-only `sensitivity_methods` per metric. Declare them in the plan (or `MetricSpec` for dataframe input), or override them call-wide with `run(decision_method=..., sensitivity_methods=...)`. A differing call-time override replaces a non-default metric declaration for that run and emits one warning per overridden setting. Sensitivity rows are not additional decision evidence.
+Choose one `decision_method` per metric. Optional `sensitivity_methods` show
+how estimates change under other methods; they are **not extra decision
+evidence**.
 
-Without an explicit choice, observational designs use IPTW; randomized and encouragement designs use their unadjusted default. A sensitivity method does not change the decision method. For example, requesting unadjusted sensitivity on an observational analysis still reports an IPTW decision. An explicit unadjusted decision remains unadjusted.
+Declare these in the plan or, for dataframe input, in `MetricSpec`. Without an
+explicit choice, observational designs use IPTW; randomized and encouragement
+designs use their unadjusted default. Adding a sensitivity method never changes
+that choice; an explicit unadjusted decision also stays unadjusted.
 
-An omitted sensitivity override inherits the declaration; `sensitivity_methods=[]` clears it. Matching overrides and overrides of undeclared defaults do not warn. The legacy method-list keyword is not part of the public `run()` API.
-
-??? info "Decision defaults and sensitivity overrides"
-    When the decision method is omitted, observational designs use IPTW; randomized and encouragement designs retain their unadjusted default. Adding a sensitivity method does not change that decision: for example, `run(sensitivity_methods=[Method(name="unadjusted")])` on an observational analysis reports an IPTW decision and an unadjusted sensitivity. An explicitly chosen unadjusted decision stays unadjusted.
-
+Call-wide `run(decision_method=..., sensitivity_methods=...)` overrides the
+declaration. A different override of a non-default metric setting warns once
+per setting. Matching overrides and overrides of undeclared defaults do not
+warn. Omit the sensitivity override to inherit it; pass `[]` to clear it.
+The legacy method-list keyword is not part of the public `run()` API.
 
 For observational designs, daily and as-of lift views refuse with
 `facade.analysis.observational_day_axis`; these views do not provide adjusted
@@ -66,10 +93,11 @@ day-axis contrasts. Use daily or as-of values views
 or the whole-window `View.overall()` view for adjusted whole-experiment
 comparisons.
 
-For metric selection, always-valid inference, secondary family roles, and interactions between methods, see the [method compatibility reference](compatibility.md) and [Multiplicity](multiplicity.md).
-
-??? info "Allocation across metrics and arms"
-    For metric selection plus always-valid inference, secondary family role, enabled multiplicity, and evidence interactions, use the [method compatibility reference](compatibility.md) and [Multiplicity](multiplicity.md) for how a primary's alpha share divides again across its own arms, a guardrail tests unsplit at the full alpha, and a secondaries family is controlled by false-discovery rate at its own q instead of an alpha split.
+Check [method compatibility](compatibility.md) before combining options.
+[Multiplicity](multiplicity.md) explains the error budgets: the primary's
+alpha share is divided across its arms, guardrails use the full unsplit alpha,
+and secondary families use false-discovery control at their own q. These
+roles are not interchangeable.
 
 ## I need effects for different user segments
 
@@ -77,7 +105,11 @@ Use heterogeneous-treatment-effect tools after estimating the overall effect. Se
 
 ## I need warehouse-backed analysis
 
-For randomized or observational warehouse analysis, declare sources, dimensions, exposures, metrics, and experiments in YAML, then use `from_definitions`. Increment compiles inspectable Ibis expressions for the configured backend. `from_unit_day_artifact` reuses published unit-day data. Observational methods need declared pre-exposure covariates; portable moments cannot reconstruct them. See [The data model](data-model.md) and [Analysis from a warehouse](../examples/analysis_from_a_warehouse.md).
+Follow [warehouse setup](data-model.md) to declare sources, dimensions,
+assignment, metrics and experiments in YAML. `from_definitions` builds queries
+you can inspect; `from_unit_day_artifact` reuses published unit-day data.
+Observational methods need declared pre-exposure covariates; portable moments
+cannot reconstruct them. Try the [local warehouse notebook](../examples/analysis_from_a_warehouse.md).
 
 ## What Increment does not do
 
