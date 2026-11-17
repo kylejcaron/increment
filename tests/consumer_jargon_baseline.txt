@@ -13,5 +13,4 @@ roster completeness	increment/_interpretation.py	1
 seam	docs/guides/compatibility.md	4
 seam	increment/estimation/cuped/scalar.py	1
 sidecar	docs/guides/observational.md	1
-substrate	docs/guides/data-model.md	1
 sidecar	increment/estimation/inference.py	1

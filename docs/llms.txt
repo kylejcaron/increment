@@ -18,6 +18,10 @@ separate event store.
 - [Result fields](https://getincrement.io/docs/reference/result-fields/): Exact result fields, confidence sets, unavailable reasons and export behavior.
 - [Method selection](https://getincrement.io/docs/guides/choose-a-method/): Choose a design and estimator from the treatment process and analysis goal.
 - [Data model](https://getincrement.io/docs/guides/data-model/): Declare warehouse sources, exposures, metrics, and experiments.
+- [Warehouse definitions](https://getincrement.io/docs/reference/warehouse-definitions/): YAML fields, normalized joins, clustering and backend behavior.
+- [Experiment specifications](https://getincrement.io/docs/guides/experiment-specifications/): Declare views, run an analysis and save or reopen its results.
+- [Saved data and replay](https://getincrement.io/docs/reference/artifacts-and-replay/): Artifact publication, recovery, reader identity and replay contracts.
+- [Saved formats](https://getincrement.io/docs/reference/saved-formats/): Readable versions, refusal codes and migration routes.
 - [Observational causal inference](https://getincrement.io/docs/guides/observational/): Use IPTW, DML, and AIPW with explicit causal assumptions.
 - [CUPED](https://getincrement.io/docs/guides/cuped/): Reduce variance with pre-treatment data.
 - [Power analysis](https://getincrement.io/docs/guides/power-analysis/): Calculate sample size, power, and MDE.

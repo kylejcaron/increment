@@ -1,151 +1,119 @@
 # Experiment specifications
 
-`increment.Experiment` is an immutable description of a registered analysis. It records a design, metrics, source references, and declared views. For portable declarations, `to_json()` and `from_json()` preserve its canonical identity. In-memory analyses can also declare learner factories and fold counts: these remain usable during construction and execution. Exporting a raw learner factory refuses rather than replacing the learner. Source references can record a digest, a column-name/type schema, and a versioned `EvidenceCapabilities` declaration; a missing declaration is not evidence that a source supports a request.
+An `Experiment` describes the analysis: its design, metrics, decision plan and requested views. A reader supplies the data; `run(experiment, reader)` returns the results. Saving the experiment saves the settings, not the data or a warehouse connection.
 
-Design mechanisms are a versioned set: an older reader refuses an unknown
-mechanism with `design.mechanism_unsupported` rather than guessing its
-semantics. New mechanisms are added in minor releases; existing mechanism
-contracts are not silently reinterpreted.
+Dataframe readers keep the rows present when the builder ran. Warehouse readers read current data on each call. Identical declarations do not establish an identical data snapshot; use [saved data or results](../reference/artifacts-and-replay.md) when replay must use the same input.
 
-Artifact readers retain `artifact.context.mismatch` for other invalid experiment
-declarations, including boolean values in integer fields.
+## Building and running
 
-Raw learner factories use exact object identity while bound in memory, so
-different closures, partials, or callable instances cannot be substituted for
-one another. Their registration identity is process-local, not a portable
-implementation/configuration identifier. Stable experiment hashes and portable
-exports refuse raw factories even when `implementation_refs` records their
-provenance. An `ImplementationRef` does not replace or reconstruct a raw
-factory; experiments containing one remain in-memory-only. They still
-deep-copy and pickle when the factory itself pickles, such as a module-level
-function or class; unpickle only data you trust.
+Each module builder returns an experiment and the reader that reads its
+source:
 
-`run(experiment, reader)` returns one `RunResult` for all declared supported
-views, sharing one physical evidence capture. `views=(view, ...)` selects
-declared views by their hashes; execution follows declaration order, not
-selection order. Empty, duplicate or undeclared selections refuse before reads.
-`result.readout(view)` returns the typed collection each executed view
-produced; see [reading results](reading-results.md).
+```python
+import increment
+import pandas as pd
 
-Declare the result views on the experiment with `with_views`; it returns a new
-experiment with the supplied views added, in order, after the ones already
-declared. A builder declares the overall view, so this experiment runs three
-views; adding a view that is already declared refuses with
-`kernel.request.invalid`. Every unit was exposed on 2025-01-01, so the frame
-holds that date in a constant `exposure_date` column, which daily views need:
+units = pd.DataFrame(
+    {
+        "user_id": range(40),
+        "variant": ["control"] * 20 + ["treatment"] * 20,
+        "revenue": [float(1 + index % 7) for index in range(40)],
+    }
+)
+
+experiment, reader = increment.from_frame(
+    units,
+    shape="summary",
+    unit="user_id",
+    group="variant",
+    control="control",
+    metrics={"revenue": "mean"},
+)
+saved = experiment.to_json()
+restored = increment.Experiment.from_json(saved)
+result = increment.run(restored, reader)
+print(increment.render(result, "brief"))
+```
+
+The declaration is immutable. Methods such as `with_views` return a new experiment. Portable declarations retain their canonical identity through JSON. A raw learner factory is usable in memory but cannot be exported or given a portable hash; recording an `ImplementationRef` does not make that factory portable.
+
+## Add result views
+
+A builder declares the overall view. Add daily lift and per-arm daily values with `with_views`; adding an already-declared view refuses with `kernel.request.invalid`. Daily views need each unit’s exposure date. Here every unit was exposed on the panel’s only day:
 
 ```python
 import pandas as pd
+
 import increment
 
-frame = pd.DataFrame(
+panel = pd.DataFrame(
     {
-        "unit": ["u1", "u2", "u3", "u4"],
-        "arm": ["control", "treatment", "control", "treatment"],
-        "day": ["2025-01-01"] * 4,
-        "exposed_on": ["2025-01-01"] * 4,
-        "value": [1.0, 2.0, 3.0, 4.0],
+        "user_id": range(40),
+        "variant": ["control"] * 20 + ["treatment"] * 20,
+        "event_day": [pd.Timestamp("2025-01-01")] * 40,
+        "revenue": [float(1 + index % 7) for index in range(40)],
     }
 )
 experiment, reader = increment.from_frame(
-    frame,
+    panel,
     shape="panel",
-    unit="unit",
-    group="arm",
-    date="day",
+    unit="user_id",
+    group="variant",
+    date="event_day",
+    exposure_date="event_day",
     control="control",
-    metrics={"value": "mean"},
-    exposure_date="exposed_on",
-    observation_end="2025-01-02",
+    metrics={"revenue": "mean"},
 )
-daily_lift = increment.View.daily()
+total = increment.View.overall()
+daily = increment.View.daily()
 daily_values = increment.View.daily(values=True)
-experiment = experiment.with_views(daily_lift, daily_values)
+experiment = experiment.with_views(daily, daily_values)  # The builder declared `total`.
+combined = increment.run(experiment, reader)  # One capture, all three views.
+only_daily = increment.run(experiment, reader, views=(daily,))
 ```
 
-`values=True` requests per-arm descriptive values for daily or as-of views.
-Without it, those views request lift. Values and lift at the same time
-coordinates are separate views; the default lift view keeps its existing
-canonical identity. Overall, breakout and switchback views do not support values.
-If an in-memory learner configuration cannot be serialized, `RunResult`
-remains usable in memory, while storing or serializing it refuses with
-`wire.procedure.runtime_method`.
+`values=True` requests descriptive per-arm values on daily or as-of views. Overall, breakout and switchback views do not support it. Select declared views with `run(..., views=(...))`; execution follows declaration order. Empty, duplicate or undeclared selections refuse before reading data.
 
-`Experiment.compile()` returns one run-wide `EvidenceScope` inventory and one `AnalysisRequest` for each selected view. Both contain the declared metrics, with any breakout or switchback view's metric selection applied. Each request retains its view, registration hash, and source-reference name.
+Selected views share one capture, but combining them cannot supply missing time, breakout or cluster information. Whole-window overall views are evaluated against the decision plan; daily, as-of, breakout, compliance-only and exploratory cells do not decide the overall experiment. Read each collection with `result.readout(view)`.
 
-`runnable(experiment, metric)` is an offline preflight. It does not open a source. If a source has no recorded capabilities, the returned estimator entries name those capabilities as `unknown`; known data-dependent conditions such as usable denominators and sample floors remain deferred until execution. Its `static_refusals` contain only known incompatibilities.
+## Save and reopen results
 
-An unknown source declaration does not erase refusals already established by
-another source. Alternative evidence routes include their count and named
-covariate requirements. For switchback experiments, `switchback.contrast`
-identifies the supported contrast procedure; arm estimators refuse with
-`readout.contrast.override`.
+Pass `results_store=` to save a run and `decision_log=` to record its final
+family decisions; either may be used alone, and `run_id=` names the run (an ID
+is generated when it is omitted, and an empty ID refuses with
+`store.run.identity_incomplete` before any data is read). Both are checked
+against the experiment's registration before any data is read, and a refused
+run writes nothing: methods without a portable implementation reference refuse
+with `wire.procedure.runtime_method`, and a registration that differs from the
+analysis plan or readout options that change registered decisions or omit
+registered metrics with `store.decision.reference_invalid`.
+A switchback contrast run saves with `results_store=` alone: its cells,
+metadata and method identities are available to `handle.envelope()`,
+`store.query` and `store.history`, but it keeps no decision plan, so
+`decision_log=` refuses with `wire.procedure.contrast_context` and
+`RunResult.from_handle` refuses it with `store.decision.reference_invalid`.
+Saving a live raw-set confidence set refuses with
+`wire.result.raw_outcomes_unavailable`; it remains available in memory. A saved
+run reopens with its registration, which must match the one it was saved
+under:
 
-Builder specifications retain the compiled plan, metric configurations,
-cluster and trigger declarations, and the bound operations' accepted arguments.
-Readout operations are selected through the declared views: daily values and
-daily lift are separate views even when they share time coordinates, and have
-different compatibility requirements. Preflight is conservative and sound rather than complete: it reports
-known static refusals using the execution refusal code, but does not estimate
-data-dependent conditions or guarantee that an unrefused request will execute.
+```python
+from tempfile import TemporaryDirectory
 
+import increment
+from increment.store import ParquetResultsStore
 
-The analysis specification identity includes the effective readout operation for
-each view and saved request options, including priors and estimands. Omitting
-an operation and explicitly selecting its default have the same specification
-identity. These declarations also contribute to the execution identity; they
-do not change evidence identities.
+with TemporaryDirectory() as directory:
+    store = ParquetResultsStore(directory)
+    saved = increment.run(experiment, reader, results_store=store)
+    handle = store.open_run(saved.run.experiment_id, saved.run.analysis_spec_hash, saved.run.run_id)
+    reopened = increment.RunResult.from_handle(handle, registration=experiment.registration)
+assert reopened.cells == saved.cells
+assert reopened.decisions == saved.decisions
+```
 
-Preflight restores saved request options and checks known metric selection and
-configuration overrides, including an explicit `prior=None` that clears a
-declared prior. It cannot run every execution validator offline, so some
-configuration checks may first appear during execution. Daily and as-of values
-use descriptive validation, without restrictions that apply only to lift or
-causal inference. A registered as-of lift projects the current finalized
-checkpoint, so it requires sequential history rather than separately retained
-as-of moments.
-
-Estimator selection retains declared method settings such as conversion
-inference and CUPED covariates where available; multicovariate CUPED requires
-its covariate configuration. Switchback views require a switchback experiment.
-Switchback requests reject arm-only arguments and role or prior overrides with
-the same checks as execution.
-`capture` is an execution step, not a saved request option. To capture or adopt
-a sequential checkpoint, call
-`increment.workflows.capture_sequential(experiment, reader, ...)` with the
-pair returned by a module builder, then run the experiment. Pass an `as_of`
-horizon when required by the source. `run(experiment, reader,
-capture=SequentialCaptureRequest(...))` instead takes the capture inside the
-run's own shared evidence capture, before any view reads.
-Specifications containing `capture` refuse with
-`kernel.request.capture_not_supported`. Population is declared on a view
-constructor, such as `View.daily(population=...)`; a request option named
-`population` refuses with
-`kernel.request.population_scope_only`, as does a `run(population=...)` that
-differs from a selected view's population.
-
-`run(experiment, reader)` and every function that reads data accept only the
-`ExperimentReader` a module builder returns with the experiment; anything else
-refuses with `kernel.run.reader_required`, whose context names the type that
-was passed. A custom evidence provider is verified, not run, with
-`increment.evidence.BoundResolver`; see the
-[provider guide](../development/adding-an-estimator.md#custom-evidence-providers).
-`run` verifies the reader's source declarations before reading.
-
-A closed reader stays closed: after `close()` or the end of a `with` block,
-every read refuses with `kernel.run.reader_closed`; build a new reader with the
-same builder to read again. A reader that `from_definitions(path)` restores from
-the offline catalog cannot read and refuses with `kernel.run.reader_offline`;
-build it with a connection to run. `repr(reader)` names the experiment, how the
-reader reads and whether it is closed, without reading data.
-
-The specification format describes declarations; it does not itself open a warehouse or infer a source snapshot. Reproducible execution still requires the reader and execution context to establish the actual snapshot identity.
-
-An experiment's identity and its source digests cover declarations, not rows,
-so readers built with identical declarations are interchangeable: `run`
-accepts any of them with the experiment and reads whatever rows that reader
-holds. A dataframe reader keeps the rows its frame held when the builder ran;
-a warehouse reader reads live on every call.
+A reopened result recomputes its decisions from the saved cells; live readouts
+are not saved, so its `live_rows` holds `None` for every cell.
 
 ## Save selected segments with the complete decision
 
@@ -218,417 +186,30 @@ identity; `RunResult.from_handle` restores them for decisions, frames and
 reports without a reader. Selecting a metric does not bypass its existing
 breakout compatibility checks.
 
-## Building and running
+## Check a saved declaration before reading data
 
-Each module builder returns an experiment and the reader that reads its
-source:
-
-```python
-import increment
-import pandas as pd
-
-units = pd.DataFrame(
-    {
-        "user_id": range(40),
-        "variant": ["control"] * 20 + ["treatment"] * 20,
-        "revenue": [float(1 + index % 7) for index in range(40)],
-    }
-)
-
-experiment, reader = increment.from_frame(
-    units,
-    shape="summary",
-    unit="user_id",
-    group="variant",
-    control="control",
-    metrics={"revenue": "mean"},
-)
-saved = experiment.to_json()
-restored = increment.Experiment.from_json(saved)
-result = increment.run(restored, reader)
-print(increment.render(result, "brief"))
-```
-
-For a panel-backed sequential definition, capture through the builder's pair
-before running. Supply an `as_of` horizon when required by the source:
-
-```python
-import polars as pl
-
-import increment
-from increment.workflows import capture_sequential
-
-panel = pl.DataFrame(
-    {
-        "user_id": [f"u{index}" for index in range(8)],
-        "variant": ["control"] * 4 + ["treatment"] * 4,
-        "day": [1] * 8,
-        "enrolled_on": [1] * 8,
-        "revenue": [float(index + 1) for index in range(8)],
-    }
-)
-experiment, reader = increment.from_frame(
-    panel,
-    shape="panel",
-    unit="user_id",
-    group="variant",
-    date="day",
-    exposure_date="enrolled_on",
-    design=increment.Randomized(
-        control_group="control",
-        allocation={"control": 0.5, "treatment": 0.5},
-        allocation_scheme="independent",
-    ),
-    metrics=[increment.MetricSpec(name="revenue", type="mean", window_days=1)],
-    observation_end=2,
-    plan=increment.AnalysisPlan(
-        primary="revenue",
-        inference=increment.InferenceSpec(kind="asymptotic_mean"),
-    ),
-)
-capture_sequential(experiment, reader, finalized=True, as_of=1)
-result = increment.run(experiment, reader)
-```
-
-`from_frame` requires `shape="summary"` or `shape="panel"`. Each shape has
-its own typed options. A summary accepts `intervention_grain="unit"` or
-`"cluster"`; a panel requires `date` and accepts `observation_end`. Both accept
-`unit`, `group`, `metrics`, `control` or `design`, `plan`, `uptake`,
-`exposure_date`, `breakouts`, `cluster`, and `on_unassigned`.
-`control` and `design` are alternative ways to declare the comparison.
-
-The definitions call is path-first:
-`from_definitions(definitions_path, con=None, *, experiment_name=None,
-backend=None, store="auto", on_mixed_assignment="error",
-source_snapshot_evidence=None)`. Omit `experiment_name` only when the definitions
-or offline catalog contain exactly one experiment. Binding with a connection
-writes a versioned catalog beside the definitions: `.increment-kernel-catalog.json`
-inside a definitions directory, or `<file>.kernel.json` next to a single
-definitions file, and a lock file with `.lock` appended to that name, which
-serializes catalog updates and stays in place. Both are generated. A
-no-connection call reads that catalog and refuses when it is
-missing or stale. An offline specification can be inspected with `runnable`,
-but needs a connection-bound reader to execute.
-
-The other source builders expose only the options their data support:
-
-<!-- skip: next "requires a published artifact, exported moments, and a switchback frame" -->
-```python
-import increment
-
-artifact_experiment, artifact_reader = increment.from_unit_day_artifact(
-    artifact_store,
-    artifact_ref,
-    expected_context=artifact_context,
-    verification="lazy_digest",
-)
-moments_experiment, moments_reader = increment.from_moments(
-    moment_rows,
-    metrics={"revenue": "mean"},
-    control="control",
-    experiment_id="checkout_redesign",
-)
-switchback_experiment, switchback_reader = increment.from_switchback_frame(
-    switchback_rows,
-    unit="user_id",
-    cycle="cycle",
-    period="period",
-    step="step",
-    group="variant",
-    metrics={"revenue": "mean"},
-    identification=randomized_design,
-    assignment=switchback_assignment,
-    contrast_references=contrast_references,
-)
-```
-
-Every builder returns an experiment declaration and a reader for reading its
-source. Saving and loading the declaration preserves
-its hash; it does not serialize the data or a warehouse connection. Column types
-recorded for a source are saved with the declaration (`SourceReference.schema`), and
-`experiment.provides()` lists the recorded columns, but the types are not part of its
-`hash()` or `analysis_spec_hash`. `hash(experiment)` agrees with
-`==`, so equal experiments are one dictionary key; `experiment.hash()` can still
-differ between declarations that compare equal, such as `Fraction(1, 2)` and
-`0.5`.
-
-Use the reader as a context manager when it owns temporary warehouse tables or
-an opened artifact snapshot. Exiting the block releases those resources; it
-does not close the warehouse connection you supplied:
-
-```python
-from pathlib import Path
-from tempfile import TemporaryDirectory
-
-import ibis
-import pyarrow as pa
-
-import increment
-
-rows = [
-    {
-        "user_id": f"u{index}",
-        "group_id": "control" if index < 4 else "treatment",
-        "experiment_id": "demo",
-        "ts": f"2025-01-01 12:{event:02}:00",
-        "event": kind,
-        "revenue": float(index + 1) if kind == "purchase" else None,
-    }
-    for index in range(8)
-    for event, kind in ((0, "page_view"), (1, "purchase"))
-]
-con = ibis.duckdb.connect()
-con.create_table("demo_events", pa.Table.from_pylist(rows))
-
-with TemporaryDirectory() as definitions:
-    Path(definitions, "demo.yaml").write_text(
-        """\
-dialect: duckdb
-fact_sources:
-  - name: demo_events
-    sql: SELECT * FROM demo_events
-    timestamp_column: ts
-    entities: [user_id]
-    facts:
-      - {name: page_view, column: null}
-      - {name: purchase, column: revenue}
-exposures:
-  - {name: enrolled, fact: page_view}
-metrics:
-  - {name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 1}
-experiments:
-  - name: demo
-    exposure: enrolled
-    unit: user_id
-    start: 2025-01-01
-    end: 2025-01-01
-    observation_end: 2025-01-02
-    control_group: control
-    plan: {primary: revenue}
-""",
-        encoding="utf-8",
-    )
-    experiment, reader = increment.from_definitions(
-        definitions, con, experiment_name="demo", store="always"
-    )
-    with reader:
-        result = increment.run(experiment, reader)
-assert result
-assert con.raw_sql("SELECT 1").fetchone()[0] == 1
-con.disconnect()
-```
-
-An offline definitions reader can inspect a saved specification, but it has
-no warehouse connection and cannot run it. Connect to the warehouse and build
-the reader again when you are ready to run.
-
-A built-in reader executes selected overall, daily, as-of, breakout
-or switchback views using each view's declared metric selection and
-population. It validates every selected operation before opening the shared
-capture. Existing source limitations still apply: combining views does not
-create temporal, breakout, raw-outcome or clustering evidence.
-Whole-window overall views, including the switchback contrast view, are evaluated
-against the registered decision plan once per result. Daily, as-of, breakout,
-compliance-only and exploratory-metric cells retain their own view and role and
-receive `not_evaluated` verdicts. Cells, effects and any live confidence-set rows
-stay aligned in one flat result with one run ID. Changed designs, decision
-plans, metric definitions or unsupported view coordinates refuse with
-`kernel.run.execution_unavailable`, before reading evidence. When the experiment
-is not the one the reader was built for, its `field` context names the first
-declaration that differs (`experiment_id`, `design`, `registration`,
-`analysis_context` or `metrics`) and `reader_experiment_id` names the reader's
-experiment. Source names, URIs, recorded digests, and capabilities must identify
-the bound source; otherwise the read refuses with `kernel.provider.digest_mismatch`
-or `kernel.provider.capability_mismatch`.
-`run` accepts readout options as keywords:
-`decision_method`, `sensitivity_methods`, `prior`, `metrics`, `estimands`,
-`value_scale`, `exploratory_metrics`, `population` and `coherence`. Only the
-options you pass apply, so `prior=None` removes the registered prior while an
-omitted `prior` keeps it. A `population` must match every selected view;
-declare a different population with the matching view constructor, such as
-`View.daily(population=...)`.
-`result.readout(view)` returns the `LiftEstimates`, `ContrastResults` or
-other typed collection one view produced.
-
-For example, a unit panel that names each unit's exposure date with
-`exposure_date=` supports daily views, so it can declare whole-window and daily
-views together. Here every unit was exposed on the panel's one day:
-
-```python
-import pandas as pd
-
-import increment
-
-panel = pd.DataFrame(
-    {
-        "user_id": range(40),
-        "variant": ["control"] * 20 + ["treatment"] * 20,
-        "event_day": [pd.Timestamp("2025-01-01")] * 40,
-        "revenue": [float(1 + index % 7) for index in range(40)],
-    }
-)
-experiment, reader = increment.from_frame(
-    panel,
-    shape="panel",
-    unit="user_id",
-    group="variant",
-    date="event_day",
-    exposure_date="event_day",
-    control="control",
-    metrics={"revenue": "mean"},
-)
-total = increment.View.overall()
-daily = increment.View.daily()
-experiment = experiment.with_views(daily)  # The builder declared `total`.
-combined = increment.run(experiment, reader)  # One capture, both views.
-only_daily = increment.run(experiment, reader, views=(daily,))
-```
-
-Pass `results_store=` to save a run and `decision_log=` to record its final
-family decisions; either may be used alone, and `run_id=` names the run (an ID
-is generated when it is omitted, and an empty ID refuses with
-`store.run.identity_incomplete` before any data is read). Both are checked
-against the experiment's registration before any data is read, and a refused
-run writes nothing: methods without a portable implementation reference refuse
-with `wire.procedure.runtime_method`, and a registration that differs from the
-analysis plan or readout options that change registered decisions or omit
-registered metrics with `store.decision.reference_invalid`.
-A switchback contrast run saves with `results_store=` alone: its cells,
-metadata and method identities are available to `handle.envelope()`,
-`store.query` and `store.history`, but it keeps no decision plan, so
-`decision_log=` refuses with `wire.procedure.contrast_context` and
-`RunResult.from_handle` refuses it with `store.decision.reference_invalid`.
-Saving a live raw-set confidence set refuses with
-`wire.result.raw_outcomes_unavailable`; it remains available in memory. A saved
-run reopens with its registration, which must match the one it was saved
-under:
-
-```python
-from tempfile import TemporaryDirectory
-
-import increment
-from increment.store import ParquetResultsStore
-
-with TemporaryDirectory() as directory:
-    store = ParquetResultsStore(directory)
-    saved = increment.run(experiment, reader, results_store=store)
-    handle = store.open_run(saved.run.experiment_id, saved.run.analysis_spec_hash, saved.run.run_id)
-    reopened = increment.RunResult.from_handle(handle, registration=experiment.registration)
-assert reopened.cells == saved.cells
-assert reopened.decisions == saved.decisions
-```
-
-A reopened result recomputes its decisions from the saved cells; live readouts
-are not saved, so its `live_rows` holds `None` for every cell.
-
-Definitions-backed `run(experiment, reader, exploratory_metrics=...)` also shares one
-physical capture across declared and exploratory families. Each family retains
-the horizon of its original standalone declaration, including unselected
-declared metrics needed to determine a running calendar-day horizon. Such
-capture-only dependencies do not become authorized readout metrics. Request-
-and evidence-bound `source_snapshot_id` values remain distinct when appropriate;
-the shared physical capture is recorded separately in `metadata.captures`.
-No source snapshot hash or wire-format version changes.
-
-Connected definitions builders record dtypes lazily from the selected input
-relations during the first execution, then refresh their offline catalog.
-Recording them does not change the experiment's identity: the connected and
-offline experiments share one `hash()` and `analysis_spec_hash` before and after
-that first execution.
-Construction performs no additional schema query. The definitions builder takes
-the path first and the experiment name as the `experiment_name=` keyword.
-Catalog refreshes retain the definitions digest from the original bind. The
-digest covers the parsed definitions, so comment and whitespace edits do not
-change it. After any other change to those files, `run(experiment, reader)`
-and every function that reads data through the reader refuse with
-`kernel.definitions.catalog_stale` before reading anything; rebind the
-definitions with a connection to continue.
-Catalog updates lock the complete read-merge-replace operation, so concurrent
-bindings or schema refreshes retain each experiment's entry.
-
-The catalog records each loader's `declaration_identity()` digest alongside its
-schema and capabilities. A connected reader recomputes that declaration digest
-before every read and refuses a changed or unavailable recorded digest with
-`kernel.provider.digest_mismatch`. It does not hash live rows: snapshot and
-content digests belong to the runtime evidence, not the saved specification.
-
-Use `runnable` when a caller needs the static refusal codes, and inspect all
-three `Runnable` fields rather than treating unknown requirements as supported:
+`runnable` checks known compatibility without opening a source. Inspect all three fields: unknown requirements do not cancel known refusals, and no static refusal is not a guarantee that the data will be usable. Denominators and sample floors still need execution.
 
 ```python
 import increment
 
 status = increment.runnable(experiment, "revenue")["randomized.unadjusted"]
-if status.unknown:
-    print("not established offline:", status.unknown)
-elif status.static_refusals:
-    print("cannot run:", [error.code for error in status.static_refusals])
-else:
-    print("checks still deferred:", status.deferred_checks)
+print("cannot run:", [error.code for error in status.static_refusals])
+print("not established offline:", status.unknown)
+print("checks deferred until execution:", status.deferred_checks)
 ```
 
-`ResultCell` preserves one cell's identity and outcome in a stored run;
-`Decisions` records the verdicts computed from those cells. The top-level
-`run(experiment, reader)` returns a `RunResult` containing cells and decisions;
-`result.readout(view)` returns each view's estimate collection.
+Calling `from_definitions(path)` without a connection reads a previously generated catalog. It can support offline inspection, not execution. Rebind with a warehouse connection to run, or after changing the parsed definitions. Comment and whitespace edits do not invalidate the catalog.
 
-## Frozen-capture construction coverage
+## Reader lifetime and replay details
 
-The specification round-trip tests enumerate the frozen capture's own
-scenario/constructor inventory, including its as-of variants. In-memory definitions
-are written through the public definitions constructor; explicitly registered
-segment families are retained in the serialized inference declaration rather
-than replaced with an automatic, unsegmented registration.
+Use a reader as a context manager when it owns TEMP tables or an artifact snapshot. Exiting `with reader:` releases those resources without closing a warehouse connection you supplied. A closed reader cannot reopen; build another. Closing an artifact reader does not delete its published data.
 
-An absent constructor is not a failed round-trip: it is not declared
-for that captured scenario. A constructor refusal also produces no `Experiment`.
-Both outcomes are recorded with their reason or refusal code. Among the
-analysis-construction scenarios, `edge-nonfinite-ratio-denominator` has no
-successful captured constructor: its unit-summary input refuses with
-`source.frame.non_finite`, and the other constructor routes are absent.
+- [Identity, view selection and reader matching](../reference/artifacts-and-replay.md#experiment-identity).
+- [Builder options and offline catalogs](../reference/artifacts-and-replay.md#builder-options-and-offline-catalogs).
+- [Sequential capture and continuation](sequential-inference.md): capture is an execution step, not a saved request option.
+- [Saved-format versions and migration](../reference/saved-formats.md).
 
-The following frozen scenarios are isolated refusal probes, not analysis
-constructions. They supply invalid arm statistics, compatibility requests or
-contrast objects directly to the owning statistical function; there is no
-builder-produced specification to serialize:
+<span id="frozen-capture-construction-coverage"></span>
 
-- `allocation.alpha.underflow`
-- `arm.adjustment.cluster_cuped`, `arm.adjustment.cluster_prior`,
-  `arm.adjustment.sequential_prior`
-- `arm.baseline.cluster_size_required`, `arm.baseline.compliance_undeclared`,
-  `arm.baseline.iid_cluster_knobs`
-- `arm.inference.cluster`
-- `arm.metric.quantile_cluster`, `arm.metric.quantile_cuped`,
-  `arm.metric.quantile_sequential`
-- `compatibility.support_unsupported`
-- `contrast.decision`, `contrast.inference`, `contrast.metric`
-- `estimation.engine.arm.duplicate_rows`, `estimation.engine.arm.invalid_count`
-- `estimation.engine.carries_format_moments`,
-  `estimation.engine.carries_unsupported_weighted`
-- `estimation.engine.cluster.denominator`, `estimation.engine.control_group_found`
-- `estimation.engine.cuped_linear_cluster`,
-  `estimation.engine.cuped_linear_encouragement`,
-  `estimation.engine.cuped_linear_observational`,
-  `estimation.engine.cuped_linear_sequential`,
-  `estimation.engine.cuped_linear_unit_evidence`,
-  `estimation.engine.cuped_linear_winsorization`
-- `estimation.engine.group_summary_missing`, `estimation.engine.group_summary_row`
-- `estimation.engine.method_name_observational`,
-  `estimation.engine.method_names_unique`, `estimation.engine.metric_found_group`
-- `estimation.engine.ratio.cuped`, `estimation.engine.ratio.negative_variance`
-- `estimation.engine.winsorization_metadata_differs`,
-  `estimation.engine.winsorization_metadata_present`
-- `estimation.engine.x_role_declared`
-
-The remaining non-construction probes exercise planning-only admission
-coordinates, rather than experiment declarations:
-
-| Frozen scenario | Why no builder specification exists |
-| --- | --- |
-| `compatibility.denominator` | Only the private conservative-ratio helper accepts an arbitrary denominator; public plans derive it from validated inputs. |
-| `compatibility.multiplier` | Only that private helper accepts an arbitrary multiplier; public plans derive it from validated inputs. |
-| `arm.adjustment.sequential_cuped` | The public power planner rejects always-valid inference before this admission point, and admits CUPED under asymptotic inference. |
-| `arm.baseline.absorption_undeclared` | The public sample-size planner derives factor absorption from nonzero baseline ICC before admission. |
-| `arm.baseline.triggering_undeclared` | It derives the triggered population from the baseline trigger rate before admission. |
-| `arm.baseline.cuped_undeclared` | It derives the CUPED method from the baseline correlation before admission. |
-| `arm.metric.unsupported` | Validated planning-procedure metric capabilities exclude the probe's unsupported metric shape before admission. |
+[Specification round-trip coverage](../reference/artifacts-and-replay.md#frozen-capture-construction-coverage) distinguishes captured analysis constructions from refusal-only probes.

@@ -71,7 +71,7 @@ nav:
       - Reading Results: guides/reading-results.md
       - Which Method Should I Use?: guides/choose-a-method.md
       - Refusal Navigation: guides/refusals.md
-      - Data Model & YAML Definitions: guides/data-model.md
+      - Warehouse Analysis: guides/data-model.md
       - Experiment Specifications: guides/experiment-specifications.md
       - Metric Types: guides/metric-types.md
       - CUPED: guides/cuped.md
@@ -95,6 +95,8 @@ nav:
       - Error Codes: reference/error-codes.md
       - Method Compatibility Reference: guides/compatibility.md
       - Result Fields: reference/result-fields.md
+      - Warehouse Definitions: reference/warehouse-definitions.md
+      - Saved Data and Replay: reference/artifacts-and-replay.md
       - Saved Formats: reference/saved-formats.md
   - Development:
       - Extending Estimators and Evidence: development/adding-an-estimator.md
