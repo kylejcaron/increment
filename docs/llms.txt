@@ -14,6 +14,8 @@ separate event store.
 
 - [README](https://raw.githubusercontent.com/kylejcaron/increment/main/README.md): Project overview and installation.
 - [Quickstart](https://getincrement.io/docs/guides/quickstart/): Analyze A/B tests from Python dataframes.
+- [Reading results](https://getincrement.io/docs/guides/reading-results/): Interpret effects, uncertainty, missing evidence and the experiment decision.
+- [Result fields](https://getincrement.io/docs/reference/result-fields/): Exact result fields, confidence sets, unavailable reasons and export behavior.
 - [Method selection](https://getincrement.io/docs/guides/choose-a-method/): Choose a design and estimator from the treatment process and analysis goal.
 - [Data model](https://getincrement.io/docs/guides/data-model/): Declare warehouse sources, exposures, metrics, and experiments.
 - [Observational causal inference](https://getincrement.io/docs/guides/observational/): Use IPTW, DML, and AIPW with explicit causal assumptions.

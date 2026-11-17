@@ -1372,61 +1372,61 @@ warehouse.
 
 ## The math
 
-    The coefficient minimizes the variance of the additive contrast
-    $\hat\mu_t - \hat\mu_c$ when the group moments are treated as known. For
-    independent groups, that variance is
+The coefficient minimizes the variance of the additive contrast
+$\hat\mu_t - \hat\mu_c$ when the group moments are treated as known. For
+independent groups, that variance is
 
-    $$
-    \sum_a [\operatorname{Var}(Y_a) - 2\theta\operatorname{Cov}(Y_a, X_a) + \theta^2\operatorname{Var}(X_a)]/n_a
-    $$
+$$
+\sum_a [\operatorname{Var}(Y_a) - 2\theta\operatorname{Cov}(Y_a, X_a) + \theta^2\operatorname{Var}(X_a)]/n_a
+$$
 
-    A pooled regression slope weights the same moments by $n_a - 1$,
-    targeting a different quantity. With unequal allocation and different
-    group slopes, it can be worse than no adjustment; this allocation-aware
-    weighting addresses that case. The two coefficients agree with equal
-    allocation or matching within-group slopes. Fitting a separate $\theta$
-    for each group would reintroduce bias.
+A pooled regression slope weights the same moments by $n_a - 1$,
+targeting a different quantity. With unequal allocation and different
+group slopes, it can be worse than no adjustment; this allocation-aware
+weighting addresses that case. The two coefficients agree with equal
+allocation or matching within-group slopes. Fitting a separate $\theta$
+for each group would reintroduce bias.
 
-    When $X$ is independent of assignment, as a value measured before
-    randomization is, adjustment preserves the target difference. That is an
-    assumption about how the covariate was built for each arm: a covariate
-    that depends on the arm shifts the adjusted difference by
-    $-\theta\,(\mathbb{E}[\bar{X}_t] - \mathbb{E}[\bar{X}_c])$, a bias that does
-    not shrink with sample size, and each fixed-horizon CUPED cell
-    [tests it](#when-cuped-misleads-a-covariate-that-differs-by-arm). When both
-    groups share a slope, the approximate variance-reduction factor is:
+When $X$ is independent of assignment, as a value measured before
+randomization is, adjustment preserves the target difference. That is an
+assumption about how the covariate was built for each arm: a covariate
+that depends on the arm shifts the adjusted difference by
+$-\theta\,(\mathbb{E}[\bar{X}_t] - \mathbb{E}[\bar{X}_c])$, a bias that does
+not shrink with sample size, and each fixed-horizon CUPED cell
+[tests it](#when-cuped-misleads-a-covariate-that-differs-by-arm). When both
+groups share a slope, the approximate variance-reduction factor is:
 
-    $$
-    1 - \rho^2, \qquad \rho = \operatorname{Corr}(Y, X)
-    $$
+$$
+1 - \rho^2, \qquad \rho = \operatorname{Corr}(Y, X)
+$$
 
-    A correlation of $\rho = 0.7$ roughly halves the variance.
-    The corresponding interval-width factor is $\sqrt{1 - \rho^2}$.
+A correlation of $\rho = 0.7$ roughly halves the variance.
+The corresponding interval-width factor is $\sqrt{1 - \rho^2}$.
 
-    !!! note "A planning approximation, not the interval calculation"
-        The $(1 - \rho^2)$ factor helps plan an experiment. Reported intervals
-        use each group's adjusted mean and full quadratic variance calculation,
-        not this correlation shortcut.
+!!! note "A planning approximation, not the interval calculation"
+    The $(1 - \rho^2)$ factor helps plan an experiment. Reported intervals
+    use each group's adjusted mean and full quadratic variance calculation,
+    not this correlation shortcut.
 
-    !!! note "What the interval assumes"
-        $\theta$ targets the additive contrast, not relative lift.
-        Relative lift is nonlinear, and its log-scale standard error accounts
-        for the shared pooled mean $\bar{X}$. That mean cancels in a
-        difference but not in a ratio, so the adjusted group means cannot
-        be treated as independent; its variance optimum differs, and
-        different group slopes or means make widening more likely.
+!!! note "What the interval assumes"
+    $\theta$ targets the additive contrast, not relative lift.
+    Relative lift is nonlinear, and its log-scale standard error accounts
+    for the shared pooled mean $\bar{X}$. That mean cancels in a
+    difference but not in a ratio, so the adjusted group means cannot
+    be treated as independent; its variance optimum differs, and
+    different group slopes or means make widening more likely.
 
-        The interval calculation treats the fitted $\theta$ as fixed.
-        Its guarantee is therefore asymptotic; there is no finite-sample
-        guarantee that fitting the adjustment cannot widen an interval. A
-        fixed slope with a valid pre-period covariate is unbiased; a slope
-        fitted from the same outcomes can correlate with the sample's
-        covariate imbalance, a finite-sample bias that vanishes
-        asymptotically under the usual regularity conditions.
+    The interval calculation treats the fitted $\theta$ as fixed.
+    Its guarantee is therefore asymptotic; there is no finite-sample
+    guarantee that fitting the adjustment cannot widen an interval. A
+    fixed slope with a valid pre-period covariate is unbiased; a slope
+    fitted from the same outcomes can correlate with the sample's
+    covariate imbalance, a finite-sample bias that vanishes
+    asymptotically under the usual regularity conditions.
 
-    See the [API reference](../api.md) for `MetricSpec` and `Method`. Planning
-    an experiment around an expected $\rho$ is covered in the
-    [power analysis guide](power-analysis.md).
+See the [API reference](../api.md) for `MetricSpec` and `Method`. Planning
+an experiment around an expected $\rho$ is covered in the
+[power analysis guide](power-analysis.md).
 
 ## Next step
 

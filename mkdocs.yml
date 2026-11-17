@@ -72,6 +72,7 @@ nav:
       - Which Method Should I Use?: guides/choose-a-method.md
       - Refusal Navigation: guides/refusals.md
       - Data Model & YAML Definitions: guides/data-model.md
+      - Experiment Specifications: guides/experiment-specifications.md
       - Metric Types: guides/metric-types.md
       - CUPED: guides/cuped.md
       - Switchback Contrasts: guides/switchback.md
@@ -93,9 +94,11 @@ nav:
       - Capabilities by Entry Point: reference/capabilities-by-entry-point.md
       - Error Codes: reference/error-codes.md
       - Method Compatibility Reference: guides/compatibility.md
+      - Result Fields: reference/result-fields.md
       - Saved Formats: reference/saved-formats.md
   - Development:
       - Extending Estimators and Evidence: development/adding-an-estimator.md
+      - Retained State: development/retained-state.md
   - API Reference: api.md
   - Examples:
       - DataFrame Analysis Tutorial: examples/analysis_from_a_dataframe.md

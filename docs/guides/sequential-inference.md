@@ -344,7 +344,7 @@ one to express lift. Endpoints can be unbounded, and sets can be full or empty.
 A missing relative point estimate does not erase the confidence set. The
 `sequential_lower` and `sequential_upper` frame columns hold those endpoints on
 the lift scale (ratio minus one), rounded outward to numeric floats or nulls;
-see [Reading results](reading-results.md#sequential-inference-two-coordinate-systems).
+see [Result fields](../reference/result-fields.md#sequential-inference-two-coordinate-systems).
 On exact Bernoulli (`always_valid`) rows, `sequential_log_e` is the log e-value as a float,
 so it stays usable where the e-value itself would overflow; `sequential_alpha`
 is the decision alpha as a float, and the exact fractions stay on
@@ -524,7 +524,7 @@ side, every guardrail result is available and certified, and assignment
 integrity is qualified. A primary that rejects on its adverse side blocks with
 `decision.primary.adverse`, and a guardrail that is not certified blocks with
 `decision.guardrail.not_certified` (see
-[Program verdict](reading-results.md#program-verdict)). The test is one-sided,
+[Program verdict](../reference/result-fields.md#program-verdict)). The test is one-sided,
 so a guardrail that is not certified is not a finding of harm. A caller using
 only the per-row verdicts must apply the compound "ship only if every guardrail
 is certified" rule. Reading several guardrail verdicts without applying that

@@ -16,6 +16,12 @@ are in `increment.power`.
 
 ::: increment.RunResult
 
+`increment.runnable(experiment, metric)` returns a `Runnable` for each method.
+Its `static_refusals` are known incompatibilities, `deferred_checks` need data,
+and `unknown` requirements cannot be established offline. No static refusal
+is not a promise that execution will succeed; see
+[checking an experiment](guides/experiment-specifications.md).
+
 ::: increment.estimators.MetricTrends
 
 ::: increment.Definitions
@@ -1025,7 +1031,7 @@ values.
   a flagged segment selected by its BH family still reported
   `stat_sig() == False` and was called inconclusive. Its interpretation line
   now ends with a low-reliability caveat, and
-  [Reading results](guides/reading-results.md#small-segments-are-flagged-not-withheld)
+  [Result fields](reference/result-fields.md#small-segments-are-flagged-not-withheld)
   states it. A fixed-horizon Bonferroni breakout divides each metric's alpha
   by its (treatment arm, segment) cells estimable by their arm counts under
   its decision method, so a sensitivity method never changes it, and its
@@ -1466,7 +1472,7 @@ values.
   (`favorable`, `adverse`, `not_established`, `unspecified`, or `None` when the
   cell does not reject), result rows gain `rejection_side()`, and sequential
   rows now carry the metric's `preferred_direction`; see
-  [Program verdict](guides/reading-results.md#program-verdict). Estimates,
+  [Program verdict](reference/result-fields.md#program-verdict). Estimates,
   intervals, p-values and `stat_sig()` are unchanged. The decision plan bound
   to a run now records each metric's favorable side, so an experiment that
   declares a direction or uses a one-sided plan changes its `to_json()`,
@@ -2456,6 +2462,10 @@ sequential plans refuse with `facade.analysis.exploratory_metrics_sequential`.
 ::: increment.Metric
 
 ::: increment.Method
+
+`MethodSpec` is the serializable method declaration, including CUPED inputs.
+
+::: increment.MethodSpec
 
 ::: increment.estimators.MixturePrior
 
