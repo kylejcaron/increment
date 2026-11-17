@@ -1939,13 +1939,19 @@ def _readout_envelope_rows(data: Any) -> Any:
     from importlib import import_module
 
     envelope_module = import_module("increment.result_envelope")
-    if isinstance(data, import_module("increment._run").RunResult):
+    RunResult = import_module("increment._run").RunResult
+    if isinstance(data, RunResult):
         return _EnvelopeReadoutRows(
             envelope_module.result_rows(data.cells, data.live_rows), data.metadata, data.cells
         )
-    if not isinstance(data, envelope_module.AnalysisEnvelope):
-        return data
-    return _EnvelopeReadoutRows(envelope_module.result_rows(data.cells), data.metadata, data.cells)
+    if isinstance(data, envelope_module.AnalysisEnvelope):
+        return _EnvelopeReadoutRows(
+            envelope_module.result_rows(data.cells), data.metadata, data.cells
+        )
+    persisted_cells = getattr(data, "_persisted_cells", None)
+    if persisted_cells is not None:
+        return _EnvelopeReadoutRows(data, data.metadata, persisted_cells)
+    return data
 
 
 def _color_result_columns(table: Any, frame: Any) -> None:

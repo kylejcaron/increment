@@ -100,6 +100,9 @@ parameter support does not introduce a new percentile-input or query API.
 Dates with no observations remain unavailable even when another date has a
 posterior. Loading a previously saved readout preserves its recorded prior
 meaning; newly added optional metadata does not create a posterior.
+Saved result collections and envelopes preserve recorded posterior queries in
+tables and CSV exports, including unavailable values and their exact codes and
+contexts. Exporting does not replace those records with default queries.
 
 The working model uses estimated uncertainty. Skew, low event counts, a noisy
 baseline and dependence between an estimate and its estimated SE can affect

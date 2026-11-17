@@ -799,4 +799,10 @@ def readout_refusals(
         for metric in request.metrics:
             if metric.type == "quantile":
                 check(refuse_observational_quantile, metric)
+    if (
+        not refusals
+        and operation == "run"
+        and (capabilities.kind == "artifact" or "artifact_experiment" in capabilities.operations)
+    ):
+        check(validate_windowed_quantile_support, request.metrics, supported=False)
     return tuple(refusals)

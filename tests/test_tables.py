@@ -4194,3 +4194,63 @@ def test_numerical_readout_caveats_are_grouped_by_full_detail_in_native_gt():
         "Difference detected¹",
         "Difference detected²",
     ]
+
+
+@pytest.mark.integration
+def test_restored_collection_keeps_recorded_query_failure_in_table_and_csv():
+    import io
+    import json
+
+    import pandas as pd
+
+    from increment import MetricSpec, from_frame, run
+    from increment.estimators import Normal, RelativeLiftPrior
+    from increment.results import ReadoutResults
+
+    pytest.importorskip("coeftable")
+    result = run(
+        *from_frame(
+            pd.DataFrame(
+                {
+                    "unit": list(range(8)),
+                    "arm": ["control"] * 4 + ["treatment"] * 4,
+                    "value": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
+                }
+            ),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="value",
+                    type="mean",
+                    prior=RelativeLiftPrior(distribution=Normal(mu=0, sigma=0.1)),
+                )
+            ],
+        )
+    )
+    saved = json.loads(result.readout().model_dump_json())
+    saved["metadata"].update(
+        run_id=result.run.run_id, analysis_spec_hash=result.run.analysis_spec_hash
+    )
+    saved["persisted_cells"] = [cell.to_payload() for cell in result.cells]
+    query = {
+        "value": None,
+        "operation": "quantile",
+        "parameters": {"probability": 0.25},
+        "code": "estimation.posterior.numerical_unavailable",
+        "context": {"operation": "quantile", "reason": "accuracy_unresolved"},
+    }
+    saved["persisted_cells"][0]["posterior_queries"] = [query]
+    restored = ReadoutResults.model_validate_json(json.dumps(saved))
+
+    table = readout_table(restored, advisory=True)
+    projected = table.data.iloc[0]
+    assert json.loads(projected["posterior_queries"]) == [query]
+    assert pd.isna(projected["posterior_query_0_value"])
+    assert not any(name.startswith("posterior_query_1_") for name in table.data.columns)
+    exported = pd.read_csv(io.StringIO(table.data.to_csv(index=False))).iloc[0]
+    assert json.loads(exported["posterior_queries"]) == [query]
+    assert pd.isna(exported["posterior_query_0_value"])
+    assert json.loads(exported["posterior_query_0_context"]) == query["context"]
