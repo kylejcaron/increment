@@ -14,7 +14,7 @@ const ROLES = [
 ];
 
 /** The packaged shell with a one-population payload of `count` metrics, in declared order. */
-function dashboardWith(count) {
+function dashboardWith(count, references = {}) {
   const metrics = ROLES.slice(0, count).map((role, index) => {
     const key = `${TOPICS[index % TOPICS.length]}_${String(index + 1).padStart(2, "0")}`;
     return { key, label: key.replace("_", " "), role, detail: "", csv: "" };
@@ -23,6 +23,7 @@ function dashboardWith(count) {
     title: "Many metrics",
     results: "",
     metrics,
+    references,
     scopes: {
       overall: { label: "Whole experiment", dimension: null, source: null },
       country: { label: "Country", dimension: "country", source: null },
@@ -101,4 +102,64 @@ test("a short focus-metric list shows every metric without a filter", () => {
   const dashboard = dashboardWith(3);
   assert.equal(byId(dashboard, "metric-filter").hidden, true);
   assert.equal(shown(dashboard).length, 3);
+});
+
+test("captured-result search decodes timestamp and named-date identities", () => {
+  const cell = {
+    metric: "revenue_01", analysis_population: "assigned", group_id: "T",
+    method: "unadjusted", method_role: "decision", dimension: null,
+    dimension_value: null, source: null, ds_basis: "calendar",
+  };
+  const dashboard = dashboardWith(1, {
+    results: {
+      timestamp: { cell: { ...cell, ds: { datetime: "2025-01-15T00:00:00Z" } }, sourceId: "capture" },
+      named: { cell: { ...cell, ds: { label: "day zero" } }, sourceId: "capture" },
+    },
+    views: { '["readout"]': ["timestamp", "named"] },
+  });
+  dashboard.tabs.readout.dispatch("click");
+  const row = dashboard.readoutTable.querySelector("tr");
+  dashboard.readoutTable.dispatch("click", { target: row.querySelector(".metric-select"), detail: 0 });
+  const search = byId(dashboard, "result-filter");
+  search.value = "2025-01-15T00:00:00Z";
+  search.dispatch("input");
+  assert.deepEqual(byId(dashboard, "result-choice").children.map(x => x.getAttribute("value")), ["", "timestamp"]);
+  search.value = "day zero";
+  search.dispatch("input");
+  assert.deepEqual(byId(dashboard, "result-choice").children.map(x => x.getAttribute("value")), ["", "named"]);
+});
+
+test("pointer selection brings the responsive inspector into focus", () => {
+  const dashboard = dashboardWith(1);
+  dashboard.context.window.matchMedia = () => ({ matches: true });
+  const button = dashboard.readoutTable.querySelector(".metric-select");
+  dashboard.readoutTable.dispatch("click", { target: button, detail: 1 });
+  assert.equal(dashboard.document.activeElement?.id, "inspector-title");
+});
+
+test("table data stays inert while metric names open result evidence", () => {
+  for (const target of ["readout-table", "report-table", "overview-table"]) {
+    const dashboard = dashboardWith(1);
+    dashboard.tabs[target === "report-table" ? "report" : target === "overview-table" ? "explore" : "readout"].dispatch("click");
+    const host = byId(dashboard, target);
+    const row = host.querySelector("tr") || new FakeElement("tr");
+    row.dataset.metric = "revenue_01";
+    row.dataset.incResultRefs = "[]";
+    let name = row.querySelector(".metric-select");
+    if (!name) {
+      name = new FakeElement("button", { className: "metric-select" });
+      name.dataset.metric = "revenue_01";
+      row.append(name);
+    }
+    const value = new FakeElement("td");
+    value.textContent = "+12.0%";
+    row.append(value);
+    if (!row.parentElement) host.append(row);
+    byId(dashboard, "close-inspector").dispatch("click");
+    const events = target === "overview-table" ? dashboard.panels.explore : host;
+    events.dispatch("click", { target: value, detail: 1 });
+    assert.equal(byId(dashboard, "inspector").hidden, true, target);
+    events.dispatch("click", { target: name, detail: 1 });
+    assert.equal(byId(dashboard, "inspector").hidden, false, target);
+  }
 });

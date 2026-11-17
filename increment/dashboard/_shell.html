@@ -147,7 +147,7 @@ code, .number { font-family: var(--inc-dashboard-mono-font); font-variant-numeri
 button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .metric-select strong { font-weight: 600; }
 .metric-select small { display: block; font: calc(var(--inc-dashboard-interval-size) * .75) var(--inc-dashboard-mono-font); color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }
-.metric-row { cursor: pointer; }
+button.metric-select { cursor: pointer; }
 .metric-row[data-selected] .metric-select strong { color: var(--accent); text-decoration: underline; }
 
 /* ===== Readout ============================================================= */
@@ -159,9 +159,18 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 #readout-table .gt_row { padding: var(--inc-dashboard-cell-padding-y) var(--inc-dashboard-cell-padding-x) !important; }
 #readout-table .gt_col_heading { padding: calc(var(--inc-dashboard-cell-padding-y) + 1px) var(--inc-dashboard-cell-padding-x) !important; }
 .inspector {
-  position: sticky; top: 16px; background: var(--surface);
+  position: fixed; top: 16px; right: 16px; z-index: 40; background: var(--surface);
+  width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+  box-sizing: border-box; overflow: auto;
   border: 1px solid var(--line); border-top: 2px solid var(--accent); padding: 18px; min-width: 0;
 }
+.result-picker, .result-filters label { display: grid; gap: 6px; margin-bottom: 12px; }
+.result-picker select, .result-filters input, .result-filters select { width: 100%; min-width: 0; color: var(--ink); background: var(--surface); border: 1px solid var(--line); padding: 8px; }
+#readout-inspector pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+#readout-inspector table { width: 100%; font-size: 12px; }
+#readout-inspector td { overflow-wrap: anywhere; }
+#readout-inspector td:last-child { white-space: normal; }
+@media print { #inspector { display: none !important; } }
 .inspector-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 13px; }
 .inspector-heading h3 { font-size: 20px; margin: 0; overflow-wrap: anywhere; }
 .inspector-heading h3:focus { outline: none; }
@@ -296,9 +305,6 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .rpt-title { font-size: 30px; line-height: 1.12; letter-spacing: -.01em; margin: 0 0 8px; overflow-wrap: anywhere; }
 .rpt-meta { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0; overflow-wrap: anywhere; }
 .rpt-meta:empty { display: none; }
-.rpt-qualifications { padding: 12px 14px; margin: 0 0 14px; border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); background: var(--tint); color: var(--ink); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
-.rpt-qualifications > summary, .rpt-notes-disclosure > summary { cursor: pointer; font-weight: 600; }
-.rpt-qualifications p { margin: 8px 0 0; white-space: pre-line; }
 /* Primary card: the estimate carries the tone; the interval beneath is smaller and neutral. */
 .rpt-primary { display: block; min-width: 210px; max-width: 280px; margin: 0; padding: 11px 16px 12px; }
 .rpt-primary-label { margin: 0 0 4px; font-size: 10px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; overflow-wrap: anywhere; }
@@ -347,16 +353,11 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .rpt .rpt-paper:not(.rpt-natural) .rpt-results table[data-cols="4"]:not([data-spanned]) .gt_col_heading:nth-child(2) { width: 14%; }
 .rpt .rpt-paper:not(.rpt-natural) .rpt-results table[data-cols="4"]:not([data-spanned]) .gt_col_heading:nth-child(3) { width: 16%; }
 .rpt .rpt-paper:not(.rpt-natural) .rpt-results table[data-cols="4"]:not([data-spanned]) .gt_col_heading:nth-child(4) { width: 40%; }
+.rpt .rpt-paper:not(.rpt-natural) .rpt-results table[data-cols="5"] { table-layout: fixed !important; }
 
-/* Allocation health: the qualified status only, never a ship recommendation. */
-.rpt-health-status { font-size: 12px; line-height: 1.5; margin: 0 0 8px; padding: 8px 12px; border-left: 3px solid var(--line); background: var(--tint); overflow-wrap: anywhere; }
-.rpt-health-status strong { font-weight: 650; margin-right: 6px; }
-.rpt-health-status[data-kind="healthy"] { border-left-color: var(--favorable); background: var(--favorable-bg); }
-.rpt-health-status[data-kind="warning"] { border-left-color: var(--inconclusive); background: var(--inconclusive-bg); }
-
-.rpt-notes { margin: 0 0 8px; padding-left: 18px; font-size: 11px; line-height: 1.5; color: var(--muted); }
-.rpt-notes li { margin: 0 0 3px; overflow-wrap: anywhere; }
 .rpt-footer { margin: 12px 0 0; padding-top: 8px; border-top: 2px solid var(--ink); font-size: 10.5px; line-height: 1.5; color: var(--muted); }
+.rpt .inc-dashboard-table { min-width: 0; width: 100%; table-layout: fixed; }
+.rpt .inc-dashboard-table th, .rpt .inc-dashboard-table td { white-space: normal; overflow-wrap: anywhere; }
 .rpt-footer p { margin: 0; overflow-wrap: anywhere; }
 
 /* Off-screen measurement of the print layout (see "Print" in the script): the report panel is laid
@@ -450,10 +451,12 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
    readable type and flows over as many pages as it needs (data-print-mode="multi"). Keep @page
    margin in sync with PAGE_MARGIN_MM in the script. */
 @page { size: A4 portrait; margin: 12mm; }
+.rpt-measuring .report-reference, .rpt-measuring .report-check-link,
+.rpt-measuring .rpt-results a { display: none !important; }
 @media print {
   html, body { background: var(--inc-dashboard-theme-panel) !important; color: var(--inc-dashboard-theme-text); height: auto; }
   .shell { max-width: none; padding: 0; }
-  .masthead, .experiment-hero, .navigation, .page-footer, .rpt-toolbar,
+  .masthead, .experiment-hero, .navigation, .page-footer, .rpt-toolbar, #inspector,
   .view:not([data-view="report"]) { display: none !important; }
   .view[data-view="report"], .view[data-view="report"][hidden] { display: block !important; }
   .rpt { padding: 0; color: var(--ink); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -464,15 +467,13 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   /* Static floors for the known small classes, so the minimum holds even before any measurement. */
   .rpt-brand, .rpt-kind { font-size: max(11px, var(--inc-dashboard-print-min-font-size)); }
   .rpt-primary-label { font-size: max(10px, var(--inc-dashboard-print-min-font-size)); }
-  .rpt-notes { font-size: max(11px, var(--inc-dashboard-print-min-font-size)); }
   .rpt-footer { font-size: max(10.5px, var(--inc-dashboard-print-min-font-size)); }
   .rpt .rpt-results .metric-select small { font-size: max(calc(var(--inc-dashboard-interval-size) * .72), var(--inc-dashboard-print-min-font-size)); }
   .rpt-paper[data-banded] #report-table { display: none !important; }
   .rpt-paper[data-banded] .rpt-bands { display: block; }
-  .rpt-meta, .rpt-notes, .rpt-footer { color: var(--muted); }
-  .rpt-primary, .rpt-masthead, .rpt-summary, .rpt-health-status, .rpt-footer { break-inside: avoid; }
+  .rpt-meta, .rpt-footer { color: var(--muted); }
+  .rpt-primary, .rpt-masthead, .rpt-summary, .rpt-footer { break-inside: avoid; }
   .rpt-h2 { break-after: avoid; }
-  .rpt-notes li { break-inside: avoid; }
   .rpt-slot, .rpt-slot-scroll { overflow: visible !important; }
   .rpt-slot * { box-shadow: none !important; text-shadow: none !important; }
   .rpt-slot a { color: inherit; text-decoration: none; }
@@ -484,6 +485,9 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   .rpt .rpt-results .ct-caret { display: none !important; }
   .rpt .rpt-slot details::details-content { content-visibility: visible !important; height: auto !important; }
   .rpt details:not([open]) > :not(summary) { display: block !important; }
+  .rpt .rpt-results a { display: none !important; }
+  .rpt .report-reference, .rpt .report-check-link { display: none !important; }
+  .rpt .evidence-select { border: 0; padding: 0; background: transparent; color: inherit; text-decoration: none; }
 }
 </style>
 <script>
@@ -629,7 +633,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
         <div>
           <div class="table-surface native-output" id="readout-table"></div>
           <div class="readout-bottom">
-            <span class="readout-help">Select a metric row to inspect its definition and observed data.</span>
+            <span class="readout-help">Select a metric's name to inspect its definition and observed data.</span>
           </div>
           <details class="provenance-disclosure" id="readout-provenance-disclosure">
             <summary>Experiment provenance &amp; definitions</summary>
@@ -644,6 +648,22 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
             </div>
             <button type="button" id="close-inspector" aria-label="Close metric evidence">×</button>
           </div>
+          <div class="result-filters" id="result-filters" hidden>
+            <label for="result-filter">Find a result
+              <input type="search" id="result-filter" placeholder="Date, method or source" autocomplete="off">
+            </label>
+            <label for="result-scope" id="result-scope-label" hidden>Result scope
+              <select id="result-scope"></select>
+            </label>
+            <label for="result-caution" id="result-caution-label" hidden>Caution
+              <select id="result-caution"></select>
+            </label>
+            <p id="result-match-count" class="readout-help" role="status" aria-live="polite"></p>
+          </div>
+          <label class="result-picker" for="result-choice">Captured result
+            <select id="result-choice"></select>
+          </label>
+          <p id="result-selection-note" class="readout-help"></p>
           <div class="native-output" id="readout-inspector"></div>
         </aside>
       </div>
@@ -676,6 +696,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
           </div>
         </div>
       </div>
+      <p class="readout-help" id="overview-hidden-metrics" hidden></p>
       <p class="added-status" id="added-status" role="status" aria-live="polite" hidden></p>
       <div class="scope-bar" id="scope-bar">
         <span class="scope-label" id="scope-label">Compare by</span>
@@ -684,12 +705,13 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       </div>
       <p class="explore-empty" id="explore-empty" hidden>No exploratory views were captured with this snapshot.</p>
       <section class="explore-overview" id="explore-overview" aria-label="Overview of every metric">
+        <div class="native-output" id="overview-limitations"></div>
         <div class="table-surface native-output" id="overview-table" role="region" tabindex="0"></div>
-        <details class="metric-detail plot-notes" id="overview-notes">
-          <summary id="overview-notes-summary"></summary>
-          <ul id="overview-notes-list"></ul>
+        <details class="metric-detail plot-notes" id="overview-methods">
+          <summary>How Explore comparisons work</summary>
+          <div class="native-output" id="overview-methods-body"></div>
         </details>
-        <p class="muted metric-detail-note">Select a metric to open its time series.</p>
+        <p class="muted metric-detail-note">Select a result to inspect the evidence for these coordinates.</p>
       </section>
       <div class="explore-layout" id="explore-layout" hidden>
         <aside class="metric-list" id="metric-list" aria-labelledby="metric-list-label">
@@ -760,7 +782,6 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
                 <p class="rpt-brand">increment <span>/ experiment report</span></p>
                 <p class="rpt-kind">Snapshot report</p>
               </div>
-              <div class="rpt-qualifications native-output" id="report-qualifications" aria-label="Readout qualifications" hidden></div>
               <div class="rpt-summary">
                 <div>
                   <h1 class="rpt-title" id="report-title"></h1>
@@ -780,15 +801,17 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
               <div class="rpt-bands" id="report-bands"></div>
             </section>
 
-            <section class="rpt-section" id="report-health-section" aria-labelledby="rpt-h-health" hidden>
-              <h2 class="rpt-h2" id="rpt-h-health">Allocation health</h2>
-              <div class="rpt-health-status" id="report-health-status"></div>
+            <section class="rpt-section" id="report-limitations-section" aria-labelledby="rpt-h-limitations" hidden>
+              <h2 class="rpt-h2" id="rpt-h-limitations">What needs care</h2>
+              <div class="native-output" id="report-limitations"></div>
             </section>
-
-            <details class="rpt-section rpt-notes-disclosure" id="report-notes-section" hidden>
-              <summary class="rpt-h2" id="rpt-h-notes">Interpretation notes &amp; metric outcomes</summary>
-              <ul class="rpt-notes" id="report-notes"></ul>
-            </details>
+            <section class="rpt-section" id="report-health-section" aria-label="Warnings" hidden>
+              <div class="native-output" id="report-health"></div>
+            </section>
+            <section class="rpt-section" id="report-methods-section" aria-labelledby="rpt-h-methods" hidden>
+              <h2 class="rpt-h2" id="rpt-h-methods">How to read these results</h2>
+              <div class="native-output" id="report-methods"></div>
+            </section>
 
             <footer class="rpt-footer" id="report-footer" hidden><p id="report-context"></p></footer>
           </div>
@@ -955,6 +978,82 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
   /* ---------- Readout -------------------------------------------------------- */
   let selectedReadoutMetric = null;
+  let inspectorOrigin = null;
+  let inspectorCandidates = [];
+
+  function referenceLabel(reference) {
+    const cell = reference.cell;
+    const date = cell.ds && typeof cell.ds === 'object' ? cell.ds.datetime ?? cell.ds.label : cell.ds;
+    const arm = cell.control_group ? (cell.treatment_group || cell.group_id) + ' vs ' + cell.control_group :
+      cell.treatment_group || cell.group_id;
+    return [cell.analysis_population, arm,
+      cell.method, cell.method_role, cell.dimension, cell.dimension_value,
+      date, cell.ds_basis, reference.sourceId].filter((value) => value !== null && value !== undefined).join(' · ');
+  }
+
+  function referenceScope(reference) {
+    const cell = reference.cell;
+    return JSON.stringify([cell.source, cell.dimension, cell.dimension_value]);
+  }
+
+  function mountSharedReference(target, record) {
+    mountNative(target, record?.previewHtml || '');
+    if (record) target.append(el('details', {},
+      el('summary', { text: 'Original shared record' }),
+      el('pre', { text: record.recordJson })));
+  }
+
+  function showReference(identity) {
+    const reference = own(data.references?.results, identity);
+    if (!reference || !inspectorCandidates.includes(identity)) {
+      mountNative($('readout-inspector'), '');
+      $('result-selection-note').textContent = 'Choose a captured result. No headline result has been substituted.';
+      return;
+    }
+    $('result-selection-note').textContent = '';
+    mountNative($('readout-inspector'), reference.readingHtml);
+    const technical = el('details', {},
+      el('summary', { text: 'Technical record for this result' }));
+    const records = el('div', { className: 'native-output', id: 'selected-reference-record' });
+    records.append(el('pre', { text: reference.recordJson }));
+    for (const id of reference.groupIds || []) {
+      const shared = el('div', { className: 'native-output' });
+      mountSharedReference(shared, own(data.references.groups, id));
+      records.append(shared);
+    }
+    technical.append(records);
+    $('readout-inspector').append(technical);
+  }
+
+  $('result-choice').addEventListener('change', () => showReference($('result-choice').value));
+
+  function filterReferenceChoices(autoSelect = false) {
+    const picker = $('result-choice');
+    const previous = picker.value;
+    const query = $('result-filter').value.trim().toLowerCase();
+    const caution = $('result-caution').value;
+    const scope = $('result-scope').value;
+    const matching = inspectorCandidates.filter((id) => {
+      const reference = data.references.results[id];
+      return referenceLabel(reference).toLowerCase().includes(query) &&
+        (!caution || reference.diagnosticCodes?.includes(caution)) &&
+        (!scope || referenceScope(reference) === scope);
+    });
+    picker.replaceChildren(el('option', { value: '', text: 'Choose a result…' }),
+      ...matching.map((id) => el('option', {
+        value: id, text: referenceLabel(data.references.results[id]),
+      })));
+    picker.value = matching.includes(previous) ? previous :
+      autoSelect && matching.length === 1 ? matching[0] : '';
+    picker.disabled = matching.length === 0;
+    $('result-match-count').textContent = matching.length + ' of ' + inspectorCandidates.length + ' captured results';
+    showReference(picker.value);
+    if (!matching.length) $('result-selection-note').textContent =
+      'No result matches these filters. Other views have not been substituted.';
+  }
+  $('result-filter').addEventListener('input', () => filterReferenceChoices());
+  $('result-caution').addEventListener('change', () => filterReferenceChoices(true));
+  $('result-scope').addEventListener('change', () => filterReferenceChoices(true));
 
   function syncReadoutSelection() {
     for (const button of $('readout-table').querySelectorAll('.metric-select')) {
@@ -966,47 +1065,98 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     }
   }
 
-  function openInspector(key, moveFocus) {
-    const metric = metricByKey.get(key);
+  function openInspector(key, options = {}) {
+    const metric = metricByKey.get(key) || (
+      options.ids?.some((id) => own(data.references?.results, id)?.cell.metric === key)
+        ? { key, label: key } : null);
     if (!metric) return;
     selectedReadoutMetric = key;
+    if (options.origin) inspectorOrigin = options.origin;
+    const keys = options.viewKeys || ['["readout"]'];
+    const applicable = new Set(keys.flatMap((view) => data.references?.views?.[view] || []));
+    inspectorCandidates = (options.ids || [...applicable]).filter((id) =>
+      applicable.has(id) && own(data.references?.results, id)?.cell.metric === key);
     $('inspector-title').textContent = metric.label;
-    mountNative($('readout-inspector'), metric.detail);
+    $('result-filter').value = '';
+    const scopeOptions = new Map(inspectorCandidates.map((id) => {
+      const reference = data.references.results[id], cell = reference.cell;
+      const label = cell.dimension === null ? 'Whole experiment' :
+        cell.dimension + ' = ' + cell.dimension_value;
+      return [referenceScope(reference), label + (cell.source ? ' · ' + cell.source : '')];
+    }));
+    $('result-scope').replaceChildren(el('option', { value: '', text: 'All scopes' }),
+      ...[...scopeOptions].map(([value, text]) => el('option', { value, text })));
+    $('result-scope').value = '';
+    $('result-scope-label').hidden = scopeOptions.size <= 1;
+    const codes = [...new Set(inspectorCandidates.flatMap((id) =>
+      data.references.results[id].diagnosticCodes || []))];
+    $('result-caution').replaceChildren(el('option', { value: '', text: 'All results' }),
+      ...codes.map((code) => el('option', {
+        value: code, text: own(data.references.diagnosticLabels, code) || code,
+      })));
+    $('result-caution-label').hidden = codes.length === 0 || codes.length === 1 &&
+      inspectorCandidates.every((id) => data.references.results[id].diagnosticCodes?.includes(codes[0]));
+    $('result-filters').hidden = inspectorCandidates.length <= 1;
+    filterReferenceChoices(options.autoSelect !== false);
+    $('shell').append($('inspector'));
     $('inspector').hidden = false;
-    $('readout-layout').classList.add('inspector-open');
     syncReadoutSelection();
-    if (moveFocus) $('inspector-title').focus();
+    if (options.moveFocus || window.matchMedia('(max-width: 1100px)').matches) {
+      $('inspector-title').focus();
+    }
   }
 
   function closeInspector() {
     const focusWasInside = $('inspector').contains(document.activeElement);
-    const key = selectedReadoutMetric;
+    const origin = inspectorOrigin;
     selectedReadoutMetric = null;
     $('inspector').hidden = true;
-    $('readout-layout').classList.remove('inspector-open');
+    inspectorCandidates = [];
+    mountNative($('readout-inspector'), '');
     syncReadoutSelection();
-    if (focusWasInside) {
-      for (const button of $('readout-table').querySelectorAll('.metric-select')) {
-        if (button.dataset.metric === key) { button.focus(); break; }
-      }
-    }
+    if (focusWasInside && origin?.isConnected) origin.focus();
+    inspectorOrigin = null;
   }
 
   function mountReadout() {
     mountNative($('readout-table'), data.results, { metrics: 'select' });
     mountNative($('readout-provenance'), data.provenance);
     syncReadoutSelection();
-    if (selectedReadoutMetric) openInspector(selectedReadoutMetric, false);
+    if (selectedReadoutMetric) openInspector(selectedReadoutMetric, { autoSelect: false });
   }
 
-  $('readout-table').addEventListener('click', (event) => {
-    if (event.target.closest('a, label, input, summary')) return;
-    const row = event.target.closest('tr[data-metric]');
+  for (const target of ['readout-table', 'report-table']) $(target).addEventListener('click', (event) => {
+    const button = event.target.closest('button');
+    if (!button?.classList.contains('metric-select')) return;
+    const row = button.closest('tr[data-metric]');
     // detail === 0 is a keyboard activation of the in-row button.
-    if (row) openInspector(row.dataset.metric, event.detail === 0);
+    if (row) openInspector(row.dataset.metric, {
+      ids: JSON.parse(row.dataset.incResultRefs || '[]'),
+      moveFocus: event.detail === 0, origin: button,
+    });
   });
   $('close-inspector').addEventListener('click', closeInspector);
   $('inspector').addEventListener('keydown', (event) => { if (event.key === 'Escape') closeInspector(); });
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-result-ref], button[data-result-refs]');
+    if (!button) return;
+    const ids = button.dataset.resultRef ? [button.dataset.resultRef] :
+      JSON.parse(button.dataset.resultRefs || '[]');
+    const reference = own(data.references?.results, ids[0]);
+    if (!reference) return;
+    const selected = new Set(ids);
+    const keys = Object.keys(data.references.views).filter((key) =>
+      data.references.views[key].some((id) => selected.has(id)));
+    openInspector(reference.cell.metric, {
+      viewKeys: keys, ids, origin: button, moveFocus: true,
+    });
+  });
+  $('readout-provenance').addEventListener('change', (event) => {
+    if (!event.target.classList.contains('source-record-choice')) return;
+    const output = $('readout-provenance').querySelector('.source-record-output');
+    const record = own(data.references?.groups, event.target.value);
+    if (output) mountSharedReference(output, record);
+  });
 
   /* ---------- Explore -------------------------------------------------------- */
   const exploreState = { view: 'overview', scope: scopeKeys.includes('overall') ? 'overall' : scopeKeys[0], metric: exploreMetrics.length ? exploreMetrics[0].key : null, mode: 'relative', cadence: 'cumulative', complete: false };
@@ -1093,16 +1243,21 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   function renderOverview() {
     const packet = own(overview, exploreState.scope);
     const table = $('overview-table');
-    let notes = [];
     if (packet && typeof packet === 'object') {
       mountNative(table, packet.html, { metrics: 'select' });
-      notes = Array.isArray(packet.notes) ? packet.notes.map(str).filter(Boolean) : [];
+      mountNative($('overview-limitations'), packet.limitationsHtml);
+      mountNative($('overview-methods-body'), packet.methodsHtml);
     } else {
       table.replaceChildren(el('p', { className: 'inc-dashboard-note', text: 'This overview was not captured with the snapshot.' }));
+      mountNative($('overview-limitations'), '');
+      mountNative($('overview-methods-body'), '');
     }
-    $('overview-notes').hidden = notes.length === 0;
-    $('overview-notes-summary').textContent = 'Overview notes (' + notes.length + ')';
-    $('overview-notes-list').replaceChildren(...notes.map((note) => el('li', { text: note })));
+    $('overview-methods').hidden = !packet?.methodsHtml;
+    const hiddenMetrics = Array.isArray(packet?.hiddenMetrics) ? packet.hiddenMetrics : [];
+    $('overview-hidden-metrics').hidden = hiddenMetrics.length === 0;
+    $('overview-hidden-metrics').textContent = hiddenMetrics.length +
+      (hiddenMetrics.length === 1 ? ' saved metric is' : ' saved metrics are') +
+      ' not displayed. Their eligible comparisons still count in the correction.';
   }
 
   function renderExplore() {
@@ -1152,7 +1307,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     plot.setAttribute('aria-label', (whole ? 'All experiment metrics' : metric.label) + ' · ' + scopeLabel + ' plot');
     let notes = [];
     if (packet && typeof packet === 'object' && typeof packet.html === 'string' && packet.html !== '') {
-      mountNative(plot, packet.html, whole ? {} : { metrics: 'label' });
+      mountNative(plot, packet.html, { metrics: 'select' });
       $('trajectory-caption').textContent = str(packet.caption);
       notes = Array.isArray(packet.notes) ? packet.notes.map(str).filter(Boolean) : [];
       const points = Number(packet.pointCount) || 0;
@@ -1186,16 +1341,23 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
   $('plot-notes').addEventListener('toggle', () => { notesOpen = $('plot-notes').open; });
   $('panel-explore').addEventListener('click', (event) => {
-    const row = event.target.closest('#overview-table tr[data-metric]');
-    if (row && metricByKey.has(row.dataset.metric)) {
-      exploreState.metric = row.dataset.metric;
-      exploreState.view = 'series';
-      renderExplore();
-      revealSelectedMetric();
-      return;
-    }
     const button = event.target.closest('button');
     if (!button) return;
+    const row = button.classList.contains('metric-select') ? button.closest('tr[data-metric]') : null;
+    if (row && metricByKey.has(row.dataset.metric)) {
+      const scope = scopes[exploreState.scope] || {};
+      const packet = exploreState.scope === 'overall'
+        ? own(wholeExperiment, viewKey())
+        : own(own(own(explore, exploreState.scope), exploreState.metric), viewKey());
+      const keys = exploreState.view === 'overview'
+        ? [JSON.stringify(['overview', scope.source || null, scope.dimension || null])]
+        : packet?.referenceViews || [];
+      openInspector(row.dataset.metric, {
+        viewKeys: keys, ids: JSON.parse(row.dataset.incResultRefs || '[]'),
+        moveFocus: event.detail === 0, origin: button,
+      });
+      return;
+    }
     if (button.dataset.exploreView !== undefined) exploreState.view = button.dataset.exploreView;
     else if (button.dataset.scope !== undefined) exploreState.scope = button.dataset.scope;
     else if (button.dataset.metric !== undefined) exploreState.metric = button.dataset.metric;
@@ -1278,7 +1440,13 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   });
   $('added-panel').addEventListener('keydown', (event) => { if (event.key === 'Escape') { setPanel(false); $('added-open').focus(); } });
   window.addEventListener('message', (event) => {
-    if (event.source !== window.parent || event.source === window) return;
+    if (event.source === window) return;
+    if (event.source !== window.parent) {
+      try {
+        const parentDocument = window.parent.document;
+        if (!parentDocument || event.source?.document !== parentDocument) return;
+      } catch (error) { return; }
+    }
     const message = event.data;
     if (!message || message.source !== HOST) return;
     if (message.type === 'bridge') { bridged = true; renderAdded(); }
@@ -1320,9 +1488,6 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   function mountReport() {
     $('report-title').textContent = str(data.title);
     $('report-meta').textContent = str(data.meta);
-    const qualifications = str(report.qualifications);
-    mountNative($('report-qualifications'), qualifications, { metrics: 'label' });
-    $('report-qualifications').hidden = qualifications === '';
     const box = $('report-primary-box');
     box.hidden = true;
     for (const tone of TONES) box.classList.remove(toneClass(tone));
@@ -1335,16 +1500,15 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       $('report-primary-interval').textContent = interval;
     }
     if (typeof report.results === 'string' && report.results !== '') {
-      mountNative($('report-table'), report.results, { metrics: 'label' });
+      mountNative($('report-table'), report.results, { metrics: 'select' });
     } else {
       $('report-table').replaceChildren(el('p', { className: 'rpt-empty', text: 'This snapshot did not include a report results table.' }));
     }
-    renderHealthStatus($('report-health-status'));
-    $('report-health-section').hidden = !healthStatus;
-    const notes = Array.isArray(report.notes) ? report.notes.map(str).filter(Boolean) : [];
-    $('rpt-h-notes').textContent = 'Interpretation notes & metric outcomes (' + notes.length + ')';
-    $('report-notes').replaceChildren(...notes.map((note) => el('li', { text: note })));
-    $('report-notes-section').hidden = notes.length === 0;
+    for (const [key, target] of [['limitationsHtml', 'limitations'], ['healthHtml', 'health'], ['methodsHtml', 'methods']]) {
+      const content = str(report[key]);
+      mountNative($('report-' + target), content, { metrics: 'label' });
+      $('report-' + target + '-section').hidden = content === '';
+    }
     const context = str(report.context);
     $('report-context').textContent = context;
     $('report-footer').hidden = context === '';
@@ -1371,6 +1535,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       tab.setAttribute('aria-selected', String(active));
       tab.tabIndex = active ? 0 : -1;
     }
+    if (selectedReadoutMetric && view !== 'readout') closeInspector();
     ensureMounted(view);
   }
   // Both population snapshots are embedded; change their projection inside the srcdoc without navigation.
@@ -1398,6 +1563,10 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     selectedAdded = Array.isArray(added.selected) ? added.selected.map(str) : [];
     draft = new Set(selectedAdded);
 
+    inspectorCandidates = [];
+    mountNative($('readout-inspector'), '');
+    $('result-choice').value = '';
+    if (selectedReadoutMetric) openInspector(selectedReadoutMetric, { autoSelect: false });
     if (selectedReadoutMetric && !metricByKey.has(selectedReadoutMetric)) {
       selectedReadoutMetric = null;
       $('inspector').hidden = true;
@@ -1565,6 +1734,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     if (!(sheet.width > 0 && sheet.height > 0)) return;
     const panel = $('panel-report');
     const paper = $('report-paper');
+    const scrollX = window.scrollX, scrollY = window.scrollY;
     const release = printing ? null : expandReport();
     const minPx = minFontPx();
     let outcome = null;
@@ -1579,7 +1749,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       markFloor(paper, minPx);
       let size = measure();
       let banded = false;
-      if ($('report-table').querySelector('table')) {
+      if ($('report-table').scrollWidth > sheet.width) {
         const plan = planReportBands(paper, sheet.width);
         if (plan) {
           installBands(paper, plan);
@@ -1618,6 +1788,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       paper.classList.remove('rpt-natural');
       panel.classList.remove('rpt-measuring');
       if (release) release();
+      window.scrollTo(scrollX, scrollY);
     }
     if (!outcome) return;
     paper.style.setProperty('--rpt-fit-w', outcome.width + 'px');

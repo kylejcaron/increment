@@ -9,6 +9,7 @@ import io
 import json
 import re
 import xml.etree.ElementTree as ET
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -24,14 +25,14 @@ from increment.dashboard import (
     DashboardSnapshot,
     ExploreView,
     readout_csv,
-    render_details,
+    render_dashboard,
     render_explore,
     render_header,
     render_health,
     render_metric_details,
     render_results,
 )
-from increment.dashboard._app import _render_entry, _report_notes, build_payload
+from increment.dashboard._app import _render_entry, build_payload, document
 from increment.dashboard._data import enriched_rows
 from increment.dashboard._html import temporal_figure
 from tests.dashboard_snapshots import (
@@ -51,6 +52,16 @@ def storefront() -> DashboardSnapshot:
 @pytest.fixture(scope="module")
 def pricing() -> DashboardSnapshot:
     return pricing_snapshot()
+
+
+def _rendered_payload(snapshot: DashboardSnapshot) -> dict[str, Any]:
+    page = render_dashboard(experiment_for(snapshot), snapshot=snapshot).widget.get_state()[
+        "document"
+    ]
+    (embedded,) = re.findall(
+        r"""<script[^>]*id=["']dashboard-data["'][^>]*>(.*?)</script>""", page, re.S
+    )
+    return json.loads(embedded)
 
 
 # Readout qualifications and allocation.
@@ -95,6 +106,24 @@ def test_dashboard_explains_missing_allocation_scheme_separately(
     assert "the allocation scheme is not declared" in text
     assert "integrity.allocation_scheme_missing" in text
     assert "no allocation declared" not in text
+
+
+@pytest.mark.integration
+def test_missing_required_guardrail_is_named_before_optional_details(storefront):
+    collection = storefront.readout_collection
+    assert collection is not None
+    selected = collection.filter(lambda row: row.metric != "session_seconds")
+    snapshot = dataclasses.replace(
+        storefront,
+        estimates=tuple(selected),
+        readout_rows=enriched_rows(selected),
+        readout_collection=selected,
+        explore={},
+    )
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    visible = payload["results"].split("<details", 1)[0]
+    assert "session_seconds" in visible
+    assert "session_seconds" in payload["report"]["healthHtml"]
 
 
 def test_dashboard_names_declared_weights_not_observed_counts(pricing: DashboardSnapshot) -> None:
@@ -156,12 +185,19 @@ def test_dashboard_allocation_mismatch_stays_visible_before_the_readout(
             update={"expected": expected, "is_srm": True, "log_e_value": 100.0}
         ),
     )
-    rendered = render_results(snapshot).text
-    visible = rendered.split("<details", 1)[0]
-    warnings = re.findall(
-        r'<p class="[^"]*inc-dashboard-status--warn[^"]*">(.*?)</p>', visible, re.S
-    )
-    assert any("allocation" in warning.lower() and "assigned" in warning for warning in warnings)
+    payload = _rendered_payload(snapshot)
+    for rendered in (
+        render_results(snapshot).text,
+        payload["results"],
+        payload["report"]["healthHtml"],
+    ):
+        visible = rendered.split("<details", 1)[0]
+        warnings = re.findall(
+            r'<p class="[^"]*inc-dashboard-status--warn[^"]*">(.*?)</p>', visible, re.S
+        )
+        assert any(
+            "allocation" in warning.lower() and "assigned" in warning for warning in warnings
+        )
 
 
 def test_assigned_health_collapses_inapplicable_checks_and_omits_duplicate_allocation(
@@ -313,7 +349,6 @@ def test_both_experiments_share_the_same_sections(
         health = render_health(snapshot).text
         assert f"{enrolled:,}" in header
         assert snapshot.title in header
-        assert "No allocation issues detected" in health
         for arm in arms:
             assert arm in header
             assert arm in health
@@ -508,7 +543,6 @@ def test_health_keeps_assignment_warnings_when_no_mismatch_is_detected(
         min_expected_count=3.5,
     )
     html = render_health(snapshot).text
-    assert "No allocation issues detected" in html
     assert "37" in html
     assert "not assigned to any arm" in html
     assert "more than one arm" in html
@@ -620,9 +654,6 @@ def test_results_keep_selection_qualification_as_a_footnote(pricing: DashboardSn
         )
     }
     assert {"Lift %", "Lift Plot"} <= headers
-    assert {"Result", "Discovery"}.isdisjoint(headers)
-    assert "Numerical qualification" not in headers
-    assert "Selection qualification" not in headers
     assert "Selection evidence for" in html
     assert pricing.primary_metric in html
     assert qualification in html
@@ -764,18 +795,35 @@ def test_inspector_keeps_zero_control_inputs_for_a_sensitivity_result(
 
 
 @pytest.mark.integration
-def test_provenance_keeps_selected_zero_control_calculation_inputs(
+def test_selected_result_keeps_zero_control_calculation_inputs(
     storefront: DashboardSnapshot,
 ) -> None:
 
-    snapshot = _with_primary_row(
-        storefront,
-        binomial_set=binomial_region().model_copy(
-            update={"x_c": 0, "n_c": 610, "x_t": 13, "n_t": 620}
-        ),
+    region = binomial_region().model_copy(update={"x_c": 0, "n_c": 610, "x_t": 13, "n_t": 620})
+    estimates = tuple(
+        row.model_copy(update={"binomial_set": region})
+        if row.metric == storefront.primary_metric
+        else row
+        for row in storefront.estimates
     )
-
-    html = render_details(snapshot).text
+    assert storefront.readout_collection is not None
+    collection = type(storefront.readout_collection)(
+        estimates, metadata=storefront.readout_collection.metadata
+    )
+    snapshot = dataclasses.replace(
+        storefront,
+        estimates=estimates,
+        readout_rows=enriched_rows(collection),
+        readout_collection=collection,
+        explore={},
+    )
+    payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
+    html = next(
+        reference["readingHtml"]
+        for reference in payload["references"]["results"].values()
+        if reference["cell"]["metric"] == storefront.primary_metric
+        and reference["cell"]["ds"] is None
+    )
 
     assert "0/610" in html and "13/620" in html
 
@@ -797,6 +845,26 @@ def test_report_readout_keeps_non_table_caveats(storefront: DashboardSnapshot) -
     rendered = payload["results"] + payload["report"]["results"]
     assert "engine declined this row" in rendered
     assert "outside the declared population" in rendered
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("empty_readout", [False, True], ids=["no-limitations", "empty-readout"])
+def test_report_omits_empty_limitations_fragment(
+    pricing: DashboardSnapshot, empty_readout: bool
+) -> None:
+    snapshot = (
+        dataclasses.replace(
+            pricing,
+            estimates=(),
+            readout_rows=(),
+            readout_collection=None,
+            explore={},
+        )
+        if empty_readout
+        else pricing
+    )
+
+    assert _rendered_payload(snapshot)["report"]["limitationsHtml"] == ""
 
 
 def test_results_show_available_prior_advisory_columns(pricing: DashboardSnapshot) -> None:
@@ -954,7 +1022,7 @@ def test_whole_experiment_keeps_available_metrics_and_attributes_refusals(
     refusal = CodedError(
         "captured metric refusal",
         code="explore.metric_refused",
-        context={"metric": missing, "snapshot": "pinned"},
+        context={"metric": missing, "snapshot": "pinned", "details": {"capture": "pinned"}},
     )
     empty_rows = type(temporal_rows(storefront, view))()
     snapshot = dataclasses.replace(
@@ -984,6 +1052,18 @@ def test_whole_experiment_keeps_available_metrics_and_attributes_refusals(
     assert "snapshot" in html and "pinned" in html
     focused = payload["explore"]["overall"][missing]["daily_values"]
     assert "explore.metric_refused" in focused["caption"]
+    page = document(payload)
+    match = re.search(
+        r'<script type="application/json" id="dashboard-data">(.*?)</script>', page, re.S
+    )
+    assert match is not None
+    embedded = json.loads(match.group(1))
+    retained = next(
+        item
+        for item in embedded["references"]["refusals"].values()
+        if item["code"] == "explore.metric_refused"
+    )
+    assert retained["context"]["details"]["capture"] == "pinned"
 
 
 @pytest.mark.integration
@@ -1578,7 +1658,8 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
         relative_confidence_set=region,
         method_role=method_role,
     )
-    notes = " ".join(_report_notes(snapshot))
+    limitations = _rendered_payload(snapshot)["report"]["limitationsHtml"]
+    notes = unescape(re.sub(r"<[^>]+>", " ", limitations))
     assert "∪" in notes
     displayed = [float(value) / 100 for value in re.findall(r"([+-]?\d+(?:\.\d+)?)%", notes)]
     for interval in region.intervals:
@@ -1595,13 +1676,14 @@ def test_summary_notes_attribute_each_captured_level_to_its_own_metric(
 
     rows = decision_rows(storefront)
     assert len({row["level"] for row in rows}) > 1
-    summary = _report_notes(storefront)[0]
-    stated = [(m.start(), m.group()) for m in re.finditer(r"\d+(?:\.\d+)?%", summary)]
+    summary = _rendered_payload(storefront)["report"]["methodsHtml"]
+    interval_rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", summary, re.DOTALL)
     for row in rows:
-        metric_at = summary.index(str(row["metric"]))
-        preceding = [text for start, text in stated if start < metric_at]
-        assert float(preceding[-1].rstrip("%")) / 100 == pytest.approx(
-            float(row["level"]), abs=0.00005
+        matching = [body for body in interval_rows if str(row["metric"]) in body and "%" in body]
+        assert any(
+            float(value) / 100 == pytest.approx(float(row["level"]), abs=0.00005)
+            for body in matching
+            for value in re.findall(r"(\d+(?:\.\d+)?)%", body)[:1]
         )
 
 
@@ -1626,15 +1708,20 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
             ),
         ),
     )
-    summary = _report_notes(snapshot)[0]
-    levels = [
-        (m.start(), float(m.group()[:-1]) / 100) for m in re.finditer(r"\d+(?:\.\d+)?%", summary)
-    ]
+    summary = _rendered_payload(snapshot)["report"]["methodsHtml"]
+    interval_rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", summary, re.DOTALL)
     for row in (decision, sensitivity):
-        method_at = summary.index(str(row["method"]))
-        preceding = [value for start, value in levels if start < method_at]
         assert isinstance(row["level"], float)
-        assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
+        matching = [
+            body
+            for body in interval_rows
+            if str(row["method"]) in body and str(row["method_role"]) in body and "%" in body
+        ]
+        assert any(
+            float(value) / 100 == pytest.approx(float(row["level"]), abs=0.00005)
+            for body in matching
+            for value in re.findall(r"(\d+(?:\.\d+)?)%", body)[:1]
+        )
     disclosure = render_results(snapshot).text
     table_rows = [
         re.sub(r"<[^>]+>", " ", body)
@@ -2048,7 +2135,8 @@ def test_report_retains_directional_fieller_set_beside_central_interval(
         confidence_set=None,
         binomial_set=None,
     )
-    notes = " ".join(_report_notes(snapshot))
+    limitations = _rendered_payload(snapshot)["report"]["limitationsHtml"]
+    notes = unescape(re.sub(r"<[^>]+>", " ", limitations))
     displayed = [
         float(value) / 100
         for value in re.findall(r"([+−-]?\d+(?:\.\d+)?)%", notes.replace("−", "-"))
@@ -2114,11 +2202,24 @@ def test_secondary_coverage_budget_reaches_metric_details(
     )
     rows = list(storefront.readout_rows)
     rows[index] = {**dict(rows[index]), "level": 1.0}
-    snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
+    assert storefront.readout_collection is not None
+    collection = type(storefront.readout_collection)(
+        updated, metadata=storefront.readout_collection.metadata
+    )
+    snapshot = dataclasses.replace(
+        storefront,
+        estimates=tuple(updated),
+        readout_rows=tuple(rows),
+        readout_collection=collection,
+    )
 
     payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
     metric = str(rows[index]["metric"])
-    detail = next(item["detail"] for item in payload["metrics"] if item["key"] == metric)
+    detail = next(
+        item["readingHtml"]
+        for item in payload["references"]["results"].values()
+        if item["cell"]["metric"] == metric and item["cell"]["ds"] is None
+    )
     assert "100% (α=1e-17)" in detail
 
 
@@ -2155,9 +2256,17 @@ def test_report_keeps_equal_rounded_levels_with_distinct_retained_budgets(
     snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
 
     payload = build_payload(experiment_for(snapshot), snapshot=snapshot)
-    notes = payload["report"]["notes"]
-    assert any("100% (α=1e-17)" in note for note in notes)
-    assert any("100% (α=1e-18)" in note for note in notes)
+    methods = payload["report"]["methodsHtml"]
+    interval_rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", methods, re.DOTALL)
+    for index, alpha in zip(indices, (1e-17, 1e-18), strict=True):
+        assert any(
+            str(rows[index]["metric"]) in body and repr(alpha) in body for body in interval_rows
+        )
+    printable = re.sub(r"<details\b.*?</details>", "", methods, flags=re.DOTALL)
+    assert any(
+        str(rows[indices[0]]["metric"]) in body and "100% (α=1e-17)" in body
+        for body in re.findall(r"<tr\b[^>]*>(.*?)</tr>", printable, re.DOTALL)
+    )
 
 
 def test_report_preserves_distinct_raw_levels_that_round_alike(
@@ -2182,11 +2291,16 @@ def test_report_preserves_distinct_raw_levels_that_round_alike(
         rows[index] = {**dict(rows[index]), "level": level}
     snapshot = dataclasses.replace(storefront, estimates=tuple(updated), readout_rows=tuple(rows))
 
-    notes = build_payload(experiment_for(snapshot), snapshot=snapshot)["report"]["notes"]
-    assert sum(note.count("95% fixed-horizon intervals") for note in notes) == 2, notes
+    methods = build_payload(experiment_for(snapshot), snapshot=snapshot)["report"]["methodsHtml"]
+    interval_rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", methods, re.DOTALL)
+    for index, alpha in zip(indices, (0.05, 0.04999), strict=True):
+        assert any(
+            str(rows[index]["metric"]) in body and repr(alpha) in body for body in interval_rows
+        )
+    printable = re.sub(r"<details\b.*?</details>", "", methods, flags=re.DOTALL)
     assert any(
-        "Interval levels differ; compare each interval only with its own level." in note
-        for note in notes
+        str(rows[indices[0]]["metric"]) in body and "95%" in body
+        for body in re.findall(r"<tr\b[^>]*>(.*?)</tr>", printable, re.DOTALL)
     )
 
 

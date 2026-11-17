@@ -177,7 +177,11 @@ class FakeElement {
     }
   }
 
-  focus() {}
+  focus() {
+    let root = this;
+    while (root.parentElement) root = root.parentElement;
+    if (root.tagName === "#document") root.activeElement = this;
+  }
 
   getBoundingClientRect() {
     return { width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0 };

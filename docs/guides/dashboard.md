@@ -162,6 +162,10 @@ printing always uses light mode. To customize fonts, colors, or sizes, see
 For individual notebook sections, see the
 [renderer functions](../reference/dashboard-output.md#renderer-functions).
 
+Readout and Report show short warnings for failed checks, missing results, or
+unverified assignment. Routine passes and complete-result counts stay in
+**Health**, alongside the detailed checks.
+
 <span id="population-selection"></span>
 <span id="assigned-and-triggered-populations"></span>
 
@@ -192,11 +196,14 @@ intentional one-sided bounds, whereas undefined ends carry reasons. Expand
 
 <span id="observed-data-by-group"></span>
 
-Select a metric to inspect its definition, analysis policy, exact bounds, and
-observed **Data by group**. The header's enrollment count is not a metric
+Select a metric's name to inspect its definition, analysis policy, exact bounds,
+and observed **Data by group**. The header's enrollment count is not a metric
 denominator: inspect eligibility, maturity, and exclusions. Group values precede
 adjustment; added exploratory metrics have no group-data panel or download.
 See [group-value definitions](../reference/dashboard-output.md#observed-data-by-group).
+
+When a metric has several methods, dates, or segments, choose the result you want;
+the inspector keeps that result's evidence rather than substituting a headline.
 
 <span id="explore"></span>
 <span id="overview"></span>
@@ -218,8 +225,9 @@ or Report. In static HTML, their captured selection cannot change. See
 
 <span id="time-series"></span>
 
-Select a row for **Time series**. **Relative lift** is cumulative; **Absolute
-values** shows both arms, daily or cumulative. **Completed windows only**
+Choose **Time series** to inspect changes over time. **Relative lift** is
+cumulative; **Absolute values** shows both arms, daily or cumulative.
+**Completed windows only**
 excludes partial follow-up in cumulative views; it does not apply to daily
 values or delay open-ended metrics. Assignment starts the Assigned clock;
 first trigger starts the Triggered clock. Retention's daily dates identify

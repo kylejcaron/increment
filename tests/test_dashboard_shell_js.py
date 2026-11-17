@@ -165,3 +165,25 @@ def test_whole_experiment_series_uses_population_packet_and_restores_breakouts()
         [node_path, "--test", str(script)], cwd=root, capture_output=True, text=True
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+
+@pytest.mark.integration
+def test_print_bands_keep_metric_and_arm_identity():
+    node_path = _node_or_gate()
+    root = Path(__file__).resolve().parents[1]
+    script = root / "tests/js/dashboard_print_bands.test.mjs"
+    result = subprocess.run(
+        [node_path, "--test", str(script)], cwd=root, capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+
+@pytest.mark.integration
+def test_live_bridge_keeps_the_embedded_frame_as_its_trust_boundary():
+    node_path = _node_or_gate()
+    root = Path(__file__).resolve().parents[1]
+    script = root / "tests/js/dashboard_live_bridge.test.mjs"
+    result = subprocess.run(
+        [node_path, "--test", str(script)], cwd=root, capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

@@ -77,7 +77,7 @@ export function loadDashboard(html, configure) {
       (windowListeners[type] ??= []).push(handler);
     },
     frameElement: null,
-    matchMedia: null,
+    matchMedia: () => ({ matches: false }),
     print() {},
   };
   window.parent = parent;
@@ -87,10 +87,15 @@ export function loadDashboard(html, configure) {
       mountNative(host, markup, options = {}) {
         host.innerHTML = markup;
         if (options.metrics !== "select" || host.id !== "readout-table") return;
-        const view = Object.values(payload.populationViews).find((candidate) => candidate.results === markup);
+        const view = [payload, ...Object.values(payload.populationViews)].find((candidate) => candidate.results === markup);
         for (const metric of view?.metrics ?? []) {
           const row = new FakeElement("tr");
           row.dataset.metric = metric.key;
+          row.dataset.incResultRefs = JSON.stringify(
+            (view.references?.views?.['["readout"]'] || []).filter(
+              (id) => view.references.results[id].cell.metric === metric.key
+            )
+          );
           const button = new FakeElement("button", { className: "metric-select" });
           button.dataset.metric = metric.key;
           button.setAttribute("aria-pressed", "false");
@@ -114,8 +119,8 @@ export function loadDashboard(html, configure) {
     createNativeAdapter,
   });
   vm.runInContext(shellSource(html), context, { filename: "dashboard-shell.js" });
-  function dispatchHostMessage(data) {
-    for (const handler of windowListeners.message ?? []) handler({ source: parent, data });
+  function dispatchHostMessage(data, source = parent) {
+    for (const handler of windowListeners.message ?? []) handler({ source, data });
   }
 
   return {

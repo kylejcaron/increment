@@ -103,7 +103,7 @@ def allocation_verdict(
         )
     if allocation.is_srm:
         return "Sample ratio mismatch detected"
-    return "No allocation issues detected"
+    return "No arm-count mismatch detected"
 
 
 def allocation_evidence(allocation: SRMResult) -> str:

@@ -14,7 +14,8 @@ dashboard needs. ``_html`` sees only the functions below.
 from __future__ import annotations
 
 import html
-from collections.abc import Iterable, Mapping, Sequence
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import fields, replace
 from typing import TYPE_CHECKING, Any
 
@@ -33,7 +34,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "append_diagnostics",
-    "drop_columns",
     "native_html",
     "readout_native",
     "resize_forest",
@@ -60,8 +60,24 @@ def row_metrics(table: ct.CoefTable, keys: Sequence[object]) -> dict[str, str]:
     return {label: key for label, key in metrics.items() if key is not None}
 
 
+def row_references(
+    table: ct.CoefTable, keys: Sequence[Sequence[str]]
+) -> dict[str, tuple[str, ...]]:
+    """Retain every result represented by a native row, including split methods."""
+    assert table.rows is not None
+    labels = nw.from_native(table.data, eager_only=True)[table.rows].to_list()
+    assert len(labels) == len(keys), "result references must align with input rows"
+    references: dict[str, list[str]] = {}
+    for label, identities in zip(labels, keys, strict=True):
+        references.setdefault(str(label), []).extend(identities)
+    return {label: tuple(dict.fromkeys(values)) for label, values in references.items()}
+
+
 def _metric_label(
-    metrics: Mapping[str, str], guardrails: Mapping[str, str], labels: Mapping[str, str]
+    metrics: Mapping[str, str],
+    guardrails: Mapping[str, str],
+    labels: Mapping[str, str],
+    references: Mapping[str, Sequence[str]],
 ) -> FormatFn:
     """The row-label formatter, wrapping each identified label in its metric key."""
     formatter = ROW_LABEL.html
@@ -83,13 +99,21 @@ def _metric_label(
             if boundary
             else ""
         )
-        return f'<span {METRIC_ATTRIBUTE}="{html.escape(key, quote=True)}">{label}</span>{note}'
+        identities = html.escape(json.dumps(references.get(raw, ())), quote=True)
+        return (
+            f'<span {METRIC_ATTRIBUTE}="{html.escape(key, quote=True)}" '
+            f'data-inc-result-refs="{identities}">{label}</span>{note}'
+        )
 
     return to_html
 
 
 def native_html(
-    table: ct.CoefTable, metrics: Mapping[str, str], *, labels: Mapping[str, str] | None = None
+    table: ct.CoefTable,
+    metrics: Mapping[str, str],
+    *,
+    labels: Mapping[str, str] | None = None,
+    references: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
     """``table`` as an HTML fragment whose identified row labels carry ``data-inc-metric``."""
     rendered = table.gt()
@@ -116,7 +140,7 @@ def native_html(
             str(row[table.rows]): guardrail_text(row) for row in rows.iter_rows(named=True)
         }
         rendered = rendered.fmt(
-            _metric_label(metrics, guardrails, labels or {}), columns=table.rows
+            _metric_label(metrics, guardrails, labels or {}, references or {}), columns=table.rows
         )
     markup = rendered.as_raw_html()
     return make_collapsible(markup) if table.collapsible_groups else markup
@@ -130,6 +154,7 @@ def readout_native(
     ``rows`` are readout row mappings; ``options`` pass through to ``readout_table``.
     """
     table = readout_table(list(rows), **options)
+    _mark_lift_caveats(table)
     return table, row_metrics(table, [row["metric"] for row in rows])
 
 
@@ -142,7 +167,7 @@ def append_diagnostics(table: ct.CoefTable) -> None:
 
 
 def _mark_lift_caveats(table: ct.CoefTable) -> None:
-    """Keep row-specific footnote references visible when the Result column is hidden."""
+    """Bind caveat footnotes to the estimate they qualify."""
     data = nw.from_native(table.data, eager_only=True)
     if "__result_markers" not in data.columns:
         return
@@ -175,16 +200,6 @@ def _mark_lift_caveats(table: ct.CoefTable) -> None:
         if isinstance(column, ct.Estimate) and column.label in {"Lift %", "Lift (absolute)"}
         else column
         for column in table.columns
-    )
-
-
-def drop_columns(table: ct.CoefTable, labels: Iterable[str]) -> None:
-    """Remove the declared columns whose header is in ``labels``."""
-    hidden = frozenset(labels)
-    if "Result" in hidden:
-        _mark_lift_caveats(table)
-    table.columns = tuple(
-        column for column in table.columns if getattr(column, "label", None) not in hidden
     )
 
 
