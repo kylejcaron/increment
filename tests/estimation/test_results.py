@@ -568,12 +568,38 @@ class TestLiftEstimateReferenceValidation:
         assert exc_info.value.code == "estimation.results.lift.dof_reference_df_mismatch"
 
     def test_model_validate_infers_t_reference_from_legacy_dof(self):
-        payload = self._kwargs(dof=12.0)
+        from scipy.stats import t
+
+        se = math.hypot(0.02, 0.02)
+        log_rr = 2.1 * se
+        critical = t.isf(0.025, 12)
+        payload = self._kwargs(
+            dof=12.0,
+            lift=Estimate(
+                value=math.expm1(log_rr),
+                lb=math.expm1(log_rr - critical * se),
+                ub=math.expm1(log_rr + critical * se),
+                level=0.95,
+                alpha=0.05,
+                log_mean=log_rr,
+                log_se=se,
+            ),
+        )
         before = payload.copy()
         est = LiftEstimate.model_validate(payload)
         assert est.reference_kind == "t"
         assert est.reference_df == 12.0
         assert payload == before
+        legacy = est.model_copy()
+        del legacy.__dict__["reference_kind"]
+        del legacy.__dict__["reference_df"]
+        restored = pickle.loads(pickle.dumps(legacy))
+        assert restored.reference_kind == "t"
+        assert restored.reference_df == 12.0
+        p_value = restored.p_value()
+        assert p_value == pytest.approx(2 * t.sf(2.1, 12))
+        assert p_value > 0.05
+        assert not restored.stat_sig()
 
     def test_legacy_sequential_label_requires_raw_checkpoint(self):
         from increment.errors import CapabilityError
@@ -865,6 +891,16 @@ class TestEstimateAdversarialConstruction:
         )
         tampered = result.model_copy(update={"lift": estimate.model_copy(update={"alpha": 0.10})})
         assert tampered.prob_beyond(0.0) is None
+        legacy = result.model_copy()
+        del legacy.__dict__["posterior_relative_model"]
+        del legacy.__dict__["posterior_student_t_state"]
+        restored = pickle.loads(pickle.dumps(legacy))
+        assert restored.model_dump_json() == result.model_dump_json()
+        assert restored.model_fields_set == result.model_fields_set
+        assert restored.posterior_relative_model is None
+        assert restored.posterior_student_t_state is None
+        assert restored.posterior_available is None
+        assert restored.prob_beyond(0.0) is None
 
 
 def test_lift_estimate_carries_winsorization_diagnostics():

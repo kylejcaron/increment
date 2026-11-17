@@ -43,7 +43,7 @@ from increment.estimation.conversion_delta import delta_interval
 from increment.estimation.conversion_route import dense_min_count
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal, Prior
-from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimation.priors import MixturePrior, RelativeLiftPrior, StudentTPrior
 from increment.estimators import SequentialCell, sitewide
 from increment.frame import CupedCovariate, MetricSpec
 from increment.plan import bind_automatic_sequential_plan
@@ -1339,6 +1339,7 @@ def _prior_reset_case(
 def _lift_prior_case(
     kind: Literal["normal", "student_t", "mixture"],
     *,
+    relative: bool = False,
     warehouse_connection: Callable[[list[dict[str, Any]]], Any] = ds.duckdb_connection,
     dialect: str = "duckdb",
 ) -> ParityCase:
@@ -1348,9 +1349,9 @@ def _lift_prior_case(
         "mixture": MixturePrior(weights=(0.7, 0.3), means=(0.0, 0.2), sigmas=(0.03, 0.1)),
     }
     return _fixed_horizon_case(
-        id=f"lift_prior_{kind}_mean_ratio_conversion_cuped",
+        id=f"lift_prior_{'relative_' if relative else ''}{kind}_mean_ratio_conversion_cuped",
         breakout=False,
-        prior=priors[kind],
+        prior=RelativeLiftPrior(distribution=priors[kind]) if relative else priors[kind],
         warehouse=_Warehouse(warehouse_connection, dialect),
     )
 
@@ -10045,6 +10046,18 @@ def _edge_cases() -> tuple[ParityCase, ...]:
     )
 
 
+def _relative_prior_shape_cases() -> tuple[ParityCase, ...]:
+    """Use existing evidence shapes for relative posterior replay and view parity."""
+    prior = RelativeLiftPrior(distribution=Normal(mu=0.0, sigma=0.10))
+    shapes = (
+        _breakout_case(),
+        _retention_breakout_cohorts_case(),
+        _quantile_ties_case(),
+        *(case for case in _triggered_day_axis_cases() if case.view in {"daily_lift", "asof_lift"}),
+    )
+    return tuple(replace(case, id=f"relative_prior_{case.id}", prior=prior) for case in shapes)
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
     *_edge_cases(),
     _arm_facts_parity_case(),
@@ -10093,6 +10106,10 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _lift_prior_case("normal"),
     _lift_prior_case("student_t"),
     _lift_prior_case("mixture"),
+    _lift_prior_case("normal", relative=True),
+    _lift_prior_case("student_t", relative=True),
+    _lift_prior_case("mixture", relative=True),
+    *_relative_prior_shape_cases(),
     _breakout_case(),
     _breakout_case(boolean=True),
     _dashboard_breakout_reads_case(),
@@ -10177,6 +10194,7 @@ _PR_PARITY_CASE_IDS = (
     "edge-empty-arm",
     "edge-zero-variance-arm",
     "edge-near-zero-positive-ratio-denominator",
+    "lift_prior_relative_normal_mean_ratio_conversion_cuped",
     "edge-nonfinite-ratio-denominator",
     "categorical-cuped-moments-format-13",
     "bare_metric_name_summary_panel",

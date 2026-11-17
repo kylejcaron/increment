@@ -3005,6 +3005,16 @@ def _assert_breakout_receipt_domain(receipt, coordinate, configs):
                 assert request.arm_order == (request.control, *sorted(arms - {request.control}))
 
 
+def _breakout_scope_configs(configuration, context):
+    """Select the recorded call's effective configs within one source slice."""
+    source_metrics = {metric.name for metric in context.metrics}
+    return tuple(
+        _decode_config(value)
+        for value in configuration["context"]["configs"]
+        if value["metric"]["name"] in source_metrics
+    )
+
+
 def _breakout_scope_request(receipt, configuration, context):
     from tests.evidence_fixtures.transcript import _plain, _restore
 
@@ -3028,16 +3038,17 @@ def _breakout_scope_request(receipt, configuration, context):
     assert request["source_name"] == source_name
     assert request["analysis_population"] == configuration["population"]
     assert _plain(request["estimands"]) == configuration["estimands"]
+    effective_configs = _breakout_scope_configs(configuration, context)
     _assert_input_value(
         request["configs"],
         [
             _snapshot_config(config, context.design)
-            for config in sorted(context.configs, key=lambda value: value.metric.name)
+            for config in sorted(effective_configs, key=lambda value: value.metric.name)
         ],
     )
     assert request["metrics"] == [
         config.metric.model_dump(mode="json")
-        for config in sorted(context.configs, key=lambda value: value.metric.name)
+        for config in sorted(effective_configs, key=lambda value: value.metric.name)
     ]
     policy = context.plan.view_policies.for_view(
         "breakout",
@@ -3486,7 +3497,8 @@ def _assert_common_snapshot(
         "alpha": plan.alpha,
         "q": plan.q,
         "procedures": {
-            name: procedure.model_dump(mode="python") for name, procedure in plan.procedures.items()
+            name: procedure.model_dump(mode="python", exclude={"favorable_side"})
+            for name, procedure in plan.procedures.items()
         },
     }
     projected_rows = [
@@ -3710,6 +3722,36 @@ def _assert_old_metadata_coverage(transcript):
     assert _OLD_METADATA_SCOPES[key] == expected.keys()
 
 
+def _rebind_metadata_artifact_provenance(expected, provenance, transcript, recorded_modes):
+    """Use the input's manifest only for a distinct publication of identical relations."""
+    recorded_manifest = expected.get("artifact_manifest_sha256")
+    if recorded_manifest is None or recorded_manifest == provenance["manifest_sha256"]:
+        return
+    assert provenance["manifest_sha256"] is not None
+    relations = [list(pair) for pair in provenance["relation_digests"]]
+    assert relations and expected["artifact_relation_digests"] == relations
+    receipts = [
+        item
+        for item in transcript.provenance["source_inputs"]
+        if item["kind"] == "declared_artifact_manifest"
+    ]
+    assert len(receipts) == 1
+    configuration = receipts[0]["configuration"]
+    artifacts = configuration["source_identity"]["artifacts"]
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact["manifest_sha256"] == provenance["manifest_sha256"]
+    assert configuration["artifact_id"] == artifact["artifact_id"]
+    assert configuration["generation_id"] == artifact["generation_id"]
+    artifact_modes = [key for key in recorded_modes if key.startswith("artifact:")]
+    assert len(artifact_modes) == 1
+    recorded_generation = artifact_modes[0].split(":")
+    assert len(recorded_generation) == 3 and all(recorded_generation)
+    assert recorded_generation[1:] != [artifact["artifact_id"], artifact["generation_id"]]
+    # Publication IDs and timestamps change the manifest, not the retained relation bytes.
+    expected["artifact_manifest_sha256"] = provenance["manifest_sha256"]
+
+
 def _assert_old_metadata_payload(results, transcript, bindings, source_scopes, *, merged):
     from increment.result_envelope import AnalysisEnvelope
     from tests.parity_harness.expected_differences import without_relative_late_p_value
@@ -3744,6 +3786,19 @@ def _assert_old_metadata_payload(results, transcript, bindings, source_scopes, *
     assert [list(pair) for pair in results.metadata.artifact_relation_digests] == [
         list(pair) for pair in expected_artifacts["relation_digests"]
     ]
+    recorded_modes = expected.get("effective_modes", {})
+    recorded_manifest = expected.get("artifact_manifest_sha256")
+    _rebind_metadata_artifact_provenance(expected, expected_artifacts, transcript, recorded_modes)
+    for record in expected["cells"]:
+        provenance = _METADATA_ARTIFACT_INPUTS[record["source_snapshot_id"]]
+        if record.get("artifact_manifest_sha256") not in (None, provenance["manifest_sha256"]):
+            assert record["artifact_manifest_sha256"] == recorded_manifest
+        _rebind_metadata_artifact_provenance(
+            record,
+            provenance,
+            transcript,
+            recorded_modes,
+        )
     comparable = _post_capture_row_projection(expected, _metadata_without_modes(actual))
     comparable = _project_post_capture_artifact_digests(expected, comparable)
     comparable = without_relative_late_p_value(expected, comparable, results)
@@ -3901,7 +3956,10 @@ def _assert_fixed_snapshot(results, transcript, population, configs, design, evi
         "q": plan.q,
         "declared": plan.declared,
         "procedures": {
-            name: _snapshot_request(procedure.model_dump(mode="json"), field=f"procedures.{name}")
+            name: _snapshot_request(
+                procedure.model_dump(mode="json", exclude={"favorable_side"}),
+                field=f"procedures.{name}",
+            )
             for name, procedure in plan.procedures.items()
         },
         "source_identity": assembly["source_identity"],
@@ -4652,7 +4710,10 @@ def _project_design_results(
         "q": plan.q,
         "declared": plan.declared,
         "procedures": {
-            name: _snapshot_request(procedure.model_dump(mode="python"), field=f"procedures.{name}")
+            name: _snapshot_request(
+                procedure.model_dump(mode="python", exclude={"favorable_side"}),
+                field=f"procedures.{name}",
+            )
             for name, procedure in plan.procedures.items()
         },
         **extra,
@@ -5323,7 +5384,8 @@ def _scope_breakout_inputs(transcript, rows, identity, source, advisories):
 
     receipt, components = _breakout_scope_data(transcript, identity, source)
     context = _decode_source_context(receipt["context"])
-    configs, plan, design = context.configs, context.plan, context.design
+    configs = _breakout_scope_configs(transcript.provenance["consumer_configuration"], context)
+    plan, design = context.plan, context.design
     request = _restore(receipt["request"])
     result = scoped_collection(
         rows,
@@ -5401,7 +5463,7 @@ def test_frozen_breakout_consumers_match_complete_ordered_old_rows():
                 receipt, _components = _breakout_scope_data(transcript, identity, stamp_source)
                 scoped_context = _decode_source_context(receipt["context"])
                 configs, plan, design = (
-                    scoped_context.configs,
+                    _breakout_scope_configs(configuration, scoped_context),
                     scoped_context.plan,
                     scoped_context.design,
                 )

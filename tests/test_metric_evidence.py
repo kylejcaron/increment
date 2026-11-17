@@ -36,6 +36,7 @@ from tests.parity_harness.expected_differences import (
     ExpectedDifference,
     declared_directions,
     with_declared_favorable_sides,
+    without_absent_relative_posterior_state,
     without_gained_arm_facts,
     without_gained_fit_fields,
     without_guardrail_segments,
@@ -247,6 +248,7 @@ def _normalize_step8_replay_rows(expected, actual):
     normalized = []
     step8_fields = {"allocation_alpha", "family_nominal_alpha"}
     for expected_row, actual_row in zip(expected, actual, strict=True):
+        actual_row = without_absent_relative_posterior_state(expected_row, actual_row)
         additions = {
             field
             for field in step8_fields

@@ -18,6 +18,7 @@ from increment.semantics.models import (
     ConversionMetric,
     Definitions,
     MeanMetric,
+    NormalPriorSpec,
     RatioMetric,
 )
 from tests.warning_codes import warning_codes
@@ -799,7 +800,7 @@ def test_experiment_metric_binding_loads_via_loader(tmp_path: Path):
     defs = load(tmp_path / "defs.yaml")
     binding = defs.experiments[0].bindings["orders"]
     assert binding.wants_cuped
-    assert binding.prior is not None
+    assert isinstance(binding.prior, NormalPriorSpec)
     assert binding.prior.sigma == 0.03
 
 

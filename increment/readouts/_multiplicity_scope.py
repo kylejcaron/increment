@@ -756,6 +756,8 @@ def scoped_collection(  # noqa: PLR0913
                 model=row.posterior_model,
                 scale=row.posterior_scale,
                 prior=config.prior,
+                relative_model=row.posterior_relative_model,
+                student_t_state=row.posterior_student_t_state,
                 reason_code=row.posterior_reason_code,
                 reason_context=row.posterior_reason_context,
             )

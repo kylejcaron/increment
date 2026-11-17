@@ -17,6 +17,7 @@ from decimal import Decimal, localcontext
 from fractions import Fraction
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     ClassVar,
     Literal,
@@ -29,9 +30,11 @@ from typing import (
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     PrivateAttr,
+    ValidationError,
     ValidationInfo,
     computed_field,
     field_serializer,
@@ -55,6 +58,7 @@ from increment._literals import (
     RowRole,
     ValueScale,
 )
+from increment._posterior_projection import _posterior_chance_to_beat, _posterior_risk_if_shipped
 from increment.errors import (
     CodedError,
     CodedModel,
@@ -77,12 +81,29 @@ from increment.estimation._fixed_horizon import (
     binomial_abs_interval,
 )
 from increment.estimation._readout_refusals import refuse_legacy_sampling
+from increment.estimation._relative_conjugate import (
+    _UPDATED_WEIGHT_ERROR,
+    RelativeMixturePosterior,
+    RelativeNormalPosterior,
+)
+from increment.estimation._relative_posterior import (
+    RelativeStudentTPosterior,
+    RelativeStudentTState,
+)
 from increment.estimation._student_t import _log_tail_bounds
 from increment.estimation._tails import resolvable_expm1, student_t_isf, tail_isf, wald_bounds
 from increment.estimation._winsor_bootstrap import bootstrap_p_value
 from increment.estimation.armstats import IndependentMeanReference
 from increment.estimation.conversion_route import CAPPED_NOTE_PREFIX, ESCALATED_NOTE_PREFIX
-from increment.estimation.priors import MixturePosterior, MixturePrior, Normal, StudentTPrior
+from increment.estimation.priors import (
+    MixturePosterior,
+    MixturePrior,
+    Normal,
+    Prior,
+    RelativeLiftPrior,
+    StudentTPrior,
+    prior_from_payload,
+)
 from increment.estimation.risk_difference import score_p_value
 from increment.estimation.sequential_result import (
     AsymptoticSequentialResult,
@@ -151,7 +172,7 @@ _ADDITIVE_DECISION_REASONS = frozenset(
 if TYPE_CHECKING:
     from increment.estimation._fcr_reinterval import Construction
     from increment.estimation.binomial_rr import BinomialInterval
-    from increment.estimation.inference import LiftPosterior
+    from increment.estimation.priors import LiftPosterior
     from increment.estimation.readout_types import ReadoutMetadata
     from increment.result_envelope import ResultCell
     from increment.winsor import WinsorRawState
@@ -855,6 +876,18 @@ def _freeze_row_contexts(row: Any) -> None:
             object.__setattr__(row, name, freeze(value))
 
 
+class RelativePosteriorModel(CodedModel, BaseModel):
+    """Recorded likelihood, units and support for a relative-effect posterior."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    version: Literal[1] = 1
+    likelihood: Literal["relative_normal"] = "relative_normal"
+    prior_scale: Literal["relative"] = "relative"
+    support: Literal["real"] = "real"
+    summary: Literal["median"] = "median"
+
+
 class _RowIdentity(CodedModel, BaseModel):
     """Leading identity fields shared, in the same declared order, by
     LiftEstimate, BreakoutEstimate and DailyLiftEstimate. Only a field
@@ -879,8 +912,14 @@ class _RowIdentity(CodedModel, BaseModel):
     posterior_components: PosteriorComponents | None = None
     posterior_reason_code: str | None = None
     posterior_reason_context: Mapping[str, object] | None = None
-    posterior_model: Literal["normal", "mixture"] | None = None
+    posterior_model: Literal["normal", "mixture", "student_t_normal"] | None = None
     posterior_scale: Literal["log", "linear"] | None = None
+    posterior_relative_model: RelativePosteriorModel | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    posterior_student_t_state: RelativeStudentTState | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     posterior_estimate: float | None = None
     posterior_lb: float | None = None
     posterior_ub: float | None = None
@@ -937,6 +976,16 @@ class _RowIdentity(CodedModel, BaseModel):
     mean_control: float | None = Field(default=None, exclude_if=lambda v: v is None)
     mean_treat: float | None = Field(default=None, exclude_if=lambda v: v is None)
 
+    def __setstate__(self, state: dict[str, object]) -> None:
+        """Restore trusted pickle values and missing defaults without recomputing inference."""
+        values = cast("dict[str, Any]", _infer_reference_from_legacy_dof(state["__dict__"]))
+        identity = _PickledRowIdentity.model_validate(
+            {name: values[name] for name in _PICKLED_IDENTITY_FIELDS if name in values}
+        )
+        identity_values = {name: getattr(identity, name) for name in _PICKLED_IDENTITY_FIELDS}
+        restored = type(self).model_construct(**{**values, **identity_values})
+        super().__setstate__({**state, "__dict__": {**values, **restored.__dict__}})
+
     def _posterior(self) -> LiftPosterior | None:
         """Reconstruct the stored posterior shared by every decision-row view."""
         if self.posterior_available is not True or self.inference != "fixed":
@@ -944,15 +993,30 @@ class _RowIdentity(CodedModel, BaseModel):
         if self.posterior_model == "normal":
             if self.posterior_latent_mean is None or self.posterior_latent_sd is None:
                 return None
-            return Normal(mu=self.posterior_latent_mean, sigma=self.posterior_latent_sd)
+            normal = Normal(mu=self.posterior_latent_mean, sigma=self.posterior_latent_sd)
+            return (
+                RelativeNormalPosterior(normal)
+                if self.posterior_relative_model is not None
+                else normal
+            )
         if self.posterior_model == "mixture" and self.posterior_components is not None:
             import numpy as np
 
-            return MixturePosterior(
+            mixture = MixturePosterior(
                 weights=np.asarray(self.posterior_components.weights, dtype=float),
                 means=np.asarray(self.posterior_components.means, dtype=float),
                 sigmas=np.asarray(self.posterior_components.sigmas, dtype=float),
             )
+            return (
+                RelativeMixturePosterior(mixture, weight_relative_error=_UPDATED_WEIGHT_ERROR)
+                if self.posterior_relative_model is not None
+                else mixture
+            )
+        if (
+            self.posterior_model == "student_t_normal"
+            and self.posterior_student_t_state is not None
+        ):
+            return RelativeStudentTPosterior(self.posterior_student_t_state)
         return None
 
     @model_validator(mode="after")
@@ -986,6 +1050,8 @@ class _RowIdentity(CodedModel, BaseModel):
                 self.posterior_model is not None
                 or self.posterior_scale is not None
                 or self.posterior_components is not None
+                or self.posterior_relative_model is not None
+                or self.posterior_student_t_state is not None
                 or any(value is not None for value in payload)
             ):
                 invalid("posterior state is present while posterior_available is not true")
@@ -1001,26 +1067,58 @@ class _RowIdentity(CodedModel, BaseModel):
             invalid("available posterior is missing its model or scale")
         if any(value is None or not math.isfinite(value) for value in required):
             invalid("available posterior is missing finite interval payload")
+        declared = getattr(self, "prior_spec", None)
+        if isinstance(declared, RelativeLiftPrior):
+            if self.posterior_relative_model is None or self.posterior_scale != "linear":
+                invalid("relative prior requires its explicit relative model and linear scale")
+            family = declared.distribution
+            expected_model = (
+                "normal"
+                if isinstance(family, Normal)
+                else "mixture"
+                if isinstance(family, MixturePrior)
+                else "student_t_normal"
+            )
+            if self.posterior_model != expected_model:
+                invalid("relative posterior model does not match its declared family")
+        elif self.posterior_relative_model is not None:
+            invalid("relative model requires an explicit relative prior")
         if self.posterior_model == "normal":
             if (
                 self.posterior_components is not None
+                or self.posterior_student_t_state is not None
                 or self.posterior_latent_mean is None
                 or self.posterior_latent_sd is None
                 or not math.isfinite(self.posterior_latent_mean)
                 or not math.isfinite(self.posterior_latent_sd)
                 or self.posterior_latent_sd <= 0.0
-                or getattr(self, "prior_spec", None) is not None
+                or (declared is not None and not isinstance(declared, RelativeLiftPrior))
             ):
                 invalid("Normal posterior requires finite latent parameters and no mixture state")
         elif self.posterior_model == "mixture":
             if (
                 self.posterior_components is None
+                or self.posterior_student_t_state is not None
                 or self.posterior_latent_mean is not None
                 or self.posterior_latent_sd is not None
-                or getattr(self, "prior_spec", None) is None
+                or not isinstance(declared, (StudentTPrior, MixturePrior, RelativeLiftPrior))
             ):
                 invalid(
                     "mixture posterior requires stored components and a separate declared prior"
+                )
+        elif self.posterior_model == "student_t_normal":
+            state = self.posterior_student_t_state
+            if (
+                state is None
+                or self.posterior_components is not None
+                or self.posterior_latent_mean is not None
+                or self.posterior_latent_sd is not None
+                or not isinstance(declared, RelativeLiftPrior)
+                or not isinstance(declared.distribution, StudentTPrior)
+                or state.prior != declared.distribution
+            ):
+                invalid(
+                    "Student-t posterior requires its original relative prior and saved likelihood"
                 )
         else:
             invalid("available posterior model is unsupported")
@@ -1050,6 +1148,51 @@ class _RowIdentity(CodedModel, BaseModel):
     @classmethod
     def _validated_alternative(cls, value: object) -> object:
         return binomial_rr.validate_alternative(value) if isinstance(value, str) else value
+
+    @field_validator(
+        "posterior_relative_model",
+        "posterior_student_t_state",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def _decode_posterior_defining_state(cls, value: object, info: ValidationInfo) -> object:
+        if isinstance(value, str):
+            try:
+                parsed = canonical_json_loads(value)
+            except (TypeError, ValueError):
+                _raise(
+                    "estimation.results.lift.posterior_components_invalid",
+                    metric=str(info.data.get("metric", "<frame>")),
+                    group_id=str(info.data.get("group_id", "<frame>")),
+                    reason="frame payload is not valid canonical JSON",
+                )
+            if not isinstance(parsed, Mapping) or canonical_json_bytes(parsed).decode() != value:
+                _raise(
+                    "estimation.results.lift.posterior_components_invalid",
+                    metric=str(info.data.get("metric", "<frame>")),
+                    group_id=str(info.data.get("group_id", "<frame>")),
+                    reason="frame payload must be a canonical JSON object",
+                )
+            value = parsed
+        try:
+            if value is not None and info.field_name == "prior_spec":
+                return prior_from_payload(value)
+            if value is not None:
+                model = (
+                    RelativePosteriorModel
+                    if info.field_name == "posterior_relative_model"
+                    else RelativeStudentTState
+                )
+                return model.model_validate(value)
+        except ValidationError:
+            _raise(
+                "estimation.results.lift.posterior_components_invalid",
+                metric=str(info.data.get("metric", "<frame>")),
+                group_id=str(info.data.get("group_id", "<frame>")),
+                reason=f"invalid {info.field_name}",
+            )
+        return value
 
     @field_validator("posterior_components", mode="before")
     @classmethod
@@ -1193,6 +1336,24 @@ def _selection_qualification(row: Any) -> str | None:
     return f"{procedure_label}{level}; {family}"
 
 
+_StoredPrior = Annotated[
+    Prior | None, BeforeValidator(_RowIdentity._decode_posterior_defining_state)
+]
+
+
+class _PickledRowIdentity(_RowIdentity):
+    """Validate saved posterior identity without reinverting sampling intervals."""
+
+    prior_spec: _StoredPrior = None
+
+
+_PICKLED_IDENTITY_FIELDS = frozenset(
+    name
+    for name, field in _PickledRowIdentity.model_fields.items()
+    if field.is_required() or name.startswith("posterior_") or name == "prior_spec"
+)
+
+
 class LiftEstimate(_RowIdentity):
     """A lift estimate, carrying the metadata to identify which (metric,
     method, group) and its persisted inference reference.
@@ -1324,7 +1485,7 @@ class LiftEstimate(_RowIdentity):
     # Scale on which the underlying posterior law is parameterized.
     # Declared Student-t/MixturePrior input; exact updated posterior state is
     # separately persisted in posterior_components.
-    prior_spec: StudentTPrior | MixturePrior | None = None
+    prior_spec: _StoredPrior = None
     # Historical persisted marker that an informative prior was supplied.
     # Modern sampling availability and posterior availability are authoritative.
     prior_shrunk: bool = False
@@ -2289,19 +2450,11 @@ class LiftEstimate(_RowIdentity):
 
     def risk_if_shipped(self) -> float | None:
         """Stored-posterior expected negative lift, when a posterior is available."""
-        posterior = self._posterior()
-        if posterior is None or self.posterior_scale is None:
-            return None
-        return posterior.expected_negative_part(scale=self.posterior_scale)
+        return _posterior_risk_if_shipped(self, favorable=False)
 
     def risk_if_shipped_favorable(self) -> float | None:
         """Stored-posterior expected loss on the declared unfavorable side."""
-        posterior = self._posterior()
-        if posterior is None or self.posterior_scale is None or self.preferred_direction is None:
-            return None
-        if self.preferred_direction == "decrease":
-            return posterior.expected_positive_part(scale=self.posterior_scale)
-        return posterior.expected_negative_part(scale=self.posterior_scale)
+        return _posterior_risk_if_shipped(self, favorable=True)
 
     def require_sequential_result(self) -> SequentialResult:
         """Return the authoritative stopped likelihood state or refuse a fixed row."""
@@ -2405,7 +2558,7 @@ if TYPE_CHECKING:
 
 def row_chance_to_beat(row: DecisionRow) -> float | None:
     """Stored-posterior probability that a decision row's lift is positive."""
-    return _row_chance_of_side(row, "greater")
+    return _posterior_chance_to_beat(row, favorable=False)
 
 
 def row_favorable_side(row: DecisionRow) -> Literal["greater", "less"] | None:
@@ -2420,18 +2573,7 @@ def row_chance_to_beat_favorable(row: DecisionRow) -> float | None:
     :func:`row_favorable_side` of zero, or ``None`` for a metric that declares no
     direction. The decrease side reads the posterior's lower tail, never
     ``1 - P(lift > 0)``, so a vanishing probability keeps its magnitude."""
-    side = row_favorable_side(row)
-    return None if side is None else _row_chance_of_side(row, side)
-
-
-def _row_chance_of_side(row: DecisionRow, side: Literal["greater", "less"]) -> float | None:
-    if isinstance(row, LiftEstimate):
-        row._refuse_selected_sequential_probability()
-    posterior = row._posterior()
-    if posterior is None:
-        return None
-    # Zero lift is zero on the log scale as well: log1p(0) == 0.
-    return posterior.survival(0.0) if side == "greater" else posterior.cdf(0.0)
+    return _posterior_chance_to_beat(row, favorable=True)
 
 
 def _require_fixed_horizon(row: DecisionRow, reason: str) -> None:

@@ -7,14 +7,10 @@ from pathlib import Path
 
 @cache
 def _artifact_outcomes() -> Mapping[str, Mapping[str, object]]:
-    from scripts.capture_evidence_identity import load_operations_capture
+    from scripts.capture_evidence_identity import load_frozen_operations_capture
 
-    capture = load_operations_capture(
-        Path(__file__).parents[1]
-        / "fixtures"
-        / "evidence_identity"
-        / "pre-kernel"
-        / "operations.json.gz"
+    capture = load_frozen_operations_capture(
+        Path(__file__).parents[1] / "fixtures" / "evidence_identity"
     )
     return {
         scenario_id: ingresses["from_unit_day_artifact"]

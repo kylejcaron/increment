@@ -29,12 +29,14 @@ from increment._display import (
     interval_text,
 )
 from increment._interpretation import (
+    _readout_cell_labels,
     interpret_readout,
     readout_evidence_columns,
     render_effect_interpretation,
 )
 from increment._optional import require_tables
-from increment._readout_html import readout_header
+from increment._posterior_projection import _PosteriorQueryProjection, _project_posterior_query
+from increment._readout_html import _evidence_label, _metadata_context, readout_header
 from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, DailyMetricValue
 from increment.breakout.projection import to_frame
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
@@ -242,6 +244,8 @@ def _base_liftestimate_to_row(
             est, "posterior_prob_favorable_reason_code", None
         ),
         posterior_components=components_json,
+        posterior_relative_model=_posterior_state_json(est.posterior_relative_model),
+        posterior_student_t_state=_posterior_state_json(est.posterior_student_t_state),
         failure_code=getattr(est, "failure_code", None),
         failure_context=getattr(est, "failure_context", None),
         source_snapshot_id=getattr(est, "source_snapshot_id", None),
@@ -309,26 +313,58 @@ def _liftestimate_to_row(
     return row
 
 
+def _posterior_state_json(value) -> str | None:
+    from increment._canonical import canonical_json_bytes
+
+    return None if value is None else canonical_json_bytes(value.model_dump(mode="json")).decode()
+
+
+def _posterior_query_columns(
+    queries: Sequence[_PosteriorQueryProjection],
+) -> dict[str, ReadoutValue]:
+    from increment._canonical import canonical_json_bytes
+
+    if not queries:
+        return {}
+    columns: dict[str, ReadoutValue] = {
+        "posterior_queries": canonical_json_bytes(
+            [query.model_dump(mode="json") for query in queries]
+        ).decode()
+    }
+    for index, query in enumerate(queries):
+        prefix = f"posterior_query_{index}"
+        payload = query.model_dump(mode="json")
+        columns.update(
+            {
+                f"{prefix}_value": query.value,
+                f"{prefix}_operation": query.operation,
+                f"{prefix}_parameters": canonical_json_bytes(payload["parameters"]).decode(),
+                f"{prefix}_code": query.code,
+                f"{prefix}_context": canonical_json_bytes(payload["context"]).decode(),
+            }
+        )
+    return columns
+
+
 def _decision_stat_columns(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
-) -> dict[str, float | None]:
-    """Best-effort posterior-derived values, explicitly model-qualified. A metric
-    that declares a direction reports its favorable side of zero; the test
-    ``alternative`` never chooses the side."""
-    if est.sequential_result is not None or getattr(est, "posterior_available", None) is not True:
+) -> dict[str, ReadoutValue]:
+    """Project probability and loss independently on the declared favorable side."""
+    if est.sequential_result is not None or est.posterior_available is not True:
         return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
-    try:
-        if row_favorable_side(est) is not None:
-            return {
-                "posterior_chance_to_beat": est.chance_to_beat_favorable(),  # ty: ignore[unresolved-attribute]
-                "posterior_risk_if_shipped": est.risk_if_shipped_favorable(),  # ty: ignore[unresolved-attribute]
-            }
-        return {
-            "posterior_chance_to_beat": est.chance_to_beat(),  # ty: ignore[unresolved-attribute]
-            "posterior_risk_if_shipped": est.risk_if_shipped(),  # ty: ignore[unresolved-attribute]
-        }
-    except (AttributeError, ValueError):
-        return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
+    favorable = row_favorable_side(est) is not None
+    queries = tuple(
+        _project_posterior_query(
+            est, operation=f"{operation}_favorable" if favorable else operation, parameters={}
+        )
+        for operation in ("chance_to_beat", "risk_if_shipped")
+    )
+    columns = _posterior_query_columns(queries)
+    for name, query in zip(("chance_to_beat", "risk_if_shipped"), queries, strict=True):
+        columns[f"posterior_{name}"] = query.value
+        columns[f"posterior_{name}_reason_code"] = query.code
+        columns[f"posterior_{name}_reason_context"] = query.context
+    return columns
 
 
 def contrast_results_to_readout(
@@ -1788,6 +1824,29 @@ class _EnvelopeReadoutRows(list):
         self.cells = tuple(cells)
 
 
+def _posterior_query_disclosure(rows: Sequence[Mapping[str, object]]) -> str:
+    import json
+
+    items = []
+    for row in rows:
+        encoded = row.get("posterior_queries")
+        if not isinstance(encoded, str):
+            continue
+        queries = tuple(
+            _PosteriorQueryProjection.model_validate(query) for query in json.loads(encoded)
+        )
+        if not row.get("posterior_queries_recorded") and not any(query.code for query in queries):
+            continue
+        label = row.get("posterior_queries_label") or _evidence_label(row)
+        details = _metadata_context(
+            [query.model_dump(mode="json") for query in queries], encoded=False
+        )
+        items.append(f"<li><b>{escape_html(str(label))}</b>{details}</li>")
+    if not items:
+        return ""
+    return "<details><summary>Posterior queries</summary><ul>" + "".join(items) + "</ul></details>"
+
+
 def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, list[dict[str, Any]]]:
     """Keep source-qualified evidence separate from the plot's display labels."""
     metadata = getattr(data, "metadata", None)
@@ -1796,7 +1855,21 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, list[dict[st
         if metadata is not None:
             interpretation = interpret_readout(data, metadata)
         row_data = estimates_to_readout(list(data))
-        for projected, estimate in zip(row_data, data, strict=True):
+        labels = (
+            _readout_cell_labels(data.cells, interpretation or interpret_readout(data, metadata))
+            if any(cell.posterior_queries for cell in data.cells)
+            else ("",) * len(data)
+        )
+        for projected, estimate, cell, label in zip(
+            row_data, data, data.cells, labels, strict=True
+        ):
+            if cell.posterior_queries:
+                for name in tuple(projected):
+                    if name.startswith("posterior_query_"):
+                        projected.pop(name)
+                projected.update(_posterior_query_columns(cell.posterior_queries))
+                projected["posterior_queries_recorded"] = True
+                projected["posterior_queries_label"] = label
             if interpretation is not None:
                 projected["view_partial"] = interpretation.partial
                 projected.update(
@@ -1809,11 +1882,14 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, list[dict[st
         if metadata is not None:
             interpretation = interpret_readout(data, metadata)
         data = estimates_to_readout(data)
-    frame = (
-        nw.from_native(pd.DataFrame(data), eager_only=True)
-        if isinstance(data, list)
-        else nw.from_native(data, eager_only=True)
-    )
+    if isinstance(data, list):
+        native = pd.DataFrame(data)
+        for name in native.columns:
+            if name.startswith("posterior_query_") and name.endswith("_value"):
+                native[name] = pd.array(native[name], dtype="Float64")
+        frame = nw.from_native(native, eager_only=True)
+    else:
+        frame = nw.from_native(data, eager_only=True)
     evidence_rows = [
         {key: None if _is_missing(value) else value for key, value in row.items()}
         for row in frame.iter_rows(named=True)
@@ -1863,13 +1939,19 @@ def _readout_envelope_rows(data: Any) -> Any:
     from importlib import import_module
 
     envelope_module = import_module("increment.result_envelope")
-    if isinstance(data, import_module("increment._run").RunResult):
+    RunResult = import_module("increment._run").RunResult
+    if isinstance(data, RunResult):
         return _EnvelopeReadoutRows(
             envelope_module.result_rows(data.cells, data.live_rows), data.metadata, data.cells
         )
-    if not isinstance(data, envelope_module.AnalysisEnvelope):
-        return data
-    return _EnvelopeReadoutRows(envelope_module.result_rows(data.cells), data.metadata, data.cells)
+    if isinstance(data, envelope_module.AnalysisEnvelope):
+        return _EnvelopeReadoutRows(
+            envelope_module.result_rows(data.cells), data.metadata, data.cells
+        )
+    persisted_cells = getattr(data, "_persisted_cells", None)
+    if persisted_cells is not None:
+        return _EnvelopeReadoutRows(data, data.metadata, persisted_cells)
+    return data
 
 
 def _color_result_columns(table: Any, frame: Any) -> None:
@@ -2226,6 +2308,7 @@ def readout_table[V](
         empty=not len(frame),
         markers=multiplicity_markers,
     )
+    evidence += _posterior_query_disclosure(evidence_rows)
     disclosure = cast(Any, gt_html(evidence))
     return table.header(title or disclosure, disclosure if title else "")
 

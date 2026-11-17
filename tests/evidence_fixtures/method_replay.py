@@ -493,7 +493,15 @@ _BREAKOUT_LATER_ASSEMBLY_FIELDS = frozenset({"population", "source_snapshot_id"}
 _BREAKOUT_FIELDS_WITHOUT_OLD_AUTHORITY = frozenset(
     {"delta_evidence", "posterior_prob_favorable_reason_code", "preferred_direction"}
 )
-_BREAKOUT_OPTIONAL_OLD_FIELDS = frozenset({"mean_control", "mean_treat", "metric_type"})
+_BREAKOUT_OPTIONAL_OLD_FIELDS = frozenset(
+    {
+        "mean_control",
+        "mean_treat",
+        "metric_type",
+        "posterior_relative_model",
+        "posterior_student_t_state",
+    }
+)
 
 
 def assert_encouragement_breakout_matches_old_row(

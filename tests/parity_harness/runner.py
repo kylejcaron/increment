@@ -94,6 +94,7 @@ from pydantic import ValidationError
 
 from increment import Experiment, builders, run, workflows
 from increment.errors import CodedError, IncrementWarning, InvalidRequestError
+from increment.estimation.results import row_chance_to_beat_favorable
 from increment.evidence import SequentialCaptureRequest
 from tests._override_warnings import allow_declared_overrides
 from tests.capability_contracts import CONSTRUCTORS
@@ -182,9 +183,18 @@ def _row_payload(row: Any) -> dict[str, Any]:
     """Every public field of the row, plus the derived values the dump does not carry."""
     payload = row.model_dump(mode="python", exclude=_PATH_SPECIFIC)
     payload["p_value"] = _p_value(row)
-    payload["posterior_prob_favorable"] = (
-        row.prob_favorable() if getattr(row, "posterior_available", None) is True else None
-    )
+    available = getattr(row, "posterior_available", None) is True
+    payload["posterior_prob_favorable"] = row_chance_to_beat_favorable(row) if available else None
+    if getattr(row, "posterior_relative_model", None) is not None:
+        posterior = row._posterior() if available else None
+        payload["posterior_probability_above_03"] = (
+            posterior.survival(0.03) if posterior is not None else None
+        )
+        payload["posterior_expected_negative_lift"] = (
+            posterior.expected_negative_part(scale=row.posterior_scale)
+            if posterior is not None
+            else None
+        )
     # `log_e` is a property of the result, not a dumped field. `sequential_result` is None on
     # a non-sequential row: both sides then compare as None.
     sequential_result = getattr(row, "sequential_result", None)

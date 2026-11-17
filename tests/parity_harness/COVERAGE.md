@@ -178,3 +178,42 @@ QR is supported for definitions, unit-day artifacts, unit summaries and unit pan
 format-13 fitted evidence supports continuous/mixed moments replay and categorical cells retain
 their own aggregate replay contract. Clustering, sequential, percentile winsorization and
 triggered-population status are unchanged.
+
+## Relative-prior acceptance rows
+
+The existing `lift_prior_*_mean_ratio_conversion_cuped` family includes
+`relative_normal`, `relative_student_t` and `relative_mixture`. These compare
+definitions, adopted unit-day artifacts, unit summaries, unit panels and
+moments on identical mean, ratio, dense conversion and scalar-CUPED evidence.
+The relative Normal case is in the pull-request covering subset; the other
+families remain exhaustive.
+
+`relative_prior_*` variants reuse the existing breakout, mature-retention,
+tied-quantile, triggered-daily-lift and triggered-as-of-lift shapes. Their
+source refusals are inherited, not widened: moments do not acquire quantile
+or segment data, and day-axis trigger evidence is not invented on frame
+sources. The row payload compares the retained model/state and scale, a
+probability at nonzero relative threshold 0.03, and uncapped expected negative
+lift, alongside sampling evidence and population/multiplicity identity.
+Multicovariate CUPED keeps its existing posterior-unavailable reason.
+
+Numerical construction/query inability is retained result evidence, not a
+new preflight hazard. Scientific working-model calibration and independent
+unit-scale density/loss certification are marked slow and remain separate
+from constructor parity and the raw-outcome approximation studies.
+
+The feature-era `relative-prior-v1/operations.json.gz` capture contains only
+these eight cases: 48 constructor outcomes, including 30 successful consumer
+transcripts, four source refusals and 14 absent routes. Its transcripts name
+producer baseline `c2f810c94d4303a205ff11a9ef8699484b428560`, which includes
+the relative-prior implementation and the landed warehouse-window fixes.
+Reproduction uses `scripts/capture_evidence_identity.py` with that cutover
+and repeated `--scenario` selections, then `--consumer-inputs` with the same
+selections and `--baseline` commit. Existing captures are not recaptured.
+
+The historical operation capture SHA256 values remain
+`796155bf76d476f9d76577c4cf4e8d600dc68c52d999da2e1c66f73495b84c3c`
+(`pre-kernel`) and
+`465816e61158a11e98e94f03c5357da52030cc58075bd439289f7d14b14eb287`
+(`pre-kernel-asof`). The merged inventory rejects duplicate scenario/constructor
+coordinates rather than overwriting a historical outcome.

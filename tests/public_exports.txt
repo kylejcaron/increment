@@ -156,6 +156,7 @@ MetricTrends: Evaluate governed metrics over calendar time without an experiment
 Normal: Declare a normal prior on a metric's lift.
 MixturePrior: Declare a normal-mixture prior on the log relative lift.
 StudentTPrior: Declare a heavy-tailed Student-t prior on the lift.
+RelativeLiftPrior: Declare a prior directly on fractional relative lift.
 AsymptoticMean: Register asymptotic sequential monitoring of continuous means.
 AsymptoticSequentialResult: Read a stopped sequential state's asymptotic evidence and confidence set.
 AsymptoticSequentialEvidence: Read the set-exclusion evidence behind an asymptotic sequential decision.

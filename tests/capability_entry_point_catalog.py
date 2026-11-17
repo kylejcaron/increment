@@ -503,6 +503,11 @@ _PRIOR_CONDITIONS = (
     ("Student-t prior", "lift_prior_student_t_mean_ratio_conversion_cuped"),
     ("mixture prior", "lift_prior_mixture_mean_ratio_conversion_cuped"),
 )
+_RELATIVE_PRIOR_CONDITIONS = (
+    ("relative Normal prior", "lift_prior_relative_normal_mean_ratio_conversion_cuped"),
+    ("relative Student-t prior", "lift_prior_relative_student_t_mean_ratio_conversion_cuped"),
+    ("relative mixture prior", "lift_prior_relative_mixture_mean_ratio_conversion_cuped"),
+)
 _WINSOR_CONDITIONS = (
     ("positive pool below the size route", "winsor-percentile-three-arm"),
     ("zero-inclusive pool below the size route", "winsor-percentile-zero-inclusive-2-arm"),
@@ -623,6 +628,25 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
         "Informative Normal/Student-t/mixture log-lift priors, fixed-horizon "
         "mean/ratio/conversion/mean CUPED",
         _PRIOR_CONDITIONS,
+    ),
+    _conditional_case_row(
+        "informative-relative-lift-priors",
+        "Relative Normal/Student-t/mixture priors, fixed-horizon mean/ratio/conversion/mean CUPED",
+        _RELATIVE_PRIOR_CONDITIONS,
+    ),
+    *(
+        _case_row(f"relative-prior-{slug}", label, f"relative_prior_{case_id}")
+        for slug, label, case_id in (
+            ("breakout", "Relative Normal prior on breakout rows", "breakout_store_dimension"),
+            (
+                "retention",
+                "Relative Normal prior on mature retention breakouts",
+                "audit-retention-breakout-cohorts",
+            ),
+            ("quantile", "Relative Normal prior on quantiles", "quantile_tied_rounded_outcomes"),
+            ("daily", "Relative Normal prior on triggered daily lift", "triggered_daily_lift"),
+            ("asof", "Relative Normal prior on triggered as-of lift", "triggered_asof_lift"),
+        )
     ),
     _case_row(
         "fixed-threshold-winsor-sequential",

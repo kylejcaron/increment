@@ -1569,8 +1569,12 @@ def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_p
         )
     )
     native = _pinned_experiment(path, con)
+    from increment import runnable
+
     adopted = None
     try:
+        native_preflight = runnable(native[0], "revenue")["randomized.unadjusted"]
+        assert native_preflight.static_refusals == ()
         adopted = _publish_and_adopt(con, native, kinds=("breakout_dimension", "assignment_counts"))
         with pytest.raises(CapabilityError) as triggered:
             view_readout(*adopted, View(view="breakout", grain="total", population="triggered"))
@@ -1586,6 +1590,17 @@ def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_p
         with pytest.raises(InvalidRequestError) as assigned:
             view_readout(*adopted, View(view="breakout", grain="total", population="assigned"))
         assert assigned.value.code == "frame.metric.window_days_supported"
+        from dataclasses import replace
+
+        requested = replace(adopted[0], views=(View.overall(population="assigned"),))
+        preflight = runnable(requested, "revenue")["randomized.unadjusted"].static_refusals
+        with pytest.raises(InvalidRequestError) as overall:
+            run(requested, adopted[1], metrics=["revenue"])
+        assert overall.value.code == "frame.metric.window_days_supported"
+        assert overall.value.context == {"name": "revenue"}
+        assert [(error.code, dict(error.context)) for error in preflight] == [
+            (overall.value.code, dict(overall.value.context))
+        ]
     finally:
         if adopted is None:
             native[1].close()

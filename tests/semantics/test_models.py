@@ -2549,9 +2549,29 @@ def test_experiment_metric_binding_roundtrip():
     binding = e.bindings["orders"]
     assert binding.decision_method is not None
     assert binding.sensitivity_methods[0].variance_reduction == "cuped"
-    assert binding.prior is not None
+    assert isinstance(binding.prior, NormalPriorSpec)
     assert binding.prior.sigma == 0.03
     assert "revenue" not in e.bindings  # shorthand has no binding
+
+
+@pytest.mark.parametrize(
+    "distribution",
+    [
+        {"type": "normal", "mu": 0.0, "sigma": 0.1},
+        {"type": "student_t", "nu": 4.0, "scale": 0.1, "k": 80},
+        {
+            "type": "normal_mixture",
+            "weights": [0.25, 0.75],
+            "means": [-0.1, 0.2],
+            "sigmas": [0.05, 0.1],
+        },
+    ],
+)
+def test_relative_prior_binding_json_preserves_distribution(distribution):
+    declaration = {"type": "relative_lift", "distribution": distribution}
+    binding = ExperimentMetric.model_validate({"metric": "orders", "prior": declaration})
+    restored = ExperimentMetric.model_validate_json(binding.model_dump_json())
+    assert restored.model_dump(mode="json")["prior"] == declaration
 
 
 def test_guardrail_binding_included_in_bindings_and_guardrail_names():
@@ -2571,7 +2591,7 @@ def test_guardrail_binding_included_in_bindings_and_guardrail_names():
     )
     assert e.guardrail_names == ["latency"]
     prior = e.bindings["latency"].prior
-    assert prior is not None
+    assert isinstance(prior, NormalPriorSpec)
     assert prior.sigma == 0.01
 
 
