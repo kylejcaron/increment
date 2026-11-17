@@ -149,6 +149,10 @@ tests/estimation/test_learner.py 3
 tests/estimation/test_meta.py 2
 tests/estimation/test_quantile.py 7
 tests/estimation/test_quantile_recovery.py 2
+# Direct numerical checks cover inverse tails and integration partitions
+# that public readout methods cannot express; keep these import counts bounded.
+tests/estimation/test_relative_conjugate.py 4
+tests/estimation/test_relative_posterior.py 7
 tests/estimation/test_results.py 8
 tests/estimation/test_scorestats.py 2
 tests/estimation/test_sequential.py 1

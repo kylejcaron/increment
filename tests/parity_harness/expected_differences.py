@@ -226,15 +226,11 @@ def declared_directions(experiment: Any) -> dict[str, str | None]:
 
 
 def with_declared_favorable_sides(expected: Any, declared: Mapping[str, str | None]) -> Any:
-    """The frozen capture with each compiled plan it records given the favorable sides its
-    metrics declare, which plans captured earlier left out.
+    """Supply missing historical plan sides and verify sides in newer captures.
 
-    A plan is a mapping holding ``procedures`` and ``view_policies``, or that mapping as JSON
-    under ``decision_plan``. An arm procedure gains "greater" when ``declared`` names its
-    metric's ``preferred_direction`` "increase" and "less" for "decrease"; any other
-    declaration adds none, so a side the current plan records for it fails the caller's
-    comparison. Refuses a plan that already records a side or names a metric ``declared``
-    lacks, so the rule fails once a capture records the sides itself.
+    Relative/absolute procedures use the metric's recorded declaration:
+    increase means greater, decrease means less, and no declaration means no
+    side. A captured side must already agree; it is never overwritten.
     """
 
     def migrate_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -242,9 +238,12 @@ def with_declared_favorable_sides(expected: Any, declared: Mapping[str, str | No
         for metric, procedure in plan["procedures"].items():
             side = None
             if procedure.get("kind") in {"relative", "absolute"}:
-                assert "favorable_side" not in procedure, f"{metric} already records its side"
                 assert metric in declared, f"{metric} has no recorded declaration"
                 side = _DECLARED_SIDES.get(declared[metric] or "")
+                if "favorable_side" in procedure:
+                    assert procedure["favorable_side"] == side, (
+                        f"{metric} records a side inconsistent with its declaration"
+                    )
             procedures[metric] = (
                 procedure if side is None else {**procedure, "favorable_side": side}
             )
@@ -1473,6 +1472,25 @@ def _assert_score_replaced_wald(
     half_width = float(norm.isf(alpha / 2.0)) * expected["abs_se"]
     wald = (expected["abs_diff"] - half_width, expected["abs_diff"] + half_width)
     assert nested_close(wald, (expected["abs_lb"], expected["abs_ub"])), (alpha, wald)
+
+
+def without_absent_relative_posterior_state(
+    expected: Mapping[str, Any], actual: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Drop null relative-posterior columns absent from a frozen row.
+
+    Typed rows omit absent state; flattened tables retain its null columns. A
+    non-null addition has no historical authority and fails. State recorded by
+    the capture stays untouched for the caller's complete comparison.
+    """
+    projected = dict(actual)
+    for name in ("posterior_relative_model", "posterior_student_t_state"):
+        if name not in expected:
+            assert actual.get(name) is None, (
+                f"relative posterior field {name!r} has a value but no frozen authority"
+            )
+            projected.pop(name, None)
+    return projected
 
 
 def without_gained_arm_facts(

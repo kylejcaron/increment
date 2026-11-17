@@ -10,6 +10,7 @@ from fractions import Fraction
 from typing import Any, Literal
 
 from increment._display import interval_text
+from increment._posterior_projection import _project_posterior_query
 from increment.estimation.readout_types import (
     CellKey,
     ReadoutMetadata,
@@ -20,8 +21,6 @@ from increment.estimation.results import (
     _selection_qualification,
     contrast_rejection_side,
     contrast_stat_sig,
-    row_chance_to_beat,
-    row_chance_to_beat_favorable,
     row_favorable_side,
     row_verdict,
 )
@@ -676,13 +675,7 @@ def render_brief_qualification(row, family=None, *, alpha=None) -> str | None:
     return "; ".join(labels) if labels else None
 
 
-def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[str, ...]:
-    """Project cells and retained disclosures into source-qualified brief lines."""
-    rows_by_identity = {
-        (row.source_snapshot_id, CellKey.from_row(row)): row
-        for group in interpretation.groups
-        for row in group.visible_rows
-    }
+def _readout_cell_labels(cells, interpretation: ReadoutInterpretation) -> tuple[str, ...]:
     source_ids = {cell.source_snapshot_id for cell in cells if cell.source_snapshot_id is not None}
     comparisons = {
         (group.source_snapshot_id, CellKey.from_row(row)): (
@@ -693,7 +686,7 @@ def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[
         for row in group.visible_rows
     }
     varying = _varying_fields(cell.identity.key for cell in cells)
-    lines = []
+    labels = []
     for cell in cells:
         key = cell.identity.key
         label = _cell_coordinates(key, varying)
@@ -702,6 +695,21 @@ def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[
             label += f", comparison={comparison[1]} vs {comparison[0]}"
         if len(source_ids) > 1 and cell.source_snapshot_id is not None:
             label += f", source={_display_source(cell.source_snapshot_id)}"
+        labels.append(label)
+    return tuple(labels)
+
+
+def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[str, ...]:
+    """Project cells and retained disclosures into source-qualified brief lines."""
+    rows_by_identity = {
+        (row.source_snapshot_id, CellKey.from_row(row)): row
+        for group in interpretation.groups
+        for row in group.visible_rows
+    }
+    labels = _readout_cell_labels(cells, interpretation)
+    lines = []
+    for cell, label in zip(cells, labels, strict=True):
+        key = cell.identity.key
         status = cell.components["sampling"][0]
         row = rows_by_identity.get((cell.source_snapshot_id, key))
         text = _brief_summary_text(
@@ -998,10 +1006,15 @@ def _render_group_rows(group, visible_rows) -> list[str]:
                 if relative and posterior_estimate is not None
                 else repr(posterior_estimate)
             )
-            if row_favorable_side(row) is None:
-                chance = f"chance_to_beat={row_chance_to_beat(row)!r}"
-            else:
-                chance = f"chance_to_beat_favorable={row_chance_to_beat_favorable(row)!r}"
+            operation = (
+                "chance_to_beat" if row_favorable_side(row) is None else "chance_to_beat_favorable"
+            )
+            query = _project_posterior_query(row, operation=operation, parameters={})
+            chance = (
+                f"{operation}={query.value!r}"
+                if query.code is None
+                else f"{operation} unavailable {query.code}: {_reason(query.context)}"
+            )
             lines.append(f"{row.metric} posterior: estimate={estimate}; {chance}")
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:

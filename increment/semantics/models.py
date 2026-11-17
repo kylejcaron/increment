@@ -39,7 +39,16 @@ from increment._literals import (
     Correction,
     PreferredDirection,
 )
-from increment.errors import CodedModel, DefinitionError, RefusalSpec
+from increment.errors import (
+    MODEL_FIELD_REFUSALS,
+    CodedModel,
+    DefinitionError,
+    InvalidRequestError,
+    RefusalSpec,
+    raiser,
+    refusals,
+    refuse,
+)
 from increment.semantics.design import (
     ALLOCATION_SCHEME_INCOMPATIBLE,
     AllocationScheme,
@@ -1981,6 +1990,135 @@ class MethodSpec(_Base):
         return self
 
 
+_PRIOR_REFUSALS = refusals(
+    InvalidRequestError,
+    {
+        "estimation.priors.mixture.prior_needs_least": "a mixture prior needs at least one component",
+        "estimation.priors.mixture.weights_means_sigmas": "weights/means/sigmas must have the same length, got {k}/{means}/{sigmas}",
+        "estimation.priors.mixture.every_weight_mean": "every mixture weight, mean, and sigma must be finite, got weights={weights}, means={means}, sigmas={sigmas}",
+        "estimation.priors.mixture.every_weight": "every mixture weight must be > 0",
+        "estimation.priors.mixture.every_sigma": "every mixture sigma must be > 0",
+        "estimation.priors.mixture.weights_sum": "mixture weights must sum to 1, got {total}",
+    },
+)
+_raise_prior = raiser(_PRIOR_REFUSALS)
+
+
+def _validate_mixture_prior(
+    weights: tuple[float, ...], means: tuple[float, ...], sigmas: tuple[float, ...]
+) -> None:
+    """Validate finite components without normalizing or reordering them."""
+    k = len(weights)
+    if k == 0:
+        _raise_prior("estimation.priors.mixture.prior_needs_least")
+    if len(means) != k or len(sigmas) != k:
+        _raise_prior(
+            "estimation.priors.mixture.weights_means_sigmas",
+            k=k,
+            means=len(means),
+            sigmas=len(sigmas),
+        )
+    # NaN would pass the positivity and normalization comparisons.
+    if not (
+        all(math.isfinite(w) for w in weights)
+        and all(math.isfinite(m) for m in means)
+        and all(math.isfinite(s) for s in sigmas)
+    ):
+        _raise_prior(
+            "estimation.priors.mixture.every_weight_mean",
+            weights=weights,
+            means=means,
+            sigmas=sigmas,
+        )
+    if any(w <= 0.0 for w in weights):
+        _raise_prior("estimation.priors.mixture.every_weight")
+    if any(s <= 0.0 for s in sigmas):
+        _raise_prior("estimation.priors.mixture.every_sigma")
+    total = sum(weights)
+    if abs(total - 1.0) > 1e-9:
+        _raise_prior("estimation.priors.mixture.weights_sum", total=total)
+
+
+def _validate_relative_prior_tag(value: Mapping[Any, object]) -> None:
+    """Require explicit relative-scale tagging in portable prior payloads."""
+    tag = value.get("type")
+    if isinstance(tag, str) and tag == "relative_lift":
+        return
+    code = "model.field.literal" if "type" in value else "model.field.missing"
+    refuse(
+        MODEL_FIELD_REFUSALS[code],
+        model="RelativeLiftPrior",
+        field="type",
+        loc=("type",),
+        value=tag,
+        constraint="relative_lift",
+    )
+
+
+class RelativeNormalSpec(_Base):
+    """Normal mean and standard deviation in fractional relative-lift units."""
+
+    mu: float = Field(allow_inf_nan=False)
+    sigma: float = Field(gt=0, allow_inf_nan=False)
+    type: Literal["normal"] = "normal"
+
+
+class RelativeStudentTSpec(_Base):
+    """Zero-centered Student-t declaration in fractional relative-lift units."""
+
+    type: Literal["student_t"] = "student_t"
+    nu: float = Field(gt=0, le=200, allow_inf_nan=False)
+    scale: float = Field(gt=0, allow_inf_nan=False)
+    k: int = Field(default=80, ge=2)
+
+
+class RelativeMixtureSpec(_Base):
+    """Ordered Normal-mixture components in fractional relative-lift units."""
+
+    type: Literal["normal_mixture"] = "normal_mixture"
+    weights: tuple[float, ...]
+    means: tuple[float, ...]
+    sigmas: tuple[float, ...]
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "RelativeMixtureSpec":
+        _validate_mixture_prior(self.weights, self.means, self.sigmas)
+        return self
+
+
+class RelativeLiftPriorSpec(_Base):
+    """Explicit relative-scale prior, with unrestricted real support."""
+
+    type: Literal["relative_lift"] = "relative_lift"
+    distribution: Annotated[
+        RelativeNormalSpec | RelativeStudentTSpec | RelativeMixtureSpec,
+        Field(discriminator="type"),
+    ]
+
+    @field_validator("distribution", mode="before")
+    @classmethod
+    def _known_distribution(cls, value: object) -> object:
+        if isinstance(value, (RelativeNormalSpec, RelativeStudentTSpec, RelativeMixtureSpec)):
+            return value
+        if isinstance(value, Mapping):
+            tag = value.get("type")
+            if isinstance(tag, str) and tag in ("normal", "student_t", "normal_mixture"):
+                return value
+            code, field, loc = "model.field.literal", "distribution.type", ("distribution", "type")
+            invalid_value = tag if isinstance(tag, str) else repr(tag)
+        else:
+            code, field, loc = "model.field.type", "distribution", ("distribution",)
+            invalid_value = type(value).__name__
+        refuse(
+            MODEL_FIELD_REFUSALS[code],
+            model="RelativeLiftPrior",
+            field=field,
+            loc=loc,
+            value=invalid_value,
+            constraint=("normal", "student_t", "normal_mixture"),
+        )
+
+
 class NormalPriorSpec(_Base):
     """Serializable Normal prior declaration - the YAML-safe counterpart
     of ``increment.estimation.inference.Normal``."""
@@ -2002,9 +2140,17 @@ class ExperimentMetric(_Base):
     metric: str
     decision_method: MethodSpec | None = None
     sensitivity_methods: tuple[MethodSpec, ...] = ()
-    prior: NormalPriorSpec | None = None
+    prior: NormalPriorSpec | RelativeLiftPriorSpec | None = None
     margin: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
     margin_abs: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
+
+    @field_validator("prior", mode="before")
+    @classmethod
+    def _tagged_prior(cls, value: object) -> object:
+        if isinstance(value, Mapping) and ("type" in value or "distribution" in value):
+            _validate_relative_prior_tag(value)
+            return RelativeLiftPriorSpec.model_validate(value)
+        return value
 
     @model_validator(mode="after")
     def _margins_mutually_exclusive(self) -> "ExperimentMetric":

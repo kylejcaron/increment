@@ -19,13 +19,15 @@ from increment._interpretation import (
     EffectEstimate,
     _failure_text,
     _has_sampling_result,
+    _readout_cell_labels,
     project_effect,
 )
+from increment._posterior_projection import _PosteriorQueryProjection
 from increment.errors import CodedError
 from increment.estimation._fcr_reinterval import Construction, classify
 from increment.estimation.readout_types import FamilyScope, ReadoutMetadata
 from increment.estimation.readout_types import cell_order as _readout_cell_order
-from increment.estimation.results import LiftEstimate, reinterval_selected
+from increment.estimation.results import LiftEstimate, _RowIdentity, reinterval_selected
 from increment.kernel.contracts import CellIdentity
 
 
@@ -307,6 +309,7 @@ class ResultCell:
     projection_fields: Mapping[str, JsonValue] = field(default_factory=dict)
     row_kind: str = "lift_estimate"
     row_payload: Mapping[str, JsonValue] | None = None
+    posterior_queries: tuple[_PosteriorQueryProjection, ...] = ()
     supports: Mapping[Literal["sampling", "posterior", "sequential"], frozenset[Operation]] = field(
         init=False
     )
@@ -315,6 +318,13 @@ class ResultCell:
         components = MappingProxyType(dict(self.components))
         object.__setattr__(self, "components", components)
         object.__setattr__(self, "projection_fields", _freeze(self.projection_fields))
+        object.__setattr__(
+            self,
+            "posterior_queries",
+            tuple(
+                _PosteriorQueryProjection.model_validate(query) for query in self.posterior_queries
+            ),
+        )
         allowed_row_kinds = {
             "lift_estimate",
             "breakout",
@@ -501,20 +511,7 @@ class ResultCell:
                 reason=reason if construction is None else None,
                 advisories=advisory_codes,
             )
-        posterior_available = (
-            False
-            if raw_outcomes_present
-            else (
-                (
-                    record.posterior.available
-                    if record is not None and record.posterior is not None
-                    else None
-                )
-                if row.posterior_components is None and row.posterior_latent_mean is None
-                else True
-            )
-        )
-        posterior_available = bool(posterior_available)
+        posterior_available = not raw_outcomes_present and row._posterior() is not None
         posterior_reason = (
             record.posterior.reason_code
             if record is not None and record.posterior is not None
@@ -684,6 +681,17 @@ class ResultCell:
                 reason=_failure_text(code, context, metric) or (None if explicit else fallback),
                 context=context,
             )
+        posterior = ComponentStatus("unavailable", code="results.component.unavailable")
+        if isinstance(row, _RowIdentity):
+            posterior = (
+                ComponentStatus("available")
+                if row._posterior() is not None
+                else ComponentStatus(
+                    "unavailable",
+                    code=row.posterior_reason_code or "results.component.unavailable",
+                    context=row.posterior_reason_context or {},
+                )
+            )
         return cls(
             identity=identity,
             label=label,
@@ -691,10 +699,7 @@ class ResultCell:
             source_snapshot_id=source_snapshot_id or identity.source_snapshot_id,
             components={
                 "sampling": (sampling, None),
-                "posterior": (
-                    ComponentStatus("unavailable", code="results.component.unavailable"),
-                    None,
-                ),
+                "posterior": (posterior, None),
                 "sequential": (
                     ComponentStatus("unavailable", code="results.component.unavailable"),
                     None,
@@ -964,8 +969,18 @@ class ResultCell:
             comps[name] = component
         identity_payload = self.identity.model_dump(mode="json")
         identity_payload.pop("source_content_digest", None)
+        queries = (
+            {
+                "posterior_queries": [
+                    query.model_dump(mode="json") for query in self.posterior_queries
+                ]
+            }
+            if self.posterior_queries
+            else {}
+        )
         return {
             "schema_version": _SCHEMA_VERSION,
+            **queries,
             "row_kind": self.row_kind,
             "row_payload": None if self.row_payload is None else _plain(self.row_payload),
             "identity": identity_payload,
@@ -1152,6 +1167,10 @@ class ResultCell:
             projection_fields=saved.get("projection_fields") or {},
             row_kind=row_kind,
             row_payload=row_payload,
+            posterior_queries=tuple(
+                _PosteriorQueryProjection.model_validate(query)
+                for query in saved.get("posterior_queries", ())
+            ),
         )
 
     @staticmethod
@@ -1184,6 +1203,15 @@ class ResultCell:
                 else _json(payload["row_payload"]),
                 "projection_fields": _json(payload["projection_fields"]),
             }
+            if cell.posterior_queries:
+                entry["posterior_queries"] = [
+                    {
+                        **query.model_dump(mode="json"),
+                        "parameters": _json(_plain(query.parameters)),
+                        "context": _json(_plain(query.context)),
+                    }
+                    for query in cell.posterior_queries
+                ]
             for name in ("sampling", "posterior", "sequential"):
                 status, state = cell.components[name]
                 entry[name] = {
@@ -1198,7 +1226,9 @@ class ResultCell:
                     "supports": sorted(op.value for op in cell.supports[name]),
                 }
             rows.append(entry)
-        schema = _arrow_schema()
+        schema = _arrow_schema(
+            include_posterior_queries=any(cell.posterior_queries for cell in cells)
+        )
         table = pa.Table.from_pylist(rows, schema=schema)
         return table
 
@@ -1309,7 +1339,16 @@ class ResultCell:
                 "provenance": json.loads(entry["provenance"]),
                 "summary": None if entry["summary"] is None else json.loads(entry["summary"]),
             }
-            cells.append(ResultCell.from_payload(payload))
+            if entry.get("posterior_queries"):
+                payload["posterior_queries"] = [
+                    {
+                        **query,
+                        "parameters": json.loads(query["parameters"]),
+                        "context": json.loads(query["context"]),
+                    }
+                    for query in entry["posterior_queries"]
+                ]
+            cells.append(ResultCell.from_payload(cast("Mapping[str, JsonValue]", payload)))
         return cells
 
 
@@ -1367,7 +1406,7 @@ def _standard_error_df(payload: object) -> float | None:
     return _numeric_field(cast(Mapping[str, Any], payload), "abs_reference_df", "abs_dof", "dof")
 
 
-def _arrow_schema() -> pa.Schema:
+def _arrow_schema(*, include_posterior_queries: bool = False) -> pa.Schema:
     comp = pa.struct(
         [
             ("status", pa.string()),
@@ -1381,7 +1420,7 @@ def _arrow_schema() -> pa.Schema:
             ("supports", pa.list_(pa.string())),
         ]
     )
-    return pa.schema(
+    schema = pa.schema(
         [
             ("schema_version", pa.int32()),
             ("row_kind", pa.string()),
@@ -1406,6 +1445,24 @@ def _arrow_schema() -> pa.Schema:
             ("sequential", comp),
         ]
     )
+    if include_posterior_queries:
+        schema = schema.append(
+            pa.field(
+                "posterior_queries",
+                pa.list_(
+                    pa.struct(
+                        [
+                            ("value", pa.float64()),
+                            ("operation", pa.string()),
+                            ("parameters", pa.string()),
+                            ("code", pa.string()),
+                            ("context", pa.string()),
+                        ]
+                    )
+                ),
+            )
+        )
+    return schema
 
 
 def _can_reconstruct_relevel(row: LiftEstimate) -> bool:
@@ -1869,6 +1926,7 @@ def _replace_row(cell: ResultCell, row: LiftEstimate) -> ResultCell:
         cell.provenance,
         summary,
         _safe_projection_fields(row),
+        posterior_queries=cell.posterior_queries,
     )
 
 
@@ -1993,11 +2051,31 @@ def render(
         for index, cell in enumerate(envelope.cells)
     )
     brief = render_readout_brief(brief_cells, interpretation)
+    labels = _readout_cell_labels(envelope.cells, interpretation)
+    query_details = tuple(
+        f"{label} posterior query {query.operation} "
+        f"{_json(_plain(query.parameters))}: "
+        + (
+            f"unavailable {status.code}; {_json(_plain(status.context))}"
+            if (status := _posterior_query_status(query)).state == "unavailable"
+            else f"{query.value!r}"
+        )
+        for cell, label in zip(envelope.cells, labels, strict=True)
+        for query in cell.posterior_queries
+    )
     if audience == "brief":
-        return "\n".join(brief)
+        return "\n".join((*brief, *query_details))
     report_details = tuple(
         f"{cell.label}: {detail}"
         for cell in envelope.cells
         if (detail := _report_detail(cell)) is not None
     )
-    return "\n".join((render_readout_text(interpretation), *report_details, *brief))
+    return "\n".join((render_readout_text(interpretation), *report_details, *brief, *query_details))
+
+
+def _posterior_query_status(query: _PosteriorQueryProjection) -> ComponentStatus:
+    return ComponentStatus(
+        "unavailable" if query.code is not None else "available",
+        code=query.code,
+        context=query.context,
+    )

@@ -13,8 +13,13 @@ from increment import from_frame
 from increment.errors import InvalidRequestError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.engine import estimate_lift
-from increment.estimation.inference import Normal
-from increment.estimation.priors import MixturePrior, StudentTPrior, mixture_posterior
+from increment.estimation.inference import Normal, infer_lift
+from increment.estimation.priors import (
+    MixturePrior,
+    RelativeLiftPrior,
+    StudentTPrior,
+    mixture_posterior,
+)
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import MeanMetric, Metric
 from tests.analysis_factory import view_readout
@@ -316,3 +321,473 @@ def test_mixture_posterior_state_coupling_is_validated():
     with pytest.raises(InvalidRequestError) as unavailable:
         LiftEstimate.model_validate(row.model_dump() | {"posterior_available": False})
     assert unavailable.value.code == "estimation.results.lift.posterior_components_invalid"
+
+
+def _relative_row(prior: RelativeLiftPrior | None) -> LiftEstimate:
+    return infer_lift(
+        "rev",
+        "treatment",
+        "unadjusted",
+        math.log1p(0.2),
+        0.1 / (1.2 * math.sqrt(2)),
+        0.1 / (1.2 * math.sqrt(2)),
+        prior=prior,
+        method_role="decision",
+    )
+
+
+def test_relative_normal_update_uses_relative_likelihood_and_replays_new_threshold():
+    from scipy.stats import norm
+
+    from increment.estimators import RelativeLiftPrior
+
+    baseline = _relative_row(None)
+    row = _relative_row(RelativeLiftPrior(distribution=Normal(mu=0, sigma=0.1)))
+    sd = math.sqrt(0.005)
+    assert row.lift == baseline.lift
+    assert row.p_value() == baseline.p_value()
+    assert row.posterior_estimate == pytest.approx(0.1)
+    assert row.posterior_latent_sd == pytest.approx(sd)
+    assert row.posterior_lb == pytest.approx(0.1 - sd * norm.isf(0.025))
+    assert row.posterior_scale == "linear"
+    assert row.posterior_relative_model is not None
+    assert row.posterior_relative_model.model_dump() == {
+        "version": 1,
+        "likelihood": "relative_normal",
+        "prior_scale": "relative",
+        "support": "real",
+        "summary": "median",
+    }
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+    assert restored.prob_beyond(0.2) == pytest.approx(norm.sf(0.1 / sd))
+
+
+def test_relative_normal_preserves_mass_below_minus_one_and_uncapped_loss():
+    from scipy.stats import norm
+
+    from increment.estimation.inference import infer_lift
+    from increment.estimators import RelativeLiftPrior
+
+    row = infer_lift(
+        "rev",
+        "treatment",
+        "unadjusted",
+        math.log1p(100.0),
+        0.35,
+        0.35,
+        prior=RelativeLiftPrior(distribution=Normal(mu=0, sigma=12.0)),
+        method_role="decision",
+    )
+    variance = (101.0 * 0.35) ** 2 * 2
+    mean = 100.0 * 144.0 / (144.0 + variance)
+    sd = math.sqrt(144.0 * variance / (144.0 + variance))
+    assert row.posterior_lb is not None and row.posterior_lb < -1.0
+    assert row.prob_beyond(-1.5) == pytest.approx(norm.sf((-1.5 - mean) / sd))
+    loss = sd * norm.pdf(mean / sd) - mean * norm.cdf(-mean / sd)
+    assert loss > 1.0
+    assert row.risk_if_shipped() == pytest.approx(loss)
+
+
+def test_relative_standard_error_matches_independent_raw_mean_gradient():
+    from increment.estimators import RelativeLiftPrior
+
+    n = 1000
+    arms = [
+        ArmStats.from_raw_sums(
+            study_id="e",
+            metric="rev",
+            group_id=group,
+            n=n,
+            sum_y=n * mean,
+            sum_y2=n * (mean * mean + variance),
+        )
+        for group, mean, variance in (("control", 10.0, 4.0), ("treatment", 12.0, 9.0))
+    ]
+    [row] = estimate_lift(
+        [MeanMetric(name="rev", entity="user", fact="rev")],
+        [arm_row(arm) for arm in arms],
+        control_group="control",
+        prior=RelativeLiftPrior(distribution=Normal(mu=0.0, sigma=0.1)),
+    ).results
+    sampling_variance = 9.0 / ((n - 1) * 10.0**2) + 12.0**2 * 4.0 / ((n - 1) * 10.0**4)
+    expected_mean = 0.2 * 0.01 / (0.01 + sampling_variance)
+    expected_sd = math.sqrt(0.01 * sampling_variance / (0.01 + sampling_variance))
+    assert row.posterior_estimate == pytest.approx(expected_mean)
+    assert row.posterior_latent_sd == pytest.approx(expected_sd)
+
+
+def test_relative_student_t_replay_matches_independent_integrals_without_k_approximation():
+    # Independent 50/70-digit latent integration and direct-density references.
+    for k in (2, 80):
+        declared = RelativeLiftPrior(distribution=StudentTPrior(nu=4, scale=0.1, k=k))
+        row = _relative_row(declared)
+        assert row.posterior_available is True
+        assert row.posterior_model == "student_t_normal"
+        assert row.posterior_scale == "linear"
+        assert row.posterior_components is None
+        assert row.posterior_latent_mean is None and row.posterior_latent_sd is None
+        state = row.posterior_student_t_state
+        assert state is not None
+        assert state.prior == declared.distribution
+        assert state.likelihood_point == pytest.approx(0.2)
+        assert state.likelihood_se == pytest.approx(0.1)
+        assert row.posterior_estimate == pytest.approx(0.10975744510707510277, abs=1e-9)
+        assert row.posterior_lb == pytest.approx(-0.03542144354231887879, abs=1e-9)
+        assert row.posterior_ub == pytest.approx(0.28742976346985185452, abs=1e-9)
+        saved = row.model_dump_json()
+        restored = LiftEstimate.model_validate_json(saved)
+        assert restored.prior_spec == declared
+        assert restored.prob_beyond(0.1) == pytest.approx(0.54824321183459880589, abs=1e-10)
+        assert restored.chance_to_beat() == pytest.approx(0.92779547467510838579, abs=1e-10)
+        assert restored.risk_if_shipped() == pytest.approx(0.00227994248666679017, abs=1e-10)
+        assert restored.model_dump_json() == saved
+
+
+def test_student_t_defining_state_is_rejected_on_a_normal_posterior():
+    row = _relative_row(RelativeLiftPrior(distribution=Normal(mu=0, sigma=0.1)))
+    state = {
+        "version": 1,
+        "likelihood_point": 0.2,
+        "likelihood_se": 0.1,
+        "prior": {"nu": 4.0, "scale": 0.1, "k": 80},
+    }
+    with pytest.raises(InvalidRequestError) as caught:
+        LiftEstimate.model_validate(row.model_dump() | {"posterior_student_t_state": state})
+    assert caught.value.code == "estimation.results.lift.posterior_components_invalid"
+
+
+@pytest.mark.parametrize("change", ["missing_state", "different_prior", "unavailable"])
+def test_student_t_saved_state_requires_its_original_prior_and_available_model(change):
+    row = _relative_row(RelativeLiftPrior(distribution=StudentTPrior(nu=4, scale=0.1)))
+    payload = row.model_dump()
+    if change == "missing_state":
+        payload["posterior_student_t_state"] = None
+    elif change == "different_prior":
+        payload["posterior_student_t_state"]["prior"]["scale"] = 0.2
+    else:
+        payload["posterior_available"] = False
+    with pytest.raises(InvalidRequestError) as caught:
+        LiftEstimate.model_validate(payload)
+    assert caught.value.code == "estimation.results.lift.posterior_components_invalid"
+    corrupt = row.model_copy(update=payload)
+    with pytest.raises(InvalidRequestError) as from_pickle:
+        pickle.loads(pickle.dumps(corrupt))
+    assert from_pickle.value.code == caught.value.code
+    assert from_pickle.value.context == caught.value.context
+
+
+def test_student_t_construction_failure_keeps_sampling_original_prior_and_coded_reason():
+    prior = RelativeLiftPrior(distribution=StudentTPrior(nu=4, scale=0.1))
+    baseline = infer_lift(
+        "rev",
+        "treatment",
+        "unadjusted",
+        math.log(2),
+        math.ulp(0),
+        math.ulp(0),
+        method_role="decision",
+    )
+    row = infer_lift(
+        "rev",
+        "treatment",
+        "unadjusted",
+        math.log(2),
+        math.ulp(0),
+        math.ulp(0),
+        prior=prior,
+        method_role="decision",
+    )
+    assert row.sampling_available is True
+    assert row.lift == baseline.lift and row.p_value() == baseline.p_value()
+    assert row.posterior_available is False
+    assert row.posterior_estimate is None and row.posterior_model is None
+    assert row.prior_spec == prior
+    assert row.posterior_reason_code == "estimation.posterior.numerical_unavailable"
+    expected_context = {
+        "operation": "construction",
+        "reason": "standardized_likelihood_unrepresentable",
+        "version": 1,
+        "likelihood_point": 1.0,
+        "likelihood_se": 2 * math.ulp(0),
+    }
+    assert row.posterior_reason_context == expected_context
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+    assert restored.posterior_reason_context == expected_context
+    assert restored.chance_to_beat() is None
+
+
+def test_wrapped_asymmetric_mixture_updates_in_fractional_units_and_replays_components():
+    from scipy.stats import norm
+
+    prior = MixturePrior(weights=(0.25, 0.75), means=(-0.1, 0.2), sigmas=(0.05, 0.1))
+    declared = RelativeLiftPrior(distribution=prior)
+    row = _relative_row(declared)
+    marginal = tuple(
+        weight * norm.pdf(0.2, loc=mean, scale=math.hypot(sigma, 0.1))
+        for weight, mean, sigma in zip(prior.weights, prior.means, prior.sigmas, strict=True)
+    )
+    weights = tuple(weight / math.fsum(marginal) for weight in marginal)
+    means = tuple(
+        (0.2 * sigma**2 + mean * 0.01) / (sigma**2 + 0.01)
+        for mean, sigma in zip(prior.means, prior.sigmas, strict=True)
+    )
+    sigmas = tuple(math.sqrt(sigma**2 * 0.01 / (sigma**2 + 0.01)) for sigma in prior.sigmas)
+    components = row.posterior_components
+    assert components is not None
+    assert components.weights == pytest.approx(weights)
+    assert components.means == pytest.approx(means)
+    assert components.sigmas == pytest.approx(sigmas)
+    assert row.prior_spec == declared
+    assert row.posterior_scale == "linear"
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+    expected = math.fsum(
+        weight * norm.sf((0.1 - mean) / sigma)
+        for weight, mean, sigma in zip(weights, means, sigmas, strict=True)
+    )
+    assert restored.prob_beyond(0.1) == pytest.approx(expected, abs=1e-10)
+
+
+@pytest.mark.parametrize(
+    "distribution",
+    [
+        Normal(mu=0.0, sigma=0.1),
+        StudentTPrior(nu=4, scale=0.1),
+        MixturePrior(weights=(0.7, 0.3), means=(0.0, 0.2), sigmas=(0.05, 0.1)),
+    ],
+)
+def test_relative_prior_preserves_arithmetic_not_geometric_sampling_lift(distribution):
+    control, treatment = [4.0, 16.0] * 100, [1.0, 29.0] * 100
+    frame = pd.DataFrame(
+        {
+            "unit": range(len(control) + len(treatment)),
+            "group": ["control"] * len(control) + ["treatment"] * len(treatment),
+            "value": control + treatment,
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=["value"],
+    )
+    (baseline,) = view_readout(experiment, reader, prior=None)
+    (row,) = view_readout(experiment, reader, prior=RelativeLiftPrior(distribution=distribution))
+    assert row.lift is not None
+    assert row.lift.value == pytest.approx(0.5)
+    assert row.lift == baseline.lift
+    assert row.p_value() == baseline.p_value()
+    assert row.stat_sig() == baseline.stat_sig()
+    assert row.posterior_available is True
+    assert row.posterior_estimate != pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    "distribution",
+    [
+        Normal(mu=float.fromhex("0x1.fffffffffffffp+1023"), sigma=1e306),
+        MixturePrior(
+            weights=(1.0,),
+            means=(float.fromhex("0x1.fffffffffffffp+1023"),),
+            sigmas=(1e306,),
+        ),
+    ],
+)
+def test_relative_conjugate_unrepresentable_interval_retains_sampling(distribution):
+    log_rr, arm_se = math.log1p(1e308), 0.1 / math.sqrt(2)
+    baseline = infer_lift(
+        "value",
+        "treatment",
+        "unadjusted",
+        log_rr,
+        arm_se,
+        arm_se,
+        prior=None,
+        method_role="decision",
+    )
+    row = infer_lift(
+        "value",
+        "treatment",
+        "unadjusted",
+        log_rr,
+        arm_se,
+        arm_se,
+        prior=RelativeLiftPrior(distribution=distribution),
+        method_role="decision",
+    )
+    assert row.sampling_available is True
+    assert row.lift == baseline.lift
+    assert row.p_value() == baseline.p_value()
+    assert row.posterior_available is False
+    assert row.posterior_estimate is None
+    assert row.posterior_reason_code == "estimation.posterior.numerical_unavailable"
+    assert row.posterior_reason_context is not None
+    assert row.posterior_reason_context["operation"] == "isf"
+    assert row.posterior_reason_context["reason"] == "result_unrepresentable"
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+    assert restored.posterior_reason_context == row.posterior_reason_context
+    assert restored.lift == baseline.lift
+
+
+def test_relative_conjugate_finite_mixture_summary_replays_despite_overflowing_hints():
+    from decimal import Decimal, localcontext
+
+    from scipy.stats import norm
+
+    prior_mean = float.fromhex("0x1.fffffffffffffp+1023")
+    distribution = MixturePrior(weights=(1.0,), means=(prior_mean,), sigmas=(1e306,))
+    log_rr, arm_se = math.log1p(1e308), 0.1 / math.sqrt(2)
+    row = infer_lift(
+        "value",
+        "treatment",
+        "unadjusted",
+        log_rr,
+        arm_se,
+        arm_se,
+        prior=RelativeLiftPrior(distribution=distribution),
+        alpha=0.99,
+        method_role="decision",
+    )
+    with localcontext() as context:
+        context.prec = 100
+        x = Decimal.from_float(math.expm1(log_rr))
+        s = Decimal.from_float(math.exp(log_rr) * math.hypot(arm_se, arm_se))
+        prior_sd = Decimal.from_float(1e306)
+        marginal_variance = s * s + prior_sd * prior_sd
+        mean = (
+            x * prior_sd * prior_sd + Decimal.from_float(prior_mean) * s * s
+        ) / marginal_variance
+        sd = s * prior_sd / marginal_variance.sqrt()
+        threshold = 1.79e308
+        z = float((Decimal.from_float(threshold) - mean) / sd)
+    assert row.posterior_available is True
+    assert row.posterior_estimate is not None
+    assert row.posterior_estimate == pytest.approx(float(mean), rel=1e-6)
+    assert row.posterior_lb is not None and row.posterior_ub is not None
+    assert row.posterior_lb < row.posterior_estimate < row.posterior_ub
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+    assert restored.prob_beyond(threshold) == pytest.approx(norm.sf(z), abs=1e-10)
+
+
+@pytest.mark.parametrize("family", ["normal", "mixture"])
+@pytest.mark.parametrize("conditioning", ["subnormal_scale", "rounded_center"])
+def test_relative_conjugate_unretainable_density_preserves_sampling(family, conditioning):
+    tiny = math.ulp(0.0)
+    log_rr, se_t, se_c, prior_sigma = (
+        (0.0, tiny, 2 * tiny, tiny)
+        if conditioning == "subnormal_scale"
+        else (math.log(2), 1e-17 / (2 * math.sqrt(2)), 1e-17 / (2 * math.sqrt(2)), 1e-20)
+    )
+    distribution = (
+        Normal(mu=0.0, sigma=prior_sigma)
+        if family == "normal"
+        else MixturePrior(weights=(1.0,), means=(0.0,), sigmas=(prior_sigma,))
+    )
+    baseline = infer_lift(
+        "value", "treatment", "unadjusted", log_rr, se_t, se_c, prior=None, method_role="decision"
+    )
+    row = infer_lift(
+        "value",
+        "treatment",
+        "unadjusted",
+        log_rr,
+        se_t,
+        se_c,
+        prior=RelativeLiftPrior(distribution=distribution),
+        method_role="decision",
+    )
+    assert row.lift == baseline.lift
+    assert row.posterior_available is False
+    assert row.posterior_reason_code == "estimation.posterior.numerical_unavailable"
+    assert row.posterior_reason_context is not None
+    assert row.posterior_reason_context["operation"] == "construction"
+    assert row.posterior_reason_context["reason"] == "accuracy_unresolved"
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+    assert restored.posterior_reason_context == row.posterior_reason_context
+    assert restored.lift == baseline.lift
+
+
+def test_relative_conjugate_exact_narrow_center_is_not_blanket_refused():
+    arm_se = 1e-17 / (2 * math.sqrt(2))
+    row = infer_lift(
+        "value",
+        "treatment",
+        "unadjusted",
+        math.log(2),
+        arm_se,
+        arm_se,
+        prior=RelativeLiftPrior(distribution=Normal(mu=1.0, sigma=1.0)),
+        method_role="decision",
+    )
+    assert row.posterior_available is True
+    assert row.prob_beyond(1.0) == pytest.approx(0.5, abs=1e-10)
+
+
+@pytest.mark.parametrize("family", ["normal", "mixture"])
+def test_relative_conjugate_cancellation_retains_original_target_median(family):
+    from fractions import Fraction
+
+    log_rr = math.log1p(float(2**62 + 2**10))
+    point = math.expm1(log_rr)
+    prior_mean, prior_sigma = -point / 4 + 256, float(2**51)
+    arm_se = float(2**52) / math.exp(log_rr) / math.sqrt(2)
+    se = math.exp(log_rr) * math.hypot(arm_se, arm_se)
+    vp, vl = Fraction(prior_sigma) ** 2, Fraction(se) ** 2
+    expected = float((Fraction(point) * vp + Fraction(prior_mean) * vl) / (vp + vl))
+    distribution = (
+        Normal(mu=prior_mean, sigma=prior_sigma)
+        if family == "normal"
+        else MixturePrior(weights=(1.0,), means=(prior_mean,), sigmas=(prior_sigma,))
+    )
+    row = infer_lift(
+        "value",
+        "treatment",
+        "unadjusted",
+        log_rr,
+        arm_se,
+        arm_se,
+        prior=RelativeLiftPrior(distribution=distribution),
+        alpha=0.99,
+        method_role="decision",
+    )
+    assert row.posterior_available is True
+    assert row.posterior_estimate == pytest.approx(expected, abs=1e-9, rel=1e-6)
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+    assert restored.posterior_estimate == pytest.approx(expected, abs=1e-9, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    "point,weights,reference",
+    [
+        (0.0, (0.5, math.nextafter(0.5, 0.0)), -0.8667931313940471),
+        (math.ulp(0.0), (0.5, 0.5), 0.39734895150982776),
+    ],
+)
+def test_relative_mixture_weight_precision_never_publishes_wrong_flat_median(
+    point, weights, reference
+):
+    row = infer_lift(
+        "value",
+        "treatment",
+        "unadjusted",
+        point,
+        0.25 / math.sqrt(2),
+        0.25 / math.sqrt(2),
+        prior=RelativeLiftPrior(
+            distribution=MixturePrior(
+                weights=weights,
+                means=(-1.0, 1.0),
+                sigmas=(1 / 64, 1 / 64),
+            )
+        ),
+        method_role="decision",
+    )
+    # Independent 120/500-digit original-weight/direct-tail solutions.
+    if row.posterior_available:
+        assert row.posterior_estimate == pytest.approx(reference, abs=1e-9, rel=1e-6)
+    else:
+        assert row.posterior_reason_code == "estimation.posterior.numerical_unavailable"
+        assert row.posterior_reason_context is not None
+        assert row.posterior_reason_context["reason"] == "accuracy_unresolved"
+    assert row.sampling_available is True

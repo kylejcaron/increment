@@ -866,6 +866,61 @@ def test_estimates_to_readout_qualifies_only_stored_posterior_values():
     assert "risk_if_shipped" not in row
 
 
+def test_legacy_unrepresentable_loss_preserves_independent_table_queries():
+    import json
+    import math
+
+    from increment.estimation.inference import infer_lift
+    from increment.estimation.priors import Normal
+
+    row = infer_lift(
+        metric="legacy",
+        group_id="T",
+        method="unadjusted",
+        method_role="decision",
+        log_rr=709.75,
+        se_t=0.28,
+        se_c=0.28,
+        alpha=0.99,
+        prior=Normal(mu=709.75, sigma=100),
+        preferred_direction="decrease",
+    )
+    assert row.risk_if_shipped_favorable() == math.inf
+    assert all(
+        value is not None and math.isfinite(value)
+        for value in (
+            row.posterior_estimate,
+            row.posterior_lb,
+            row.posterior_ub,
+        )
+    )
+    saved = row.model_dump_json()
+    sibling = _valid_estimate(
+        metric="sibling", prior=Normal(mu=0, sigma=0.1), preferred_direction="increase"
+    )
+    projected, other = estimates_to_readout([row, sibling])
+    assert projected["lift"] == row.require_lift().value
+    assert projected["posterior_available"] is True
+    assert projected["posterior_chance_to_beat"] == row.chance_to_beat_favorable()
+    assert projected["posterior_risk_if_shipped"] is None
+    assert projected["posterior_risk_if_shipped_reason_code"] == (
+        "estimation.posterior.numerical_unavailable"
+    )
+    assert projected["posterior_risk_if_shipped_reason_context"] == {
+        "operation": "risk_if_shipped_favorable",
+        "reason": "result_unrepresentable",
+    }
+    encoded = projected["posterior_queries"]
+    assert isinstance(encoded, str)
+    successful, unavailable = json.loads(encoded)
+    assert successful["value"] == projected["posterior_chance_to_beat"]
+    assert successful["code"] is None
+    assert unavailable["value"] is None
+    assert unavailable["context"] == projected["posterior_risk_if_shipped_reason_context"]
+    assert other["posterior_risk_if_shipped"] == sibling.risk_if_shipped_favorable()
+    assert row.model_dump_json() == saved
+
+
 def test_readout_uses_stored_posterior_for_clustered_and_binomial_rows():
     from increment.estimation.engine import Method
     from increment.estimation.inference import Normal
@@ -4139,3 +4194,63 @@ def test_numerical_readout_caveats_are_grouped_by_full_detail_in_native_gt():
         "Difference detected¹",
         "Difference detected²",
     ]
+
+
+@pytest.mark.integration
+def test_restored_collection_keeps_recorded_query_failure_in_table_and_csv():
+    import io
+    import json
+
+    import pandas as pd
+
+    from increment import MetricSpec, from_frame, run
+    from increment.estimators import Normal, RelativeLiftPrior
+    from increment.results import ReadoutResults
+
+    pytest.importorskip("coeftable")
+    result = run(
+        *from_frame(
+            pd.DataFrame(
+                {
+                    "unit": list(range(8)),
+                    "arm": ["control"] * 4 + ["treatment"] * 4,
+                    "value": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
+                }
+            ),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="value",
+                    type="mean",
+                    prior=RelativeLiftPrior(distribution=Normal(mu=0, sigma=0.1)),
+                )
+            ],
+        )
+    )
+    saved = json.loads(result.readout().model_dump_json())
+    saved["metadata"].update(
+        run_id=result.run.run_id, analysis_spec_hash=result.run.analysis_spec_hash
+    )
+    saved["persisted_cells"] = [cell.to_payload() for cell in result.cells]
+    query = {
+        "value": None,
+        "operation": "quantile",
+        "parameters": {"probability": 0.25},
+        "code": "estimation.posterior.numerical_unavailable",
+        "context": {"operation": "quantile", "reason": "accuracy_unresolved"},
+    }
+    saved["persisted_cells"][0]["posterior_queries"] = [query]
+    restored = ReadoutResults.model_validate_json(json.dumps(saved))
+
+    table = readout_table(restored, advisory=True)
+    projected = table.data.iloc[0]
+    assert json.loads(projected["posterior_queries"]) == [query]
+    assert pd.isna(projected["posterior_query_0_value"])
+    assert not any(name.startswith("posterior_query_1_") for name in table.data.columns)
+    exported = pd.read_csv(io.StringIO(table.data.to_csv(index=False))).iloc[0]
+    assert json.loads(exported["posterior_queries"]) == [query]
+    assert pd.isna(exported["posterior_query_0_value"])
+    assert json.loads(exported["posterior_query_0_context"]) == query["context"]

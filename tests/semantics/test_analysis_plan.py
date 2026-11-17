@@ -4,7 +4,12 @@ the per-experiment margin fields on ExperimentMetric bindings."""
 import pytest
 
 from increment.errors import DefinitionError, InvalidRequestError
-from increment.semantics.models import AnalysisPlan, ExperimentMetric, InferenceSpec
+from increment.semantics.models import (
+    AnalysisPlan,
+    ExperimentMetric,
+    InferenceSpec,
+    NormalPriorSpec,
+)
 from tests.sequential_cases import registered_spec
 
 
@@ -79,7 +84,7 @@ def test_entry_looks_up_binding_across_roles():
     plan = _full_plan()
     binding = plan.entry("add_to_cart")
     assert isinstance(binding, ExperimentMetric)
-    assert binding.prior is not None
+    assert isinstance(binding.prior, NormalPriorSpec)
     assert binding.prior.mu == 0.0
 
     guardrail = plan.entry("checkout_latency_ms")

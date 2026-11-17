@@ -48,7 +48,7 @@ from increment.estimation.inference import (
     MIXTURE_PRIORS_ARE,
     Prior,
 )
-from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimation.priors import MixturePrior, RelativeLiftPrior, StudentTPrior
 from increment.estimators.registry import uses_builtin_adjustment_preflight
 
 if TYPE_CHECKING:
@@ -369,7 +369,7 @@ def _no_decision_method(
 
 def _reject_unsupported_prior_type(prior: Prior | None) -> None:
     """Refuse a prior whose posterior this path cannot reconstruct."""
-    if isinstance(prior, (StudentTPrior, MixturePrior)):
+    if isinstance(prior, (StudentTPrior, MixturePrior, RelativeLiftPrior)):
         _refuse("estimation.adjust.prior.type")
 
 
@@ -688,6 +688,8 @@ def validate_readout_adjustment(request: ReadoutRequest) -> None:
         _refuse_observational_quantiles(metrics)
         for metric, config, methods in zip(metrics, configs, method_catalog, strict=True):
             prior = config.prior
+            if isinstance(prior, RelativeLiftPrior):
+                _reject_unsupported_prior_type(prior)
             if isinstance(prior, (StudentTPrior, MixturePrior)):
                 _refuse("readout.observational.prior")
             _validate_prior_method_scales(methods, prior)

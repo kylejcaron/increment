@@ -182,6 +182,7 @@ depends_on = [
   "increment.estimation.decision_types",
   "increment.kernel.contracts",
   "increment._interpretation",
+  "increment._posterior_projection",
   "increment.estimation.sequential_result", "increment.estimation.results", "increment.estimation.multiplicity", "increment.estimation.readout_types", "increment.estimation._fcr_reinterval", "increment.estimation.family",
 ]
 [[modules]]
@@ -239,7 +240,12 @@ depends_on = ["increment._canonical", "increment._immutable"]
 [[modules]]
 path = "increment._interpretation"
 layer = "core"
-depends_on = ["increment._display", "increment.estimation.readout_types", "increment.estimation.results"]
+depends_on = ["increment._display", "increment._posterior_projection", "increment.estimation.readout_types", "increment.estimation.results"]
+
+[[modules]]
+path = "increment._posterior_projection"
+layer = "core"
+depends_on = ["increment._immutable", "increment._literals", "increment.errors", "increment.estimation._relative_posterior", "increment.estimation.priors", "increment.semantics"]
 
 [[modules]]
 path = "increment.estimation.decision_types"
@@ -331,7 +337,7 @@ depends_on = [
 [[modules]]
 path = "increment._metric_specs"
 layer = "core"
-depends_on = ["increment._finite_sample_refusals", "increment._literals", "increment.errors", "increment.semantics", "increment.estimation.engine", "increment.estimation.inference"]
+depends_on = ["increment._finite_sample_refusals", "increment._literals", "increment.errors", "increment.semantics", "increment.estimation.engine", "increment.estimation.priors"]
 
 # Shared source and decision types live in leaf modules, keeping the core
 # decision/plan/source/request/config dependency graph acyclic.
@@ -415,7 +421,7 @@ depends_on = [
 [[modules]]
 path = "increment._analysis_config"
 layer = "core"
-depends_on = ["increment.estimation.decision_types", "increment.semantics", "increment.errors", "increment.sequential_state", "increment.estimation.inference", "increment.estimation.engine", "increment.estimation.cuped.scalar", "increment.estimation.adjust"]
+depends_on = ["increment.estimation.decision_types", "increment.semantics", "increment.errors", "increment.sequential_state", "increment.estimation.priors", "increment.estimation.engine", "increment.estimation.cuped.scalar", "increment.estimation.adjust"]
 
 [[modules]]
 path = "increment._moment_plan"
@@ -555,6 +561,16 @@ depends_on = ["increment.errors"]
 path = "increment.estimation._result_types"
 layer = "core"
 depends_on = []
+
+[[modules]]
+path = "increment.estimation._relative_conjugate"
+layer = "core"
+depends_on = ["increment.estimation._relative_posterior", "increment.estimation.priors"]
+
+[[modules]]
+path = "increment.estimation._relative_posterior"
+layer = "core"
+depends_on = ["increment.errors", "increment.estimation.priors"]
 
 [[modules]]
 path = "increment.estimation._student_t"
@@ -923,6 +939,8 @@ depends_on = [
   "increment.compatibility",
   "increment.errors",
   "increment.estimation._fixed_horizon",
+  "increment.estimation._relative_conjugate",
+  "increment.estimation._relative_posterior",
   "increment.estimation._tails",
   "increment.estimation.armstats",
   "increment.estimation.decision_types",
@@ -946,7 +964,7 @@ depends_on = ["increment._literals", "increment._multiplicity"]
 [[modules]]
 path = "increment.estimation.priors"
 layer = "core"
-depends_on = ["increment.errors"]
+depends_on = ["increment.errors", "increment.semantics"]
 
 [[modules]]
 path = "increment.estimation.quantile"
@@ -975,11 +993,13 @@ depends_on = [
   "increment.declarations",
   "increment.errors",
   "increment.estimation._readout_refusals",
+  "increment.estimation._relative_posterior",
   "increment.estimation._sequential_likelihood",
   "increment.estimation.advisory",
   "increment.estimation.cuped.encoding",
   "increment.estimation.decision_types",
   "increment.estimation.priors",
+  "increment.estimation.results",
   "increment.estimation.sequential_result",
   "increment.sequential_state",
 ]
@@ -992,10 +1012,13 @@ depends_on = [
   "increment._display",
   "increment._immutable",
   "increment._literals",
+  "increment._posterior_projection",
   "increment.errors",
   "increment.estimation._fcr_reinterval",
   "increment.estimation._fixed_horizon",
   "increment.estimation._readout_refusals",
+  "increment.estimation._relative_conjugate",
+  "increment.estimation._relative_posterior",
   "increment.estimation._student_t",
   "increment.estimation._tails",
   "increment.estimation._winsor_bootstrap",
@@ -1637,6 +1660,7 @@ path = "increment.tables"
 layer = "core"
 depends_on = [
   "increment._canonical", "increment._display", "increment._readout_html",
+  "increment._posterior_projection",
   "increment.breakout.estimates", "increment.errors",
   "increment.estimation.sequential_result", "increment.breakout.projection", "increment._interpretation",
   "increment._optional", "increment.estimation.contrast_results", "increment.estimation.results", "increment.estimation.contrast",
@@ -1986,8 +2010,8 @@ depends_on = [
   "increment._metric_specs",
   "increment._source_types", "increment._window", "increment.decision", "increment.kernel.contracts",
   "increment.plan",
-  "increment.declarations", "increment.errors", "increment.query.artifact_ports", "increment.readouts", "increment.semantics",
-  "increment.sequential_source", "increment.readouts._whole_window", "increment.estimation.inference", "increment.estimation._readout_refusals", "increment.estimation.engine",
+  "increment.declarations", "increment.errors", "increment.readouts", "increment.semantics",
+  "increment.sequential_source", "increment.readouts._whole_window", "increment.estimation.priors", "increment.estimation._readout_refusals", "increment.estimation.engine",
 ]
 
 [[modules]]

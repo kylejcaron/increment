@@ -7,7 +7,7 @@ import pytest
 
 from increment import from_frame, from_moments
 from increment.estimation.decision_types import EValueEvidence
-from increment.estimation.readout_types import CellKey, IntegrityResult, StreamingDigest
+from increment.estimation.readout_types import CellKey, PosteriorInference, StreamingDigest
 from increment.workflows import capture_sequential, export_moments, sequential_snapshot
 from tests.analysis_factory import view_readout
 
@@ -294,20 +294,23 @@ def test_categorical_missing_digest_is_stable_for_unit_frame_cuped_runs():
 
 
 def test_metadata_context_is_deeply_immutable_and_portable():
-    result = IntegrityResult(
-        status="not_applicable",
-        analysis_population="assigned",
-        construction="none",
-        alpha=None,
-        observed=None,
-        expected=None,
-        randomization_grain=None,
-        code=None,
-        context={"nested": {"values": [1, 2]}},
+    result = PosteriorInference(
+        available=False,
+        reason_context={"nested": {"values": [1, 2]}},
     )
-    assert result.context["nested"]["values"] == (1, 2)
+    assert result.reason_context is not None
+    assert result.reason_context["nested"]["values"] == (1, 2)
     assert deepcopy(result) == result
-    assert pickle.loads(pickle.dumps(result)) == result
+    legacy = result.model_copy()
+    del legacy.__dict__["relative_model"]
+    del legacy.__dict__["student_t_state"]
+    restored = pickle.loads(pickle.dumps(legacy))
+    assert restored == result
+    assert restored.model_dump_json() == result.model_dump_json()
+    assert restored.model_fields_set == result.model_fields_set
+    assert restored.relative_model is None
+    assert restored.student_t_state is None
+    assert restored.available is False
 
 
 def test_cell_identity_retains_sampling_axes():

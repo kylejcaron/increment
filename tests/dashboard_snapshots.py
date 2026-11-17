@@ -546,6 +546,9 @@ def _capture_field_value(name, value, owner):
         {
             key: _captured_advisories(item) if key == "advisories" else item
             for key, item in row.items()
+            if not (
+                item is None and key in {"posterior_relative_model", "posterior_student_t_state"}
+            )
         }
         for row in value
     )

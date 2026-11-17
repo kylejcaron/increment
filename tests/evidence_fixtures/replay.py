@@ -23,6 +23,7 @@ from tests.evidence_fixtures.transcript import Transcript, _plain, _validate_rec
 from tests.parity_harness.comparison import TOLERANCE
 from tests.parity_harness.expected_differences import (
     FIT_FIELDS_GAINED_AFTER_CAPTURE,
+    without_absent_relative_posterior_state,
     without_gained_arm_facts,
     without_relative_late_log_reference,
 )
@@ -260,6 +261,8 @@ _ESTIMATOR_FIELDS = frozenset(
         "posterior_reason_context",
         "posterior_model",
         "posterior_scale",
+        "posterior_relative_model",
+        "posterior_student_t_state",
         "posterior_estimate",
         "posterior_lb",
         "posterior_ub",
@@ -492,6 +495,7 @@ def assert_estimator_matches_old_row(
     actual = without_relative_late_log_reference(
         old_row, without_gained_arm_facts(old_row, result.model_dump(mode="python"))
     )
+    actual = without_absent_relative_posterior_state(old_row, actual)
     excluded = _ASSEMBLY_ONLY_FIELDS
     if consumer == "cuped":
         excluded |= {"sampling_available"}

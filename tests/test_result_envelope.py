@@ -3090,3 +3090,220 @@ def test_confidence_set_only_report_cells_stay_available():
             assert projected[index].stat_sig() == rows[index].stat_sig()
             assert projected[index].decision_scope_complete is not False
         assert cell.identity.key in available
+
+
+@pytest.mark.parametrize(
+    ("operation", "parameters", "details"),
+    [
+        ("unknown", {"probability": "invalid"}, {}),
+        (
+            "chance_to_beat",
+            {"unexpected": {"values": [1]}},
+            {
+                "expected_parameters": (),
+                "parameters": {"unexpected": {"values": (1,)}},
+            },
+        ),
+        (
+            "quantile",
+            {},
+            {"expected_parameters": ("probability",), "parameters": {}},
+        ),
+        (
+            "quantile",
+            {"probability": True},
+            {"probability": True},
+        ),
+        (
+            "quantile",
+            {"probability": "0.5"},
+            {"probability": "0.5"},
+        ),
+        (
+            "quantile",
+            {"probability": 0.0},
+            {"probability": 0.0},
+        ),
+        (
+            "quantile",
+            {"probability": 1.0},
+            {"probability": 1.0},
+        ),
+    ],
+    ids=["operation", "extra-parameter", "missing-parameter", "boolean", "string", "zero", "one"],
+)
+def test_malformed_posterior_query_payload_refuses_with_immutable_context(
+    operation, parameters, details
+):
+    from increment.errors import CodedError
+    from increment.result_envelope import ResultCell
+
+    row, _ = _relevel_test_t_rows(*_relevel_test_data())
+    parameters = dict(parameters)
+    payload = ResultCell.from_row(row).to_payload()
+    payload["posterior_queries"] = [
+        {"value": None, "operation": operation, "parameters": parameters}
+    ]
+
+    with pytest.raises(CodedError) as caught:
+        ResultCell.from_payload(payload)
+
+    assert caught.value.code == "estimation.posterior.invalid_request"
+    assert {key: value for key, value in caught.value.context.items() if key != "reason"} == {
+        "operation": operation,
+        **details,
+    }
+    recorded_context = dict(caught.value.context)
+    with pytest.raises(TypeError):
+        cast(dict[str, object], caught.value.context)["operation"] = "changed"
+    parameters.clear()
+    assert caught.value.context == recorded_context
+
+
+def _assert_single_cell_query_columns(cell, failed):
+    import json
+    from dataclasses import replace
+
+    import pandas as pd
+
+    from increment.result_envelope import AnalysisEnvelope
+    from increment.tables import readout_table
+
+    standalone = readout_table(AnalysisEnvelope((cell,), None), advisory=True)
+    assert pd.api.types.is_numeric_dtype(standalone.data["posterior_query_0_value"])
+    single = readout_table(
+        AnalysisEnvelope((replace(cell, posterior_queries=(failed,)),), None), advisory=True
+    )
+    assert not any(name.startswith("posterior_query_1_") for name in single.data.columns)
+    assert len(json.loads(single.data["posterior_queries"].iloc[0])) == 1
+
+
+@pytest.mark.integration
+def test_failed_posterior_query_preserves_density_and_independent_records():
+    import io
+    import json
+    from typing import cast
+
+    import pandas as pd
+
+    from increment.errors import CodedError
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.estimators import RelativeLiftPrior, StudentTPrior
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+    from increment.tables import readout_table
+    from tests.test_readout_public_scope import _relative_prior_run
+
+    results = _relative_prior_run(
+        {
+            "revenue": RelativeLiftPrior(distribution=StudentTPrior(nu=1, scale=1e-53)),
+            "sibling": RelativeLiftPrior(distribution=StudentTPrior(nu=4, scale=2)),
+        }
+    )
+    replay = ReadoutResults.model_validate_json(results.model_dump_json())
+    row = next(row for row in replay if row.metric == "revenue")
+    probability = 0.44919976139382767
+    with pytest.raises(CodedError) as direct:
+        row._posterior().quantile(probability)
+    assert direct.value.code == "estimation.posterior.numerical_unavailable"
+    assert direct.value.context["reason"] == "accuracy_unresolved"
+    payload = row.as_cells()[0].to_payload()
+    payload["posterior_queries"] = [
+        {
+            "value": None,
+            "operation": "quantile",
+            "parameters": {"probability": probability},
+            "code": direct.value.code,
+            "context": dict(direct.value.context),
+        },
+        {
+            "value": row.risk_if_shipped_favorable(),
+            "operation": "risk_if_shipped_favorable",
+            "parameters": {},
+        },
+    ]
+    recorded = ResultCell.from_payload(json.loads(json.dumps(payload)))
+    failed, good = recorded.posterior_queries
+    assert failed.value is None
+    assert failed.code == direct.value.code
+    assert failed.context == direct.value.context
+    assert good.code is None and good.value == pytest.approx(row.risk_if_shipped_favorable())
+    for mapping in (failed.parameters, good.context):
+        with pytest.raises(TypeError):
+            cast(dict[str, object], mapping)["mutated"] = True
+    cells = tuple(
+        recorded if cell.identity.key.metric == "revenue" else cell for cell in replay.as_cells()
+    )
+    envelope = AnalysisEnvelope(cells, replay.metadata)
+    for restored in (
+        AnalysisEnvelope.from_payload(json.loads(json.dumps(envelope.to_payload()))),
+        AnalysisEnvelope.from_arrow(envelope.to_arrow()),
+    ):
+        cell = next(cell for cell in restored.cells if cell.identity.key.metric == "revenue")
+        assert cell.posterior_queries == (failed, good)
+        assert cell.components["posterior"][0].state == "available"
+        assert cell.retained_row().posterior_available is True
+        assert cell.retained_row().risk_if_shipped_favorable() == good.value
+        assert all(cell.components["sampling"][0].state != "unavailable" for cell in restored.cells)
+        table = readout_table(restored, advisory=True)
+        data = table.data
+        projected = data.loc[data["metric"] == "revenue"].iloc[0]
+        assert pd.isna(projected["posterior_query_0_value"])
+        assert projected["posterior_query_1_value"] == good.value
+        records = json.loads(projected["posterior_queries"])
+        assert records == [failed.model_dump(mode="json"), good.model_dump(mode="json")]
+        csv = pd.read_csv(io.StringIO(data.to_csv(index=False)))
+        encoded = csv.loc[csv["metric"] == "revenue"].iloc[0]
+        assert pd.isna(encoded["posterior_query_0_value"])
+        assert json.loads(encoded["posterior_query_0_context"]) == dict(direct.value.context)
+        assert json.loads(encoded["posterior_queries"]) == records
+        html = table.gt().as_raw_html()
+        assert failed.operation in html and failed.code in html
+        assert str(probability) in html and str(failed.context["reason"]) in html
+        _assert_single_cell_query_columns(cell, failed)
+        for audience in ("full", "brief"):
+            text = render(restored, audience=audience)
+            assert failed.code in text
+            assert row.metric in text and "sibling" in text
+    legacy = row.as_cells()[0]
+    assert "posterior_queries" not in legacy.to_payload()
+    assert "posterior_queries" not in ResultCell.to_arrow([legacy]).column_names
+    assert ResultCell.from_payload(legacy.to_payload()).posterior_queries == ()
+
+
+@pytest.mark.integration
+def test_posterior_query_rendering_identifies_the_affected_arm():
+    from increment.errors import CodedError
+    from increment.estimators import RelativeLiftPrior, StudentTPrior
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+    from tests.test_readout_public_scope import _relative_prior_run
+
+    results = _relative_prior_run(
+        {"revenue": RelativeLiftPrior(distribution=StudentTPrior(nu=1, scale=1e-53))},
+        arms=("treatment_a", "treatment_b"),
+    )
+    affected = next(row for row in results if row.group_id == "treatment_b")
+    probability = 0.44919976139382767
+    with pytest.raises(CodedError) as direct:
+        affected._posterior().quantile(probability)
+    payload = affected.as_cells()[0].to_payload()
+    payload["posterior_queries"] = [
+        {
+            "value": None,
+            "operation": "quantile",
+            "parameters": {"probability": probability},
+            "code": direct.value.code,
+            "context": dict(direct.value.context),
+        }
+    ]
+    recorded = ResultCell.from_payload(payload)
+    (failed,) = recorded.posterior_queries
+    assert failed.code == "estimation.posterior.numerical_unavailable"
+    cells = tuple(
+        recorded if cell.identity.key.group_id == affected.group_id else cell
+        for cell in results.as_cells()
+    )
+    for audience in ("full", "brief"):
+        text = render(AnalysisEnvelope(cells, results.metadata), audience=audience)
+        (query_line,) = [line for line in text.splitlines() if failed.code in line]
+        assert affected.group_id in query_line
+        assert "treatment_a" not in query_line

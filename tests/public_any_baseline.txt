@@ -159,6 +159,7 @@
   "increment.estimators.PredictivePrior": {},
   "increment.estimators.ProspectiveAssumptionProvenance": {},
   "increment.estimators.RefusalSpec": {},
+  "increment.estimators.RelativeLiftPrior": {},
   "increment.estimators.ScalarMeanModel": {},
   "increment.estimators.SequentialCell": {},
   "increment.estimators.SequentialCompliancePolicy": {},

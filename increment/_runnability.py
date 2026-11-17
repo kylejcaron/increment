@@ -37,6 +37,7 @@ from increment.decision import (
 )
 from increment.declarations import VARIANCE_REDUCTION, estimator_refs, thaw
 from increment.errors import CapabilityError, CodedError, InvalidRequestError, RefusalSpec, refuse
+from increment.estimation.priors import prior_from_payload
 from increment.plan import with_unassigned_procedures
 from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
 
@@ -396,25 +397,6 @@ def refuse_recorded_margin_less_guardrail(
     )
 
 
-def _validate_artifact_metrics(declaration: Mapping[str, Any]) -> None:
-    import json
-
-    from increment.query.artifact_ports import artifact_query_ports
-    from increment.semantics.artifact import MetricMeasure
-
-    artifact_reader = artifact_query_ports().reader
-    _declared_metric_definitions = artifact_reader._declared_metric_definitions
-    _metric_spec_from_binding = artifact_reader._metric_spec_from_binding
-
-    identity = declaration["source_declaration"]
-    definitions = _declared_metric_definitions(json.dumps(identity["context"]))
-    for binding in identity["metric_measures"]:
-        _metric_spec_from_binding(
-            TypeAdapter(MetricMeasure).validate_python(binding),
-            definitions[binding["metric_name"]],
-        )
-
-
 def _estimator_config(
     config: ResolvedMetricConfig,
     design: Design,
@@ -452,7 +434,6 @@ def _estimator_config(
 def typed_request_options(options: Mapping[str, Any]) -> dict[str, Any]:
     """Restore portable request declarations to their runtime models."""
     from increment.estimation.engine import Method
-    from increment.estimation.inference import Prior
     from increment.semantics.models import Metric
 
     values = thaw(options)
@@ -473,7 +454,7 @@ def typed_request_options(options: Mapping[str, Any]) -> dict[str, Any]:
         ]
     prior = values.get("prior")
     if isinstance(prior, Mapping):
-        values["prior"] = TypeAdapter(Prior).validate_python(prior)
+        values["prior"] = prior_from_payload(prior)
     return values
 
 
@@ -505,7 +486,15 @@ def _request_config(
     capabilities: EvidenceCapabilities,
 ) -> tuple[dict[str, Any], tuple[ResolvedMetricConfig, ...], tuple[ResolvedMetricConfig, ...]]:
     values = typed_request_options(options)
-    base = _CONFIGS.validate_python(declaration["configs"])
+    recorded_configs = tuple(
+        {**config, "prior": prior_from_payload(prior)}
+        if isinstance(config, Mapping)
+        and isinstance((prior := config.get("prior")), Mapping)
+        and ("type" in prior or "distribution" in prior)
+        else config
+        for config in declaration["configs"]
+    )
+    base = _CONFIGS.validate_python(recorded_configs)
     metrics = select_metrics(
         tuple(config.metric for config in base),
         values.get("metrics"),
@@ -581,6 +570,29 @@ def _validate_declared_day_axis(
     )
 
 
+def _validate_declared_scalar_route(
+    request: ReadoutRequest, operation: str, capabilities: EvidenceCapabilities
+) -> None:
+    from increment._analysis_config import DAY_AXIS_ROUTES, validate_scalar_route
+    from increment.readouts._common import _sequential_inference
+
+    scalar = capabilities.scalar
+    validate_scalar_route(
+        request.configs,
+        route=DAY_AXIS_ROUTES[operation],
+        representation="registered"
+        if _sequential_inference(request.plan) is not None
+        else "implicit",
+        registered_plan=request.plan,
+        design=request.design,
+        covariate_moments_available=(
+            scalar is None
+            or scalar.covariate_grains is None
+            or request.grain in scalar.covariate_grains
+        ),
+    )
+
+
 def _validate_scope_request(
     declaration: Mapping[str, Any],
     request: ReadoutRequest,
@@ -592,6 +604,8 @@ def _validate_scope_request(
 ) -> None:
     if scope.view == "daily":
         check(_validate_declared_day_axis, declaration, request, operation, capabilities)
+        if refusals:
+            return
         check(validate_request, request)
     elif scope.view == "asof":
         check(_validate_declared_day_axis, declaration, request, operation, capabilities)
@@ -616,6 +630,8 @@ def _validate_scope_request(
             check(validate_request, request)
     else:
         check(validate_request, request)
+    if operation == "run_asof_lift" and not refusals:
+        check(_validate_declared_scalar_route, request, operation, capabilities)
     if operation == "run_asof_lift" and not refusals:
         validation_request = request
         if capabilities.kind == "moments" and capabilities.sequential_capture == "replay":
@@ -721,12 +737,11 @@ def readout_refusals(
             ):
                 refusals.append(error)
 
-    if capabilities.kind == "artifact":
-        check(_validate_artifact_metrics, declaration)
     _validate_scope_request(declaration, request, scope, operation, capabilities, check, refusals)
+    if refusals:
+        return tuple(refusals)
     if (
-        not refusals
-        and options.get("value_scale")
+        options.get("value_scale")
         and not effective_capabilities(capabilities).value_scale_overrides
     ):
         try:
@@ -777,26 +792,17 @@ def readout_refusals(
         from increment.readouts._daily import _validate_daily_inference
 
         check(_validate_daily_inference, inference)
-    if operation in {"run_daily_lift", "run_asof_lift"}:
-        from increment._analysis_config import DAY_AXIS_ROUTES, validate_scalar_route
-
-        check(
-            validate_scalar_route,
-            configs,
-            route=DAY_AXIS_ROUTES[operation],
-            representation="registered" if inference is not None else "implicit",
-            registered_plan=plan,
-            design=context.design,
-            covariate_moments_available=(
-                scalar is None
-                or scalar.covariate_grains is None
-                or scope.grain in scalar.covariate_grains
-            ),
-        )
+        check(_validate_declared_scalar_route, request, operation, capabilities)
     if getattr(context.design, "mechanism", None) == "observational":
         from increment.estimation._readout_refusals import refuse_observational_quantile
 
         for metric in request.metrics:
             if metric.type == "quantile":
                 check(refuse_observational_quantile, metric)
+    if (
+        not refusals
+        and operation == "run"
+        and (capabilities.kind == "artifact" or "artifact_experiment" in capabilities.operations)
+    ):
+        check(validate_windowed_quantile_support, request.metrics, supported=False)
     return tuple(refusals)

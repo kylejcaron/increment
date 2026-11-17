@@ -85,7 +85,7 @@ from increment.estimation.inference import (
     normal_posterior,
     posterior_fields,
 )
-from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimation.priors import RelativeLiftPrior
 from increment.estimation.results import Estimate, LiftEstimate, _reference_fields, failed_cell_row
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,
@@ -704,6 +704,12 @@ def _compliance_metric(uptake_window_days: int | None = None) -> MeanMetric:
     )
 
 
+def _supported_prior(prior: Prior | None) -> Normal | None:
+    if prior is None or isinstance(prior, Normal):
+        return prior
+    refuse(MIXTURE_PRIORS_ARE)
+
+
 def validate_readout_encouragement(request: ReadoutRequest) -> None:
     """Validate encouragement-specific static compatibility at the seam."""
 
@@ -713,6 +719,9 @@ def validate_readout_encouragement(request: ReadoutRequest) -> None:
     validate_readout_encouragement_identification(request)
     metrics = tuple(request.metrics)
     configs = tuple(request.configs)
+    for config in configs:
+        if isinstance(config.prior, RelativeLiftPrior):
+            _supported_prior(config.prior)
     estimands = request.estimands
     plan = request.plan
     raw_inference = plan.inference
@@ -1005,8 +1014,7 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
     route_tail: float | None,
 ) -> _PreparedEncouragementEstimation | DecisionComputation[LiftEstimate]:
     """Resolve request policy, index arms, and delegate ITT construction."""
-    if isinstance(prior, (StudentTPrior, MixturePrior)):
-        refuse(MIXTURE_PRIORS_ARE)
+    prior = _supported_prior(prior)
     unknown = set(estimands) - set(ESTIMANDS)
     if unknown:
         _refuse(

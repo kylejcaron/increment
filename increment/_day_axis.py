@@ -1299,6 +1299,8 @@ def _fill_daily_domain_gaps(rows: list[Any], req: DayAxisRequest) -> list[Any]:
                             "posterior_prob_favorable_reason_code": None,
                             "posterior_model": None,
                             "posterior_scale": None,
+                            "posterior_relative_model": None,
+                            "posterior_student_t_state": None,
                             "posterior_estimate": None,
                             "posterior_lb": None,
                             "posterior_ub": None,

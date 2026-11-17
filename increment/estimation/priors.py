@@ -13,12 +13,27 @@ again.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from fractions import Fraction
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal, Protocol, runtime_checkable
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Discriminator,
+    Field,
+    FieldSerializationInfo,
+    Tag,
+    TypeAdapter,
+    ValidationError,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from scipy.optimize import brentq
 
 from increment.errors import (
@@ -27,20 +42,21 @@ from increment.errors import (
     raiser,
     refusals,
     refuse,
+    unwrap_coded,
+)
+from increment.semantics.models import (
+    RelativeLiftPriorSpec,
+    _validate_mixture_prior,
+    _validate_relative_prior_tag,
 )
 
 _MIN_POSITIVE_FLOAT = math.nextafter(0.0, 1.0)
+_MAX_FINITE_FLOAT = Fraction(float(np.finfo(float).max))
 
 
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "estimation.priors.mixture.prior_needs_least": "a mixture prior needs at least one component",
-        "estimation.priors.mixture.weights_means_sigmas": "weights/means/sigmas must have the same length, got {k}/{means}/{sigmas}",
-        "estimation.priors.mixture.every_weight_mean": "every mixture weight, mean, and sigma must be finite, got weights={weights}, means={means}, sigmas={sigmas}",
-        "estimation.priors.mixture.every_weight": "every mixture weight must be > 0",
-        "estimation.priors.mixture.every_sigma": "every mixture sigma must be > 0",
-        "estimation.priors.mixture.weights_sum": "mixture weights must sum to 1, got {total}",
         "estimation.priors.student_t.nu_exceeds_200": "nu={nu} exceeds 200, where the mixture expansion is numerically unstable; and a t with nu > 200 is within 0.6% of a Normal anyway. Use Normal(mu=0, sigma=scale) instead.",
         "estimation.priors.mixture_posterior.probability": "probability must be in (0, 1), got {probability}",
         "estimation.priors.mixture_posterior.tail_probability": "tail_probability must be in (0, 1), got {tail_probability}",
@@ -57,6 +73,98 @@ EXPECTED_NEGATIVE_PART_SCALE = _REFUSALS[
 EXPECTED_POSITIVE_PART_SCALE = _REFUSALS[
     "estimation.priors.mixture_posterior.expected_positive_part_scale"
 ]
+
+
+def _normal_log_moment(means: np.ndarray, sigmas: np.ndarray) -> np.ndarray:
+    """Compute mu + sigma²/2 without losing the low product bits."""
+    mantissas, exponents = np.frexp(sigmas)
+    split = (2**27 + 1) * mantissas
+    high = split - (split - mantissas)
+    low = mantissas - high
+    square = mantissas * mantissas
+    error = ((high * high - square) + 2.0 * high * low) + low * low
+    powers = 2 * exponents - 1
+    result = np.empty_like(means)
+    small = powers <= 0
+    result[small] = (means[small] + np.ldexp(square[small], powers[small])) + np.ldexp(
+        error[small], powers[small]
+    )
+    # Scale the sum as well as the square when the variance itself can overflow.
+    scaled = np.ldexp(means[~small], -powers[~small])
+    total = square[~small] + scaled
+    remainder = total - square[~small]
+    correction = (square[~small] - (total - remainder)) + (scaled - remainder)
+    with np.errstate(over="ignore"):
+        result[~small] = np.ldexp(total + (correction + error[~small]), powers[~small])
+    return result
+
+
+def _normal_log_expected_part(
+    means: np.ndarray, sigmas: np.ndarray, *, scale: Literal["linear", "log"], positive: bool
+) -> np.ndarray:
+    """Evaluate log Normal partial expectations before weighting components."""
+    from scipy.special import erfcx, log_ndtr
+
+    means = np.asarray(means, dtype=float)
+    sigmas = np.asarray(sigmas, dtype=float)
+    with np.errstate(over="ignore", divide="ignore"):
+        z = means / sigmas
+        log_density = -0.5 * z * z - 0.5 * math.log(2.0 * math.pi)
+    if scale == "linear":
+        directed_means = means if positive else -means
+        directed_z = z if positive else -z
+        log_scaled_density = np.log(sigmas) + log_density
+        result = np.full_like(means, -math.inf)
+        central = directed_means >= 0.0
+        with np.errstate(divide="ignore"):
+            result[central] = np.logaddexp(
+                log_scaled_density[central],
+                np.log(directed_means[central]) + log_ndtr(directed_z[central]),
+            )
+        # The loss is bounded above by sigma*phi(z); omit only rounded-zero terms.
+        tail = ~central & (log_scaled_density > math.log(_MIN_POSITIVE_FLOAT) - math.log(2.0))
+        t = -directed_z[tail]
+        mills = math.sqrt(math.pi / 2.0) * erfcx(t / math.sqrt(2.0))
+        result[tail] = log_scaled_density[tail] + np.log1p(-t * mills)
+        return result
+
+    with np.errstate(over="ignore"):
+        tilted_z = z + sigmas
+    log_tilted = np.empty_like(means)
+    tail = tilted_z < 0.0 if positive else tilted_z >= 0.0
+    t = -tilted_z[tail] if positive else tilted_z[tail]
+    with np.errstate(divide="ignore"):
+        log_tilted[tail] = log_density[tail] + np.log(
+            math.sqrt(math.pi / 2.0) * erfcx(t / math.sqrt(2.0))
+        )
+    log_tilted[~tail] = _normal_log_moment(means[~tail], sigmas[~tail]) + log_ndtr(
+        tilted_z[~tail] if positive else -tilted_z[~tail]
+    )
+    log_mass = log_ndtr(z if positive else -z)
+    log_large, log_small = (log_tilted, log_mass) if positive else (log_mass, log_tilted)
+    finite = np.isfinite(log_large)
+    with np.errstate(divide="ignore"):
+        log_large[finite] += np.log(-np.expm1(log_small[finite] - log_large[finite]))
+    return log_large
+
+
+@runtime_checkable
+class LiftPosterior(Protocol):
+    """Distribution operations consumed by fixed-horizon decision statistics."""
+
+    def cdf(self, value: float) -> float: ...
+
+    def survival(self, value: float) -> float: ...
+
+    def quantile(self, probability: float) -> float: ...
+
+    def isf(self, tail_probability: float) -> float: ...
+
+    def probability_between(self, lower: float, upper: float) -> float: ...
+
+    def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float: ...
+
+    def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float: ...
 
 
 class Normal(CodedModel, BaseModel):
@@ -104,35 +212,33 @@ class Normal(CodedModel, BaseModel):
 
     def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float:
         """Expected magnitude below zero on the requested reporting scale."""
-        from scipy.stats import norm as _norm
-
-        z = self.mu / self.sigma
-        if scale == "linear":
-            return float(self.sigma * _norm.pdf(z) - self.mu * _norm.cdf(-z))
-        if scale == "log":
-            a = -z
+        if scale not in ("linear", "log"):
+            refuse(EXPECTED_NEGATIVE_PART_SCALE, scale=scale)
+        with np.errstate(over="ignore"):
             return float(
-                _norm.cdf(a) - math.exp(self.mu + 0.5 * self.sigma**2) * _norm.cdf(a - self.sigma)
+                np.exp(
+                    _normal_log_expected_part(
+                        np.array([self.mu]), np.array([self.sigma]), scale=scale, positive=False
+                    )[0]
+                )
             )
-        refuse(EXPECTED_NEGATIVE_PART_SCALE, scale=scale)
 
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
         """Expected magnitude above zero on the requested reporting scale."""
-        from scipy.stats import norm as _norm
-
-        z = self.mu / self.sigma
-        if scale == "linear":
-            return float(self.sigma * _norm.pdf(z) + self.mu * _norm.cdf(z))
-        if scale == "log":
-            a = -z
+        if scale not in ("linear", "log"):
+            refuse(EXPECTED_POSITIVE_PART_SCALE, scale=scale)
+        with np.errstate(over="ignore"):
             return float(
-                math.exp(self.mu + 0.5 * self.sigma**2) * _norm.cdf(self.sigma - a) - _norm.cdf(-a)
+                np.exp(
+                    _normal_log_expected_part(
+                        np.array([self.mu]), np.array([self.sigma]), scale=scale, positive=True
+                    )[0]
+                )
             )
-        refuse(EXPECTED_POSITIVE_PART_SCALE, scale=scale)
 
 
 class MixturePrior(CodedModel, BaseModel):
-    """Finite normal-mixture prior on the log-relative-risk lift scale."""
+    """Finite Normal mixture with ordered component weights, means and deviations."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -142,37 +248,7 @@ class MixturePrior(CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _consistent(self):
-        k = len(self.weights)
-        if k == 0:
-            _raise("estimation.priors.mixture.prior_needs_least")
-        if len(self.means) != k or len(self.sigmas) != k:
-            _raise(
-                "estimation.priors.mixture.weights_means_sigmas",
-                k=k,
-                means=len(self.means),
-                sigmas=len(self.sigmas),
-            )
-        # NaN comparisons are always false, so positivity/normalization
-        # checks below would silently accept a non-finite component
-        # without this: check finiteness first, before any comparison.
-        if not (
-            all(math.isfinite(w) for w in self.weights)
-            and all(math.isfinite(m) for m in self.means)
-            and all(math.isfinite(s) for s in self.sigmas)
-        ):
-            _raise(
-                "estimation.priors.mixture.every_weight_mean",
-                weights=self.weights,
-                means=self.means,
-                sigmas=self.sigmas,
-            )
-        if any(w <= 0.0 for w in self.weights):
-            _raise("estimation.priors.mixture.every_weight")
-        if any(s <= 0.0 for s in self.sigmas):
-            _raise("estimation.priors.mixture.every_sigma")
-        total = sum(self.weights)
-        if abs(total - 1.0) > 1e-9:
-            _raise("estimation.priors.mixture.weights_sum", total=total)
+        _validate_mixture_prior(self.weights, self.means, self.sigmas)
         return self
 
     def components(self) -> MixturePrior:
@@ -195,19 +271,15 @@ def _student_t_unit_expansion(nu: float, k: int) -> tuple[tuple[float, ...], tup
 
 
 class StudentTPrior(CodedModel, BaseModel):
-    """Student-t prior on the lift, declared by (nu, scale, k).
+    """Zero-centered Student-t prior with shape nu, scale and legacy size k.
 
-    A t is a Gaussian scale mixture: ``theta | lam ~ N(0, scale^2/lam)``
-    with ``lam ~ Gamma(nu/2, nu/2)``. ``components()`` discretizes that
-    mixing density on generalized Gauss-Laguerre nodes - a fixed,
-    data-independent expansion whose error lives entirely in
-    representing the prior; the posterior update stays exact. K=80
-    holds the posterior mean within 1% of the exact t out to 5-sigma
-    surprises (measured).
+    The precision mixture is ``theta | lam ~ N(0, scale^2/lam)`` with
+    ``lam ~ Gamma(nu/2, nu/2)``. Unwrapped priors use ``components()``:
+    a fixed, data-independent finite expansion of that mixing density.
+    ``RelativeLiftPrior`` uses the continuous target; k does not change it.
 
-    ``nu`` is capped at 200: the expansion is numerically unstable for
-    large ``nu`` (NaN weights measured at nu=400), and at nu=200 a t
-    is within 0.6% of a Normal at the 97.5% quantile anyway.
+    The existing declaration range caps nu at 200. Use a Normal prior
+    for a larger, near-Normal shape.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -232,9 +304,90 @@ class StudentTPrior(CodedModel, BaseModel):
         )
 
 
-type Prior = Normal | StudentTPrior | MixturePrior
-# Composes with a mixture everywhere except normal_posterior (the single-
-# Normal update) and paths that don't persist state to recompute it.
+def _prior_family(value: object) -> str | None:
+    if isinstance(value, Mapping):
+        if "type" in value:
+            tag = value.get("type")
+            return tag if isinstance(tag, str) else None
+        if "mu" in value or "sigma" in value:
+            return "normal"
+        if "nu" in value or "scale" in value:
+            return "student_t"
+        if "weights" in value or "means" in value or "sigmas" in value:
+            return "normal_mixture"
+        return None
+    if isinstance(value, Normal):
+        return "normal"
+    if isinstance(value, StudentTPrior):
+        return "student_t"
+    if isinstance(value, MixturePrior):
+        return "normal_mixture"
+    if isinstance(value, RelativeLiftPrior):
+        return "relative_lift"
+    return None
+
+
+type _RelativeDistribution = Annotated[
+    Annotated[Normal, Tag("normal")]
+    | Annotated[StudentTPrior, Tag("student_t")]
+    | Annotated[MixturePrior, Tag("normal_mixture")],
+    Discriminator(_prior_family),
+]
+
+
+class RelativeLiftPrior(CodedModel, BaseModel):
+    """Prior directly on fractional relative lift: 0.10 means ten percent."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    type: Literal["relative_lift"] = "relative_lift"
+    distribution: _RelativeDistribution
+
+    @field_validator("distribution", mode="before")
+    @classmethod
+    def _strict_family_payload(cls, value: object) -> object:
+        models = {"normal": Normal, "student_t": StudentTPrior, "normal_mixture": MixturePrior}
+        payload: object = value
+        if isinstance(value, (Normal, StudentTPrior, MixturePrior)):
+            payload = {"type": _prior_family(value), **value.model_dump()}
+        declared = RelativeLiftPriorSpec.model_validate({"distribution": payload}).distribution
+        if isinstance(value, (Normal, StudentTPrior, MixturePrior)):
+            return value
+        return models[declared.type].model_validate(declared.model_dump(exclude={"type"}))
+
+    @field_serializer("distribution")
+    def _distribution_payload(
+        self, value: Normal | StudentTPrior | MixturePrior, info: FieldSerializationInfo
+    ) -> dict[str, object]:
+        return {"type": _prior_family(value), **value.model_dump(mode=info.mode)}
+
+
+def _tagged_relative_prior(value: object) -> object:
+    if isinstance(value, Mapping) and ("type" in value or "distribution" in value):
+        _validate_relative_prior_tag(value)
+        return RelativeLiftPrior.model_validate(value)
+    return value
+
+
+type Prior = Annotated[
+    Annotated[Normal, Tag("normal")]
+    | Annotated[StudentTPrior, Tag("student_t")]
+    | Annotated[MixturePrior, Tag("normal_mixture")]
+    | Annotated[RelativeLiftPrior, Tag("relative_lift")],
+    Discriminator(_prior_family),
+    BeforeValidator(_tagged_relative_prior),
+]
+
+_PRIOR_PAYLOAD = TypeAdapter(Prior)
+
+
+def prior_from_payload(value: object) -> Prior:
+    """Decode prior data without reinterpreting legacy family declarations."""
+    try:
+        return _PRIOR_PAYLOAD.validate_python(value)
+    except ValidationError as error:
+        unwrap_coded(error)
+        raise
 
 
 @dataclass(frozen=True)
@@ -309,38 +462,30 @@ class MixturePosterior:
         return float((self.weights * per_component).sum())
 
     def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float:
-        from scipy.stats import norm as _norm
+        from scipy.special import logsumexp
 
+        if scale not in ("linear", "log"):
+            _raise("estimation.priors.mixture_posterior.expected_negative_part_scale", scale=scale)
         active = self.weights > 0.0
         weights = self.weights[active]
-        means = self.means[active]
-        sigmas = self.sigmas[active]
-        z = means / sigmas
-        if scale == "linear":
-            per = sigmas * _norm.pdf(z) - means * _norm.cdf(-z)
-        elif scale == "log":
-            a = -z
-            per = _norm.cdf(a) - np.exp(means + 0.5 * sigmas**2) * _norm.cdf(a - sigmas)
-        else:
-            _raise("estimation.priors.mixture_posterior.expected_negative_part_scale", scale=scale)
-        return float((weights * per).sum())
+        log_per = _normal_log_expected_part(
+            self.means[active], self.sigmas[active], scale=scale, positive=False
+        )
+        with np.errstate(over="ignore"):
+            return float(np.exp(logsumexp(np.log(weights) + log_per)))
 
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
-        from scipy.stats import norm as _norm
+        from scipy.special import logsumexp
 
+        if scale not in ("linear", "log"):
+            _raise("estimation.priors.mixture_posterior.expected_positive_part_scale", scale=scale)
         active = self.weights > 0.0
         weights = self.weights[active]
-        means = self.means[active]
-        sigmas = self.sigmas[active]
-        z = means / sigmas
-        if scale == "linear":
-            per = sigmas * _norm.pdf(z) + means * _norm.cdf(z)
-        elif scale == "log":
-            a = -z
-            per = np.exp(means + 0.5 * sigmas**2) * _norm.cdf(sigmas - a) - _norm.cdf(-a)
-        else:
-            _raise("estimation.priors.mixture_posterior.expected_positive_part_scale", scale=scale)
-        return float((weights * per).sum())
+        log_per = _normal_log_expected_part(
+            self.means[active], self.sigmas[active], scale=scale, positive=True
+        )
+        with np.errstate(over="ignore"):
+            return float(np.exp(logsumexp(np.log(weights) + log_per)))
 
 
 def mixture_posterior(
@@ -353,18 +498,43 @@ def mixture_posterior(
     likelihood of the data, computed in log space so a many-sigma surprise
     re-normalizes instead of underflowing to NaN.
     """
-    from scipy.stats import norm as _norm
-
     if standard_error <= 0:
         _raise("estimation.priors.standard_error", standard_error=standard_error)
     prior_means = np.asarray(prior.means)
     prior_sigmas = np.asarray(prior.sigmas)
-    log_weights = np.log(np.asarray(prior.weights)) + _norm.logpdf(
-        estimate, prior_means, np.sqrt(prior_sigmas**2 + standard_error**2)
+    small = np.minimum(prior_sigmas, standard_error)
+    large = np.maximum(prior_sigmas, standard_error)
+    ratio = small / large
+    unit_marginal = np.hypot(1.0, ratio)
+    same_sign = np.signbit(prior_means) == np.signbit(estimate)
+    observation = Fraction(estimate)
+    observation_variance = Fraction(standard_error) ** 2
+    quadratics = [
+        (observation - Fraction(mean)) ** 2 / (Fraction(sigma) ** 2 + observation_variance)
+        for mean, sigma in zip(prior.means, prior.sigmas, strict=True)
+    ]
+    closest = min(quadratics)
+    # Subtract exact rational quadratics before rounding away component-mean differences.
+    penalties = [(quadratic - closest) / 2 for quadratic in quadratics]
+    relative_penalty = np.array(
+        [float(penalty) if penalty <= _MAX_FINITE_FLOAT else math.inf for penalty in penalties]
     )
-    log_weights -= log_weights.max()
-    weights = np.exp(log_weights)
+    log_weights = (
+        np.log(np.asarray(prior.weights)) - np.log(large) - np.log(unit_marginal) - relative_penalty
+    )
+    weights = np.exp(log_weights - log_weights.max())
     weights /= weights.sum()
-    variances = 1.0 / (1.0 / prior_sigmas**2 + 1.0 / standard_error**2)
-    means = variances * (prior_means / prior_sigmas**2 + estimate / standard_error**2)
-    return MixturePosterior(weights=weights, means=means, sigmas=np.sqrt(variances))
+
+    prior_smaller = prior_sigmas <= standard_error
+    small_means = np.where(prior_smaller, prior_means, estimate)
+    large_means = np.where(prior_smaller, estimate, prior_means)
+    denominator = 1.0 + ratio * ratio
+    means = np.empty_like(prior_means)
+    means[same_sign] = small_means[same_sign] + ratio[same_sign] * (
+        (ratio[same_sign] * (large_means[same_sign] - small_means[same_sign]))
+        / denominator[same_sign]
+    )
+    means[~same_sign] = small_means[~same_sign] / denominator[~same_sign] + ratio[~same_sign] * (
+        (ratio[~same_sign] * large_means[~same_sign]) / denominator[~same_sign]
+    )
+    return MixturePosterior(weights=weights, means=means, sigmas=small / unit_marginal)

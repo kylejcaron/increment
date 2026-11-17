@@ -22,7 +22,7 @@ from increment.errors import (
     refusals,
 )
 from increment.estimation.engine import Method, _validate_unique_method_names
-from increment.estimation.inference import Normal
+from increment.estimation.priors import Normal, RelativeLiftPrior, prior_from_payload
 from increment.semantics.models import (
     ConversionMetric,
     CupedCovariate,
@@ -136,7 +136,7 @@ class MetricSpec(CodedModel, BaseModel):
         CUPED method owns its covariate declarations and missing policy. A
         call-time ``run(sensitivity_methods=...)`` replaces this list for
         that run; if it replaces a non-empty declaration, ``run()`` warns.
-    prior : Normal | None
+    prior : Normal | RelativeLiftPrior | None
         Informative prior for this metric's rows. Omitted uses no declared
         prior. A call-time ``run(prior=...)`` takes precedence for that run;
         if it replaces this prior, ``run()`` warns.
@@ -170,8 +170,15 @@ class MetricSpec(CodedModel, BaseModel):
     missing: Literal["error", "zero", "skip", "impute", "drop"] = "error"
     decision_method: Method | None = None
     sensitivity_methods: tuple[Method, ...] = ()
-    prior: Normal | None = None
+    prior: Normal | RelativeLiftPrior | None = None
     preferred_direction: PreferredDirection | None = None
+
+    @field_validator("prior", mode="before")
+    @classmethod
+    def _tagged_prior(cls, value: object) -> object:
+        if isinstance(value, Mapping) and ("type" in value or "distribution" in value):
+            return prior_from_payload(value)
+        return value
 
     @model_validator(mode="after")
     def _check_quantile(self) -> MetricSpec:

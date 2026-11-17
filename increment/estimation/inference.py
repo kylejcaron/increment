@@ -16,7 +16,8 @@ log transform, and lifts ``<= -1`` are representable.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, runtime_checkable
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from increment._literals import (
     VALUE_SCALE_VALUES,
@@ -44,11 +45,25 @@ from increment.estimation._fixed_horizon import (
     _joint_additive_bounds,
     _resolve_fixed_horizon,
 )
+from increment.estimation._relative_conjugate import (
+    _UPDATED_WEIGHT_ERROR,
+    RelativeMixturePosterior,
+    RelativeNormalPosterior,
+    _refine_conjugate_parameters,
+)
+from increment.estimation._relative_posterior import (
+    RelativeStudentTPosterior,
+    RelativeStudentTState,
+    _PosteriorNumericalError,
+    _unavailable,
+)
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.priors import (
+    LiftPosterior,
     MixturePrior,
     Normal,
     Prior,
+    RelativeLiftPrior,
     StudentTPrior,
     mixture_posterior,
 )
@@ -72,6 +87,7 @@ from increment.estimation.results import (
     JointContrastReference,
     LiftEstimate,
     PosteriorComponents,
+    RelativePosteriorModel,
     RelativeUnavailableReason,
     relative_confidence_set,
 )
@@ -111,11 +127,9 @@ _REFUSALS = refusals(
         "estimation.inference.infer_ate_null_lift_finite": "null_lift must be finite, got {null_lift}",
         "estimation.inference.infer_ate_null_abs_finite": "null_abs must be finite, got {null_abs}",
         "estimation.adjust.prior.type": (
-            "mixture priors are only supported on the relative (log-RR) lift scale served by"
-            " infer_lift/estimate_lift: this path reports rows whose raw pre-prior statistics are"
-            " not persisted, so the mixture posterior could not be recomputed for decision"
-            " statistics. Pass a Normal prior here, or estimate the metric through the"
-            " relative-lift path."
+            "This prior needs a randomized relative-lift analysis; this contrast does not "
+            "retain the required relative likelihood. Use an eligible randomized analysis, "
+            "or an unwrapped Normal prior for this contrast."
         ),
     },
 )
@@ -181,25 +195,6 @@ class LiftGuardError(CodedError):
         self.reason = reason
 
 
-@runtime_checkable
-class LiftPosterior(Protocol):
-    """Distribution operations consumed by fixed-horizon decision statistics."""
-
-    def cdf(self, value: float) -> float: ...
-
-    def survival(self, value: float) -> float: ...
-
-    def quantile(self, probability: float) -> float: ...
-
-    def isf(self, tail_probability: float) -> float: ...
-
-    def probability_between(self, lower: float, upper: float) -> float: ...
-
-    def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float: ...
-
-    def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float: ...
-
-
 _DEFAULT_PRIOR = Normal(mu=0.0, sigma=1e6)
 
 
@@ -253,7 +248,7 @@ def normal_posterior(
 
 class PosteriorFields(TypedDict, total=False):
     posterior_available: bool
-    posterior_model: Literal["normal", "mixture"]
+    posterior_model: Literal["normal", "mixture", "student_t_normal"]
     posterior_scale: Literal["log", "linear"]
     posterior_estimate: float
     posterior_lb: float
@@ -265,49 +260,48 @@ class PosteriorFields(TypedDict, total=False):
     posterior_prob_favorable: float | None
     posterior_prob_favorable_reason_code: str | None
     posterior_components: PosteriorComponents | None
-    prior_spec: StudentTPrior | MixturePrior | None
+    prior_spec: Prior | None
+    posterior_relative_model: RelativePosteriorModel | None
+    posterior_student_t_state: RelativeStudentTState | None
+    posterior_reason_code: str | None
+    posterior_reason_context: Mapping[str, object] | None
 
 
-def posterior_fields(
-    point: float,
-    se: float,
-    prior: Prior | None,
+def _relative_likelihood(log_rr: float, log_se: float) -> Normal:
+    """Convert one usable log mean-ratio into direct relative Normal evidence."""
+    try:
+        point = math.expm1(log_rr)
+        standard_error = math.exp(log_rr) * log_se
+    except OverflowError:
+        _unavailable("construction", "result_unrepresentable", log_rr=log_rr, log_se=log_se)
+    if not math.isfinite(point) or not math.isfinite(standard_error) or standard_error <= 0:
+        _unavailable("construction", "result_unrepresentable", log_rr=log_rr, log_se=log_se)
+    return Normal(mu=point, sigma=standard_error)
+
+
+def _posterior_summary(
+    posterior: LiftPosterior,
     *,
     alpha: float,
     alternative: str,
     scale: Literal["log", "linear"],
     preferred_direction: PreferredDirection | None,
-    null_lift: float = 0.0,
-    null_abs: float | None = None,
+    null_lift: float,
+    null_abs: float | None,
 ) -> PosteriorFields:
-    """Persist the supported working-likelihood posterior separately."""
     from scipy.stats import norm as _norm
 
-    if prior is None:
-        return {}
     alpha_eff = _alpha_eff_for(alternative, alpha)
-    if isinstance(prior, (StudentTPrior, MixturePrior)):
-        posterior = mixture_posterior(point, se, prior.components())
-        center = posterior.quantile(0.5)
-        lower = posterior.quantile(alpha_eff / 2.0)
-        upper = posterior.isf(alpha_eff / 2.0)
-        model = "mixture"
-        latent_mean = latent_sd = None
-        posterior_components = PosteriorComponents(
-            weights=tuple(float(weight) for weight in posterior.weights),
-            means=tuple(float(mean) for mean in posterior.means),
-            sigmas=tuple(float(sigma) for sigma in posterior.sigmas),
-        )
-    else:
-        posterior = normal_posterior(point, se, prior)
-        center = latent_mean = posterior.mu
-        latent_sd = posterior.sigma
+    if isinstance(posterior, Normal):
+        center = posterior.mu
         crit = two_sided_critical_value(_norm.isf, alpha_eff, what="posterior credible interval")
         lower, upper = wald_bounds(
             center, crit, posterior.sigma, what="posterior credible interval"
         )
-        model = "normal"
-        posterior_components = None
+    else:
+        center = posterior.quantile(0.5)
+        lower = posterior.quantile(alpha_eff / 2.0)
+        upper = posterior.isf(alpha_eff / 2.0)
 
     def transform(value: float) -> float:
         return (
@@ -316,15 +310,12 @@ def posterior_fields(
 
     return {
         "posterior_available": True,
-        "posterior_model": model,
         "posterior_scale": scale,
         "posterior_estimate": transform(center),
         "posterior_lb": transform(lower),
         "posterior_ub": transform(upper),
         "posterior_level": math.fsum((1.0, -alpha_eff)),
         "posterior_alpha": alpha_eff,
-        "posterior_latent_mean": latent_mean,
-        "posterior_latent_sd": latent_sd,
         "posterior_prob_favorable": (
             posterior.cdf(null_lift if scale == "linear" else math.log1p(null_lift))
             if null_abs is None and preferred_direction == "decrease"
@@ -341,9 +332,170 @@ def posterior_fields(
             if preferred_direction == "neutral"
             else None
         ),
-        "posterior_components": posterior_components,
-        "prior_spec": prior if isinstance(prior, (StudentTPrior, MixturePrior)) else None,
     }
+
+
+def _updated_posterior_fields(
+    point: float,
+    se: float,
+    prior: Prior,
+    *,
+    alpha: float,
+    alternative: str,
+    scale: Literal["log", "linear"],
+    preferred_direction: PreferredDirection | None,
+    null_lift: float,
+    null_abs: float | None,
+) -> PosteriorFields:
+    distribution: Normal | StudentTPrior | MixturePrior
+    if isinstance(prior, RelativeLiftPrior):
+        if scale != "log":
+            refuse(MIXTURE_PRIORS_ARE)
+        observed = _relative_likelihood(point, se)
+        point, se, scale = observed.mu, observed.sigma, "linear"
+        distribution = prior.distribution
+    else:
+        distribution = prior
+
+    posterior: LiftPosterior
+    fields: PosteriorFields
+    if isinstance(prior, RelativeLiftPrior) and isinstance(distribution, StudentTPrior):
+        state = RelativeStudentTState(
+            version=1, likelihood_point=point, likelihood_se=se, prior=distribution
+        )
+        posterior = RelativeStudentTPosterior(state)
+        fields = {
+            "posterior_model": "student_t_normal",
+            "posterior_student_t_state": state,
+            "posterior_latent_mean": None,
+            "posterior_latent_sd": None,
+            "posterior_components": None,
+        }
+    elif isinstance(distribution, (StudentTPrior, MixturePrior)):
+        components = distribution.components()
+        mixture = mixture_posterior(point, se, components)
+        if isinstance(prior, RelativeLiftPrior):
+            for index, (weight, original_mean, original_sigma, mean, sigma) in enumerate(
+                zip(
+                    mixture.weights,
+                    components.means,
+                    components.sigmas,
+                    mixture.means,
+                    mixture.sigmas,
+                    strict=True,
+                )
+            ):
+                if weight > 0:
+                    mixture.means[index], mixture.sigmas[index] = _refine_conjugate_parameters(
+                        point,
+                        se,
+                        prior_mean=float(original_mean),
+                        prior_sigma=float(original_sigma),
+                        mean=float(mean),
+                        sigma=float(sigma),
+                    )
+        posterior = (
+            RelativeMixturePosterior(mixture, weight_relative_error=_UPDATED_WEIGHT_ERROR)
+            if isinstance(prior, RelativeLiftPrior)
+            else mixture
+        )
+        fields = {
+            "posterior_model": "mixture",
+            "posterior_latent_mean": None,
+            "posterior_latent_sd": None,
+            "posterior_components": PosteriorComponents(
+                weights=tuple(float(weight) for weight in mixture.weights),
+                means=tuple(float(mean) for mean in mixture.means),
+                sigmas=tuple(float(sigma) for sigma in mixture.sigmas),
+            ),
+        }
+    else:
+        normal = normal_posterior(point, se, distribution)
+        if isinstance(prior, RelativeLiftPrior):
+            mean, sigma = _refine_conjugate_parameters(
+                point,
+                se,
+                prior_mean=distribution.mu,
+                prior_sigma=distribution.sigma,
+                mean=normal.mu,
+                sigma=normal.sigma,
+            )
+            if mean != normal.mu or sigma != normal.sigma:
+                normal = Normal(mu=mean, sigma=sigma)
+        posterior = (
+            RelativeNormalPosterior(normal) if isinstance(prior, RelativeLiftPrior) else normal
+        )
+        fields = {
+            "posterior_model": "normal",
+            "posterior_latent_mean": normal.mu,
+            "posterior_latent_sd": normal.sigma,
+            "posterior_components": None,
+        }
+    fields.update(
+        _posterior_summary(
+            posterior,
+            alpha=alpha,
+            alternative=alternative,
+            scale=scale,
+            preferred_direction=preferred_direction,
+            null_lift=null_lift,
+            null_abs=null_abs,
+        )
+    )
+    fields["prior_spec"] = (
+        prior if isinstance(prior, (RelativeLiftPrior, StudentTPrior, MixturePrior)) else None
+    )
+    if isinstance(prior, RelativeLiftPrior):
+        fields["posterior_relative_model"] = RelativePosteriorModel()
+    return fields
+
+
+def posterior_fields(
+    point: float,
+    se: float,
+    prior: Prior | None,
+    *,
+    alpha: float,
+    alternative: str,
+    scale: Literal["log", "linear"],
+    preferred_direction: PreferredDirection | None,
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
+) -> PosteriorFields:
+    """Persist supported posteriors without changing sampling evidence."""
+    if prior is None:
+        return {}
+    if not isinstance(prior, RelativeLiftPrior):
+        return _updated_posterior_fields(
+            point,
+            se,
+            prior,
+            alpha=alpha,
+            alternative=alternative,
+            scale=scale,
+            preferred_direction=preferred_direction,
+            null_lift=null_lift,
+            null_abs=null_abs,
+        )
+    try:
+        return _updated_posterior_fields(
+            point,
+            se,
+            prior,
+            alpha=alpha,
+            alternative=alternative,
+            scale=scale,
+            preferred_direction=preferred_direction,
+            null_lift=null_lift,
+            null_abs=null_abs,
+        )
+    except _PosteriorNumericalError as error:
+        return {
+            "posterior_available": False,
+            "posterior_reason_code": error.code,
+            "posterior_reason_context": error.context,
+            "prior_spec": prior,
+        }
 
 
 # Shared lift-inference function
@@ -386,11 +538,11 @@ def infer_lift(  # noqa: PLR0913
     small effect at a large offset.  ``se_t``/``se_c`` remain the per-arm
     delta-method SEs of ``log(point)``, which the offset does not disturb.
 
-    The ordinary interval is the same prior-free sampling construction
-    regardless of ``prior``. A supported ``Normal``, ``StudentTPrior`` or
-    ``MixturePrior`` adds separate posterior fields from the working
-    log-ratio likelihood; the posterior never changes the sampling point,
-    interval, reference, p-value or significance verdict.
+    The ordinary interval is prior-free sampling inference. Unwrapped
+    ``Normal``, ``StudentTPrior`` and ``MixturePrior`` use the log-ratio
+    likelihood for a separate posterior. ``RelativeLiftPrior`` instead puts
+    its distribution on fractional lift and uses the relative Normal
+    working likelihood. Neither changes sampling results.
 
     For ``alternative != "two-sided"``, the sampling interval is computed
     at ``alpha_eff = 2 * alpha`` through the same two-sided path (both
@@ -663,7 +815,7 @@ def infer_ate(  # noqa: PLR0913
     never the randomized/encouragement estimands ``"itt"``/``"compliance"``/
     ``"late"``.
     """
-    if isinstance(prior, (StudentTPrior, MixturePrior)):
+    if isinstance(prior, (StudentTPrior, MixturePrior, RelativeLiftPrior)):
         refuse(MIXTURE_PRIORS_ARE)
     has_joint_result = joint_reference is not None or relative_unavailable_reason is not None
     if has_joint_result and (

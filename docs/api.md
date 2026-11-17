@@ -141,6 +141,23 @@ values.
 
 ### Current changes
 
+- `increment.estimators.RelativeLiftPrior` explicitly declares a Normal,
+  zero-centered Student-t, or Normal-mixture distribution on fractional
+  relative lift. Eligible randomized fixed-horizon results use a direct
+  relative Normal working likelihood, retain unrestricted support and report
+  the posterior median separately from unchanged sampling inference.
+  Existing unwrapped prior meanings and encodings are unchanged. Relative
+  model/state and independent query-unavailability reasons survive result,
+  breakout, daily, JSON, frame and table replay. The
+  [prior guide](guides/priors-and-decisions.md) explains units, historical
+  prediction, approximation limits and unchanged method restrictions.
+
+- Normal-mixture updates preserve finite answers when squared input scales
+  overflow. Expected-loss arithmetic also retains resolvable small tails.
+  These numerical corrections can change previously inaccurate answers;
+  distribution families, component order and ordinary sampling inference
+  are unchanged.
+
 - Dashboard preparation consolidates repeated ratio cautions into one
   `dashboard.statistical_cautions` warning. Affected results retain expandable
   **Diagnostics** with their dates, segments, arms and sample sizes; clean
@@ -2470,6 +2487,8 @@ sequential plans refuse with `facade.analysis.exploratory_metrics_sequential`.
 ::: increment.estimators.MixturePrior
 
 ::: increment.estimators.StudentTPrior
+
+::: increment.estimators.RelativeLiftPrior
 
 ::: increment.estimators.moments_from_summaries
 
