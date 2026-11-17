@@ -130,7 +130,7 @@ alpha release is 1.0.0. Dependency changes are reflected in `pyproject.toml`.
 | Installation | Dependency floors |
 | --- | --- |
 | Core | Pydantic 2.14.1, packaging 24.0, NumPy 2.5.4, SciPy 1.18.1, Narwhals 2.27.1, PyArrow 26.0.0 (25.0.0 excluded); PyYAML 6.0.1 on Python 3.12, 6.0.2 on 3.13, and 6.0.3 on 3.14 and newer |
-| `warehouse` extra | Ibis 10.1.0 on Python 3.12–3.13 and 11.0.0 on 3.14; SQLGlot `>=30.14`, excluding `30.18.0` through `30.27.0` inclusive, `30.29.0` and `30.30.0` (the declared warehouse-extra constraint) |
+| `warehouse` extra | Ibis 10.1.0 on Python 3.12–3.13 and 11.0.0 on 3.14; SQLGlot `>=30.14,<30.18` (the verified compatible warehouse-extra range) |
 
 The standalone `tables` extra accepts pandas 3.1; its CoefTable rendering path
 does not require Ibis. The `warehouse` extra retains `pandas>=3.0.5,<3.1`
@@ -255,8 +255,9 @@ values.
 - Unclustered triggered analyses accept a custom provider's declared unit counts
   when assignment counts are unavailable. Clustered analyses still require counts
   at the randomization grain.
-- Fresh warehouse and demo installations exclude SQLGlot 30.32.0, which produces
-  invalid SQL when Ibis creates a DuckDB table from Arrow data.
+- Fresh warehouse and demo installations keep SQLGlot in the verified
+  `>=30.14,<30.18` range. Newer releases, including 30.33.0, generate invalid
+  SQL when Ibis 12 creates a DuckDB table from Arrow data.
 - Unavailable CUPED results contribute their fit identity and structured reason
   to readout snapshot identity. Changing that evidence no longer reuses an
   identity; valid comparison-method estimates are unchanged.
