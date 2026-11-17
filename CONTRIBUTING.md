@@ -987,7 +987,7 @@ Keep intentional aliases pointing to the canonical spec. The gate checks local
 registration and statically known template keys:
 
 ```bash
-make test TESTS='tests/test_refusal_drift.py tests/test_refusal_uniqueness.py tests/test_docs_refusal_guidance.py tests/test_refusal_gate.py'
+make test TESTS='tests/test_refusal_drift.py tests/test_refusal_uniqueness.py tests/test_error_code_catalogue.py tests/test_refusal_gate.py'
 ```
 
 Dynamic keys are reported as statically unknown and require public

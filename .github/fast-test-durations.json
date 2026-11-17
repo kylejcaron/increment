@@ -12263,8 +12263,6 @@
     "tests/test_docs_ci_changes.py::test_workflow_and_build_configuration_changes_require_both[noxfile.py]": 0.353,
     "tests/test_docs_ci_changes.py::test_workflow_and_build_configuration_changes_require_both[pyproject.toml]": 0.43,
     "tests/test_docs_ci_changes.py::test_workflow_and_build_configuration_changes_require_both[uv.lock]": 0.358,
-    "tests/test_docs_refusal_guidance.py::test_refusal_guide_covers_registered_code_families": 0.023,
-    "tests/test_docs_refusal_guidance.py::test_refusal_guide_explains_cross_source_joint_grouping": 0.002,
     "tests/test_errors.py::test_coded_error_code_and_context_attributes_are_read_only": 0.001,
     "tests/test_errors.py::test_coded_error_requires_explicit_code_and_context": 0.001,
     "tests/test_errors.py::test_coded_error_survives_pickle_and_deepcopy_round_trip": 0.001,
