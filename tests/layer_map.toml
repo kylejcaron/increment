@@ -1,4 +1,5 @@
 core = [
+  "metric_definitions*",
   "increment",
   "increment._*",
   "increment._optional",
