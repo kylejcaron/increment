@@ -156,6 +156,9 @@ values.
 - `increment.load_definitions(path)` lists experiments and their declared
   metrics from YAML without connecting to a warehouse or writing a catalog.
 
+- Warehouse result and artifact stores create missing schemas on first write
+  in the DuckDB catalog you specify, including an already attached catalog.
+
 - `increment.estimators.RelativeLiftPrior` explicitly declares a Normal,
   zero-centered Student-t, or Normal-mixture distribution on fractional
   relative lift. Eligible randomized fixed-horizon results use a direct

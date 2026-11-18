@@ -291,15 +291,20 @@ def test_results_store_refuses_a_schema_it_can_neither_find_nor_create(monkeypat
 @pytest.mark.integration
 def test_results_store_saves_into_a_schema_of_another_catalog():
     backend = ibis.duckdb.connect()
-    backend.raw_sql("ATTACH ':memory:' AS other")
-    backend.raw_sql("CREATE SCHEMA other.results")
+    default_catalog = backend.current_catalog
+    backend.raw_sql("ATTACH ':memory:' AS \"run-archive\"")
+    backend.raw_sql('CREATE SCHEMA "result archive"')
     experiment, resolver = _analysis()
     try:
         saved = _warehouse_run(view_readout(experiment, resolver))
-        store = WarehouseResultsStore(backend, schema="other.results")
+        assert "result archive" not in backend.list_databases(catalog="run-archive")
+        store = WarehouseResultsStore(backend, schema="run-archive.result archive")
         store.put(saved)
-        assert store.open_run("exp", "spec", "one").run.manifest_hash == saved.manifest_hash
-        assert "other.results" not in backend.list_databases()
+        reopened = WarehouseResultsStore(backend, schema="run-archive.result archive")
+        assert reopened.open_run("exp", "spec", "one").run.manifest_hash == saved.manifest_hash
+        assert backend.list_tables(database=("run-archive", "result archive"))
+        assert not backend.list_tables(database=(default_catalog, "result archive"))
+        assert backend.current_catalog == default_catalog
     finally:
         resolver.close()
         backend.disconnect()
