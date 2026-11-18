@@ -14,6 +14,9 @@ assert set(selected.measures) == {"revenue", "order_count"}
 schema = Catalog.model_json_schema()  # JSON Schema for the YAML input
 ```
 
+Use plain YAML mappings, lists, and scalars. Explicit YAML tags, aliases, and
+merge keys are not supported.
+
 ## Version 1
 
 - A **source** names a table, its unique non-null `row_key`, entity columns,

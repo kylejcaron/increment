@@ -113,3 +113,16 @@ def test_prohibited_yaml_character_reports_its_location(tmp_path):
         2,
         9,
     )
+
+
+def test_explicit_yaml_tag_reports_its_location(tmp_path):
+    path = tmp_path / "invalid.yaml"
+    path.write_text("version: 1\ncount_rows: !!bool banana\n")
+    with pytest.raises(CatalogError) as exc:
+        load(path)
+    assert (exc.value.code, exc.value.path, exc.value.line, exc.value.column) == (
+        "invalid_yaml",
+        path,
+        2,
+        13,
+    )

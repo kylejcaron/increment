@@ -10,7 +10,7 @@ import yaml
 from pydantic import ValidationError
 from yaml.composer import ComposerError
 from yaml.error import Mark
-from yaml.events import AliasEvent
+from yaml.events import AliasEvent, CollectionStartEvent, ScalarEvent
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.reader import ReaderError
 
@@ -48,6 +48,10 @@ class _Loader(yaml.SafeLoader):
         event = self.peek_event()
         if isinstance(event, AliasEvent):
             raise ComposerError(None, None, "YAML aliases are not supported.", event.start_mark)
+        if isinstance(event, (ScalarEvent, CollectionStartEvent)) and event.tag is not None:
+            raise ComposerError(
+                None, None, "Explicit YAML tags are not supported.", event.start_mark
+            )
         return super().compose_node(parent, cast(int, index))  # PyYAML's stub narrows index.
 
 
