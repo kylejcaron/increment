@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
+from increment._source_types import declared_day_axis_metric_objects_supported
 from increment.errors import CodedError
 from increment.kernel.contracts import View, declared_breakouts
 from increment.kernel.experiment import Experiment, SourceReference
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from increment._evidence_types import SequentialCaptureRequest
     from increment.estimation.readout_types import ScopedReadout
     from increment.kernel.context import EvidenceExecutionContext
+    from increment.semantics.models import Metric
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -239,32 +241,162 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
     return refusals
 
 
+def _metric_roster(exp: Experiment) -> Mapping[str, object]:
+    """The binding's metric declarations, independent of the saved selection."""
+    recorded = exp.analysis_context
+    configs = recorded.get("configs")
+    context = recorded.get("context")
+    source = recorded.get("source_declaration")
+    if isinstance(configs, (tuple, list)):
+        metrics = [
+            config.get("metric") if isinstance(config, Mapping) else None for config in configs
+        ]
+    elif recorded.get("family") == "contrast" and isinstance(context, Mapping):
+        metrics = context.get("metrics")
+    elif isinstance(source, Mapping):
+        metrics = source.get("metrics")
+    else:
+        metrics = None
+    if not isinstance(metrics, (tuple, list)):
+        return exp.metrics
+    roster = {}
+    for metric in metrics:
+        if not isinstance(metric, Mapping) or not isinstance(name := metric.get("name"), str):
+            return exp.metrics
+        roster[name] = metric
+    return roster
+
+
+def _possible_exploratory_source(source: SourceReference) -> bool:
+    """Whether source declarations leave room for adding catalog metrics."""
+    capabilities = source.capabilities
+    if capabilities is not None:
+        return capabilities.kind == "definitions" or "exploratory_source" in capabilities.operations
+    return source.uri.partition("://")[0] not in {
+        "artifact",
+        "breakout",
+        "moments",
+        "switchback",
+        "unit_panel",
+        "unit_summary",
+    }
+
+
+def _catalog_metric_eligibility(
+    recorded: Mapping[str, Any], source: Mapping[str, Any], metric: Mapping[str, Any]
+) -> Metric | Literal[False] | None:
+    from pydantic import TypeAdapter, ValidationError
+
+    from increment._analysis_config import is_exploratory_metric
+    from increment.semantics.models import AnalysisPlan, Metric
+
+    experiment = source.get("experiment") or recorded.get("experiment")
+    if not isinstance(experiment, Mapping) or not isinstance(unit := experiment.get("unit"), str):
+        return None
+    try:
+        plan = AnalysisPlan.model_validate(experiment.get("plan"))
+        candidate = TypeAdapter(Metric).validate_python(metric)
+    except (ValidationError, CodedError):
+        return None
+    return (
+        candidate
+        if is_exploratory_metric(
+            candidate.name,
+            candidate.type,
+            getattr(candidate, "entity", None),
+            declared_names=plan.role_names(),
+            unit=unit,
+        )
+        else False
+    )
+
+
+def _exploratory_metric(exp: Experiment, name: str) -> Metric | Literal[False] | None:
+    """Find an eligible metric; missing declarations do not prove absence."""
+    recorded: Mapping[str, Any] = exp.analysis_context
+    if recorded.get("family") == "contrast" or not any(
+        _possible_exploratory_source(source) for source in exp.source_refs
+    ):
+        return False
+    source = recorded.get("source_declaration")
+    if not isinstance(source, Mapping) or not isinstance(
+        definitions := source.get("definitions"), Mapping
+    ):
+        return None
+    catalog = definitions.get("metrics")
+    if not isinstance(catalog, (tuple, list)):
+        return None
+    match = None
+    for metric in catalog:
+        if not isinstance(metric, Mapping) or not isinstance(
+            metric_name := metric.get("name"), str
+        ):
+            return None
+        if metric_name == name:
+            match = metric
+    return False if match is None else _catalog_metric_eligibility(recorded, source, match)
+
+
+def _runnable_metric(exp: Experiment, name: str) -> tuple[object, bool]:
+    """Resolve a string metric or say its exploratory eligibility is unknown."""
+    from pydantic import TypeAdapter
+
+    from increment._analysis_config import refuse_unknown_metrics
+    from increment.semantics.models import Metric
+
+    if name in exp.metrics:
+        return name, False
+    roster = _metric_roster(exp)
+    if name in roster:
+        return TypeAdapter(Metric).validate_python(roster[name]), False
+    saved = exp.request_options.get("metrics")
+    if (
+        isinstance(saved, (tuple, list))
+        and any(scope.view in {"daily", "asof"} for scope in exp.views)
+        and any(
+            source.capabilities is not None
+            and declared_day_axis_metric_objects_supported(source.capabilities)
+            for source in exp.source_refs
+        )
+    ):
+        for metric in saved:
+            if isinstance(metric, Mapping) and metric.get("name") == name:
+                return TypeAdapter(Metric).validate_python(metric), False
+    exploratory = _exploratory_metric(exp, name)
+    if exploratory is False:
+        refuse_unknown_metrics((name,), roster.keys(), caller="runnable")
+    return (name, True) if exploratory is None else (exploratory, False)
+
+
 def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:
     """Conservative offline feasibility: absent declarations remain unknown."""
     from increment.declarations import estimator_refs
 
+    eligibility_unknown = False
+    if isinstance(metric, str):
+        metric, eligibility_unknown = _runnable_metric(exp, metric)
+    contrast = exp.analysis_context.get("family") == "contrast"
     references = estimator_refs()
-    capabilities_known = exp.analysis_context.get("family") == "contrast" or all(
-        source.capabilities is not None for source in exp.source_refs
-    )
     missing = tuple(
-        f"{source.name}.capabilities" for source in exp.source_refs if source.capabilities is None
+        f"{source.name}.capabilities"
+        for source in exp.source_refs
+        if source.capabilities is None and not contrast
     )
+    if eligibility_unknown:
+        missing += ("exploratory metric eligibility",)
     return {
         estimator_id: Runnable(
-            static_refusals=tuple(resolve(estimator_id, exp, metric)),
+            static_refusals=()
+            if eligibility_unknown
+            else tuple(resolve(estimator_id, exp, metric)),
             deferred_checks=(
                 ("sample floors", "usable denominators", "data-dependent estimator checks")
-                if capabilities_known
+                if not missing
                 else ()
             ),
-            unknown=() if capabilities_known else missing,
+            unknown=missing,
         )
-        for estimator_id in (
-            (*references, "switchback.contrast")
-            if exp.analysis_context.get("family") == "contrast"
-            else references
-        )
+        for estimator_id in ((*references, "switchback.contrast") if contrast else references)
     }
 
 

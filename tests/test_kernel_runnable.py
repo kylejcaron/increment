@@ -7,7 +7,7 @@ import pytest
 
 from increment import AnalysisPlan, InferenceSpec, Randomized, run
 from increment.builders import from_frame, from_moments
-from increment.errors import CodedError
+from increment.errors import CodedError, InvalidRequestError
 from increment.evidence import EvidenceCapabilities
 from increment.kernel.contracts import Registration, View
 from increment.kernel.experiment import Experiment, SourceReference
@@ -125,7 +125,7 @@ def test_runnable_reports_unknown_without_recorded_capabilities_after_json_resto
             SourceReference(
                 name="events",
                 uri="frame://events",
-                schema={"orders": "float64"},
+                schema={"orders": "float64", "typo": "float64"},
             ),
         ),
         views=(
@@ -141,6 +141,23 @@ def test_runnable_reports_unknown_without_recorded_capabilities_after_json_resto
 
     assert runnable(restored, "orders")["randomized.unadjusted"].unknown == ("events.capabilities",)
     assert runnable(restored, "orders")["randomized.unadjusted"].static_refusals == ()
+
+    possible = runnable(restored, "typo")["randomized.unadjusted"]
+    assert possible.unknown == ("events.capabilities", "exploratory metric eligibility")
+    assert possible.static_refusals == ()
+
+    frame = replace(
+        restored,
+        source_refs=(replace(restored.source_refs[0], uri="unit_summary://checkout"),),
+    )
+    with pytest.raises(InvalidRequestError) as caught:
+        runnable(frame, "typo")
+    assert caught.value.code == "facade.analysis_config.unknown_metric_declared"
+    assert caught.value.context == {
+        "caller": "runnable",
+        "unknown_names": ("typo",),
+        "declared_names": ("orders",),
+    }
 
 
 def test_runnable_names_authored_source_and_selection_for_unavailable_breakouts():

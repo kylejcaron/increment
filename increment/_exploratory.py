@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from increment._analysis_config import select_exploratory_metrics, select_metrics
+from increment._analysis_config import (
+    is_exploratory_metric,
+    select_exploratory_metrics,
+    select_metrics,
+)
 from increment._evidence_loaders import load_exploratory_source
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import ExploratorySourceOperation
@@ -41,9 +45,13 @@ def available_metrics(binding: SourceBinding) -> list[Metric]:
     return [
         metric
         for metric in state.definitions.metrics
-        if metric.name not in declared
-        and metric.type not in ("total", "active")
-        and getattr(metric, "entity", None) == state.experiment.unit
+        if is_exploratory_metric(
+            metric.name,
+            metric.type,
+            getattr(metric, "entity", None),
+            declared_names=declared,
+            unit=state.experiment.unit,
+        )
     ]
 
 

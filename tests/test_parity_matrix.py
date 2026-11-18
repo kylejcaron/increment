@@ -34,6 +34,7 @@ import itertools
 import json
 from collections.abc import Iterable
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
@@ -181,6 +182,87 @@ def test_runnable_preserves_preflight_refusals(
     finally:
         _close_parity_binding(bound)
     _assert_recorded_hazards(f"{cell.id}-{ingress}", hazards, record_property)
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_runnable_metric_name_refusal_matches_run_without_source_reads(tmp_path, monkeypatch):
+    import yaml
+    from ibis.backends.sql import SQLBackend
+
+    from increment import AnalysisPlan, Experiment, from_definitions, run, runnable
+    from increment.errors import InvalidRequestError
+    from tests.parity_harness import dataset as ds
+
+    definition = ds.definitions_dict(plan=AnalysisPlan(primary="revenue", secondaries=["rps"]))
+    definition["fact_sources"][0]["entities"].append("store_id")
+    definition["metrics"].extend(
+        [
+            {
+                "type": "conversion",
+                "name": "store_purchase",
+                "entity": "store_id",
+                "fact": "purchase",
+            },
+            {"type": "active", "name": "purchasers", "entity": "user_id", "fact": "purchase"},
+        ]
+    )
+    path = tmp_path / "definitions.yaml"
+    path.write_text(yaml.safe_dump(definition), encoding="utf-8")
+    con = cast(SQLBackend, ds.duckdb_connection())
+    try:
+        experiment, reader = from_definitions(path, con, experiment_name="exp")
+        # A saved selection (and a narrower declaration) does not change the binding's roster.
+        selected = replace(
+            experiment,
+            metrics={"revenue": experiment.metrics["revenue"]},
+            request_options={"metrics": ["revenue"]},
+        )
+        payload = selected.to_json()
+
+        def fail_read(*args, **kwargs):
+            pytest.fail("invalid metric selection reached the warehouse")
+
+        with reader, monkeypatch.context() as patch:
+            for name in ("execute", "to_pyarrow", "raw_sql"):
+                patch.setattr(type(con), name, fail_read)
+            with pytest.raises(InvalidRequestError) as runtime:
+                run(selected, reader, metrics=["typo"])
+            with pytest.raises(InvalidRequestError) as exploratory:
+                run(selected, reader, exploratory_metrics=["typo"])
+            assert exploratory.value.code == "facade.analysis_config.exploratory_metric_unavailable"
+    finally:
+        con.disconnect()
+
+    restored = Experiment.from_json(payload)
+    for name in ("revenue", "rps", "purchase_rate"):
+        status = runnable(restored, name)["randomized.unadjusted"]
+        assert not status.static_refusals
+        assert not status.unknown
+        assert status.deferred_checks
+    with pytest.raises(InvalidRequestError) as preflight:
+        runnable(restored, "typo")
+    assert preflight.value.code == runtime.value.code
+    assert runtime.value.code == "facade.analysis_config.unknown_metric_declared"
+    assert runtime.value.context == {
+        "caller": "run",
+        "unknown_names": ("typo",),
+        "declared_names": ("revenue", "rps"),
+    }
+    assert preflight.value.context == {**runtime.value.context, "caller": "runnable"}
+    for name in ("purchasers", "store_purchase"):
+        with pytest.raises(InvalidRequestError) as ineligible:
+            runnable(restored, name)
+        assert ineligible.value.code == preflight.value.code
+        assert ineligible.value.context == {**preflight.value.context, "unknown_names": (name,)}
+
+    legacy = replace(
+        restored,
+        analysis_context={**restored.analysis_context, "source_declaration": None},
+    )
+    assert runnable(legacy, "typo")["randomized.unadjusted"].unknown == (
+        "exploratory metric eligibility",
+    )
 
 
 def _assert_recorded_hazards(cell_id, hazards, record_property):
