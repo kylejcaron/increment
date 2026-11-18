@@ -68,6 +68,9 @@ experiments:
     control_group: control
     plan: {primary: revenue}
 """)
+    definitions = increment.load_definitions(definitions_directory)
+    for declaration in definitions.experiments:
+        print(declaration.name, declaration.metric_names)
     experiment, reader = increment.from_definitions(
         definitions_directory, demo_con, experiment_name="demo"
     )
@@ -86,6 +89,9 @@ Increment builds the unit-by-day panel and exposes every query it runs. If your
 data is already one row per unit or per unit-day, use
 `from_frame(..., shape="summary")` or `shape="panel"` instead
 ([Quickstart](quickstart.md)).
+
+Use `load_definitions(path)` to choose an experiment from a YAML file or
+directory. It does not connect to the warehouse or create files.
 
 Building with a connection writes a catalog of the bound experiments,
 `.increment-kernel-catalog.json`, and its `.lock` file into the definitions

@@ -194,7 +194,7 @@ _MERGE_LISTS = {"fact_sources", "dim_sources", "exposures", "metrics", "experime
 
 
 def load(path: str | Path) -> Definitions:
-    """Load and validate a definitions YAML file or directory.
+    """Inspect experiment and metric declarations without a warehouse connection.
 
     Accepts a single file or a directory of ``**/*.yaml``/``**/*.yml``
     files, merged and validated. Raises ``DefinitionError`` on invalid

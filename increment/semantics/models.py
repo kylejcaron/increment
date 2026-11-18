@@ -3074,7 +3074,7 @@ class Definitions(_Base):
     """Top-level semantic definitions loaded from a directory or YAML file.
 
     Construct it with the validated source, metric, exposure, and experiment
-    declarations, or obtain it from :func:`increment.semantics.load`.
+    declarations, or obtain it from :func:`increment.load_definitions`.
     """
 
     dialect: str | None = None

@@ -10,6 +10,8 @@ are in `increment.power`.
 
 ::: increment.from_switchback_frame
 
+::: increment.load_definitions
+
 ::: increment.from_definitions
 
 ::: increment.from_unit_day_artifact
@@ -150,6 +152,9 @@ numerical corrections in release notes; compatibility does not preserve wrong
 values.
 
 ### Current changes
+
+- `increment.load_definitions(path)` lists experiments and their declared
+  metrics from YAML without connecting to a warehouse or writing a catalog.
 
 - `increment.estimators.RelativeLiftPrior` explicitly declares a Normal,
   zero-centered Student-t, or Normal-mixture distribution on fractional
