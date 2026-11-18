@@ -280,7 +280,7 @@ def test_compile_emits_run_inventory_and_one_request_per_scope():
     assert all(request.source_ref == "events" for request in requests)
 
 
-def test_runnable_marks_missing_capabilities_unknown_per_estimator():
+def test_runnable_reports_missing_capabilities_and_metric_eligibility():
     from increment import runnable
 
     experiment = Experiment(
@@ -295,7 +295,10 @@ def test_runnable_marks_missing_capabilities_unknown_per_estimator():
     result = runnable(experiment, "orders")
 
     assert result
-    assert result["randomized.unadjusted"].unknown == ("events.capabilities",)
+    assert result["randomized.unadjusted"].unknown == (
+        "events.capabilities",
+        "exploratory metric eligibility",
+    )
     assert result["randomized.unadjusted"].static_refusals == ()
 
 

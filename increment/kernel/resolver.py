@@ -376,7 +376,12 @@ def _runnable_metric(exp: Experiment, name: str) -> tuple[object, bool]:
     exploratory = _exploratory_metric(exp, name)
     if exploratory is False:
         refuse_unknown_metrics((name,), roster.keys(), caller="runnable")
-    return (name, True) if exploratory is None else (exploratory, False)
+    if exploratory is None:
+        return name, True
+    from increment._runnability import require_runnable_exploratory_metric
+
+    require_runnable_exploratory_metric(exp.analysis_context, name)
+    return exploratory, False
 
 
 def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:

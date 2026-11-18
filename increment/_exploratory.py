@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from increment._analysis_config import (
     is_exploratory_metric,
+    require_fixed_exploratory_metrics,
     select_exploratory_metrics,
     select_metrics,
 )
@@ -14,7 +15,7 @@ from increment._evidence_loaders import load_exploratory_source
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import ExploratorySourceOperation
 from increment.decision import DefinitionsArmAnalysisState
-from increment.errors import CapabilityError, RefusalSpec, UnsupportedRequestError, refuse
+from increment.errors import CapabilityError, RefusalSpec, refuse
 from increment.readouts._evidence import day_axis_metric_objects_supported
 from increment.readouts._execution_context import current_execution_context
 
@@ -28,11 +29,6 @@ EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
     "facade.analysis.exploratory_metrics_source_limited",
     CapabilityError,
     template="{method}: exploratory_metrics adds metrics from the saved definitions, which this source does not carry; build the experiment with from_definitions.",
-)
-_EXPLORATORY_SEQUENTIAL = RefusalSpec(
-    "facade.analysis.exploratory_metrics_sequential",
-    UnsupportedRequestError,
-    template="{method}: exploratory_metrics {names!r} are chosen after data are visible, so no registered sequential model covers them under {inference}; read the declared metrics alone, or use a fixed-horizon plan.",
 )
 
 
@@ -69,14 +65,9 @@ def select_exploratory(
         names,
         caller=caller,
     )
-    inference = binding.plan.inference
-    if getattr(inference, "registration", None) is not None:
-        refuse(
-            _EXPLORATORY_SEQUENTIAL,
-            method=caller,
-            names=[metric.name for metric in added],
-            inference=type(inference).__name__,
-        )
+    require_fixed_exploratory_metrics(
+        binding.plan.inference, [metric.name for metric in added], caller=caller
+    )
     return added
 
 

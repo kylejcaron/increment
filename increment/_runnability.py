@@ -15,6 +15,7 @@ from increment._analysis_config import (
     effective_methods,
     normalize_display_correction,
     overlay_configs,
+    require_fixed_exploratory_metrics,
     resolve_configs,
     select_metrics,
 )
@@ -55,6 +56,17 @@ class _DeclaredSource(_DeclaredEvidence):
     ) -> None:
         super().__init__(evidence, constructor)
         self.context = context
+
+
+def require_runnable_exploratory_metric(declaration: Mapping[str, Any], name: str) -> None:
+    """Apply the registered-plan restriction to an eligible catalog metric."""
+    plan = declaration.get("plan")
+    if not isinstance(plan, Mapping):
+        return
+    inference = plan.get("inference")
+    if isinstance(inference, Mapping) and inference.get("registration") is not None:
+        compiled = CompiledDecisionPlan.model_validate(thaw(plan))
+        require_fixed_exploratory_metrics(compiled.inference, [name], caller="runnable")
 
 
 def _compliance_only_request(

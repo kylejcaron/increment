@@ -16,7 +16,15 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from increment import View, _dashboard_capture, builders, from_frame, workflows
+from increment import (
+    Experiment,
+    View,
+    _dashboard_capture,
+    builders,
+    from_frame,
+    runnable,
+    workflows,
+)
 from increment import run as run_views
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning
@@ -924,6 +932,15 @@ def test_sequential_plans_refuse_added_metrics_and_uncorrected_segments(warehous
         with pytest.raises(CodedError) as refused:
             view_readout(*analysis, scope, exploratory_metrics=["purchase_rate"])
         assert refused.value.code == "facade.analysis.exploratory_metrics_sequential"
+    experiment, reader = analysis
+    restored = Experiment.from_json(experiment.to_json())
+    with pytest.raises(CodedError) as executed:
+        run_views(experiment, reader, exploratory_metrics=["purchase_rate"])
+    with pytest.raises(CodedError) as preflight:
+        runnable(restored, "purchase_rate")
+    assert executed.value.code == "facade.analysis.exploratory_metrics_sequential"
+    assert preflight.value.code == executed.value.code
+    assert dict(preflight.value.context) == dict(executed.value.context) | {"method": "runnable"}
     (declared,) = experiment_definition(*analysis).breakouts
     with pytest.raises(CodedError) as refused:
         _dashboard_capture.dashboard_breakout_reads(

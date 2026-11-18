@@ -15496,7 +15496,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `inference`, `method`, `names`
 
-**Registering modules:** `increment._exploratory`
+**Registering modules:** `increment._analysis_config`
 
 <span id="facade.analysis.exploratory_metrics_source_limited"></span>
 

@@ -23,6 +23,7 @@ from increment.errors import (
     UnsupportedRequestError,
     raiser,
     refusals,
+    refuse,
 )
 from increment.estimation.engine import (
     Method,
@@ -559,6 +560,23 @@ def select_metrics(
 
     ordered = [resolved_by_name[m.name] for m in declared if m.name in resolved_by_name]
     return [*ordered, *undeclared_in_order]
+
+
+_EXPLORATORY_SEQUENTIAL = RefusalSpec(
+    "facade.analysis.exploratory_metrics_sequential",
+    UnsupportedRequestError,
+    template="{method}: exploratory_metrics {names!r} are chosen after data are visible, so no registered sequential model covers them under {inference}; read the declared metrics alone, or use a fixed-horizon plan.",
+)
+
+
+def require_fixed_exploratory_metrics(
+    inference: object, names: Sequence[str], *, caller: str
+) -> None:
+    """Refuse adding metrics outside the registered sequential family."""
+    if getattr(inference, "registration", None) is not None:
+        refuse(
+            _EXPLORATORY_SEQUENTIAL, method=caller, names=names, inference=type(inference).__name__
+        )
 
 
 def is_exploratory_metric(
