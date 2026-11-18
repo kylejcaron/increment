@@ -12,6 +12,7 @@ from yaml.composer import ComposerError
 from yaml.error import Mark
 from yaml.events import AliasEvent
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
+from yaml.reader import ReaderError
 
 from .models import Catalog, Location
 
@@ -96,9 +97,15 @@ def load(path: str | Path) -> Catalog:
     """Read and validate a versioned YAML catalog from disk."""
     path = Path(path)
     try:
-        loader = _Loader(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
     except UnicodeError as exc:
         raise _at(path, None, "invalid_yaml", str(exc)) from exc
+    try:
+        loader = _Loader(text)
+    except ReaderError as exc:
+        line = text.count("\n", 0, exc.position) + 1
+        column = exc.position - text.rfind("\n", 0, exc.position)
+        raise CatalogError("invalid_yaml", path, line, column, str(exc)) from exc
     try:
         node = loader.get_single_node()
         if node is None:

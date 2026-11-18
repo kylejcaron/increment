@@ -100,3 +100,16 @@ def test_invalid_declaration_names_its_source_line(tmp_path, line_fragment, repl
     assert exc.value.path == path
     assert exc.value.line in lines
     assert exc.value.column >= 1
+
+
+def test_prohibited_yaml_character_reports_its_location(tmp_path):
+    path = tmp_path / "invalid.yaml"
+    path.write_text("version: 1\nsources:\x00 {}\n")
+    with pytest.raises(CatalogError) as exc:
+        load(path)
+    assert (exc.value.code, exc.value.path, exc.value.line, exc.value.column) == (
+        "invalid_yaml",
+        path,
+        2,
+        9,
+    )
