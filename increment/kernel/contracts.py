@@ -61,6 +61,14 @@ _REFUSALS = refusals(
         "kernel.request.scope_mismatch": "Request kind {kind!r} field {field!r} disagrees with its view",
         "kernel.definitions.catalog_missing": "Offline definitions catalog is missing for {path!r}; bind the definitions with a connection first",
         "kernel.definitions.catalog_stale": "Offline definitions catalog is stale for {path!r}; rebind the definitions with a connection",
+        "kernel.definitions.catalog_invalid_destination": (
+            "Catalog destination {path!r} is not an empty path or an Increment catalog; "
+            "choose a new catalog file outside the definitions, or use the catalog file directly"
+        ),
+        "kernel.definitions.catalog_unwritable": (
+            "Could not write the definitions catalog at {path!r}; "
+            "pass catalog_path pointing to a writable file location"
+        ),
         "kernel.request.datetime_timezone": "Request datetime field {field!r} must be timezone-aware",
         "kernel.method.duplicate_instance": "Method instance id {method_instance_id!r} is duplicated",
         "kernel.context.closed": "Execution context is closed",

@@ -156,6 +156,10 @@ values.
 - `increment.load_definitions(path)` lists experiments and their declared
   metrics from YAML without connecting to a warehouse or writing a catalog.
 
+- `increment.from_definitions(..., catalog_path=...)` writes the offline
+  catalog to a file you choose. Pass the same path to reopen without a
+  connection; omitting it preserves the existing location.
+
 - Warehouse result and artifact stores create missing schemas on first write
   in the DuckDB catalog you specify, including an already attached catalog.
 

@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import stat
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -591,38 +592,99 @@ def _catalog_path(path: Path) -> Path:
     )
 
 
-def _write_catalog(path: Path, experiment: Experiment, expected_digest: str | None) -> None:
-    catalog_path = _catalog_path(path)
+def _select_catalog_path(path: Path, override: str | os.PathLike[str] | None) -> Path:
+    if override is None:
+        return _catalog_path(path)
+    requested = Path(override).absolute()
+    try:
+        target = requested.parent.resolve() / requested.name
+        if target.is_symlink():
+            _refuse("kernel.definitions.catalog_invalid_destination", path=str(target))
+    except (OSError, RuntimeError):
+        _refuse("kernel.definitions.catalog_unwritable", path=str(requested))
+    definitions = path.resolve()
+    if target == definitions or (
+        path.is_dir()
+        and target.is_relative_to(definitions)
+        and any(
+            Path(part).match("*.yaml") or Path(part).match("*.yml")
+            for part in target.relative_to(definitions).parts
+        )
+    ):
+        _refuse("kernel.definitions.catalog_invalid_destination", path=str(target))
+    return target
+
+
+def _existing_catalog(path: Path, *, protect: bool) -> dict[str, Any] | None:
+    try:
+        if protect and not stat.S_ISREG(path.lstat().st_mode):
+            _refuse("kernel.definitions.catalog_invalid_destination", path=str(path))
+        catalog = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        if protect:
+            _refuse("kernel.definitions.catalog_invalid_destination", path=str(path))
+        raise
+    if protect and not (
+        isinstance(catalog, dict)
+        and set(catalog) == {"schema_version", "definitions_digest", "experiments"}
+        and type(catalog["schema_version"]) is int
+        and catalog["schema_version"] in (1, _CATALOG_VERSION)
+        and isinstance(catalog["definitions_digest"], str)
+        and isinstance(catalog["experiments"], dict)
+    ):
+        _refuse("kernel.definitions.catalog_invalid_destination", path=str(path))
+    return catalog
+
+
+def _write_catalog(
+    path: Path,
+    catalog_path: Path,
+    experiment: Experiment,
+    expected_digest: str | None,
+    *,
+    protect: bool,
+) -> None:
     payload = json.loads(experiment.to_json())
-    catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    with _catalog_lock(catalog_path.with_suffix(catalog_path.suffix + ".lock")):
-        _require_unchanged_definitions(path, expected_digest)
-        catalog: dict[str, Any] = {
-            "schema_version": _CATALOG_VERSION,
-            "definitions_digest": expected_digest,
-            "experiments": {},
-        }
-        if catalog_path.exists():
-            previous = json.loads(catalog_path.read_text(encoding="utf-8"))
+    try:
+        catalog_path.parent.mkdir(parents=True, exist_ok=True)
+        with _catalog_lock(catalog_path.with_suffix(catalog_path.suffix + ".lock")):
+            _require_unchanged_definitions(path, expected_digest)
+            previous = _existing_catalog(catalog_path, protect=protect)
+            catalog: dict[str, Any]
             if (
-                previous.get("schema_version") == _CATALOG_VERSION
+                previous is not None
+                and previous.get("schema_version") == _CATALOG_VERSION
                 and previous.get("definitions_digest") == expected_digest
             ):
                 catalog = previous
-        catalog["experiments"][experiment.experiment_id] = payload
-        data = json.dumps(catalog, sort_keys=True, separators=(",", ":")) + "\n"
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{catalog_path.name}.", dir=catalog_path.parent
-        )
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, catalog_path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+            else:
+                catalog = {
+                    "schema_version": _CATALOG_VERSION,
+                    "definitions_digest": expected_digest,
+                    "experiments": {},
+                }
+            catalog["experiments"][experiment.experiment_id] = payload
+            _replace_catalog(catalog_path, catalog)
+    except OSError:
+        _refuse("kernel.definitions.catalog_unwritable", path=str(catalog_path))
+
+
+def _replace_catalog(catalog_path: Path, catalog: dict[str, Any]) -> None:
+    data = json.dumps(catalog, sort_keys=True, separators=(",", ":")) + "\n"
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{catalog_path.name}.", dir=catalog_path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, catalog_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 @overload
@@ -774,24 +836,32 @@ def from_definitions(
     store: Literal["auto", "always", "none"] = "auto",
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
+    catalog_path: str | os.PathLike[str] | None = None,
 ) -> tuple[Experiment, ExperimentReader]:
-    """Build from definitions, using a bound versioned catalog when offline."""
+    """Bind warehouse definitions or reopen their catalog without a connection.
+
+    ``catalog_path`` names the catalog file and puts its lock in the same
+    directory. Use the same path to reopen offline. Omit it to keep both
+    files beside the definitions.
+    """
     require_warehouse("from_definitions")
     path = Path(definitions_path)
+    catalog = _select_catalog_path(path, catalog_path)
+    protect = catalog_path is not None
     if con is None:
-        catalog_path = _catalog_path(path)
-        if not catalog_path.is_file():
-            _refuse("kernel.definitions.catalog_missing", path=str(path))
+        catalog_label = str(catalog if protect else path)
+        if not catalog.is_file():
+            _refuse("kernel.definitions.catalog_missing", path=catalog_label)
         try:
-            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            _refuse("kernel.definitions.catalog_stale", path=str(path))
-        if not isinstance(catalog, dict) or catalog.get("schema_version") != _CATALOG_VERSION:
-            _refuse("kernel.definitions.catalog_stale", path=str(path))
-        _require_unchanged_definitions(path, catalog.get("definitions_digest"))
-        experiments = catalog.get("experiments")
+            contents = json.loads(catalog.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            _refuse("kernel.definitions.catalog_stale", path=catalog_label)
+        if not isinstance(contents, dict) or contents.get("schema_version") != _CATALOG_VERSION:
+            _refuse("kernel.definitions.catalog_stale", path=catalog_label)
+        _require_unchanged_definitions(path, contents.get("definitions_digest"))
+        experiments = contents.get("experiments")
         if not isinstance(experiments, dict):
-            _refuse("kernel.definitions.catalog_stale", path=str(path))
+            _refuse("kernel.definitions.catalog_stale", path=catalog_label)
         name = experiment_name
         if name is None:
             if len(experiments) != 1:
@@ -799,11 +869,17 @@ def from_definitions(
             name = next(iter(experiments))
         payload = experiments.get(name)
         if not isinstance(payload, dict):
-            _refuse("kernel.definitions.catalog_missing", path=str(path))
+            _refuse("kernel.definitions.catalog_missing", path=catalog_label)
         experiment = Experiment.from_json(json.dumps(payload))
         return experiment, ExperimentReader(None, experiment)
 
     from increment.semantics.loader import load
+
+    if protect:
+        try:
+            _existing_catalog(catalog, protect=True)
+        except OSError:
+            _refuse("kernel.definitions.catalog_unwritable", path=str(catalog))
 
     # Digest before binding, so an edit during the build fails the catalog write;
     # definitions that do not load are reported by the binding itself.
@@ -823,13 +899,21 @@ def from_definitions(
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=source_snapshot_evidence,
     )
+
+    def write_catalog(captured: Experiment) -> None:
+        _write_catalog(path, catalog, captured, definitions_digest, protect=protect)
+
     experiment, reader = resolver_for(
         binding,
         record_schema=True,
-        catalog_writer=lambda captured: _write_catalog(path, captured, definitions_digest),
+        catalog_writer=write_catalog,
         definitions_guard=lambda: _require_unchanged_definitions(path, definitions_digest),
     )
-    _write_catalog(path, experiment, definitions_digest)
+    try:
+        write_catalog(experiment)
+    except BaseException:
+        reader.close()
+        raise
     return experiment, reader
 
 

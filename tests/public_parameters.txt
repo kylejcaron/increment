@@ -21,6 +21,7 @@ breakout: One declared breakout dimension.
 breakouts: Columns available for breakout analysis.
 canonical_definition_json: Canonical serialized definition.
 canonical_source_recipe_json: Canonical serialized source recipe.
+catalog_path: File for the bound definitions catalog and offline reopen.
 checkpoints: Sequential look schedule.
 cluster: Column identifying randomization clusters.
 cluster_weight: Weighting choice for cluster-level analysis.

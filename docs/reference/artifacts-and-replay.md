@@ -766,15 +766,21 @@ its own typed options. A summary accepts `intervention_grain="unit"` or
 The definitions call is path-first:
 `from_definitions(definitions_path, con=None, *, experiment_name=None,
 backend=None, store="auto", on_mixed_assignment="error",
-source_snapshot_evidence=None)`. Omit `experiment_name` only when the definitions
-or offline catalog contain exactly one experiment. Binding with a connection
-writes a versioned catalog beside the definitions: `.increment-kernel-catalog.json`
+source_snapshot_evidence=None, catalog_path=None)`. Omit `experiment_name` only
+when the definitions or offline catalog contain exactly one experiment.
+
+By default, binding with a connection writes `.increment-kernel-catalog.json`
 inside a definitions directory, or `<file>.kernel.json` next to a single
-definitions file, and a lock file with `.lock` appended to that name, which
-serializes catalog updates and stays in place. Both are generated. A
-no-connection call reads that catalog and refuses when it is
-missing or stale. An offline specification can be inspected with `runnable`,
-but needs a connection-bound reader to execute.
+definitions file. For read-only definitions, set `catalog_path` to a writable
+file location and pass the same path when you reopen without a connection.
+Relative paths are relative to your working directory. Use a new file or a
+catalog previously written by Increment, not a YAML input or a symbolic link.
+The generated `.lock` file stays beside the catalog to serialize updates.
+`store="none"` does not disable this catalog.
+
+Reopening refuses when the catalog is missing or the definitions have changed.
+You can inspect the offline experiment with `runnable`, but need a connected
+reader to execute it.
 
 The other source builders expose only the options their data support:
 
