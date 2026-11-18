@@ -627,6 +627,12 @@ differs from a selected view's population.
 
 `runnable(experiment, metric)` is an offline preflight. It does not open a source. If a source has no recorded capabilities, the returned estimator entries name those capabilities as `unknown`; known data-dependent conditions such as usable denominators and sample floors remain deferred until execution. Its `static_refusals` contain only known incompatibilities.
 
+Pass a metric name declared for the experiment, or an eligible metric you can
+add from its definitions with `run(..., exploratory_metrics=[name])`. A name
+that is neither raises `facade.analysis_config.unknown_metric_declared` before
+reading data. If a saved experiment lacks enough information to decide
+whether it can add that name, the check reports it under `unknown` instead.
+
 An unknown source declaration does not erase refusals already established by
 another source. Alternative evidence routes include their count and named
 covariate requirements. For switchback experiments, `switchback.contrast`

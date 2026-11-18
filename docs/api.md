@@ -163,6 +163,9 @@ values.
 - Warehouse result and artifact stores create missing schemas on first write
   in the DuckDB catalog you specify, including an already attached catalog.
 
+- `runnable()` refuses unknown metric names before reading data. It still
+  checks eligible metrics you can add from the experiment's definitions.
+
 - `increment.estimators.RelativeLiftPrior` explicitly declares a Normal,
   zero-centered Student-t, or Normal-mixture distribution on fractional
   relative lift. Eligible randomized fixed-horizon results use a direct
