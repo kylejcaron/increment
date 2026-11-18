@@ -190,7 +190,7 @@ def test_runnable_metric_name_refusal_matches_run_without_source_reads(tmp_path,
     import yaml
     from ibis.backends.sql import SQLBackend
 
-    from increment import AnalysisPlan, Experiment, from_definitions, run, runnable
+    from increment import AnalysisPlan, Experiment, View, from_definitions, run, runnable
     from increment.errors import InvalidRequestError
     from tests.parity_harness import dataset as ds
 
@@ -263,6 +263,13 @@ def test_runnable_metric_name_refusal_matches_run_without_source_reads(tmp_path,
     assert runnable(legacy, "typo")["randomized.unadjusted"].unknown == (
         "exploratory metric eligibility",
     )
+
+    incompatible = replace(legacy, views=(View.switchback(),))
+    status = runnable(incompatible, "typo")["randomized.unadjusted"]
+    assert status.unknown == ("exploratory metric eligibility",)
+    (scope_refusal,) = status.static_refusals
+    assert scope_refusal.code == "kernel.scope.family_mismatch"
+    assert scope_refusal.context == {"experiment_id": "exp", "view": "switchback"}
 
 
 def _assert_recorded_hazards(cell_id, hazards, record_property):

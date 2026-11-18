@@ -71,6 +71,12 @@ def _resolve_verified(
 
 def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedError]:
     """Return source-declaration incompatibilities without acquiring evidence."""
+    return _resolve(estimator_id, exp, metric, eligibility_unknown=False)
+
+
+def _resolve(
+    estimator_id: str, exp: Experiment, metric: object, *, eligibility_unknown: bool
+) -> list[CodedError]:
     from increment._evidence_refusals import (
         require_any_evidence_route,
         require_evidence_declaration,
@@ -129,6 +135,11 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
         return refusals
     # Recorded declarations are read as recorded; a corrupt one fails at the read.
     recorded: Mapping[str, Any] = exp.analysis_context
+    readout_context_known = bool(recorded) and (
+        not eligibility_unknown
+        or {"configs", "plan", "study_id", "cluster", "trigger_name", "source_name"}
+        <= recorded.keys()
+    )
     for source in exp.source_refs:
         capabilities = source.capabilities
         if capabilities is None:
@@ -143,7 +154,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
             # An empty breakout segment reads every declared breakout, so validation sees the
             # identities execution expands it to.
             breakouts = declared_breakouts(exp.source_refs, scope, exp.analysis_context)
-            if exp.analysis_context:
+            if readout_context_known:
                 from increment._runnability import readout_refusals
 
                 for refusal in readout_refusals(
@@ -158,7 +169,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                 ):
                     append_unique(refusal)
             request = EvidenceScope(
-                metrics=(metric_spec,),
+                metrics=() if eligibility_unknown else (metric_spec,),
                 population=scope.population,
                 grain=None if checkpoint_projection else scope.grain,
                 breakouts=breakouts,
@@ -180,7 +191,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                 continue
             methods = (
                 method
-                for config in recorded.get("configs", ())
+                for config in (() if eligibility_unknown else recorded.get("configs", ()))
                 if config["metric"]["name"] == metric_name
                 for method in (config["decision_method"], *config["sensitivity_methods"])
             )
@@ -386,9 +397,9 @@ def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:
         missing += ("exploratory metric eligibility",)
     return {
         estimator_id: Runnable(
-            static_refusals=()
-            if eligibility_unknown
-            else tuple(resolve(estimator_id, exp, metric)),
+            static_refusals=tuple(
+                _resolve(estimator_id, exp, metric, eligibility_unknown=eligibility_unknown)
+            ),
             deferred_checks=(
                 ("sample floors", "usable denominators", "data-dependent estimator checks")
                 if not missing
