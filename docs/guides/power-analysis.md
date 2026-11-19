@@ -122,12 +122,14 @@ import pandas as pd
 rng = np.random.default_rng(42)
 n = 4_000
 purchase_chance = rng.beta(0.1, 0.4, n)
-pilot = pd.DataFrame({
-    "user": range(n),
-    "arm": ["control", "treatment"] * (n // 2),
-    "pre_revenue": 20 * rng.binomial(1, purchase_chance),
-    "revenue": 20 * rng.binomial(1, purchase_chance),
-})
+pilot = pd.DataFrame(
+    {
+        "user": range(n),
+        "arm": ["control", "treatment"] * (n // 2),
+        "pre_revenue": 20 * rng.binomial(1, purchase_chance),
+        "revenue": 20 * rng.binomial(1, purchase_chance),
+    }
+)
 ```
 
 Estimate the baseline from the pilot's control users. For the unadjusted
@@ -139,11 +141,18 @@ from increment.power import achieved_power, minimum_detectable_effect
 from increment.workflows import planning_baseline
 
 experiment, reader = inc.from_frame(
-    pilot, shape="summary", unit="user", group="arm", control="control",
-    metrics=[inc.MetricSpec(
-        name="revenue", type="mean",
-        decision_method=inc.Method.cuped(covariates="pre_revenue"),
-    )],
+    pilot,
+    shape="summary",
+    unit="user",
+    group="arm",
+    control="control",
+    metrics=[
+        inc.MetricSpec(
+            name="revenue",
+            type="mean",
+            decision_method=inc.Method.cuped(covariates="pre_revenue"),
+        )
+    ],
 )
 cuped = planning_baseline(experiment, reader, "revenue")
 plain = cuped.model_copy(update={"cuped_rho": 0.0})
