@@ -509,6 +509,7 @@ def _request_config(
         for config in declaration["configs"]
     )
     base = _CONFIGS.validate_python(recorded_configs)
+    declared = base
     metrics = select_metrics(
         tuple(config.metric for config in base),
         values.get("metrics"),
@@ -555,7 +556,7 @@ def _request_config(
         else config
         for config in configs
     )
-    return values, base, configs
+    return values, declared, configs
 
 
 def _validate_declared_day_axis(

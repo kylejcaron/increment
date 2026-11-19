@@ -69,6 +69,21 @@ def _resolve_verified(
     return provider
 
 
+def _scope_compatibility(
+    exp: Experiment, scope: View, exploratory_metric: Metric | None
+) -> tuple[CodedError, ...]:
+    from increment._runnability import operation_options, scope_refusals
+
+    refusals = scope_refusals(exp, scope)
+    if refusals or exploratory_metric is None:
+        return refusals
+    try:
+        operation_options(exp, scope, {"exploratory_metrics": [exploratory_metric.name]})
+    except CodedError as refusal:
+        return (refusal,)
+    return ()
+
+
 def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedError]:
     """Return source-declaration incompatibilities without acquiring evidence."""
     return _resolve(estimator_id, exp, metric, eligibility_unknown=False)
@@ -104,10 +119,10 @@ def _resolve(
         ):
             refusals.append(refusal)
 
-    from increment._runnability import operation_options, scope_operation, scope_refusals
+    from increment._runnability import operation_options, scope_operation
 
     for scope in exp.views:
-        for refusal in scope_refusals(exp, scope):
+        for refusal in _scope_compatibility(exp, scope, exploratory_metric):
             append_unique(refusal)
     if refusals:
         return refusals

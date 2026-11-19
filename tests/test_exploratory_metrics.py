@@ -845,15 +845,35 @@ def test_a_day_source_over_an_added_metric_tests_it_at_the_plan_alpha(warehouse,
 
 def test_dimensioned_daily_reads_keep_their_refusal_of_undeclared_metrics(warehouse):
     experiment, resolver = _analysis(warehouse, AnalysisPlan(primary="revenue"), breakout=True)
+    scope = View.daily(values=True, segment=(BreakoutIdentity("store", None),))
     with pytest.raises(CodedError) as refused:
         view_readout(
             experiment,
             resolver,
-            View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("store", None)),
+            scope,
             metrics=[],
             exploratory_metrics=["purchase_rate"],
         )
     assert refused.value.code == "facade.analysis.undeclared_metric_for_dimension"
+    restored = Experiment.from_json(replace(experiment, views=(scope,)).to_json())
+    status = runnable(restored, "purchase_rate")["randomized.unadjusted"]
+    assert [(error.code, error.context) for error in status.static_refusals] == [
+        (refused.value.code, refused.value.context)
+    ]
+
+
+def test_daily_lift_preflight_refuses_an_exploratory_option_the_view_cannot_run(warehouse):
+    experiment, reader = _analysis(warehouse, AnalysisPlan(primary="revenue"))
+    scope = View.daily()
+    with reader, pytest.raises(CodedError) as executed:
+        view_readout(experiment, reader, scope, exploratory_metrics=["purchase_rate"])
+    assert executed.value.code == "kernel.run.execution_unavailable"
+
+    restored = Experiment.from_json(replace(experiment, views=(scope,)).to_json())
+    status = runnable(restored, "purchase_rate")["randomized.unadjusted"]
+    assert [(error.code, error.context) for error in status.static_refusals] == [
+        (executed.value.code, executed.value.context)
+    ]
 
 
 def test_dimensioned_asof_lift_serves_added_metrics_as_exploratory_rows(warehouse):
