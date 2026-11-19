@@ -233,6 +233,29 @@ def _web_sales_connection() -> SQLBackend:
 
 
 @pytest.mark.integration
+def test_rebound_shared_roster_cannot_verify_an_old_experiment(shared_files):
+    manifest, portable = shared_files
+    native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    native["metric_definitions"]["use"].append("mean")
+    manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
+    con = _web_sales_connection()
+    try:
+        original, reader = from_definitions(manifest, con)
+        reader.close()
+        portable.write_text(
+            _PORTABLE.replace("table: enrolled", "table: enrolled_v2"), encoding="utf-8"
+        )
+        changed, rebound = from_definitions(manifest, con)
+        assert changed.source_refs[0].expected_digest != original.source_refs[0].expected_digest
+        with rebound, pytest.raises(CodedError) as exc:
+            run(Experiment.from_json(original.to_json()), rebound)
+        assert exc.value.code == "kernel.run.execution_unavailable"
+        assert exc.value.context["field"] == "analysis_context"
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(("hazard", "operation"), [("roster", "run"), ("row_key", "artifact")])
 def test_shared_operation_refuses_warehouse_drift_after_binding(shared_files, hazard, operation):
     from increment.artifacts import publish_unit_day_artifact
@@ -294,8 +317,12 @@ def test_unrequested_shared_roster_does_not_block_a_shared_ratio(shared_files):
         native["exposures"].append({"name": "visit", "fact": "session_end"})
         native["experiments"][0]["trigger"] = "visit"
         manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
-        _, triggered_reader = from_definitions(manifest, con)
-        triggered_reader.close()
+        triggered, triggered_reader = from_definitions(manifest, con)
+        restored = Experiment.from_json(triggered.to_json())
+        with triggered_reader, pytest.raises(DefinitionError) as exc:
+            run(restored, triggered_reader, exploratory_metrics=["mean"])
+        (offline,) = runnable(restored, "mean")["randomized.unadjusted"].static_refusals
+        assert (offline.code, offline.context) == (exc.value.code, exc.value.context)
     finally:
         con.disconnect()
 

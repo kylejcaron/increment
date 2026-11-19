@@ -41,7 +41,7 @@ from increment.errors import CapabilityError, CodedError, InvalidRequestError, R
 from increment.estimation.priors import prior_from_payload
 from increment.plan import with_unassigned_procedures
 from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
-from increment.semantics.shared import _refuse_uncaptured_shared_metric
+from increment.semantics.shared import _refuse_shared_trigger, _refuse_uncaptured_shared_metric
 
 if TYPE_CHECKING:
     from increment._evidence_types import BreakoutIdentity
@@ -669,13 +669,17 @@ def _validate_scope_request(
         check(validate_request, validation_request)
 
 
-def _validate_live_capture(capabilities: EvidenceCapabilities, request: ReadoutRequest) -> None:
-    if not capabilities.snapshot_required_metrics:
-        return
-    selected = {metric.name for metric in request.metrics}
-    for name in capabilities.snapshot_required_metrics:
-        if name in selected:
-            _refuse_uncaptured_shared_metric(name)
+def _validate_shared_capture(
+    capabilities: EvidenceCapabilities, request: ReadoutRequest, *, live: bool
+) -> None:
+    for metric in request.metrics:
+        if (
+            request.context.trigger_name is not None
+            and metric.name in capabilities.roster_required_metrics
+        ):
+            _refuse_shared_trigger(metric.name, request.context.study_id)
+        if live and metric.name in capabilities.snapshot_required_metrics:
+            _refuse_uncaptured_shared_metric(metric.name)
 
 
 def readout_refusals(
@@ -782,8 +786,8 @@ def readout_refusals(
                 refusals.append(error)
 
     _validate_scope_request(declaration, request, scope, operation, capabilities, check, refusals)
-    if not refusals and live:
-        check(_validate_live_capture, capabilities, request)
+    if not refusals:
+        check(_validate_shared_capture, capabilities, request, live=live)
     if refusals:
         return tuple(refusals)
     if (

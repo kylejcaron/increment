@@ -55,8 +55,8 @@ jobs:
           lock="$core/conformance/malloy/package-lock.json"
           expected_lock_sha=$(jq -er '.malloy.lock_sha256' "$receipt")
           printf '%s  %s\n' "$expected_lock_sha" "$lock" | sha256sum --check -
-          npm exec --yes --package="node@$node_version" -- npm ci --prefix "$core/conformance/malloy"
+          npm exec --yes --package="node@$node_version" --package=npm@10.9.4 -- npm ci --prefix "$core/conformance/malloy"
           MALLOY_NODE=$(npm exec --yes --package="node@$node_version" -- which node)
           export MALLOY_NODE
           test "$("$MALLOY_NODE" --version)" = "v$node_version"
-          uv run --project "$core" --locked --python "$python_version" pytest -q "$core/conformance/test_three_consumers.py"
+          uv run --project "$core" --locked --python "$python_version" pytest -q "$core/tests" "$core/conformance/test_three_consumers.py"

@@ -169,7 +169,9 @@ descriptive reports.
 Experiment reads of shared metrics require a warehouse snapshot so the row keys
 and eligible roster are checked against the same rows used for the result.
 Use the default captured reads, not `coherence="live"`.
-Offline `runnable()` also flags a saved live request for a shared metric.
+Offline `runnable()` also flags saved live requests and roster metrics with a
+separate trigger population. Saved experiments bind the roster table and key;
+changing either requires a new experiment and reader.
 
 Use other formulas in descriptive reports with Terrine or Malloy, not experiment inference.
 An unselected formula does not have to be supported by Increment, but the whole

@@ -99,6 +99,15 @@ def native_observation_mapping(definitions, experiment, *, on_mixed_assignment="
             "on_mixed_assignment": on_mixed_assignment,
         }
     )
+    shared = definitions._shared_metrics
+    if shared is not None:
+        rosters = [
+            {"metric": binding.name, "table": binding.roster.table, "key": binding.roster.key}
+            for binding in shared.metrics
+            if binding.roster is not None
+        ]
+        if rosters:
+            raw_mapping["shared_rosters"] = rosters
     # The raw recipe holds source SQL, so only its digest may travel with a registration.
     return {"source_mapping_format": 2, "recipe_sha256": canonical_id(raw_mapping)}
 

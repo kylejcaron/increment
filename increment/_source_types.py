@@ -218,6 +218,7 @@ class EvidenceCapabilities:
     temporal_clusters: bool | None = None
     dimensioned_daily_metrics: Literal["declared", "any"] | None = None
     snapshot_required_metrics: tuple[str, ...] = ()
+    roster_required_metrics: tuple[str, ...] = ()
 
 
 def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:

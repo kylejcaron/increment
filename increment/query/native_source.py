@@ -195,7 +195,11 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
 )
-from increment.semantics.shared import _refuse_uncaptured_shared_metric, refuse_shared_metric
+from increment.semantics.shared import (
+    _refuse_shared_trigger,
+    _refuse_uncaptured_shared_metric,
+    refuse_shared_metric,
+)
 from increment.sequential_source import SequentialSourceMixin
 from increment.sources import (
     MIXED_ASSIGNMENT_LABEL,
@@ -353,6 +357,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             snapshot_required_metrics=()
             if shared is None
             else tuple(binding.name for binding in shared.metrics),
+            roster_required_metrics=()
+            if shared is None
+            else tuple(binding.name for binding in shared.metrics if binding.roster is not None),
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -469,11 +476,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     route="bind the metric to the experiment's unit",
                 )
             if binding.roster is not None and self._experiment.trigger is not None:
-                refuse_shared_metric(
-                    binding.name,
-                    f"experiment {self._experiment.name!r} includes a separate triggered population",
-                    route="use a fixed assignment population with the declared eligible roster",
-                )
+                _refuse_shared_trigger(binding.name, self._experiment.name)
 
     def validate_scope_capture(self, scope: EvidenceScope) -> None:
         """Refuse to read shared metrics outside a validated warehouse capture."""

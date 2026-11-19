@@ -52,6 +52,14 @@ def _refuse_uncaptured_shared_metric(metric: str) -> NoReturn:
     )
 
 
+def _refuse_shared_trigger(metric: str, experiment: str) -> NoReturn:
+    refuse_shared_metric(
+        metric,
+        f"experiment {experiment!r} includes a separate triggered population",
+        route="use a fixed assignment population with the declared eligible roster",
+    )
+
+
 def _unsupported(metric: str, reason: str) -> NoReturn:
     refuse_shared_metric(
         metric,
