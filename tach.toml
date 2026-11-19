@@ -38,6 +38,11 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment.assignment"
+layer = "core"
+depends_on = ["increment.errors"]
+
+[[modules]]
 path = "increment._optional"
 layer = "core"
 depends_on = ["increment.errors"]

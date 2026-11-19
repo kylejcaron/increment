@@ -138,7 +138,7 @@ step: Column identifying steps within a switchback period.
 store: Policy for materializing warehouse reductions.
 study_id: Stable identifier for the study.
 summary: Per-arm summary statistics.
-target: Policy or target population to evaluate.
+target: Policy, population, layer, or standalone experiment to evaluate.
 withheld: Arm-specific adjustment evidence omitted with its refusal.
 target_power: Desired probability of detecting the target effect.
 tau_prior_scale: Prior scale for segment-level heterogeneity.
@@ -149,6 +149,7 @@ trace: Logged policy decisions and outcomes.
 transformations: Declared transformations applied to the source.
 triggered: Whether the sequential analysis has triggered.
 unit: Column identifying experimental units.
+unit_id: Stable identifier for the assignment unit.
 unit_counts: Counts of units by arm.
 units_per_week: Weekly unit volume used for planning.
 uptake: Column recording encouragement uptake.
@@ -175,5 +176,6 @@ views: Declared experiment views selected for one shared execution.
 capture: Sequential checkpoint captured before a run reads its views.
 execution_context: Open shared evidence capture that a run reuses instead of reading its source again.
 experiment: Experiment declaration to execute.
-config: Dashboard display configuration supplied with an experiment.
+config: Configuration for dashboard display or experiment assignment.
 view: Dashboard Explore view to load from a prepared snapshot.
+holdout_key: Name of the holdout to evaluate.

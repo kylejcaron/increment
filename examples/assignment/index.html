@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assignment quickstart</title>
+  <script type="importmap">{"imports":{"@increment/assignment":"/sdk/index.js"}}</script>
+  <script type="module" src="/client.mjs"></script>
+</head>
+<body data-demo-unit="acct:1">
+  <main>
+    <h1>Assignment quickstart</h1>
+    <nav><a href="/server">Server decision</a> · <a href="/client">Browser decision</a></nav>
+    <p>Decision: <output aria-live="polite">Waiting</output></p>
+  </main>
+  <script id="server-decision" type="application/json"><!-- decision --></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "name": "@increment/assignment",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Deterministic experiment assignment using the Increment v1 protocol",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "node scripts/lint.mjs && tsc --noEmit --noUnusedLocals --noUnusedParameters",
+    "test": "npm run build && node --test"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

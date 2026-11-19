@@ -68,6 +68,7 @@ nav:
   - Home: index.md
   - Guides:
       - Quickstart: guides/quickstart.md
+      - Assign Units to Experiments: guides/assign-experiments.md
       - Reading Results: guides/reading-results.md
       - Which Method Should I Use?: guides/choose-a-method.md
       - Refusal Navigation: guides/refusals.md
@@ -108,6 +109,7 @@ nav:
       - Release History: reference/release-history.md
       - Warehouse Definitions: reference/warehouse-definitions.md
       - Saved Data and Replay: reference/artifacts-and-replay.md
+      - Assignment Protocol v1: reference/assignment-protocol-v1.md
       - Saved Formats: reference/saved-formats.md
   - Development:
       - Extending Estimators and Evidence: development/adding-an-estimator.md

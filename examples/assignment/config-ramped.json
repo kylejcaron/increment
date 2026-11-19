@@ -1,0 +1,118 @@
+{
+  "protocol": 1,
+  "revision": "release/次",
+  "experiments": [
+    {
+      "key": "cart",
+      "enrollment_bps": 8000,
+      "arms": [
+        {
+          "key": "treatment",
+          "weight_bps": 7500
+        },
+        {
+          "key": "control",
+          "weight_bps": 2500
+        }
+      ]
+    },
+    {
+      "key": "pilot",
+      "enrollment_bps": 10000,
+      "arms": [
+        {
+          "key": "treatment",
+          "weight_bps": 7500
+        },
+        {
+          "key": "control",
+          "weight_bps": 2500
+        }
+      ]
+    },
+    {
+      "key": "smart",
+      "enrollment_bps": 6000,
+      "arms": [
+        {
+          "key": "treatment",
+          "weight_bps": 7500
+        },
+        {
+          "key": "control",
+          "weight_bps": 2500
+        }
+      ]
+    },
+    {
+      "key": "e",
+      "enrollment_bps": 5000,
+      "arms": [
+        {
+          "key": "treatment",
+          "weight_bps": 7500
+        },
+        {
+          "key": "control",
+          "weight_bps": 2500
+        }
+      ]
+    },
+    {
+      "key": "plain",
+      "enrollment_bps": 0,
+      "arms": [
+        {
+          "key": "treatment",
+          "weight_bps": 7500
+        },
+        {
+          "key": "control",
+          "weight_bps": 2500
+        }
+      ]
+    }
+  ],
+  "layers": [
+    {
+      "key": "checkout",
+      "ranges": [
+        {
+          "experiment": "cart",
+          "start_bps": 9071,
+          "end_bps": 10000
+        },
+        {
+          "experiment": "pilot",
+          "start_bps": 0,
+          "end_bps": 7500
+        }
+      ]
+    },
+    {
+      "key": "search",
+      "ranges": [
+        {
+          "experiment": "smart",
+          "start_bps": 0,
+          "end_bps": 5000
+        }
+      ]
+    },
+    {
+      "key": "empty",
+      "ranges": []
+    }
+  ],
+  "holdouts": [
+    {
+      "key": "shopping",
+      "held_out_bps": 1000,
+      "targets": [
+        "search",
+        "e",
+        "checkout"
+      ]
+    }
+  ]
+}

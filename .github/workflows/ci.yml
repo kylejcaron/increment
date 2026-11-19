@@ -519,6 +519,38 @@ jobs:
         continue-on-error: true
         run: uv run --no-sync python scripts/rewritten_bytecode_cache.py save .pytest_cache/rewritten-bytecode
 
+  assignment-sdks:
+    name: installed assignment SDKs (Python, Node, Chromium, workerd)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.assignment_sdks_required == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with: {enable-cache: true, python-version: "3.12"}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: python scripts/check_assignment_vectors.py
+      - name: Check the JavaScript package
+        working-directory: sdks/assignment-js
+        run: |
+          npm ci
+          npm run lint
+          npm run typecheck
+          npm test
+      - name: Qualify installed packages
+        working-directory: integration/assignment_sdks
+        run: |
+          npm ci
+          npm run install:chromium -- --with-deps
+          npm run qualify
+
   # Catches packaging breakage on every push/PR rather than at release time,
   # using the same gates release.yml applies before publishing.
   # Also builds the documentation when changed paths require it, saving a job.
@@ -573,6 +605,7 @@ jobs:
       certification_required: ${{ steps.certification.outputs.required }}
       exhaustive_required: ${{ steps.exhaustive.outputs.required }}
       compile_registry_required: ${{ steps.compile_registry.outputs.required }}
+      assignment_sdks_required: ${{ steps.assignment_sdks.outputs.required }}
       tooling_required: ${{ steps.tooling.outputs.required }}
       wheel_smoke_required: ${{ steps.packaging.outputs.required }}
       snippets: ${{ steps.docs.outputs.snippets }}
@@ -606,6 +639,23 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+      - id: assignment_sdks
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          required=true
+          # diff --quiet fails on either a change or an unknown diff; both require the job.
+          if [[ "$EVENT" == pull_request && "$BASE" =~ ^[0-9a-f]{40}$ && "$HEAD" =~ ^[0-9a-f]{40}$ ]] &&
+            git diff --quiet --no-ext-diff --no-renames "$BASE...$HEAD" -- \
+              increment/assignment/ increment/__init__.py increment/errors.py tests/test_allocation_sdk.py \
+              sdks/assignment-js/ integration/assignment_sdks/ examples/assignment/ \
+              'docs/reference/assignment-*' docs/guides/assign-experiments.md scripts/check_assignment_vectors.py \
+              pyproject.toml uv.lock .github/workflows/ci.yml; then
+            required=false
+          fi
+          echo "required=$required" >> "$GITHUB_OUTPUT"
       - id: tooling
         run: python scripts/tooling_ci_changes.py --event "$EVENT" --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
         env:
@@ -811,7 +861,7 @@ jobs:
   # means editing the ruleset every time the matrix changes.
   ci-ok:
     runs-on: ubuntu-latest
-    needs: [lint, test, unit-newest, slow, exhaustive, duration-ratchet, compile-registry, tooling, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows, test-weakening, core-install]
+    needs: [lint, test, unit-newest, slow, exhaustive, duration-ratchet, compile-registry, tooling, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows, test-weakening, core-install, assignment-sdks]
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -850,6 +900,8 @@ jobs:
         env:
           COMPILE_REGISTRY_REQUIRED: ${{ needs.changes.outputs.compile_registry_required }}
           COMPILE_REGISTRY_RESULT: ${{ needs.compile-registry.result }}
+          ASSIGNMENT_SDKS_REQUIRED: ${{ needs.changes.outputs.assignment_sdks_required }}
+          ASSIGNMENT_SDKS_RESULT: ${{ needs.assignment-sdks.result }}
           POSTGRES_REQUIRED: ${{ needs.changes.outputs.postgres_required }}
           POSTGRES_RESULT: ${{ needs.warehouse-postgres.result }}
           CERTIFICATION_REQUIRED: ${{ needs.changes.outputs.certification_required }}
@@ -892,6 +944,7 @@ jobs:
           }
           check_conditional_job "$UNIT_NEWEST_REQUIRED" "$UNIT_NEWEST_RESULT" unit-newest
           check_conditional_job "$COMPILE_REGISTRY_REQUIRED" "$COMPILE_REGISTRY_RESULT" compile-registry
+          check_conditional_job "$ASSIGNMENT_SDKS_REQUIRED" "$ASSIGNMENT_SDKS_RESULT" assignment-sdks
           check_conditional_job "$POSTGRES_REQUIRED" "$POSTGRES_RESULT" PostgreSQL
           check_conditional_job "$CERTIFICATION_REQUIRED" "$CERTIFICATION_RESULT" certification
           check_conditional_job "$EXHAUSTIVE_REQUIRED" "$EXHAUSTIVE_RESULT" exhaustive

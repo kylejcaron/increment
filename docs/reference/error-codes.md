@@ -150,6 +150,54 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Registering modules:** `increment.compatibility`
 
+<span id="allocation.invalid_config"></span>
+
+### `allocation.invalid_config`
+
+**Cause and message:**
+
+<p>Invalid allocation configuration: {field} {reason}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `reason`
+
+**Registering modules:** `increment.assignment._config`
+
+<span id="allocation.invalid_target"></span>
+
+### `allocation.invalid_target`
+
+**Cause and message:**
+
+<p>Invalid allocation target: {field} {reason}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `reason`
+
+**Registering modules:** `increment.assignment._config`
+
+<span id="allocation.invalid_unit"></span>
+
+### `allocation.invalid_unit`
+
+**Cause and message:**
+
+<p>Invalid allocation unit: {field} {reason}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `reason`
+
+**Registering modules:** `increment.assignment._config`
+
 <span id="family-analysis"></span>
 
 ## `analysis.*`

@@ -26,6 +26,7 @@ BASELINE = ROOT / "tests" / "consumer_jargon_baseline.txt"
 PROMISED_NAMESPACES = {
     "increment",
     "increment.artifacts",
+    "increment.assignment",
     "increment.dashboard",
     "increment.digest",
     "increment.errors",
@@ -630,6 +631,7 @@ def _public_callable_parameters() -> dict[str, set[str]]:
 
     import increment
     from increment import frame, workflows
+    from increment.assignment import AllocationEvaluator, compile_allocation
 
     callables = [
         (f"increment.{name}", function) for name, function in _root_export_functions(increment)
@@ -645,6 +647,16 @@ def _public_callable_parameters() -> dict[str, set[str]]:
             callables.append((f"{module_name}.{name}", function))
     callables.extend(
         (f"frame.{name}", function) for name, function in _frame_factory_functions(frame)
+    )
+    callables.extend(
+        [
+            ("assignment.compile_allocation", compile_allocation),
+            ("assignment.AllocationEvaluator.decide", AllocationEvaluator.decide),
+            (
+                "assignment.AllocationEvaluator.holdout_membership",
+                AllocationEvaluator.holdout_membership,
+            ),
+        ]
     )
 
     parameters: dict[str, set[str]] = {}

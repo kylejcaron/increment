@@ -179,8 +179,10 @@ with the reason, instead of being dropped. Methods carry assumptions: read the
 [statistical limitations](https://getincrement.io/docs/limitations/) and the
 [validation evidence](https://getincrement.io/docs/validation/).
 
-Increment analyzes data you already have. It does not assign traffic, run
-feature flags, or store events.
+Increment analyzes data you already have. If you also need to [assign experiment
+traffic](docs/guides/assign-experiments.md), the optional local SDKs can decide
+who enters an experiment and which arm to serve. Increment does not host
+feature flags or store events.
 
 ## Contributing and license
 

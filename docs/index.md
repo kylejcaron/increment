@@ -2,7 +2,8 @@
 
 Compare treatment with control from a dataframe or SQL warehouse. Increment
 reports effects, uncertainty intervals and the checks that qualify each result.
-It analyzes data you already collected; it does not assign traffic or store events.
+Use your existing assignments or [assign units locally](guides/assign-experiments.md).
+Increment does not store events or host a feature-flag service.
 
 **Start with the [dataframe quickstart](guides/quickstart.md).** It runs without
 YAML or a warehouse connection and explains the resulting estimate.

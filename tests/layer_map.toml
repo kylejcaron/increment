@@ -42,6 +42,7 @@ core = [
   "increment.switchback",
   "increment.winsor*",
   "increment.errors",
+  "increment.assignment*",
   "increment.compatibility",
   "increment.sequential*",
   "increment.metric*",

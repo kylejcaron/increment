@@ -92,6 +92,12 @@ SourceSnapshotEvidence: Declare a source's event-time cutoff and certified feed 
 artifact_context: Compute the trusted publication context of a definitions-backed experiment.
 publish_unit_day_artifact: Publish a definitions-backed experiment as an immutable artifact.
 
+[increment.assignment]
+AllocationEvaluator: Make repeatable decisions using one configuration snapshot.
+Decision: Read the assignment outcome and applicable probabilities.
+Membership: Read a unit's holdout group and its probability.
+compile_allocation: Validate and snapshot experiment allocation rules.
+
 [increment.dashboard]
 MIDNIGHT: Apply the dark dashboard theme.
 DashboardCharts: Adjust dashboard chart dimensions.
