@@ -6,7 +6,7 @@
     "source_date_epoch": 315532800
   },
   "increment": {
-    "runtime_commit": "87002aadb77e3492bf2ea1d72bbe374b6a670c37",
+    "runtime_commit": "da2f536ef83d912b1a6409ea029bf415f6e307f1",
     "ibis": "12.0.0",
     "duckdb": "1.5.5"
   },
