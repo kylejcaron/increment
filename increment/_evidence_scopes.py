@@ -285,6 +285,9 @@ def scope_source(src: EvidenceSource, scope: EvidenceScope) -> Iterator[Evidence
 
     with ExitStack() as stack:
         source = loader_source(src)
+        validate_capture = getattr(source, "validate_scope_capture", None)
+        if callable(validate_capture):
+            validate_capture(scope)
         if scope.snapshot and "readout_snapshot" in declared_evidence(source).operations:
             snapshot_options: dict[str, Any] = {
                 "metrics": scope.metrics,

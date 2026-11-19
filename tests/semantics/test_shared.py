@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 import yaml
 
-from increment import AnalysisPlan, from_definitions
+from increment import AnalysisPlan, from_definitions, run
 from increment.errors import CodedError, DefinitionError
 from increment.reporting import MetricTrends
 from increment.semantics.loader import load
@@ -15,6 +15,7 @@ from increment.semantics.models import ConversionMetric, MeanMetric, RatioMetric
 from tests.parity_harness import dataset as ds
 
 if TYPE_CHECKING:
+    from ibis.backends.duckdb import Backend as DuckDBBackend
     from ibis.backends.sql import SQLBackend
 
 
@@ -111,6 +112,22 @@ def test_shared_definition_refusals(shared_files, change, code):
         assert "descriptive report" in str(exc.value.context["route"])
 
 
+def test_invalid_native_fact_declaration_keeps_native_error_with_shared_opt_in(shared_files):
+    manifest, _ = shared_files
+    native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    opt_in = native.pop("shared_metrics")
+    del native["fact_sources"][0]["timestamp_column"]
+    manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
+    with pytest.raises(DefinitionError) as native_error:
+        load(manifest)
+    native["shared_metrics"] = opt_in
+    manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
+    with pytest.raises(DefinitionError) as shared_error:
+        load(manifest)
+    assert shared_error.value.code == native_error.value.code == "definition.validation"
+    assert shared_error.value.context == native_error.value.context
+
+
 @pytest.mark.integration
 def test_offline_catalog_tracks_only_validated_selected_shared_semantics(shared_files):
     manifest, portable = shared_files
@@ -151,8 +168,11 @@ def test_shared_mean_and_conversion_require_the_assigned_roster(shared_files):
         assigned = events.filter(events.event == "exposure").select("user_id")
         con.create_table("enrolled", assigned)
         experiment, reader = from_definitions(manifest, con)
-        reader.close()
-        assert experiment.experiment_id == "exp"
+        with reader:
+            assert {row.metric for row in run(experiment, reader).readout()} == {
+                "mean",
+                "conversion",
+            }
         # Same number of eligible IDs, but not the same people.
         con.create_table(
             "enrolled", assigned.mutate(user_id=assigned.user_id + "-other"), overwrite=True
@@ -179,5 +199,96 @@ def test_trends_refuse_shared_roster_metric_before_resolving_facts(shared_files)
         assert exc.value.code == "definition.shared.metric_unsupported"
         assert exc.value.context["metric"] == "mean"
         assert exc.value.context["target"] == "Increment metric trends"
+    finally:
+        con.disconnect()
+
+
+def _web_sales_connection() -> SQLBackend:
+    rows = ds.event_rows()
+    for row in rows:
+        if row["store_id"] == "s0":
+            row["store_id"] = "web"
+    return cast("SQLBackend", ds.duckdb_connection(rows))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("hazard", "operation"), [("roster", "run"), ("row_key", "artifact")])
+def test_shared_operation_refuses_warehouse_drift_after_binding(shared_files, hazard, operation):
+    from increment.artifacts import publish_unit_day_artifact
+    from increment.query.session import WarehouseArtifactStore
+
+    manifest, _ = shared_files
+    con = cast("DuckDBBackend", ds.duckdb_connection())
+    try:
+        if hazard == "roster":
+            _select_roster_metrics(manifest)
+            con.create_table(
+                "enrolled", con.sql("SELECT user_id FROM events WHERE event = 'exposure'")
+            )
+        else:
+            native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            native["fact_sources"][0]["sql"] = "SELECT * FROM keyed_events"
+            manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
+            con.create_table(
+                "keyed_events", con.sql("SELECT *, row_number() OVER () AS order_id FROM events")
+            )
+        experiment, reader = from_definitions(manifest, con)
+        with reader:
+            if hazard == "roster":
+                con.raw_sql("DELETE FROM enrolled WHERE user_id = 'c0'")
+            else:
+                con.raw_sql(
+                    "INSERT INTO keyed_events SELECT * FROM keyed_events WHERE event = 'purchase' LIMIT 1"
+                )
+            with pytest.raises(DefinitionError) as exc:
+                if operation == "run":
+                    run(experiment, reader)
+                else:
+                    publish_unit_day_artifact(experiment, reader, WarehouseArtifactStore(con))
+        assert exc.value.code == "definition.shared.metric_unsupported"
+        assert exc.value.context["metric"] == ("conversion" if hazard == "roster" else "aov")
+        assert ("eligible roster" if hazard == "roster" else "order_id") in str(
+            exc.value.context["reason"]
+        )
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_unrequested_shared_roster_does_not_block_a_shared_ratio(shared_files):
+    manifest, _ = shared_files
+    native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    native["shared_metrics"]["use"].append("mean")
+    manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
+    con = _web_sales_connection()
+    try:
+        experiment, reader = from_definitions(manifest, con)
+        with reader:
+            assert run(experiment, reader).cells
+            with pytest.raises(DefinitionError) as exc:
+                run(experiment, reader, exploratory_metrics=["mean"])
+        assert exc.value.code == "definition.shared.metric_unsupported"
+        assert exc.value.context["metric"] == "mean"
+        assert "enrolled" in str(exc.value.context["reason"])
+        native["exposures"].append({"name": "visit", "fact": "session_end"})
+        native["experiments"][0]["trigger"] = "visit"
+        manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
+        _, triggered_reader = from_definitions(manifest, con)
+        triggered_reader.close()
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_uncaptured_shared_metrics_refuse_without_reading_current_rows(shared_files):
+    manifest, _ = shared_files
+    con = _web_sales_connection()
+    try:
+        experiment, reader = from_definitions(manifest, con)
+        with reader, pytest.raises(DefinitionError) as exc:
+            run(experiment, reader, coherence="live")
+        assert exc.value.code == "definition.shared.metric_unsupported"
+        assert exc.value.context["metric"] == "aov"
+        assert "captured" in str(exc.value.context["route"])
     finally:
         con.disconnect()

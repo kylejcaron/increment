@@ -36,7 +36,9 @@ from increment.semantics.models import (
     DEFINITION_REFUSALS,
     ConversionMetric,
     Definitions,
+    FactSource,
     MeanMetric,
+    _Base,
     consistency_message,
 )
 from increment.semantics.shared import bind_shared, refuse_recursive_include, shared_path
@@ -194,6 +196,10 @@ _NO_YAML_FILES_WARNING = WarningSpec(
 _MERGE_LISTS = {"fact_sources", "dim_sources", "exposures", "metrics", "experiments"}
 
 
+class _FactSources(_Base):
+    fact_sources: tuple[FactSource, ...] = ()
+
+
 def load(path: str | Path) -> Definitions:
     """Load and validate a definitions YAML file or directory.
 
@@ -273,9 +279,10 @@ def _load(path_obj: Path, *, advise: bool) -> Definitions:
     if "shared_metrics" in raw:
         declaring_file = Path(provenance.scalars["shared_metrics"])
         root = path_obj if path_obj.is_dir() else path_obj.parent
-        metrics, shared = bind_shared(
-            raw.pop("shared_metrics"), declaring_file, root, raw.get("fact_sources", [])
-        )
+        fact_sources = _validate(
+            {"fact_sources": raw.get("fact_sources", [])}, path_obj, provenance, model=_FactSources
+        ).fact_sources
+        metrics, shared = bind_shared(raw.pop("shared_metrics"), declaring_file, root, fact_sources)
         provenance.record({"metrics": metrics}, str(declaring_file))
         raw.setdefault("metrics", []).extend(metrics)
         dup_errors = []
@@ -287,7 +294,7 @@ def _load(path_obj: Path, *, advise: bool) -> Definitions:
                 path=str(path_obj),
                 sources=provenance.origins,
             )
-    defs = _validate(raw, path_obj, provenance)
+    defs = _validate(raw, path_obj, provenance, model=Definitions)
     if shared is not None:
         assert defs.__pydantic_private__ is not None
         defs.__pydantic_private__["_shared_metrics"] = shared
@@ -360,10 +367,12 @@ class _Provenance:
         return files[0] if len(files) == 1 else None
 
 
-def _validate(raw: dict[str, Any], path: Path, provenance: _Provenance) -> Definitions:
+def _validate[T: _Base](
+    raw: dict[str, Any], path: Path, provenance: _Provenance, *, model: type[T]
+) -> T:
     """Validate merged definitions; each failure names the file holding its item."""
     try:
-        return Definitions.model_validate(raw)
+        return model.model_validate(raw)
     except _DefinitionError as exc:
         context = {**exc.context, "path": str(path)}
         message = exc.message
