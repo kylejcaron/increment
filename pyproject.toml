@@ -172,6 +172,10 @@ include = [
 source = "vcs"
 fallback-version = "0.0.0"
 
+# Evidence capture tags retain commits but are not package releases.
+[tool.hatch.version.raw-options]
+git_describe_command = "git describe --dirty --tags --long --abbrev=40 --match v[0-9]*"
+
 [tool.uv]
 package = true
 # Keep source-build inputs identical to the reviewed xdist build.
