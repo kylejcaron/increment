@@ -152,6 +152,9 @@ contain exactly the assigned units, with no duplicate or null keys; they cannot
 be read against a separate trigger population.
 Calendar trends do not apply the shared roster; use the experiment builder for
 these metrics.
+Experiment reads of shared metrics require a warehouse snapshot so the row keys
+and eligible roster are checked against the same rows used for the result.
+Use the default captured reads, not `coherence="live"`.
 
 Use other formulas in descriptive reports, not experiment inference.
 An unselected formula does not have to be supported by Increment, but the whole

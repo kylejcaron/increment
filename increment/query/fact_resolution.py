@@ -115,9 +115,10 @@ def validate_shared_fact(
     *,
     metric: str,
     unit: str,
+    captured: bool,
 ) -> None:
     """Check the native event stream still has the declared shared grain."""
-    validate_fact_source_schema(relation, source)
+    validate_fact_source_schema(relation, source, require_values=not captured)
     key = binding.row_key
     route = "expose the declared non-null, unique row key on the native event stream"
     if key not in relation.columns:
@@ -138,33 +139,40 @@ def validate_shared_fact(
         )
 
 
-def validate_shared_roster(
-    con: SQLBackend, exposures: Table, roster: SharedRoster, *, metric: str
-) -> None:
-    """Require a unique eligible roster with exactly the enrolled unit identities."""
-    import ibis
+_ROSTER_ROUTE = "use a roster containing exactly one row for each assigned experiment unit"
 
-    route = "use a roster containing exactly one row for each assigned experiment unit"
+
+def resolve_shared_roster(con: SQLBackend, roster: SharedRoster, *, metric: str) -> Table:
+    """Resolve and project the eligible unit key for a shared population."""
     parts = roster.table.split(".")
     database = None if len(parts) == 1 else parts[0] if len(parts) == 2 else (parts[0], parts[1])
     if len(parts) > 3:
         refuse_shared_metric(
-            metric, f"cannot resolve eligible roster {roster.table!r}", route=route
+            metric, f"cannot resolve eligible roster {roster.table!r}", route=_ROSTER_ROUTE
         )
     try:
         table = con.table(parts[-1], database=database)
     except Exception as exc:
         try:
             refuse_shared_metric(
-                metric, f"cannot resolve eligible roster {roster.table!r}", route=route
+                metric, f"cannot resolve eligible roster {roster.table!r}", route=_ROSTER_ROUTE
             )
         except DefinitionError as error:
             raise error from exc
     if roster.key not in table.columns:
         refuse_shared_metric(
-            metric, f"eligible roster does not project {roster.key!r}", route=route
+            metric, f"eligible roster does not project {roster.key!r}", route=_ROSTER_ROUTE
         )
-    eligible = table.select(unit_id=table[roster.key])
+    return table.select(unit_id=table[roster.key])
+
+
+def validate_shared_roster(
+    con: SQLBackend, exposures: Table, eligible: Table, *, roster: SharedRoster, metric: str
+) -> None:
+    """Require a unique eligible roster with exactly the enrolled unit identities."""
+    import ibis
+
+    route = _ROSTER_ROUTE
     assigned = exposures.select("unit_id")
     if eligible.unit_id.type().copy(nullable=True) != assigned.unit_id.type().copy(nullable=True):
         refuse_shared_metric(

@@ -10,12 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from increment._literals import PreferredDirection
 from increment.errors import DefinitionError, RefusalSpec, refuse
-from increment.semantics.models import FactSource
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
     import metric_definitions as md
+
+    from increment.semantics.models import FactSource
 
 _INCLUDE = RefusalSpec(
     "definition.shared.include",
@@ -286,7 +288,7 @@ def _ratio_leaves(formula: md.Formula, catalog: md.Catalog, name: str) -> tuple[
 
 
 def bind_shared(
-    raw_manifest: object, path: Path, root: Path, fact_sources: list[dict[str, Any]]
+    raw_manifest: object, path: Path, root: Path, fact_sources: Sequence[FactSource]
 ) -> tuple[list[dict[str, Any]], SharedMetrics]:
     """Select, then translate only the requested experiment metrics."""
     manifest = _manifest(raw_manifest, path)
@@ -315,7 +317,7 @@ def bind_shared(
         if name not in catalog.metrics:
             _unsupported(name, "the shared document does not declare that metric")
     selected = catalog.select(manifest.use)
-    sources = {source.name: source for source in map(FactSource.model_validate, fact_sources)}
+    sources = {source.name: source for source in fact_sources}
     binding = _Binding(selected, manifest, sources)
     metrics, checks = zip(*(binding.metric(name) for name in sorted(manifest.use)), strict=True)
     selection = json.dumps(selected.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
