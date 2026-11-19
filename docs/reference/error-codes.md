@@ -5552,7 +5552,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/semantics/loader.py#L132).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/semantics/loader.py#L131).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
