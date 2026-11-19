@@ -186,19 +186,37 @@ def test_shared_mean_and_conversion_require_the_assigned_roster(shared_files):
 
 
 @pytest.mark.integration
-def test_trends_refuse_shared_roster_metric_before_resolving_facts(shared_files):
+@pytest.mark.parametrize("metric", ["mean", "aov"])
+def test_trends_refuse_shared_metrics_before_resolving_facts(shared_files, metric):
     import ibis
 
     manifest, _ = shared_files
     _select_roster_metrics(manifest)
+    native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    native["shared_metrics"]["use"].append("aov")
+    manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
     con = ibis.duckdb.connect()
     try:
         trends = MetricTrends.from_definitions(manifest, con)
         with pytest.raises(DefinitionError) as exc:
-            trends.metric("mean", start=dt.date(2025, 1, 10), end=dt.date(2025, 1, 11))
+            trends.metric(metric, start=dt.date(2025, 1, 10), end=dt.date(2025, 1, 11))
         assert exc.value.code == "definition.shared.metric_unsupported"
-        assert exc.value.context["metric"] == "mean"
+        assert exc.value.context["metric"] == metric
         assert exc.value.context["target"] == "Increment metric trends"
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_native_ratio_trend_ignores_unrequested_shared_metrics(shared_files):
+    manifest, _ = shared_files
+    con = cast("SQLBackend", ds.duckdb_connection())
+    day = dt.date(2025, 1, 10)
+    try:
+        trends = MetricTrends.from_definitions(manifest, con)
+        frame = trends.metric("rps", start=day, end=day).to_frame("pandas")
+        # On this day, purchases sum to 280 + 320 across 120 sessions.
+        assert frame["value"].tolist() == pytest.approx([5.0])
     finally:
         con.disconnect()
 

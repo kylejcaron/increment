@@ -48,7 +48,9 @@ def _unsupported(metric: str, reason: str) -> NoReturn:
     refuse_shared_metric(
         metric,
         reason,
-        route="use the shared metric in a descriptive report, or bind a supported experiment metric",
+        route=(
+            "use a descriptive report in Terrine or Malloy, or bind a supported experiment metric"
+        ),
     )
 
 
