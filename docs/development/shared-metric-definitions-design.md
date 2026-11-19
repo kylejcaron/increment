@@ -18,7 +18,7 @@ sources:
     row_key: order_id
     entities: {customer: customer_id}
     time: placed_at
-    dimensions: {channel: channel}
+    dimensions: {channel: {column: channel, type: string}}
 measures:
   revenue: {source: orders, sum: gross_amount}
   refunds: {source: orders, sum: refunded_amount}
