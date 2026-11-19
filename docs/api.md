@@ -153,19 +153,6 @@ values.
 
 ### Current changes
 
-- `increment.load_definitions(path)` lists experiments and their declared
-  metrics from YAML without connecting to a warehouse or writing a catalog.
-
-- `increment.from_definitions(..., catalog_path=...)` writes the offline
-  catalog to a file you choose. Pass the same path to reopen without a
-  connection; omitting it preserves the existing location.
-
-- Warehouse result and artifact stores create missing schemas on first write
-  in the DuckDB catalog you specify, including an already attached catalog.
-
-- `runnable()` refuses unknown metric names before reading data. It still
-  checks eligible metrics you can add from the experiment's definitions.
-
 - `increment.estimators.RelativeLiftPrior` explicitly declares a Normal,
   zero-centered Student-t, or Normal-mixture distribution on fractional
   relative lift. Eligible randomized fixed-horizon results use a direct
@@ -182,6 +169,19 @@ values.
   These numerical corrections can change previously inaccurate answers;
   distribution families, component order and ordinary sampling inference
   are unchanged.
+
+- `increment.load_definitions(path)` lists experiments and their declared
+  metrics from YAML without connecting to a warehouse or writing a catalog.
+
+- `increment.from_definitions(..., catalog_path=...)` writes the offline
+  catalog to a file you choose. Pass the same path to reopen without a
+  connection; omitting it preserves the existing location.
+
+- Warehouse result and artifact stores create missing schemas on first write
+  in the DuckDB catalog you specify, including an already attached catalog.
+
+- `runnable()` refuses unknown metric names before reading data. It still
+  checks eligible metrics you can add from the experiment's definitions.
 
 - Dashboard preparation consolidates repeated ratio cautions into one
   `dashboard.statistical_cautions` warning. Affected results retain expandable
