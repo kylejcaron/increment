@@ -1396,11 +1396,11 @@ def test_line7_registry_matches_frozen_artifact_inventory() -> None:
 
     frozen = _artifact_outcomes()
     assert _LINE7_PAIRS == {(scenario_id, "from_unit_day_artifact") for scenario_id in frozen}
-    assert len(frozen) == 120
+    assert len(frozen) == 121
     assert {
         kind: sum(outcome["kind"] == kind for outcome in frozen.values())
         for kind in ("cells", "refusal", "absent")
-    } == {"cells": 101, "refusal": 11, "absent": 8}
+    } == {"cells": 102, "refusal": 11, "absent": 8}
 
 
 def _offset_payload(cell: Mapping[str, Any], fraction: float) -> dict[str, Any]:
