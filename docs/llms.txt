@@ -7,13 +7,14 @@ observational treatments from dataframes or warehouse definitions. Increment sup
 analysis, MDE, sequential and always-valid inference, SRM diagnostics, IPTW,
 DML, AIPW, encouragement designs, and heterogeneous treatment effects.
 
-It does not assign traffic, manage feature flags, ingest events, or maintain a
-separate event store.
+Optional local SDKs make deterministic assignment decisions. Increment does
+not host feature flags, ingest events, or maintain a separate event store.
 
 ## Documentation
 
 - [README](https://raw.githubusercontent.com/kylejcaron/increment/main/README.md): Project overview and installation.
 - [Quickstart](https://getincrement.io/docs/guides/quickstart/): Analyze A/B tests from Python dataframes.
+- [Assign units](https://getincrement.io/docs/guides/assign-experiments/): Enroll units, choose arms, and use layers and holdouts from Python or JavaScript.
 - [Reading results](https://getincrement.io/docs/guides/reading-results/): Interpret effects, uncertainty, missing evidence and the experiment decision.
 - [Result fields](https://getincrement.io/docs/reference/result-fields/): Exact result fields, confidence sets, unavailable reasons and export behavior.
 - [Method selection](https://getincrement.io/docs/guides/choose-a-method/): Choose a design and estimator from the treatment process and analysis goal.

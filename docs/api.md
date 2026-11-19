@@ -45,6 +45,15 @@ for experiment metadata.
 
 ::: increment.ExperimentDefinition
 
+## Assignment
+
+Use `increment.assignment.compile_allocation(config)` to validate and freeze
+a local allocation configuration. Its `AllocationEvaluator` returns a
+`Decision` from `decide(target, unit_id)` and a `Membership` record from
+`holdout_membership(holdout_key, unit_id)`. Both records are JSON-compatible
+and omit the unit ID. See the [examples and deployment guide](guides/assign-experiments.md)
+and the [exact configuration and record fields](reference/assignment-protocol-v1.md).
+
 ## Compatibility policy
 
 This policy defines the compatibility promise beginning with release 1.0.0. It
@@ -70,6 +79,7 @@ namespace:
 - `increment.dashboard`, `increment.tables`, and `increment.simulate` for
   presentation and synthetic data;
 - `increment.errors` for errors and warnings callers catch;
+- `increment.assignment` for optional deterministic assignment and holdout records;
 - `increment.query` for `build_panel_for_metric`, `panel_sql`, and `summary_sql`.
   Each operates on an `(experiment, reader)` pair; SQL previews preserve
   their optional-breakout defaults and use adopted SQL as the summary fallback.
@@ -150,6 +160,11 @@ numerical corrections in release notes; compatibility does not preserve wrong
 values.
 
 ### Current changes
+
+- The optional Python assignment API and locally packed `@increment/assignment`
+  use one [v1 protocol](reference/assignment-protocol-v1.md) for enrollment, arms,
+  mutually exclusive layers and named holdouts. Neither records exposure nor
+  changes analysis of assignments produced by another system.
 
 - `increment.estimators.RelativeLiftPrior` explicitly declares a Normal,
   zero-centered Student-t, or Normal-mixture distribution on fractional

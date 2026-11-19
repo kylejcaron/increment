@@ -111,9 +111,11 @@ you can inspect; `from_unit_day_artifact` reuses published unit-day data.
 Observational methods need declared pre-exposure covariates; portable moments
 cannot reconstruct them. Try the [local warehouse notebook](../examples/analysis_from_a_warehouse.md).
 
-## What Increment does not do
+## I need to assign traffic
 
-Increment analyzes existing data; it does not allocate traffic, manage feature flags, ingest events, or maintain an event store.
+Use the optional [assignment SDKs](assign-experiments.md) for deterministic
+enrollment, variants, layers and holdouts. You can also keep using your existing
+assignment system. Increment does not host feature flags or collect events.
 
 ## What the method you picked assumes
 

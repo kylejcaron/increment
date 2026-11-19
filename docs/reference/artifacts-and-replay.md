@@ -482,6 +482,16 @@ Assignment evidence is needed for the versioned allocation and exposure work
 tracked in #93 and is a prerequisite for follow-on assignment and network
 readouts (#83, #91, #92, #78, #95).
 
+### Reproduce a decision from the assignment SDK
+
+The [assignment SDK protocol](assignment-protocol-v1.md) is distinct from
+`AssignmentSpec`, even if both saved formats have the same version number or
+produce the same arm. To reproduce a decision, compile the archived SDK
+configuration and supply the original target and unit ID. Do not convert the
+configuration to `AssignmentSpec` or use `increment.evidence.replay` to
+certify it. Continue using the legacy verifier for the ledgers it was
+designed to verify.
+
 
 ## Experiment identity
 
