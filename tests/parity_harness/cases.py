@@ -82,6 +82,8 @@ from . import dataset as ds
 from .views import ViewName, read
 
 if TYPE_CHECKING:
+    from ibis.backends.sql import SQLBackend
+
     from increment.query.artifact_contract import ArtifactContext
     from increment.semantics.artifact import UnitDayArtifactRef
 
@@ -10058,8 +10060,106 @@ def _relative_prior_shape_cases() -> tuple[ParityCase, ...]:
     return tuple(replace(case, id=f"relative_prior_{case.id}", prior=prior) for case in shapes)
 
 
+def _shared_order_value_case() -> ParityCase:
+    """Read the same completed-order ratio as shared YAML and native input."""
+    import yaml
+
+    name = "average_order_value"
+    plan = AnalysisPlan(
+        primary=name, inference={"kind": "asymptotic_mean", "expected_decision_sample_size": 100}
+    )
+    native = ds.definitions_dict(plan=plan, allocation={"control": 0.5, "treatment": 0.5})
+    native["experiments"][0]["n_pre_periods"] = 0
+    native["fact_sources"].append(
+        {
+            "name": "orders",
+            "sql": "SELECT 'order' AS event, * FROM fact_orders WHERE status = 'completed'",
+            "timestamp_column": "ordered_at",
+            "entities": ["user_id"],
+            "facts": [{"name": "order", "column": "total_amount"}],
+        }
+    )
+    metadata = {"preferred_direction": "increase", "description": "Value per completed order"}
+    native["metrics"] = [
+        {
+            **metadata,
+            "name": name,
+            "type": "ratio",
+            "entity": "user_id",
+            "numerator": {"fact": "order", "aggregation": "sum", "window_days": 1},
+            "denominator": {"fact": "order", "aggregation": "count", "window_days": 1},
+        }
+    ]
+    shared = {
+        **native,
+        "metrics": [],
+        "shared_metrics": {
+            "file": "shop.metrics.yaml",
+            "use": [name],
+            "sources": {"orders": "orders"},
+            "measures": {"revenue": "order", "order_count": "order"},
+            "metrics": {name: {**metadata, "entity": "user", "window_days": 1}},
+        },
+    }
+    portable = """\
+version: 1
+sources:
+  orders: {table: fact_orders, row_key: order_id, entities: {user: user_id}, time: ordered_at}
+measures:
+  revenue: {source: orders, sum: total_amount}
+  order_count: {source: orders, count_rows: true}
+metrics:
+  average_order_value: {formula: revenue / order_count}
+  net_revenue: {formula: revenue - 1}
+"""
+
+    def build(*, shared_yaml: bool) -> Bound:
+        rows = ds.event_rows(n_per_arm=60)
+        con = cast("SQLBackend", ds.duckdb_connection(rows))
+        directory = tempfile.TemporaryDirectory(prefix="increment-parity-")
+        path = Path(directory.name)
+        try:
+            con.create_table(
+                "fact_orders",
+                con.sql("""
+                    SELECT row_number() OVER () AS order_id, user_id, event_at AS ordered_at,
+                           revenue AS total_amount, 'completed' AS status
+                    FROM events WHERE event = 'purchase'
+                    UNION ALL
+                    SELECT -1, user_id, event_at, 1000000, 'cancelled'
+                    FROM events WHERE event = 'purchase' LIMIT 10000
+                """),
+            )
+            (path / "native.yaml").write_text(
+                yaml.safe_dump(shared if shared_yaml else native), encoding="utf-8"
+            )
+            if shared_yaml:
+                (path / "shop.metrics.yaml").write_text(portable, encoding="utf-8")
+            bound = builders.from_definitions(path, con)
+        except BaseException:
+            directory.cleanup()
+            con.disconnect()
+            raise
+        _track_cleanup(bound, directory.cleanup)
+        if not shared_yaml:
+            bound = _publish_and_adopt(con, bound)
+        _mark_as_of(bound, ds._EXPERIMENT_END - dt.timedelta(days=1))
+        return _track_connection(bound, con) if shared_yaml else bound
+
+    return ParityCase(
+        id="shared-completed-order-value",
+        build={
+            "from_definitions": partial(build, shared_yaml=True),
+            "from_unit_day_artifact": partial(build, shared_yaml=False),
+        },
+        sequential=True,
+        slow=True,
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
     *_edge_cases(),
+    _shared_order_value_case(),
     _arm_facts_parity_case(),
     _categorical_cuped_moments_case(),
     _bare_metric_name_frame_case(),
@@ -10230,6 +10330,7 @@ _PR_PARITY_CASE_IDS = (
     "winsor-percentile-zero-inclusive-2-arm",
     "mixed-cuped-multicovariate-fixed-horizon",
     "scalar_sequential_mean_cuped_asymptotic",
+    "shared-completed-order-value",
 )
 _CASES_BY_ID = {case.id: case for case in PARITY_CASES}
 PR_PARITY_CASES: tuple[ParityCase, ...] = tuple(

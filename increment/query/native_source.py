@@ -155,6 +155,8 @@ from increment.query.fact_resolution import (
     refuse_null_fact_values,
     resolve_fact_source_sql,
     validate_fact_source_schema,
+    validate_shared_fact,
+    validate_shared_roster,
     with_null_counts,
 )
 from increment.query.integrity import (
@@ -192,6 +194,7 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
 )
+from increment.semantics.shared import refuse_shared_metric
 from increment.sequential_source import SequentialSourceMixin
 from increment.sources import (
     MIXED_ASSIGNMENT_LABEL,
@@ -429,6 +432,36 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._assignment_validation_depth = 0
         self._materialized = False
         self._exp_lookup_exposures = {e.name: e for e in self._defs.exposures}
+
+    def validate_shared_metrics(self) -> None:
+        """Check event grain and eligible roster before binding the warehouse reader."""
+        shared = self._defs._shared_metrics
+        assert shared is not None
+        sources = {source.name: source for source in self._defs.fact_sources}
+        checked_facts = set()
+        checked_rosters = set()
+        for binding in shared.metrics:
+            if binding.unit != self._experiment.unit:
+                continue
+            if binding.roster is not None and self._experiment.trigger is not None:
+                refuse_shared_metric(
+                    binding.name,
+                    f"experiment {self._experiment.name!r} includes a separate triggered population",
+                    route="use a fixed assignment population with the declared eligible roster",
+                )
+            for fact in binding.facts:
+                if fact not in checked_facts:
+                    source = sources[fact.source]
+                    relation = resolve_fact_source_sql(self._session.source_sql, source)
+                    validate_shared_fact(
+                        self._con, relation, source, fact, metric=binding.name, unit=binding.unit
+                    )
+                    checked_facts.add(fact)
+            if binding.roster is not None and binding.roster not in checked_rosters:
+                validate_shared_roster(
+                    self._con, self._get_exposures(), binding.roster, metric=binding.name
+                )
+                checked_rosters.add(binding.roster)
 
     @property
     def context(self) -> SourceContext:

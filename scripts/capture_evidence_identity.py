@@ -47,7 +47,12 @@ from tests.parity_harness.cases import (
 from tests.parity_harness.views import read
 
 _DUCKDB_CONNECT = ibis.duckdb.connect
-FROZEN_OPERATION_CUTOVERS = ("pre-kernel", "pre-kernel-asof", "relative-prior-v1")
+FROZEN_OPERATION_CUTOVERS = (
+    "pre-kernel",
+    "pre-kernel-asof",
+    "relative-prior-v1",
+    "shared-metric-definitions",
+)
 
 
 def _connect_single_thread(**kwargs):

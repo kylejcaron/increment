@@ -17,6 +17,7 @@ fact_sources:
     sql: |
       SELECT
         'order' AS event,
+        order_id,
         user_id,
         ordered_at,
         total_amount
