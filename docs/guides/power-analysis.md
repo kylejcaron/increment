@@ -106,6 +106,73 @@ unit. Finish incomplete windows; waiting cannot define an outcome such as
 `avg_event` for a unit with no events. See
 [pilot inputs and refusal routes](../reference/planning-methods.md#what-planning_baseline-reads).
 
+### Will CUPED help at our expected traffic?
+
+You expect 10,000 users per arm. Can you detect a 7% lift in revenue per user
+with 80% power? Compare two fixed-horizon plans using the same pilot users.
+Use one row per user, including nonbuyers. Measure `pre_revenue` before
+assignment and `revenue` over the outcome window you intend to use.
+
+Here is a synthetic pilot you can replace with your own dataframe:
+
+```python
+import numpy as np
+import pandas as pd
+
+rng = np.random.default_rng(42)
+n = 4_000
+purchase_chance = rng.beta(0.1, 0.4, n)
+pilot = pd.DataFrame(
+    {
+        "user": range(n),
+        "arm": ["control", "treatment"] * (n // 2),
+        "pre_revenue": 20 * rng.binomial(1, purchase_chance),
+        "revenue": 20 * rng.binomial(1, purchase_chance),
+    }
+)
+```
+
+Estimate the baseline from the pilot's control users. For the unadjusted
+comparison, keep the same mean and variance but turn off the CUPED reduction:
+
+```python
+import increment as inc
+from increment.power import achieved_power, minimum_detectable_effect
+from increment.workflows import planning_baseline
+
+experiment, reader = inc.from_frame(
+    pilot,
+    shape="summary",
+    unit="user",
+    group="arm",
+    control="control",
+    metrics=[
+        inc.MetricSpec(
+            name="revenue",
+            type="mean",
+            decision_method=inc.Method.cuped(covariates="pre_revenue"),
+        )
+    ],
+)
+cuped = planning_baseline(experiment, reader, "revenue")
+plain = cuped.model_copy(update={"cuped_rho": 0.0})
+
+for label, candidate in [("Unadjusted", plain), ("CUPED", cuped)]:
+    mde = minimum_detectable_effect(10_000, candidate).mde_relative
+    power = achieved_power(10_000, 0.07, candidate).power
+    print(f"{label}: MDE {mde:.1%}, power at +7% {power:.1%}")
+```
+
+<!-- output -->
+```text
+Unadjusted: MDE 7.9%, power at +7% 69.6%
+CUPED: MDE 5.7%, power at +7% 93.3%
+```
+
+Only the CUPED plan reaches the 80% target for a 7% lift. Choose it as the
+**decision method** if prior revenue is available at launch and you expect
+it to predict revenue about as well as it did in the pilot.
+
 ### Quantile metrics
 
 A quantile baseline keeps the real per-unit pilot values and projects the
