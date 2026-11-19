@@ -698,6 +698,8 @@ increment.result_envelope -> increment.kernel
 increment.result_envelope -> increment.kernel.contracts
 increment.semantics.assignment -> increment._assignment_refusals
 increment.semantics.loader -> increment._optional
+increment.semantics.loader -> increment.semantics
+increment.semantics.loader -> increment.semantics.shared
 increment.semantics.models -> increment.errors
 increment.semantics.models -> increment.semantics
 increment.semantics.models -> increment.semantics.design

@@ -41,7 +41,6 @@ from increment.semantics.models import (
     _Base,
     consistency_message,
 )
-from increment.semantics.shared import bind_shared, refuse_recursive_include, shared_path
 
 
 class _DuplicateKeySafeLoader(yaml.SafeLoader):
@@ -277,6 +276,8 @@ def _load(path_obj: Path, *, advise: bool) -> Definitions:
 
     shared = None
     if "shared_metrics" in raw:
+        from increment.semantics.shared import bind_shared
+
         declaring_file = Path(provenance.scalars["shared_metrics"])
         root = path_obj if path_obj.is_dir() else path_obj.parent
         fact_sources = _validate(
@@ -463,6 +464,8 @@ def _directory_includes(
             data = _read_yaml(file)
             native[file] = data
             if "shared_metrics" in data:
+                from increment.semantics.shared import shared_path
+
                 target = shared_path(data["shared_metrics"], file, path)
                 included.add(target)
     return native, included
@@ -481,6 +484,8 @@ def _load_dir(path: Path, *, advise: bool) -> tuple[dict[str, Any], _Provenance]
     for yaml_file in files:
         if yaml_file.resolve() in included:
             if yaml_file in native and "shared_metrics" in native[yaml_file]:
+                from increment.semantics.shared import refuse_recursive_include
+
                 refuse_recursive_include(yaml_file)
             continue
         data = native[yaml_file] if yaml_file in native else _read_yaml(yaml_file)
