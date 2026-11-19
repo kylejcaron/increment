@@ -137,6 +137,7 @@ _LAZY_IMPORTS = {
 _SUBMODULES = frozenset(
     {
         "artifacts",
+        "assignment",
         "dashboard",
         "digest",
         "errors",
