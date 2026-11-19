@@ -2280,8 +2280,15 @@ class WarehouseSession:
                     )
             tables.append(table)
         tables.extend(extra_relations.values())
+        # Each alias is NULL in every other stream, even if its source is NOT NULL.
+        multi_stream = len(tables) > 1
         fields = [
-            (index, name, f"s{index}_c{column}", dtype)
+            (
+                index,
+                name,
+                f"s{index}_c{column}",
+                dtype.copy(nullable=True) if multi_stream and not dtype.nullable else dtype,
+            )
             for index, table in enumerate(tables)
             for column, (name, dtype) in enumerate(table.schema().items())
         ]
@@ -2289,7 +2296,7 @@ class WarehouseSession:
             table.select(
                 _stream=ibis.literal(index, type="int64"),
                 **{
-                    alias: table[name] if owner == index else ibis.null().cast(dtype)
+                    alias: table[name].cast(dtype) if owner == index else ibis.null().cast(dtype)
                     for owner, name, alias, dtype in fields
                 },
             )
