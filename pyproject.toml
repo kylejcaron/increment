@@ -73,9 +73,9 @@ warehouse = [
     # Keep the verified compatible range until the Ibis adapter is updated.
     "sqlglot>=30.14,<30.18",
 ]
-shared-metrics = ["metric-definitions-core>=0.1.0a1,<0.2"]
+metric-definitions = ["metric-definitions>=0.1.0a1,<0.2"]
 demo   = [
-    "increment[warehouse,shared-metrics]",
+    "increment[warehouse,metric-definitions]",
     # Ibis 12 still calls DuckDB's removed `fetch_arrow_table()` method.
     # Reassess this exact release exclusion after the upstream adapter is updated.
     "duckdb!=2.0.0",
@@ -187,7 +187,7 @@ build-constraint-dependencies = [
 ]
 
 [tool.uv.sources]
-metric-definitions-core = { path = "packages/metric-definitions" }
+metric-definitions = { path = "packages/metric-definitions" }
 
 [tool.pytest.ini_options]
 # Doc snippets (README.md, docs/) are collected by the root conftest's sybil

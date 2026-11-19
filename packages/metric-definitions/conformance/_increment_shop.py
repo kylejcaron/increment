@@ -67,7 +67,7 @@ def _manifest(start, end, names):
                 "plan": {"primary": names[0], "secondaries": names[1:]},
             }
         ],
-        "shared_metrics": {
+        "metric_definitions": {
             "file": "shop.metrics.yaml",
             "use": names,
             "sources": {"orders": "orders"},

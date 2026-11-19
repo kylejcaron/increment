@@ -1,6 +1,6 @@
 # ── Metrics ───────────────────────────────────────────────────────────────
 
-shared_metrics:
+metric_definitions:
   file: shop.metrics.yaml
   use: [average_order_value]
   sources: {orders: orders}

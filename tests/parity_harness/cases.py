@@ -10093,7 +10093,7 @@ def _shared_order_value_case() -> ParityCase:
     shared = {
         **native,
         "metrics": [],
-        "shared_metrics": {
+        "metric_definitions": {
             "file": "shop.metrics.yaml",
             "use": [name],
             "sources": {"orders": "orders"},

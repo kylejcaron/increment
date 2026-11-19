@@ -28,7 +28,7 @@ jobs:
         run: |
           core="$GITHUB_WORKSPACE/packages/metric-definitions"
           receipt="$core/conformance/versions.json"
-          terrine="$RUNNER_TEMP/shared-metrics-terrine"
+          terrine="$RUNNER_TEMP/metric-definitions-terrine"
           terrine_sha=$(jq -er '.terrine.commit' "$receipt")
           [[ "$terrine_sha" =~ ^[a-f0-9]{40}$ ]]
           git init "$terrine"
@@ -39,7 +39,7 @@ jobs:
           python_version=$(jq -er '.python' "$receipt")
           uv python install "$python_version"
           uv sync --locked --python "$python_version" --extra demo
-          uv sync --project "$terrine" --locked --python "$python_version" --extra duckdb --extra shared-metrics
+          uv sync --project "$terrine" --locked --python "$python_version" --extra duckdb --extra metric-definitions
           SOURCE_DATE_EPOCH=$(jq -er '.core.source_date_epoch' "$receipt") \
             uv build --directory "$core" --wheel --out-dir "$RUNNER_TEMP/core-wheel"
           wheel=$(find "$RUNNER_TEMP/core-wheel" -name '*.whl')
@@ -47,8 +47,8 @@ jobs:
           sha256sum "$wheel"
           export INCREMENT_PYTHON="$GITHUB_WORKSPACE/.venv/bin/python"
           export TERRINE_PYTHON="$terrine/.venv/bin/python"
-          uv pip install --no-deps --reinstall-package metric-definitions-core --python "$INCREMENT_PYTHON" "$wheel"
-          uv pip install --no-deps --reinstall-package metric-definitions-core --python "$TERRINE_PYTHON" "$wheel"
+          uv pip install --no-deps --reinstall-package metric-definitions --python "$INCREMENT_PYTHON" "$wheel"
+          uv pip install --no-deps --reinstall-package metric-definitions --python "$TERRINE_PYTHON" "$wheel"
 
           node_version=$(jq -er '.malloy.node' "$receipt")
           [[ "$node_version" =~ ^22\.[0-9]+\.[0-9]+$ ]]

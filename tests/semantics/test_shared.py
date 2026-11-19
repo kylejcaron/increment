@@ -63,7 +63,7 @@ def shared_files(tmp_path: Path):
     defs = ds.definitions_dict(plan=AnalysisPlan(primary="aov"))
     defs["fact_sources"][0]["sql"] = "SELECT *, row_number() OVER () AS order_id FROM events"
     defs["experiments"][0]["n_pre_periods"] = 0
-    defs["shared_metrics"] = {
+    defs["metric_definitions"] = {
         "file": portable.name,
         "use": ["aov"],
         "sources": {"orders": "events"},
@@ -104,7 +104,7 @@ def test_shared_filters_stay_on_the_selected_operand(shared_files):
 def test_shared_definition_refusals(shared_files, change, code):
     manifest, _ = shared_files
     native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    native["shared_metrics"].update(change)
+    native["metric_definitions"].update(change)
     manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
     with pytest.raises(DefinitionError) as exc:
         load(manifest)
@@ -118,12 +118,12 @@ def test_shared_definition_refusals(shared_files, change, code):
 def test_invalid_native_fact_declaration_keeps_native_error_with_shared_opt_in(shared_files):
     manifest, _ = shared_files
     native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    opt_in = native.pop("shared_metrics")
+    opt_in = native.pop("metric_definitions")
     del native["fact_sources"][0]["timestamp_column"]
     manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
     with pytest.raises(DefinitionError) as native_error:
         load(manifest)
-    native["shared_metrics"] = opt_in
+    native["metric_definitions"] = opt_in
     manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
     with pytest.raises(DefinitionError) as shared_error:
         load(manifest)
@@ -153,7 +153,7 @@ def test_offline_catalog_tracks_only_validated_selected_shared_semantics(shared_
 
 def _select_roster_metrics(manifest: Path) -> None:
     native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    native["shared_metrics"]["use"] = ["mean", "conversion"]
+    native["metric_definitions"]["use"] = ["mean", "conversion"]
     native["experiments"][0]["plan"] = {"primary": "mean", "secondaries": ["conversion"]}
     manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
 
@@ -196,7 +196,7 @@ def test_trends_refuse_shared_metrics_before_resolving_facts(shared_files, metri
     manifest, _ = shared_files
     _select_roster_metrics(manifest)
     native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    native["shared_metrics"]["use"].append("aov")
+    native["metric_definitions"]["use"].append("aov")
     manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
     con = ibis.duckdb.connect()
     try:
@@ -279,7 +279,7 @@ def test_shared_operation_refuses_warehouse_drift_after_binding(shared_files, ha
 def test_unrequested_shared_roster_does_not_block_a_shared_ratio(shared_files):
     manifest, _ = shared_files
     native = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    native["shared_metrics"]["use"].append("mean")
+    native["metric_definitions"]["use"].append("mean")
     manifest.write_text(yaml.safe_dump(native), encoding="utf-8")
     con = _web_sales_connection()
     try:

@@ -275,15 +275,17 @@ def _load(path_obj: Path, *, advise: bool) -> Definitions:
         )
 
     shared = None
-    if "shared_metrics" in raw:
+    if "metric_definitions" in raw:
         from increment.semantics.shared import bind_shared
 
-        declaring_file = Path(provenance.scalars["shared_metrics"])
+        declaring_file = Path(provenance.scalars["metric_definitions"])
         root = path_obj if path_obj.is_dir() else path_obj.parent
         fact_sources = _validate(
             {"fact_sources": raw.get("fact_sources", [])}, path_obj, provenance, model=_FactSources
         ).fact_sources
-        metrics, shared = bind_shared(raw.pop("shared_metrics"), declaring_file, root, fact_sources)
+        metrics, shared = bind_shared(
+            raw.pop("metric_definitions"), declaring_file, root, fact_sources
+        )
         provenance.record({"metrics": metrics}, str(declaring_file))
         raw.setdefault("metrics", []).extend(metrics)
         dup_errors = []
@@ -449,7 +451,7 @@ def _shared_manifest_candidate(path: Path) -> bool:
         return False
     return isinstance(node, yaml.MappingNode) and any(
         isinstance(key, yaml.ScalarNode)
-        and (key.value == "shared_metrics" or key.tag == "tag:yaml.org,2002:merge")
+        and (key.value == "metric_definitions" or key.tag == "tag:yaml.org,2002:merge")
         for key, _ in node.value
     )
 
@@ -463,10 +465,10 @@ def _directory_includes(
         if _shared_manifest_candidate(file):
             data = _read_yaml(file)
             native[file] = data
-            if "shared_metrics" in data:
+            if "metric_definitions" in data:
                 from increment.semantics.shared import shared_path
 
-                target = shared_path(data["shared_metrics"], file, path)
+                target = shared_path(data["metric_definitions"], file, path)
                 included.add(target)
     return native, included
 
@@ -483,7 +485,7 @@ def _load_dir(path: Path, *, advise: bool) -> tuple[dict[str, Any], _Provenance]
     native, included = _directory_includes(path, files)
     for yaml_file in files:
         if yaml_file.resolve() in included:
-            if yaml_file in native and "shared_metrics" in native[yaml_file]:
+            if yaml_file in native and "metric_definitions" in native[yaml_file]:
                 from increment.semantics.shared import refuse_recursive_include
 
                 refuse_recursive_include(yaml_file)

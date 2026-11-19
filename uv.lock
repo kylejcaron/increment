@@ -1161,12 +1161,12 @@ dashboard = [
 demo = [
     { name = "duckdb" },
     { name = "ibis-framework", extra = ["duckdb"] },
-    { name = "metric-definitions-core" },
+    { name = "metric-definitions" },
     { name = "pandas" },
     { name = "sqlglot" },
 ]
-shared-metrics = [
-    { name = "metric-definitions-core" },
+metric-definitions = [
+    { name = "metric-definitions" },
 ]
 tables = [
     { name = "coeftable" },
@@ -1237,8 +1237,8 @@ requires-dist = [
     { name = "ibis-framework", extras = ["duckdb"], marker = "python_full_version >= '3.14' and extra == 'demo'", specifier = ">=12.0.0" },
     { name = "ibis-framework", extras = ["duckdb"], marker = "python_full_version < '3.14' and extra == 'demo'", specifier = ">=10.1.0" },
     { name = "marimo", marker = "extra == 'dashboard'", specifier = ">=0.25.2" },
-    { name = "metric-definitions-core", marker = "extra == 'demo'", directory = "packages/metric-definitions" },
-    { name = "metric-definitions-core", marker = "extra == 'shared-metrics'", directory = "packages/metric-definitions" },
+    { name = "metric-definitions", marker = "extra == 'demo'", directory = "packages/metric-definitions" },
+    { name = "metric-definitions", marker = "extra == 'metric-definitions'", directory = "packages/metric-definitions" },
     { name = "narwhals", specifier = ">=2.28.0" },
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "packaging", specifier = ">=24.0" },
@@ -1257,7 +1257,7 @@ requires-dist = [
     { name = "sqlglot", marker = "extra == 'demo'", specifier = ">=30.14,<30.18" },
     { name = "sqlglot", marker = "extra == 'warehouse'", specifier = ">=30.14,<30.18" },
 ]
-provides-extras = ["dashboard", "demo", "shared-metrics", "tables", "warehouse"]
+provides-extras = ["dashboard", "demo", "metric-definitions", "tables", "warehouse"]
 
 [package.metadata.requires-dev]
 core-test = [
@@ -1719,7 +1719,7 @@ wheels = [
 ]
 
 [[package]]
-name = "metric-definitions-core"
+name = "metric-definitions"
 version = "0.1.0a1"
 source = { directory = "packages/metric-definitions" }
 dependencies = [

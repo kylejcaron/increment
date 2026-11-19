@@ -89,7 +89,7 @@ def _manifest(raw: object, path: Path) -> _Manifest:
         manifest = _Manifest.model_validate(raw)
     except ValidationError as exc:
         first = exc.errors(include_url=False)[0]
-        field = ".".join(map(str, first["loc"])) or "shared_metrics"
+        field = ".".join(map(str, first["loc"])) or "metric_definitions"
         _refuse_include(path, f"{field}: {first['msg']}")
     if len(set(manifest.use)) != len(manifest.use):
         _refuse_include(path, "use lists a metric more than once")
@@ -97,7 +97,9 @@ def _manifest(raw: object, path: Path) -> _Manifest:
 
 
 def _refuse_include(path: Path, reason: str) -> NoReturn:
-    refuse(_INCLUDE, path=str(path), reason=reason, route="repair the shared_metrics declaration")
+    refuse(
+        _INCLUDE, path=str(path), reason=reason, route="repair the metric_definitions declaration"
+    )
 
 
 def shared_path(raw: object, path: Path, root: Path) -> Path:
@@ -308,7 +310,9 @@ def bind_shared(
     except ModuleNotFoundError as exc:
         if exc.name != "metric_definitions":
             raise
-        _refuse_include(path, "shared metrics require the increment[shared-metrics] extra")
+        _refuse_include(
+            path, "portable definitions require the increment[metric-definitions] extra"
+        )
     try:
         catalog = md.load(included)
     except md.CatalogError as exc:

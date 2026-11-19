@@ -54,7 +54,7 @@ def run(fixture, database, scenario):
     )
     connection = ibis.duckdb.connect(str(database), read_only=True)
     try:
-        model = tr.Model.from_shared_metrics(
+        model = tr.Model.from_metric_definitions(
             catalog,
             con=connection,
             units={"customer": tr.UnitSource("customers", "customer_id")},

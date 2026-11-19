@@ -106,15 +106,15 @@ shows how to join dimension tables.
     analysis arms; see [Multiplicity](multiplicity.md) for populations and
     statuses.
 
-## Reuse a shared metric
+## Metrics
 
-Install the `increment[shared-metrics]` extra alongside `increment[warehouse]`
-to use a shared metric with `increment.from_definitions`. Put the opt-in in a
-native definitions file, beside `fact_sources`, `metrics`, or `experiments`.
+Install `increment[metric-definitions]` alongside `increment[warehouse]` to
+import portable metric definitions with `increment.from_definitions`. Add a
+`metric_definitions:` block beside native sections such as `metrics:`.
 Here is the checkout demo's binding:
 
 ```yaml
-shared_metrics:
+metric_definitions:
   file: shop.metrics.yaml
   use: [average_order_value]
   sources: {orders: orders}

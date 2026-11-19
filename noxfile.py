@@ -688,7 +688,7 @@ def wheel_smoke_demo(session: nox.Session) -> None:
                 core_dist,
                 external=True,
             )
-            (core_wheel,) = Path(core_dist).glob("metric_definitions_core-*.whl")
+            (core_wheel,) = Path(core_dist).glob("metric_definitions-*.whl")
             session.install(demo_wheel, str(core_wheel))
     elif session.posargs:
         session.error("wheel_smoke_demo only accepts --candidate-core")

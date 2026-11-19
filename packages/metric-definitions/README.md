@@ -59,8 +59,8 @@ exposure rules and snapshot windows belong in the consumer, not in this file.
 
 | Consumer | Entry point | Scope |
 | --- | --- | --- |
-| Increment | `from_definitions` with `shared_metrics` | Additive ratios, eligible-unit means, and event-presence conversions with matching native bindings |
-| Terrine | `Model.from_shared_metrics`, then an ordinary `Design` | Named formulas over aligned window aggregates; readiness and roster binding stay native |
+| Increment | `from_definitions` with `metric_definitions` | Additive ratios, eligible-unit means, and event-presence conversions with matching native bindings |
+| Terrine | `Model.from_metric_definitions`, then an ordinary `Design` | Named formulas over aligned window aggregates; readiness and roster binding stay native |
 | Malloy | `metric_definitions.malloy.export_malloy` | Native fields and grouping over compatible fact or roster sources |
 
 The [migration and conformance guide](conformance/) shows how to reuse AOV

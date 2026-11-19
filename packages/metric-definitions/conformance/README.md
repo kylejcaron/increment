@@ -12,15 +12,15 @@ receipt="$core/conformance/versions.json"
 test "$(git -C "$TERRINE_CHECKOUT" rev-parse HEAD)" = "$(jq -r '.terrine.commit' "$receipt")"
 python_version=$(jq -r '.python' "$receipt")
 uv sync --locked --python "$python_version" --extra demo
-uv sync --project "$TERRINE_CHECKOUT" --locked --python "$python_version" --extra duckdb --extra shared-metrics
+uv sync --project "$TERRINE_CHECKOUT" --locked --python "$python_version" --extra duckdb --extra metric-definitions
 wheel_dir=$(mktemp -d)
 SOURCE_DATE_EPOCH=$(jq -r '.core.source_date_epoch' "$receipt") \
   uv build --directory "$core" --wheel --out-dir "$wheel_dir"
 sha256sum "$wheel_dir"/*.whl
 export INCREMENT_PYTHON="$PWD/.venv/bin/python"
 export TERRINE_PYTHON="$TERRINE_CHECKOUT/.venv/bin/python"
-uv pip install --no-deps --reinstall-package metric-definitions-core --python "$INCREMENT_PYTHON" "$wheel_dir"/*.whl
-uv pip install --no-deps --reinstall-package metric-definitions-core --python "$TERRINE_PYTHON" "$wheel_dir"/*.whl
+uv pip install --no-deps --reinstall-package metric-definitions --python "$INCREMENT_PYTHON" "$wheel_dir"/*.whl
+uv pip install --no-deps --reinstall-package metric-definitions --python "$TERRINE_PYTHON" "$wheel_dir"/*.whl
 node_version=$(jq -r '.malloy.node' "$receipt")
 npm exec --yes --package="node@$node_version" -- npm ci --prefix "$core/conformance/malloy"
 MALLOY_NODE=$(npm exec --yes --package="node@$node_version" -- which node)
@@ -47,7 +47,7 @@ The three-customer fixture does not validate statistical inference. The Incremen
 | Consumer path | Compared in the shop fixture | Refused or kept native |
 |---|---|---|
 | Increment `from_definitions` → `publish_unit_day_artifact` | Order-value and web-only revenue ratios: eligible units, numerator and denominator | General formula experiment inference refuses; assignments and analysis settings stay native |
-| Terrine `Model.from_shared_metrics` → `Design.build` | Named formulas, ratios, means, conversion, empty and incomplete outcomes | Snapshot and readiness rules stay native |
+| Terrine `Model.from_metric_definitions` → `Design.build` | Named formulas, ratios, means, conversion, empty and incomplete outcomes | Snapshot and readiness rules stay native |
 | Malloy `export_malloy` → handwritten report | Customer grouping, ratios, arithmetic, eligible and buyer conversion | Only groupings defined for every operand; no import of Malloy definitions |
 
 ## Move an existing definition
@@ -56,8 +56,8 @@ The three-customer fixture does not validate statistical inference. The Incremen
 |---|---|
 | Table, row identifier, entity columns, event time, typed dimension, simple filter, sum/count, or arithmetic | Shared YAML when the consumer can represent it |
 | Eligible denominator for a mean or conversion | Explicit shared roster; the native binding must identify that roster |
-| Assignment, trigger, analysis plan, inference method and exposure-relative window | Existing Increment definitions; use `shared_metrics` to bind selected measures and metrics |
-| Native source SQL, historical dimensions, unit roster bounds, window and snapshot design, readiness | Existing Terrine bindings and Design; use `Model.from_shared_metrics` for portable definitions |
+| Assignment, trigger, analysis plan, inference method and exposure-relative window | Existing Increment definitions; use `metric_definitions` to bind selected measures and metrics |
+| Native source SQL, historical dimensions, unit roster bounds, window and snapshot design, readiness | Existing Terrine bindings and Design; use `Model.from_metric_definitions` for portable definitions |
 | Legacy Increment YAML or SDK objects used by Terrine | Keep `Model.from_increment`; no migration required for existing users |
 | Browser/report grouping and custom query layout | Handwritten Malloy report importing generated fields; generation does not overwrite the report |
 
