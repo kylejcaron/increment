@@ -20,6 +20,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     StrictInt,
     field_serializer,
     field_validator,
@@ -70,6 +71,7 @@ from increment.winsor import WinsorInferenceSpec, WinsorSupport
 
 if TYPE_CHECKING:
     from increment.semantics.design import Encouragement, Observational, Randomized
+    from increment.semantics.shared import SharedMetrics
 
 
 def _render_definition_message(message: str, **_: object) -> str:
@@ -3087,6 +3089,8 @@ class Definitions(_Base):
     exposures: tuple[Exposure, ...] = ()
     metrics: tuple[Metric, ...] = ()
     experiments: tuple[Experiment, ...] = ()
+
+    _shared_metrics: "SharedMetrics | None" = PrivateAttr(default=None)
 
     @field_validator("day_boundary")
     @classmethod

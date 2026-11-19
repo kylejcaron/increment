@@ -1,0 +1,13 @@
+version: 1
+sources:
+  orders:
+    # A relation of completed orders, not the unfiltered order log.
+    table: completed_orders
+    row_key: order_id
+    entities: {user: user_id}
+    time: ordered_at
+measures:
+  revenue: {source: orders, sum: total_amount}
+  order_count: {source: orders, count_rows: true}
+metrics:
+  average_order_value: {formula: revenue / order_count}

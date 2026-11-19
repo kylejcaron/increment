@@ -1,5 +1,17 @@
 # ── Metrics ───────────────────────────────────────────────────────────────
 
+shared_metrics:
+  file: shop.metrics.yaml
+  use: [average_order_value]
+  sources: {orders: orders}
+  measures: {revenue: order, order_count: order}
+  metrics:
+    average_order_value:
+      description: "Average value of observed orders: total revenue / total orders"
+      entity: user
+      preferred_direction: increase
+      window_days: null
+
 metrics:
   # Primary
   - type: conversion
@@ -19,20 +31,6 @@ metrics:
     fact: order
     aggregation: sum
     window_days: 14
-
-  - type: ratio
-    name: average_order_value
-    description: "Average value of observed orders: total revenue / total orders"
-    entity: user_id
-    preferred_direction: increase
-    numerator:
-      fact: order
-      aggregation: sum
-      window_days: null
-    denominator:
-      fact: order
-      aggregation: count
-      window_days: null
 
   # Guardrails
   - type: retention
