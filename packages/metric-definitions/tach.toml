@@ -22,6 +22,11 @@ layer = "core"
 depends_on = ["metric_definitions.models"]
 
 [[modules]]
+path = "metric_definitions.malloy"
+layer = "core"
+depends_on = ["metric_definitions.formula", "metric_definitions.models"]
+
+[[modules]]
 path = "metric_definitions.models"
 layer = "core"
 depends_on = ["metric_definitions.formula"]
