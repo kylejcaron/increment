@@ -1,5 +1,7 @@
 """Shared documents extend, but do not replace, native experiment YAML."""
 
+from __future__ import annotations
+
 import datetime as dt
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
