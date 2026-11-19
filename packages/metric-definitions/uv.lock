@@ -75,7 +75,7 @@ wheels = [
 ]
 
 [[package]]
-name = "metric-definitions-core"
+name = "metric-definitions"
 version = "0.1.0a1"
 source = { editable = "." }
 dependencies = [

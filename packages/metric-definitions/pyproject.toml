@@ -1,5 +1,5 @@
 [project]
-name = "metric-definitions-core"
+name = "metric-definitions"
 version = "0.1.0a1"
 description = "Portable definitions for analytical measures and metrics."
 readme = "README.md"
@@ -18,7 +18,7 @@ dev = ["pytest>=9,<10", "ruff>=0.17.3", "tach>=0.35.3,<0.36", "ty>=0.0.64,<0.0.6
 packages = ["src/metric_definitions"]
 
 [tool.hatch.build.targets.wheel.shared-data]
-"examples/shop" = "share/metric-definitions-core/examples/shop"
+"examples/shop" = "share/metric-definitions/examples/shop"
 
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/examples/shop", "/README.md", "/pyproject.toml"]

@@ -1,4 +1,4 @@
-# Metric Definitions Core
+# Metric Definitions
 
 Define measures and metrics once, independently of a warehouse connection or an
 analysis. This package validates definitions and selects the dependencies needed
