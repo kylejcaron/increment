@@ -98,9 +98,15 @@ def ensure_schema(con: Any, *, schema: str | None, catalog: str | None) -> bool:
     create_database = getattr(con, "create_database", None)
     if not callable(create_database):
         return not callable(getattr(con, "list_databases", None))
-    options = {} if catalog is None else {"catalog": catalog}
     try:
-        create_database(_created_name(con, schema), force=False, **options)
+        if catalog is not None and getattr(con, "name", None) == "duckdb":
+            # Ibis DuckDB's create_database rejects even an attached catalog.
+            from sqlglot import exp, table
+
+            con.raw_sql(exp.Create(this=table(schema, db=catalog, quoted=True), kind="SCHEMA"))
+        else:
+            options = {} if catalog is None else {"catalog": catalog}
+            create_database(_created_name(con, schema), force=False, **options)
     except Exception:
         # Another writer may have created it since the lookup.
         return schema_exists(con, schema=schema, catalog=catalog) is True

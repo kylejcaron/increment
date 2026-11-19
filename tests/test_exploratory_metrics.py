@@ -10,13 +10,23 @@ from __future__ import annotations
 import copy
 import pickle
 import warnings
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
 import pandas as pd
 import pytest
 
-from increment import View, _dashboard_capture, builders, from_frame, workflows
+from increment import (
+    CupedCovariateBinding,
+    Experiment,
+    View,
+    _dashboard_capture,
+    builders,
+    from_frame,
+    runnable,
+    workflows,
+)
 from increment import run as run_views
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning
@@ -835,15 +845,35 @@ def test_a_day_source_over_an_added_metric_tests_it_at_the_plan_alpha(warehouse,
 
 def test_dimensioned_daily_reads_keep_their_refusal_of_undeclared_metrics(warehouse):
     experiment, resolver = _analysis(warehouse, AnalysisPlan(primary="revenue"), breakout=True)
+    scope = View.daily(values=True, segment=(BreakoutIdentity("store", None),))
     with pytest.raises(CodedError) as refused:
         view_readout(
             experiment,
             resolver,
-            View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("store", None)),
+            scope,
             metrics=[],
             exploratory_metrics=["purchase_rate"],
         )
     assert refused.value.code == "facade.analysis.undeclared_metric_for_dimension"
+    restored = Experiment.from_json(replace(experiment, views=(scope,)).to_json())
+    status = runnable(restored, "purchase_rate")["randomized.unadjusted"]
+    assert [(error.code, error.context) for error in status.static_refusals] == [
+        (refused.value.code, refused.value.context)
+    ]
+
+
+def test_daily_lift_preflight_refuses_an_exploratory_option_the_view_cannot_run(warehouse):
+    experiment, reader = _analysis(warehouse, AnalysisPlan(primary="revenue"))
+    scope = View.daily()
+    with reader, pytest.raises(CodedError) as executed:
+        view_readout(experiment, reader, scope, exploratory_metrics=["purchase_rate"])
+    assert executed.value.code == "kernel.run.execution_unavailable"
+
+    restored = Experiment.from_json(replace(experiment, views=(scope,)).to_json())
+    status = runnable(restored, "purchase_rate")["randomized.unadjusted"]
+    assert [(error.code, error.context) for error in status.static_refusals] == [
+        (executed.value.code, executed.value.context)
+    ]
 
 
 def test_dimensioned_asof_lift_serves_added_metrics_as_exploratory_rows(warehouse):
@@ -924,12 +954,72 @@ def test_sequential_plans_refuse_added_metrics_and_uncorrected_segments(warehous
         with pytest.raises(CodedError) as refused:
             view_readout(*analysis, scope, exploratory_metrics=["purchase_rate"])
         assert refused.value.code == "facade.analysis.exploratory_metrics_sequential"
+    experiment, reader = analysis
+    restored = Experiment.from_json(experiment.to_json())
+    with pytest.raises(CodedError) as executed:
+        run_views(experiment, reader, exploratory_metrics=["purchase_rate"])
+    with pytest.raises(CodedError) as preflight:
+        runnable(restored, "purchase_rate")
+    assert executed.value.code == "facade.analysis.exploratory_metrics_sequential"
+    assert preflight.value.code == executed.value.code
+    assert dict(preflight.value.context) == dict(executed.value.context) | {"method": "runnable"}
     (declared,) = experiment_definition(*analysis).breakouts
     with pytest.raises(CodedError) as refused:
         _dashboard_capture.dashboard_breakout_reads(
             analysis[1]._binding, declared
         ).uncorrected_segments(metrics=["revenue"])
     assert refused.value.code == "facade.analysis.uncorrected_segments_sequential"
+
+
+def test_offline_preflight_checks_cluster_compatibility_of_added_quantile(warehouse):
+    definitions = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
+    definitions["experiments"][0]["cluster"] = "store_id"
+    definitions["metrics"].append(
+        {
+            "type": "quantile",
+            "name": "p90",
+            "entity": "user_id",
+            "fact": "purchase",
+            "quantile": 0.9,
+        }
+    )
+    experiment, reader = make_binding(
+        warehouse, Definitions.model_validate(definitions), experiment="exp"
+    )
+    with reader, pytest.raises(CodedError) as executed:
+        run_views(experiment, reader, exploratory_metrics=["p90"])
+    assert executed.value.code == "arm.metric.quantile_cluster"
+
+    restored = Experiment.from_json(experiment.to_json())
+    status = runnable(restored, "p90")["randomized.unadjusted"]
+    assert [(error.code, error.context) for error in status.static_refusals] == [
+        (executed.value.code, executed.value.context)
+    ]
+    assert not runnable(restored, "revenue")["randomized.unadjusted"].static_refusals
+
+
+def test_offline_preflight_keeps_preperiod_covariates_for_added_metric(warehouse):
+    experiment, reader = _analysis(warehouse, AnalysisPlan(primary="revenue"))
+    method = Method(
+        name="cuped",
+        variance_reduction="cuped",
+        covariates=(
+            CupedCovariateBinding(
+                name="pre_spend",
+                kind="continuous",
+                measure={"fact": "purchase", "aggregation": "sum", "window_days": 7},
+            ),
+        ),
+    )
+    selected = replace(
+        experiment, request_options={"metrics": [], "decision_method": method.model_dump()}
+    )
+    with reader:
+        result = run_views(selected, reader, exploratory_metrics=["revenue_cuped"])
+    assert result.cells and any(cell.summary is not None for cell in result.cells)
+
+    restored = Experiment.from_json(selected.to_json())
+    assert not runnable(restored, "revenue_cuped")["randomized.cuped"].static_refusals
 
 
 @pytest.mark.slow

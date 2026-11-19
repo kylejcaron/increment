@@ -37,6 +37,7 @@ Runnable: Report static refusals, data checks, and unknown feasibility requireme
 runnable: Inspect estimator feasibility without reading source data.
 from_frame: Build an experiment and reader from a unit-summary or unit-panel frame.
 from_definitions: Build an experiment and reader from warehouse definitions, or read its offline catalog.
+load_definitions: List experiments and their declared metrics from YAML without connecting.
 from_unit_day_artifact: Build an experiment and reader from a unit-day artifact.
 from_switchback_frame: Build an experiment and reader from a switchback panel.
 from_moments: Build an experiment and reader from retained moments.

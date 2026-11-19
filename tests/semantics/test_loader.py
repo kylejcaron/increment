@@ -315,8 +315,10 @@ def test_recursive_yaml_anchor_rejected_not_infinite_loop(tmp_path: Path):
 # ── Directory merging ──────────────────────────────────────────────────
 
 
-def test_load_directory_merges(tmp_path: Path):
-    """Files in a directory are merged by top-level list keys."""
+@pytest.mark.integration
+def test_public_loader_lists_experiments_and_metrics_without_writing(tmp_path: Path):
+    import increment
+
     src_file = tmp_path / "fact_sources.yaml"
     _dump_yaml(
         {
@@ -344,27 +346,47 @@ def test_load_directory_merges(tmp_path: Path):
                     "entity": "user_id",
                     "fact": "ev",
                     "window_days": 7,
-                }
+                },
+                {
+                    "type": "conversion",
+                    "name": "quick_rate",
+                    "entity": "user_id",
+                    "fact": "ev",
+                    "window_days": 1,
+                },
             ],
             "experiments": [
                 {
                     "name": "e1",
-                    "plan": {},
+                    "plan": {"primary": "rate"},
                     "exposure": "enrolled",
                     "unit": "user_id",
                     "start": "2024-01-01",
                     "control_group": "C",
-                }
+                },
+                {
+                    "name": "e2",
+                    "plan": {"primary": "quick_rate"},
+                    "exposure": "enrolled",
+                    "unit": "user_id",
+                    "start": "2024-01-01",
+                    "control_group": "C",
+                },
             ],
         },
         exp_file,
     )
 
-    defs = load(tmp_path)
-    assert len(defs.fact_sources) == 1
-    assert len(defs.exposures) == 1
-    assert len(defs.metrics) == 1
-    assert len(defs.experiments) == 1
+    before = {path.name: path.read_bytes() for path in (src_file, exp_file)}
+    defs = increment.load_definitions(tmp_path)
+    assert {source.name for source in defs.fact_sources} == {"events"}
+    assert {exposure.name for exposure in defs.exposures} == {"enrolled"}
+    assert {metric.name for metric in defs.metrics} == {"rate", "quick_rate"}
+    assert {exp.name: exp.metric_names for exp in defs.experiments} == {
+        "e1": ["rate"],
+        "e2": ["quick_rate"],
+    }
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
 
 
 def test_load_directory_ignores_non_yaml(tmp_path: Path):

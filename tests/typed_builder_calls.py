@@ -143,7 +143,7 @@ def retained_calls(
 
 
 def definitions_calls(path: str | PathLike[str], evidence: SourceSnapshotEvidence) -> None:
-    from_definitions(path)
+    from_definitions(path, catalog_path=path)
     from_definitions(
         path,
         experiment_name="experiment",
@@ -151,6 +151,7 @@ def definitions_calls(path: str | PathLike[str], evidence: SourceSnapshotEvidenc
         store="none",
         on_mixed_assignment="exclude",
         source_snapshot_evidence=evidence,
+        catalog_path="cache/experiment-catalog.json",
     )
     from_definitions(path, store="invalid")  # ty: ignore[invalid-argument-type]
 

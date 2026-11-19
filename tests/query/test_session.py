@@ -1899,7 +1899,9 @@ def test_publish_manifest_rejects_a_relation_the_publication_never_wrote() -> No
 @pytest.mark.integration
 def test_drop_generation_is_idempotent_in_qualified_namespace() -> None:
     con = ibis.duckdb.connect()
-    catalog = con.current_catalog
+    default_catalog = con.current_catalog
+    catalog = "artifact-archive"
+    con.raw_sql("ATTACH ':memory:' AS \"artifact-archive\"")
 
     # ibis 12.0.0's DuckDB insert()/drop_table() fail for schemas named by reserved
     # words (select, table, order, where, from): sqlglot force-quotes the name and
@@ -1908,9 +1910,9 @@ def test_drop_generation_is_idempotent_in_qualified_namespace() -> None:
     reserved_store = WarehouseArtifactStore(con, schema_name="select")
     assert reserved_store.visible_manifests == ()
 
-    # Exercise the full publish/drop lifecycle against a genuinely qualified
-    # two-part catalog+schema namespace, which round-trips correctly.
-    con.create_database("ud_reporting", force=True)
+    # Leave the target absent; the same name in the default catalog must not count.
+    con.create_database("ud_reporting")
+    assert "ud_reporting" not in con.list_databases(catalog=catalog)
     store = WarehouseArtifactStore(con, catalog=catalog, schema_name="ud_reporting")
 
     ref_a, _measure_a = _publish_in(store, unit_id="ua")
@@ -1939,6 +1941,8 @@ def test_drop_generation_is_idempotent_in_qualified_namespace() -> None:
         )
     assert rows[0]["unit_id"] == "ub"
     assert rows[0]["sum_value"] == 2.0
+    assert measure_b.relation.name in con.list_tables(database=(catalog, "ud_reporting"))
+    assert not con.list_tables(database=(default_catalog, "ud_reporting"))
 
 
 @pytest.mark.slow

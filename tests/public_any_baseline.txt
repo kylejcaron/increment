@@ -258,6 +258,7 @@
   "increment.from_moments": {},
   "increment.from_switchback_frame": {},
   "increment.from_unit_day_artifact": {},
+  "increment.load_definitions": {},
   "increment.power.AnalysisAxes": {},
   "increment.power.ArmPlanningProcedure": {},
   "increment.power.Baseline": {},

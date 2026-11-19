@@ -7,12 +7,13 @@ import pytest
 
 from increment import AnalysisPlan, InferenceSpec, Randomized, run
 from increment.builders import from_frame, from_moments
-from increment.errors import CodedError
+from increment.errors import CodedError, InvalidRequestError
 from increment.evidence import EvidenceCapabilities
 from increment.kernel.contracts import Registration, View
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import resolve, runnable
 from increment.results import BreakoutEstimates
+from increment.semantics.models import MeanMetric
 from increment.workflows import export_moments
 
 
@@ -52,6 +53,21 @@ def test_resolve_refuses_scope_grain_missing_from_declared_capabilities():
         refusal.code
         for refusal in runnable(experiment, "orders")["randomized.unadjusted"].static_refusals
     ) == ("evidence.grain_unavailable",)
+
+    legacy = replace(
+        experiment,
+        source_refs=(
+            replace(
+                experiment.source_refs[0],
+                capabilities=replace(capabilities, kind="definitions"),
+            ),
+        ),
+        analysis_context={"source_declaration": None},
+    )
+    status = runnable(legacy, "undeclared")["randomized.unadjusted"]
+    assert status.unknown == ("exploratory metric eligibility",)
+    assert [error.code for error in status.static_refusals] == ["evidence.grain_unavailable"]
+    assert status.static_refusals[0].context == refusals[0].context
 
 
 def test_runnable_uses_recorded_capabilities_after_json_restore():
@@ -114,6 +130,22 @@ def test_runnable_uses_recorded_capabilities_after_json_restore():
         ].static_refusals
     ) == ("evidence.grain_unavailable",)
 
+    ad_hoc = MeanMetric(name="ad_hoc", entity="unit", fact="orders", aggregation="sum")
+    with_selection = replace(
+        supported_loaded,
+        source_refs=(
+            replace(
+                supported_loaded.source_refs[0],
+                capabilities=replace(
+                    capabilities, kind="moments", operations=frozenset({"moments_source"})
+                ),
+            ),
+        ),
+        request_options={"metrics": [ad_hoc.model_dump(mode="json")]},
+    )
+    restored = Experiment.from_json(with_selection.to_json())
+    assert runnable(restored, "ad_hoc")["randomized.unadjusted"].static_refusals == ()
+
 
 def test_runnable_reports_unknown_without_recorded_capabilities_after_json_restore():
     experiment = Experiment(
@@ -125,7 +157,7 @@ def test_runnable_reports_unknown_without_recorded_capabilities_after_json_resto
             SourceReference(
                 name="events",
                 uri="frame://events",
-                schema={"orders": "float64"},
+                schema={"orders": "float64", "typo": "float64"},
             ),
         ),
         views=(
@@ -141,6 +173,23 @@ def test_runnable_reports_unknown_without_recorded_capabilities_after_json_resto
 
     assert runnable(restored, "orders")["randomized.unadjusted"].unknown == ("events.capabilities",)
     assert runnable(restored, "orders")["randomized.unadjusted"].static_refusals == ()
+
+    possible = runnable(restored, "typo")["randomized.unadjusted"]
+    assert possible.unknown == ("events.capabilities", "exploratory metric eligibility")
+    assert possible.static_refusals == ()
+
+    frame = replace(
+        restored,
+        source_refs=(replace(restored.source_refs[0], uri="unit_summary://checkout"),),
+    )
+    with pytest.raises(InvalidRequestError) as caught:
+        runnable(frame, "typo")
+    assert caught.value.code == "facade.analysis_config.unknown_metric_declared"
+    assert caught.value.context == {
+        "caller": "runnable",
+        "unknown_names": ("typo",),
+        "declared_names": ("orders",),
+    }
 
 
 def test_runnable_names_authored_source_and_selection_for_unavailable_breakouts():

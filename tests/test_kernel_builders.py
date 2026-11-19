@@ -896,62 +896,116 @@ def test_concurrent_definitions_builders_retain_both_catalog_entries(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("target", ["nested-yaml", "unrelated-json", "definition-alias"])
+def test_catalog_override_refuses_non_catalog_destinations_without_writes(
+    tmp_path, example_definitions, con, target
+):
+    if target == "nested-yaml":
+        destination = example_definitions / "new" / "catalog.yaml"
+    elif target == "unrelated-json":
+        destination = tmp_path / "unrelated.json"
+        destination.write_text('{"notes": "keep me"}', encoding="utf-8")
+    else:
+        destination = tmp_path / "alias.json"
+        destination.symlink_to(next(example_definitions.rglob("*.yaml")))
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(CodedError) as raised:
+        from_definitions(
+            example_definitions, con, experiment_name="pricing_tier_test", catalog_path=destination
+        )
+
+    assert raised.value.code == "kernel.definitions.catalog_invalid_destination"
+    assert raised.value.context["path"] == str(destination)
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    if target == "nested-yaml":
+        assert not destination.parent.exists()
+    elif target == "definition-alias":
+        assert destination.is_symlink()
+
+
+@pytest.mark.integration
+def test_catalog_write_failure_names_destination_and_keeps_connection(
+    tmp_path, example_definitions, con
+):
+    parent = tmp_path / "not-a-directory"
+    parent.write_text("unchanged", encoding="utf-8")
+    destination = parent / "catalog.json"
+
+    with pytest.raises(CodedError) as raised:
+        from_definitions(
+            example_definitions, con, experiment_name="pricing_tier_test", catalog_path=destination
+        )
+
+    assert raised.value.code == "kernel.definitions.catalog_unwritable"
+    assert raised.value.context["path"] == str(destination)
+    assert parent.read_text(encoding="utf-8") == "unchanged"
+    assert con.raw_sql("SELECT 1").fetchone() == (1,)
+
+
+@pytest.mark.integration
 @pytest.mark.slow
 def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
-    tmp_path, seeded_defs, seeded_con
+    tmp_path, example_definitions, seeded_con, request
 ):
+    definitions = example_definitions
+    before = {path: path.read_bytes() for path in definitions.rglob("*") if path.is_file()}
+    catalog_path = tmp_path / "generated" / "experiments.json"
+    request.addfinalizer(lambda: definitions.chmod(0o755))
+    definitions.chmod(0o555)
 
-    definitions = tmp_path / "definitions"
-    shutil.copytree(seeded_defs, definitions)
-
-    catalog_path = definitions / ".increment-kernel-catalog.json"
-    if not catalog_path.exists():
-        from_definitions(definitions, seeded_con, experiment_name="new_onboarding_v2")
-    cached, _ = from_definitions(definitions, experiment_name="new_onboarding_v2")
     online, online_resolver = from_definitions(
-        definitions, seeded_con, experiment_name="new_onboarding_v2"
+        definitions,
+        seeded_con,
+        experiment_name="new_onboarding_v2",
+        catalog_path=catalog_path,
     )
+    request.addfinalizer(online_resolver.close)
     assert online.source_refs[0].schema == {}
     with warnings.catch_warnings(record=True) as captured_warnings:
         warnings.simplefilter("always", IncrementWarning)
-        assert run(
-            cached,
-            online_resolver,
-            metrics=["purchase_rate"],
-        )
+        assert run(online, online_resolver, metrics=["purchase_rate"])
     assert warning_codes(captured_warnings) == ["analysis.cuped.covariate_unused"]
-    catalog_path = definitions / ".increment-kernel-catalog.json"
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    offline, _ = from_definitions(definitions, experiment_name="new_onboarding_v2")
 
-    assert offline.source_refs[0].schema
-    assert catalog["experiments"]["new_onboarding_v2"]["source_refs"][0]["schema"]
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    entry = catalog["experiments"]["new_onboarding_v2"]
+    recorded = Experiment.from_json(json.dumps(entry))
+    expected_schema = {
+        "event_log.country_code": "string",
+        "event_log.device_type": "string",
+        "event_log.event": "string",
+        "event_log.event_at": "timestamp(6)",
+        "event_log.experiment_id": "string",
+        "event_log.group_id": "string",
+        "event_log.plan": "string",
+        "event_log.revenue": "float64",
+        "event_log.session_id": "string",
+        "event_log.user_id": "string",
+    }
+    assert entry["source_refs"][0]["schema"] == expected_schema
     recorded_digest = online.source_refs[0].expected_digest
     assert recorded_digest is not None
     assert (
         catalog["experiments"]["new_onboarding_v2"]["source_refs"][0]["expected_digest"]
         == recorded_digest
     )
-    assert offline.source_refs[0].expected_digest == recorded_digest
+    assert recorded.source_refs[0].expected_digest == recorded_digest
     provider = online_resolver._resolve(online.source_refs)
-    assert online_resolver._verify(offline.source_refs, provider) == []
-    changed = (replace(offline.source_refs[0], expected_digest="sha256:changed"),)
+    assert online_resolver._verify(recorded.source_refs, provider) == []
+    changed = (replace(recorded.source_refs[0], expected_digest="sha256:changed"),)
     assert [error.code for error in online_resolver._verify(changed, provider)] == [
         "kernel.provider.digest_mismatch"
     ]
 
-    offline_capabilities = offline.source_refs[0].capabilities
+    recorded_capabilities = recorded.source_refs[0].capabilities
     online_capabilities = online.source_refs[0].capabilities
-    assert offline_capabilities is not None and online_capabilities is not None
-    assert offline_capabilities == online_capabilities
-    assert runnable(offline, "purchase_rate") == runnable(online, "purchase_rate")
+    assert recorded_capabilities is not None and online_capabilities is not None
+    assert recorded_capabilities == online_capabilities
     assert Experiment.from_json(online.to_json()).hash() == online.hash()
     assert (
         Experiment.from_json(online.to_json()).analysis_context["operation_parameters"]
         == online.analysis_context["operation_parameters"]
     )
-    assert Experiment.from_json(offline.to_json()).hash() == offline.hash()
-
     for field in (
         "value_scale_overrides",
         "fixed_triggered",
@@ -960,20 +1014,34 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
         "temporal_clusters",
         "dimensioned_daily_metrics",
     ):
-        capabilities = offline.source_refs[0].capabilities
+        capabilities = recorded.source_refs[0].capabilities
         assert capabilities is not None
         value = getattr(capabilities, field)
         changed_value = (
             not value if isinstance(value, bool) else "any" if value == "declared" else "declared"
         )
         changed_capabilities = replace(capabilities, **{field: changed_value})
-        changed_ref = replace(offline.source_refs[0], capabilities=changed_capabilities)
-        changed_experiment = replace(offline, source_refs=(changed_ref,))
+        changed_ref = replace(recorded.source_refs[0], capabilities=changed_capabilities)
+        changed_experiment = replace(recorded, source_refs=(changed_ref,))
         restored = Experiment.from_json(changed_experiment.to_json())
-        assert restored.hash() != offline.hash()
+        assert restored.hash() != recorded.hash()
         assert [
             error.code for error in online_resolver._verify(restored.source_refs, provider)
         ] == ["kernel.provider.capability_mismatch"]
+
+    online_resolver.close()
+    offline, _ = from_definitions(
+        definitions, experiment_name="new_onboarding_v2", catalog_path=catalog_path
+    )
+    assert offline.source_refs[0].schema == expected_schema
+    assert offline.hash() == recorded.hash() == online.hash()
+    assert offline.source_refs[0].capabilities == online_capabilities
+    assert runnable(offline, "purchase_rate") == runnable(online, "purchase_rate")
+    assert {path: path.read_bytes() for path in definitions.rglob("*") if path.is_file()} == before
+    assert set(catalog_path.parent.iterdir()) == {
+        catalog_path,
+        catalog_path.with_suffix(".json.lock"),
+    }
 
 
 @pytest.mark.integration

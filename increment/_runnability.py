@@ -15,6 +15,7 @@ from increment._analysis_config import (
     effective_methods,
     normalize_display_correction,
     overlay_configs,
+    require_fixed_exploratory_metrics,
     resolve_configs,
     select_metrics,
 )
@@ -43,6 +44,7 @@ from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, pars
 
 if TYPE_CHECKING:
     from increment._evidence_types import BreakoutIdentity
+    from increment.semantics.models import Metric
 
 _CONFIGS = TypeAdapter(tuple[ResolvedMetricConfig, ...])
 
@@ -55,6 +57,17 @@ class _DeclaredSource(_DeclaredEvidence):
     ) -> None:
         super().__init__(evidence, constructor)
         self.context = context
+
+
+def require_runnable_exploratory_metric(declaration: Mapping[str, Any], name: str) -> None:
+    """Apply the registered-plan restriction to an eligible catalog metric."""
+    plan = declaration.get("plan")
+    if not isinstance(plan, Mapping):
+        return
+    inference = plan.get("inference")
+    if isinstance(inference, Mapping) and inference.get("registration") is not None:
+        compiled = CompiledDecisionPlan.model_validate(thaw(plan))
+        require_fixed_exploratory_metrics(compiled.inference, [name], caller="runnable")
 
 
 def _compliance_only_request(
@@ -484,6 +497,7 @@ def _request_config(
     metric_name: str,
     *,
     capabilities: EvidenceCapabilities,
+    exploratory_metric: Metric | None,
 ) -> tuple[dict[str, Any], tuple[ResolvedMetricConfig, ...], tuple[ResolvedMetricConfig, ...]]:
     values = typed_request_options(options)
     recorded_configs = tuple(
@@ -495,6 +509,7 @@ def _request_config(
         for config in declaration["configs"]
     )
     base = _CONFIGS.validate_python(recorded_configs)
+    declared = base
     metrics = select_metrics(
         tuple(config.metric for config in base),
         values.get("metrics"),
@@ -504,6 +519,20 @@ def _request_config(
             and declared_day_axis_metric_objects_supported(capabilities)
         ),
     )
+    if exploratory_metric is not None:
+        metrics.append(exploratory_metric)
+        experiment = declaration.get("experiment")
+        periods = experiment.get("n_pre_periods") if isinstance(experiment, Mapping) else None
+        base += resolve_configs(
+            (exploratory_metric,),
+            None,
+            None,
+            methods=None,
+            prior=None,
+            covariate_available_metrics=(exploratory_metric.name,)
+            if isinstance(periods, int) and periods > 0
+            else (),
+        )
     overrides = {} if operation in _VALUE_OPERATIONS else values
     base_names = {config.metric.name for config in base}
     missing = tuple(metric for metric in metrics if metric.name not in base_names)
@@ -527,7 +556,7 @@ def _request_config(
         else config
         for config in configs
     )
-    return values, base, configs
+    return values, declared, configs
 
 
 def _validate_declared_day_axis(
@@ -649,6 +678,7 @@ def readout_refusals(
     operation: str,
     metric_name: str,
     options: Mapping[str, Any],
+    exploratory_metric: Metric | None = None,
 ) -> tuple[CodedError, ...]:
     """Use the execution validators on recorded metric, method and view declarations."""
     declaration = thaw(declaration)
@@ -662,8 +692,11 @@ def readout_refusals(
             operation,
             metric_name,
             capabilities=capabilities,
+            exploratory_metric=exploratory_metric,
         )
         plan = CompiledDecisionPlan.model_validate(dict(declaration["plan"]))
+        if exploratory_metric is not None:
+            plan = with_unassigned_procedures(plan, (exploratory_metric,), design=decoded_design)
         if scope.view in {"daily", "asof"} and declared_day_axis_metric_objects_supported(
             capabilities
         ):

@@ -43,7 +43,7 @@ demo_rows.append(
 demo_con = ibis.duckdb.connect()
 demo_con.create_table("demo_events", pl.DataFrame(demo_rows).to_arrow())
 
-with TemporaryDirectory() as definitions_directory:
+with TemporaryDirectory() as definitions_directory, TemporaryDirectory() as cache_directory:
     Path(definitions_directory, "demo.yaml").write_text("""\
 dialect: duckdb
 fact_sources:
@@ -68,10 +68,19 @@ experiments:
     control_group: control
     plan: {primary: revenue}
 """)
+    definitions = increment.load_definitions(definitions_directory)
+    for declaration in definitions.experiments:
+        print(declaration.name, declaration.metric_names)
+    catalog_path = Path(cache_directory, "experiments.json")
     experiment, reader = increment.from_definitions(
-        definitions_directory, demo_con, experiment_name="demo"
+        definitions_directory, demo_con, experiment_name="demo", catalog_path=catalog_path
     )
-    demo_results = increment.run(experiment, reader).readout()
+    with reader:
+        demo_results = increment.run(experiment, reader).readout()
+    offline_experiment, _ = increment.from_definitions(
+        definitions_directory, experiment_name="demo", catalog_path=catalog_path
+    )
+    assert offline_experiment.hash() == experiment.hash()
 for row in demo_results:
     print(row.metric, row.group_id, row.lift)
 ```
@@ -87,12 +96,14 @@ data is already one row per unit or per unit-day, use
 `from_frame(..., shape="summary")` or `shape="panel"` instead
 ([Quickstart](quickstart.md)).
 
-Building with a connection writes a catalog of the bound experiments,
-`.increment-kernel-catalog.json`, and its `.lock` file into the definitions
-directory; `increment.from_definitions(definitions_directory)` reads that
-catalog to inspect an experiment without a connection. The reader reads the
-warehouse through `demo_con`; closing it, or leaving its `with` block, never
-closes `demo_con`, and a closed reader refuses every read.
+Use `load_definitions(path)` to choose an experiment from a YAML file or
+directory. It does not connect to the warehouse or create files.
+
+If the definitions are read-only, pass a writable catalog file as
+`catalog_path=` when you bind, then pass the same path to reopen without a
+connection. The offline reader cannot run an analysis. Without `catalog_path=`,
+the catalog and its lock are written beside the YAML. Closing the connected
+reader releases its temporary tables, not the connection you supplied.
 
 The [warehouse example](../examples/analysis_from_a_warehouse.md) walks through
 the full flow; [Binding a normalized warehouse](#binding-a-normalized-warehouse)

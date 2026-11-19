@@ -15496,7 +15496,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `inference`, `method`, `names`
 
-**Registering modules:** `increment._exploratory`
+**Registering modules:** `increment._analysis_config`
 
 <span id="facade.analysis.exploratory_metrics_source_limited"></span>
 
@@ -15920,7 +15920,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/builders.py#L48).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/builders.py#L49).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -17398,6 +17398,22 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Registering modules:** `increment.kernel.contracts`
 
+<span id="kernel.definitions.catalog_invalid_destination"></span>
+
+### `kernel.definitions.catalog_invalid_destination`
+
+**Cause and message:**
+
+<p>Catalog destination {path!r} is not an empty path or an Increment catalog; choose a new catalog file outside the definitions, or use the catalog file directly</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `path`
+
+**Registering modules:** `increment.kernel.contracts`
+
 <span id="kernel.definitions.catalog_missing"></span>
 
 ### `kernel.definitions.catalog_missing`
@@ -17421,6 +17437,22 @@ The cause depends on the supplied context; read the raised message. [Message rul
 **Cause and message:**
 
 <p>Offline definitions catalog is stale for {path!r}; rebind the definitions with a connection</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `path`
+
+**Registering modules:** `increment.kernel.contracts`
+
+<span id="kernel.definitions.catalog_unwritable"></span>
+
+### `kernel.definitions.catalog_unwritable`
+
+**Cause and message:**
+
+<p>Could not write the definitions catalog at {path!r}; pass catalog_path pointing to a writable file location</p>
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         Randomized,
         UptakeSpec,
     )
+    from increment.semantics.loader import load as load_definitions
     from increment.semantics.models import (
         AnalysisPlan,
         CupedCovariate,
@@ -63,6 +64,7 @@ __all__ = [
     "render",
     "from_frame",
     "from_definitions",
+    "load_definitions",
     "from_unit_day_artifact",
     "from_switchback_frame",
     "from_moments",
@@ -103,6 +105,7 @@ _LAZY_IMPORTS = {
     "from_frame": ("increment.builders", "from_frame"),
     "render": ("increment.result_envelope", "render"),
     "from_definitions": ("increment.builders", "from_definitions"),
+    "load_definitions": ("increment.semantics.loader", "load"),
     "from_unit_day_artifact": ("increment.builders", "from_unit_day_artifact"),
     "from_switchback_frame": ("increment.builders", "from_switchback_frame"),
     "from_moments": ("increment.builders", "from_moments"),

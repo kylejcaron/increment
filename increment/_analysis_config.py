@@ -23,6 +23,7 @@ from increment.errors import (
     UnsupportedRequestError,
     raiser,
     refusals,
+    refuse,
 )
 from increment.estimation.engine import (
     Method,
@@ -470,6 +471,18 @@ def prior_from_spec(spec: NormalPriorSpec | RelativeLiftPriorSpec | None) -> Pri
     return prior_from_payload(spec.model_dump())
 
 
+def refuse_unknown_metrics(
+    unknown_names: Collection[str], declared_names: Collection[str], *, caller: str
+) -> NoReturn:
+    """Report requested names absent from the binding's metric declarations."""
+    _raise(
+        "facade.analysis_config.unknown_metric_declared",
+        caller=caller,
+        unknown_names=sorted(unknown_names),
+        declared_names=sorted(declared_names),
+    )
+
+
 def select_metrics(
     declared: Sequence[Metric],
     requested: Sequence[str | Metric] | None,
@@ -497,7 +510,6 @@ def select_metrics(
         return list(declared)
 
     by_name = {m.name: m for m in declared}
-    declared_names = sorted(by_name)
 
     seen_names: set[str] = set()
     duplicate_names: list[str] = []
@@ -538,12 +550,7 @@ def select_metrics(
             duplicate_names=sorted(duplicate_names),
         )
     if unknown_names:
-        _raise(
-            "facade.analysis_config.unknown_metric_declared",
-            caller=caller,
-            unknown_names=sorted(unknown_names),
-            declared_names=declared_names,
-        )
+        refuse_unknown_metrics(unknown_names, by_name.keys(), caller=caller)
     if mismatched_names:
         _raise(
             "facade.analysis_config.metric_definition_mismatch",
@@ -553,6 +560,35 @@ def select_metrics(
 
     ordered = [resolved_by_name[m.name] for m in declared if m.name in resolved_by_name]
     return [*ordered, *undeclared_in_order]
+
+
+_EXPLORATORY_SEQUENTIAL = RefusalSpec(
+    "facade.analysis.exploratory_metrics_sequential",
+    UnsupportedRequestError,
+    template="{method}: exploratory_metrics {names!r} are chosen after data are visible, so no registered sequential model covers them under {inference}; read the declared metrics alone, or use a fixed-horizon plan.",
+)
+
+
+def require_fixed_exploratory_metrics(
+    inference: object, names: Sequence[str], *, caller: str
+) -> None:
+    """Refuse adding metrics outside the registered sequential family."""
+    if getattr(inference, "registration", None) is not None:
+        refuse(
+            _EXPLORATORY_SEQUENTIAL, method=caller, names=names, inference=type(inference).__name__
+        )
+
+
+def is_exploratory_metric(
+    name: str,
+    kind: str,
+    entity: str | None,
+    *,
+    declared_names: Collection[str],
+    unit: str,
+) -> bool:
+    """Whether a catalog metric can be added to the experiment."""
+    return name not in declared_names and kind not in ("total", "active") and entity == unit
 
 
 def select_exploratory_metrics(
