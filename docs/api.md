@@ -151,6 +151,11 @@ values.
 
 ### Current changes
 
+- DuckDB accumulates daily ratio statistics more accurately. A sparse day
+  with valid data can now report an interval instead of refusing because
+  of rounding. Invalid statistics and days without a usable denominator
+  are still handled as before.
+
 - `increment.estimators.RelativeLiftPrior` explicitly declares a Normal,
   zero-centered Student-t, or Normal-mixture distribution on fractional
   relative lift. Eligible randomized fixed-horizon results use a direct

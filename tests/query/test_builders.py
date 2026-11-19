@@ -18,6 +18,7 @@ import pyarrow as pa
 import pytest
 
 from increment.artifacts import SourceSnapshotEvidence
+from increment.breakout.estimates import run_daily
 from increment.errors import (
     CapabilityError,
     IncrementWarning,
@@ -2562,6 +2563,50 @@ def test_daily_group_summary_den_panel_computes_real_ratio_moments(exposures, ex
     assert ctrl["cden1"] == 0.0
     assert ctrl["cden2"] == 0.0
     assert ctrl["cyden"] == 0.0
+
+
+def test_daily_ratio_interval_stays_available_when_sparse_pairs_are_reordered():
+    metric = RatioMetric(
+        name="aov",
+        entity="unit_id",
+        numerator=Measure(fact="purchase", aggregation="sum"),
+        denominator=Measure(fact="purchase", aggregation="count"),
+    )
+    day = dt.date(2025, 2, 3)
+    n = 222
+    amount = 55.46
+    panel = ibis.memtable(
+        pa.table(
+            {
+                "unit_id": [f"u{i:06}" for i in range(n)],
+                "ds": [day] * n,
+                "experiment_id": ["shop"] * n,
+                "group_id": ["treatment"] * n,
+                "metric": ["aov"] * n,
+                "n_events": [1, *([0] * (n - 1))],
+                "sum_value": [amount, *([0.0] * (n - 1))],
+                "position": list(range(n)),
+            }
+        )
+    )
+    # One contributing pair and all other pairs zero: the ratio is amount
+    # and every linearized residual is exactly zero.
+    con = ibis.duckdb.connect(threads=1, preserve_insertion_order=True)
+    try:
+        for order in (ibis.desc("position"), ibis.asc("position")):
+            ordered = panel.order_by(order)
+            query = daily_group_summary(ordered, metric=metric, den_panel=ordered)
+            (result,) = run_daily(con.to_pyarrow(query).to_pylist(), [metric])
+            assert (result.group_id, result.metric, result.n) == ("treatment", "aov", n)
+            assert result.value is not None
+            assert result.value.value == pytest.approx(amount, rel=1e-14)
+            # The square root can amplify near-zero variance roundoff to
+            # O(sqrt(eps)) on the interval's relative scale.
+            assert (result.value.lb, result.value.ub) == pytest.approx(
+                (amount, amount), rel=4 * math.sqrt(math.ulp(1.0))
+            )
+    finally:
+        con.disconnect()
 
 
 def test_daily_group_summary_without_den_panel_stays_null(panel, mean_metric):

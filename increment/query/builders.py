@@ -269,6 +269,37 @@ def _register_naive_utc() -> None:
 _register_naive_utc()
 
 
+class _DailyRatioMomentSum(ops.Sum):
+    """Use compensated accumulation for DuckDB's floating ratio moments."""
+
+    ratio_rows: ops.Column[ibis_dt.Boolean] | None = None
+
+
+def _register_daily_ratio_moment_sum() -> None:
+    from ibis.backends.sql.compilers.base import SQLGlotCompiler
+    from ibis.backends.sql.compilers.duckdb import DuckDBCompiler
+
+    def portable(compiler: Any, op: _DailyRatioMomentSum, *, arg: Any, where: Any, **_: Any):
+        return compiler.visit_Sum(op, arg=arg, where=where)
+
+    def duckdb(compiler: Any, _op: _DailyRatioMomentSum, *, arg: Any, where: Any, ratio_rows: Any):
+        if ratio_rows is None:
+            return compiler.agg.fsum(arg, where=where)
+        # Batched requests can mix ratio and non-ratio groups; each group has one kind.
+        other_rows = ~ratio_rows
+        if where is not None:
+            ratio_rows, other_rows = where.and_(ratio_rows), where.and_(other_rows)
+        return compiler.f.coalesce(
+            compiler.agg.fsum(arg, where=ratio_rows), compiler.agg.sum(arg, where=other_rows)
+        )
+
+    SQLGlotCompiler.visit__DailyRatioMomentSum = portable  # ty: ignore[unresolved-attribute]
+    DuckDBCompiler.visit__DailyRatioMomentSum = duckdb  # ty: ignore[unresolved-attribute]
+
+
+_register_daily_ratio_moment_sum()
+
+
 def _naive_utc(ts: ir.TimestampValue) -> ir.TimestampValue:
     """A time-zone-aware *ts* as the naive UTC timestamp of the same instant; a ``ts`` of
     any other type is returned as it is."""
@@ -2281,6 +2312,7 @@ def emit_centered_moments(
     *,
     keys: Sequence[str],
     columns: Mapping[str, str],
+    _daily_ratio_rows: bool | str = False,
     _sql_stages: SummarySqlStages | None = None,
 ) -> ir.Table:
     """One centered-moment row per *keys* from *table*, shaped by *plan*.
@@ -2299,6 +2331,10 @@ def emit_centered_moments(
     -- never routed through the float moments. ``successes`` is such a column:
     an exact 0/1 integer per row of a declared binary outcome, ``NULL``
     elsewhere, so a group's exact count is the integer sum of its rows.
+
+    DuckDB uses compensated floating sums for daily ratios. Pass ``True``
+    for all groups or name a boolean column constant per group in a mixed
+    batch. Centers, counts and passthrough fields are unchanged.
     """
     if _sql_stages is not None:
         _sql_stages.mark("analysis_rows", table)
@@ -2318,6 +2354,7 @@ def emit_centered_moments(
     residual = {
         variable: centered[columns[variable]] - centered[ref_name[variable]] for variable in live
     }
+    ratio_rows = centered[_daily_ratio_rows].op() if isinstance(_daily_ratio_rows, str) else None
     mask_value = {mask: centered[columns[mask]] for mask in masks}
 
     def null(dtype: str = "float64") -> ir.Value:
@@ -2339,6 +2376,11 @@ def emit_centered_moments(
             term = residual[variable]
             product = term if product is None else product * term
         assert product is not None
+        if _daily_ratio_rows:
+            return _DailyRatioMomentSum(
+                arg=cast("ops.Column[ibis_dt.Floating]", product.op()),
+                ratio_rows=cast("ops.Column[ibis_dt.Boolean] | None", ratio_rows),
+            ).to_expr()
         return product.sum()
 
     aggs: dict[str, ir.Value] = {plan.name(("n", (), None)): centered.count()}
@@ -2592,7 +2634,13 @@ def daily_group_summary(
         columns["x"] = "x"
     if den_panel is not None:
         columns["den"] = "value_den"
-    return emit_centered_moments(agg_source, DAY_GRAIN, keys=group_cols, columns=columns)
+    return emit_centered_moments(
+        agg_source,
+        DAY_GRAIN,
+        keys=group_cols,
+        columns=columns,
+        _daily_ratio_rows=den_panel is not None,
+    )
 
 
 def _panel_row_key(left: ir.Table, right: ir.Table) -> ir.BooleanValue:
