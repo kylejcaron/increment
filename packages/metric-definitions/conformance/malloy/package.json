@@ -1,0 +1,9 @@
+{
+  "name": "metric-definitions-malloy-conformance",
+  "private": true,
+  "engines": { "node": "22.x" },
+  "dependencies": {
+    "@malloydata/db-duckdb": "0.0.438",
+    "@malloydata/malloy": "0.0.438"
+  }
+}

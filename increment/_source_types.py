@@ -186,6 +186,9 @@ class EvidenceCapabilities:
     ``grain_route`` names how to obtain an undeclared day axis (a daily or
     as-of grain, or as-of compliance) from this kind of source, when one
     exists; ``None`` keeps the generic route.
+
+    ``snapshot_required_metrics`` names shared metrics that require validation
+    on the same capture used for their outcome rows.
     """
 
     kind: Literal[
@@ -214,6 +217,7 @@ class EvidenceCapabilities:
     temporal_quantiles: bool | None = None
     temporal_clusters: bool | None = None
     dimensioned_daily_metrics: Literal["declared", "any"] | None = None
+    snapshot_required_metrics: tuple[str, ...] = ()
 
 
 def effective_capabilities(value: EvidenceCapabilities) -> EvidenceCapabilities:

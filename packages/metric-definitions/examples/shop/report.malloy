@@ -1,0 +1,49 @@
+// Export the shop metrics to generated.malloy next to this report, and import it.
+// The input must cover the complete reporting period and have unique, non-null keys.
+import 'generated.malloy'
+
+query: fact_totals is orders -> {
+  aggregate:
+    revenue
+    refunds
+    order_count
+    average_order_value
+    net_revenue
+    scaled_net_revenue
+    web_revenue_per_order
+    revenue_less_store_refunds
+}
+
+query: by_channel is orders -> {
+  group_by: marketing_group is channel_details.marketing_group
+  aggregate: average_order_value
+}
+
+query: buyer_totals is population_paying_customers -> {
+  aggregate: revenue_per_buyer, buyer_conversion
+}
+
+// AOV has no implicit roster. Join from the eligible customers explicitly when
+// the report needs to retain customers with no orders.
+source: eligible_orders is population_eligible_customers extend {
+  join_many: orders on customer = orders.customer
+}
+
+query: eligible_totals is eligible_orders -> {
+  aggregate: revenue_per_customer, purchase_conversion, orders.order_count
+}
+
+query: by_customer is eligible_orders -> {
+  group_by: customer
+  aggregate:
+    orders.revenue
+    orders.refunds
+    orders.order_count
+    orders.net_revenue
+}
+
+query: only_c is eligible_orders -> {
+  where: customer = 'C'
+  group_by: customer
+  aggregate: orders.order_count, orders.average_order_value
+}

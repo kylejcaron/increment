@@ -1,0 +1,62 @@
+name: shared metric conformance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/shared-metric-conformance.yml'
+      - 'increment/**'
+      - 'packages/metric-definitions/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+
+permissions:
+  contents: read
+
+jobs:
+  shop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Build and compare the three consumers
+        shell: bash
+        run: |
+          core="$GITHUB_WORKSPACE/packages/metric-definitions"
+          receipt="$core/conformance/versions.json"
+          terrine="$RUNNER_TEMP/metric-definitions-terrine"
+          terrine_sha=$(jq -er '.terrine.commit' "$receipt")
+          [[ "$terrine_sha" =~ ^[a-f0-9]{40}$ ]]
+          git init "$terrine"
+          git -C "$terrine" fetch --depth=1 https://github.com/kylejcaron/terrine.git "$terrine_sha"
+          git -C "$terrine" checkout --detach FETCH_HEAD
+          test "$(git -C "$terrine" rev-parse HEAD)" = "$terrine_sha"
+
+          python_version=$(jq -er '.python' "$receipt")
+          uv python install "$python_version"
+          uv sync --locked --python "$python_version" --extra demo
+          uv sync --project "$terrine" --locked --python "$python_version" --extra duckdb --extra metric-definitions
+          SOURCE_DATE_EPOCH=$(jq -er '.core.source_date_epoch' "$receipt") \
+            uv build --directory "$core" --wheel --out-dir "$RUNNER_TEMP/core-wheel"
+          wheel=$(find "$RUNNER_TEMP/core-wheel" -name '*.whl')
+          test -f "$wheel"
+          sha256sum "$wheel"
+          export INCREMENT_PYTHON="$GITHUB_WORKSPACE/.venv/bin/python"
+          export TERRINE_PYTHON="$terrine/.venv/bin/python"
+          uv pip install --no-deps --reinstall-package metric-definitions --python "$INCREMENT_PYTHON" "$wheel"
+          uv pip install --no-deps --reinstall-package metric-definitions --python "$TERRINE_PYTHON" "$wheel"
+
+          node_version=$(jq -er '.malloy.node' "$receipt")
+          [[ "$node_version" =~ ^22\.[0-9]+\.[0-9]+$ ]]
+          lock="$core/conformance/malloy/package-lock.json"
+          expected_lock_sha=$(jq -er '.malloy.lock_sha256' "$receipt")
+          printf '%s  %s\n' "$expected_lock_sha" "$lock" | sha256sum --check -
+          npm exec --yes --package="node@$node_version" -- npm ci --prefix "$core/conformance/malloy"
+          MALLOY_NODE=$(npm exec --yes --package="node@$node_version" -- which node)
+          export MALLOY_NODE
+          test "$("$MALLOY_NODE" --version)" = "v$node_version"
+          uv run --project "$core" --locked --python "$python_version" pytest -q "$core/conformance/test_three_consumers.py"

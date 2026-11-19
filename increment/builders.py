@@ -156,7 +156,8 @@ def _bind_definitions(
     store: Literal["auto", "always", "none"] = "auto",
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-) -> SourceBinding:
+    definitions: Definitions | None = None,
+) -> tuple[SourceBinding, str]:
     from increment.plan import bind_automatic_sequential_plan, compile_decision_plan
     from increment.query.native_source import DefinitionsMomentSource
     from increment.query.session import WarehouseSession
@@ -171,7 +172,8 @@ def _bind_definitions(
         )
     if store not in ("auto", "always", "none"):
         _bind_raise("facade.analysis.invalid_store_policy", store=store)
-    defs = load(definitions_path)
+    defs = load(definitions_path) if definitions is None else definitions
+    definitions_digest = _definitions_digest(Path(definitions_path), definitions=defs)
     experiment = defs.experiment(experiment_name)
     if experiment is None:
         _bind_raise(
@@ -224,7 +226,9 @@ def _bind_definitions(
         design=design,
         plan=compiled_plan,
     )
-    return bind_source(
+    if defs._shared_metrics is not None:
+        src.validate_shared_metrics()
+    binding = bind_source(
         src,
         design,
         defs=defs,
@@ -236,6 +240,7 @@ def _bind_definitions(
         store=store,
         on_mixed_assignment=on_mixed_assignment,
     )
+    return binding, definitions_digest
 
 
 def _input_backend_of(frame: IntoDataFrame) -> Any:
@@ -560,11 +565,14 @@ def _catalog_lock(lock_path: Path) -> Iterator[None]:
 _CATALOG_VERSION = 2
 
 
-def _definitions_digest(path: Path) -> str:
+def _definitions_digest(path: Path, *, definitions: Definitions | None = None) -> str:
     """Hash the parsed definitions, so comment and formatting edits keep the digest."""
     from increment.semantics.loader import _load
 
-    declared = _load(path, advise=False).model_dump(mode="json")
+    defs = _load(path, advise=False) if definitions is None else definitions
+    declared = defs.model_dump(mode="json")
+    if defs._shared_metrics is not None:
+        declared["shared_metrics"] = defs._shared_metrics.selection
     encoded = json.dumps(declared, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -838,7 +846,7 @@ def from_definitions(
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     catalog_path: str | os.PathLike[str] | None = None,
 ) -> tuple[Experiment, ExperimentReader]:
-    """Bind warehouse definitions or reopen their catalog without a connection.
+    """Bind warehouse definitions, including selected portable metrics, or reopen offline.
 
     ``catalog_path`` names the catalog file and puts its lock in the same
     directory. Use the same path to reopen offline. Omit it to keep both
@@ -881,16 +889,14 @@ def from_definitions(
         except OSError:
             _refuse("kernel.definitions.catalog_unwritable", path=str(catalog))
 
-    # Digest before binding, so an edit during the build fails the catalog write;
-    # definitions that do not load are reported by the binding itself.
-    definitions_digest = _loaded_digest(path)
+    definitions = None
     if experiment_name is None:
         definitions = load(path)
         if len(definitions.experiments) != 1:
             _refuse("kernel.request.invalid", field="experiment_name is required")
         experiment_name = definitions.experiments[0].name
     assert con is not None
-    binding = _bind_definitions(
+    binding, definitions_digest = _bind_definitions(
         experiment_name,
         path,
         con,
@@ -898,6 +904,7 @@ def from_definitions(
         store=store,
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=source_snapshot_evidence,
+        definitions=definitions,
     )
 
     def write_catalog(captured: Experiment) -> None:

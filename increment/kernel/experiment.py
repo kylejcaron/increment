@@ -288,6 +288,8 @@ def _capability_payload(value: EvidenceCapabilities | None) -> dict[str, object]
     # Unset route values preserve declarations recorded before the field existed.
     if value.grain_route is None:
         del payload["grain_route"]
+    if not value.snapshot_required_metrics:
+        del payload["snapshot_required_metrics"]
     return payload
 
 
@@ -298,6 +300,7 @@ def _capabilities_from_payload(payload: Mapping[str, object]) -> EvidenceCapabil
     if values.get("available_covariates") is not None:
         values["available_covariates"] = frozenset(values["available_covariates"])
     values["breakouts"] = tuple(values.get("breakouts", ()))
+    values["snapshot_required_metrics"] = tuple(values.get("snapshot_required_metrics", ()))
     scalar = values.get("scalar")
     if isinstance(scalar, Mapping):
         scalar_values = dict(scalar)

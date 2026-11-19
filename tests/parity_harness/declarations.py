@@ -24,6 +24,18 @@ _MARGIN_LESS_GUARDRAIL_REFUSALS = tuple(
 
 PARITY_DECLARATIONS = MappingProxyType(
     {
+        "shared-completed-order-value": ParityDeclaration(
+            attempted=("from_definitions", "from_unit_day_artifact"),
+            waive=tuple(
+                (ingress, "SOURCE: this comparison starts with native and shared warehouse YAML.")
+                for ingress in (
+                    "from_unit_summary",
+                    "from_unit_panel",
+                    "from_switchback_panel",
+                    "from_moments",
+                )
+            ),
+        ),
         "triggered_sequential_asymptotic_mean": ParityDeclaration(
             attempted=("from_definitions", "from_unit_day_artifact", "from_moments"),
             waive=(

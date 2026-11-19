@@ -701,6 +701,28 @@ def test_snapshot_exception_leaves_no_arrow_cache_state():
         con.disconnect()
 
 
+def test_pin_sources_preserves_nonnullable_columns_in_independent_streams():
+    from increment.semantics.models import Definitions
+
+    con = ibis.duckdb.connect()
+    try:
+        con.raw_sql("CREATE TABLE assignments (customer_id INTEGER NOT NULL)")
+        con.raw_sql("INSERT INTO assignments VALUES (1)")
+        con.raw_sql("CREATE TABLE orders (units INTEGER NOT NULL)")
+        con.raw_sql("INSERT INTO orders VALUES (3)")
+        queries = ("SELECT customer_id FROM assignments", "SELECT units FROM orders")
+        session = WarehouseSession(con, Definitions(dialect="duckdb"))
+        snapshot = session.pin_sources(queries)
+        try:
+            first, second = (session.fetch_arrow(snapshot.source_sql(sql)) for sql in queries)
+            assert first.to_pylist() == [{"customer_id": 1}]
+            assert second.to_pylist() == [{"units": 3}]
+        finally:
+            snapshot.drop_materialized()
+    finally:
+        con.disconnect()
+
+
 def test_pin_sources_interprets_naive_boundary_cutoff_without_host_timezone(monkeypatch):
     con = ibis.duckdb.connect()
     try:

@@ -117,6 +117,67 @@ shows how to join dimension tables.
     analysis arms; see [Multiplicity](multiplicity.md) for populations and
     statuses.
 
+## Metrics
+
+Install `increment[metric-definitions]` alongside `increment[warehouse]` to
+import portable metric definitions with `increment.from_definitions`. Add a
+`metric_definitions:` block beside native sections such as `metrics:`.
+Here is the checkout demo's binding:
+
+```yaml
+metric_definitions:
+  file: shop.metrics.yaml
+  use: [average_order_value]
+  sources: {orders: orders}
+  measures: {revenue: order, order_count: order}
+  metrics:
+    average_order_value:
+      entity: user
+      preferred_direction: increase
+      window_days: null
+```
+
+`file` is relative to this YAML file and must stay inside the loaded
+definitions directory. `use` names the shared metrics to import. Refer to
+those names in the experiment plan exactly as you would refer to a native
+metric. Do not also declare an imported name in `metrics`.
+
+For each selected measure, `sources` maps the shared source name to a native
+fact source, and `measures` maps the measure name to an event in that source.
+The demo maps both operands to the same `order` event on the same
+completed-order rows; its existing native SQL still excludes other orders.
+Bind sources that represent the same rows as the shared table or view. Native
+SQL must expose the shared row key, entity column, event time and any value or
+filter columns. In `metrics`, `entity` names the shared entity and must map
+to the experiment's native unit. Keep enrollment, methods, windows and other
+experiment settings in the native YAML.
+
+Increment supports ratios of two named sums or row counts, means over a
+declared eligible roster, and conversions that ask whether a unit had at least
+one qualifying event. A ratio divides the arm's total numerator by its total
+denominator, not the average of each unit's ratio. Filters are applied to each
+operand separately. Bind a filtered event's string, boolean or numeric
+dimension to a native property with the same column and type; filters requiring
+a shared join are not supported. Roster-based metrics require the roster to
+contain exactly the assigned units, with no duplicate or null keys; they cannot
+be read against a separate trigger population.
+
+`MetricTrends` reads native metric definitions only. To read an imported metric,
+use `increment.from_definitions` for experiments or Terrine or Malloy for
+descriptive reports.
+
+Experiment reads of shared metrics require a warehouse snapshot so the row keys
+and eligible roster are checked against the same rows used for the result.
+Use the default captured reads, not `coherence="live"`.
+Offline `runnable()` also flags a saved live request for a shared metric.
+
+Use other formulas in descriptive reports with Terrine or Malloy, not experiment inference.
+An unselected formula does not have to be supported by Increment, but the whole
+shared file must still be valid. Changing a selected metric or its dependencies
+requires rebuilding the offline catalog with a connection. Comments, formatting,
+and unrelated valid formulas do not. Other experiment builders accept their
+usual prepared inputs; they do not read shared YAML.
+
 ## One row per unit per day
 
 Each unit's clock starts at its first qualifying exposure inside the experiment

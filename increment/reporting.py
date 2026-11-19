@@ -44,6 +44,7 @@ from increment.semantics.models import (
     RatioMetric,
     TotalMetric,
 )
+from increment.semantics.shared import refuse_shared_metric
 
 __all__ = ["MetricTrend", "MetricTrends"]
 
@@ -240,6 +241,12 @@ class MetricTrends:
                     label=f"exposure '{exposure.name}'",
                 )
         self._defs = snapshot
+        shared = defs._shared_metrics
+        self._shared_metric_names = (
+            frozenset(metric.name for metric in shared.metrics)
+            if shared is not None
+            else frozenset()
+        )
         self._con = con
         self._session = WarehouseSession(con, snapshot)
 
@@ -329,6 +336,13 @@ class MetricTrends:
                 errors.append(f"'{name}': appears more than once in the metrics list")
                 continue
             seen.add(name)
+            if name in self._shared_metric_names:
+                refuse_shared_metric(
+                    name,
+                    "calendar trends do not verify shared event grain or eligible rosters",
+                    target="Increment metric trends",
+                    route="use captured experiment reads through from_definitions, or report with Terrine or Malloy",
+                )
             m = self._defs.metric(name)
             if m is None:
                 errors.append(f"'{name}': not defined in the definitions")

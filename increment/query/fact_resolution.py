@@ -28,12 +28,15 @@ from increment.semantics.models import (
     Metric,
     RatioMetric,
 )
+from increment.semantics.shared import refuse_shared_metric
 
 if TYPE_CHECKING:
     import ibis.expr.types as ir
     import pyarrow as pa
     from ibis import Table
     from ibis.backends.sql import SQLBackend
+
+    from increment.semantics.shared import SharedFact, SharedRoster
 
 
 _REFUSALS = refusals(
@@ -101,6 +104,93 @@ def validate_fact_source_schema(
             "definition.fact_source.missing_columns",
             fact_source=fs.name,
             missing=missing,
+        )
+
+
+def validate_shared_fact(
+    con: SQLBackend,
+    relation: Table,
+    source: FactSource,
+    binding: SharedFact,
+    *,
+    metric: str,
+    unit: str,
+    captured: bool,
+) -> None:
+    """Check the native event stream still has the declared shared grain."""
+    validate_fact_source_schema(relation, source, require_values=not captured)
+    key = binding.row_key
+    route = "expose the declared non-null, unique row key on the native event stream"
+    if key not in relation.columns:
+        refuse_shared_metric(
+            metric, f"source {source.name!r} does not project {key!r}", route=route
+        )
+    rows = relation.filter(relation.event == binding.fact)
+    valid = (
+        (rows.count() == rows[key].nunique())
+        & (rows.count() == rows[unit].count())
+        & (rows.count() == rows[source.timestamp_column].count())
+    )
+    if not con.execute(valid):
+        refuse_shared_metric(
+            metric,
+            f"source {source.name!r} has null units or event times, or null or repeated {key!r}",
+            route=route,
+        )
+
+
+_ROSTER_ROUTE = "use a roster containing exactly one row for each assigned experiment unit"
+
+
+def resolve_shared_roster(con: SQLBackend, roster: SharedRoster, *, metric: str) -> Table:
+    """Resolve and project the eligible unit key for a shared population."""
+    parts = roster.table.split(".")
+    database = None if len(parts) == 1 else parts[0] if len(parts) == 2 else (parts[0], parts[1])
+    if len(parts) > 3:
+        refuse_shared_metric(
+            metric, f"cannot resolve eligible roster {roster.table!r}", route=_ROSTER_ROUTE
+        )
+    try:
+        table = con.table(parts[-1], database=database)
+    except Exception as exc:
+        try:
+            refuse_shared_metric(
+                metric, f"cannot resolve eligible roster {roster.table!r}", route=_ROSTER_ROUTE
+            )
+        except DefinitionError as error:
+            raise error from exc
+    if roster.key not in table.columns:
+        refuse_shared_metric(
+            metric, f"eligible roster does not project {roster.key!r}", route=_ROSTER_ROUTE
+        )
+    return table.select(unit_id=table[roster.key])
+
+
+def validate_shared_roster(
+    con: SQLBackend, exposures: Table, eligible: Table, *, roster: SharedRoster, metric: str
+) -> None:
+    """Require a unique eligible roster with exactly the enrolled unit identities."""
+    import ibis
+
+    route = _ROSTER_ROUTE
+    assigned = exposures.select("unit_id")
+    if eligible.unit_id.type().copy(nullable=True) != assigned.unit_id.type().copy(nullable=True):
+        refuse_shared_metric(
+            metric, "eligible and assigned unit keys have different types", route=route
+        )
+    one, zero = ibis.literal(1), ibis.literal(0)
+    memberships = eligible.mutate(in_roster=one, assigned=zero).union(
+        assigned.mutate(in_roster=zero, assigned=one), distinct=False
+    )
+    counts = memberships.group_by("unit_id").agg(
+        in_roster=memberships.in_roster.sum(), assigned=memberships.assigned.sum()
+    )
+    invalid = counts.filter(
+        counts.unit_id.isnull() | (counts.in_roster != 1) | (counts.assigned != 1)
+    )
+    if con.execute(invalid.limit(1).count()):
+        refuse_shared_metric(
+            metric, f"eligible roster {roster.table!r} differs from assigned units", route=route
         )
 
 
