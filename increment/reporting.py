@@ -241,10 +241,11 @@ class MetricTrends:
                     label=f"exposure '{exposure.name}'",
                 )
         self._defs = snapshot
-        self._shared_roster_metrics = frozenset(
-            metric.name
-            for metric in (() if defs._shared_metrics is None else defs._shared_metrics.metrics)
-            if metric.roster is not None
+        shared = defs._shared_metrics
+        self._shared_metric_names = (
+            frozenset(metric.name for metric in shared.metrics)
+            if shared is not None
+            else frozenset()
         )
         self._con = con
         self._session = WarehouseSession(con, snapshot)
@@ -335,12 +336,12 @@ class MetricTrends:
                 errors.append(f"'{name}': appears more than once in the metrics list")
                 continue
             seen.add(name)
-            if name in self._shared_roster_metrics:
+            if name in self._shared_metric_names:
                 refuse_shared_metric(
                     name,
-                    "calendar trends do not verify the declared eligible roster",
+                    "calendar trends do not verify shared event grain or eligible rosters",
                     target="Increment metric trends",
-                    route="use from_definitions with an experiment that enrolls the declared roster",
+                    route="use captured experiment reads through from_definitions, or report with Terrine or Malloy",
                 )
             m = self._defs.metric(name)
             if m is None:

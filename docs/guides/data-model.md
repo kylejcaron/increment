@@ -150,13 +150,16 @@ dimension to a native property with the same column and type; filters requiring
 a shared join are not supported. Roster-based metrics require the roster to
 contain exactly the assigned units, with no duplicate or null keys; they cannot
 be read against a separate trigger population.
-Calendar trends do not apply the shared roster; use the experiment builder for
-these metrics.
+
+`MetricTrends` reads native metric definitions only. To read an imported metric,
+use `increment.from_definitions` for experiments or Terrine or Malloy for
+descriptive reports.
+
 Experiment reads of shared metrics require a warehouse snapshot so the row keys
 and eligible roster are checked against the same rows used for the result.
 Use the default captured reads, not `coherence="live"`.
 
-Use other formulas in descriptive reports, not experiment inference.
+Use other formulas in descriptive reports with Terrine or Malloy, not experiment inference.
 An unselected formula does not have to be supported by Increment, but the whole
 shared file must still be valid. Changing a selected metric or its dependencies
 requires rebuilding the offline catalog with a connection. Comments, formatting,
