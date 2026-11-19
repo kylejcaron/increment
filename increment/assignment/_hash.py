@@ -36,4 +36,4 @@ def _draw(prefix: bytes, unit: bytes) -> int:
         word = int.from_bytes(digest.digest()[:4], "big")
         if word < _CUTOFF:
             return word % _FULL
-    raise RuntimeError("Allocation draw exhausted its attempt counter.")
+    raise AssertionError("Allocation draw exhausted its attempt counter.")
