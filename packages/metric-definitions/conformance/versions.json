@@ -2,16 +2,16 @@
   "python": "3.12.11",
   "core": {
     "version": "0.1.0a1",
-    "wheel_sha256": "8c930cb5cf4963b339a79372b959cefdc277d448fd85d47b9ece0df05bbc0675",
+    "wheel_sha256": "b720768e4aeb178dd1e829ced023af10bb04ff85edd58649879277edeb53ab39",
     "source_date_epoch": 315532800
   },
   "increment": {
-    "runtime_commit": "da2f536ef83d912b1a6409ea029bf415f6e307f1",
+    "runtime_commit": "50e837469abf2595bbdbe90a9344b58215dcc4ce",
     "ibis": "12.0.0",
     "duckdb": "1.5.5"
   },
   "terrine": {
-    "commit": "adf2163cee7c09f79ff25af69b7541b8c0945269",
+    "commit": "2af9b0ef771ab22c63e1f9c9d041c035884a2e10",
     "ibis": "12.0.0",
     "duckdb": "1.5.6",
     "legacy_increment_bridge": "0.1.0a2"
