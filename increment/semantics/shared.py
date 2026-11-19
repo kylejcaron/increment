@@ -44,6 +44,14 @@ def refuse_shared_metric(
     refuse(_UNSUPPORTED, metric=metric, target=target, reason=reason, route=route)
 
 
+def _refuse_uncaptured_shared_metric(metric: str) -> NoReturn:
+    refuse_shared_metric(
+        metric,
+        "the shared inputs must be checked in the same snapshot as the readout",
+        route="use captured coherence for this metric",
+    )
+
+
 def _unsupported(metric: str, reason: str) -> NoReturn:
     refuse_shared_metric(
         metric,

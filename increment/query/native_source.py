@@ -195,7 +195,7 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
 )
-from increment.semantics.shared import refuse_shared_metric
+from increment.semantics.shared import _refuse_uncaptured_shared_metric, refuse_shared_metric
 from increment.sequential_source import SequentialSourceMixin
 from increment.sources import (
     MIXED_ASSIGNMENT_LABEL,
@@ -308,6 +308,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     @property
     def evidence(self) -> EvidenceCapabilities:
+        shared = self._defs._shared_metrics
         return EvidenceCapabilities(
             kind="definitions",
             grains=self.capabilities,
@@ -349,6 +350,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             temporal_quantiles=False,
             temporal_clusters=False,
             dimensioned_daily_metrics="declared",
+            snapshot_required_metrics=()
+            if shared is None
+            else tuple(binding.name for binding in shared.metrics),
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -481,11 +485,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     def _require_validated_shared_capture(self, bindings: Sequence[BoundSharedMetric]) -> None:
         for binding in bindings:
             if binding.name not in self._validated_shared_metrics:
-                refuse_shared_metric(
-                    binding.name,
-                    "the shared inputs must be checked in the same snapshot as the readout",
-                    route="use captured coherence for this metric",
-                )
+                _refuse_uncaptured_shared_metric(binding.name)
 
     def _snapshot_auxiliary_relations(
         self, bindings: Sequence[BoundSharedMetric], horizon: Table | None

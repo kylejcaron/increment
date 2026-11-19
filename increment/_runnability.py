@@ -40,6 +40,7 @@ from increment.errors import CapabilityError, CodedError, InvalidRequestError, R
 from increment.estimation.priors import prior_from_payload
 from increment.plan import with_unassigned_procedures
 from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
+from increment.semantics.shared import _refuse_uncaptured_shared_metric
 
 if TYPE_CHECKING:
     from increment._evidence_types import BreakoutIdentity
@@ -639,6 +640,15 @@ def _validate_scope_request(
         check(validate_request, validation_request)
 
 
+def _validate_live_capture(capabilities: EvidenceCapabilities, request: ReadoutRequest) -> None:
+    if not capabilities.snapshot_required_metrics:
+        return
+    selected = {metric.name for metric in request.metrics}
+    for name in capabilities.snapshot_required_metrics:
+        if name in selected:
+            _refuse_uncaptured_shared_metric(name)
+
+
 def readout_refusals(
     *,
     estimator_id: str,
@@ -649,6 +659,7 @@ def readout_refusals(
     operation: str,
     metric_name: str,
     options: Mapping[str, Any],
+    live: bool,
 ) -> tuple[CodedError, ...]:
     """Use the execution validators on recorded metric, method and view declarations."""
     declaration = thaw(declaration)
@@ -738,6 +749,8 @@ def readout_refusals(
                 refusals.append(error)
 
     _validate_scope_request(declaration, request, scope, operation, capabilities, check, refusals)
+    if not refusals and live:
+        check(_validate_live_capture, capabilities, request)
     if refusals:
         return tuple(refusals)
     if (

@@ -153,6 +153,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                     operation=scope_operation(exp, scope),
                     metric_name=str(metric_name),
                     options=operation_options(exp, scope),
+                    live=exp.request_options.get("coherence") == "live",
                 ):
                     append_unique(refusal)
             request = EvidenceScope(

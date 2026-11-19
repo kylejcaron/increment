@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
 import yaml
 
-from increment import AnalysisPlan, from_definitions, run
+from increment import AnalysisPlan, Experiment, from_definitions, run, runnable
 from increment.errors import CodedError, DefinitionError
 from increment.reporting import MetricTrends
 from increment.semantics.loader import load
@@ -305,10 +306,14 @@ def test_uncaptured_shared_metrics_refuse_without_reading_current_rows(shared_fi
     con = _web_sales_connection()
     try:
         experiment, reader = from_definitions(manifest, con)
+        saved = replace(experiment, request_options={"coherence": "live"})
+        restored = Experiment.from_json(saved.to_json())
         with reader, pytest.raises(DefinitionError) as exc:
-            run(experiment, reader, coherence="live")
+            run(restored, reader)
         assert exc.value.code == "definition.shared.metric_unsupported"
         assert exc.value.context["metric"] == "aov"
         assert "captured" in str(exc.value.context["route"])
+        (offline,) = runnable(restored, "aov")["randomized.unadjusted"].static_refusals
+        assert (offline.code, offline.context) == (exc.value.code, exc.value.context)
     finally:
         con.disconnect()
