@@ -3712,6 +3712,28 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 census[f"_as_of_{index}"],
             )
 
+    @staticmethod
+    def _component_batch_day_summary(
+        combined: Table, grain: Grain, metrics: Sequence[Metric]
+    ) -> Table:
+        daily_ratio_rows: bool | str = False
+        if grain == "daily":
+            ratio_requests = [
+                index for index, metric in enumerate(metrics) if isinstance(metric, RatioMetric)
+            ]
+            if len(ratio_requests) == len(metrics):
+                daily_ratio_rows = True
+            elif ratio_requests:
+                daily_ratio_rows = "__daily_ratio"
+                combined = combined.mutate(__daily_ratio=combined["__request"].isin(ratio_requests))
+        return emit_centered_moments(
+            combined,
+            DAY_GRAIN,
+            keys=["ds", "experiment_id", "metric", "group_id", "__request"],
+            columns={"y": "y", "den": "y_den"},
+            _daily_ratio_rows=daily_ratio_rows,
+        )
+
     def _component_batch_rows(
         self,
         requests: Sequence[MomentsRequest],
@@ -3849,12 +3871,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         elif first.grain == "total":
             summary = group_summary(combined, by=["__request"])
         else:
-            summary = emit_centered_moments(
-                combined,
-                DAY_GRAIN,
-                keys=["ds", "experiment_id", "metric", "group_id", "__request"],
-                columns={"y": "y", "den": "y_den"},
-            )
+            summary = self._component_batch_day_summary(combined, first.grain, metrics)
         null_counts = self._null_value_counts(
             tuple(OutcomeRows(item, exposures) for item in metrics)
         )
