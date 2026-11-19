@@ -54,3 +54,15 @@ represent. A valid catalog does not establish that any workload can execute it.
 The [shop fixture](examples/shop/) contains the definitions, input SQL, matched
 scope, and hand-derived results. Existing product-specific settings such as
 exposure rules and snapshot windows belong in the consumer, not in this file.
+
+## Use the same metric in another tool
+
+| Consumer | Entry point | Scope |
+| --- | --- | --- |
+| Increment | `from_definitions` with `shared_metrics` | Additive ratios, eligible-unit means, and event-presence conversions with matching native bindings |
+| Terrine | `Model.from_shared_metrics`, then an ordinary `Design` | Named formulas over aligned window aggregates; readiness and roster binding stay native |
+| Malloy | `metric_definitions.malloy.export_malloy` | Native fields and grouping over compatible fact or roster sources |
+
+The [migration and conformance guide](conformance/) shows how to reuse AOV
+without rewriting an experiment or a Terrine Design. The comparison uses matched
+DuckDB inputs and candidate builds, not released package compatibility.

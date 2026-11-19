@@ -1,0 +1,24 @@
+{
+  "python": "3.12.11",
+  "core": {
+    "version": "0.1.0a1",
+    "wheel_sha256": "8c930cb5cf4963b339a79372b959cefdc277d448fd85d47b9ece0df05bbc0675",
+    "source_date_epoch": 315532800
+  },
+  "increment": {
+    "runtime_commit": "8f5d95531a3fb225e1588e87543e3e55042f8b05",
+    "ibis": "12.0.0",
+    "duckdb": "1.5.5"
+  },
+  "terrine": {
+    "commit": "adf2163cee7c09f79ff25af69b7541b8c0945269",
+    "ibis": "12.0.0",
+    "duckdb": "1.5.6",
+    "legacy_increment_bridge": "0.1.0a2"
+  },
+  "malloy": {
+    "node": "22.23.5",
+    "malloydata": "0.0.438",
+    "lock_sha256": "a69620b64a63da82c463065edcd389a938c7503eafb8b50df88c546ac3d3332e"
+  }
+}
