@@ -44,6 +44,7 @@ from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, pars
 
 if TYPE_CHECKING:
     from increment._evidence_types import BreakoutIdentity
+    from increment.semantics.models import Metric
 
 _CONFIGS = TypeAdapter(tuple[ResolvedMetricConfig, ...])
 
@@ -496,6 +497,7 @@ def _request_config(
     metric_name: str,
     *,
     capabilities: EvidenceCapabilities,
+    exploratory_metric: Metric | None,
 ) -> tuple[dict[str, Any], tuple[ResolvedMetricConfig, ...], tuple[ResolvedMetricConfig, ...]]:
     values = typed_request_options(options)
     recorded_configs = tuple(
@@ -516,6 +518,8 @@ def _request_config(
             and declared_day_axis_metric_objects_supported(capabilities)
         ),
     )
+    if exploratory_metric is not None:
+        metrics.append(exploratory_metric)
     overrides = {} if operation in _VALUE_OPERATIONS else values
     base_names = {config.metric.name for config in base}
     missing = tuple(metric for metric in metrics if metric.name not in base_names)
@@ -524,6 +528,8 @@ def _request_config(
         if missing
         else base
     )
+    if exploratory_metric is not None:
+        base = request_base
     configs = overlay_configs(
         metrics,
         request_base,
@@ -661,6 +667,7 @@ def readout_refusals(
     operation: str,
     metric_name: str,
     options: Mapping[str, Any],
+    exploratory_metric: Metric | None = None,
 ) -> tuple[CodedError, ...]:
     """Use the execution validators on recorded metric, method and view declarations."""
     declaration = thaw(declaration)
@@ -674,8 +681,11 @@ def readout_refusals(
             operation,
             metric_name,
             capabilities=capabilities,
+            exploratory_metric=exploratory_metric,
         )
         plan = CompiledDecisionPlan.model_validate(dict(declaration["plan"]))
+        if exploratory_metric is not None:
+            plan = with_unassigned_procedures(plan, (exploratory_metric,), design=decoded_design)
         if scope.view in {"daily", "asof"} and declared_day_axis_metric_objects_supported(
             capabilities
         ):

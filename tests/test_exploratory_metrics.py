@@ -949,6 +949,33 @@ def test_sequential_plans_refuse_added_metrics_and_uncorrected_segments(warehous
     assert refused.value.code == "facade.analysis.uncorrected_segments_sequential"
 
 
+def test_offline_preflight_checks_cluster_compatibility_of_added_quantile(warehouse):
+    definitions = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
+    definitions["experiments"][0]["cluster"] = "store_id"
+    definitions["metrics"].append(
+        {
+            "type": "quantile",
+            "name": "p90",
+            "entity": "user_id",
+            "fact": "purchase",
+            "quantile": 0.9,
+        }
+    )
+    experiment, reader = make_binding(
+        warehouse, Definitions.model_validate(definitions), experiment="exp"
+    )
+    with reader, pytest.raises(CodedError) as executed:
+        run_views(experiment, reader, exploratory_metrics=["p90"])
+    assert executed.value.code == "arm.metric.quantile_cluster"
+
+    restored = Experiment.from_json(experiment.to_json())
+    status = runnable(restored, "p90")["randomized.unadjusted"]
+    assert [(error.code, error.context) for error in status.static_refusals] == [
+        (executed.value.code, executed.value.context)
+    ]
+    assert not runnable(restored, "revenue")["randomized.unadjusted"].static_refusals
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("correction", ["none", "bonferroni", "bh"])
 def test_uncorrected_segments_are_the_unadjusted_run_breakout_rows(warehouse, correction):

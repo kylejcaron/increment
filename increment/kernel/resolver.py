@@ -75,7 +75,12 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
 
 
 def _resolve(
-    estimator_id: str, exp: Experiment, metric: object, *, eligibility_unknown: bool
+    estimator_id: str,
+    exp: Experiment,
+    metric: object,
+    *,
+    eligibility_unknown: bool,
+    exploratory_metric: Metric | None = None,
 ) -> list[CodedError]:
     from increment._evidence_refusals import (
         require_any_evidence_route,
@@ -166,6 +171,7 @@ def _resolve(
                     operation=scope_operation(exp, scope),
                     metric_name=str(metric_name),
                     options=operation_options(exp, scope),
+                    exploratory_metric=exploratory_metric,
                 ):
                     append_unique(refusal)
             request = EvidenceScope(
@@ -348,18 +354,20 @@ def _exploratory_metric(exp: Experiment, name: str) -> Metric | Literal[False] |
     return False if match is None else _catalog_metric_eligibility(recorded, source, match)
 
 
-def _runnable_metric(exp: Experiment, name: str) -> tuple[object, bool]:
-    """Resolve a string metric or say its exploratory eligibility is unknown."""
+def _runnable_metric(
+    exp: Experiment, name: str
+) -> tuple[object, Literal["known", "unknown", "add"]]:
+    """Resolve a name, keeping catalog additions separate from declared metrics."""
     from pydantic import TypeAdapter
 
     from increment._analysis_config import refuse_unknown_metrics
     from increment.semantics.models import Metric
 
     if name in exp.metrics:
-        return name, False
+        return name, "known"
     roster = _metric_roster(exp)
     if name in roster:
-        return TypeAdapter(Metric).validate_python(roster[name]), False
+        return TypeAdapter(Metric).validate_python(roster[name]), "known"
     saved = exp.request_options.get("metrics")
     if (
         isinstance(saved, (tuple, list))
@@ -372,25 +380,29 @@ def _runnable_metric(exp: Experiment, name: str) -> tuple[object, bool]:
     ):
         for metric in saved:
             if isinstance(metric, Mapping) and metric.get("name") == name:
-                return TypeAdapter(Metric).validate_python(metric), False
+                return TypeAdapter(Metric).validate_python(metric), "known"
     exploratory = _exploratory_metric(exp, name)
     if exploratory is False:
         refuse_unknown_metrics((name,), roster.keys(), caller="runnable")
     if exploratory is None:
-        return name, True
+        return name, "unknown"
     from increment._runnability import require_runnable_exploratory_metric
 
     require_runnable_exploratory_metric(exp.analysis_context, name)
-    return exploratory, False
+    return exploratory, "add"
 
 
 def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:
     """Conservative offline feasibility: absent declarations remain unknown."""
     from increment.declarations import estimator_refs
 
+    exploratory_metric = None
     eligibility_unknown = False
     if isinstance(metric, str):
-        metric, eligibility_unknown = _runnable_metric(exp, metric)
+        metric, selection = _runnable_metric(exp, metric)
+        eligibility_unknown = selection == "unknown"
+        if selection == "add":
+            exploratory_metric = cast("Metric", metric)
     contrast = exp.analysis_context.get("family") == "contrast"
     references = estimator_refs()
     missing = tuple(
@@ -403,7 +415,13 @@ def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:
     return {
         estimator_id: Runnable(
             static_refusals=tuple(
-                _resolve(estimator_id, exp, metric, eligibility_unknown=eligibility_unknown)
+                _resolve(
+                    estimator_id,
+                    exp,
+                    metric,
+                    eligibility_unknown=eligibility_unknown,
+                    exploratory_metric=exploratory_metric,
+                )
             ),
             deferred_checks=(
                 ("sample floors", "usable denominators", "data-dependent estimator checks")
