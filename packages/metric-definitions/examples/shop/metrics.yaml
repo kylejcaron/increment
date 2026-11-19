@@ -1,0 +1,52 @@
+version: 1
+sources:
+  customers:
+    table: customers
+    row_key: customer_id
+    entities: {customer: customer_id}
+  buyers:
+    table: buying_customers
+    row_key: customer_id
+    entities: {customer: customer_id}
+  channels:
+    table: channels
+    row_key: channel
+    dimensions:
+      marketing_group: {column: marketing_group, type: string}
+  orders:
+    table: orders
+    row_key: order_id
+    entities: {customer: customer_id}
+    time: placed_at
+    dimensions:
+      channel: {column: channel, type: string}
+    joins:
+      channel_details: {source: channels, foreign_key: channel}
+populations:
+  eligible_customers: {source: customers, entity: customer}
+  paying_customers: {source: buyers, entity: customer}
+filters:
+  web_only:
+    source: orders
+    conditions:
+      - {dimension: channel, op: eq, value: web}
+  store_only:
+    source: orders
+    conditions:
+      - {dimension: channel, op: in, value: [store]}
+measures:
+  revenue: {source: orders, sum: gross_amount}
+  refunds: {source: orders, sum: refunded_amount}
+  order_count: {source: orders, count_rows: true}
+  web_revenue: {source: orders, sum: gross_amount, filter: web_only}
+  store_refunds: {source: orders, sum: refunded_amount, filter: store_only}
+metrics:
+  average_order_value: {formula: revenue / order_count}
+  net_revenue: {formula: revenue - refunds}
+  scaled_net_revenue: {formula: 2 * net_revenue}
+  web_revenue_per_order: {formula: web_revenue / order_count}
+  revenue_less_store_refunds: {formula: revenue - store_refunds}
+  revenue_per_customer: {per_unit_mean: {measure: revenue, population: eligible_customers}}
+  revenue_per_buyer: {per_unit_mean: {measure: revenue, population: paying_customers}}
+  purchase_conversion: {conversion: {event_count: order_count, population: eligible_customers}}
+  buyer_conversion: {conversion: {event_count: order_count, population: paying_customers}}

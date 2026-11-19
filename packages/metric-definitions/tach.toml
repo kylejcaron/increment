@@ -1,0 +1,27 @@
+layers = ["core"]
+layers_explicit_depends_on = true
+source_roots = ["src"]
+root_module = "ignore"
+exact = true
+ignore_type_checking_imports = true
+forbid_circular_dependencies = true
+
+[[modules]]
+path = "metric_definitions"
+layer = "core"
+depends_on = ["metric_definitions.formula", "metric_definitions.loader", "metric_definitions.models"]
+
+[[modules]]
+path = "metric_definitions.formula"
+layer = "core"
+depends_on = []
+
+[[modules]]
+path = "metric_definitions.loader"
+layer = "core"
+depends_on = ["metric_definitions.models"]
+
+[[modules]]
+path = "metric_definitions.models"
+layer = "core"
+depends_on = ["metric_definitions.formula"]
