@@ -161,11 +161,6 @@ values.
 
 ### Current changes
 
-- The optional Python assignment API and locally packed `@increment/assignment`
-  use one [v1 protocol](reference/assignment-protocol-v1.md) for enrollment, arms,
-  mutually exclusive layers and named holdouts. Neither records exposure nor
-  changes analysis of assignments produced by another system.
-
 - `increment.estimators.RelativeLiftPrior` explicitly declares a Normal,
   zero-centered Student-t, or Normal-mixture distribution on fractional
   relative lift. Eligible randomized fixed-horizon results use a direct
@@ -352,6 +347,11 @@ values.
   CSV, p-values and decisions are unchanged; dashboard tables still omit Result.
   The CUPED example compares estimated variance using absolute standard errors,
   not relative-lift interval widths, and labels sampling confidence correctly.
+
+- The optional Python assignment API and locally packed `@increment/assignment`
+  use one [v1 protocol](reference/assignment-protocol-v1.md) for enrollment, arms,
+  mutually exclusive layers and named holdouts. Neither records exposure nor
+  changes analysis of assignments produced by another system.
 
 ### Earlier release notes
 
