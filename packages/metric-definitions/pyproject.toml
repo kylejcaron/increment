@@ -12,7 +12,7 @@ requires = ["hatchling>=1.33.0"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-dev = ["pytest>=9,<10", "ruff>=0.17.3", "ty>=0.0.64,<0.0.65", "types-PyYAML"]
+dev = ["pytest>=9,<10", "ruff>=0.17.3", "tach>=0.35.3,<0.36", "ty>=0.0.64,<0.0.65", "types-PyYAML"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/metric_definitions"]
