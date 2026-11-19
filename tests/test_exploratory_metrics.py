@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import pickle
 import warnings
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -17,6 +18,7 @@ import pandas as pd
 import pytest
 
 from increment import (
+    CupedCovariateBinding,
     Experiment,
     View,
     _dashboard_capture,
@@ -974,6 +976,30 @@ def test_offline_preflight_checks_cluster_compatibility_of_added_quantile(wareho
         (executed.value.code, executed.value.context)
     ]
     assert not runnable(restored, "revenue")["randomized.unadjusted"].static_refusals
+
+
+def test_offline_preflight_keeps_preperiod_covariates_for_added_metric(warehouse):
+    experiment, reader = _analysis(warehouse, AnalysisPlan(primary="revenue"))
+    method = Method(
+        name="cuped",
+        variance_reduction="cuped",
+        covariates=(
+            CupedCovariateBinding(
+                name="pre_spend",
+                kind="continuous",
+                measure={"fact": "purchase", "aggregation": "sum", "window_days": 7},
+            ),
+        ),
+    )
+    selected = replace(
+        experiment, request_options={"metrics": [], "decision_method": method.model_dump()}
+    )
+    with reader:
+        result = run_views(selected, reader, exploratory_metrics=["revenue_cuped"])
+    assert result.cells and any(cell.summary is not None for cell in result.cells)
+
+    restored = Experiment.from_json(selected.to_json())
+    assert not runnable(restored, "revenue_cuped")["randomized.cuped"].static_refusals
 
 
 @pytest.mark.slow

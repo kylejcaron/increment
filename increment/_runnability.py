@@ -520,6 +520,18 @@ def _request_config(
     )
     if exploratory_metric is not None:
         metrics.append(exploratory_metric)
+        experiment = declaration.get("experiment")
+        periods = experiment.get("n_pre_periods") if isinstance(experiment, Mapping) else None
+        base += resolve_configs(
+            (exploratory_metric,),
+            None,
+            None,
+            methods=None,
+            prior=None,
+            covariate_available_metrics=(exploratory_metric.name,)
+            if isinstance(periods, int) and periods > 0
+            else (),
+        )
     overrides = {} if operation in _VALUE_OPERATIONS else values
     base_names = {config.metric.name for config in base}
     missing = tuple(metric for metric in metrics if metric.name not in base_names)
@@ -528,8 +540,6 @@ def _request_config(
         if missing
         else base
     )
-    if exploratory_metric is not None:
-        base = request_base
     configs = overlay_configs(
         metrics,
         request_base,
