@@ -6,19 +6,45 @@ Design proposal, not a released API or implementation authorization. Baseline: `
 
 | Origin | Design scope | Disposition |
 |---|---|---|
-| Owner: “custom estimators for users to be able to create and run in a similar pattern” | Write a Python method outside Increment; run it on the same experiment as a built-in. | Core workflow. Not a request to add a catalog of estimators. |
-| Owner: “support as of and daily views optionally” and “what about a mann whitney test” | Estimators and test-only methods; the same implementation on an eligible whole, daily or as-of slice. | Core workflow. Dates select outcomes; they do not change stopping guarantees. |
-| Owner: “over a base class child class pattern?” and “decide the right scope and how it interacts with everything else” | Evaluate the author interface, statistical boundaries, ingress, storage and presentation. | Design discretion, not approval of every proposal in the discussion. |
-| Design decision under delegated scope | Trusted Python in process; labelled unit data; one example base class and one method to override; no authority over decisions. | Compare this candidate against prepared rows in a private dataframe spike. No stable public API or implementation approved. |
+| Owner asked whether custom methods are useful, and “decide the right scope” | Evaluate user-written methods on randomized readouts. | Design question, not a request to ship a feature or the narrow candidate below. |
+| Owner asked about “as of and daily views optionally” and “a mann whitney test” | Use a rank test across calendar views as a concrete example. | Prototype scenario, not an approved metric catalog. |
+| Owner: “go ahead and prototype as part of the spec”; “dont forget about multiplicity and interactions with other features”, “ie sequential” | Prototype a custom comparison; investigate multiple hypotheses and repeated looks. | Private prototype authorized, including separate-family and qualified sequential examples. No production registration. |
+| Owner: “you think that over a base class child class pattern?”, “can you research it to decide?” | Decide which authoring responsibilities are useful. | The two call sites and pooled fit are research controls chosen by the author, not owner requirements or promises to ship two interfaces or an adjusted estimator. |
 | Agent-proposed whole-window and temporal breakout comparisons | Segment support is a separate acquisition/eligibility problem. | Excluded, including when a source already declares a breakout. |
 | Agent-proposed warehouse and artifact delivery | Getting warehouse data to Python introduces scan, memory and privacy costs not demonstrated by a frame probe. | Excluded: no warehouse/artifact implementation or release gate. Classify these paths honestly. |
-| Agent-proposed portable code, dashboard, planning and stopping hooks | Would turn reporting code into a registered inference procedure. | Excluded, not backlog commitments. |
+| Agent-proposed portable code, dashboard, planning and stopping hooks | Would extend reporting into other subsystems. | Excluded from production scope; a private statistical experiment does not add a stopping hook. |
 
-**Decision: test the prepared slice before committing to the plug-in.** The product candidate is a reporting-only companion to `run`: the analyst's method and the standard result share the same eligible units, cutoff and capture. They can answer different questions; “sensitivity” is inappropriate if one estimates mean lift and the other tests equality of distributions. First compare two private dataframe sketches on the same slices: a function called by the analyst versus the integrated call below. Do not ship both. If the integrated version does not remove a demonstrated source of error or repeated alignment work, stop at prepared rows; if ordinary dataframe code suffices, ship neither.
+**Question tested:** when does a runner-managed comparison improve on an ordinary Python function using the same prepared rows? Both forms can report a rank comparison alongside a built-in mean difference; the two statistics need not answer the same question. Only the former introduces a new extension framework. See the measured verdict below.
 
-## User path and statistical contract
+**Two inference questions are separate from the reporting interface.** (1) Can predeclared custom hypotheses form their own corrected fixed-look family? (2) Can a custom procedure with a different evidence type support repeated, outcome-dependent stopping? The private experiments address both positively under explicit conditions; merely labelling a method “sequential” does neither. They do not change built-in family membership. The interaction exclusions below apply to the ordinary fixed-look reporting callback, not to every conceivable custom construction.
 
-Proposed spelling (`UnitComparison` and result types in `increment.estimators`, not the package root):
+## Prototype verdict
+
+**Prioritize prepared unit rows; do not stabilize a plug-in base class or give custom callbacks decision authority yet.** On this fixture a thin runner bought one thing: the package, rather than the analyst, keyed results to arms and dates. It did not save a data read, improve an estimate, or make inference valid. An ordinary callable sufficed for both examples. If users repeatedly need a combined readout, a wrapper that accepts a named callable and owns those keys is enough to investigate next. A compulsory subclass hierarchy has not earned its cost.
+
+For a notebook author, the proposed boundary is `for cell in prepared_slices(experiment, reader, metric="orders", views=views): result = my_method(cell.units, cell.control, cell.treatments)`. The cell identifies its date, grain and population. Increment owns who belongs in that table; the author owns what their statistic means. On an already clean unit-summary table the analyst can just call SciPy. The candidate earns its keep on sparse panels, where reproducing the cohort for each date is real work.
+
+Run from the checkout: `PYTHONPATH=. .venv/bin/python docs/development/prototypes/comparison_report.py`. The [plan](custom-comparisons-prototype-plan.md) separates this evidence from a future release. See the [authoring call sites](prototypes/custom_workflows.py), [custom evidence experiment](prototypes/custom_evidence.py) and [derivation and integration constraints](prototypes/custom-evidence-sources.md).
+
+**Authoring.** On the same sparse panel, each path prepared seven slices and called each of two methods seven times. All 14 arm/view/date results agreed; two absent-arm rows stayed unavailable. Selecting only as-of retained the same six cells with no duplicates or holes. Summary totals agreed with panel totals. The wrapper moved 14 alignment lookups from caller to runner. The pooled adjusted-mean example produced −1 for each treatment on the second day; two separate pairwise regressions would have returned 0 and −2. The adapter uses a frozen Arrow input and independently checked eligible rows, not a shared production capture. No analyst was timed or asked for a preference.
+
+**Multiplicity and sequential inference.** A family correction controls comparisons across hypotheses, not repeated looks over time. Predeclare two sharp no-effect hypotheses, a 5% familywise budget, fair independent assignment, and joint final binary outcomes in a fixed reveal order. A custom exact binomial test can spend 2.5% per hypothesis at one planned look. A different custom method uses a nonnegative betting process and a threshold of 40 on each stream; its guarantee covers both members and every stopping time under the stated assumptions. Neither is a sequential version of Mann–Whitney.
+
+| Rule | Assignment paths with any false rejection, out of 8,192 |
+|---|---:|
+| Fixed-look Bonferroni, used at the planned 13th unit | 184 (2.25%) |
+| The same Bonferroni p-value rule, checked after every unit | 580 (7.08%) |
+| Time-uniform betting rule with the same family budget | 56 (0.68%) |
+
+These are exact frequencies for **one fixed joint-null outcome schedule**, not general operating characteristics or a power comparison. General validity of the betting rule comes from its martingale construction, not from the 0.68%. Replay matched uninterrupted monitoring; the private monitor refused rewritten, duplicate, unfinalized or unregistered data and a fixed-look Mann–Whitney p-value. The latched first-crossing rule is for this separate familywise procedure; a peak e-value must not be passed to built-in e-BH.
+
+**Decision on integration.** Ordinary callbacks remain reports. A fixed-look custom family is technically feasible with registered hypotheses, valid pointwise p-values and a suitable correction. A custom sequential family is feasible for a *specific* evidence process with a reveal law and verified continuation. Neither belongs in the existing decision family by declaration alone. In the actual built-in controls, BH and sequential e-BH both kept the two registered secondaries; at 48 and 96 finalized units, e-BH selected none and then one. Those were separate prefix runs. This experiment never injected custom evidence into Increment. Its `raw_likelihood_v1` certificate is not a certificate for our sign bet, and its secondary FDR rule is not the prototype's FWER rule. Launching when **either** of two separate families rejects would require a new joint error allocation.
+
+**Interaction coverage.** Measured: independently assigned scalar outcomes on summary/panel, ties, zero activity, staggered entry, pooled baseline adjustment, multiple arms, full calendar views, separate fixed/sequential families and immutable joint prefixes. Not measured: skipped outcomes, estimated winsorization, ratio denominators, cluster/switchback dependence, triggered populations, segment selection, warehouse/artifact capture, dashboards, calibration of user-supplied intervals, persistence or power. Those remain the proposed boundaries in the table below, **not implemented refusals**. A pre-exposure covariate can be legitimate while a coefficient refit using future observations is not predictable. Neither a rank statistic nor a repeated-look interval inherits CUPED, selected-interval/FCR or stopping guarantees from a neighboring built-in row.
+
+## Alternative evaluated: integrated reporting contract (not recommended for release)
+
+The original subclass proposal is shown for contrast with the two runnable call sites above. None of the names below is public. The routing, interaction and promotion criteria that follow describe what an integrated implementation would have to do, not what the prototype implements.
 
 <!-- skip: next "illustrates a proposed API that is not implemented" -->
 
