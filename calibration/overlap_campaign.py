@@ -8,9 +8,10 @@ import platform
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from fractions import Fraction
 from hashlib import sha256
 from itertools import repeat
-from math import sqrt
+from math import inf, nextafter, sqrt
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Protocol, TypedDict
@@ -44,7 +45,9 @@ from increment.semantics.overlap import (
 from tests.oracles.overlap_design import (
     RegressionBatch,
     contrast_matrix,
+    exact_contrast_rows,
     occupancy_probability,
+    reference_support_violations,
     regress_raw_trials,
 )
 
@@ -64,7 +67,12 @@ _INTERACTION = 7
 _ROLE_JOINT = (0, 1)
 _SCALE = np.asarray((1.0, 1.5, 1.0, 2.0))
 _DIRECTION = np.asarray(((1,) * 7 + (0,), (-1,) * 8, (0,) * 8))
-_BOUNDARY = np.broadcast_to(np.asarray((0.0, 0.25, 0.0))[:, None], (3, 8))
+_THRESHOLDS = (Fraction(), Fraction(1, 4), Fraction())
+_BOUNDARY = np.broadcast_to(np.asarray(_THRESHOLDS, dtype=float)[:, None], (3, 8))
+_ZERO_MEANS = (Fraction(),) * 4
+_MIXED_MEANS = tuple(map(Fraction, ("0", "0.3", "0.2", "0.8")))
+_MIXED_RISK_INCREMENTS = tuple(map(Fraction, ("0", "0.02", "0.01", "0.04")))
+_MIXED_COST = (Fraction(),) * 3 + (_THRESHOLDS[1],)
 
 
 @dataclass(frozen=True)
@@ -75,7 +83,7 @@ class _Regime:
     weights_b: tuple[int, int]
     dense: bool = True
     skew: bool = False
-    risk: float | None = None
+    risk: Fraction | None = None
 
     @property
     def a(self) -> float:
@@ -90,9 +98,9 @@ _REGIMES = (
     _Regime("dense_normal", 512, (1, 1), (1, 1)),
     _Regime("unequal_normal", 4096, (3, 1), (1, 3)),
     _Regime("dense_skew", 4096, (1, 1), (1, 1), skew=True),
-    _Regime("dense_binary", 4096, (1, 1), (1, 1), risk=0.20),
+    _Regime("dense_binary", 4096, (1, 1), (1, 1), risk=Fraction("0.20")),
     _Regime("sparse_joint", 48, (9, 1), (4, 1), dense=False),
-    _Regime("rare_binary", 512, (3, 1), (1, 3), dense=False, risk=0.005),
+    _Regime("rare_binary", 512, (3, 1), (1, 3), dense=False, risk=Fraction("0.005")),
 )
 
 
@@ -108,12 +116,27 @@ class _Case:
 
     @property
     def means(self) -> NDArray[np.float64]:
-        k = (0.0, 0.0, 0.0, 0.25) if self.mixed else (0.0,) * 4
-        if self.regime.risk is None:
-            m = np.asarray((0.0, 0.3, 0.2, 0.8) if self.mixed else (0.0,) * 4)
+        cost = np.asarray(_MIXED_COST if self.mixed else _ZERO_MEANS, dtype=float)
+        risk = self.regime.risk
+        if risk is None:
+            value = np.asarray(_MIXED_MEANS if self.mixed else _ZERO_MEANS, dtype=float)
         else:
-            m = self.regime.risk + np.asarray((0.0, 0.02, 0.01, 0.04) if self.mixed else (0.0,) * 4)
-        return np.column_stack((m, k, m))
+            # Keep the generator's original binary64 addition of risk and increment.
+            value = float(risk) + np.asarray(
+                _MIXED_RISK_INCREMENTS if self.mixed else _ZERO_MEANS, dtype=float
+            )
+        return np.column_stack((value, cost, value))
+
+    @property
+    def cell_means(self) -> tuple[tuple[Fraction, ...], ...]:
+        cost = _MIXED_COST if self.mixed else _ZERO_MEANS
+        risk = self.regime.risk
+        if risk is None:
+            value = _MIXED_MEANS if self.mixed else _ZERO_MEANS
+        else:
+            increments = _MIXED_RISK_INCREMENTS if self.mixed else _ZERO_MEANS
+            value = tuple(risk + increment for increment in increments)
+        return tuple(zip(value, cost, value, strict=True))
 
 
 class CampaignRow(PlanningRow, Protocol):
@@ -399,6 +422,7 @@ def _reference_trials(
     data = _allocate_batch(_REPLICATIONS)
     rng, means, regime = _rng(stream), case.means, case.regime
     binary = () if regime.risk is None else (0, 2)
+    invalid_ready = invalid_approvals = 0
     for first in range(0, _REPLICATIONS, _BATCH):
         n = min(_REPLICATIONS - first, _BATCH)
         shape = (n, regime.n)
@@ -420,6 +444,16 @@ def _reference_trials(
             direction=_DIRECTION,
             alpha=_ALPHA,
         )
+        bad_ready, bad_approvals = reference_support_violations(
+            assignments,
+            observations,
+            contrast=contrast,
+            binary_metrics=binary,
+            ready=ref.ready,
+            favorable=ref.favorable,
+        )
+        invalid_ready += bad_ready
+        invalid_approvals += bad_approvals
         batch = slice(first, first + n)
         for dest, src in zip(
             (data.counts, data.estimate, data.se, data.lo, data.hi, data.favorable, data.ready),
@@ -431,11 +465,67 @@ def _reference_trials(
             if reason not in data.reasons:
                 data.reasons[reason] = np.zeros_like(data.ready)
             data.reasons[reason][batch] = mask
-    return _Trials(data, data.favorable[:, _ROLE_JOINT, _JOINT].all(axis=-1), 0, 0)
+    joint = data.favorable[:, _ROLE_JOINT, _JOINT].all(axis=-1)
+    return _Trials(data, joint, invalid_ready, invalid_approvals)
 
 
-def _true_null(truth: NDArray[np.float64]) -> NDArray[np.bool_]:
-    return np.where(_DIRECTION == 0, truth == _BOUNDARY, _DIRECTION * (truth - _BOUNDARY) <= 0)
+@dataclass(frozen=True)
+class QualificationTruth:
+    """Exact claim values and precomputed comparisons for qualification."""
+
+    values: tuple[tuple[Fraction, ...], ...]
+    null: NDArray[np.bool_]
+    _max_lower: NDArray[np.float64]
+    _min_upper: NDArray[np.float64]
+
+    @classmethod
+    def from_cell_means(
+        cls,
+        means: Sequence[Sequence[Fraction]],
+        *,
+        weights_a: tuple[int, int],
+        weights_b: tuple[int, int],
+    ) -> QualificationTruth:
+        """Classify the registered directions against exact contrast values."""
+        a = Fraction(weights_a[1], sum(weights_a))
+        b = Fraction(weights_b[1], sum(weights_b))
+        values = exact_contrast_rows(means, a, b)
+        null = np.empty(_DIRECTION.shape, dtype=np.bool_)
+        max_lower = np.empty(_DIRECTION.shape)
+        min_upper = np.empty(_DIRECTION.shape)
+        for j, (row, threshold) in enumerate(zip(values, _THRESHOLDS, strict=True)):
+            for c, truth in enumerate(row):
+                direction = int(_DIRECTION[j, c])
+                difference = truth - threshold
+                null[j, c] = difference == 0 if direction == 0 else direction * difference <= 0
+                nearest = float(truth)
+                # A finite float band contains an exact value iff its lower bound
+                # is at most the floor float and its upper bound at least the ceiling.
+                max_lower[j, c] = nearest if nearest <= truth else nextafter(nearest, -inf)
+                min_upper[j, c] = nearest if nearest >= truth else nextafter(nearest, inf)
+        return cls(values, null, max_lower, min_upper)
+
+    @classmethod
+    def from_empirical_vectors(
+        cls,
+        vectors: NDArray[np.float64],
+        *,
+        weights_a: tuple[int, int],
+        weights_b: tuple[int, int],
+    ) -> QualificationTruth:
+        """Treat each observed binary64 outcome as its exact represented value."""
+        means = tuple(
+            tuple(
+                sum((Fraction(float(x)) for x in column), Fraction()) / len(column)
+                for column in cell.T
+            )
+            for cell in vectors
+        )
+        return cls.from_cell_means(means, weights_a=weights_a, weights_b=weights_b)
+
+    def coverage(self, lo: NDArray[np.float64], hi: NDArray[np.float64]) -> NDArray[np.bool_]:
+        """Return simultaneous coverage of the exact claims by finite band bounds."""
+        return ((lo <= self._max_lower) & (self._min_upper <= hi)).all(axis=(1, 2))
 
 
 class _Rate(TypedDict):
@@ -449,23 +539,24 @@ def _rate(mask: NDArray[np.bool_]) -> _Rate:
 
 
 def _claim_summary(
-    trials: RegressionBatch, truth: NDArray[np.float64], j: int, c: int
+    trials: RegressionBatch, truth: QualificationTruth, j: int, c: int
 ) -> dict[str, object]:
+    value = truth.values[j][c]
     estimates, standard_errors = trials.estimate[:, j, c], trials.se[:, j, c]
     points = estimates[np.isfinite(estimates)]
     fitted = standard_errors[np.isfinite(standard_errors)]
     return {
         "metric": _NAMES[j],
         "contrast": CONTRAST_IDS[c],
-        "truth": float(truth[j, c]),
+        "truth": float(value),
         "threshold": float(_BOUNDARY[j, c]),
-        "false_claim": bool(_true_null(truth)[j, c]),
+        "false_claim": bool(truth.null[j, c]),
         "n_point": len(points),
         "n_fit": len(fitted),
         "n_decision_ready": int(trials.ready[:, j, c].sum()),
         "n_abstain": _REPLICATIONS - int(trials.ready[:, j, c].sum()),
         "favorable": _rate(trials.favorable[:, j, c]),
-        "bias_given_point": float(points.mean() - truth[j, c]) if len(points) else None,
+        "bias_given_point": float(Fraction(float(points.mean())) - value) if len(points) else None,
         "empirical_sd_given_point": float(points.std(ddof=1)) if len(points) >= 2 else None,
         "mean_se_given_fit": float(fitted.mean()) if len(fitted) else None,
         "se_quantiles_given_fit_05_50_95": np.quantile(fitted, (0.05, 0.50, 0.95)).tolist()
@@ -496,11 +587,11 @@ class _Summary(TypedDict):
     claims: list[dict[str, object]]
 
 
-def _summarize(trials: _Trials, truth: NDArray[np.float64]) -> _Summary:
+def _summarize(trials: _Trials, truth: QualificationTruth) -> _Summary:
     d = trials.regression
-    null = _true_null(truth)
+    null = truth.null
     all_issued = (np.isfinite(d.lo) & np.isfinite(d.hi)).all(axis=(1, 2))
-    cover = ((d.lo <= truth) & (truth <= d.hi)).all(axis=(1, 2))
+    cover = truth.coverage(d.lo, d.hi)
     return {
         "attempts": _REPLICATIONS,
         "invalid_ready": trials.invalid_ready,
@@ -651,9 +742,10 @@ def _run_case(
     plan = _plan(case)
     seeds = case.stream.spawn(5)
     contrast = contrast_matrix(case.regime.a, case.regime.b)
-    parametric_truth = case.means.T @ contrast.T
+    weights = {"weights_a": case.regime.weights_a, "weights_b": case.regime.weights_b}
+    parametric_truth = QualificationTruth.from_cell_means(case.cell_means, **weights)
     empirical = _empirical_law(case, seeds[2])
-    empirical_truth = empirical.mean(axis=1).T @ contrast.T
+    empirical_truth = QualificationTruth.from_empirical_vectors(empirical, **weights)
     seed = int(seeds[3].generate_state(1, dtype=np.uint64)[0]) & MAX_EXACT_INTEGER
     scenario = prepare_overlap_scenario(
         plan,

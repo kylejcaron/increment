@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from itertools import product
 from math import exp, hypot, lgamma, log, log1p, sqrt
 
@@ -85,19 +86,40 @@ def contrast_matrix(a: float, b: float) -> NDArray[np.float64]:
     """Build contrasts from the design matrix independently of the readout."""
     # Saturated design columns are intercept, A, B, A*B, not the cell means.
     design = np.asarray(((1, 0, 0, 0), (1, 1, 0, 0), (1, 0, 1, 0), (1, 1, 1, 1)))
-    questions = np.asarray(
-        (
-            (0, 1, 0, b),
-            (0, 0, 1, a),
-            (0, 1, 0, 0),
-            (0, 1, 0, 1),
-            (0, 0, 1, 0),
-            (0, 0, 1, 1),
-            (0, 1, 1, 1),
-            (0, 0, 0, 1),
-        )
-    )
+    questions = np.asarray(_contrast_questions(a, b))
     return questions @ np.linalg.inv(design)
+
+
+def _contrast_questions(
+    a: float | Fraction, b: float | Fraction
+) -> tuple[tuple[int | float | Fraction, ...], ...]:
+    return (
+        (0, 1, 0, b),
+        (0, 0, 1, a),
+        (0, 1, 0, 0),
+        (0, 1, 0, 1),
+        (0, 0, 1, 0),
+        (0, 0, 1, 1),
+        (0, 1, 1, 1),
+        (0, 0, 0, 1),
+    )
+
+
+def exact_contrast_rows(
+    means: Sequence[Sequence[Fraction]], a: Fraction, b: Fraction
+) -> tuple[tuple[Fraction, ...], ...]:
+    """Apply the saturated-group regression questions to exact cell means."""
+    rows = []
+    for base, a_only, b_only, both in zip(*means, strict=True):
+        # Inverse of the integer design above: intercept, A, B, A*B.
+        coefs = (base, a_only - base, b_only - base, both - a_only - b_only + base)
+        rows.append(
+            tuple(
+                sum((Fraction(q) * x for q, x in zip(question, coefs, strict=True)), Fraction())
+                for question in _contrast_questions(a, b)
+            )
+        )
+    return tuple(rows)
 
 
 @dataclass(frozen=True)
@@ -128,13 +150,24 @@ def regress_raw_trials(
     reps, units, metrics = outcomes.shape
     slots = (4 * np.arange(reps)[:, None] + assignments).ravel()
     counts = np.bincount(slots, minlength=4 * reps).reshape(reps, 4)
+    divisor = np.maximum(1, counts.ravel())
+    first = np.full(4 * reps, reps * units, dtype=np.intp)
+    np.minimum.at(first, slots, np.arange(reps * units))
+    occupied = first < reps * units
+    first_observed = first[occupied]
     means = np.empty((reps, metrics, 4))
     m2 = np.empty_like(means)
     for metric in range(metrics):
         observations = outcomes[..., metric].reshape(reps * units)
-        total = np.bincount(slots, observations, minlength=4 * reps).reshape(reps, 4)
-        means[:, metric] = total / np.maximum(1, counts)
-        residual = observations - means[:, metric].reshape(-1)[slots]
+        # Subtract an actual observation before computing each group mean.
+        # An exactly constant group then has exactly zero residuals.
+        origin = np.zeros(4 * reps)
+        origin[occupied] = observations[first_observed]
+        offsets = observations - origin[slots]
+        total = np.bincount(slots, offsets, minlength=4 * reps)
+        mean_offset = total / divisor
+        means[:, metric] = (origin + mean_offset).reshape(reps, 4)
+        residual = offsets - mean_offset[slots]
         m2[:, metric] = np.bincount(slots, residual**2, minlength=4 * reps).reshape(reps, 4)
     support = contrast != 0
     empty = _any_required(counts[:, None, :] == 0, support)
@@ -182,6 +215,33 @@ def regress_raw_trials(
             "sparse_binary_events": sparse,
         },
     )
+
+
+def reference_support_violations(
+    assignments: NDArray[np.int64],
+    outcomes: NDArray[np.float64],
+    *,
+    contrast: NDArray[np.float64],
+    binary_metrics: Iterable[int],
+    ready: NDArray[np.bool_],
+    favorable: NDArray[np.bool_],
+) -> tuple[int, int]:
+    """Audit readiness and approvals against realized support, without using the fit."""
+    reps, units, metrics = outcomes.shape
+    slots = (4 * np.arange(reps)[:, None] + assignments).ravel()
+    counts = np.bincount(slots, minlength=4 * reps)
+    values = outcomes.reshape(reps * units, metrics)
+    lower = np.full((4 * reps, metrics), np.inf)
+    upper = np.full((4 * reps, metrics), -np.inf)
+    np.minimum.at(lower, slots, values)
+    np.maximum.at(upper, slots, values)
+    supported = (counts[:, None] >= 30) & (lower < upper)
+    for metric in binary_metrics:
+        successes = np.bincount(slots[values[:, metric] == 1], minlength=4 * reps)
+        supported[:, metric] &= (successes >= 10) & (counts - successes >= 10)
+    cell_support = supported.reshape(reps, 4, metrics).transpose(0, 2, 1)
+    unsupported = _any_required(~cell_support, contrast != 0)
+    return int((ready & unsupported).sum()), int((favorable & unsupported).sum())
 
 
 def _any_required(mask: NDArray[np.bool_], support: NDArray[np.bool_]) -> NDArray[np.bool_]:

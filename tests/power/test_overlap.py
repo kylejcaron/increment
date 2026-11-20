@@ -3,7 +3,7 @@
 import json
 from decimal import Decimal
 from fractions import Fraction
-from math import sqrt
+from math import inf, nextafter, sqrt
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,7 @@ import polars as pl
 import pyarrow as pa
 import pytest
 
+from calibration.overlap_campaign import QualificationTruth
 from increment.errors import CodedError
 from increment.power.overlap import prepare_overlap_scenario
 from increment.semantics.overlap import CellId, OverlapPlan
@@ -20,6 +21,7 @@ from tests.oracles.overlap_design import (
     contrast_matrix,
     occupancy_probability,
     planned_se_at_counts,
+    reference_support_violations,
     regress_raw_trials,
     two_point_event_probability,
 )
@@ -188,6 +190,101 @@ def test_raw_regression_reference_uses_full_interaction():
     assert ref.ready[0, 0, 7] and ref.favorable[0, 0, 7]
 
 
+def test_qualification_truth_preserves_rare_binary_nulls_and_guardrail_boundary():
+    risk = Fraction("0.005")
+    weights_a, weights_b = (3, 1), (1, 3)
+    global_null = QualificationTruth.from_cell_means(
+        ((risk, Fraction(), risk),) * 4, weights_a=weights_a, weights_b=weights_b
+    )
+    assert global_null.null[[0, 2], :].all()
+    assert global_null.values[0][0] == 0
+
+    mixed_null = QualificationTruth.from_cell_means(
+        tuple(
+            (risk + Fraction(increment), Fraction(cost), risk + Fraction(increment))
+            for increment, cost in zip(
+                ("0", ".02", ".01", ".04"), ("0", "0", "0", ".25"), strict=True
+            )
+        ),
+        weights_a=weights_a,
+        weights_b=weights_b,
+    )
+    assert not mixed_null.null[0, 6]
+    assert mixed_null.values[1][6] == Fraction(1, 4)
+    assert mixed_null.null[1, 6]
+    assert not mixed_null.null[1, 0]  # Marginal cost stays inside the margin.
+
+
+def test_empirical_qualification_uses_exact_mean_before_boundary_and_coverage_checks():
+    law = np.zeros((4, 4, 3))
+    law[3, :, 1] = 0.25
+    law[3, 0, 1] = below = nextafter(0.25, -inf)
+    truth = QualificationTruth.from_empirical_vectors(law, weights_a=(3, 1), weights_b=(1, 3))
+    exact = (Fraction(below) + 3 * Fraction(1, 4)) / 4
+    assert truth.values[1][6] == exact
+    assert float(exact) == 0.25
+    assert not truth.null[1, 6]
+
+    lo = np.full((2, 3, 8), -1.0)
+    hi = np.full((2, 3, 8), 1.0)
+    lo[0, 1, 6] = hi[1, 1, 6] = 0.25
+    lo[1, 1, 6] = below
+    assert truth.coverage(lo, hi).tolist() == [False, True]
+
+
+def test_raw_regression_does_not_fit_a_constant_non_dyadic_cell():
+    assignments = np.repeat(np.arange(4, dtype=np.int64), 32)[None, :]
+    outcomes = np.tile((-1.0, 1.0), 64)[None, :, None]
+    outcomes[0, :32, 0] = 0.1
+    ref = regress_raw_trials(
+        assignments,
+        outcomes,
+        contrast=contrast_matrix(0.25, 0.75)[[6]],
+        binary_metrics=(),
+        raw_boundary=np.zeros((1, 1)),
+        direction=np.zeros((1, 1), dtype=np.int64),
+        alpha=0.05,
+    )
+    assert np.isnan(ref.se[0, 0, 0]) and np.isnan(ref.lo[0, 0, 0])
+    assert ref.estimate[0, 0, 0] == -0.1
+    assert ref.reasons["zero_cell_variance"][0, 0, 0]
+    assert not ref.ready[0, 0, 0]
+
+
+def test_reference_support_audit_catches_approvals_based_on_points():
+    assignments = np.repeat(np.arange(4, dtype=np.int64), (32, 32, 29, 32))[None, :]
+    labels = assignments[0]
+    row_in_cell = np.arange(labels.size) - np.array((0, 32, 64, 93))[labels]
+    continuous = 5 * labels + np.where(labels == 3, 0, row_in_cell % 2)
+    binary = row_in_cell < np.asarray((10, 20, 15, 23))[labels]
+    observations = np.column_stack((continuous, binary)).astype(float)[None, :, :]
+    contrasts = contrast_matrix(0.25, 0.75)[[2, 4, 6]]
+    ref = regress_raw_trials(
+        assignments,
+        observations,
+        contrast=contrasts,
+        binary_metrics=(1,),
+        raw_boundary=np.zeros((2, 3)),
+        direction=np.zeros((2, 3), dtype=np.int64),
+        alpha=0.05,
+    )
+    # A permissive policy incorrectly treats any nonzero fitted point as an approval.
+    reported_ready = np.isfinite(ref.estimate)
+    reported_favorable = reported_ready & (ref.estimate != 0)
+    assert reported_favorable.all()
+    # The two comparisons against 01 are small. Both-versus-neither has a
+    # constant continuous group and only nine observed failures in the binary group.
+    violations = reference_support_violations(
+        assignments,
+        observations,
+        contrast=contrasts,
+        binary_metrics=(1,),
+        ready=reported_ready,
+        favorable=reported_favorable,
+    )
+    assert violations == (4, 4)
+
+
 @pytest.mark.parametrize(
     "defect", ["absent_cell", "empty_cell", "extra_column", "binary_fraction", "nonfinite"]
 )
@@ -222,6 +319,48 @@ def test_binary_validation_precedes_float_rounding(plan, outcomes):
     assert caught.value.context == {
         "field": "cell_outcomes",
         "reason": "nonbinary_metric",
+        "cell": "11",
+    }
+
+
+@pytest.mark.parametrize("dtype", ["int64", "uint64", "decimal"])
+def test_empirical_values_are_not_rounded_before_scenario_identity(plan, outcomes, dtype):
+    if dtype == "int64":
+        exact = 2**53 + 4
+        source = pd.DataFrame({"value": [exact], "event": [0]})
+        shifted = pd.DataFrame({"value": [exact + 1], "event": [0]})
+    elif dtype == "uint64":
+        exact = 2**63 + 2048
+        source = pl.DataFrame(
+            {"value": [exact], "event": [0]}, schema_overrides={"value": pl.UInt64}
+        )
+        shifted = pl.DataFrame(
+            {"value": [exact + 1], "event": [0]}, schema_overrides={"value": pl.UInt64}
+        )
+    else:
+        exact = Decimal("0.5")
+        decimal_type = pl.Decimal(30, 18)
+        source = pl.DataFrame(
+            {"value": [exact], "event": [0]}, schema_overrides={"value": decimal_type}
+        )
+        shifted = pl.DataFrame(
+            {"value": [Decimal("0.500000000000000001")], "event": [0]},
+            schema_overrides={"value": decimal_type},
+        )
+    native: dict[CellId, pd.DataFrame | pl.DataFrame] = {**outcomes, "11": source}
+    normalized: dict[CellId, pd.DataFrame] = dict(outcomes)
+    normalized["11"] = pd.DataFrame({"value": [float(exact)], "event": [0]})
+    expected = prepare_overlap_scenario(plan, n_target=0, cell_outcomes=normalized)
+    assert (
+        prepare_overlap_scenario(plan, n_target=0, cell_outcomes=native).scenario_id
+        == expected.scenario_id
+    )
+    native["11"] = shifted
+    with pytest.raises(CodedError) as caught:
+        prepare_overlap_scenario(plan, n_target=0, cell_outcomes=native)
+    assert caught.value.context == {
+        "field": "cell_outcomes",
+        "reason": "inexact_metric",
         "cell": "11",
     }
 

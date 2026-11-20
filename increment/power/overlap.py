@@ -232,7 +232,12 @@ def _empirical_cell(
     except (TypeError, ValueError, OverflowError, NarwhalsError):
         pass
     else:
-        return _validate_vectors(data, cell)
+        if not np.isfinite(data).all():
+            refuse(PLAN_INVALID, field="cell_outcomes", reason="nonfinite_metric", cell=cell)
+        for metric, column in zip(metrics, data.T, strict=True):
+            if metric.kind == "mean" and not _lossless_column(df.get_column(metric.name), column):
+                refuse(PLAN_INVALID, field="cell_outcomes", reason="inexact_metric", cell=cell)
+        return _empirical_distribution(data)
     refuse(PLAN_INVALID, field="cell_outcomes", reason="invalid_dataframe", cell=cell)
 
 
@@ -244,9 +249,25 @@ def _native_frame(frame: IntoDataFrame, cell: CellId) -> nw.DataFrame[IntoDataFr
     refuse(PLAN_INVALID, field="cell_outcomes", reason="invalid_dataframe", cell=cell)
 
 
-def _validate_vectors(data: NDArray[np.float64], cell: CellId) -> _EmpiricalCell:
-    if not np.isfinite(data).all():
-        refuse(PLAN_INVALID, field="cell_outcomes", reason="nonfinite_metric", cell=cell)
+def _lossless_column(source: nw.Series, converted: NDArray[np.float64]) -> bool:
+    dtype = source.dtype
+    if dtype.is_integer():
+        # Python integer/float equality compares values without rounding the integer.
+        return all(
+            int(old) == float(new) for old, new in zip(source.to_list(), converted, strict=True)
+        )
+    if dtype == nw.Decimal:
+        return all(old == float(new) for old, new in zip(source.to_list(), converted, strict=True))
+    if dtype == nw.Float64:
+        # A wider native float can be described as Float64 by a dataframe adapter.
+        native = source.to_numpy()
+        return native.dtype.itemsize <= converted.dtype.itemsize or np.array_equal(
+            native, converted
+        )
+    return True
+
+
+def _empirical_distribution(data: NDArray[np.float64]) -> _EmpiricalCell:
     # Lexicographic unique rows retain their original multiplicities.
     vectors, frequencies = np.unique(data, axis=0, return_counts=True)
     vectors[vectors == 0] = 0  # Both spellings of zero are one outcome.
