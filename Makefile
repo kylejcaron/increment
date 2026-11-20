@@ -47,6 +47,7 @@ lint:
 	uv run ty check tests/typed_builder_calls.py --error-on-warning --warn unused-ignore-comment
 	uv run ruff check --select PLR0915 --ignore-noqa --config 'lint.pylint.max-statements=100' increment/
 	uv run tach check
+	uv run --directory packages/metric-definitions tach check
 	uv run vulture increment vulture_whitelist.py --min-confidence 80
 	uv run python -m scripts.check_docstring_baseline
 	uv run python scripts/check_public_typing.py

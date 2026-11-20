@@ -15,6 +15,8 @@ EXTENSION_LAYERS = {"designs", "observational", "program", "artifacts"}
 
 def _config() -> tuple[dict[str, object], dict[str, list[str]]]:
     tach = tomllib.loads((ROOT / "tach.toml").read_text())
+    shared = tomllib.loads((ROOT / "packages/metric-definitions/tach.toml").read_text())
+    tach["modules"].extend(shared["modules"])
     layer_map = tomllib.loads((ROOT / "tests/layer_map.toml").read_text())
     return tach, layer_map
 

@@ -1,0 +1,38 @@
+[project]
+name = "metric-definitions"
+version = "0.1.0a1"
+description = "Portable definitions for analytical measures and metrics."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+dependencies = ["pydantic>=2.14.2,<3", "pyyaml>=6.0.3,<7"]
+
+[build-system]
+requires = ["hatchling>=1.33.0"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=9,<10", "ruff>=0.17.3", "tach>=0.35.3,<0.36", "ty>=0.0.64,<0.0.65", "types-PyYAML"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/metric_definitions"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"examples/shop" = "share/metric-definitions/examples/shop"
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/examples/shop", "/README.md", "/LICENSE", "/NOTICE", "/pyproject.toml"]
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = ["integration: exercises the filesystem or a query engine"]
+filterwarnings = ["error"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+
+[tool.ty.src]
+include = ["src", "tests"]

@@ -1,0 +1,47 @@
+{
+  "scope": {
+    "start": "2026-01-01T12:00:00",
+    "end": "2026-01-02T12:00:00",
+    "eligible_customers": ["A", "B", "C"],
+    "paying_customers": ["A", "B"],
+    "complete": true
+  },
+  "per_customer": {
+    "A": {"revenue": 60, "refunds": 5, "order_count": 2, "net_revenue": 55},
+    "B": {"revenue": 60, "refunds": 10, "order_count": 1, "net_revenue": 50},
+    "C": {"revenue": 0, "refunds": 0, "order_count": 0, "net_revenue": 0}
+  },
+  "totals": {
+    "revenue": 120,
+    "refunds": 15,
+    "order_count": 3,
+    "average_order_value": 40,
+    "net_revenue": 105,
+    "scaled_net_revenue": 210,
+    "web_revenue_per_order": 26.666666666666668,
+    "revenue_less_store_refunds": 115,
+    "revenue_per_customer": 40,
+    "revenue_per_buyer": 60,
+    "purchase_conversion": 0.6666666666666666,
+    "buyer_conversion": 1
+  },
+  "scenarios": {
+    "zero_orders": {"eligible_customers": ["C"], "average_order_value": null},
+    "duplicate_dimension_key": {
+      "sql": "INSERT INTO channels VALUES ('web', 'duplicate');",
+      "relation": "channels",
+      "key": "channel"
+    },
+    "incomplete_coverage": {
+      "customer": "C",
+      "source": "orders",
+      "end": "2026-01-01T18:00:00",
+      "net_revenue": null
+    },
+    "at_anchor": {
+      "sql": "INSERT INTO orders VALUES (4, 'A', TIMESTAMP '2026-01-01 12:00:00', 'web', 30, 0);",
+      "terrine_order_count_for_a": 3,
+      "increment_order_count_for_a": 2
+    }
+  }
+}
