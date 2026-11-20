@@ -8,16 +8,20 @@ from datetime import datetime
 from hashlib import sha256
 from math import isfinite
 from pathlib import Path
+from string import ascii_lowercase, ascii_uppercase
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import ibis
 import ibis.expr.operations as ops
+import sqlglot
 from duckdb import DuckDBPyConnection
 from duckdb import Error as DuckDBError
 from ibis.backends.duckdb import Backend
 from ibis.common.exceptions import IbisError
 from ibis.expr import datatypes as dt
 from ibis.expr import types as ir
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from increment._assignment_refusals import refuse_assignment_invalid
 from increment._canonical import canonical_json_bytes
@@ -54,15 +58,18 @@ __all__ = ["bind_overlap_warehouse", "capture_overlap_warehouse"]
 
 
 _KEYS = ("study_id", "unit_id")
-_CATALOG = """
-SELECT d.path, c.column_name, c.data_type, c.column_default IS NOT NULL,
-       regexp_matches(t.sql, '[[:space:]]COLLATE[[:space:]]', 'i')
+_ASCII_FOLD = str.maketrans(ascii_uppercase, ascii_lowercase)
+_CATALOG = f"""
+SELECT d.path, d.database_name, t.schema_name, t.table_name, t.sql,
+       c.column_name, c.data_type, c.column_default IS NOT NULL
 FROM system.main.duckdb_databases() AS d
 JOIN system.main.duckdb_tables() AS t USING (database_oid)
 LEFT JOIN system.main.duckdb_columns() AS c
   ON c.table_oid = t.table_oid AND c.database_oid = d.database_oid
  AND c.schema_oid = t.schema_oid AND list_contains(?, c.column_name)
-WHERE d.database_name = ? AND t.schema_name = ? AND t.table_name = ?
+WHERE translate(d.database_name, '{ascii_uppercase}', '{ascii_lowercase}') = ?
+  AND translate(t.schema_name, '{ascii_uppercase}', '{ascii_lowercase}') = ?
+  AND translate(t.table_name, '{ascii_uppercase}', '{ascii_lowercase}') = ?
   AND d.type = 'duckdb' AND NOT d.internal AND NOT t.internal AND NOT t.temporary
 """
 
@@ -146,9 +153,10 @@ def _sources(plan: OverlapPlan, tables: dict[FeedRole, ir.Table]) -> _Sources:
             _unbound()
         if not op.namespace.catalog or not op.namespace.database:
             _unbound()
-        if backend is not None and (backend is not op.source or catalog != op.namespace.catalog):
+        folded_catalog = op.namespace.catalog.translate(_ASCII_FOLD)
+        if backend is not None and (backend is not op.source or catalog != folded_catalog):
             _unbound()
-        backend, catalog = op.source, op.namespace.catalog
+        backend, catalog = op.source, folded_catalog
     assert backend is not None and catalog is not None
     return _Sources(backend, catalog, tables, columns)
 
@@ -176,24 +184,39 @@ def _locators(cursor: DuckDBPyConnection, sources: _Sources) -> dict[FeedRole, s
         namespace = op.namespace
         required = sources.columns[role]
         rows = cursor.execute(
-            _CATALOG, [[col.name for col in required], sources.catalog, namespace.database, op.name]
+            _CATALOG,
+            [
+                [col.name for col in required],
+                sources.catalog,
+                cast("str", namespace.database).translate(_ASCII_FOLD),
+                op.name.translate(_ASCII_FOLD),
+            ],
         ).fetchall()
         if not rows:
             _unbound()
-        path, _, _, _, collated = rows[0]
+        path, catalog, schema, name, ddl, *_ = rows[0]
         if not path or not Path(path).is_absolute() or not Path(path).is_file():
             _unbound()
         # Generated columns share `column_default` with stored defaults in the catalog.
         # Refuse both rather than execute an expression whose volatility is unknown.
-        if collated or any(has_default for _, _, _, has_default, _ in rows):
+        if any(row[7] for row in rows) or not _uncollated_table(ddl):
             _unbound()
-        actual = {name: dtype for _, name, dtype, _, _ in rows if name is not None}
+        actual = {column: dtype for _, _, _, _, _, column, dtype, _ in rows if column is not None}
         _validate_columns(sources, role, table, actual)
         source_ids[role] = "duckdb-table-v1:" + _identity(
             "increment.overlap.duckdb.table.v1",
-            (str(Path(path).resolve()), sources.catalog, namespace.database, op.name),
+            (str(Path(path).resolve()), catalog, schema, name),
         )
     return source_ids
+
+
+def _uncollated_table(ddl: str) -> bool:
+    parsed = sqlglot.parse_one(ddl, dialect="duckdb")
+    return (
+        isinstance(parsed, exp.Create)
+        and parsed.kind == "TABLE"
+        and parsed.find(exp.CollateColumnConstraint) is None
+    )
 
 
 def _validate_columns(
@@ -245,7 +268,21 @@ def _versions(row: Mapping[str, Any]) -> dict[FeedRole, str]:
 
 
 def _query(cursor: DuckDBPyConnection, backend: Backend, expr: ir.Table) -> list[dict[str, Any]]:
-    result = cursor.execute(backend.compile(expr))
+    slots: dict[str, str] = {}
+
+    def bind_text(node: exp.Expr) -> exp.Expr:
+        if not isinstance(node, exp.Literal) or not node.is_string:
+            return node
+        value = cast("str", node.this)
+        name = slots.setdefault(value, f"v{len(slots)}")
+        return exp.Cast(this=exp.Placeholder(this=name), to=exp.DataType.build("VARCHAR"))
+
+    # Ibis reuses AST nodes, so transform the copy to replace every occurrence.
+    query = backend.compiler.to_sqlglot(expr).transform(bind_text)
+    result = cursor.execute(
+        query.sql(dialect=backend.dialect, copy=False, unsupported_level=sqlglot.ErrorLevel.RAISE),
+        {name: value for value, name in slots.items()},
+    )
     names = [column[0] for column in result.description]
     return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
 
@@ -285,7 +322,7 @@ def bind_overlap_warehouse(
         return capture.model_copy(
             update={"generation_id": _generation(source_ids, versions), "feeds": feeds}
         )
-    except (DuckDBError, IbisError, OSError):
+    except (DuckDBError, IbisError, OSError, SqlglotError):
         pass
     _unbound()
 
@@ -435,6 +472,14 @@ def _check_decisions(decisions: ir.Table, plan: OverlapPlan, checks: _Checks) ->
     on = (decisions.arm == _factor_values(decisions, plan, "on")) & (
         decisions.assigned_weight == _factor_values(decisions, plan, "on_weight")
     )
+    standalone = [
+        factor.target
+        for factor in (plan.a, plan.b)
+        if plan.law.origin == "sdk_v1" and factor.layer is None
+    ]
+    layer_only = decisions.target.isin(standalone) & (
+        (decisions.status == "unallocated") | (identity & ~focal)
+    )
     checks.add(
         decisions,
         "decisions",
@@ -454,7 +499,8 @@ def _check_decisions(decisions: ir.Table, plan: OverlapPlan, checks: _Checks) ->
             )
         )
         | (not_enrolled & (~identity | arm | weight))
-        | (~assigned & ~not_enrolled & (identity | arm | weight)),
+        | (~assigned & ~not_enrolled & (identity | arm | weight))
+        | layer_only,
     )
 
 
@@ -703,11 +749,16 @@ def _aggregate_capture(
     _check_decisions(decisions, plan, checks)
     spine = _with_gates(spine, plan)
     _check_gates(spine, plan, checks)
+    events = deliveries.inner_join(roster, list(_KEYS)).select(
+        deliveries.delivered_at, roster.eligibility_at_a, roster.eligibility_at_b
+    )
     checks.add(
-        deliveries,
+        events,
         "deliveries",
-        delivery_before_start=deliveries.delivered_at < plan.start,
-        delivery_after_cutoff=deliveries.delivered_at > capture.cutoff,
+        delivery_before_start=events.delivered_at < plan.start,
+        delivery_after_cutoff=events.delivered_at > capture.cutoff,
+        eligibility_not_before_delivery=(events.eligibility_at_a >= events.delivered_at)
+        | (events.eligibility_at_b >= events.delivered_at),
     )
     _check_outcomes(outcomes, plan, capture, checks)
     proof = checks.summary().cross_join(digests)
@@ -720,7 +771,8 @@ def _aggregate_capture(
     )
     target = _guard(_joint_spine(spine, plan), verified)
     cells = _cell_moments(_metric_observations(target, outcomes, plan, capture))
-    delivery_counts = _delivery_counts(_guard(deliveries, verified), spine, target, plan)
+    in_window = deliveries.filter(deliveries.delivered_at < plan.end)
+    delivery_counts = _delivery_counts(_guard(in_window, verified), spine, target, plan)
     return _union_sections((proof.cross_join(_tallies(spine)), delivery_counts, cells)), checks
 
 
@@ -827,7 +879,7 @@ def capture_overlap_warehouse(
             expr, checks = _aggregate_capture(plan, capture, sources, scoped, digests)
             rows = _query(cursor, sources.backend, expr)
         return _evidence(plan, capture, rows, checks)
-    except (DuckDBError, IbisError, OSError):
+    except (DuckDBError, IbisError, OSError, SqlglotError):
         pass
     # A driver error can contain source values, SQL literals or filesystem paths.
     _unbound()

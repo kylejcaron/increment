@@ -8,11 +8,13 @@ Use four native tables in the same local, file-backed DuckDB catalog, on one Ibi
 
 Pass your `OverlapPlan`, a producer-supplied `OverlapCapture`, and the four tables to `increment.query.overlap.bind_overlap_warehouse`. That function keeps the plan and coverage declarations, but writes the source IDs, versions, and generation ID from the actual tables:
 
-- Each source ID identifies the resolved local database path, catalog, schema, and table. The receipt contains a hash, not the path.
+- Each source ID identifies the resolved local database path and the catalog, schema, and table names recorded by DuckDB. Changing only the ASCII case of a table reference does not change its identity. The receipt contains a hash, not the path.
 - Each version hashes the declared columns of that study's rows. A change to a row, or to the number of copies of a row, changes the version. Reordering rows does not. Outcome values are encoded as doubles and timestamps as UTC instants.
 - The generation identifies the four source ID and version pairs together.
 
 Use the returned receipt as `capture` and pass the same four qualified tables to `capture_overlap_warehouse`. The warehouse checks that the receipt still matches while counting invalid records and computing the assignment cells in one SQL statement. If any feed has changed, capture refuses with `overlap.capture.invalid` (`role="snapshot"`, `reason="unbound_generation"`). Rebind only if the new contents still match your declared coverage and cutoff. A matching receipt cannot establish that the producer included every eligible unit, that events were logged when they happened, or that the archived randomization law was followed.
+
+Delivery summaries count only events in the fixed outcome window: at or after its start and strictly before its end. Capture still rejects events before the start or after the declared cutoff.
 
 ## Work done by the warehouse
 

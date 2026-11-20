@@ -95,6 +95,91 @@ def warehouse(tmp_path):
     backend.disconnect()
 
 
+def test_mixed_ascii_case_uses_the_same_source_identity(warehouse):
+    backend, _, plan, template, bindings, _ = warehouse
+    capture = bind_overlap_warehouse(plan, capture=template, **bindings)
+    aliases = {
+        **bindings,
+        "roster": backend.table("RoSTer", database=("OVERLAP", "MaIn")),
+        "decisions": backend.table("DECISIONS", database=("OverLap", "MAIN")),
+    }
+    assert bind_overlap_warehouse(plan, capture=template, **aliases) == capture
+    assert capture_overlap_warehouse(plan, capture=capture, **aliases).target_count == 2
+
+
+def test_catalog_collation_check_distinguishes_ddl_syntax_from_quoted_text(warehouse):
+    backend, _, plan, template, bindings, _ = warehouse
+    backend.raw_sql(
+        """CREATE TABLE "input COLLATE label" AS SELECT * FROM roster;
+        CREATE TABLE collated_roster (unit_id VARCHAR COLLATE NOCASE);
+        CREATE TABLE checked_delivery (
+            study_id VARCHAR, event_id VARCHAR CHECK(event_id <> ' COLLATE '),
+            unit_id VARCHAR, target VARCHAR, experiment VARCHAR, revision VARCHAR,
+            delivered_arm VARCHAR, delivered_at TIMESTAMPTZ
+        )"""
+    )
+    qualified = {
+        **bindings,
+        "roster": backend.table("input COLLATE label", database=("overlap", "main")),
+        "deliveries": backend.table("checked_delivery", database=("overlap", "main")),
+    }
+    capture = bind_overlap_warehouse(plan, capture=template, **qualified)
+    assert capture_overlap_warehouse(plan, capture=capture, **qualified).target_count == 2
+    rejected = {
+        **qualified,
+        "roster": backend.table("collated_roster", database=("overlap", "main")),
+    }
+    with pytest.raises(CodedError) as caught:
+        bind_overlap_warehouse(plan, capture=template, **rejected)
+    assert dict(caught.value.context) == {"role": "snapshot", "reason": "unbound_generation"}
+
+
+def test_text_identities_with_nul_round_trip_through_capture(warehouse):
+    backend, _, plan, template, bindings, _ = warehouse
+    study, target, experiment, revision, on, metric = (
+        "study\0one",
+        "target\0a",
+        "experiment\0a",
+        "revision\0a",
+        "arm\0on",
+        "metric\0orders",
+    )
+    a = plan.a.model_copy(
+        update={"target": target, "experiment": experiment, "revision": revision, "on": on}
+    )
+    changed_metric = plan.metrics[0].model_copy(update={"name": metric})
+    claims = tuple(
+        claim.model_copy(update={"metric": metric}) if claim.metric == "orders" else claim
+        for claim in plan.claims
+    )
+    plan = plan.model_copy(
+        update={
+            "study_id": study,
+            "a": a,
+            "metrics": (changed_metric, plan.metrics[1]),
+            "claims": claims,
+        }
+    )
+    template = template.model_copy(update={"law_sha256": plan.law_sha256})
+    for table in ("roster", "decisions", "outcomes"):
+        backend.raw_sql(f"UPDATE {table} SET study_id=?", parameters=(study,))
+    backend.raw_sql(
+        """UPDATE decisions SET target=?, selected_experiment=?, revision=?,
+            arm=CASE arm WHEN 'on' THEN ? ELSE arm END WHERE target='target-a'""",
+        parameters=(target, experiment, revision, on),
+    )
+    backend.raw_sql("UPDATE outcomes SET metric=? WHERE metric='orders'", parameters=(metric,))
+    backend.raw_sql(
+        """INSERT INTO deliveries VALUES (?, 'a1', '001', ?, ?, ?, ?,
+            TIMESTAMPTZ '2026-01-01 00:00:04+00')""",
+        parameters=(study, target, experiment, revision, on),
+    )
+    capture = bind_overlap_warehouse(plan, capture=template, **bindings)
+    evidence = capture_overlap_warehouse(plan, capture=capture, **bindings)
+    assert (evidence.cells[1].metric, evidence.cells[1].anchor) == (metric, 14.0)
+    assert evidence.delivery_counts[2].n_matching == 1
+
+
 def test_common_entry_duckdb_fixture(warehouse):
     backend, _, plan, template, bindings, expected = warehouse
     backend.raw_sql(
@@ -120,6 +205,98 @@ def test_common_entry_duckdb_fixture(warehouse):
     expected["delivery_counts"][2].update(n_without_delivery=0, n_matching=2)
     expected["delivery_counts"][3].update(n_without_delivery=0, n_inconsistent=1)
     assert deliveries == expected["delivery_counts"]
+
+
+def test_delivery_at_or_after_window_end_does_not_count(warehouse):
+    backend, _, plan, template, bindings, expected = warehouse
+    backend.raw_sql(
+        """INSERT INTO deliveries VALUES
+            ('common-entry-v1', 'end', '001', 'target-a', 'experiment-a', 'rev-a',
+             'on', TIMESTAMPTZ '2026-01-01 00:00:10+00'),
+            ('common-entry-v1', 'after-end', '1', 'target-b', 'experiment-b', 'wrong-revision',
+             'off', TIMESTAMPTZ '2026-01-01 00:00:10.5+00')"""
+    )
+    capture = bind_overlap_warehouse(plan, capture=template, **bindings)
+    evidence = capture_overlap_warehouse(plan, capture=capture, **bindings)
+    assert [row.model_dump() for row in evidence.delivery_counts] == expected["delivery_counts"]
+
+
+def test_both_eligibility_times_must_precede_a_focal_delivery_without_attempts(warehouse):
+    backend, _, plan, template, bindings, _ = warehouse
+    backend.raw_sql(
+        """UPDATE roster SET eligible_b=FALSE,
+            eligibility_at_a=TIMESTAMPTZ '2026-01-01 00:00:03.000001+00',
+            eligibility_at_b=TIMESTAMPTZ '2026-01-01 00:00:03.000001+00' WHERE unit_id='x';
+        DELETE FROM decisions WHERE unit_id='x';
+        INSERT INTO deliveries VALUES
+            ('common-entry-v1', 'at-eligibility', 'x', 'target-a', 'experiment-a', 'rev-a',
+             'on', TIMESTAMPTZ '2026-01-01 00:00:03.000001+00')"""
+    )
+    capture = bind_overlap_warehouse(plan, capture=template, **bindings)
+    with pytest.raises(CodedError) as caught:
+        capture_overlap_warehouse(plan, capture=capture, **bindings)
+    assert caught.value.code == "overlap.evidence.invalid"
+    assert dict(caught.value.context) == {
+        "role": "deliveries",
+        "reason": "eligibility_not_before_delivery",
+        "count": 1,
+    }
+
+
+def test_standalone_sdk_refuses_layer_only_dispositions(warehouse):
+    backend, _, plan, template, bindings, _ = warehouse
+    digest = "6f4b58f9ca7c00ddde42717a64210a36a93c36a83a4fc940c0dacc25e3480d32"
+    law = plan.law.model_copy(
+        update={
+            "origin": "sdk_v1",
+            "gate_basis": "common_entry_archived_draws",
+            "rule_source_id": "increment.assignment.protocol-v1",
+            "rule_version": "1",
+            "archive_sha256": (digest, digest),
+        }
+    )
+    a = plan.a.model_copy(update={"target": "A", "experiment": "A", "revision": "archive-v1"})
+    b = plan.b.model_copy(
+        update={
+            "target": "B",
+            "experiment": "B",
+            "revision": "archive-v1",
+            "off_weight": 7500,
+            "on_weight": 2500,
+        }
+    )
+    plan = plan.model_copy(update={"a": a, "b": b, "law": law})
+    template = template.model_copy(
+        update={
+            "origin": "sdk_v1",
+            "law_sha256": plan.law_sha256,
+            "archive_sha256": (digest, digest),
+        }
+    )
+    backend.raw_sql(
+        """UPDATE decisions SET
+            target=CASE target WHEN 'target-a' THEN 'A' ELSE 'B' END,
+            selected_experiment=CASE target WHEN 'target-a' THEN 'A' ELSE 'B' END,
+            revision=?, archive_sha256=?,
+            assigned_weight=CASE assigned_weight WHEN 3 THEN 7500 WHEN 1 THEN 2500
+                            ELSE assigned_weight END""",
+        parameters=("archive-v1", digest),
+    )
+    backend.raw_sql(
+        """UPDATE decisions SET status='unallocated',
+            selected_experiment=NULL, arm=NULL, assigned_weight=NULL
+            WHERE unit_id='001' AND target='A';
+        UPDATE decisions SET selected_experiment='sibling' WHERE unit_id='1' AND target='B'"""
+    )
+    capture = bind_overlap_warehouse(plan, capture=template, **bindings)
+    with pytest.raises(CodedError) as caught:
+        capture_overlap_warehouse(plan, capture=capture, **bindings)
+    assert caught.value.code == "overlap.evidence.invalid"
+    assert dict(caught.value.context) == {
+        "role": "decisions",
+        "reason": "invalid_disposition",
+        "count": 2,
+    }
 
 
 def test_adjacent_floats_and_exact_binary_centers(warehouse):
@@ -280,7 +457,7 @@ def test_query_egress_is_aggregate_only(warehouse, monkeypatch):
                 "mean_delta",
                 "m2",
                 *(f"version_{role}" for role in _SCHEMAS),
-                *(f"violation_{i}" for i in range(34)),
+                *(f"violation_{i}" for i in range(35)),
                 *(f"gate_{i}" for i in range(25)),
                 *(f"eligibility_{cell}" for cell in ("00", "10", "01", "11")),
             }
