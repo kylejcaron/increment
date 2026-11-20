@@ -307,6 +307,11 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment._holdout_look"
+layer = "core"
+depends_on = ["increment._holdout_records", "increment.errors"]
+
+[[modules]]
 path = "increment.estimation.sequential_result"
 layer = "core"
 depends_on = [
@@ -1372,6 +1377,15 @@ depends_on = ["increment._finite_sample_refusals", "increment.errors", "incremen
 path = "increment.power._noncentral_t"
 layer = "core"
 depends_on = ["increment._literals", "increment.estimation._tails"]
+
+[[modules]]
+path = "increment.power.holdout"
+layer = "core"
+depends_on = [
+  "increment._holdout_look", "increment._holdout_records", "increment.errors",
+  "increment.estimation._tails", "increment.estimation.armstats",
+  "increment.power._noncentral_t", "increment.power._shared",
+]
 
 [[modules]]
 path = "increment.breakout.projection"

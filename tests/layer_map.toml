@@ -23,6 +23,8 @@ core = [
   "increment.decision*",
   "increment.plan*",
   "increment.power*",
+  "increment.power.holdout",
+  "increment._holdout_look",
   "increment.results",
   "increment.result_envelope",
   "increment.decide*",
