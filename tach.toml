@@ -1225,6 +1225,18 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment.query.overlap"
+layer = "core"
+depends_on = [
+  "increment._assignment_refusals",
+  "increment._canonical",
+  "increment._overlap_evidence",
+  "increment._overlap_refusals",
+  "increment.errors",
+  "increment.semantics.overlap",
+]
+
+[[modules]]
 path = "increment.query._day_offsets"
 layer = "core"
 depends_on = []
