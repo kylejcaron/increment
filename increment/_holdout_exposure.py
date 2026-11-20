@@ -55,20 +55,34 @@ _PHASE_ORDER = attrgetter(
 
 
 @dataclass(frozen=True, slots=True)
+class _Timeline:
+    phases: list[Phase]
+    max_ends: list[datetime]
+
+    def at(self, at: datetime) -> Phase | None:
+        index = bisect_right(self.phases, at, key=attrgetter("from_at")) - 1
+        match = None
+        # Earlier phases can still be active after a shorter overlap ends.
+        while index >= 0 and at < self.max_ends[index]:
+            phase = self.phases[index]
+            if at < phase.to_at:
+                if match is not None:
+                    return None
+                match = phase
+            index -= 1
+        return match
+
+
+@dataclass(frozen=True, slots=True)
 class _History:
     phases: tuple[Phase, ...]
-    timelines: dict[str, list[Phase]]
+    timelines: dict[str, _Timeline]
     configs: ConfigIndex
     unresolved: set[str]
 
     def at(self, launch_id: str, at: datetime) -> Phase | None:
         timeline = self.timelines.get(launch_id)
-        if timeline is None:
-            return None
-        index = bisect_right(timeline, at, key=attrgetter("from_at")) - 1
-        if index >= 0 and at < timeline[index].to_at:
-            return timeline[index]
-        return None
+        return timeline.at(at) if timeline is not None else None
 
     def digest(self) -> str | None:
         if not self.phases:
@@ -92,47 +106,48 @@ def _audit_history(
         return _History((), {}, configs, set())
 
     unresolved = set(targets) if snapshot.history_ref is None else set()
-    observed = sorted(dict.fromkeys(snapshot.phases), key=_PHASE_ORDER)
-    timelines: dict[str, list[Phase]] = defaultdict(list)
-    for phase in observed:
+    phases: list[Phase] = []
+    matching_phases: dict[str, list[Phase]] = defaultdict(list)
+    checked_revisions: set[str] = set()
+    for phase in sorted(dict.fromkeys(snapshot.phases), key=_PHASE_ORDER):
         if phase.available_at > snapshot.as_of or phase.from_at >= stop or phase.to_at <= start:
             continue
         launch = phase.launch_id
-        if (
-            targets.get(launch) != phase.target
-            or phase.baseline_version != study.baseline_version
-            or phase.from_at >= phase.to_at
-            or phase.available_at < phase.from_at
-            or (
-                phase.feature_version == phase.baseline_version and phase.eligible_offer_probability
-            )
+        if targets.get(launch) != phase.target:
+            unresolved.add(launch)
+            continue
+        phases.append(phase)
+        if phase.from_at >= phase.to_at or phase.available_at < phase.from_at:
+            unresolved.add(launch)
+            continue
+        lower, upper = max(start, phase.from_at), min(stop, phase.to_at)
+        if not _config_covers(study, snapshot, configs, phase, lower, upper, checked_revisions):
+            unresolved.add(launch)
+        if phase.baseline_version != study.baseline_version or (
+            phase.feature_version == phase.baseline_version and phase.eligible_offer_probability
         ):
             unresolved.add(launch)
         else:
-            timelines[launch].append(phase)
+            matching_phases[launch].append(phase)
 
-    phases = tuple(phase for launch in targets for phase in timelines.get(launch, ()))
-    checked_revisions: set[str] = set()
+    timelines: dict[str, _Timeline] = {}
     for launch in targets:
-        timeline = timelines.get(launch, [])
+        timeline = matching_phases.get(launch, [])
         cursor = start
-        overlapping = False
+        max_ends: list[datetime] = []
         rollout_rules: dict[str, tuple[str, float]] = {}
         for phase in timeline:
             lower, upper = max(start, phase.from_at), min(stop, phase.to_at)
             rule = (phase.feature_version, phase.eligible_offer_probability)
             if lower != cursor or rollout_rules.setdefault(phase.rollout_revision, rule) != rule:
                 unresolved.add(launch)
-            overlapping |= lower < cursor
             cursor = max(cursor, upper)
-            if not _config_covers(study, snapshot, configs, phase, lower, upper, checked_revisions):
-                unresolved.add(launch)
+            max_ends.append(cursor)
         if cursor != stop:
             unresolved.add(launch)
-        # Conflicting intervals do not supply a unique version for an event.
-        if overlapping:
-            del timelines[launch]
-    return _History(phases, timelines, configs, unresolved)
+        if timeline:
+            timelines[launch] = _Timeline(timeline, max_ends)
+    return _History(tuple(phases), timelines, configs, unresolved)
 
 
 def _config_covers(
@@ -145,15 +160,21 @@ def _config_covers(
     checked_revisions: set[str],
 ) -> bool:
     revision = phase.config_revision
-    while start < stop:
-        archive = configs.at(revision, start)
-        if archive is None:
-            return False
+    activations = configs.activations.get(revision, ())
+    first = bisect_right(activations, start, key=attrgetter("effective_to"))
+    covered = True
+    for index in range(first, len(activations)):
+        archive = activations[index]
+        if archive.effective_from >= stop:
+            break
+        # The index guarantees one immutable archive per revision, even
+        # across separate activations. A gap cannot hide an archive conflict.
         if revision not in checked_revisions:
             check_config_binding(study, snapshot, archive)
             checked_revisions.add(revision)
+        covered &= archive.effective_from <= start
         start = archive.effective_to
-    return True
+    return covered and start >= stop
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,7 +235,7 @@ def _visible_events(
     visible: dict[str, _Event] = {}
     conflicts: set[str] = set()
     for event in events:
-        if event.available_at <= as_of and event.at <= as_of:
+        if event.available_at <= as_of:
             if visible.setdefault(event.event_id, event) != event:
                 conflicts.add(event.event_id)
     for event_id in conflicts:
@@ -222,17 +243,20 @@ def _visible_events(
     return visible, conflicts
 
 
-def _phase_issue(history: _History, event: _Event) -> str | None:
+def _phase_issue(history: _History, event: _Event, *, nonbaseline: bool) -> str | None:
     phase = history.at(event.launch_id, event.at)
     if phase is None:
         return "out_of_phase"
     if history.configs.at(phase.config_revision, event.at) is None:
         return "inactive_config"
+    off_offer = nonbaseline and not phase.eligible_offer_probability
     if isinstance(event, DecisionEvent):
-        return None if event.config_revision == phase.config_revision else "config_mismatch"
-    if event.nonbaseline and not phase.eligible_offer_probability:
+        if event.config_revision != phase.config_revision:
+            return "config_mismatch"
+        return "out_of_phase" if off_offer else None
+    if off_offer:
         return "out_of_phase"
-    version = phase.feature_version if event.nonbaseline else phase.baseline_version
+    version = phase.feature_version if nonbaseline else phase.baseline_version
     if event.rollout_revision != phase.rollout_revision or event.feature_version != version:
         return "version_mismatch"
     return None
@@ -270,7 +294,7 @@ def _audit_event(
     # A scoped observation can directly evidence a leak even if it cannot be
     # reconciled to the version that should have been running at the time.
     observed[(event.launch_id, member.group, kind)].record(member, event, nonbaseline=nonbaseline)
-    return _phase_issue(history, event)
+    return _phase_issue(history, event, nonbaseline=nonbaseline)
 
 
 def _coverage_status(
