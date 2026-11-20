@@ -160,6 +160,7 @@ def test_break_even_and_ties() -> None:
     [
         ({"aggregates_permitted": False}, "use_permission_unconfirmed", 2),
         ({"design_ref": ""}, "unverified_trial_design", 2),
+        ({"expected_sha256": "not-a-source-digest"}, "invalid_expected_digest", 2),
         ({"expected_sha256": "0" * 64}, "digest_mismatch", 2),
         ({"analysis_permitted": "true"}, "invalid_case_manifest", 1),
     ],
@@ -176,10 +177,11 @@ def test_access_checks_precede_outcome_parsing(
     data, manifest = fixture_trial
     data.write_text("unit_id,arm,y,s,b\nsynthetic,0,not-binary,0,0\n", encoding="utf-8")
     original_open = Path.open
+    design = Path(str(manifest["design_ref"]))
     if reason != "digest_mismatch":
 
         def refuse_data_open(path: Path, *args, **kwargs):
-            if path == data:
+            if path == data or reason == "invalid_expected_digest" and path == design:
                 pytest.fail("data opened before source permission and design checks")
             return original_open(path, *args, **kwargs)
 
@@ -191,6 +193,72 @@ def test_access_checks_precede_outcome_parsing(
     assert code == expected_code
     assert packet["reason"] == reason
     assert packet["bounds"] is packet["owner_decision"] is None
+
+
+@pytest.mark.parametrize("key", ["design_ref", "card"])
+@pytest.mark.parametrize("link", ["symlink", "hardlink"])
+@pytest.mark.integration
+def test_outcome_file_cannot_be_read_as_metadata(
+    tmp_path: Path,
+    fixture_trial: tuple[Path, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    link: str,
+) -> None:
+    data, manifest = fixture_trial
+    alias = tmp_path / "metadata-alias.json"
+    if link == "symlink":
+        alias.symlink_to(data)
+    else:
+        alias.hardlink_to(data)
+    args = ()
+    if key == "design_ref":
+        manifest["design_ref"] = str(alias)
+    else:
+        args = ("--card", str(alias))
+    original_open = Path.open
+
+    def refuse_data_open(path: Path, *args, **kwargs):
+        if path in (data, alias):
+            pytest.fail("the outcome file must not be opened through a metadata path")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", refuse_data_open)
+    code, out = _run(tmp_path, _write_json(tmp_path / "manifest.json", manifest), *args)
+    packet = _read_json(out / "decision.json")
+    assert code == 1
+    assert packet["reason"] == "case_input_alias"
+    assert packet["diagnostics"][0]["context"] == [["stage", "preflight"], ["coordinate", key]]
+    assert packet["bounds"] is packet["owner_decision"] is None
+
+
+@pytest.mark.parametrize("assignment", ["complete", "bernoulli"])
+@pytest.mark.integration
+def test_empty_allocated_arm_depends_on_assignment_design(
+    tmp_path: Path, fixture_trial: tuple[Path, dict[str, object]], assignment: str
+) -> None:
+    data, manifest = fixture_trial
+    data.write_text(
+        "unit_id,arm,y,s,b\n"
+        + "".join(f"fixture-{i},0,0,{i // 2 % 2},{i % 2}\n" for i in range(100)),
+        encoding="utf-8",
+    )
+    manifest["expected_sha256"] = hashlib.sha256(data.read_bytes()).hexdigest()
+    design = Path(str(manifest["design_ref"]))
+    _write_json(design, {**_read_json(design), "assignment": assignment})
+    card = _write_json(tmp_path / "card.json", _card_fields())
+    code, out = _run(
+        tmp_path, _write_json(tmp_path / "manifest.json", manifest), "--card", str(card)
+    )
+    packet = _read_json(out / "decision.json")
+    if assignment == "complete":
+        assert code == 1
+        assert packet["reason"] == "assignment_design_mismatch"
+        assert packet["bounds"] is packet["owner_decision"] is None
+    else:
+        assert code == 0
+        band = _read_json(out / "bounds.json")["bounds"]["methods"]["U0"]
+        assert band["plugin"] is None and band["reason"] == "empty_arm_leaf"
 
 
 @pytest.mark.parametrize(
@@ -239,6 +307,11 @@ def test_hillstrom_uses_assignment_and_only_baseline_flags() -> None:
     ("changes", "diagnostic"),
     [
         ({"signed_at": "2000-01-02T00:00:00Z"}, "nonprospective_decision_card"),
+        (
+            {"signed_at": "9998-01-01T00:00:00Z", "unblind_at": "9998-01-02T00:00:00Z"},
+            "future_card_signature",
+        ),
+        ({"unblind_at": "9998-01-02T00:00:00Z"}, "card_unblinding_not_reached"),
         ({"signed_at": "2000-01-01T00:00:00"}, "invalid_decision_card"),
         ({"tau": "0.25"}, "invalid_decision_card"),
         ({"max_false_action_risk": 0.049}, "insufficient_risk_ceiling"),
@@ -268,12 +341,47 @@ def test_ineligible_cards_cannot_supply_actions(
     assert diagnostic in {issue["reason"] for issue in packet["diagnostics"]}
 
 
+@pytest.mark.parametrize("schema_valid", [True, False])
+@pytest.mark.integration
+def test_card_tolerance_can_be_research_sensitivity_but_not_owner_action(
+    tmp_path: Path, fixture_trial: tuple[Path, dict[str, object]], schema_valid: bool
+) -> None:
+    _, manifest = fixture_trial
+    card = _write_json(
+        tmp_path / "card.json",
+        {**_card_fields(), "horizon": "28 days", "tau": 0.21 if schema_valid else "0.21"},
+    )
+    code, out = _run(
+        tmp_path, _write_json(tmp_path / "manifest.json", manifest), "--card", str(card)
+    )
+    packet = _read_json(out / "decision.json")
+    assert code == 2 and packet["owner_decision"] is None
+    with (out / "thresholds.csv").open(encoding="utf-8") as f:
+        non_grid = [row for row in csv.DictReader(f) if row["tau"] == "0.21"]
+    if schema_valid:
+        assert len(non_grid) == 9
+        assert {row["threshold_origin"] for row in non_grid} == {"ineligible_card_sensitivity"}
+    else:
+        assert not non_grid
+
+
 @pytest.mark.integration
 def test_eligible_card_selects_simple_costed_action_without_confirmation(
     tmp_path: Path, fixture_trial: tuple[Path, dict[str, object]]
 ) -> None:
     _, manifest = fixture_trial
-    card = _write_json(tmp_path / "card.json", {**_card_fields(), "tau": 0.21})
+    card = _write_json(
+        tmp_path / "card.json",
+        {
+            **_card_fields(),
+            "tau": 0.21,
+            "action_if_clear": {
+                "kind": "clear",
+                "description": "Send to private-recipient through https://private.invalid/a",
+                "cost_bearer": "sponsor",
+            },
+        },
+    )
     code, out = _run(
         tmp_path, _write_json(tmp_path / "manifest.json", manifest), "--card", str(card)
     )
@@ -285,11 +393,57 @@ def test_eligible_card_selects_simple_costed_action_without_confirmation(
     assert owner["smallest_useful_simple_pipeline"] == "P0"
     assert not owner["h_adds_decision"]
     assert owner["pipelines"]["P0"]["g_min"] == pytest.approx(0.15, abs=1e-12)
-    assert owner["pipelines"]["P0"]["action"]["description"] == "Send offer"
+    assert owner["pipelines"]["P0"]["action"] == {
+        "key": "action_if_clear",
+        "kind": "clear",
+        "cost_bearer": "sponsor",
+    }
     with (out / "thresholds.csv").open(encoding="utf-8") as f:
-        assert sum(row["tau"] == "0.21" for row in csv.DictReader(f)) == 9
+        assert [row["threshold_origin"] for row in csv.DictReader(f) if row["tau"] == "0.21"] == [
+            "eligible_card"
+        ] * 9
     for path in out.iterdir():
         wire = path.read_text(encoding="utf-8")
         assert str(tmp_path) not in wire
         assert "Synthetic sponsor" not in wire
         assert "fixture-id-" not in wire
+        assert "synthetic-decision" not in wire
+        assert "synthetic loss units" not in wire
+        assert "private-recipient" not in wire
+        assert "private.invalid" not in wire
+
+
+@pytest.mark.parametrize(
+    ("wait_cost", "workflow_cost", "useful"),
+    [
+        ("0.4", "0.3", False),
+        ("0.40000000000000005", "0.30000000000000005", False),
+        ("0.400000000000000051", "0.30000000000000005", True),
+    ],
+)
+@pytest.mark.integration
+def test_gain_uses_source_decimals_not_rounded_wire_values(
+    tmp_path: Path,
+    fixture_trial: tuple[Path, dict[str, object]],
+    wait_cost: str,
+    workflow_cost: str,
+    useful: bool,
+) -> None:
+    _, manifest = fixture_trial
+    card = tmp_path / "card.json"
+    raw = json.dumps(
+        {**_card_fields(), "cost_abstain": "WAIT", "incremental_workflow_cost": "WORK"}
+    )
+    card.write_text(
+        raw.replace('"WAIT"', wait_cost).replace('"WORK"', workflow_cost), encoding="utf-8"
+    )
+    code, out = _run(
+        tmp_path, _write_json(tmp_path / "manifest.json", manifest), "--card", str(card)
+    )
+    owner = _read_json(out / "decision.json")["owner_decision"]
+    assert code == 0
+    p0 = owner["pipelines"]["P0"]
+    assert p0["decision"] == "clear"
+    assert owner["smallest_useful_simple_pipeline"] == ("P0" if useful else None)
+    assert p0["gain_exceeds_minimum"] is p0["best_gain_exceeds_minimum"] is useful
+    assert p0["g_min"] == p0["g_max"] == owner["minimum_gain"] == 0.1

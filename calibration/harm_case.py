@@ -13,8 +13,10 @@ import subprocess
 import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
-from typing import Annotated, Literal, TextIO
+from typing import Annotated, Literal, TextIO, cast
 
 import numpy as np
 import pydantic
@@ -49,10 +51,16 @@ type _Source = Literal["hillstrom", "owner_trial"]
 type _Status = Literal["unavailable", "research_only", "completed", "failed"]
 type _Row = tuple[int, int, int, int]  # assignment, factual result, S, B
 type _ActionKind = Literal["clear", "rule_out", "abstain"]
+type _ActionKey = Literal[
+    "action_if_clear", "action_if_rule_out", "action_if_inconclusive", "current_action"
+]
+type _CostBearer = Literal["sponsor", "participants", "sponsor_and_participants", "third_parties"]
 type _Direction = Literal["one_is_beneficial"]
 type _Probability = Annotated[float, Field(gt=0, lt=1, allow_inf_nan=False)]
 type _Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 type _Nonnegative = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+type _PositiveMoney = Annotated[Decimal, Field(gt=0, allow_inf_nan=False)]
+type _NonnegativeMoney = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 type _Text = Annotated[str, Field(min_length=1, pattern=r"\S")]
 type _Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 type _Regime = Literal["below", "equal", "above"]
@@ -96,7 +104,13 @@ class _TrialDesign(_Strict):
 class _Action(_Strict):
     kind: _ActionKind
     description: _Text
-    cost_bearer: Literal["sponsor", "participants", "sponsor_and_participants", "third_parties"]
+    cost_bearer: _CostBearer
+
+
+class _ActionReceipt(_Strict):
+    key: _ActionKey
+    kind: _ActionKind
+    cost_bearer: _CostBearer
 
 
 class DecisionCard(_Strict):
@@ -113,11 +127,11 @@ class DecisionCard(_Strict):
     positive_direction: _Direction
     tau: _Probability
     max_false_action_risk: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)]
-    cost_false_clear: _Positive
-    cost_false_rule_out: _Positive
-    cost_abstain: _Nonnegative
-    incremental_workflow_cost: _Nonnegative
-    minimum_gain: _Nonnegative
+    cost_false_clear: _PositiveMoney
+    cost_false_rule_out: _PositiveMoney
+    cost_abstain: _NonnegativeMoney
+    incremental_workflow_cost: _NonnegativeMoney
+    minimum_gain: _NonnegativeMoney
     currency_or_loss_unit: _Text
     action_if_clear: _Action
     action_if_rule_out: _Action
@@ -135,14 +149,35 @@ class DecisionCard(_Strict):
             return datetime.fromisoformat(value)
         raise ValueError("an ISO 8601 timestamp with a time zone is required")
 
+    @field_validator(
+        "cost_false_clear",
+        "cost_false_rule_out",
+        "cost_abstain",
+        "incremental_workflow_cost",
+        "minimum_gain",
+    )
+    @classmethod
+    def _reportable_money(cls, value: Decimal) -> Decimal:
+        rounded = float(value)
+        if not math.isfinite(rounded) or (value != 0 and rounded == 0.0):
+            raise ValueError("cost is outside the numeric report range")
+        return value
+
 
 class _Diagnostic(_Strict):
     reason: str
     context: DiagnosticContext
 
 
+class _CardCheck(_Strict):
+    eligible: DecisionCard | None = None
+    sha256: _Sha | None = None
+    sensitivity_tau: _Probability | None = None
+    issue: _Diagnostic | None = None
+
+
 class _InputReceipt(_Strict):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     source: _Source
     manifest_sha256: _Sha | None = None
     design_sha256: _Sha | None = None
@@ -218,7 +253,7 @@ class _Bounds(_Strict):
 
 
 class _BoundsPacket(_Strict):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     protocol_sha256: _Sha
     status: _Status
     reason: str | None
@@ -232,30 +267,30 @@ class _Guessing(_Strict):
 
 class _PipelineDecision(_Strict):
     decision: Decision
-    action: _Action
+    action: _ActionReceipt
     changes_action: bool
     g_min: float
     g_max: float
+    gain_exceeds_minimum: bool
+    best_gain_exceeds_minimum: bool
     ambiguity: Literal["irreducible_at_features", "sampling_or_unresolved_identification"] | None
     guess_vs_wait_worst_excess: _Guessing | None
 
 
 class _OwnerDecision(_Strict):
-    decision_id: str
     tau: _Probability
     minimum_gain: _Nonnegative
     pipelines: _Pipelines[_PipelineDecision]
     smallest_useful_simple_pipeline: Literal["P0", "P1", "P2"] | None
     h_adds_decision: bool
     irreducible_at_features: bool
-    current_action: _Action
+    current_action: _ActionReceipt
     incremental_workflow_cost: _Nonnegative
     cost_false_clear: _Positive
     cost_false_rule_out: _Positive
     cost_abstain: _Nonnegative
-    currency_or_loss_unit: str
     max_false_action_risk: float
-    alternatives: tuple[_Action, _Action, _Action]
+    alternatives: tuple[_ActionReceipt, _ActionReceipt, _ActionReceipt]
     confirmation: None = None
 
 
@@ -283,7 +318,7 @@ class _Reproduction(_Strict):
 
 
 class _FieldDecision(_Strict):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     source: _Source
     status: _Status
     reason: str | None
@@ -322,6 +357,13 @@ def _unique_members(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _validate[T: _Strict](model: type[T], raw: bytes, reason: str, stage: str) -> T:
     try:
+        if model is DecisionCard:
+            document = json.loads(
+                raw, object_pairs_hook=_unique_members, parse_float=Decimal, parse_int=Decimal
+            )
+            if isinstance(document, dict) and isinstance(document.get("arms"), list):
+                document["arms"] = tuple(document["arms"])
+            return cast(T, DecisionCard.model_validate(document))
         json.loads(raw, object_pairs_hook=_unique_members)
         return model.model_validate_json(raw)
     except ValidationError as exc:
@@ -356,9 +398,15 @@ def _check_permission(manifest: _CaseInput) -> None:
             raise _issue("use_permission_unconfirmed", "preflight", key)
 
 
-def _check_card(card: DecisionCard, manifest: _CaseInput, design: _TrialDesign) -> None:
+def _check_card(
+    card: DecisionCard, manifest: _CaseInput, design: _TrialDesign, started: datetime
+) -> None:
     if card.signed_at >= card.unblind_at:
         raise _issue("nonprospective_decision_card", "card", "signed_at")
+    if card.signed_at > started:
+        raise _issue("future_card_signature", "card", "signed_at")
+    if card.unblind_at > started:
+        raise _issue("card_unblinding_not_reached", "card", "unblind_at")
     if card.max_false_action_risk < _RISK:
         raise _issue("insufficient_risk_ceiling", "card", "max_false_action_risk")
     for key in ("arms", "outcome", "horizon", "positive_direction"):
@@ -380,21 +428,22 @@ def _check_card(card: DecisionCard, manifest: _CaseInput, design: _TrialDesign) 
 
 
 def _eligible_card(
-    path: Path | None, manifest: _CaseInput, design: _TrialDesign | None
-) -> tuple[DecisionCard | None, str | None, _Diagnostic | None]:
-    digest = None
+    path: Path | None, manifest: _CaseInput, design: _TrialDesign | None, started: datetime
+) -> _CardCheck:
+    digest = sensitivity_tau = None
     try:
         if path is None:
             raise _issue("missing_decision_card", "card", "document")
         raw = _read(path, "missing_decision_card", "card_read_error", "card", "document")
         digest = _sha(raw)
         card = _validate(DecisionCard, raw, "invalid_decision_card", "card")
+        sensitivity_tau = card.tau
         if design is None:
             raise _issue("historical_card_inapplicable", "card", "target")
-        _check_card(card, manifest, design)
+        _check_card(card, manifest, design, started)
     except StudyError as exc:
-        return None, digest, _diagnostic(exc)
-    return card, digest, None
+        return _CardCheck(sha256=digest, sensitivity_tau=sensitivity_tau, issue=_diagnostic(exc))
+    return _CardCheck(eligible=card, sha256=digest, sensitivity_tau=sensitivity_tau)
 
 
 def _records(
@@ -457,7 +506,7 @@ def _owner_rows(text: TextIO) -> list[_Row]:
     return [result[unit_id] for unit_id in sorted(result)]
 
 
-def _read_rows(raw: bytes, source: _Source) -> list[_Row]:
+def _read_rows(raw: bytes, source: _Source, design: _TrialDesign | None) -> list[_Row]:
     try:
         with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8-sig", newline="") as stream:
             rows = _hillstrom_rows(stream) if source == "hillstrom" else _owner_rows(stream)
@@ -469,6 +518,10 @@ def _read_rows(raw: bytes, source: _Source) -> list[_Row]:
         raise _issue(
             "hillstrom_count_mismatch", "adapter", "retained_sample", expected=_HILLSTROM_N
         )
+    if design is not None and design.assignment == "complete":
+        first_arm = rows[0][0]
+        if not any(row[0] != first_arm for row in rows):
+            raise _issue("assignment_design_mismatch", "adapter", "arm")
     return rows
 
 
@@ -594,24 +647,34 @@ def _regimes(band: Interval, tau: float) -> tuple[_Regime, ...]:
     return tuple(states)
 
 
-def _loss(action: _ActionKind, regime: _Regime, card: DecisionCard) -> float:
+def _loss(action: _ActionKind, regime: _Regime, card: DecisionCard) -> Fraction:
     if action == "abstain":
-        return card.cost_abstain
+        return Fraction(card.cost_abstain)
     if action == "clear":
-        return 0.0 if regime == "below" else card.cost_false_clear
-    return 0.0 if regime == "above" else card.cost_false_rule_out
+        return Fraction(0 if regime == "below" else card.cost_false_clear)
+    return Fraction(0 if regime == "above" else card.cost_false_rule_out)
 
 
-def _usefulness(band: Interval, proposed: _ActionKind, card: DecisionCard) -> Interval:
+def _usefulness(
+    band: Interval, proposed: _ActionKind, card: DecisionCard
+) -> tuple[Fraction, Fraction]:
+    workflow_cost = Fraction(card.incremental_workflow_cost)
     gains = tuple(
-        _loss(card.current_action.kind, state, card)
-        - _loss(proposed, state, card)
-        - card.incremental_workflow_cost
+        _loss(card.current_action.kind, state, card) - _loss(proposed, state, card) - workflow_cost
         for state in _regimes(band, card.tau)
     )
-    if not all(math.isfinite(gain) for gain in gains):
-        raise _issue("nonfinite_usefulness", "decision", "gain")
     return min(gains), max(gains)
+
+
+def _action_receipt(key: _ActionKey, action: _Action) -> _ActionReceipt:
+    return _ActionReceipt(key=key, kind=action.kind, cost_bearer=action.cost_bearer)
+
+
+def _wire_gain(value: Fraction) -> float:
+    try:
+        return float(value)
+    except OverflowError:
+        raise _issue("nonfinite_usefulness", "decision", "gain") from None
 
 
 def _pipeline_decision(
@@ -619,37 +682,42 @@ def _pipeline_decision(
 ) -> _PipelineDecision:
     outcome = decide(band, card.tau)
     action = card.action_if_inconclusive
+    key: _ActionKey = "action_if_inconclusive"
     ambiguity = guessing = None
     if outcome == "clear":
         action = card.action_if_clear
+        key = "action_if_clear"
     elif outcome == "rule_out":
         action = card.action_if_rule_out
+        key = "action_if_rule_out"
     else:
         ambiguity = (
             "irreducible_at_features" if irreducible else "sampling_or_unresolved_identification"
         )
         states = _regimes(band, card.tau)
+        wait_cost = Fraction(card.cost_abstain)
         guessing = _Guessing(
-            clear=max(_loss("clear", state, card) for state in states) - card.cost_abstain,
-            rule_out=max(_loss("rule_out", state, card) for state in states) - card.cost_abstain,
+            clear=float(max(_loss("clear", state, card) for state in states) - wait_cost),
+            rule_out=float(max(_loss("rule_out", state, card) for state in states) - wait_cost),
         )
     g_min, g_max = _usefulness(band, action.kind, card)
+    minimum = Fraction(card.minimum_gain)
     return _PipelineDecision(
         decision=outcome,
-        action=action,
+        action=_action_receipt(key, action),
         changes_action=action != card.current_action,
-        g_min=g_min,
-        g_max=g_max,
+        g_min=_wire_gain(g_min),
+        g_max=_wire_gain(g_max),
+        gain_exceeds_minimum=g_min > minimum,
+        best_gain_exceeds_minimum=g_max > minimum,
         ambiguity=ambiguity,
         guess_vs_wait_worst_excess=guessing,
     )
 
 
-def _worthwhile(result: _PipelineDecision, card: DecisionCard) -> bool:
+def _worthwhile(result: _PipelineDecision) -> bool:
     return (
-        result.decision != "inconclusive"
-        and result.changes_action
-        and result.g_min > max(0.0, card.minimum_gain)
+        result.decision != "inconclusive" and result.changes_action and result.gain_exceeds_minimum
     )
 
 
@@ -663,28 +731,30 @@ def _owner_decision(bounds: _Bounds, card: DecisionCard) -> _OwnerDecision:
         decisions.append(_pipeline_decision(pipe.outer, card, irreducible=irreducible))
     p0, p1, p2, p3 = decisions
     simplest = None
-    if _worthwhile(p0, card):
+    if _worthwhile(p0):
         simplest = "P0"
-    elif _worthwhile(p1, card):
+    elif _worthwhile(p1):
         simplest = "P1"
-    elif _worthwhile(p2, card):
+    elif _worthwhile(p2):
         simplest = "P2"
     return _OwnerDecision(
-        decision_id=card.decision_id,
         tau=card.tau,
-        minimum_gain=card.minimum_gain,
+        minimum_gain=float(card.minimum_gain),
         pipelines=_Pipelines(P0=p0, P1=p1, P2=p2, P3=p3),
         smallest_useful_simple_pipeline=simplest,
-        h_adds_decision=p2.decision == "inconclusive" and _worthwhile(p3, card),
+        h_adds_decision=p2.decision == "inconclusive" and _worthwhile(p3),
         irreducible_at_features=irreducible,
-        current_action=card.current_action,
-        incremental_workflow_cost=card.incremental_workflow_cost,
-        cost_false_clear=card.cost_false_clear,
-        cost_false_rule_out=card.cost_false_rule_out,
-        cost_abstain=card.cost_abstain,
-        currency_or_loss_unit=card.currency_or_loss_unit,
+        current_action=_action_receipt("current_action", card.current_action),
+        incremental_workflow_cost=float(card.incremental_workflow_cost),
+        cost_false_clear=float(card.cost_false_clear),
+        cost_false_rule_out=float(card.cost_false_rule_out),
+        cost_abstain=float(card.cost_abstain),
         max_false_action_risk=card.max_false_action_risk,
-        alternatives=(card.action_if_clear, card.action_if_rule_out, card.action_if_inconclusive),
+        alternatives=(
+            _action_receipt("action_if_clear", card.action_if_clear),
+            _action_receipt("action_if_rule_out", card.action_if_rule_out),
+            _action_receipt("action_if_inconclusive", card.action_if_inconclusive),
+        ),
     )
 
 
@@ -699,7 +769,16 @@ _UNAVAILABLE = frozenset(
     }
 )
 _EXIT_CODES = {"completed": 0, "failed": 1, "research_only": 2, "unavailable": 2}
-_THRESHOLD_HEADER = ("scope", "name", "tau", "outer_lower", "outer_upper", "decision", "reason")
+_THRESHOLD_HEADER = (
+    "scope",
+    "name",
+    "tau",
+    "outer_lower",
+    "outer_upper",
+    "decision",
+    "reason",
+    "threshold_origin",
+)
 
 
 class _Request(_Strict):
@@ -721,26 +800,29 @@ def _artifact(out: Path, name: str, raw: bytes) -> str:
 
 
 def _threshold_rows(
-    bounds: _Bounds | None, tau: float | None
+    bounds: _Bounds | None, card: _CardCheck
 ) -> Iterable[tuple[str | float | None, ...]]:
     if bounds is None:
         return
+    tau = card.sensitivity_tau
+    card_origin = "eligible_card" if card.eligible is not None else "ineligible_card_sensitivity"
     thresholds = sorted(set(_THRESHOLDS) | ({tau} if tau is not None else set()))
     for scope, items in (("method", bounds.methods), ("pipeline", bounds.pipelines)):
         for name, band in items:
             for t in thresholds:
+                origin = "protocol_grid" if t in _THRESHOLDS else card_origin
                 if band.outer is None:
-                    yield scope, name, t, None, None, "inconclusive", "discordant_bands"
+                    yield scope, name, t, None, None, "inconclusive", "discordant_bands", origin
                 else:
                     lo, hi = band.outer
-                    yield scope, name, t, lo, hi, decide(band.outer, t), None
+                    yield scope, name, t, lo, hi, decide(band.outer, t), None, origin
 
 
-def _threshold_bytes(bounds: _Bounds | None, card: DecisionCard | None) -> bytes:
+def _threshold_bytes(bounds: _Bounds | None, card: _CardCheck) -> bytes:
     text = io.StringIO(newline="")
     writer = csv.writer(text, lineterminator="\n")
     writer.writerow(_THRESHOLD_HEADER)
-    writer.writerows(_threshold_rows(bounds, card.tau if card is not None else None))
+    writer.writerows(_threshold_rows(bounds, card))
     return text.getvalue().encode("utf-8")
 
 
@@ -788,11 +870,34 @@ def _check_digest_syntax(expected: str) -> None:
         raise _issue("invalid_expected_digest", "preflight", "expected_sha256")
 
 
-def _read_design(manifest: _CaseInput) -> bytes:
-    path = _local_path(manifest.design_ref, "unverified_trial_design", "preflight", "design_ref")
+def _read_design(path: Path) -> bytes:
     return _read(
         path, "unverified_trial_design", "unverified_trial_design", "preflight", "design_ref"
     )
+
+
+def _check_distinct_input(data: Path, resource: Path, coordinate: str) -> None:
+    try:
+        aliases = data == resource or data.samefile(resource)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise _issue("case_resource_check_error", "preflight", coordinate) from None
+    if aliases:
+        raise _issue("case_input_alias", "preflight", coordinate)
+
+
+def _checked_paths(request: _Request, manifest: _CaseInput) -> tuple[Path, Path | None]:
+    data = _local_path(manifest.csv_path, "invalid_case_path", "preflight", "csv_path")
+    design = None
+    if request.source == "owner_trial":
+        design = _local_path(
+            manifest.design_ref, "unverified_trial_design", "preflight", "design_ref"
+        )
+        _check_distinct_input(data, design, "design_ref")
+    if request.card is not None:
+        _check_distinct_input(data, request.card, "card")
+    return data, design
 
 
 def _assignment(design: _TrialDesign | None) -> dict[str, str | float | bool]:
@@ -808,7 +913,7 @@ def _write_packets(
     packet: _BoundsPacket,
     receipt: _InputReceipt,
     input_artifact_sha: str | None,
-    card: DecisionCard | None,
+    card: _CardCheck,
 ) -> _Receipts:
     if input_artifact_sha is None:
         input_artifact_sha = _artifact(out, "input_manifest.json", _json_bytes(receipt))
@@ -854,7 +959,8 @@ def _run(request: _Request, args: tuple[str, ...]) -> int:
     status: _Status = "completed"
     reason = None
     diagnostics: list[_Diagnostic] = []
-    card = bounds = owner = None
+    card = _CardCheck()
+    bounds = owner = None
     try:
         raw_manifest = _read(
             request.manifest,
@@ -868,21 +974,21 @@ def _run(request: _Request, args: tuple[str, ...]) -> int:
         _check_permission(manifest)
         receipt = receipt.model_copy(update={"permission_verified": True})
         _check_design_refs(manifest)
+        _check_digest_syntax(manifest.expected_sha256)
+        receipt = receipt.model_copy(update={"expected_csv_sha256": manifest.expected_sha256})
+        path, design_path = _checked_paths(request, manifest)
         design = None
-        if request.source == "owner_trial":
-            raw_design = _read_design(manifest)
+        if design_path is not None:
+            raw_design = _read_design(design_path)
             receipt = receipt.model_copy(update={"design_sha256": _sha(raw_design)})
             design = _validate(_TrialDesign, raw_design, "unverified_trial_design", "preflight")
             if design.arms[0] == design.arms[1]:
                 raise _issue("unverified_trial_design", "preflight", "arms")
         receipt = receipt.model_copy(update=_assignment(design))
-        _check_digest_syntax(manifest.expected_sha256)
-        receipt = receipt.model_copy(update={"expected_csv_sha256": manifest.expected_sha256})
-        card, card_digest, card_issue = _eligible_card(request.card, manifest, design)
-        if card_issue is not None:
-            diagnostics.append(card_issue)
-        receipt = receipt.model_copy(update={"card_sha256": card_digest})
-        path = _local_path(manifest.csv_path, "invalid_case_path", "preflight", "csv_path")
+        card = _eligible_card(request.card, manifest, design, started)
+        if card.issue is not None:
+            diagnostics.append(card.issue)
+        receipt = receipt.model_copy(update={"card_sha256": card.sha256})
         raw = _read(path, "missing_case_data", "case_read_error", "preflight", "csv")
         csv_digest = _sha(raw)
         receipt = receipt.model_copy(update={"csv_sha256": csv_digest})
@@ -890,8 +996,8 @@ def _run(request: _Request, args: tuple[str, ...]) -> int:
             raise _issue("digest_mismatch", "preflight", "expected_sha256")
         receipt = receipt.model_copy(update={"digest_verified": True})
         input_artifact_sha = _artifact(request.out, "input_manifest.json", _json_bytes(receipt))
-        bounds = _estimate(_read_rows(raw, request.source), request.source)
-        status, reason, owner = _assess(bounds, card, diagnostics)
+        bounds = _estimate(_read_rows(raw, request.source, design), request.source)
+        status, reason, owner = _assess(bounds, card.eligible, diagnostics)
     except StudyError as issue:
         reason = issue.reason
         diagnostics.append(_diagnostic(issue))
