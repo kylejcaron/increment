@@ -197,7 +197,9 @@ def test_nested_entry_fields_are_not_coerced(
         HoldoutSnapshot.model_validate(snapshot | {"entries": [entry]})
 
     assert error.value.code == code
-    assert error.value.context["field"] == field
+    assert error.value.context["field"] == (
+        "<unknown field>" if code == "model.field.unknown" else field
+    )
 
 
 @pytest.mark.parametrize("invalid_field", ["unit_id", "entered_at"])
@@ -222,6 +224,49 @@ def test_schema_refusals_do_not_echo_unit_identifiers(
     assert secret not in repr(error.value.context)
     assert secret not in str(error.value)
     assert secret not in str(error.value.__cause__)
+
+
+@pytest.mark.parametrize(
+    ("case", "loc", "code"),
+    [
+        ("missing_header", ("snapshot_ref",), "model.field.missing"),
+        (
+            "sdk_payload_extra",
+            ("memberships", 0, "payload", "<unknown field>"),
+            "model.field.unknown",
+        ),
+        ("unknown_header", ("<unknown field>",), "model.field.unknown"),
+    ],
+    ids=["missing_header", "sdk_payload_extra", "unknown_header"],
+)
+def test_snapshot_schema_refusals_redact_enclosing_and_embedded_values(
+    shopping: dict[str, Any], case: str, loc: tuple[str | int, ...], code: str
+) -> None:
+    raw = shopping["snapshot"]
+    secret = "private-account-7e39"
+    if case == "missing_header":
+        entry = raw["entries"][0] | {"unit_id": secret}
+        snapshot = {"entries": [entry]} | {
+            key: value for key, value in raw.items() if key not in {"entries", "snapshot_ref"}
+        }
+    elif case == "sdk_payload_extra":
+        row = raw["memberships"][0]
+        payload = row["payload"] | {"unit_id": secret}
+        snapshot = raw | {"memberships": [row | {"payload": payload}]}
+    else:
+        snapshot = raw | {secret: None}
+
+    with pytest.raises(InvalidRequestError) as error:
+        HoldoutSnapshot.model_validate_json(json.dumps(snapshot))
+
+    assert error.value.code == code
+    assert error.value.context["loc"] == loc
+    assert error.value.context["field"] == loc[-1]
+    assert error.value.context["value"] is None
+    assert secret not in str(error.value)
+    cause = error.value.__cause__
+    if isinstance(cause, ValidationError):
+        assert secret not in repr(cause.errors())
 
 
 def test_invalid_declaration_field_keeps_analyst_value(shopping: dict[str, Any]) -> None:

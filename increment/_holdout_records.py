@@ -12,7 +12,6 @@ from decimal import Decimal
 from operator import attrgetter
 from typing import (
     Annotated,
-    ClassVar,
     Literal,
     LiteralString,
     NamedTuple,
@@ -138,50 +137,74 @@ class _HoldoutRecord(CodedModel, BaseModel):
 class _PrivateEvidence(_HoldoutRecord):
     """Keep untrusted observation values out of schema diagnostics."""
 
-    _private_fields: ClassVar[frozenset[str] | None] = None
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     @model_validator(mode="wrap")
     @classmethod
-    def _protect_unit_ids(
+    def _protect_evidence(
         cls, data: object, validate: ModelWrapValidatorHandler[_PrivateEvidence]
     ) -> _PrivateEvidence:
         try:
             return validate(data)
         except ValidationError as error:
-            details = error.errors(include_url=False)
-            private = cls._private_fields
-            if private is not None and not any(
-                detail["loc"] and detail["loc"][0] in private for detail in details
-            ):
-                raise
+            # Missing fields can carry an entire enclosing record as their input.
             redacted = ValidationError.from_exception_data(
                 error.title,
-                [
-                    _schema_detail(
-                        detail,
-                        redact=private is None
-                        or bool(detail["loc"] and detail["loc"][0] in private),
-                    )
-                    for detail in details
-                ],
+                [_schema_detail(detail) for detail in error.errors(include_url=False)],
                 hide_input=True,
             )
         raise redacted
 
 
-def _schema_detail(detail: ErrorDetails, *, redact: bool) -> InitErrorDetails:
-    context = detail.get("ctx", {})
-    error_type: str | PydanticCustomError = detail["type"]
-    if "error" not in context:
-        error_type = PydanticCustomError(
-            cast(LiteralString, error_type), "{message}", {**context, "message": detail["msg"]}
-        )
-    return InitErrorDetails(
-        type=error_type,
-        loc=detail["loc"],
-        input=None if redact else detail["input"],
-        ctx=context,
+_UNKNOWN_FIELD = "<unknown field>"
+
+
+def _private_location(loc: tuple[str | int, ...], *, extra: bool) -> tuple[str | int, ...]:
+    safe_loc = tuple(
+        "<key>" if index and loc[index - 1] == "context" else part for index, part in enumerate(loc)
     )
+    return (*safe_loc[:-1], _UNKNOWN_FIELD) if extra and safe_loc else safe_loc
+
+
+def _schema_detail(detail: ErrorDetails) -> InitErrorDetails:
+    kind = detail["type"]
+    loc = _private_location(detail["loc"], extra=kind == "extra_forbidden")
+    context = detail.get("ctx", {})
+    if "error" in context:
+        embedded = context["error"]
+        if isinstance(embedded, InvalidRequestError):
+            safe_error = _private_coded_error(embedded, loc)
+            # The coded error now owns this path; a parent supplies only its own prefix.
+            loc = ()
+        else:
+            safe_error = ValueError("Invalid holdout evidence")
+        return InitErrorDetails(type=kind, loc=loc, input=None, ctx={"error": safe_error})
+    error_type = PydanticCustomError(
+        cast(LiteralString, kind), "{message}", {**context, "message": detail["msg"]}
+    )
+    return InitErrorDetails(type=error_type, loc=loc, input=None)
+
+
+def _private_coded_error(
+    original: InvalidRequestError, prefix: tuple[str | int, ...]
+) -> ValueError:
+    # Nested CodedModel validation may already have translated a field failure.
+    spec = MODEL_FIELD_REFUSALS.get(original.code)
+    if spec is None:
+        return InvalidRequestError(
+            "Invalid holdout evidence", code=original.code, context={"loc": prefix}
+        )
+    original_loc = cast("tuple[str | int, ...]", original.context["loc"])
+    extra = original.code == "model.field.unknown"
+    loc = (*prefix, *_private_location(original_loc, extra=extra))
+    safe_context = {
+        "model": original.context["model"],
+        "field": _UNKNOWN_FIELD if extra else original.context["field"],
+        "loc": loc,
+        "value": None,
+        "constraint": original.context["constraint"],
+    }
+    return spec.error_type(spec.render(**safe_context), code=spec.code, context=safe_context)
 
 
 class Terms(_HoldoutRecord):
@@ -449,10 +472,6 @@ class Outcome(_PrivateEvidence):
 
 class HoldoutSnapshot(_PrivateEvidence):
     """An as-of evidence export explicitly bound to one registration and window."""
-
-    _private_fields = frozenset(
-        {"entries", "memberships", "aliases", "decisions", "deliveries", "outcomes"}
-    )
 
     study_id: ID
     registration_ref: Ref
@@ -838,8 +857,6 @@ class ArmCounts(_HoldoutRecord):
 
 class RosterEvidence(_PrivateEvidence):
     """The original roster and its certified outcome evidence."""
-
-    _private_fields = frozenset({"members", "identity", "values"})
 
     members: tuple[RosterMember, ...]
     identity: tuple[IdentitySpan, ...]
