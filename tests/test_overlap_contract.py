@@ -5,13 +5,20 @@ import json
 import pickle
 from datetime import UTC, timedelta
 from fractions import Fraction
+from math import nextafter
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from increment.errors import CodedError
-from increment.semantics.overlap import OverlapCapture, OverlapEvidence, OverlapFactor, OverlapPlan
+from increment.semantics.overlap import (
+    OverlapCapture,
+    OverlapCell,
+    OverlapEvidence,
+    OverlapFactor,
+    OverlapPlan,
+)
 
 
 @pytest.fixture(scope="module")
@@ -75,18 +82,38 @@ def test_claims_lock_direction_margin_and_family(contract, change, field, reason
     assert caught.value.context == {"field": field, "reason": reason}
 
 
-def test_exact_weights_do_not_derive_the_rare_arm_by_subtraction(contract):
-    spec = copy.deepcopy(contract["evidence"]["plan"])
-    spec["a"].update(off_weight=1, on_weight=10**20)
-    plan = OverlapPlan.model_validate(spec)
-    assert plan.a.arm_probabilities == (Fraction(1, 1 + 10**20), Fraction(10**20, 1 + 10**20))
-    assert plan.cell_probabilities[0] == Fraction(3, 4 * (1 + 10**20))
-    assert sum(plan.cell_probabilities) == 1
-    spec["a"]["on_weight"] = 10**350
+def _evidence_with_target_count(contract, n_target):
+    raw = copy.deepcopy(contract["evidence"])
+    raw.pop("evidence_sha256")
+    raw["eligibility_counts"][3] = raw["gate_counts"][0] = n_target
+    for index in (1, 5):  # Cell 10 for each metric; cell 01 retains one unit.
+        raw["cells"][index].update(n_assigned=n_target - 1, n_observed=n_target - 1)
+    for row in raw["delivery_counts"][2:4]:
+        row["n_without_delivery"] = n_target - 1
+    return raw
+
+
+def test_maximum_exact_count_and_weight_round_trip(contract):
+    limit = contract["numeric_domain"]["max_exact_integer"]
+    raw = _evidence_with_target_count(contract, limit)
+    raw["plan"]["a"].update(off_weight=1, on_weight=limit)
+    plan = OverlapPlan.model_validate(raw["plan"])
+    raw["capture"]["law_sha256"] = plan.law_sha256
+    evidence = OverlapEvidence.model_validate(raw)
+    replay = OverlapEvidence.from_json(evidence.to_json(), expected_sha256=evidence.evidence_sha256)
+    assert replay.target_count == limit
+    assert replay.plan.a.arm_probabilities == (Fraction(1, 1 + limit), Fraction(limit, 1 + limit))
+    assert replay.plan.cell_probabilities[0] == Fraction(3, 4 * (1 + limit))
+    assert sum(replay.plan.cell_probabilities) == 1
+
+
+def test_weight_above_portable_integer_limit_is_refused(contract):
+    raw = copy.deepcopy(contract["evidence"]["plan"])
+    raw["a"]["on_weight"] = contract["numeric_domain"]["max_exact_integer"] + 1
     with pytest.raises(CodedError) as caught:
-        OverlapPlan.model_validate(spec)
-    assert caught.value.code == "overlap.law.unsupported"
-    assert caught.value.context["reason"] == "joint_probability_unrepresentable"
+        OverlapPlan.model_validate(raw)
+    assert caught.value.code == "overlap.plan.invalid"
+    assert caught.value.context == {"field": "on_weight", "reason": "invalid_value"}
 
 
 def test_boolean_weight_is_not_an_integer(contract):
@@ -202,17 +229,91 @@ def test_incomplete_cell_must_erase_the_survivors_center(contract):
     assert caught.value.context == {"role": "cells", "reason": "unusable_moments", "count": 1}
 
 
-def test_oversized_count_refuses_instead_of_overflowing_binary_center(contract):
-    raw = copy.deepcopy(contract["evidence"])
-    raw.pop("evidence_sha256")
-    count = 10**600
-    raw["eligibility_counts"][3] = raw["gate_counts"][0] = count + 1
-    raw["cells"][1].update(n_assigned=count, n_observed=count)
-    raw["cells"][5].update(n_assigned=count, n_observed=count, n_success=count // 2)
+def test_large_integral_float_center_round_trips_without_accepting_alternate_bytes(contract):
+    raw = _evidence_with_target_count(contract, 3)
+    center = dict(contract["numeric_domain"]["large_center"])
+    anchor_token = center.pop("anchor_token")
+    raw["cells"][1].update(center)
+    evidence = OverlapEvidence.model_validate(raw)
+    wire = evidence.to_json()
+    assert f'"anchor":{anchor_token},' in wire
+    replay = OverlapEvidence.from_json(wire, expected_sha256=evidence.evidence_sha256)
+    assert {key: getattr(replay.cells[1], key) for key in center} == center
+
+    alternate = wire.replace(f'"anchor":{anchor_token},', '"anchor":1e16,')
+    with pytest.raises(CodedError) as caught:
+        OverlapEvidence.from_json(alternate, expected_sha256=evidence.evidence_sha256)
+    assert caught.value.context == {"field": "payload", "reason": "noncanonical_encoding"}
+
+
+def test_count_above_portable_integer_limit_is_refused(contract):
+    count = contract["numeric_domain"]["max_exact_integer"] + 1
+    raw = _evidence_with_target_count(contract, count)
     with pytest.raises(CodedError) as caught:
         OverlapEvidence.model_validate(raw)
     assert caught.value.code == "overlap.evidence.invalid"
-    assert caught.value.context["reason"] == "invalid_value"
+    assert caught.value.context == {
+        "role": "eligibility_counts",
+        "reason": "invalid_value",
+        "count": 1,
+    }
+
+
+@pytest.mark.parametrize("m2", [0.25, 871.0])
+def test_minimum_anchored_center_refuses_impossible_centered_ss(contract, m2):
+    raw = dict(
+        contract["evidence"]["cells"][1], n_assigned=30, n_observed=30, mean_delta=1.0, m2=m2
+    )
+    with pytest.raises(CodedError) as caught:
+        OverlapCell.model_validate(raw)
+    assert caught.value.context == {"role": "cells", "reason": "inconsistent_moments", "count": 1}
+
+
+@pytest.mark.parametrize(
+    "offsets",
+    [(0, *(1,) * 29), (*(0,) * 29, 1), (0, 1.25 * 2**-537), (0, 1e154)],
+    ids=["minimum-ss", "maximum-ss", "subnormal-ss", "large-ss"],
+)
+def test_minimum_anchored_center_accepts_valid_endpoints(
+    contract, offsets: tuple[int | float, ...]
+):
+    n = len(offsets)
+    exact = tuple(Fraction(offset) for offset in offsets)
+    delta = sum(exact) / n
+    m2 = sum((offset - delta) ** 2 for offset in exact)
+    raw = dict(
+        contract["evidence"]["cells"][1],
+        n_assigned=n,
+        n_observed=n,
+        anchor=0,
+        mean_delta=float(delta),
+        m2=float(m2),
+    )
+    cell = OverlapCell.model_validate(raw)
+    assert cell.m2 == float(m2) > 0
+
+
+@pytest.mark.parametrize("quantity", ["mean_delta", "m2"])
+def test_binary_moments_must_equal_the_exact_count_projection(contract, quantity):
+    n = 10**14
+    success = n - 10
+    raw = _evidence_with_target_count(contract, n + 1)
+    cell = raw["cells"][5]
+    cell.update(
+        n_success=success,
+        mean_delta=float(Fraction(success, n)),
+        m2=float(Fraction(success * 10, n)),
+    )
+    assert OverlapEvidence.model_validate(raw).cells[5].n_success == success
+
+    cell[quantity] = nextafter(1.0 if quantity == "mean_delta" else cell["m2"], float("inf"))
+    with pytest.raises(CodedError) as caught:
+        OverlapEvidence.model_validate(raw)
+    assert caught.value.context == {
+        "role": "cells",
+        "reason": "binary_moments_mismatch",
+        "count": 1,
+    }
 
 
 def test_model_construction_cannot_bypass_cell_integrity(contract):
@@ -278,3 +379,47 @@ def test_direct_model_json_rejects_duplicate_keys(contract):
     with pytest.raises(CodedError) as caught:
         OverlapEvidence.model_validate_json(payload)
     assert caught.value.context == {"field": "payload", "reason": "duplicate_key"}
+
+
+def test_nested_nonstring_key_does_not_leak_through_schema_location(contract):
+    raw = _evidence_with_target_count(contract, 2)
+    private_key = 987_654_321
+    raw["cells"][1][private_key] = "synthetic-private-record"
+    with pytest.raises(CodedError) as caught:
+        OverlapEvidence.model_validate(raw)
+    assert caught.value.code == "overlap.evidence.invalid"
+    cause = caught.value.__cause__
+    assert isinstance(cause, ValidationError)
+    detail = cause.errors()[0]
+    assert (detail["loc"], detail["type"]) == (("cells", 1, "<unknown field>"), "invalid_key")
+    assert str(private_key) not in cause.json()
+
+
+@pytest.mark.parametrize("entry", ["model", "wire"])
+def test_numeric_range_does_not_expose_a_metric_from_unverified_input(contract, entry):
+    raw = _evidence_with_target_count(contract, 2)
+    sentinel = "synthetic-unverified-metric"
+    for cell in raw["cells"][:4]:
+        cell["metric"] = sentinel
+    raw["plan"]["metrics"][0]["name"] = sentinel
+    for claim in raw["plan"]["claims"][:3]:
+        claim["metric"] = sentinel
+    raw["cells"][1].update(anchor=1e308, mean_delta=1e308, m2=1)
+
+    with pytest.raises(CodedError) as caught:
+        if entry == "model":
+            OverlapEvidence.model_validate(raw)
+        else:
+            _replay(contract, json.dumps(raw))
+    if entry == "model":
+        assert caught.value.code == "overlap.numeric.range"
+        assert caught.value.context == {"metric": "unverified", "quantity": "mean"}
+    else:
+        assert caught.value.code == "overlap.format.invalid"
+        assert caught.value.context["reason"] == "invalid_value"
+    cause = caught.value.__cause__
+    assert isinstance(cause, ValidationError)
+    diagnostic = cause.errors()[0]["ctx"]["error"]
+    assert diagnostic.code == "overlap.numeric.range"
+    assert diagnostic.context["quantity"] == "mean"
+    assert sentinel not in cause.json()

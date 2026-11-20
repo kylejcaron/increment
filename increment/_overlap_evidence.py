@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from hashlib import sha256
-from math import isfinite
+from math import isfinite, sqrt, ulp
 from types import MappingProxyType
 from typing import (
     Annotated,
@@ -70,6 +70,7 @@ DELIVERY_KEYS = tuple(
     (cell, factor) for cell in (*CELL_IDS, "outside_target") for factor in FACTOR_IDS
 )
 OVERLAP_FORMAT = 1
+MAX_EXACT_INTEGER = 2**53 - 1  # The canonical JSON integer range.
 
 
 class OverlapColumn(NamedTuple):
@@ -207,7 +208,7 @@ def _instant_json(value: datetime) -> str:
 
 Identity = Annotated[str, StringConstraints(strict=True, min_length=1), AfterValidator(_scalar)]
 Sha256 = Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-f]{64}$")]
-Count = Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
+Count = Annotated[StrictInt, Field(ge=0, le=MAX_EXACT_INTEGER)]
 Instant = Annotated[
     datetime, BeforeValidator(_utc_microsecond), PlainSerializer(_instant_json, when_used="json")
 ]
@@ -265,7 +266,7 @@ class OverlapModel(CodedModel, BaseModel):
                 cls._invalid_field(str(field), reason)
             except CodedError as exc:
                 failure = exc
-        if kind == "extra_forbidden" and loc:
+        if kind in {"extra_forbidden", "invalid_key"} and loc:
             loc = (*loc[:-1], "<unknown field>")
         # Only the schema path and kind survive; even a missing field may carry a whole record.
         redacted = InitErrorDetails(
@@ -355,12 +356,38 @@ class OverlapCell(OverlapModel):
             ("mean", anchor + delta),
         ):
             if not isfinite(value):
-                refuse(NUMERIC_RANGE, metric=self.metric, quantity=quantity)
+                refuse(NUMERIC_RANGE, metric="unverified", quantity=quantity)
         if delta < 0 or m2 < 0 or ((delta == 0) != (m2 == 0)):
             self._invalid_field("m2", "inconsistent_moments")
         if self.n_observed == 1 and (delta != 0 or m2 != 0):
             self._invalid_field("m2", "singleton_moments")
+        if delta > 0 and not _feasible_centered_ss(self.n_observed, delta, m2):
+            self._invalid_field("m2", "inconsistent_moments")
         return self
+
+
+def _feasible_centered_ss(n: int, delta: float, m2: float) -> bool:
+    # The minimum anchor forces one zero offset. At a fixed mean residual,
+    # the other offsets are either equal (min SS) or all but one zero (max SS).
+    ratio = sqrt(m2) / delta
+    # Compare in square-root scale so neither delta² nor the SS bounds overflow.
+    # Allow rounding to the nearest SS even when its half ULP is subnormal.
+    half_ulp_relative = 0.5 * (ulp(m2) / m2)
+    lower = sqrt((n / (n - 1)) / (1 + half_ulp_relative))
+    upper = sqrt((n * (n - 1)) / (1 - half_ulp_relative))
+    # Mean and centered SS are independently computed by the reducers.
+    slack = 1e-12
+    return lower * (1 - slack) <= ratio <= upper * (1 + slack)
+
+
+def overlap_binary_moments(n_observed: int, n_success: int) -> tuple[float, float, float]:
+    """Return the minimum anchor, mean residual, and M2 for a complete binary cell."""
+    if n_observed <= 0 or not 0 <= n_success <= n_observed:
+        refuse(EVIDENCE_INVALID, role="cells", reason="invalid_success_count", count=1)
+    failure = n_observed - n_success
+    if failure == 0:
+        return 1.0, 0.0, 0.0
+    return 0.0, n_success / n_observed, n_success * failure / n_observed
 
 
 def overlap_digest(

@@ -7,7 +7,7 @@ certify a producer's independence, preregistration, or snapshot promises.
 from __future__ import annotations
 
 from fractions import Fraction
-from math import isclose, isfinite
+from math import isfinite
 from typing import Annotated, Literal, NoReturn, Self
 
 from pydantic import Field, StrictFloat, StrictInt
@@ -19,6 +19,7 @@ from increment._overlap_evidence import (
     FACTOR_IDS,
     FEED_ROLES,
     GATE_KEYS,
+    MAX_EXACT_INTEGER,
     OVERLAP_FORMAT,
     Count,
     FeedRole,
@@ -28,6 +29,7 @@ from increment._overlap_evidence import (
     OverlapIngress,
     OverlapModel,
     Sha256,
+    overlap_binary_moments,
     overlap_digest,
     overlap_wire_payload,
 )
@@ -68,15 +70,15 @@ OverlapTarget = Literal["jointly_eligible", "jointly_eligible_and_enrolled"]
 
 
 class OverlapFactor(OverlapModel):
-    """Archived identity and positive relative arm weights for one target."""
+    """Archived identity and integer arm weights from 1 through ``2**53 - 1``."""
 
     target: Identity
     experiment: Identity
     revision: Identity
     off: Identity
     on: Identity
-    off_weight: Annotated[StrictInt, Field(gt=0)]
-    on_weight: Annotated[StrictInt, Field(gt=0)]
+    off_weight: Annotated[StrictInt, Field(gt=0, le=MAX_EXACT_INTEGER)]
+    on_weight: Annotated[StrictInt, Field(gt=0, le=MAX_EXACT_INTEGER)]
     arm_draw_id: Identity
     layer: Identity | None
 
@@ -365,6 +367,7 @@ class OverlapEvidence(OverlapModel):
     Gate counts follow the A-major disposition cross-tab among both eligible.
     Delivery counts follow cell order, then A/B, with outside-target last.
     Cells follow declared metrics, then 00, 10, 01, 11.
+    All counters fit the exact canonical JSON integer domain (0 to ``2**53 - 1``).
     """
 
     plan: OverlapPlan
@@ -406,19 +409,8 @@ class OverlapEvidence(OverlapModel):
             refuse(EVIDENCE_INVALID, role="cells", reason="missing_success_count", count=1)
         if cell.anchor is None:
             return
-        n = cell.n_observed
-        failure = n - success
-        anchor = float(failure == 0)
-        m2 = success * failure / n
-        delta = 0.0 if failure == 0 else success / n
-        mean_delta, centered_ss = cell.mean_delta, cell.m2
-        if (
-            cell.anchor != anchor
-            or mean_delta is None
-            or centered_ss is None
-            or not isclose(mean_delta, delta, rel_tol=1e-12)
-            or not isclose(centered_ss, m2, rel_tol=1e-12)
-        ):
+        observed = (cell.anchor, cell.mean_delta, cell.m2)
+        if observed != overlap_binary_moments(cell.n_observed, success):
             refuse(EVIDENCE_INVALID, role="cells", reason="binary_moments_mismatch", count=1)
 
     def _validate_overlap(self) -> Self:
@@ -473,7 +465,7 @@ class OverlapEvidence(OverlapModel):
             reason = exc.context.get("reason", "invalid_value")
             cause = exc.__cause__
         else:
-            actual = overlap_digest("evidence", body)
+            actual = evidence.evidence_sha256
             if claimed != actual or expected_sha256 != actual:
                 refuse(FORMAT_INVALID, field="evidence_sha256", reason="digest_mismatch")
             if evidence.to_json() != payload:

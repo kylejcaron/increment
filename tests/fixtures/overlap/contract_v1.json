@@ -570,6 +570,15 @@
       "on": "on"
     }
   },
+  "numeric_domain": {
+    "max_exact_integer": 9007199254740991,
+    "large_center": {
+      "anchor": 10000000000000000.0,
+      "mean_delta": 2.0,
+      "m2": 8.0,
+      "anchor_token": "10000000000000000"
+    }
+  },
   "expected": {
     "cell_order": [
       "00",
