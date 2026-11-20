@@ -437,3 +437,110 @@ def test_scoped_offer_before_march_entry_is_not_postassignment_drift(
 
     assert roster.n_eligible_entries == 6
     assert roster.reasons[0].code == "holdout.entry_selection_unresolved"
+
+
+def test_foreign_rule_cannot_classify_a_prefreeze_entry_as_ineligible(
+    comparison: Comparison,
+) -> None:
+    study, window, snapshot = comparison
+    snapshot = _snapshot(
+        snapshot,
+        entries=tuple(
+            {**dict(row), "eligible": False, "rule_ref": "eligibility/another-population/1"}
+            if row.unit_id == "acct:4"
+            else row
+            for row in snapshot.entries
+        ),
+        memberships=tuple(row for row in snapshot.memberships if row.unit_id != "acct:4"),
+        outcomes=tuple(row for row in snapshot.outcomes if row.unit_id != "acct:4"),
+    )
+
+    roster = resolve_roster(study, window, snapshot)
+
+    assert [reason.code for reason in roster.reasons] == ["holdout.entry_selection_unresolved"]
+    assert roster.n_ineligible_entries == 0
+
+
+def test_tied_first_entries_at_freeze_do_not_affect_the_frozen_cohort(
+    comparison: Comparison,
+) -> None:
+    study, window, snapshot = comparison
+    boundary = next(row for row in snapshot.entries if row.unit_id == "acct:5")
+    snapshot = _snapshot(
+        snapshot,
+        entries=(*snapshot.entries, {**dict(boundary), "entry_id": "entry-5-other"}),
+    )
+
+    roster = resolve_roster(study, window, snapshot)
+    panel = observed_outcomes(window, snapshot, roster)
+
+    assert not roster.reasons
+    assert roster.n_after_freeze == 1
+    assert panel is not None
+    assert panel.held_out == (3, 3, 10.0)
+    assert panel.eligible == (3, 3, 12.0)
+
+
+def test_prefreeze_assignment_conflicts_with_the_entry_at_freeze(
+    comparison: Comparison,
+) -> None:
+    study, window, snapshot = comparison
+    snapshot = _snapshot(
+        snapshot,
+        memberships=tuple(
+            {**dict(row), "assigned_at": "2025-03-09T23:59:59Z"} if row.unit_id == "acct:5" else row
+            for row in snapshot.memberships
+        ),
+    )
+
+    roster = resolve_roster(study, window, snapshot)
+
+    assert [reason.code for reason in roster.reasons] == ["holdout.entry_selection_unresolved"]
+    assert roster.n_after_freeze == 1
+    assert all(member.original_id != "acct:5" for member in roster.members)
+
+
+def test_successor_id_used_before_rename_is_unmatched_not_a_competing_assignment(
+    comparison: Comparison,
+) -> None:
+    study, window, snapshot = comparison
+    original = next(row for row in snapshot.memberships if row.unit_id == "acct:2")
+    stray = {
+        **dict(original),
+        "event_id": "sdk/unmatched",
+        "entry_id": "entry-unknown",
+        "unit_id": "acct:successor",
+    }
+    snapshot = _snapshot(
+        snapshot,
+        aliases=(_rename("acct:2", "acct:successor"),),
+        memberships=(*snapshot.memberships, stray),
+        outcomes=tuple(
+            {**dict(row), "unit_id": "acct:successor"} if row.unit_id == "acct:2" else row
+            for row in snapshot.outcomes
+        ),
+    )
+
+    roster = resolve_roster(study, window, snapshot)
+
+    assert [reason.code for reason in roster.reasons] == ["holdout.original_assignment_unresolved"]
+    assert roster.n_unclassified == 0
+    member = next(member for member in roster.members if member.original_id == "acct:2")
+    assert member.assigned_at == _at("2025-01-02T00:00:00Z")
+    assert member.group == "held_out"
+
+
+def test_unclassified_measured_entrant_withholds_both_observed_means(
+    comparison: Comparison,
+) -> None:
+    study, window, snapshot = comparison
+    snapshot = _snapshot(
+        snapshot, memberships=tuple(row for row in snapshot.memberships if row.unit_id != "acct:4")
+    )
+
+    roster = resolve_roster(study, window, snapshot)
+    panel = observed_outcomes(window, snapshot, roster)
+
+    assert panel is not None
+    assert panel.held_out == (3, 3, None)
+    assert panel.eligible == (2, 2, None)

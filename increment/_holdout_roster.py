@@ -44,6 +44,7 @@ IDENTITY_AMBIGUOUS = RefusalSpec(
 )
 
 _ENTRY_SELECTION = "holdout.entry_selection_unresolved"
+_ORIGINAL_ASSIGNMENT = "holdout.original_assignment_unresolved"
 _OUTCOME_MISMATCH = "portfolio.impact.measurement_mismatch"
 _OUTCOME_DUPLICATE = "portfolio.impact.duplicate_unit"
 
@@ -70,16 +71,21 @@ def _events_as_of[T: (Entry, MembershipEvent)](
     return unique
 
 
-def _first_entries(entries: dict[str, Entry], cut: datetime) -> tuple[dict[str, Entry], set[str]]:
+def _first_entries(
+    entries: dict[str, Entry], cut: datetime, freeze: datetime
+) -> tuple[dict[str, Entry], set[str]]:
     first: dict[str, Entry] = {}
     uncertain: set[str] = set()
     for entry in sorted(entries.values(), key=lambda row: (row.entered_at, row.entry_id)):
         if entry.entered_at > cut:
-            uncertain.add(entry.unit_id)
+            if entry.entered_at < freeze:
+                uncertain.add(entry.unit_id)
             continue
         earlier = first.setdefault(entry.unit_id, entry)
-        if entry.entered_at == earlier.entered_at and (
-            entry.entry_id != earlier.entry_id or entry.entered_at > entry.available_at
+        if (
+            entry.entered_at < freeze
+            and entry.entered_at == earlier.entered_at
+            and (entry.entry_id != earlier.entry_id or entry.entered_at > entry.available_at)
         ):
             uncertain.add(entry.unit_id)
     return first, uncertain
@@ -164,24 +170,31 @@ def _preentry_offers(
 def _membership_claims(
     events: dict[str, MembershipEvent],
     entries: dict[str, Entry],
+    first: dict[str, Entry],
     included: dict[str, Entry],
     identity: dict[str, IdentitySpan],
     freeze: datetime,
-) -> tuple[dict[str, list[MembershipEvent]], bool]:
+) -> tuple[dict[str, list[MembershipEvent]], bool, bool]:
     claims: dict[str, list[MembershipEvent]] = defaultdict(list)
-    unmatched = False
+    unmatched = crosses_freeze = False
     for event in events.values():
-        span = identity.get(event.unit_id)
-        by_unit = span.original_id if span is not None else None
+        by_unit = _original_at(identity, event.unit_id, event.assigned_at)
         transaction = entries.get(event.entry_id)
         by_entry = transaction.unit_id if transaction is not None else None
         if by_unit is not None and by_unit in included:
             claims[by_unit].append(event)
         if by_entry is not None and by_entry != by_unit and by_entry in included:
             claims[by_entry].append(event)
-        if by_unit is None and by_entry is None and event.assigned_at < freeze:
-            unmatched = True
-    return claims, unmatched
+        if event.assigned_at < freeze:
+            # A known later first entry contradicts this clock; it does not resolve the ID.
+            if any(
+                unit is not None and unit in first and first[unit].entered_at >= freeze
+                for unit in (event.unit_id, by_entry)
+            ):
+                crosses_freeze = True
+            elif by_unit is None and by_entry is None:
+                unmatched = True
+    return claims, unmatched, crosses_freeze
 
 
 class _ArchiveReplay:
@@ -334,20 +347,31 @@ def resolve_roster(
     events = _events_as_of(
         study, snapshot.memberships, snapshot.as_of, "memberships", lambda row: row.event_id
     )
-    first, uncertain = _first_entries(entries, snapshot.as_of)
+    first, uncertain = _first_entries(entries, snapshot.as_of, freeze)
     identity = _identity_index(study, first, snapshot)
-    included = {
-        unit: entry for unit, entry in first.items() if entry.eligible and entry.entered_at < freeze
-    }
+    included: dict[str, Entry] = {}
+    n_ineligible = n_after_freeze = 0
+    for unit, entry in first.items():
+        if entry.entered_at >= freeze:
+            n_after_freeze += 1
+            continue
+        if entry.rule_ref != study.eligibility_rule_ref:
+            uncertain.add(unit)
+        if entry.eligible:
+            included[unit] = entry
+        elif unit not in uncertain:
+            n_ineligible += 1
     early = _preentry_offers(study, snapshot, first, identity)
-    claims, unresolved = _membership_claims(events, entries, included, identity, freeze)
-    selection = study.entry_basis != "pretreatment_first_entry" or bool(uncertain)
+    claims, unresolved, crosses_freeze = _membership_claims(
+        events, entries, first, included, identity, freeze
+    )
+    selection = study.entry_basis != "pretreatment_first_entry" or bool(uncertain) or crosses_freeze
     replay = _ArchiveReplay(study, snapshot, index_configs(study, snapshot))
     missing_membership = False
     invalid_window = False
     members: list[RosterMember] = []
     for unit, entry in sorted(included.items()):
-        if unit in uncertain or unit in early or entry.rule_ref != study.eligibility_rule_ref:
+        if unit in uncertain or unit in early:
             selection = True
             continue
         if not (candidates := claims.get(unit)):
@@ -378,7 +402,7 @@ def resolve_roster(
                 or not freeze <= snapshot.entry_complete_through <= snapshot.as_of,
                 "holdout.entry_coverage_unknown",
             ),
-            (unresolved, "holdout.original_assignment_unresolved"),
+            (unresolved, _ORIGINAL_ASSIGNMENT),
             (missing_membership, "holdout.membership_missing"),
         )
         if applies
@@ -418,11 +442,9 @@ def resolve_roster(
         held_out=held_out,
         eligible=eligible,
         n_eligible_entries=len(included),
-        n_ineligible_entries=sum(
-            not entry.eligible and entry.entered_at < freeze for entry in first.values()
-        ),
+        n_ineligible_entries=n_ineligible,
         n_unclassified=len(included) - len(members),
-        n_after_freeze=sum(entry.entered_at >= freeze for entry in first.values()),
+        n_after_freeze=n_after_freeze,
         reasons=tuple(reasons),
     )
 
@@ -449,7 +471,9 @@ def observed_outcomes(
     if snapshot.as_of != window.terms.final_as_of:
         return None
     values: dict[Group, list[float]] = {"held_out": [], "eligible": []}
-    if not any(reason.code == _ENTRY_SELECTION for reason in roster.reasons):
+    if roster.n_unclassified == 0 and not any(
+        reason.code in {_ENTRY_SELECTION, _ORIGINAL_ASSIGNMENT} for reason in roster.reasons
+    ):
         groups = {member.original_id: member.group for member in roster.members}
         for unit, value in roster.values:
             values[groups[unit]].append(value)
