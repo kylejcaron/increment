@@ -238,6 +238,42 @@ def test_unavailable_retains_distinct_support_reasons_in_cell_order(template):
     assert all(row.reasons == ((None, "no_target"),) for row in empty.rows)
 
 
+@pytest.mark.parametrize("all_claims", [False, True])
+def test_no_target_with_subnormal_alpha_preserves_claims(template, all_claims):
+    u = math.ulp(0.0)
+    evidence = _evidence(template, [[], [], [], []], alpha=u, all_claims=all_claims)
+    result = analyze_overlap(evidence)
+    assert result.family_members == evidence.plan.claims
+    assert result.family_sha256 == evidence.plan.family_sha256
+    assert result.alpha == u
+    assert len(result.rows) == 8
+    assert all(row.reasons == ((None, "no_target"),) for row in result.rows)
+    joint = _row(result, "joint_launch")
+    assert joint.alpha_member == (None if all_claims else u)
+    assert joint.lower is joint.upper is None
+    assert result.joint_decision == "insufficient_evidence"
+    assert OverlapResult.from_json(result.to_json(), expected_sha256=result.result_sha256) == result
+
+
+@pytest.mark.parametrize(("units", "reported_units"), [(11, 3), (15, 4)])
+def test_fitted_subnormal_tail_does_not_round_above_exact_allocation(
+    template, units, reported_units
+):
+    u = math.ulp(0.0)
+    evidence = _evidence(template, [[0.0, 2.0] * 16] * 4, alpha=units * u)
+    plan = evidence.plan.model_copy(update={"claims": evidence.plan.claims[4:]})
+    result = analyze_overlap(evidence.model_copy(update={"plan": plan}))
+    joint = _row(result, "joint_launch")
+    assert len(result.family_members) == 4
+    assert joint.availability == "decided"
+    assert joint.alpha_member == reported_units * u  # The display value rounds to nearest.
+    assert joint.df == pytest.approx(62)
+    # The exact tail is units*u/8; the greatest binary64 tail within budget is u.
+    # Base R: sqrt(2/31) * qt(-1074*log(2), 62, lower.tail=FALSE, log.p=TRUE).
+    width = 312411.07575925888
+    assert (joint.lower, joint.upper) == pytest.approx((-width, width), rel=1e-10)
+
+
 def test_adjacent_float_locations_and_extreme_tails(template):
     base = 1e16
     groups = [[base + shift, base + shift + 2] * 31 for shift in (0, 2, 4, 6)]

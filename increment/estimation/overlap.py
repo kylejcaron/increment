@@ -104,6 +104,7 @@ class OverlapRow(OverlapModel):
     p_boundary_adj: _Probability | None
     alternative: _Alternative | None
     boundary: _Finite | None
+    # Registered allocation rounded for display; null if it rounds to zero.
     alpha_member: _Probability | None
     availability: _Availability
     reasons: Ordered[tuple[Ordered[_ReasonPair], ...]]
@@ -284,11 +285,16 @@ def _raw_boundary(metric: OverlapMetric, claim: OverlapClaim) -> float:
     return -metric.margin_abs if metric.better == "higher" else metric.margin_abs
 
 
-def _member_alpha(plan: OverlapPlan) -> float:
-    alpha = plan.alpha / len(plan.claims)
-    if alpha / 2 == 0.0:
-        two_sided_critical_value(student_t_isf, alpha, 1.0, what=_INTERVAL)
-    return alpha
+def _member_alpha(plan: OverlapPlan) -> float | None:
+    return plan.alpha / len(plan.claims) or None
+
+
+def _member_tail(plan: OverlapPlan) -> float:
+    # Allocate the one-sided tail directly from the registered alpha. Never
+    # round it above the family budget, including at the subnormal boundary.
+    exact = Fraction(plan.alpha) / (2 * len(plan.claims))
+    tail = float(exact)
+    return math.nextafter(tail, 0.0) if tail > exact else tail
 
 
 def _boundary_p(estimate: float, boundary: float, se: float, df: float) -> float | None:
@@ -306,7 +312,8 @@ def _row(
     claim: OverlapClaim | None,
     *,
     target_count: int,
-    alpha: float,
+    alpha: float | None,
+    tail: float,
     members: int,
 ) -> OverlapRow:
     weights = _float_weights(exact_weights)
@@ -323,7 +330,8 @@ def _row(
     if claim is not None and se is not None:
         assert df is not None and estimate is not None and boundary is not None
         try:
-            critical = two_sided_critical_value(student_t_isf, alpha, df, what=_INTERVAL)
+            # Doubling and the helper's halving recover the certified tail exactly.
+            critical = two_sided_critical_value(student_t_isf, 2.0 * tail, df, what=_INTERVAL)
         except ArithmeticError:
             refuse(NUMERIC_RANGE, metric=metric.name, quantity="critical_value")
         lower, upper = wald_bounds(estimate, critical, se, what=_INTERVAL)
@@ -365,6 +373,7 @@ def _overlap_rows(
 ) -> tuple[OverlapRow, ...]:
     """Estimate and decide from trusted metric-major cells, without a source receipt."""
     alpha = _member_alpha(plan)
+    tail = _member_tail(plan)
     weights = _exact_weights(plan)
     claims = {(claim.metric, claim.contrast): claim for claim in plan.claims}
     return tuple(
@@ -376,6 +385,7 @@ def _overlap_rows(
             claims.get((metric.name, contrast)),
             target_count=target_count,
             alpha=alpha,
+            tail=tail,
             members=len(claims),
         )
         for metric, group in zip(plan.metrics, _cell_groups(cells), strict=True)
@@ -522,6 +532,8 @@ class OverlapResult(OverlapModel):
             self._invalid_field("rows", "row_order")
         claims = {(c.metric, c.contrast): c for c in self.plan.claims}
         alpha = _member_alpha(self.plan)
+        if any(row.lower is not None for row in self.rows) and not _member_tail(self.plan):
+            self._invalid_field("rows", "unresolvable_tail")
         weights = _exact_weights(self.plan)
         size = len(CONTRAST_IDS)
         for i, (metric, group) in enumerate(
