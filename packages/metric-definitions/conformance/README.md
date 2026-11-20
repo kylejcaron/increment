@@ -22,7 +22,7 @@ export TERRINE_PYTHON="$TERRINE_CHECKOUT/.venv/bin/python"
 uv pip install --no-deps --reinstall-package increment-metrics --python "$INCREMENT_PYTHON" "$wheel_dir"/*.whl
 uv pip install --no-deps --reinstall-package increment-metrics --python "$TERRINE_PYTHON" "$wheel_dir"/*.whl
 node_version=$(jq -r '.malloy.node' "$receipt")
-npm exec --yes --package="node@$node_version" -- npm ci --prefix "$core/conformance/malloy"
+npm exec --yes --package="node@$node_version" --package=npm@10.9.4 -- npm ci --prefix "$core/conformance/malloy"
 MALLOY_NODE=$(npm exec --yes --package="node@$node_version" -- which node)
 export MALLOY_NODE
 uv run --project "$core" --locked --python "$python_version" pytest -q "$core/conformance/test_three_consumers.py"
