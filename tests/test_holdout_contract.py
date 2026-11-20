@@ -18,6 +18,7 @@ from increment._holdout_records import (
     HoldoutSnapshot,
     HoldoutStudy,
     HoldoutWindow,
+    Outcome,
     RosterEvidence,
     check_config_binding,
     check_registration,
@@ -262,6 +263,26 @@ def test_snapshot_schema_refusals_redact_enclosing_and_embedded_values(
     assert error.value.code == code
     assert error.value.context["loc"] == loc
     assert error.value.context["field"] == loc[-1]
+    assert error.value.context["value"] is None
+    assert secret not in str(error.value)
+    cause = error.value.__cause__
+    if isinstance(cause, ValidationError):
+        assert secret not in repr(cause.errors())
+
+
+def test_direct_outcome_cross_field_refusal_redacts_its_cause(shopping: dict[str, Any]) -> None:
+    secret = "private-account-7e39"
+    outcome = shopping["snapshot"]["outcomes"][0] | {
+        "unit_id": secret,
+        "state": "measured",
+        "value": None,
+    }
+
+    with pytest.raises(InvalidRequestError) as error:
+        Outcome.model_validate(outcome)
+
+    assert error.value.code == "model.field.type"
+    assert error.value.context["loc"] == ("value",)
     assert error.value.context["value"] is None
     assert secret not in str(error.value)
     cause = error.value.__cause__

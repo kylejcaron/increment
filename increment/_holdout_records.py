@@ -540,13 +540,21 @@ def _serialize_rows(
 
 
 def _invalid_field(model: str, field: str, constraint: str) -> NoReturn:
-    refuse(
-        MODEL_FIELD_REFUSALS["model.field.type"],
-        model=model,
-        field=field,
-        loc=(field,),
-        value=None,
-        constraint=constraint,
+    spec = MODEL_FIELD_REFUSALS["model.field.type"]
+    context = {
+        "model": model,
+        "field": field,
+        "loc": (field,),
+        "value": None,
+        "constraint": constraint,
+    }
+    error = spec.error_type(spec.render(**context), code=spec.code, context=context)
+    # An after-validator can run outside the privacy wrap. Supply the cause
+    # explicitly so Pydantic cannot attach the entire invalid record as input.
+    raise ValidationError.from_exception_data(
+        model,
+        [InitErrorDetails(type="value_error", loc=(), input=None, ctx={"error": error})],
+        hide_input=True,
     )
 
 
