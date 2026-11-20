@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from scipy.stats import nct, t
+from scipy.stats import nct, norm, t
 
 from increment._holdout_records import HoldoutStudy, HoldoutWindow
 from increment.errors import InvalidRequestError
-from increment.power.holdout import plan_holdout
+from increment.power.holdout import _plan_holdout_precision
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +55,7 @@ def test_unequal_allocation_at_long_horizon(
     width: float,
     power: float,
 ) -> None:
-    result = plan_holdout(
+    result = _plan_holdout_precision(
         *comparison,
         projected_assignments=1000,
         projected_by_freeze=mature,
@@ -91,7 +91,7 @@ def test_unequal_allocation_at_long_horizon(
 def test_separately_registered_balanced_plan(
     comparison: tuple[HoldoutStudy, HoldoutWindow],
 ) -> None:
-    result = plan_holdout(
+    result = _plan_holdout_precision(
         *_registered_rate(comparison, "0.50"),
         projected_assignments=1000,
         projected_by_freeze=1000,
@@ -109,7 +109,7 @@ def test_separately_registered_balanced_plan(
 def test_planned_width_at_matched_three_per_arm(
     comparison: tuple[HoldoutStudy, HoldoutWindow],
 ) -> None:
-    result = plan_holdout(
+    result = _plan_holdout_precision(
         *_registered_rate(comparison, "0.50"),
         projected_assignments=6,
         projected_by_freeze=6,
@@ -126,7 +126,7 @@ def test_planned_width_at_matched_three_per_arm(
 def test_unequal_variances_use_both_noncentral_t_tails(
     comparison: tuple[HoldoutStudy, HoldoutWindow], effect: float
 ) -> None:
-    result = plan_holdout(
+    result = _plan_holdout_precision(
         *comparison,
         projected_assignments=1000,
         projected_by_freeze=1000,
@@ -150,15 +150,18 @@ def test_projection_floors_exact_probability_regardless_of_decimal_context(
     comparison: tuple[HoldoutStudy, HoldoutWindow],
 ) -> None:
     with localcontext(prec=2):
-        result = plan_holdout(
+        result = _plan_holdout_precision(
             *comparison,
-            projected_assignments=10**18 + 9,
+            projected_assignments=9_007_199_254_740_989,
             projected_by_freeze=999,
             variance_eligible=4,
             variance_held_out=4,
             effect=0.5,
         )
-    assert (result.n_assigned_held_out, result.n_assigned_eligible) == (10**17, 9 * 10**17 + 9)
+    assert (result.n_assigned_held_out, result.n_assigned_eligible) == (
+        900_719_925_474_098,
+        8_106_479_329_266_891,
+    )
     assert (result.n_mature_held_out, result.n_mature_eligible) == (99, 900)
 
 
@@ -166,7 +169,7 @@ def test_projection_floors_exact_probability_regardless_of_decimal_context(
 def test_planned_standard_error_survives_variance_scale_extremes(
     comparison: tuple[HoldoutStudy, HoldoutWindow], variance: float
 ) -> None:
-    result = plan_holdout(
+    result = _plan_holdout_precision(
         *_registered_rate(comparison, "0.50"),
         projected_assignments=6,
         projected_by_freeze=6,
@@ -183,7 +186,7 @@ def test_planned_standard_error_survives_variance_scale_extremes(
 def test_single_positive_variance_uses_its_own_degrees_of_freedom(
     comparison: tuple[HoldoutStudy, HoldoutWindow],
 ) -> None:
-    result = plan_holdout(
+    result = _plan_holdout_precision(
         *comparison,
         projected_assignments=1000,
         projected_by_freeze=1000,
@@ -210,7 +213,7 @@ def test_unavailable_precision_keeps_counts_and_null_numbers(
     counts: tuple[int, int],
     reason: str,
 ) -> None:
-    result = plan_holdout(
+    result = _plan_holdout_precision(
         *comparison,
         projected_assignments=1000,
         projected_by_freeze=mature,
@@ -249,7 +252,7 @@ def test_invalid_projection_is_refused(
     }
     kwargs[field] = value
     with pytest.raises(InvalidRequestError) as error:
-        plan_holdout(*comparison, **kwargs)
+        _plan_holdout_precision(*comparison, **kwargs)
     assert error.value.code == code
     assert error.value.context["field"] == field
 
@@ -260,7 +263,7 @@ def test_planning_requires_original_registered_terms(
     study, window = comparison
     study = study.model_copy(update={"registered_window": None})
     with pytest.raises(InvalidRequestError) as error:
-        plan_holdout(
+        _plan_holdout_precision(
             study,
             window,
             projected_assignments=1000,
@@ -283,7 +286,7 @@ def test_planning_cannot_offer_iid_precision_for_a_dependent_law(
     study, window = comparison
     study = HoldoutStudy.model_validate(study.model_dump() | {"allocation_scheme": "clustered"})
     with pytest.raises(ValueError):
-        plan_holdout(
+        _plan_holdout_precision(
             study,
             window,
             projected_assignments=1000,
@@ -294,17 +297,51 @@ def test_planning_cannot_offer_iid_precision_for_a_dependent_law(
         )
 
 
-def test_unrepresentable_mature_counts_are_refused(
-    comparison: tuple[HoldoutStudy, HoldoutWindow],
+@pytest.mark.parametrize(
+    ("assignments", "mature"),
+    [
+        pytest.param(2**53, 1000, id="recruitment_over_limit"),
+        pytest.param(int(sys.float_info.max), int(sys.float_info.max), id="max_float"),
+        pytest.param(10**308, 10**308, id="extreme_finite_count"),
+    ],
+)
+def test_counts_outside_exact_unit_range_are_refused(
+    comparison: tuple[HoldoutStudy, HoldoutWindow], assignments: int, mature: int
 ) -> None:
     with pytest.raises(InvalidRequestError) as error:
-        plan_holdout(
+        _plan_holdout_precision(
             *comparison,
-            projected_assignments=10**310,
-            projected_by_freeze=10**310,
+            projected_assignments=assignments,
+            projected_by_freeze=mature,
             variance_eligible=4,
             variance_held_out=4,
             effect=0.5,
         )
     assert error.value.code == "holdout.precision_unrepresentable"
     assert error.value.context == {"window_id": "mar-orders"}
+
+
+def test_largest_supported_projection_retains_exact_split_and_finite_power(
+    comparison: tuple[HoldoutStudy, HoldoutWindow],
+) -> None:
+    held_out, eligible = 900_719_925_474_099, 8_106_479_329_266_892
+    a, b = 4 / eligible, 4 / held_out
+    se = math.sqrt(a + b)
+    df = (a + b) ** 2 / (a**2 / (eligible - 1) + b**2 / (held_out - 1))
+    # At this df, the t reference agrees with the normal limit at the test tolerance.
+    critical = norm.isf(0.025)
+    power = norm.sf(critical - 2) + norm.cdf(-critical - 2)
+    result = _plan_holdout_precision(
+        *comparison,
+        projected_assignments=2**53 - 1,
+        projected_by_freeze=2**53 - 1,
+        variance_eligible=4,
+        variance_held_out=4,
+        effect=2 * se,
+    )
+
+    assert (result.n_assigned_held_out, result.n_assigned_eligible) == (held_out, eligible)
+    assert (result.n_mature_held_out, result.n_mature_eligible) == (held_out, eligible)
+    assert (result.standard_error, result.df, result.interval_width, result.power) == pytest.approx(
+        (se, df, 2 * critical * se, power), rel=1e-10, abs=0
+    )

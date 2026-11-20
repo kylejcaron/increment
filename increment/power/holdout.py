@@ -20,7 +20,6 @@ from increment.errors import (
     CodedModel,
     InvalidRequestError,
     RefusalSpec,
-    _safe_error_value,
     refuse,
 )
 from increment.estimation._tails import student_t_isf, two_sided_critical_value
@@ -33,15 +32,17 @@ if TYPE_CHECKING:
 
 
 _ALPHA = 0.05
+# Keep adjacent unit counts distinguishable through the binary64 calculation.
+_MAX_PROJECTED_UNITS = 2**53 - 1
 _PRECISION_UNAVAILABLE = "holdout.precision_unavailable"
 _PRECISION_UNREPRESENTABLE = RefusalSpec(
     "holdout.precision_unrepresentable",
     InvalidRequestError,
-    template="The projected mature counts for {window_id!r} exceed the numerical range for precision.",
+    template=f"Window {{window_id!r}} allows at most {_MAX_PROJECTED_UNITS:,} projected units.",
 )
 
 
-class HoldoutProjection(CodedModel, BaseModel):
+class _HoldoutProjection(CodedModel, BaseModel):
     """Projected counts and outcome-scale assumptions."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -54,21 +55,16 @@ class HoldoutProjection(CodedModel, BaseModel):
 
 
 def _welch_plan(
-    projection: HoldoutProjection, n_eligible: int, n_held_out: int, window_id: str
+    projection: _HoldoutProjection, n_eligible: int, n_held_out: int
 ) -> tuple[float, float, float, float]:
     # Take roots before dividing so subnormal variances can still contribute to SE.
-    try:
-        s1 = math.sqrt(projection.variance_eligible) / math.sqrt(n_eligible)
-        s0 = math.sqrt(projection.variance_held_out) / math.sqrt(n_held_out)
-    except OverflowError:
-        refuse(_PRECISION_UNREPRESENTABLE, window_id=window_id)
+    s1 = math.sqrt(projection.variance_eligible) / math.sqrt(n_eligible)
+    s0 = math.sqrt(projection.variance_held_out) / math.sqrt(n_held_out)
     se = math.hypot(s1, s0)
     scale = max(s1, s0)
     df = welch_satterthwaite_df(
         (s1 / scale) ** 2, float(n_eligible - 1), (s0 / scale) ** 2, float(n_held_out - 1)
     )
-    if not math.isfinite(df):
-        refuse(_PRECISION_UNREPRESENTABLE, window_id=window_id)
     critical = two_sided_critical_value(student_t_isf, _ALPHA, df, what="holdout interval")
     nc = projection.effect / se
     power = _scalar_power_from_nc(nc, alternative="two-sided", tail_alpha=_ALPHA / 2, dof=df)
@@ -77,7 +73,7 @@ def _welch_plan(
     return se, df, 2 * critical * se, power
 
 
-def plan_holdout(
+def _plan_holdout_precision(
     study: HoldoutStudy,
     window: HoldoutWindow,
     *,
@@ -93,26 +89,29 @@ def plan_holdout(
     in units of the declared outcome (squared for variances). The Welch reference
     provides a plug-in interval width and noncentral-t power at projected counts,
     not the expected width or power averaged over random allocations.
+    Both projected totals must fit the exact unit-count range (at most 2**53 - 1).
     """
     require_registration(study, window)
     if check_design(study) is not None:
         raise ValueError(
             "Holdout precision requires independent assignment and a supported design."
         )
-    projection = HoldoutProjection(
+    projection = _HoldoutProjection(
         projected_assignments=projected_assignments,
         projected_by_freeze=projected_by_freeze,
         variance_eligible=variance_eligible,
         variance_held_out=variance_held_out,
         effect=effect,
     )
+    if max(projection.projected_assignments, projection.projected_by_freeze) > _MAX_PROJECTED_UNITS:
+        refuse(_PRECISION_UNREPRESENTABLE, window_id=window.window_id)
     if projection.projected_by_freeze > projection.projected_assignments:
         refuse(
             MODEL_FIELD_REFUSALS["model.field.range"],
-            model="HoldoutProjection",
+            model=_HoldoutProjection.__name__,
             field="projected_by_freeze",
             loc=("projected_by_freeze",),
-            value=_safe_error_value(projection.projected_by_freeze),
+            value=projection.projected_by_freeze,
             constraint="must not exceed projected_assignments",
         )
 
@@ -128,9 +127,7 @@ def plan_holdout(
     elif projection.variance_held_out == projection.variance_eligible == 0:
         reason = "zero_variance"
     else:
-        se, df, width, power = _welch_plan(
-            projection, n_mature_eligible, n_mature_held_out, window.window_id
-        )
+        se, df, width, power = _welch_plan(projection, n_mature_eligible, n_mature_held_out)
 
     terms = window.terms
     return HoldoutPrecision(
