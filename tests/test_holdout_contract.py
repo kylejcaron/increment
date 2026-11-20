@@ -1,6 +1,8 @@
 """The original registration, later lock and separately exported evidence bind."""
 
 import json
+import pickle
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -10,10 +12,13 @@ import pytest
 from pydantic import ValidationError
 
 from increment._holdout_records import (
+    ArmCounts,
     ConfigRevision,
+    HoldoutReason,
     HoldoutSnapshot,
     HoldoutStudy,
     HoldoutWindow,
+    RosterEvidence,
     check_config_binding,
     check_registration,
     check_snapshot_binding,
@@ -52,6 +57,48 @@ def test_lock_cannot_change_the_january_comparison(
         "window_id": "mar-orders",
         "fields": ("end",),
     }
+
+
+def test_changed_terms_cannot_hide_a_lock_that_predates_registration(
+    comparison: tuple[HoldoutStudy, HoldoutWindow],
+) -> None:
+    study, window = comparison
+    lock = window.model_dump(mode="json")
+    lock["locked_at"] = "2024-12-31T23:59:59Z"
+    lock["terms"]["outcome_id"] = "revenue"
+
+    with pytest.raises(InvalidRequestError) as error:
+        check_registration(study, HoldoutWindow.model_validate(lock))
+
+    assert error.value.code == "holdout.registration_mismatch"
+    assert error.value.context == {"study_id": "shopping-25", "field": "locked_at"}
+
+
+@pytest.mark.parametrize("fractional_field", ["registered_at", "locked_at"])
+def test_a_lock_earlier_in_the_same_microsecond_cannot_be_rounded_to_registration(
+    shopping: dict[str, Any], fractional_field: str
+) -> None:
+    raw_study = shopping["study"] | {
+        "registered_at": (
+            "2025-01-01T00:00:00.0000011Z"
+            if fractional_field == "registered_at"
+            else "2025-01-01T00:00:00.0000010Z"
+        )
+    }
+    raw_window = shopping["window"] | {
+        "locked_at": (
+            "2025-01-01T00:00:00.0000010Z"
+            if fractional_field == "registered_at"
+            else "2025-01-01T00:00:00.0000009Z"
+        )
+    }
+    with pytest.raises(InvalidRequestError) as error:
+        study = HoldoutStudy.model_validate(raw_study)
+        window = HoldoutWindow.model_validate(raw_window)
+        check_registration(study, window)
+
+    assert error.value.code == "model.field.type"
+    assert error.value.context["field"] == fractional_field
 
 
 def test_absent_original_slot_is_a_descriptive_finding(
@@ -153,6 +200,38 @@ def test_nested_entry_fields_are_not_coerced(
     assert error.value.context["field"] == field
 
 
+@pytest.mark.parametrize("invalid_field", ["unit_id", "entered_at"])
+def test_schema_refusals_do_not_echo_unit_identifiers(
+    shopping: dict[str, Any], invalid_field: str
+) -> None:
+    raw = shopping["snapshot"]
+    secret = "private-account-7e39"
+    entry = raw["entries"][0] | {"unit_id": secret}
+    if invalid_field == "unit_id":
+        entry["unit_id"] = [secret]
+        expected_code = "model.field.type"
+    else:
+        del entry["entered_at"]
+        expected_code = "model.field.missing"
+
+    with pytest.raises(InvalidRequestError) as error:
+        HoldoutSnapshot.model_validate_json(json.dumps(raw | {"entries": [entry]}))
+
+    assert error.value.code == expected_code
+    assert error.value.context["field"] == invalid_field
+    assert secret not in repr(error.value.context)
+    assert secret not in str(error.value)
+    assert secret not in str(error.value.__cause__)
+
+
+def test_invalid_declaration_field_keeps_analyst_value(shopping: dict[str, Any]) -> None:
+    with pytest.raises(InvalidRequestError) as error:
+        HoldoutStudy.model_validate(shopping["study"] | {"scope_kind": "feature-family"})
+
+    assert error.value.code == "model.field.literal"
+    assert error.value.context["value"] == "feature-family"
+
+
 def test_transport_retains_opaque_ids_exact_decimals_and_utc(shopping: dict[str, Any]) -> None:
     raw = shopping["snapshot"]
     entry = raw["entries"][0] | {
@@ -178,6 +257,50 @@ def test_transport_retains_opaque_ids_exact_decimals_and_utc(shopping: dict[str,
     )
     with pytest.raises(ValidationError):
         restored_entry.unit_id = "renamed"  # ty: ignore[invalid-assignment]
+
+
+@pytest.mark.parametrize("field", ["entries", "components"])
+def test_positional_json_filters_select_before_canonical_ordering(
+    shopping: dict[str, Any], field: str
+) -> None:
+    model: HoldoutSnapshot | HoldoutStudy
+    if field == "entries":
+        raw = shopping["snapshot"]
+        model = HoldoutSnapshot.model_validate(raw | {field: raw[field][:2][::-1]})
+        key, requested, first = "entry_id", "entry-2", "entry-1"
+    else:
+        raw = shopping["study"]
+        model = HoldoutStudy.model_validate(raw | {field: raw[field][::-1]})
+        key, requested, first = "launch_id", "B", "A"
+    include = {field: {0: {key}}}
+    exclude = {field: {-1: True}}
+
+    assert json.loads(model.model_dump_json())[field][0][key] == first
+    assert model.model_dump(include=include)[field] == ({key: requested},)
+    assert model.model_dump(mode="json", include=include)[field] == [{key: requested}]
+    assert json.loads(model.model_dump_json(exclude=exclude))[field][0][key] == requested
+
+
+def test_revalidating_a_copied_snapshot_freezes_rows_again(shopping: dict[str, Any]) -> None:
+    snapshot = HoldoutSnapshot.model_validate(shopping["snapshot"])
+    entries = list(snapshot.entries[:1])
+    copied = snapshot.model_copy(update={"entries": entries})
+
+    validated = HoldoutSnapshot.model_validate(copied)
+    entries.clear()
+
+    assert isinstance(validated.entries, tuple)
+    assert validated.entries[0].entry_id == "entry-1"
+
+
+def test_revalidating_a_snapshot_checks_copied_nested_rows(shopping: dict[str, Any]) -> None:
+    snapshot = HoldoutSnapshot.model_validate(shopping["snapshot"])
+    malformed = snapshot.entries[0].model_copy(update={"eligible": 1})
+    with pytest.raises(InvalidRequestError) as error:
+        HoldoutSnapshot.model_validate(snapshot.model_copy(update={"entries": (malformed,)}))
+
+    assert error.value.code == "model.field.type"
+    assert error.value.context["field"] == "eligible"
 
 
 @pytest.mark.parametrize(
@@ -269,6 +392,68 @@ def test_a_new_archive_cannot_change_registered_assignment_law_or_scope(
     assert error.value.context == {"study_id": "shopping-25", "field": binding}
 
 
+def _layered_archive(
+    snapshot: HoldoutSnapshot, raw_sdk: str, experiments: list[dict[str, object]]
+) -> ConfigRevision:
+    sdk = json.loads(raw_sdk)
+    sdk["experiments"] = experiments
+    sdk["holdouts"][0]["targets"] = ["shopping-layer"]
+    sdk["layers"] = [
+        {
+            "key": "shopping-layer",
+            "ranges": [
+                {"experiment": experiment["key"], "start_bps": i * 1000, "end_bps": (i + 1) * 1000}
+                for i, experiment in enumerate(experiments)
+            ],
+        }
+    ]
+    return ConfigRevision.model_validate(
+        snapshot.configs[0].model_dump() | {"sdk_json": json.dumps(sdk)}
+    )
+
+
+def test_layer_target_alone_does_not_register_even_a_single_experiment(
+    shopping: dict[str, Any],
+) -> None:
+    study = HoldoutStudy.model_validate(
+        shopping["study"]
+        | {"scope_kind": "feature", "components": [{"launch_id": "A", "target": "shopping-layer"}]}
+    )
+    snapshot = HoldoutSnapshot.model_validate(shopping["snapshot"])
+    sdk = shopping["snapshot"]["configs"][0]["sdk_json"]
+    config = _layered_archive(snapshot, sdk, json.loads(sdk)["experiments"][:1])
+    with pytest.raises(InvalidRequestError) as error:
+        check_config_binding(study, snapshot, config)
+    assert error.value.code == "holdout.registration_mismatch"
+    assert error.value.context == {"study_id": "shopping-25", "field": "components"}
+
+
+@pytest.mark.parametrize("expansion", [True, False], ids=["expansion", "replacement"])
+def test_registered_sdk_layer_rejects_a_new_experiment_under_the_same_target(
+    shopping: dict[str, Any], expansion: bool
+) -> None:
+    study = HoldoutStudy.model_validate(
+        shopping["study"]
+        | {
+            "components": [
+                {"launch_id": "A", "target": "shopping-layer", "experiment_key": "shopping-a"},
+                {"launch_id": "B", "target": "shopping-layer", "experiment_key": "shopping-b"},
+            ]
+        }
+    )
+    snapshot = HoldoutSnapshot.model_validate(shopping["snapshot"])
+    sdk = shopping["snapshot"]["configs"][0]["sdk_json"]
+    original = json.loads(sdk)["experiments"]
+    check_config_binding(study, snapshot, _layered_archive(snapshot, sdk, original))
+    new = original[1] | {"key": "shopping-c"}
+    changed = [*(original if expansion else original[:1]), new]
+
+    with pytest.raises(InvalidRequestError) as error:
+        check_config_binding(study, snapshot, _layered_archive(snapshot, sdk, changed))
+    assert error.value.code == "holdout.registration_mismatch"
+    assert error.value.context == {"study_id": "shopping-25", "field": "components"}
+
+
 def test_same_archive_ref_cannot_attest_different_policy_content(
     shopping: dict[str, Any], comparison: tuple[HoldoutStudy, HoldoutWindow]
 ) -> None:
@@ -285,3 +470,65 @@ def test_same_archive_ref_cannot_attest_different_policy_content(
 
     assert error.value.code == "holdout.registration_mismatch"
     assert error.value.context == {"study_id": "shopping-25", "field": "configs"}
+
+
+def test_identical_archive_can_reactivate_without_filling_the_gap(
+    shopping: dict[str, Any], comparison: tuple[HoldoutStudy, HoldoutWindow]
+) -> None:
+    study, _ = comparison
+    raw = shopping["snapshot"]
+    original = raw["configs"][0]
+    first = original | {"effective_to": "2025-02-01T00:00:00Z"}
+    second = original | {"effective_from": "2025-03-01T00:00:00Z"}
+    snapshot = HoldoutSnapshot.model_validate(raw | {"configs": [second, first, first]})
+
+    index = index_configs(study, snapshot)
+    assert len(index.activations["r1"]) == 2
+    assert index.at("r1", datetime(2025, 1, 31, tzinfo=UTC)) == snapshot.configs[1]
+    assert index.at("r1", datetime(2025, 2, 1, tzinfo=UTC)) is None
+    assert index.at("r1", datetime(2025, 3, 1, tzinfo=UTC)) == snapshot.configs[0]
+    assert index.at("r1", datetime(2025, 4, 12, tzinfo=UTC)) is None
+
+
+def test_nonidentical_overlapping_activations_are_ambiguous(
+    shopping: dict[str, Any], comparison: tuple[HoldoutStudy, HoldoutWindow]
+) -> None:
+    study, _ = comparison
+    raw = shopping["snapshot"]
+    original = raw["configs"][0]
+    overlap = original | {"effective_to": "2025-02-01T00:00:00Z"}
+    snapshot = HoldoutSnapshot.model_validate(raw | {"configs": [original, overlap]})
+
+    with pytest.raises(InvalidRequestError) as error:
+        index_configs(study, snapshot)
+    assert error.value.code == "holdout.registration_mismatch"
+    assert error.value.context == {"study_id": "shopping-25", "field": "configs"}
+
+
+def test_nested_reason_context_survives_copy_and_pickle() -> None:
+    context = {"fields": ["end"]}
+    evidence = RosterEvidence(
+        members=(),
+        identity=(),
+        values=(),
+        held_out=ArmCounts(),
+        eligible=ArmCounts(),
+        n_eligible_entries=0,
+        n_ineligible_entries=0,
+        n_unclassified=0,
+        n_after_freeze=0,
+        reasons=(
+            HoldoutReason.model_validate(
+                {"code": "holdout.window_not_registered", "context": context}
+            ),
+        ),
+    )
+    context["fields"].append("outcome_id")
+
+    for restored in (
+        evidence.model_copy(deep=True),
+        deepcopy(evidence),
+        pickle.loads(pickle.dumps(evidence)),
+    ):
+        assert restored == evidence
+        assert restored.reasons[0].context == {"fields": ("end",)}

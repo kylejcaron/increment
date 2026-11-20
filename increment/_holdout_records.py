@@ -4,13 +4,23 @@ from __future__ import annotations
 
 import json
 import re
+from bisect import bisect_right
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from operator import attrgetter
-from types import MappingProxyType
-from typing import Annotated, Literal, NamedTuple, NoReturn, NotRequired, TypedDict, cast
+from typing import (
+    Annotated,
+    ClassVar,
+    Literal,
+    LiteralString,
+    NamedTuple,
+    NoReturn,
+    NotRequired,
+    TypedDict,
+    cast,
+)
 
 from pydantic import (
     BaseModel,
@@ -18,15 +28,18 @@ from pydantic import (
     ConfigDict,
     Field,
     FieldSerializationInfo,
+    ModelWrapValidatorHandler,
     SerializerFunctionWrapHandler,
     StrictBool,
     StringConstraints,
+    ValidationError,
     field_serializer,
     field_validator,
     model_validator,
 )
-from pydantic_core import PydanticCustomError
+from pydantic_core import ErrorDetails, InitErrorDetails, PydanticCustomError
 
+from increment._immutable import _FrozenMapping
 from increment.assignment import AllocationEvaluator, compile_allocation
 from increment.errors import (
     MODEL_FIELD_REFUSALS,
@@ -51,8 +64,15 @@ REGISTRATION_MISMATCH = RefusalSpec(
 )
 
 
+_SUBMICROSECOND = re.compile(r"[.,][0-9]{6}[0-9]*[1-9]")
+
+
 def _timestamp(value: object) -> datetime:
     if isinstance(value, str):
+        if _SUBMICROSECOND.search(value):
+            raise PydanticCustomError(
+                "datetime_type", "expected a timestamp representable to the microsecond"
+            )
         try:
             value = datetime.fromisoformat(value)
         except ValueError:
@@ -112,7 +132,56 @@ P0 = Annotated[
 
 
 class _HoldoutRecord(CodedModel, BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+
+class _PrivateEvidence(_HoldoutRecord):
+    """Keep untrusted observation values out of schema diagnostics."""
+
+    _private_fields: ClassVar[frozenset[str] | None] = None
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _protect_unit_ids(
+        cls, data: object, validate: ModelWrapValidatorHandler[_PrivateEvidence]
+    ) -> _PrivateEvidence:
+        try:
+            return validate(data)
+        except ValidationError as error:
+            details = error.errors(include_url=False)
+            private = cls._private_fields
+            if private is not None and not any(
+                detail["loc"] and detail["loc"][0] in private for detail in details
+            ):
+                raise
+            redacted = ValidationError.from_exception_data(
+                error.title,
+                [
+                    _schema_detail(
+                        detail,
+                        redact=private is None
+                        or bool(detail["loc"] and detail["loc"][0] in private),
+                    )
+                    for detail in details
+                ],
+                hide_input=True,
+            )
+        raise redacted
+
+
+def _schema_detail(detail: ErrorDetails, *, redact: bool) -> InitErrorDetails:
+    context = detail.get("ctx", {})
+    error_type: str | PydanticCustomError = detail["type"]
+    if "error" not in context:
+        error_type = PydanticCustomError(
+            cast(LiteralString, error_type), "{message}", {**context, "message": detail["msg"]}
+        )
+    return InitErrorDetails(
+        type=error_type,
+        loc=detail["loc"],
+        input=None if redact else detail["input"],
+        ctx=context,
+    )
 
 
 class Terms(_HoldoutRecord):
@@ -134,6 +203,7 @@ class Component(_HoldoutRecord):
 
     launch_id: ID
     target: ID
+    experiment_key: ID | None = None
 
 
 class HoldoutStudy(_HoldoutRecord):
@@ -171,9 +241,14 @@ class HoldoutStudy(_HoldoutRecord):
             _mismatch(self, "components")
         return self
 
-    @field_serializer("components", when_used="json")
-    def _ordered_components(self, value: tuple[Component, ...]) -> tuple[Component, ...]:
-        return tuple(sorted(value, key=attrgetter("launch_id", "target")))
+    @field_serializer("components", mode="wrap", when_used="json")
+    def _ordered_components(
+        self,
+        value: tuple[Component, ...],
+        serialize: SerializerFunctionWrapHandler,
+        info: FieldSerializationInfo,
+    ) -> object:
+        return _serialize_rows(value, serialize, info, "launch_id", "target")
 
 
 class HoldoutWindow(_HoldoutRecord):
@@ -187,7 +262,7 @@ class HoldoutWindow(_HoldoutRecord):
     terms: Terms
 
 
-class Entry(_HoldoutRecord):
+class Entry(_PrivateEvidence):
     """A common-entry census observation independent of assignment logging."""
 
     entry_id: ID
@@ -218,7 +293,7 @@ class ExternalMembership(_HoldoutRecord):
     assignment_ref: Ref
 
 
-class MembershipEvent(_HoldoutRecord):
+class MembershipEvent(_PrivateEvidence):
     """A membership payload tied to a specific common entry and assignment law."""
 
     event_id: ID
@@ -241,9 +316,9 @@ class MembershipEvent(_HoldoutRecord):
                 else ExternalMembership
             )
             return model.model_validate(value)
-        if not isinstance(value, (SDKMembership, ExternalMembership)):
-            raise PydanticCustomError("membership_type", "expected an SDK or external record")
-        return value
+        if isinstance(value, (SDKMembership, ExternalMembership)):
+            return type(value).model_validate(value)
+        raise PydanticCustomError("membership_type", "expected an SDK or external record")
 
 
 class ExternalPolicy(_HoldoutRecord):
@@ -280,7 +355,7 @@ class ConfigRevision(_HoldoutRecord):
         return self
 
 
-class Alias(_HoldoutRecord):
+class Alias(_PrivateEvidence):
     """A source-attested successor for an assignment-unit identity."""
 
     old_id: ID
@@ -318,7 +393,7 @@ class Coverage(_HoldoutRecord):
     available_at: Timestamp
 
 
-class DecisionEvent(_HoldoutRecord):
+class DecisionEvent(_PrivateEvidence):
     """An assignment decision, not proof of delivery."""
 
     event_id: ID
@@ -332,7 +407,7 @@ class DecisionEvent(_HoldoutRecord):
     nonbaseline_assigned: StrictBool
 
 
-class Delivery(_HoldoutRecord):
+class Delivery(_PrivateEvidence):
     """An actual delivery, separate from the assignment decision."""
 
     event_id: ID
@@ -346,7 +421,7 @@ class Delivery(_HoldoutRecord):
     nonbaseline: StrictBool
 
 
-class Outcome(_HoldoutRecord):
+class Outcome(_PrivateEvidence):
     """A whole-window value or an explicit observation failure for one unit."""
 
     unit_id: ID
@@ -372,8 +447,12 @@ class Outcome(_HoldoutRecord):
         return self
 
 
-class HoldoutSnapshot(_HoldoutRecord):
+class HoldoutSnapshot(_PrivateEvidence):
     """An as-of evidence export explicitly bound to one registration and window."""
+
+    _private_fields = frozenset(
+        {"entries", "memberships", "aliases", "decisions", "deliveries", "outcomes"}
+    )
 
     study_id: ID
     registration_ref: Ref
@@ -414,7 +493,7 @@ class HoldoutSnapshot(_HoldoutRecord):
         serialize: SerializerFunctionWrapHandler,
         info: FieldSerializationInfo,
     ) -> object:
-        return serialize(_ordered(rows, *_ROW_KEYS[info.field_name]))
+        return _serialize_rows(rows, serialize, info, *_ROW_KEYS[info.field_name])
 
 
 _ROW_KEYS = {
@@ -430,8 +509,15 @@ _ROW_KEYS = {
 }
 
 
-def _ordered[Record: _HoldoutRecord](rows: tuple[Record, ...], *keys: str) -> tuple[Record, ...]:
-    return tuple(sorted(rows, key=attrgetter(*keys)))
+def _serialize_rows(
+    rows: tuple[_HoldoutRecord, ...],
+    serialize: SerializerFunctionWrapHandler,
+    info: FieldSerializationInfo,
+    *keys: str,
+) -> object:
+    if info.include is None and info.exclude is None:
+        rows = tuple(sorted(rows, key=attrgetter(*keys)))
+    return serialize(rows)
 
 
 def _invalid_field(model: str, field: str, constraint: str) -> NoReturn:
@@ -463,12 +549,8 @@ class RegistrationFinding:
 
     @property
     def context(self) -> Mapping[str, object]:
-        return MappingProxyType(
-            {
-                "study_id": self.study_id,
-                "window_id": self.window_id,
-                "fields": self.fields,
-            }
+        return _FrozenMapping(
+            {"study_id": self.study_id, "window_id": self.window_id, "fields": self.fields}
         )
 
     def raise_error(self) -> NoReturn:
@@ -490,10 +572,12 @@ def _check_population(study: HoldoutStudy, terms: Terms) -> None:
         _mismatch(study, "population_version")
 
 
-def _check_clock(study: HoldoutStudy, window: HoldoutWindow) -> None:
-    terms = window.terms
-    if not study.registered_at <= window.locked_at < terms.freeze_at:
+def _check_lock_clock(study: HoldoutStudy, window: HoldoutWindow) -> None:
+    if not study.registered_at <= window.locked_at < window.terms.freeze_at:
         _mismatch(study, "locked_at")
+
+
+def _check_window_clock(study: HoldoutStudy, terms: Terms) -> None:
     if terms.freeze_at > terms.start:
         _mismatch(study, "freeze_at")
     if terms.start >= terms.end:
@@ -506,11 +590,13 @@ def check_registration(study: HoldoutStudy, window: HoldoutWindow) -> Registrati
     """Bind the lock to independently registered terms, without moving assignment dates."""
     _check_header(study, window)
     _check_population(study, window.terms)
+    _check_lock_clock(study, window)
     original = study.registered_window
     if original is None:
-        _check_clock(study, window)
+        _check_window_clock(study, window.terms)
         return RegistrationFinding(study.study_id, window.window_id, ("registered_window",))
     _check_population(study, original)
+    _check_window_clock(study, original)
     fields = tuple(
         field
         for field in sorted(Terms.model_fields)
@@ -518,7 +604,6 @@ def check_registration(study: HoldoutStudy, window: HoldoutWindow) -> Registrati
     )
     if fields:
         return RegistrationFinding(study.study_id, window.window_id, fields)
-    _check_clock(study, window)
     return None
 
 
@@ -539,17 +624,66 @@ def check_snapshot_binding(
         _mismatch(study, "window_id")
 
 
-def index_configs(study: HoldoutStudy, snapshot: HoldoutSnapshot) -> Mapping[str, ConfigRevision]:
-    """Index archives only after detecting conflicting revisions and references."""
-    by_revision: dict[str, ConfigRevision] = {}
+@dataclass(frozen=True, slots=True)
+class ConfigIndex:
+    """Immutable activation intervals by archived revision, ordered by effective time."""
+
+    activations: _FrozenMapping[str, tuple[ConfigRevision, ...]]
+
+    def at(self, revision: str, at: datetime) -> ConfigRevision | None:
+        """Find the named revision at its actual event time, without filling gaps."""
+        spans = self.activations.get(revision, ())
+        index = bisect_right(spans, at, key=attrgetter("effective_from")) - 1
+        if index >= 0 and at < spans[index].effective_to:
+            return spans[index]
+        return None
+
+
+def index_configs(study: HoldoutStudy, snapshot: HoldoutSnapshot) -> ConfigIndex:
+    """Index each revision's nonoverlapping activations without changing its archive."""
+    by_revision: dict[str, list[ConfigRevision]] = {}
     by_reference: dict[str, ConfigRevision] = {}
     for config in snapshot.configs:
-        if (
-            by_revision.setdefault(config.revision, config) != config
-            or by_reference.setdefault(config.archive_ref, config) != config
-        ):
+        spans = by_revision.setdefault(config.revision, [])
+        if spans and not _same_archive(spans[0], config):
             _mismatch(study, "configs")
-    return MappingProxyType(by_revision)
+        if not _same_archive(by_reference.setdefault(config.archive_ref, config), config):
+            _mismatch(study, "configs")
+        if config.effective_from >= config.effective_to:
+            _mismatch(study, "effective_to")
+        spans.append(config)
+    return ConfigIndex(
+        _FrozenMapping(
+            {
+                revision: _disjoint_spans(study, spans)
+                for revision, spans in sorted(by_revision.items())
+            }
+        )
+    )
+
+
+def _same_archive(first: ConfigRevision, second: ConfigRevision) -> bool:
+    return (
+        first.revision == second.revision
+        and first.archive_ref == second.archive_ref
+        and first.sdk_json == second.sdk_json
+        and first.external_policy == second.external_policy
+    )
+
+
+def _disjoint_spans(study: HoldoutStudy, spans: list[ConfigRevision]) -> tuple[ConfigRevision, ...]:
+    ordered: list[ConfigRevision] = []
+    for span in sorted(spans, key=attrgetter("effective_from", "effective_to")):
+        if ordered and span.effective_from < ordered[-1].effective_to:
+            previous = ordered[-1]
+            if (
+                span.effective_from == previous.effective_from
+                and span.effective_to == previous.effective_to
+            ):
+                continue
+            _mismatch(study, "configs")
+        ordered.append(span)
+    return tuple(ordered)
 
 
 class _SDKHoldout(TypedDict):
@@ -558,9 +692,13 @@ class _SDKHoldout(TypedDict):
     targets: list[str]
 
 
+class _SDKRange(TypedDict):
+    experiment: str
+
+
 class _SDKLayer(TypedDict):
     key: str
-    ranges: list[object]
+    ranges: list[_SDKRange]
 
 
 class _SDKConfig(TypedDict):
@@ -620,13 +758,22 @@ def _check_sdk_binding(study: HoldoutStudy, config: ConfigRevision) -> Allocatio
         if holdout["key"] == study.holdout_key:
             probability = Decimal(f"{int(holdout['held_out_bps'])}e-4")
             _check_policy(study, holdout["key"], holdout["targets"], probability)
-            if study.scope_kind == "feature" and any(
-                layer["key"] == study.components[0].target and len(layer["ranges"]) != 1
-                for layer in parsed["layers"]
-            ):
-                _mismatch(study, "components")
+            _check_sdk_components(study, parsed["layers"])
             return evaluator
     _mismatch(study, "holdout_key")
+
+
+def _check_sdk_components(study: HoldoutStudy, layers: list[_SDKLayer]) -> None:
+    archived = {layer["key"]: {span["experiment"] for span in layer["ranges"]} for layer in layers}
+    registered: dict[str, set[str | None]] = {}
+    for component in study.components:
+        registered.setdefault(component.target, set()).add(component.experiment_key)
+    for target, experiments in registered.items():
+        if target in archived:
+            if experiments != archived[target]:
+                _mismatch(study, "components")
+        elif not experiments <= {None, target}:
+            _mismatch(study, "components")
 
 
 def _check_policy(
@@ -653,7 +800,7 @@ class HoldoutReason(_HoldoutRecord):
     @field_validator("context")
     @classmethod
     def _freeze_context(cls, value: Mapping[str, ReasonValue]) -> Mapping[str, ReasonValue]:
-        return MappingProxyType(dict(sorted(value.items())))
+        return _FrozenMapping(dict(sorted(value.items())))
 
     @field_serializer("context")
     def _context_dict(self, value: Mapping[str, ReasonValue]) -> dict[str, ReasonValue]:
@@ -670,7 +817,7 @@ class RosterMember(NamedTuple):
     assignment_revision: ID
 
 
-class IdentitySpan(_HoldoutRecord):
+class IdentitySpan(_PrivateEvidence):
     """The interval over which an observed ID identifies one original unit."""
 
     unit_id: ID
@@ -689,8 +836,10 @@ class ArmCounts(_HoldoutRecord):
     missing: Count = 0
 
 
-class RosterEvidence(_HoldoutRecord):
+class RosterEvidence(_PrivateEvidence):
     """The original roster and its certified outcome evidence."""
+
+    _private_fields = frozenset({"members", "identity", "values"})
 
     members: tuple[RosterMember, ...]
     identity: tuple[IdentitySpan, ...]

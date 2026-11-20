@@ -45,7 +45,7 @@ depends_on = ["increment.errors"]
 [[modules]]
 path = "increment._holdout_records"
 layer = "core"
-depends_on = ["increment.assignment", "increment.errors"]
+depends_on = ["increment._immutable", "increment.assignment", "increment.errors"]
 
 [[modules]]
 path = "increment._optional"
