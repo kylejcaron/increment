@@ -113,7 +113,29 @@ class _ActionReceipt(_Strict):
     cost_bearer: _CostBearer
 
 
-class DecisionCard(_Strict):
+class _ExactCosts(_Strict):
+    cost_false_clear: _PositiveMoney
+    cost_false_rule_out: _PositiveMoney
+    cost_abstain: _NonnegativeMoney
+    incremental_workflow_cost: _NonnegativeMoney
+    minimum_gain: _NonnegativeMoney
+
+    @field_validator(
+        "cost_false_clear",
+        "cost_false_rule_out",
+        "cost_abstain",
+        "incremental_workflow_cost",
+        "minimum_gain",
+    )
+    @classmethod
+    def _reportable_money(cls, value: Decimal) -> Decimal:
+        rounded = float(value)
+        if not math.isfinite(rounded) or (value != 0 and rounded == 0.0):
+            raise ValueError("cost is outside the numeric report range")
+        return value
+
+
+class DecisionCard(_ExactCosts):
     """Prospective decision, matched to independently documented trial semantics."""
 
     owner: _Text
@@ -127,11 +149,6 @@ class DecisionCard(_Strict):
     positive_direction: _Direction
     tau: _Probability
     max_false_action_risk: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)]
-    cost_false_clear: _PositiveMoney
-    cost_false_rule_out: _PositiveMoney
-    cost_abstain: _NonnegativeMoney
-    incremental_workflow_cost: _NonnegativeMoney
-    minimum_gain: _NonnegativeMoney
     currency_or_loss_unit: _Text
     action_if_clear: _Action
     action_if_rule_out: _Action
@@ -148,20 +165,6 @@ class DecisionCard(_Strict):
         if isinstance(value, str) and "T" in value:
             return datetime.fromisoformat(value)
         raise ValueError("an ISO 8601 timestamp with a time zone is required")
-
-    @field_validator(
-        "cost_false_clear",
-        "cost_false_rule_out",
-        "cost_abstain",
-        "incremental_workflow_cost",
-        "minimum_gain",
-    )
-    @classmethod
-    def _reportable_money(cls, value: Decimal) -> Decimal:
-        rounded = float(value)
-        if not math.isfinite(rounded) or (value != 0 and rounded == 0.0):
-            raise ValueError("cost is outside the numeric report range")
-        return value
 
 
 class _Diagnostic(_Strict):
@@ -289,6 +292,7 @@ class _OwnerDecision(_Strict):
     cost_false_clear: _Positive
     cost_false_rule_out: _Positive
     cost_abstain: _Nonnegative
+    exact_costs: _ExactCosts
     max_false_action_risk: float
     alternatives: tuple[_ActionReceipt, _ActionReceipt, _ActionReceipt]
     confirmation: None = None
@@ -760,6 +764,13 @@ def _owner_decision(bounds: _Bounds, card: DecisionCard) -> _OwnerDecision:
         cost_false_clear=float(card.cost_false_clear),
         cost_false_rule_out=float(card.cost_false_rule_out),
         cost_abstain=float(card.cost_abstain),
+        exact_costs=_ExactCosts(
+            cost_false_clear=card.cost_false_clear,
+            cost_false_rule_out=card.cost_false_rule_out,
+            cost_abstain=card.cost_abstain,
+            incremental_workflow_cost=card.incremental_workflow_cost,
+            minimum_gain=card.minimum_gain,
+        ),
         max_false_action_risk=card.max_false_action_risk,
         alternatives=(
             _action_receipt("action_if_clear", card.action_if_clear),

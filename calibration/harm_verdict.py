@@ -13,7 +13,8 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from itertools import product, zip_longest
+from fractions import Fraction
+from itertools import groupby, product, zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -24,7 +25,7 @@ from calibration import harm_case as case
 from calibration.harm_bounds import StudyError, decide
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable, Iterator
 
     from calibration.harm_bounds import Interval
 
@@ -132,18 +133,21 @@ def _oracle_path(directory: Path, receipt: campaign._Receipt, override: Path | N
         return override
     # Don't follow an arbitrary path supplied by a manifest. The recorded path is
     # usable only for a local aggregate receipt; moved packets can pass --oracle.
-    recorded = Path(receipt.path)
-    if (
-        recorded.is_absolute()
-        and recorded.name == "oracle.json"
-        and recorded.resolve().is_relative_to((_ROOT / ".test-evidence").resolve())
-        and recorded.is_file()
-    ):
-        return recorded
+    try:
+        recorded = Path(receipt.path)
+        if (
+            recorded.is_absolute()
+            and recorded.name == "oracle.json"
+            and recorded.resolve().is_relative_to((_ROOT / ".test-evidence").resolve())
+            and recorded.is_file()
+        ):
+            return recorded
+    except (OSError, ValueError, RuntimeError):
+        raise _problem("invalid_oracle_receipt", "oracle.json") from None
     return directory.parent / "oracle.json"
 
 
-def _check_oracle(directory: Path, manifest: campaign._Manifest, oracle: Path | None) -> None:
+def _check_oracle(directory: Path, manifest: campaign._Manifest, oracle: Path | None) -> str:
     if len(manifest.inputs) != 2 or manifest.oracle_sha256 is None:
         raise _problem("missing_oracle_receipt", "oracle.json")
     protocol, receipt = manifest.inputs
@@ -162,6 +166,7 @@ def _check_oracle(directory: Path, manifest: campaign._Manifest, oracle: Path | 
         raise _problem(exc.reason, "oracle.json") from None
     if actual.sha256 != receipt.sha256:
         raise _problem("artifact_digest_mismatch", "oracle.json")
+    return actual.sha256
 
 
 def _counter_roster() -> Iterable[tuple[campaign._Coordinate, str, campaign._GateKind]]:
@@ -204,13 +209,13 @@ def _check_gates(manifest: campaign._Manifest, gates: campaign._Gates) -> None:
             raise _problem("invalid_campaign_counter", "gates.json")
 
 
-def _stream_keys[T: BaseModel](
+def _stream_rows[T: BaseModel](
     path: Path,
     expected: str,
     model: type[T],
     roster: Iterable[object] | None,
-    key: _StreamKey[T],
-) -> None:
+    key: Callable[[T], object],
+) -> Iterator[T]:
     if path.is_symlink() or not path.is_file():
         raise _problem("missing_or_invalid_evidence_file", path.name)
     try:
@@ -220,9 +225,13 @@ def _stream_keys[T: BaseModel](
             else:
                 hasher = hashlib.sha256()
                 for raw, item in zip_longest(stream, roster):
-                    if raw is None or item is None or key(model.model_validate_json(raw)) != item:
+                    if raw is None or item is None:
+                        raise _problem("invalid_campaign_result_roster", path.name)
+                    row = model.model_validate_json(raw)
+                    if key(row) != item:
                         raise _problem("invalid_campaign_result_roster", path.name)
                     hasher.update(raw)
+                    yield row
                 digest = hasher.hexdigest()
     except ValidationError:
         raise _problem("invalid_evidence_schema", path.name) from None
@@ -232,15 +241,102 @@ def _stream_keys[T: BaseModel](
         raise _problem("artifact_digest_mismatch", path.name)
 
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
+def _cell_coverage(row: campaign._CellRow) -> tuple[float, tuple[int, ...]]:
+    coord, n = row.coordinate, row.attempted
+    expected = tuple(map(float, campaign._TRUTH_ANCHORS[coord.dgp]))
+    if (row.h, *row.id_u0, *row.id_f, *row.id_q) != expected or tuple(
+        (m.mode, m.method) for m in row.methods
+    ) != tuple(product(campaign._MODES, campaign._METHODS)):
+        raise _problem("inconsistent_campaign_cell_evidence", "cells.jsonl")
+    for m in row.methods:
+        if (
+            m.attempted != n
+            or m.valid_bands != n
+            or not 0 <= m.l_covered <= n
+            or not 0 <= m.u_covered <= n
+            or not max(0, m.l_covered + m.u_covered - n)
+            <= m.jointly_covered
+            <= min(m.l_covered, m.u_covered)
+        ):
+            raise _problem("inconsistent_campaign_cell_evidence", "cells.jsonl")
+    return row.h, tuple(n - m.jointly_covered for m in row.methods)
 
-    type _StreamKey[T] = Callable[[T], object]
+
+def _reconcile_cell(
+    n: int,
+    harm: float,
+    misses: tuple[int, ...],
+    rows: Iterable[campaign._DecisionRow],
+    counts: dict[str, int],
+) -> None:
+    bad = _problem("inconsistent_campaign_counter_evidence", "gates.json")
+    joint, clear_union, out_union = (counts[name] for name in campaign._ERRORS)
+    choices: dict[tuple[str, str, float], campaign._DecisionRow] = {}
+    by_target: dict[tuple[str, str], tuple[int, int, int]] = {}
+    for row in rows:
+        if (
+            min(
+                row.clear,
+                row.rule_out,
+                row.inconclusive,
+                row.id_abstain,
+                row.sampling_abstain,
+                row.diagnostic_abstain,
+                row.false_id_clear,
+                row.false_id_rule_out,
+            )
+            < 0
+            or row.clear + row.rule_out + row.inconclusive != n
+            or row.id_abstain + row.sampling_abstain + row.diagnostic_abstain != row.inconclusive
+            or row.false_clear != (row.clear if harm >= row.tau else 0)
+            or row.false_rule_out != (row.rule_out if harm <= row.tau else 0)
+            or not row.false_clear <= row.false_id_clear <= row.clear
+            or not row.false_rule_out <= row.false_id_rule_out <= row.rule_out
+            or max(row.false_id_clear, row.false_id_rule_out) > joint
+            or row.diagnostic_abstain_reason
+            != ("discordant_bands" if row.diagnostic_abstain else None)
+            or (row.target in campaign._METHODS and row.diagnostic_abstain != 0)
+        ):
+            raise bad
+        key = (row.mode, row.target)
+        clear, out, discord = by_target.get(key, (0, 0, row.diagnostic_abstain))
+        if discord != row.diagnostic_abstain:
+            raise bad
+        by_target[key] = max(clear, row.false_clear), max(out, row.false_rule_out), discord
+        choices[*key, row.tau] = row
+    joint_marginals = (*misses, *(v[2] for v in by_target.values()))
+    if not max(joint_marginals) <= joint <= min(n, sum(joint_marginals)):
+        raise bad
+    for event, union in enumerate((clear_union, out_union)):
+        # An intersected band's strict action also occurs in at least one of
+        # its component methods; for one row family the threshold events nest.
+        lower = max(v[event] for v in by_target.values())
+        upper = sum(v[event] for (_, target), v in by_target.items() if target in campaign._METHODS)
+        if not lower <= union <= min(upper, joint):
+            raise bad
+    for name in campaign._POWER:
+        if name not in counts:
+            continue
+        if name == campaign._POWER[0]:
+            lo = hi = choices["estimated", "P0", 0.5].rule_out
+        elif name == campaign._POWER[1]:
+            lo = hi = choices["estimated", "P0", 0.5].clear
+        else:
+            baseline, increment = ("P0", "P1") if name == campaign._POWER[2] else ("P1", "P1∩H")
+            old = choices["estimated", baseline, 0.32]
+            new = choices["estimated", increment, 0.32]
+            difference = new.clear - old.clear
+            # Nesting implies a new clear could only have been a clear or
+            # abstention before; an old clear is lost only to discordance.
+            lo = max(0, difference, old.inconclusive + new.clear - n)
+            hi = min(old.inconclusive, new.clear, difference + new.diagnostic_abstain)
+        if not lo <= counts[name] <= hi:
+            raise bad
 
 
 def _read_campaign(
     directory: Path, protocol: str, oracle: Path | None
-) -> tuple[campaign._Manifest, campaign._Gates, str]:
+) -> tuple[campaign._Manifest, campaign._Gates, str, str | None]:
     root = _read(directory / "manifest.json", "manifest.json")
     manifest = _decode(campaign._Manifest, root, "manifest.json")
     if manifest.protocol_sha256 != protocol:
@@ -255,6 +351,7 @@ def _read_campaign(
     )
     _check_gates(manifest, gates)
     complete = manifest.status != "execution_failure"
+    oracle_sha = None
     if complete:
         if (
             manifest.sources != tuple(campaign._receipt(_ROOT, path) for path in _SOURCE_FILES)
@@ -265,17 +362,18 @@ def _read_campaign(
             or manifest.thread_environment != tuple((name, "1") for name in campaign._THREADS)
         ):
             raise _problem("inconsistent_campaign_provenance", "manifest.json")
-        _check_oracle(directory, manifest, oracle)
+        oracle_sha = _check_oracle(directory, manifest, oracle)
     coords = campaign.coordinates()
     n = manifest.trials_per_cell
-    _stream_keys(
+    cell_rows = _stream_rows(
         directory / "cells.jsonl",
         receipts["cells.jsonl"],
         campaign._CellRow,
         ((coord, n, n) for coord in coords) if complete else None,
         lambda row: (row.coordinate, row.attempted, row.evaluated),
     )
-    _stream_keys(
+    coverage = {row.coordinate: _cell_coverage(row) for row in cell_rows}
+    decision_rows = _stream_rows(
         directory / "decisions.jsonl",
         receipts["decisions.jsonl"],
         campaign._DecisionRow,
@@ -284,7 +382,13 @@ def _read_campaign(
         else None,
         lambda row: (row.coordinate, row.mode, row.target, row.tau, row.attempted, row.evaluated),
     )
-    return manifest, gates, _sha(root)
+    counts: dict[campaign._Coordinate, dict[str, int]] = {}
+    for counter in gates.counters:
+        counts.setdefault(counter.coordinate, {})[counter.name] = counter.count
+    for coord, rows in groupby(decision_rows, key=lambda row: row.coordinate):
+        harm, misses = coverage[coord]
+        _reconcile_cell(n, harm, misses, rows, counts[coord])
+    return manifest, gates, _sha(root), oracle_sha
 
 
 def _revision(text: str | None) -> bool:
@@ -312,6 +416,30 @@ def _simplest(owner: case._OwnerDecision) -> _Method | None:
     return "P3" if owner.h_adds_decision else None
 
 
+def _exact_gains(
+    owner: case._OwnerDecision,
+    action: case._ActionKind,
+    band: Interval,
+) -> tuple[Fraction, Fraction, tuple[float, float]]:
+    costs = owner.exact_costs
+    false_clear = Fraction(costs.cost_false_clear)
+    false_out = Fraction(costs.cost_false_rule_out)
+    wait = Fraction(costs.cost_abstain)
+    workflow = Fraction(costs.incremental_workflow_cost)
+    regimes = []
+    lo, hi = band
+    if lo < owner.tau:
+        regimes.append((Fraction(0), false_out, wait))
+    if lo <= owner.tau <= hi:
+        regimes.append((false_clear, false_out, wait))
+    if hi > owner.tau:
+        regimes.append((false_clear, Fraction(0), wait))
+    current, proposed = _KIND.index(owner.current_action.kind), _KIND.index(action)
+    gains = tuple(losses[current] - losses[proposed] - workflow for losses in regimes)
+    guesses = tuple(max(losses[i] for losses in regimes) - wait for i in (0, 1))
+    return min(gains), max(gains), (float(guesses[0]), float(guesses[1]))
+
+
 def _validate_owner(field: case._FieldDecision, inner: Interval | None) -> None:
     owner, bounds = field.owner_decision, field.bounds
     if owner is None or bounds is None:
@@ -330,6 +458,12 @@ def _validate_owner(field: case._FieldDecision, inner: Interval | None) -> None:
         != (owner.pipelines.P2.decision == "inconclusive" and _worthwhile(owner.pipelines.P3))
     ):
         raise _problem("inconsistent_owner_evidence", "decision.json")
+    if any(
+        float(getattr(owner.exact_costs, key)) != getattr(owner, key)
+        for key in case._ExactCosts.model_fields
+    ):
+        raise _problem("inconsistent_owner_evidence", "decision.json")
+    minimum = Fraction(owner.exact_costs.minimum_gain)
     for name, result in owner.pipelines:
         band = getattr(bounds, name)
         if band is None or not _valid_interval(band) or decide(band, owner.tau) != result.decision:
@@ -344,21 +478,25 @@ def _validate_owner(field: case._FieldDecision, inner: Interval | None) -> None:
                 else "sampling_or_unresolved_identification"
             )
         )
+        try:
+            g_min, g_max, guesses = _exact_gains(owner, result.action.kind, band)
+            display_matches = (result.g_min, result.g_max) == (float(g_min), float(g_max))
+        except OverflowError:
+            raise _problem("inconsistent_owner_evidence", "decision.json") from None
+        guessing = result.guess_vs_wait_worst_excess
         if (
             result.action != owner.alternatives[i]
             or result.ambiguity != ambiguity
-            or (result.guess_vs_wait_worst_excess is None) != (i != 2)
-            or not math.isfinite(result.g_min)
-            or not math.isfinite(result.g_max)
-            or result.g_min > result.g_max
+            or (None if guessing is None else (guessing.clear, guessing.rule_out))
+            != (guesses if i == 2 else None)
+            or not display_matches
+            or result.gain_exceeds_minimum != (g_min > minimum)
+            or result.best_gain_exceeds_minimum != (g_max > minimum)
             or (
-                result.best_gain_exceeds_minimum and result.action.kind == owner.current_action.kind
+                not result.changes_action
+                and (result.action.kind, result.action.cost_bearer)
+                != (owner.current_action.kind, owner.current_action.cost_bearer)
             )
-            or (result.gain_exceeds_minimum and not result.best_gain_exceeds_minimum)
-            or (result.gain_exceeds_minimum and result.g_min < owner.minimum_gain)
-            or (not result.best_gain_exceeds_minimum and result.g_max > owner.minimum_gain)
-            or (not result.gain_exceeds_minimum and result.g_min > owner.minimum_gain)
-            or (result.best_gain_exceeds_minimum and result.g_max < owner.minimum_gain)
         ):
             raise _problem("inconsistent_owner_evidence", "decision.json")
 
@@ -370,7 +508,12 @@ def _check_bounds(field: case._FieldDecision, details: case._Bounds | None) -> I
         return None
     if field.bounds is None or details.historical_benchmark != (field.source == "hillstrom"):
         raise _problem("inconsistent_field_packet", "bounds.json")
-    for _, method in details.methods:
+    fixed_maps = dict(
+        zip(("U0", "F", "Q", "M"), (*case._FIXED_MAPS, case._FIXED_MAPS[1]), strict=True)
+    )
+    for name, method in details.methods:
+        if name in fixed_maps and method.leaf_map != fixed_maps[name]:
+            raise _problem("invalid_field_leaf_map", "bounds.json")
         inner = (method.L_ci[1], method.U_ci[0])
         if (
             not all(_valid_interval(pair) for pair in (method.L_ci, method.U_ci, method.outer))
@@ -445,17 +588,28 @@ def _check_thresholds(raw: bytes, details: case._Bounds | None, field: case._Fie
 
 
 def _read_field(
-    directory: Path, protocol: str, bounds_sha: str, case_sha: str
+    directory: Path,
+    protocol: str,
+    bounds_sha: str,
+    case_sha: str,
+    unavailable_case_sha: str | None = None,
 ) -> tuple[_WireDecision, str]:
     root = _read(directory / "decision.json", "decision.json")
     field = _decode(_WireDecision, root, "decision.json")
     if field.protocol_sha256 != protocol:
         raise _problem("protocol_digest_mismatch", "decision.json")
     run = field.reproduction
+    unavailable_source = (
+        field.status == "unavailable"
+        and field.reason == "missing_case_manifest"
+        and field.owner_decision is None
+        and field.bounds is None
+        and run.harm_case_sha256 == unavailable_case_sha
+    )
     if (
         run.protocol_base_revision != campaign._PROTOCOL_BASE
         or run.harm_bounds_sha256 != bounds_sha
-        or run.harm_case_sha256 != case_sha
+        or (run.harm_case_sha256 != case_sha and not unavailable_source)
         or not _revision(run.source_revision)
         or not _chronological(run.started_at, run.ended_at)
     ):
@@ -571,15 +725,14 @@ def _recommend(
     if owner.irreducible_at_features and ack.all_admissible_baseline_features:
         return _Recommendation("reject", None, ("tolerance_inside_full_feature_inner_interval",))
     conclusive = tuple(result for _, result in owner.pipelines if result.decision != "inconclusive")
-    if (
-        ack.comparison_adequate
-        and len(conclusive) == len(_PIPELINES)
-        and any(result.changes_action for result in conclusive)
-        and not any(
-            result.best_gain_exceeds_minimum for result in conclusive if result.changes_action
-        )
-    ):
-        return _Recommendation("reject", None, ("best_compatible_gain_not_enough",))
+    if ack.comparison_adequate and conclusive:
+        if all(not result.changes_action for result in conclusive):
+            # The validated loss kind is unchanged and the workflow cost is nonnegative.
+            return _Recommendation("reject", None, ("best_compatible_gain_not_enough",))
+        if len(conclusive) == len(_PIPELINES) and not any(
+            result.best_gain_exceeds_minimum for result in conclusive
+        ):
+            return _Recommendation("reject", None, ("best_compatible_gain_not_enough",))
     return _Recommendation(
         "defer",
         None,
@@ -685,6 +838,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--acknowledgment", type=Path, help="Independently authenticated post-readout receipt"
     )
+    parser.add_argument(
+        "--unavailable-case-source-sha256",
+        help="Independently verified producer source digest for a copied missing-manifest packet",
+    )
     args = parser.parse_args(argv)
     payload: dict[str, object] = dict.fromkeys(
         (
@@ -713,11 +870,13 @@ def main(argv: list[str] | None = None) -> int:
         if protocol != campaign._PROTOCOL_DIGEST:
             raise _problem("protocol_digest_mismatch", "frozen_protocol")
         payload["protocol_sha256"] = protocol
-        manifest, gates, campaign_sha = _read_campaign(args.campaign, protocol, args.oracle)
+        manifest, gates, campaign_sha, oracle_sha = _read_campaign(
+            args.campaign, protocol, args.oracle
+        )
         totals = Counter(row.status for row in gates.counters)
         payload.update(
             campaign_manifest_sha256=campaign_sha,
-            oracle_sha256=manifest.oracle_sha256,
+            oracle_sha256=oracle_sha,
             campaign_status=manifest.status,
             green_counters=totals["green"],
             total_counters=len(gates.counters),
@@ -730,6 +889,7 @@ def main(argv: list[str] | None = None) -> int:
             protocol,
             _sha(_read(_ROOT / "calibration/harm_bounds.py", "harm_bounds.py")),
             _sha(_read(_ROOT / "calibration/harm_case.py", "harm_case.py")),
+            args.unavailable_case_source_sha256,
         )
         payload.update(
             field_decision_sha256=field_sha,

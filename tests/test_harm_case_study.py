@@ -486,3 +486,10 @@ def test_gain_uses_source_decimals_not_rounded_wire_values(
     assert owner["smallest_useful_simple_pipeline"] == ("P0" if useful else None)
     assert p0["gain_exceeds_minimum"] is p0["best_gain_exceeds_minimum"] is useful
     assert p0["g_min"] == p0["g_max"] == owner["minimum_gain"] == 0.1
+    assert owner["exact_costs"] == {
+        "cost_false_clear": str(_card_fields()["cost_false_clear"]),
+        "cost_false_rule_out": str(_card_fields()["cost_false_rule_out"]),
+        "cost_abstain": wait_cost,
+        "incremental_workflow_cost": workflow_cost,
+        "minimum_gain": str(_card_fields()["minimum_gain"]),
+    }
