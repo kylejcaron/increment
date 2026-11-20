@@ -262,6 +262,18 @@ def _cell_coverage(row: campaign._CellRow) -> tuple[float, tuple[int, ...]]:
     return row.h, tuple(n - m.jointly_covered for m in row.methods)
 
 
+def _operational_tally(row: campaign._DecisionRow) -> tuple[int, ...]:
+    return (
+        row.clear,
+        row.rule_out,
+        row.inconclusive,
+        row.diagnostic_abstain,
+        row.false_clear,
+        row.false_rule_out,
+        *row.outer_equal,
+    )
+
+
 def _reconcile_cell(
     n: int,
     harm: float,
@@ -298,6 +310,11 @@ def _reconcile_cell(
             or (row.target in campaign._METHODS and row.diagnostic_abstain != 0)
         ):
             raise bad
+        if row.target == "P0":
+            # Both act on U0's outer band. Their identification reference can differ.
+            u0 = choices.get((row.mode, "U0", row.tau))
+            if u0 is not None and _operational_tally(row) != _operational_tally(u0):
+                raise bad
         key = (row.mode, row.target)
         clear, out, discord = by_target.get(key, (0, 0, row.diagnostic_abstain))
         if discord != row.diagnostic_abstain:
@@ -514,6 +531,8 @@ def _check_bounds(field: case._FieldDecision, details: case._Bounds | None) -> I
     for name, method in details.methods:
         if name in fixed_maps and method.leaf_map != fixed_maps[name]:
             raise _problem("invalid_field_leaf_map", "bounds.json")
+        if len(method.leaf_counts) != len(set(method.leaf_map)):
+            raise _problem("invalid_field_leaf_count", "bounds.json")
         inner = (method.L_ci[1], method.U_ci[0])
         if (
             not all(_valid_interval(pair) for pair in (method.L_ci, method.U_ci, method.outer))

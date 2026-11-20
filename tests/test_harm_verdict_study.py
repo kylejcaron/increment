@@ -12,7 +12,7 @@ import pytest
 from calibration import harm_campaign as campaign
 from calibration import harm_case as case
 from calibration import harm_verdict as verdict
-from calibration.harm_bounds import StudyError
+from calibration.harm_bounds import Cell, StudyError
 from calibration.harm_case import _FieldDecision, _OwnerDecision
 
 if TYPE_CHECKING:
@@ -245,7 +245,13 @@ def test_rounded_gain_and_consistent_flags_cannot_mask_forged_gain() -> None:
     assert exc.value.reason == "inconsistent_owner_evidence"
 
 
-def test_full_feature_inner_span_requires_the_exact_q_map() -> None:
+@pytest.mark.parametrize(
+    ("q_map", "reason"),
+    (((0, 0, 1, 1), "invalid_field_leaf_map"), ((0, 1, 2, 3), "invalid_field_leaf_count")),
+)
+def test_full_feature_inner_span_requires_four_correctly_mapped_leaves(
+    q_map: tuple[int, int, int, int], reason: str
+) -> None:
     field = _field(_owner())
     detail = case._Method.model_construct(
         L_ci=(0.125, 0.15),
@@ -253,11 +259,14 @@ def test_full_feature_inner_span_requires_the_exact_q_map() -> None:
         outer=(0.125, 0.20),
         inner_span=(0.15, 0.18),
         leaf_map=(0, 0, 1, 1),
+        leaf_counts=(Cell(10, 5, 10, 5), Cell(10, 5, 10, 5)),
     )
     methods = case._Methods.model_construct(
-        U0=detail.model_copy(update={"leaf_map": (0, 0, 0, 0)}),
+        U0=detail.model_copy(
+            update={"leaf_map": (0, 0, 0, 0), "leaf_counts": (Cell(20, 10, 20, 10),)}
+        ),
         F=detail,
-        Q=detail,
+        Q=detail.model_copy(update={"leaf_map": q_map}),
         H=detail,
         M=detail,
     )
@@ -283,7 +292,7 @@ def test_full_feature_inner_span_requires_the_exact_q_map() -> None:
     )
     with pytest.raises(StudyError) as exc:
         verdict._check_bounds(field, bounds)
-    assert exc.value.reason == "invalid_field_leaf_map"
+    assert exc.value.reason == reason
 
 
 def test_missing_acknowledgment_never_promotes() -> None:
@@ -383,34 +392,39 @@ def test_archived_source_cannot_authorize_owner_action(
     )
 
 
-@pytest.mark.parametrize("counter", ("D3_P0_clear_50", "simultaneous_noncoverage"))
-def test_campaign_gates_cannot_contradict_aggregate_rows(counter: str) -> None:
+@pytest.mark.parametrize(
+    "contradiction", ("D3_P0_clear_50", "simultaneous_noncoverage", "U0_vs_P0")
+)
+def test_campaign_gates_cannot_contradict_aggregate_rows(contradiction: str) -> None:
     coord = campaign._Coordinate(dgp=3, n_index=1, e_index=0, n=4096, e=0.5)
     n = 20_000
-    rows = tuple(
-        campaign._DecisionRow.model_construct(
-            coordinate=coord,
-            mode="estimated",
-            target=target,
-            tau=0.5,
-            attempted=n,
-            evaluated=n,
-            clear=15_000,
-            rule_out=0,
-            inconclusive=5_000,
-            false_clear=0,
-            false_rule_out=0,
-            false_id_clear=0,
-            false_id_rule_out=0,
-            id_abstain=0,
-            sampling_abstain=5_000,
-            diagnostic_abstain=0,
-            diagnostic_abstain_reason=None,
+    rows = []
+    for target in ("U0", "P0"):
+        clear = 20_000 if contradiction == "U0_vs_P0" and target == "P0" else 15_000
+        rows.append(
+            campaign._DecisionRow.model_construct(
+                coordinate=coord,
+                mode="estimated",
+                target=target,
+                tau=0.5,
+                attempted=n,
+                evaluated=n,
+                clear=clear,
+                rule_out=0,
+                inconclusive=n - clear,
+                false_clear=0,
+                false_rule_out=0,
+                false_id_clear=0,
+                false_id_rule_out=0,
+                id_abstain=0,
+                sampling_abstain=n - clear,
+                diagnostic_abstain=0,
+                diagnostic_abstain_reason=None,
+                outer_equal=(0, 0),
+            )
         )
-        for target in ("U0", "P0")
-    )
-    power = 20_000 if counter == "D3_P0_clear_50" else 15_000
-    union = 0 if counter == "simultaneous_noncoverage" else 1
+    power = 15_000 if contradiction == "simultaneous_noncoverage" else 20_000
+    union = 0 if contradiction == "simultaneous_noncoverage" else 1
     counters = {
         "simultaneous_noncoverage": union,
         "any_false_clearance": 0,
