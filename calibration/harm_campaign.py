@@ -8,6 +8,7 @@ import json
 import math
 import os
 import platform
+import signal
 import subprocess
 import sys
 from collections import Counter
@@ -55,6 +56,7 @@ _BATCH = 128
 _FULL_TRIALS = 20_000
 _SMOKE_TRIALS = 8
 _TAU = (0.0025, 0.005, 0.01, 0.025, 0.05, 0.10, 0.125, 0.15, 0.20, 0.25, 0.30, 0.32, 0.50)
+_EXACT_TAU = tuple(Fraction(str(t)) for t in _TAU)
 _TAUS = np.asarray(_TAU)
 _AT_32, _AT_50 = _TAU.index(0.32), _TAU.index(0.50)
 _EQUIV = 1e-12
@@ -403,7 +405,8 @@ class _Trial:
     index: int
     maps: tuple[LeafMap, ...]
     ids: tuple[Interval, ...]
-    bands: tuple[tuple[Band, ...], ...]
+    bands: tuple[tuple[Band | None, ...], ...]
+    failures: tuple[_Diagnostic, ...]
 
 
 @cache
@@ -423,14 +426,21 @@ def _trial(coord: _Coordinate, index: int) -> _Trial:
     train_eval = ((a, b, c, d),) * 3 + (evaluation, evaluation)
     # The interval kernel caches by (k, n, K). A block uses at most 128 * 3 * (1+2+4+4+2)
     # distinct keys; both mass modes therefore share grouped inversions in its 16,384-key cache.
-    bands = tuple(
-        tuple(
-            summarize(counts, leaf_map, atom_weights=w)
-            for counts, leaf_map in zip(train_eval, maps, strict=True)
-        )
-        for w in (_WEIGHTS[coord.dgp], None)
-    )
-    return _Trial(index, maps, ids, bands)
+    failures = []
+    bands = []
+    coordinate = f"D{coord.dgp}/n{coord.n_index}/e{coord.e_index}"
+    for mode, weights in zip(_MODES, (_WEIGHTS[coord.dgp], None), strict=True):
+        group: list[Band | None] = []
+        for method, counts, leaf_map in zip(_METHODS, train_eval, maps, strict=True):
+            try:
+                group.append(summarize(counts, leaf_map, atom_weights=weights))
+            except Exception as exc:
+                failures.append(
+                    _diagnostic(exc, "band", coordinate, trial=index, method=method, mode=mode)
+                )
+                group.append(None)
+        bands.append(tuple(group))
+    return _Trial(index, maps, ids, tuple(bands), tuple(failures))
 
 
 @dataclass(slots=True)
@@ -486,20 +496,45 @@ class _Block:
     def of(cls, trials: list[_Trial]) -> _Block:
         raw = tuple(t.bands for t in trials)
         ids = np.array([t.ids for t in trials], dtype=np.float64)[:, None]
-        outer = np.array([[[b.outer for b in group] for group in t] for t in raw], dtype=np.float64)
-        l_ci = np.array([[[b.L_ci for b in group] for group in t] for t in raw], dtype=np.float64)
-        u_ci = np.array([[[b.U_ci for b in group] for group in t] for t in raw], dtype=np.float64)
+        missing = (np.nan, np.nan)
+        outer = np.array(
+            [[[b.outer if b is not None else missing for b in group] for group in t] for t in raw],
+            dtype=np.float64,
+        )
+        l_ci = np.array(
+            [[[b.L_ci if b is not None else missing for b in group] for group in t] for t in raw],
+            dtype=np.float64,
+        )
+        u_ci = np.array(
+            [[[b.U_ci if b is not None else missing for b in group] for group in t] for t in raw],
+            dtype=np.float64,
+        )
         plugin = np.array(
-            [[[b.plugin or (0.0, 0.0) for b in group] for group in t] for t in raw],
+            [
+                [
+                    [
+                        b.plugin if b is not None and b.plugin is not None else (0.0, 0.0)
+                        for b in group
+                    ]
+                    for group in t
+                ]
+                for t in raw
+            ],
             dtype=np.float64,
         )
         present = np.array(
-            [[[b.plugin is not None for b in group] for group in t] for t in raw], dtype=np.bool_
+            [[[b is not None and b.plugin is not None for b in group] for group in t] for t in raw],
+            dtype=np.bool_,
         )
         empty_arms = np.array(
             [
                 [
-                    [sum(int(c.n0 == 0) + int(c.n1 == 0) for c in b.leaf_counts) for b in group]
+                    [
+                        sum(int(c.n0 == 0) + int(c.n1 == 0) for c in b.leaf_counts)
+                        if b is not None
+                        else 0
+                        for b in group
+                    ]
                     for group in t
                 ]
                 for t in raw
@@ -508,7 +543,13 @@ class _Block:
         )
         empty_leaves = np.array(
             [
-                [[sum(c.n0 + c.n1 == 0 for c in b.leaf_counts) for b in group] for group in t]
+                [
+                    [
+                        sum(c.n0 + c.n1 == 0 for c in b.leaf_counts) if b is not None else 0
+                        for b in group
+                    ]
+                    for group in t
+                ]
                 for t in raw
             ],
             dtype=np.int64,
@@ -522,7 +563,8 @@ class _Block:
             [
                 [
                     [
-                        b.reason == (None if b.plugin is not None else "empty_arm_leaf")
+                        b is not None
+                        and b.reason == (None if b.plugin is not None else "empty_arm_leaf")
                         for b in group
                     ]
                     for group in t
@@ -532,20 +574,7 @@ class _Block:
             dtype=np.bool_,
         )
         valid &= reason_matches & (present == (empty_arms == 0))
-        return cls(ids, outer, l_ci, u_ci, plugin, present, empty_arms, empty_leaves, valid)
-
-    def select(self, keep: _Flag) -> _Block:
-        return _Block(
-            self.ids[keep],
-            self.outer[keep],
-            self.l_ci[keep],
-            self.u_ci[keep],
-            self.plugin[keep],
-            self.present[keep],
-            self.empty_arms[keep],
-            self.empty_leaves[keep],
-            self.valid[keep],
-        )
+        return cls(ids, outer, l_ci, u_ci, plugin, present & valid, empty_arms, empty_leaves, valid)
 
 
 def _valid_interval(x: _Number) -> _Flag:
@@ -592,6 +621,41 @@ def _tally(counts: _Count, key: tuple[int, ...]) -> _Tally:
     )
 
 
+def _exact_plugin(band: Band, weights: tuple[Fraction, ...] | None) -> tuple[Fraction, Fraction]:
+    counts = band.leaf_counts
+    if weights is None:
+        n = sum(c.n0 + c.n1 for c in counts)
+        masses = tuple(Fraction(c.n0 + c.n1, n) for c in counts)
+    else:
+        masses = tuple(
+            sum((w for g, w in zip(band.leaf_map, weights, strict=True) if g == leaf), Fraction(0))
+            for leaf in range(len(counts))
+        )
+    lower = upper = Fraction(0)
+    for c, mass in zip(counts, masses, strict=True):
+        p, q = Fraction(c.y0, c.n0), Fraction(c.n1 - c.y1, c.n1)
+        lower += mass * max(0, p + q - 1)
+        upper += mass * min(p, q)
+    return lower, upper
+
+
+def _plugin_actions(block: _Block, trials: list[_Trial], dgp: int) -> _Actions:
+    actions = _Actions.of(block.plugin, present=block.present, margin=_EQUIV)
+    # On this roster all nonzero factors are normal: each ratio, weight conversion,
+    # positive weight sum and product adds at most one unit roundoff relatively.
+    # Allow two more for fsum's final rounding and one for the threshold conversion.
+    # Eight ULPs at 1 conservatively encloses these errors; it does not define a tie.
+    near = (np.abs(block.plugin[..., None] - _TAUS) <= _ULPS) & block.present[..., None, None]
+    for t, mode, method in np.argwhere(near.any(axis=(3, 4))):
+        band = trials[t].bands[mode][method]
+        assert band is not None
+        exact = _exact_plugin(band, _WEIGHTS[dgp] if mode == 0 else None)
+        for side, i in np.argwhere(near[t, mode, method]):
+            equal = actions.lower_equal if side == 0 else actions.upper_equal
+            equal[t, mode, method, i] = exact[side] == _EXACT_TAU[i]
+    return actions
+
+
 def _width(bounds: _Number) -> _Number:
     return bounds[..., 1] - bounds[..., 0]
 
@@ -603,52 +667,59 @@ class _MethodTotals:
         self.spans = _Moments.zeros((2, 5, 5))
         self.paired = tuple(_Moments.zeros((2, 5, 5)) for _ in range(2))
         self.errors = _Moments.zeros((2, 5, 2))
-        self.maps: tuple[Counter[LeafMap], ...] = tuple(Counter() for _ in _METHODS)
+        self.maps: tuple[tuple[Counter[LeafMap], ...], ...] = tuple(
+            tuple(Counter() for _ in _METHODS) for _ in _MODES
+        )
         self.h_comparison = np.zeros((3, 2), dtype=np.int64)
 
     def add(self, block: _Block, trials: list[_Trial], h: float) -> _Flag:
-        for i, counts in enumerate(self.maps):
-            counts.update(t.maps[i] for t in trials)
-        l = _contains(block.l_ci, block.ids[..., 0])
-        u = _contains(block.u_ci, block.ids[..., 1])
+        for mode, group in enumerate(self.maps):
+            for i, counts in enumerate(group):
+                counts.update(
+                    t.maps[i] for t, ok in zip(trials, block.valid[:, mode, i], strict=True) if ok
+                )
+        l = block.valid & _contains(block.l_ci, block.ids[..., 0])
+        u = block.valid & _contains(block.u_ci, block.ids[..., 1])
         joint = l & u
-        self.covered += np.stack((l, u, joint, _contains(block.outer, h))).sum(axis=1)
-        self.empty += np.stack((block.empty_arms, block.empty_leaves)).sum(axis=1)
+        h_covered = block.valid & _contains(block.outer, h)
+        self.covered += np.stack((l, u, joint, h_covered)).sum(axis=1)
+        self.empty += np.stack((block.empty_arms, block.empty_leaves)).sum(
+            axis=1, where=block.valid
+        )
         outer = _width(block.outer)
         true = np.broadcast_to(_width(block.ids), outer.shape)
         inner = np.maximum(0.0, block.u_ci[..., 0] - block.l_ci[..., 1])
         spans = np.stack((true, _width(block.plugin), outer, inner, outer - true), axis=-1)
-        present = np.ones(spans.shape, dtype=np.bool_)
+        present = np.broadcast_to(block.valid[..., None], spans.shape).copy()
         present[..., 1] = block.present
         self.spans.add(spans, present)
         for i, paired in enumerate(self.paired):
             paired.add(spans - spans[:, :, i : i + 1], present & present[:, :, i : i + 1])
         self.errors.add(block.plugin - block.ids, block.present[..., None])
-        worse = outer[..., 3] > outer[..., 2] + _ULPS
+        worse = block.valid[..., 3] & block.valid[..., 2] & (outer[..., 3] > outer[..., 2] + _ULPS)
         coarser = true[..., 3] > true[..., 2] + _ULPS
         self.h_comparison += np.stack((worse, worse & coarser, worse & ~coarser)).sum(axis=1)
         return ~joint.all(axis=(1, 2))
 
-    def rows(self, coord: _Coordinate, attempted: int, evaluated: int) -> tuple[_MethodRow, ...]:
+    def rows(self, coord: _Coordinate, attempted: int) -> tuple[_MethodRow, ...]:
         return tuple(
-            self._row(mode, method, coord, attempted, evaluated)
+            self._row(mode, method, coord, attempted)
             for mode, method in product(range(len(_MODES)), range(len(_METHODS)))
         )
 
-    def _row(
-        self, mode: int, method: int, coord: _Coordinate, attempted: int, evaluated: int
-    ) -> _MethodRow:
+    def _row(self, mode: int, method: int, coord: _Coordinate, attempted: int) -> _MethodRow:
         lo, hi, joint, h = map(int, self.covered[:, mode, method])
         arms, leaves = map(int, self.empty[:, mode, method])
         l_error = self.errors.error((mode, method, 0))
-        nulls = evaluated - l_error.n
+        valid = int(self.spans.n[mode, method, 2])
+        nulls = valid - l_error.n
         training = coord.n // 3 if method >= 3 else 0
         wider, coarser, same = map(int, self.h_comparison[:, mode])
         return _MethodRow(
             method=_METHODS[method],
             mode=_MODES[mode],
             attempted=attempted,
-            valid_bands=evaluated,
+            valid_bands=valid,
             plugin_trials=l_error.n,
             null_plugin=nulls,
             null_plugin_reasons=(_CountByReason(reason="empty_arm_leaf", count=nulls),)
@@ -669,7 +740,7 @@ class _MethodTotals:
             estimation_n=coord.n - training,
             leaf_maps=tuple(
                 _CountByMap(leaf_map=m, count=count)
-                for m, count in sorted(self.maps[method].items())
+                for m, count in sorted(self.maps[mode][method].items())
             ),
             h_vs_q=_HWidthComparison(
                 wider_than_q=wider, with_coarser_true_id=coarser, with_same_true_id=same
@@ -693,18 +764,21 @@ class _DecisionTotals:
     def add(
         self,
         block: _Block,
+        trials: list[_Trial],
+        dgp: int,
         h: float,
         q: Interval,
         endpoint_miss: _Flag,
     ) -> tuple[_Count, _Flag, _Count]:
         outer = np.concatenate((block.outer, _intersections(block.outer)), axis=2)
-        discordant = outer[..., 0] > outer[..., 1]
-        states = _Actions.of(outer, present=~discordant, margin=_EQUIV)
+        available = np.concatenate((block.valid, _pipeline_valid(block.valid)), axis=2)
+        discordant = available & (outer[..., 0] > outer[..., 1])
+        states = _Actions.of(outer, present=available & ~discordant, margin=_EQUIV)
         method_id = _Actions.of(
             block.ids[:, 0], present=np.ones(block.ids[:, 0].shape[:-1], dtype=np.bool_)
         )
         self.ids += method_id.counts()
-        self.plugin += _Actions.of(block.plugin, present=block.present, margin=_EQUIV).counts()
+        self.plugin += _plugin_actions(block, trials, dgp).counts()
         self.policy += _Actions.of(
             np.full((len(outer), 2), h), present=np.ones(len(outer), dtype=np.bool_)
         ).counts()
@@ -729,50 +803,60 @@ class _DecisionTotals:
             )
         ).sum(axis=1)
         abstains = states.inconclusive | discordant[..., None]
-        self._add_loss(false_clear, false_out, abstains)
-        missed = endpoint_miss | discordant.any(axis=(1, 2))
+        self._add_loss(false_clear, false_out, abstains, available)
+        complete = block.valid.all(axis=(1, 2))
+        missed = complete & (endpoint_miss | discordant.any(axis=(1, 2)))
         clear_any, out_any, id_any = (
             x.any(axis=(1, 2, 3)) for x in (false_clear, false_out, false_id_clear | false_id_out)
         )
-        unexpected = (clear_any | out_any | id_any) & ~missed
+        unexpected = complete & (clear_any | out_any | id_any) & ~missed
         power = np.array(
             [
-                states.rule_out[:, _ESTIMATED, _P0, _AT_50].sum(),
-                states.clear[:, _ESTIMATED, _P0, _AT_50].sum(),
+                (complete & states.rule_out[:, _ESTIMATED, _P0, _AT_50]).sum(),
+                (complete & states.clear[:, _ESTIMATED, _P0, _AT_50]).sum(),
                 (
-                    abstains[:, _ESTIMATED, _P0, _AT_32] & states.clear[:, _ESTIMATED, _P1, _AT_32]
+                    complete
+                    & abstains[:, _ESTIMATED, _P0, _AT_32]
+                    & states.clear[:, _ESTIMATED, _P1, _AT_32]
                 ).sum(),
                 (
-                    abstains[:, _ESTIMATED, _P1, _AT_32] & states.clear[:, _ESTIMATED, _P1H, _AT_32]
+                    complete
+                    & abstains[:, _ESTIMATED, _P1, _AT_32]
+                    & states.clear[:, _ESTIMATED, _P1H, _AT_32]
                 ).sum(),
             ],
             dtype=np.int64,
         )
         return (
-            np.array((missed.sum(), clear_any.sum(), out_any.sum()), dtype=np.int64),
+            np.array(
+                (missed.sum(), (complete & clear_any).sum(), (complete & out_any).sum()),
+                dtype=np.int64,
+            ),
             unexpected,
             power,
         )
 
-    def _add_loss(self, false_clear: _Flag, false_out: _Flag, abstains: _Flag) -> None:
+    def _add_loss(
+        self, false_clear: _Flag, false_out: _Flag, abstains: _Flag, available: _Flag
+    ) -> None:
         groups = []
         for c_clear, c_out, c_abs in _LOSS:
             loss = c_clear * false_clear + c_out * false_out + c_abs * abstains
             groups.append(np.stack((loss, loss - c_abs, loss - loss[:, :, _P0 : _P0 + 1]), axis=1))
         values = np.stack(groups, axis=1)
-        self.loss.add(values, np.ones(values.shape, dtype=np.bool_))
+        paired = available & available[:, :, _P0 : _P0 + 1]
+        present = np.stack((available, available, paired), axis=1)
+        self.loss.add(values, np.broadcast_to(present[:, None, ..., None], values.shape))
 
-    def rows(self, coord: _Coordinate, attempted: int, evaluated: int) -> tuple[_DecisionRow, ...]:
+    def rows(self, coord: _Coordinate, attempted: int) -> tuple[_DecisionRow, ...]:
         return tuple(
-            self._row(coord, (mode, target, i), attempted, evaluated)
+            self._row(coord, (mode, target, i), attempted)
             for mode, target, i in product(
                 range(len(_MODES)), range(len(_TARGETS)), range(len(_TAU))
             )
         )
 
-    def _row(
-        self, coord: _Coordinate, key: tuple[int, int, int], attempted: int, evaluated: int
-    ) -> _DecisionRow:
+    def _row(self, coord: _Coordinate, key: tuple[int, int, int], attempted: int) -> _DecisionRow:
         mode, target, i = key
         band = _tally(self.band, key)
         clear, rule_out, id_clear, id_out = map(int, self.errors[(slice(None), *key)])
@@ -784,7 +868,7 @@ class _DecisionTotals:
             target=_TARGETS[target],
             tau=_TAU[i],
             attempted=attempted,
-            evaluated=evaluated,
+            evaluated=band.evaluated + diagnostic_abs,
             clear=band.clear,
             rule_out=band.rule_out,
             inconclusive=abstention,
@@ -832,7 +916,13 @@ def _intersections(outer: _Number) -> _Number:
     )
 
 
-def _diagnostic(exc: Exception, stage: str, coordinate: str, **details: str | int) -> _Diagnostic:
+def _pipeline_valid(valid: _Flag) -> _Flag:
+    return np.stack(tuple(valid[:, :, methods].all(axis=2) for methods in _PIPELINES), axis=2)
+
+
+def _diagnostic(
+    exc: Exception | KeyboardInterrupt, stage: str, coordinate: str, **details: str | int
+) -> _Diagnostic:
     if isinstance(exc, StudyError):
         # Preserve the exact numerical coordinate alongside the trial or file that generated it.
         context = (
@@ -843,7 +933,7 @@ def _diagnostic(exc: Exception, stage: str, coordinate: str, **details: str | in
         )
         return _Diagnostic(reason=exc.reason, context=context)
     return _Diagnostic(
-        reason="execution_failure",
+        reason="interrupted" if isinstance(exc, KeyboardInterrupt) else "execution_failure",
         context=(
             ("stage", stage),
             ("coordinate", coordinate),
@@ -866,8 +956,20 @@ def _counter(coord: _Coordinate, name: str, k: int, n: int, kind: _GateKind) -> 
     )
 
 
+@dataclass(slots=True)
+class _Interrupt:
+    requested: bool = False
+
+    def request(self, _signum: int, _frame: object) -> None:
+        self.requested = True
+
+    def check(self) -> None:
+        if self.requested:
+            raise KeyboardInterrupt
+
+
 def evaluate_cell(
-    coord: _Coordinate, attempts: int
+    coord: _Coordinate, attempts: int, *, interrupt: _Interrupt | None = None
 ) -> tuple[_CellRow, tuple[_DecisionRow, ...], tuple[_GateCounter, ...], tuple[_Diagnostic, ...]]:
     """Aggregate one cell, keeping at most one block of trial results in memory."""
     if attempts <= 0:
@@ -876,45 +978,56 @@ def evaluate_cell(
     u0, f, q = (_identification(coord.dgp, m) for m in _STATIC_MAPS)
     methods, decisions = _MethodTotals(), _DecisionTotals()
     errors, power = np.zeros(3, dtype=np.int64), np.zeros(4, dtype=np.int64)
-    evaluated = 0
+    attempted = evaluated = 0
+    stopped = False
     failures = []
     coordinate = f"D{coord.dgp}/n{coord.n_index}/e{coord.e_index}"
     for start in range(0, attempts, _BATCH):
         trials = []
         for trial in range(start, min(start + _BATCH, attempts)):
             try:
+                if interrupt is not None:
+                    interrupt.check()
+                attempted += 1
                 trials.append(_trial(coord, trial))
+            except KeyboardInterrupt as exc:
+                if not attempted:
+                    raise
+                failures.append(_diagnostic(exc, "trial", coordinate, trial=trial))
+                stopped = True
+                break
             except Exception as exc:
                 failures.append(_diagnostic(exc, "trial", coordinate, trial=trial))
         if not trials:
+            if stopped:
+                break
             continue
         block = _Block.of(trials)
-        keep = block.valid.all(axis=(1, 2))
-        if not keep.all():
-            for t, mode, method in np.argwhere(~block.valid):
+        evaluated += int(block.valid.all(axis=(1, 2)).sum())
+        for t in trials:
+            failures.extend(t.failures)
+        for t, mode, method in np.argwhere(~block.valid):
+            if trials[t].bands[mode][method] is not None:
                 exc = _error("invalid_band", "aggregation", _METHODS[method], mode=_MODES[mode])
                 failures.append(_diagnostic(exc, "trial", coordinate, trial=trials[t].index))
-            trials = [t for t, ok in zip(trials, keep, strict=True) if ok]
-            if not trials:
-                continue
-            block = block.select(keep)
-        evaluated += len(trials)
         miss = methods.add(block, trials, h)
-        bad, unexpected, wins = decisions.add(block, h, q, miss)
+        bad, unexpected, wins = decisions.add(block, trials, coord.dgp, h, q, miss)
         errors += bad
         power += wins
         for i in np.flatnonzero(unexpected):
             exc = _error("false_action_without_bound_miss", "aggregation", coordinate)
             failures.append(_diagnostic(exc, "trial", coordinate, trial=trials[i].index))
+        if stopped:
+            break
     cell = _CellRow(
         coordinate=coord,
-        attempted=attempts,
+        attempted=attempted,
         evaluated=evaluated,
         h=h,
         id_u0=u0,
         id_f=f,
         id_q=q,
-        methods=methods.rows(coord, attempts, evaluated),
+        methods=methods.rows(coord, attempted),
     )
     counters: tuple[_GateCounter, ...] = ()
     if evaluated == attempts:
@@ -925,7 +1038,7 @@ def evaluate_cell(
         if coord.n == 4096 and coord.e == 0.5 and 2 <= coord.dgp <= 5:
             j = coord.dgp - 2
             counters += (_counter(coord, _POWER[j], int(power[j]), attempts, "power"),)
-    return cell, decisions.rows(coord, attempts, evaluated), counters, tuple(failures)
+    return cell, decisions.rows(coord, attempted), counters, tuple(failures)
 
 
 def _hash(data: bytes) -> str:
@@ -998,9 +1111,9 @@ def _verify_oracle(path: Path, protocol: _Receipt, sources: tuple[_Receipt, ...]
                 not 1 - Fraction(4, 600) <= box <= joint <= min(lo, hi)
                 or tuple(a.tau for a in row.decisions) != _TAU
                 or any(
-                    _exact_probability(v) > 1 - joint
+                    _exact_probability(a.false_clear) > 1 - hi
+                    or _exact_probability(a.false_rule_out) > 1 - lo
                     for a in row.decisions
-                    for v in (a.false_clear, a.false_rule_out)
                 )
                 or (coord == (25, 20, 0.2, 0.4) and abs(float(box) - 0.996327663382) > 1e-11)
             ):
@@ -1028,7 +1141,9 @@ def _write(handle: TextIO, record: _Frozen) -> None:
     handle.write(json.dumps(record.model_dump(mode="json"), allow_nan=False) + "\n")
 
 
-def _run(mode: _RunMode, out: Path, oracle: Path, raw_args: tuple[str, ...]) -> int:
+def _run(
+    mode: _RunMode, out: Path, oracle: Path, raw_args: tuple[str, ...], interrupt: _Interrupt
+) -> int:
     root = Path(__file__).resolve().parents[1]
     started_at = datetime.now(UTC)
     threads = tuple((k, os.environ.get(k)) for k in _THREADS)
@@ -1041,6 +1156,7 @@ def _run(mode: _RunMode, out: Path, oracle: Path, raw_args: tuple[str, ...]) -> 
     protocol_sha: str | None = None
     oracle_sha: str | None = None
     complete: list[_Coordinate] = []
+    current: str = mode
     out.mkdir(parents=True, exist_ok=False)
     with (
         (out / _ARTIFACTS[0]).open("x", encoding="utf-8") as cells,
@@ -1067,8 +1183,12 @@ def _run(mode: _RunMode, out: Path, oracle: Path, raw_args: tuple[str, ...]) -> 
             _verify_truth()
             roster = coordinates()
             for coord in roster:
+                current = f"D{coord.dgp}/n{coord.n_index}/e{coord.e_index}"
+                interrupt.check()
                 try:
-                    cell, rows, gates, diagnostics = evaluate_cell(coord, trials)
+                    cell, rows, gates, diagnostics = evaluate_cell(
+                        coord, trials, interrupt=interrupt
+                    )
                     _write(cells, cell)
                     for row in rows:
                         _write(decisions, row)
@@ -1076,10 +1196,11 @@ def _run(mode: _RunMode, out: Path, oracle: Path, raw_args: tuple[str, ...]) -> 
                     counters.extend(gates)
                     if not diagnostics and cell.attempted == cell.evaluated == trials:
                         complete.append(coord)
+                    if any(d.reason == "interrupted" for d in diagnostics):
+                        break
                 except Exception as exc:
-                    failures.append(
-                        _diagnostic(exc, "cell", f"D{coord.dgp}/n{coord.n_index}/e{coord.e_index}")
-                    )
+                    failures.append(_diagnostic(exc, "cell", current))
+                interrupt.check()
             if not failures and (
                 len(roster) != 28 or tuple(complete) != roster or len(counters) != _GATES
             ):
@@ -1090,6 +1211,8 @@ def _run(mode: _RunMode, out: Path, oracle: Path, raw_args: tuple[str, ...]) -> 
                     completed=len(complete),
                     counters=len(counters),
                 )
+        except KeyboardInterrupt as exc:
+            failures.append(_diagnostic(exc, "campaign", current))
         except Exception as exc:
             failures.append(_diagnostic(exc, "campaign", mode))
     status = _status(mode, failures, counters)
@@ -1145,12 +1268,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     raw_args = tuple(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(raw_args)
-    return _run(
-        args.mode,
-        args.out,
-        args.oracle if args.oracle is not None else args.out.parent / "oracle.json",
-        raw_args,
-    )
+    # Stop between trials or completed writes, never in the middle of a JSONL record.
+    interrupt = _Interrupt()
+    previous = signal.signal(signal.SIGINT, interrupt.request)
+    try:
+        return _run(
+            args.mode,
+            args.out,
+            args.oracle if args.oracle is not None else args.out.parent / "oracle.json",
+            raw_args,
+            interrupt,
+        )
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 if __name__ == "__main__":
