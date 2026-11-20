@@ -65,6 +65,15 @@ Applies to `ResultCell` and `AnalysisEnvelope`, including cells in a saved run.
 
 **Migration**: None. Re-export the cube from its original data.
 
+## Overlap evidence and results
+
+`OverlapEvidence.to_json()` and `OverlapResult.to_json()` write format 1.
+Their `from_json(..., expected_sha256=...)` readers accept only format 1 and
+require a separately retained digest. Invalid versions or mismatched digests
+refuse with `overlap.format.invalid`. Keep the evidence to rerun the analysis
+without rereading the source. The digest checks integrity, not whether a
+producer supplied complete data or followed its declared assignment rules.
+
 ## Unit-day artifact context
 
 **Writes**: format 2

@@ -30,6 +30,7 @@ similar codes can mean different things.
 | Data or definitions | [Warehouse and dataframe inputs](data-model.md) |
 | Method or required data | [Choose a method](choose-a-method.md), [supported inputs](../reference/capabilities-by-entry-point.md) |
 | A warehouse query | [Backend translation](data-model.md#when-ibis-cannot-translate-an-operation) |
+| Overlapping experiments | [Check the design and four input feeds](overlapping-experiments.md#first-establish-who-could-have-received-either-treatment) |
 | An estimate or comparison family | [Reading results](reading-results.md), [multiplicity](multiplicity.md) |
 | A saved run | [Saved formats](../reference/saved-formats.md) |
 | A display or export | [Dashboard requirements](dashboard.md) |

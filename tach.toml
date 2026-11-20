@@ -254,6 +254,9 @@ layer = "core"
 depends_on = [
   "increment._frame_overlap",
   "increment._overlap_sdk",
+  "increment.estimation.overlap",
+  "increment.power.overlap",
+  "increment.query.overlap",
   "increment.semantics.overlap",
 ]
 

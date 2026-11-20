@@ -173,9 +173,33 @@ kwargs: Named builder arguments forwarded to the builder for the selected frame 
 shape: Unit-summary or unit-panel layout selected from a frame.
 estimator_id: Registered estimator whose declaration is checked.
 views: Declared experiment views selected for one shared execution.
-capture: Sequential checkpoint captured before a run reads its views.
+capture: Sequential checkpoint or declared source versions and coverage.
 execution_context: Open shared evidence capture that a run reuses instead of reading its source again.
 experiment: Experiment declaration to execute.
 config: Configuration for dashboard display or experiment assignment.
 view: Dashboard Explore view to load from a prepared snapshot.
 holdout_key: Name of the holdout to evaluate.
+a_config/b_config: Original archived allocation rules for experiment A or B.
+a_target/b_target: Allocator target keys for the two assignments.
+a_experiment/b_experiment: Focal experiment keys for the two assignments.
+a_off/b_off: Archived control arm labels for the two assignments.
+a_on/b_on: Archived treatment arm labels for the two assignments.
+unit_namespace: Identity space shared by the roster, decisions, deliveries and outcomes.
+population_id: Name of the target population registered for both experiments.
+eligibility_rule_sha256: Digest of the registered rules defining eligibility.
+enrollment_rule_sha256: Digest of the registered rules defining enrollment.
+serving_barrier_id: Name of the rule preventing delivery before the common start.
+registered_at: Time the plan was fixed before anyone could enter.
+entry_open: First instant at which a unit can enter either experiment.
+start/end: Inclusive start and exclusive end of the common outcome window.
+claims: Registered metric and comparison pairs used for decisions.
+decided_at: Timestamp of the persisted first allocation decision.
+decision: Persisted allocator decision to validate and normalize.
+roster: Feed identifying entrants and when both eligibility rules were checked.
+decisions: Feed containing all required allocation attempts, including declines.
+deliveries: Feed containing actual delivery events and their recorded times.
+outcomes: Feed containing one outcome per unit and registered metric.
+evidence: Validated bounded cell summaries for the registered overlap design.
+n_target: Planned number of units randomized in both experiments.
+cell_outcomes: Prespecified joint outcome vectors for each assignment cell.
+replications: Number of independent draws to use in the simulation.

@@ -405,6 +405,8 @@ increment.kernel.resolver -> increment.estimators
 increment.kernel.resolver -> increment.estimators.registry
 increment.kernel.resolver -> increment.semantics
 increment.kernel.resolver -> increment.semantics.models
+increment.overlap -> increment.query
+increment.overlap -> increment.query.overlap
 increment.plan -> increment._analysis_config
 increment.plan -> increment.decision
 increment.plan -> increment.estimation

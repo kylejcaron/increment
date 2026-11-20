@@ -8,7 +8,7 @@ Context keys include template fields, explicitly declared keys and named rendere
 
 ## Registered refusal codes
 
-[`absorption.*`](#family-absorption) · [`adjust.*`](#family-adjust) · [`allocation.*`](#family-allocation) · [`analysis.*`](#family-analysis) · [`arm.*`](#family-arm) · [`arm_planning.*`](#family-arm_planning) · [`artifact.*`](#family-artifact) · [`artifact_contract.*`](#family-artifact_contract) · [`breakout.*`](#family-breakout) · [`cate.*`](#family-cate) · [`compatibility.*`](#family-compatibility) · [`contrast.*`](#family-contrast) · [`conversion_inference.*`](#family-conversion_inference) · [`dashboard.*`](#family-dashboard) · [`decision.*`](#family-decision) · [`definition.*`](#family-definition) · [`design.*`](#family-design) · [`estimation.*`](#family-estimation) · [`evidence.*`](#family-evidence) · [`facade.*`](#family-facade) · [`family.*`](#family-family) · [`frame.*`](#family-frame) · [`identification.*`](#family-identification) · [`impute.*`](#family-impute) · [`install.*`](#family-install) · [`integrity.*`](#family-integrity) · [`kernel.*`](#family-kernel) · [`logged_policy.*`](#family-logged_policy) · [`model.*`](#family-model) · [`moments.*`](#family-moments) · [`package.*`](#family-package) · [`plan.*`](#family-plan) · [`power.*`](#family-power) · [`query.*`](#family-query) · [`readout.*`](#family-readout) · [`report.*`](#family-report) · [`reporting.*`](#family-reporting) · [`results.*`](#family-results) · [`sensitivity.*`](#family-sensitivity) · [`sequential.*`](#family-sequential) · [`simulate.*`](#family-simulate) · [`source.*`](#family-source) · [`store.*`](#family-store) · [`tables.*`](#family-tables) · [`unit_cycle.*`](#family-unit_cycle) · [`wire.*`](#family-wire)
+[`absorption.*`](#family-absorption) · [`adjust.*`](#family-adjust) · [`allocation.*`](#family-allocation) · [`analysis.*`](#family-analysis) · [`arm.*`](#family-arm) · [`arm_planning.*`](#family-arm_planning) · [`artifact.*`](#family-artifact) · [`artifact_contract.*`](#family-artifact_contract) · [`breakout.*`](#family-breakout) · [`cate.*`](#family-cate) · [`compatibility.*`](#family-compatibility) · [`contrast.*`](#family-contrast) · [`conversion_inference.*`](#family-conversion_inference) · [`dashboard.*`](#family-dashboard) · [`decision.*`](#family-decision) · [`definition.*`](#family-definition) · [`design.*`](#family-design) · [`estimation.*`](#family-estimation) · [`evidence.*`](#family-evidence) · [`facade.*`](#family-facade) · [`family.*`](#family-family) · [`frame.*`](#family-frame) · [`identification.*`](#family-identification) · [`impute.*`](#family-impute) · [`install.*`](#family-install) · [`integrity.*`](#family-integrity) · [`kernel.*`](#family-kernel) · [`logged_policy.*`](#family-logged_policy) · [`model.*`](#family-model) · [`moments.*`](#family-moments) · [`overlap.*`](#family-overlap) · [`package.*`](#family-package) · [`plan.*`](#family-plan) · [`power.*`](#family-power) · [`query.*`](#family-query) · [`readout.*`](#family-readout) · [`report.*`](#family-report) · [`reporting.*`](#family-reporting) · [`results.*`](#family-results) · [`sensitivity.*`](#family-sensitivity) · [`sequential.*`](#family-sequential) · [`simulate.*`](#family-simulate) · [`source.*`](#family-source) · [`store.*`](#family-store) · [`tables.*`](#family-tables) · [`unit_cycle.*`](#family-unit_cycle) · [`wire.*`](#family-wire)
 
 <span id="family-absorption"></span>
 
@@ -18865,6 +18865,106 @@ The cause depends on the supplied context; read the raised message. [Message rul
 **Context keys:** `field`, `metric`, `value`
 
 **Registering modules:** `increment.sources`
+
+<span id="family-overlap"></span>
+
+## `overlap.*`
+
+<span id="overlap.capture.invalid"></span>
+
+### `overlap.capture.invalid`
+
+**Cause and message:**
+
+<p>Invalid source receipt for {role}: {reason}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `reason`, `role`
+
+**Registering modules:** `increment._frame_overlap`, `increment._overlap_refusals`, `increment.query.overlap`, `increment.semantics.overlap`
+
+<span id="overlap.evidence.invalid"></span>
+
+### `overlap.evidence.invalid`
+
+**Cause and message:**
+
+<p>Invalid overlap evidence for {role}: {reason} ({count}).</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `count`, `reason`, `role`
+
+**Registering modules:** `increment._frame_overlap`, `increment._overlap_evidence`, `increment._overlap_refusals`, `increment._overlap_sdk`, `increment.estimation.overlap`, `increment.query.overlap`, `increment.semantics.overlap`
+
+<span id="overlap.format.invalid"></span>
+
+### `overlap.format.invalid`
+
+**Cause and message:**
+
+<p>Invalid serialized overlap field {field}: {reason}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `WireFormatError`
+
+**Context keys:** `field`, `reason`
+
+**Registering modules:** `increment._overlap_evidence`, `increment._overlap_refusals`, `increment.estimation.overlap`, `increment.semantics.overlap`
+
+<span id="overlap.law.unsupported"></span>
+
+### `overlap.law.unsupported`
+
+**Cause and message:**
+
+<p>Cannot establish independent binary assignment for {factors}: {reason}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `CapabilityError`
+
+**Context keys:** `factors`, `reason`
+
+**Registering modules:** `increment._overlap_refusals`, `increment._overlap_sdk`, `increment.semantics.overlap`
+
+<span id="overlap.numeric.range"></span>
+
+### `overlap.numeric.range`
+
+**Cause and message:**
+
+<p>Metric {metric} has an out-of-range {quantity}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `metric`, `quantity`
+
+**Registering modules:** `increment._frame_overlap`, `increment._overlap_evidence`, `increment._overlap_refusals`, `increment.estimation.overlap`, `increment.power.overlap`, `increment.query.overlap`
+
+<span id="overlap.plan.invalid"></span>
+
+### `overlap.plan.invalid`
+
+**Cause and message:**
+
+<p>Invalid overlapping-experiment plan field {field}: {reason}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `reason`
+
+**Registering modules:** `increment._overlap_evidence`, `increment._overlap_refusals`, `increment._overlap_sdk`, `increment.power.overlap`, `increment.semantics.overlap`
 
 <span id="family-package"></span>
 
