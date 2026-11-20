@@ -67,7 +67,8 @@ def test_train_map_and_empty_evaluation_cell() -> None:
         assert band.plugin is None
         assert band.reason == "empty_arm_leaf"
         assert band.outer[0] < band.outer[1]
-    assert summarize(counts, learned, atom_weights=(0.5, 0, 0.5, 0)).plugin == (0.0, 0.2)
+    known_counts = (counts[0], _ZERO, counts[2], _ZERO)
+    assert summarize(known_counts, learned, atom_weights=(0.5, 0, 0.5, 0)).plugin == (0.0, 0.2)
 
 
 def test_decide_requires_strict_separation() -> None:
@@ -103,6 +104,24 @@ def test_invalid_target_is_not_renormalized(weights: tuple[float, float, float, 
     with pytest.raises(StudyError) as exc:
         summarize(counts, _U0, atom_weights=weights)
     assert exc.value.reason == "invalid_target_mass"
+
+
+def test_observed_zero_target_atom_is_rejected_even_when_pooled() -> None:
+    counts = (Cell(1, 0, 1, 0), Cell(1, 1, 0, 0), _ZERO, _ZERO)
+    with pytest.raises(StudyError) as exc:
+        summarize(counts, _U0, atom_weights=(1, 0, 0, 0))
+    assert exc.value.reason == "invalid_target_mass"
+    context = dict(exc.value.context)
+    assert (context["stage"], context["coordinate"], context["count"]) == ("summarize", "01", 1)
+
+
+def test_unobserved_positive_exact_mass_still_makes_plugin_unavailable() -> None:
+    tiny = Fraction(1, 2**1076)
+    counts = (Cell(2, 1, 2, 1), _ZERO, _ZERO, _ZERO)
+    band = summarize(counts, _F, atom_weights=(1 - tiny, 0, tiny, 0))
+    assert band.plugin is None
+    assert band.reason == "empty_arm_leaf"
+    assert band.outer[0] < band.outer[1]
 
 
 @pytest.mark.parametrize("tau", [0.0, 1.0, float("inf")])

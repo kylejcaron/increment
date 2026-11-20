@@ -134,16 +134,20 @@ def _leaf_count(leaf_map: LeafMap) -> int:
     return size
 
 
-def _check_target(weights: AtomWeights) -> None:
+def _check_target(weights: AtomWeights, counts: Counts4) -> None:
     if not isinstance(weights, tuple) or len(weights) != 4:
         raise _error("invalid_target_mass", "summarize", "atom_weights", count=_shape(weights))
-    for atom, weight in zip(_ATOMS, weights, strict=True):
+    for atom, weight, cell in zip(_ATOMS, weights, counts, strict=True):
         if (
             isinstance(weight, bool)
             or not isinstance(weight, (int, float, Fraction))
             or not 0 <= weight <= 1 + _TOL
         ):
             raise _error("invalid_target_mass", "summarize", atom, mass=str(weight))
+        if weight == 0 and (cell.n0 or cell.n1):
+            raise _error(
+                "invalid_target_mass", "summarize", atom, mass="0", count=cell.n0 + cell.n1
+            )
     if all(isinstance(w, (int, Fraction)) for w in weights):
         total = sum(weights)
         valid = total == 1
@@ -201,11 +205,11 @@ def _leaf_limits(cell: Cell, leaves: int) -> tuple[float, float, float, float]:
 
 
 def _plugin(
-    counts: tuple[Cell, ...], weights: tuple[float, ...], *, known_mass: bool
+    counts: tuple[Cell, ...], weights: tuple[float, ...], *, possible: tuple[bool, ...]
 ) -> Interval | None:
     lower, upper = [], []
-    for cell, weight in zip(counts, weights, strict=True):
-        if not known_mass or weight > 0:
+    for cell, weight, positive in zip(counts, weights, possible, strict=True):
+        if positive:
             if not cell.n0 or not cell.n1:
                 return None
             # The sign of p + q - 1 is the sign of the exact success-rate difference.
@@ -220,23 +224,29 @@ def summarize(counts: Counts4, leaf_map: LeafMap, *, atom_weights: AtomWeights |
     """Project simultaneous binomial ranges over a known target or a weight simplex."""
     _check_counts(counts, "summarize")
     leaves = _leaf_count(leaf_map)
+    n = sum(cell.n0 + cell.n1 for cell in counts)
+    if n == 0:
+        raise _error("empty_study", "summarize", "estimation_sample", count=n)
+    if atom_weights is not None:
+        _check_target(atom_weights, counts)
+
     leaf_counts = tuple(
         _pool(cell for cell, g in zip(counts, leaf_map, strict=True) if g == leaf)
         for leaf in range(leaves)
     )
     membership = tuple(cell.n0 + cell.n1 for cell in leaf_counts)
-    n = sum(membership)
-    if n == 0:
-        raise _error("empty_study", "summarize", "estimation_sample", count=n)
 
     if atom_weights is None:
         w = tuple(k / n for k in membership)
+        possible = (True,) * leaves
     else:
-        _check_target(atom_weights)
-        w = tuple(
-            fsum(w_i for w_i, g in zip(atom_weights, leaf_map, strict=True) if g == leaf)
+        leaf_masses = tuple(
+            tuple(w_i for w_i, g in zip(atom_weights, leaf_map, strict=True) if g == leaf)
             for leaf in range(leaves)
         )
+        # Exact support can be positive even when its numerical weight underflows.
+        possible = tuple(any(m > 0 for m in masses) for masses in leaf_masses)
+        w = tuple(map(fsum, leaf_masses))
     if leaves == 1:
         w = (1.0,)
 
@@ -255,7 +265,7 @@ def summarize(counts: Counts4, leaf_map: LeafMap, *, atom_weights: AtomWeights |
         L_ci = (_weighted(l0, w), _weighted(l1, w))
         U_ci = (_weighted(u0, w), _weighted(u1, w))
 
-    plugin = _plugin(leaf_counts, w, known_mass=atom_weights is not None)
+    plugin = _plugin(leaf_counts, w, possible=possible)
     return Band(
         plugin=plugin,
         L_ci=L_ci,
