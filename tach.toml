@@ -1319,6 +1319,17 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment.power.overlap"
+layer = "core"
+depends_on = [
+  "increment._canonical",
+  "increment._overlap_evidence",
+  "increment._overlap_refusals",
+  "increment.errors",
+  "increment.semantics.overlap",
+]
+
+[[modules]]
 path = "increment.power.core"
 layer = "core"
 depends_on = [
