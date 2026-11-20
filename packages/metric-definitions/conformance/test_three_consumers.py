@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from metric_definitions import load
-from metric_definitions.malloy import export_malloy
+from increment_metrics import load
+from increment_metrics.malloy import export_malloy
 
 CONFORMANCE = Path(__file__).resolve().parent
 CORE = CONFORMANCE.parent

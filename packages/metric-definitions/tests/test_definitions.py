@@ -3,7 +3,7 @@ from typing import cast
 
 import pytest
 
-from metric_definitions import Binary, CatalogError, FormulaMetric, Literal, Reference, load
+from increment_metrics import Binary, CatalogError, FormulaMetric, Literal, Reference, load
 
 SHOP = Path(__file__).resolve().parents[1] / "examples" / "shop"
 pytestmark = pytest.mark.integration

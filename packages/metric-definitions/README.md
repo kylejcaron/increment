@@ -1,11 +1,14 @@
-# Metric Definitions
+# Increment Metrics
 
 Define measures and metrics once, independently of a warehouse connection or an
 analysis. This package validates definitions and selects the dependencies needed
 by a consumer. It does not read warehouse data or evaluate metrics.
 
+The distribution is `increment-metrics`; it imports as `increment_metrics` and
+does not require Increment or Terrine.
+
 ```python
-from metric_definitions import Catalog, load
+from increment_metrics import Catalog, load
 
 catalog = load("examples/shop/metrics.yaml")
 selected = catalog.select(["average_order_value"])
@@ -61,7 +64,7 @@ exposure rules and snapshot windows belong in the consumer, not in this file.
 | --- | --- | --- |
 | Increment | `from_definitions` with `metric_definitions` | Additive ratios, eligible-unit means, and event-presence conversions with matching native bindings |
 | Terrine | `Model.from_metric_definitions`, then an ordinary `Design` | Named formulas over aligned window aggregates; readiness and roster binding stay native |
-| Malloy | `metric_definitions.malloy.export_malloy` | Native fields and grouping over compatible fact or roster sources |
+| Malloy | `increment_metrics.malloy.export_malloy` | Native fields and grouping over compatible fact or roster sources |
 
 The [migration and conformance guide](conformance/) shows how to reuse AOV
 without rewriting an experiment or a Terrine Design. The comparison uses matched

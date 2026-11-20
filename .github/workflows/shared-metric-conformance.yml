@@ -47,8 +47,8 @@ jobs:
           sha256sum "$wheel"
           export INCREMENT_PYTHON="$GITHUB_WORKSPACE/.venv/bin/python"
           export TERRINE_PYTHON="$terrine/.venv/bin/python"
-          uv pip install --no-deps --reinstall-package metric-definitions --python "$INCREMENT_PYTHON" "$wheel"
-          uv pip install --no-deps --reinstall-package metric-definitions --python "$TERRINE_PYTHON" "$wheel"
+          uv pip install --no-deps --reinstall-package increment-metrics --python "$INCREMENT_PYTHON" "$wheel"
+          uv pip install --no-deps --reinstall-package increment-metrics --python "$TERRINE_PYTHON" "$wheel"
 
           node_version=$(jq -er '.malloy.node' "$receipt")
           [[ "$node_version" =~ ^22\.[0-9]+\.[0-9]+$ ]]

@@ -7,26 +7,26 @@ ignore_type_checking_imports = true
 forbid_circular_dependencies = true
 
 [[modules]]
-path = "metric_definitions"
+path = "increment_metrics"
 layer = "core"
-depends_on = ["metric_definitions.formula", "metric_definitions.loader", "metric_definitions.models"]
+depends_on = ["increment_metrics.formula", "increment_metrics.loader", "increment_metrics.models"]
 
 [[modules]]
-path = "metric_definitions.formula"
+path = "increment_metrics.formula"
 layer = "core"
 depends_on = []
 
 [[modules]]
-path = "metric_definitions.loader"
+path = "increment_metrics.loader"
 layer = "core"
-depends_on = ["metric_definitions.models"]
+depends_on = ["increment_metrics.models"]
 
 [[modules]]
-path = "metric_definitions.malloy"
+path = "increment_metrics.malloy"
 layer = "core"
-depends_on = ["metric_definitions.formula", "metric_definitions.models"]
+depends_on = ["increment_metrics.formula", "increment_metrics.models"]
 
 [[modules]]
-path = "metric_definitions.models"
+path = "increment_metrics.models"
 layer = "core"
-depends_on = ["metric_definitions.formula"]
+depends_on = ["increment_metrics.formula"]

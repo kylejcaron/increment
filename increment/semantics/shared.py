@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    import metric_definitions as md
+    import increment_metrics as md
 
     from increment.semantics.models import FactSource
 
@@ -249,7 +249,7 @@ class _Binding:
         )
 
     def metric(self, name: str) -> tuple[dict[str, Any], BoundSharedMetric]:
-        import metric_definitions as md
+        import increment_metrics as md
 
         declaration = self.catalog.metrics[name]
         if isinstance(declaration, md.FormulaMetric):
@@ -296,7 +296,7 @@ class _Binding:
 
 
 def _ratio_leaves(formula: md.Formula, catalog: md.Catalog, name: str) -> tuple[str, str]:
-    import metric_definitions as md
+    import increment_metrics as md
 
     match formula:
         case md.Binary(operator="/", left=md.Reference(name=left), right=md.Reference(name=right)):
@@ -314,9 +314,9 @@ def bind_shared(
     manifest = _manifest(raw_manifest, path)
     included = shared_path(raw_manifest, path, root)
     try:
-        import metric_definitions as md
+        import increment_metrics as md
     except ModuleNotFoundError as exc:
-        if exc.name != "metric_definitions":
+        if exc.name != "increment_metrics":
             raise
         _refuse_include(
             path, "portable definitions require the increment[metric-definitions] extra"

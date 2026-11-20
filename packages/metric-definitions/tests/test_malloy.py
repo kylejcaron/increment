@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from metric_definitions import Catalog, load
-from metric_definitions.malloy import MalloyExportError, export_malloy
+from increment_metrics import Catalog, load
+from increment_metrics.malloy import MalloyExportError, export_malloy
 
 CORE = Path(__file__).resolve().parents[1]
 SHOP = CORE / "examples" / "shop"

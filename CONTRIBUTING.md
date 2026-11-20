@@ -1163,6 +1163,19 @@ branch-protection endpoint reports the branch is not protected. These settings
 are not changed here; environment and ruleset configuration is distinct from
 the workflow's exact-candidate gate.
 
+#### Publish Increment Metrics separately
+
+`increment-metrics` has its own version in `packages/metric-definitions/pyproject.toml`.
+Run cross-consumer conformance on the release candidate and record the wheel
+digest in `packages/metric-definitions/conformance/versions.json`. A tag such
+as `v-increment-metrics-0.1.0a1` starts `release-increment-metrics.yml`, not the
+Increment release. The workflow checks the tag and digest and installs the
+built wheel before requesting approval from the `pypi` environment.
+
+For the first upload, configure a pending publisher on PyPI for project
+`increment-metrics`, owner `kylejcaron`, repository `increment`, workflow
+`release-increment-metrics.yml`, and environment `pypi`.
+
 #### Release qualification checklist
 
 Qualify a stable version on the exact candidate commit before dispatching

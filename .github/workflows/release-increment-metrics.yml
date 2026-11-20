@@ -1,0 +1,85 @@
+name: release increment-metrics
+
+on:
+  push:
+    tags: ['v-increment-metrics-*']
+
+permissions: {}
+
+concurrency:
+  group: release-increment-metrics-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Build and validate the standalone distributions
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          core="$GITHUB_WORKSPACE/packages/metric-definitions"
+          receipt="$core/conformance/versions.json"
+          version=$(jq -er '.core.version' "$receipt")
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]
+          test "$GITHUB_REF_NAME" = "v-increment-metrics-$version"
+          export SOURCE_DATE_EPOCH
+          SOURCE_DATE_EPOCH=$(jq -er '.core.source_date_epoch' "$receipt")
+          uv build --directory "$core" --out-dir "$RUNNER_TEMP/dist"
+          wheel="$RUNNER_TEMP/dist/increment_metrics-$version-py3-none-any.whl"
+          sdist="$RUNNER_TEMP/dist/increment_metrics-$version.tar.gz"
+          printf '%s  %s\n' "$(jq -er '.core.wheel_sha256' "$receipt")" "$wheel" | sha256sum --check -
+          uvx twine check --strict "$wheel" "$sdist"
+          sha256sum "$wheel" "$sdist" >> "$GITHUB_STEP_SUMMARY"
+          uv venv --python "$(jq -er '.python' "$receipt")" "$RUNNER_TEMP/wheel-smoke"
+          python="$RUNNER_TEMP/wheel-smoke/bin/python"
+          uv pip install --python "$python" "$wheel"
+          cd "$RUNNER_TEMP"
+          "$python" -I - "$version" <<'PY'
+          import sys
+          from importlib.metadata import version
+          from importlib.util import find_spec
+          from pathlib import Path
+
+          from increment_metrics import load
+
+          assert version("increment-metrics") == sys.argv[1]
+          assert all(find_spec(name) is None for name in ("increment", "terrine", "ibis"))
+          fixture = Path(sys.prefix) / "share/increment-metrics/examples/shop/metrics.yaml"
+          selected = load(fixture).select(["average_order_value"])
+          assert set(selected.measures) == {"revenue", "order_count"}
+          PY
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1
+        with:
+          name: increment-metrics-dist
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/increment-metrics/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: increment-metrics-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          attestations: true
+          print-hash: true
