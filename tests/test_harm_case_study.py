@@ -311,7 +311,6 @@ def test_hillstrom_uses_assignment_and_only_baseline_flags() -> None:
             {"signed_at": "9998-01-01T00:00:00Z", "unblind_at": "9998-01-02T00:00:00Z"},
             "future_card_signature",
         ),
-        ({"unblind_at": "9998-01-02T00:00:00Z"}, "card_unblinding_not_reached"),
         ({"signed_at": "2000-01-01T00:00:00"}, "invalid_decision_card"),
         ({"tau": "0.25"}, "invalid_decision_card"),
         ({"max_false_action_risk": 0.049}, "insufficient_risk_ceiling"),
@@ -341,6 +340,37 @@ def test_ineligible_cards_cannot_supply_actions(
     assert diagnostic in {issue["reason"] for issue in packet["diagnostics"]}
 
 
+@pytest.mark.integration
+def test_matching_future_cutoff_blocks_the_outcome_read(
+    tmp_path: Path, fixture_trial: tuple[Path, dict[str, object]]
+) -> None:
+    _, manifest = fixture_trial
+    unreadable_data = tmp_path / "not-a-readable-csv"
+    unreadable_data.mkdir()
+    manifest["csv_path"] = str(unreadable_data)
+    card = _write_json(
+        tmp_path / "card.json",
+        {**_card_fields(), "unblind_at": "9998-01-02T00:00:00Z", "tau": 0.21},
+    )
+    code, out = _run(
+        tmp_path, _write_json(tmp_path / "manifest.json", manifest), "--card", str(card)
+    )
+    packet = _read_json(out / "decision.json")
+    assert (code, packet["status"], packet["reason"]) == (
+        2,
+        "unavailable",
+        "card_unblinding_not_reached",
+    )
+    assert packet["permission_verified"] and packet["design_verified"]
+    assert packet["card_sha256"] == hashlib.sha256(card.read_bytes()).hexdigest()
+    assert packet["bounds"] is packet["owner_decision"] is None
+    assert _read_json(out / "bounds.json")["bounds"] is None
+    receipt = _read_json(out / "input_manifest.json")
+    assert receipt["csv_sha256"] is None and not receipt["digest_verified"]
+    with (out / "thresholds.csv").open(encoding="utf-8") as f:
+        assert not list(csv.DictReader(f))
+
+
 @pytest.mark.parametrize("schema_valid", [True, False])
 @pytest.mark.integration
 def test_card_tolerance_can_be_research_sensitivity_but_not_owner_action(
@@ -349,13 +379,22 @@ def test_card_tolerance_can_be_research_sensitivity_but_not_owner_action(
     _, manifest = fixture_trial
     card = _write_json(
         tmp_path / "card.json",
-        {**_card_fields(), "horizon": "28 days", "tau": 0.21 if schema_valid else "0.21"},
+        {
+            **_card_fields(),
+            "horizon": "28 days",
+            "unblind_at": "9998-01-02T00:00:00Z",
+            "tau": 0.21 if schema_valid else "0.21",
+        },
     )
     code, out = _run(
         tmp_path, _write_json(tmp_path / "manifest.json", manifest), "--card", str(card)
     )
     packet = _read_json(out / "decision.json")
     assert code == 2 and packet["owner_decision"] is None
+    assert packet["reason"] == "missing_decision_card"
+    assert packet["diagnostics"][0]["reason"] == (
+        "decision_card_mismatch" if schema_valid else "invalid_decision_card"
+    )
     with (out / "thresholds.csv").open(encoding="utf-8") as f:
         non_grid = [row for row in csv.DictReader(f) if row["tau"] == "0.21"]
     if schema_valid:

@@ -398,6 +398,9 @@ def _check_permission(manifest: _CaseInput) -> None:
             raise _issue("use_permission_unconfirmed", "preflight", key)
 
 
+_UNBLIND_PENDING = "card_unblinding_not_reached"
+
+
 def _check_card(
     card: DecisionCard, manifest: _CaseInput, design: _TrialDesign, started: datetime
 ) -> None:
@@ -405,8 +408,6 @@ def _check_card(
         raise _issue("nonprospective_decision_card", "card", "signed_at")
     if card.signed_at > started:
         raise _issue("future_card_signature", "card", "signed_at")
-    if card.unblind_at > started:
-        raise _issue("card_unblinding_not_reached", "card", "unblind_at")
     if card.max_false_action_risk < _RISK:
         raise _issue("insufficient_risk_ceiling", "card", "max_false_action_risk")
     for key in ("arms", "outcome", "horizon", "positive_direction"):
@@ -425,6 +426,8 @@ def _check_card(
     ):
         if getattr(card, key).kind != kind:
             raise _issue("invalid_decision_card", "card", key)
+    if card.unblind_at > started:
+        raise _issue(_UNBLIND_PENDING, "card", "unblind_at")
 
 
 def _eligible_card(
@@ -444,6 +447,14 @@ def _eligible_card(
     except StudyError as exc:
         return _CardCheck(sha256=digest, sensitivity_tau=sensitivity_tau, issue=_diagnostic(exc))
     return _CardCheck(eligible=card, sha256=digest, sensitivity_tau=sensitivity_tau)
+
+
+def _card_diagnostics(card: _CardCheck) -> tuple[_Diagnostic, ...]:
+    if card.issue is None:
+        return ()
+    if card.issue.reason == _UNBLIND_PENDING:
+        raise StudyError(card.issue.reason, card.issue.context)
+    return (card.issue,)
 
 
 def _records(
@@ -766,6 +777,7 @@ _UNAVAILABLE = frozenset(
         "invalid_expected_digest",
         "missing_case_data",
         "digest_mismatch",
+        _UNBLIND_PENDING,
     }
 )
 _EXIT_CODES = {"completed": 0, "failed": 1, "research_only": 2, "unavailable": 2}
@@ -986,9 +998,8 @@ def _run(request: _Request, args: tuple[str, ...]) -> int:
                 raise _issue("unverified_trial_design", "preflight", "arms")
         receipt = receipt.model_copy(update=_assignment(design))
         card = _eligible_card(request.card, manifest, design, started)
-        if card.issue is not None:
-            diagnostics.append(card.issue)
         receipt = receipt.model_copy(update={"card_sha256": card.sha256})
+        diagnostics.extend(_card_diagnostics(card))
         raw = _read(path, "missing_case_data", "case_read_error", "preflight", "csv")
         csv_digest = _sha(raw)
         receipt = receipt.model_copy(update={"csv_sha256": csv_digest})
