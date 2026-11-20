@@ -478,6 +478,18 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment.estimation.overlap"
+layer = "core"
+depends_on = [
+  "increment._canonical",
+  "increment._overlap_evidence",
+  "increment._overlap_refusals",
+  "increment.errors",
+  "increment.estimation._tails",
+  "increment.semantics.overlap",
+]
+
+[[modules]]
 path = "increment.estimation._adjust"
 layer = "observational"
 depends_on = []
