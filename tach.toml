@@ -143,6 +143,10 @@ path = "increment._source_operations"
 layer = "core"
 depends_on = ["increment._source_types", "increment.errors"]
 
+[[modules]]
+path = "increment._holdout_exposure"
+layer = "core"
+depends_on = ["increment._canonical", "increment._holdout_records"]
 
 [[modules]]
 path = "increment._source_admission"
