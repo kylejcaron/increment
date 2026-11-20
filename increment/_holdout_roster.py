@@ -348,19 +348,19 @@ def resolve_roster(
     )
     first, uncertain = _first_entries(entries, snapshot.as_of, freeze)
     identity = _identity_index(study, first, snapshot)
+    early = _preentry_offers(study, snapshot, first, identity)
     included: dict[str, Entry] = {}
     n_ineligible = n_after_freeze = 0
     for unit, entry in first.items():
         if entry.entered_at >= freeze:
             n_after_freeze += 1
             continue
-        if entry.rule_ref != study.eligibility_rule_ref:
+        if entry.rule_ref != study.eligibility_rule_ref or unit in early:
             uncertain.add(unit)
         if entry.eligible:
             included[unit] = entry
         elif unit not in uncertain:
             n_ineligible += 1
-    early = _preentry_offers(study, snapshot, first, identity)
     claims, unresolved, crosses_freeze = _membership_claims(
         events, entries, first, included, identity, freeze
     )
@@ -370,8 +370,7 @@ def resolve_roster(
     invalid_window = False
     members: list[RosterMember] = []
     for unit, entry in sorted(included.items()):
-        if unit in uncertain or unit in early:
-            selection = True
+        if unit in uncertain:
             continue
         if (candidates := claims.get(unit)) is None:
             missing_membership = True

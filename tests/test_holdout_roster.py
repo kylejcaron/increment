@@ -439,6 +439,42 @@ def test_scoped_offer_before_march_entry_is_not_postassignment_drift(
     assert roster.reasons[0].code == "holdout.entry_selection_unresolved"
 
 
+def test_actual_offer_before_first_entry_prevents_certifying_ineligibility(
+    comparison: Comparison,
+) -> None:
+    study, window, snapshot = comparison
+    delivery = {
+        "event_id": "delivery/pre-entry",
+        "unit_id": "acct:4",
+        "launch_id": "A",
+        "target": "shopping-a",
+        "feature_version": "A/1",
+        "rollout_revision": "A/ramp/1",
+        "at": "2025-03-04T00:00:00Z",
+        "available_at": "2025-03-04T00:01:00Z",
+        "nonbaseline": True,
+    }
+    snapshot = _snapshot(
+        snapshot,
+        entries=tuple(
+            {**dict(row), "eligible": False} if row.unit_id == "acct:4" else row
+            for row in snapshot.entries
+        ),
+        memberships=tuple(row for row in snapshot.memberships if row.unit_id != "acct:4"),
+        outcomes=tuple(row for row in snapshot.outcomes if row.unit_id != "acct:4"),
+        deliveries=(delivery,),
+    )
+
+    roster = resolve_roster(study, window, snapshot)
+
+    assert [reason.code for reason in roster.reasons] == ["holdout.entry_selection_unresolved"]
+    assert roster.n_ineligible_entries == 0
+    panel = observed_outcomes(window, snapshot, roster)
+    assert panel is not None
+    assert panel.held_out == (3, 3, None)
+    assert panel.eligible == (2, 2, None)
+
+
 def test_foreign_rule_cannot_classify_a_prefreeze_entry_as_ineligible(
     comparison: Comparison,
 ) -> None:
