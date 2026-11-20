@@ -60,6 +60,7 @@ core = [
   "increment._day_axis*",
   "increment._trigger*",
   "increment._assignment*",
+  "increment._holdout_roster",
   "increment._frame*",
   "increment._whole_window",
   "increment._breakout*",
