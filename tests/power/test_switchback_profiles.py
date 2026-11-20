@@ -9,7 +9,7 @@ from itertools import product
 import numpy as np
 import polars as pl
 import pytest
-from scipy.stats import binomtest, t
+from scipy.stats import t
 
 from increment import from_switchback_frame
 from increment.errors import InvalidRequestError
@@ -20,9 +20,6 @@ from increment.power.switchback_profiles import (
     SwitchbackConversionBaseline,
     SwitchbackProfilePlan,
     SwitchbackTrajectoryBaseline,
-    _paired_admission,
-    _trajectory_draws,
-    _trajectory_table,
     switchback_profile_plan,
 )
 from increment.semantics.assignment import SwitchbackAssignment
@@ -149,15 +146,6 @@ def test_fixed_count_joint_admission_not_product_of_marginals(shift, rejected):
         )
 
     for positions in ((0, 1, 2, 3, 4), (0, 0, 1, 2, 3)):
-        assigned = np.arange(5) != np.array(positions)[:, None]
-        draw = _trajectory_draws(
-            b,
-            procedure(a),
-            shift,
-            np.zeros((1, 5), dtype=int),
-            assigned.reshape(1, 5, 1, 5),
-            _trajectory_table(b),
-        )
         rows = [
             {
                 "u": u,
@@ -176,8 +164,7 @@ def test_fixed_count_joint_admission_not_product_of_marginals(shift, rejected):
         if len(set(positions)) != 5:
             with pytest.raises(InvalidRequestError) as caught:
                 bind(pl.DataFrame(rows))
-            assert draw.reason[0] == caught.value.context["reason"] == "missing_position_support"
-            assert not draw.rejected[0]
+            assert caught.value.context["reason"] == "missing_position_support"
             continue
         experiment, reader = bind(pl.DataFrame(rows))
         (actual,) = contrast_rows(view_readout(experiment, reader))
@@ -186,12 +173,10 @@ def test_fixed_count_joint_admission_not_product_of_marginals(shift, rejected):
         assert fitted.roster == roster and fitted.delta_ref == shift
         assert fitted.profiles == (block,) * 5
         assert actual.estimate is not None
-        assert draw.reason[0] is None
-        assert draw.point[0] == actual.estimate.value == shift
-        assert draw.se[0] == actual.standard_error == 0.25
-        assert draw.df == actual.dof == 4
-        assert draw.point[0] / draw.se[0] == (3 if rejected else 2)
-        assert bool(draw.rejected[0]) == contrast_stat_sig(actual) == rejected
+        assert actual.estimate.value == shift
+        assert actual.standard_error == 0.25
+        assert actual.dof == 4
+        assert contrast_stat_sig(actual) == rejected
 
 
 @pytest.mark.parametrize("shared", [False, True])
@@ -252,16 +237,37 @@ def test_fixed_count_conversion_joint_law_and_simultaneous_zero_hit_limit():
 
 
 @pytest.mark.parametrize("shared", [True, False])
-def test_binomial_admission_counts_draws_not_roster(shared):
-    # At n=40 there are splits with both orders present that still refuse.
-    k = np.arange(41)
-    expected = [binomtest(int(i), 40, 0.8).pvalue >= 1e-6 for i in k]
-    if shared:
-        expected[0] = expected[-1] = False
-    assert _paired_admission(k, 40, 0.8, shared=shared).tolist() == expected
-    # P(2 CT in 2 draws) = .001²: the binomial cutoff itself admits.
-    assert bool(_paired_admission(2, 2, 0.001, shared=shared)) == (not shared)
-    assert not _paired_admission(2, 2, math.nextafter(0.001, 0.0), shared=shared)
+def test_conversion_pilot_checks_draw_count_at_the_paired_admission_boundary(shared):
+    roster = ("east", "west")
+
+    def fit(p, orders):
+        ct, tc = (0, 1), (1, 0)
+        mid = len(orders) // 2
+        treated = (orders, orders) if shared else (orders[:mid], orders[mid:])
+        return SwitchbackConversionBaseline.from_pilot(
+            assignment=assignment(k=2, shared=shared, p=p),
+            metric="outcome",
+            control_group="C",
+            treatment_group="T",
+            roster=roster,
+            observed=[[(1, 1)] * len(unit) for unit in treated],
+            treated=[[ct if o else tc for o in unit] for unit in treated],
+            delta_ref=0,
+        )
+
+    # At 40 draws and p=.8, k=17 is below the 1e-6 exact-test threshold
+    # while k=18 is above. Copying the shared roster must not double the count.
+    cases = [(0.8, 40, 17, False), (0.8, 40, 18, True), (0.8, 40, 40, not shared)]
+    if not shared:
+        cases.extend([(0.001, 2, 2, True), (math.nextafter(0.001, 0.0), 2, 2, False)])
+    for p, n, k, admitted in cases:
+        orders = [True] * k + [False] * (n - k)
+        if admitted:
+            assert fit(p, orders).untreated_risk == 1
+        else:
+            with pytest.raises(InvalidRequestError) as exc:
+                fit(p, orders)
+            assert exc.value.code == "power.switchback.baseline"
 
 
 def test_weighted_pilot_risk_and_whole_repeated_window_grain():

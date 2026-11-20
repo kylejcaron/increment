@@ -75,12 +75,10 @@ def test_small_tail_does_not_reject_resolved_denominator():
     assert fit.reason is None and fit.se is not None
 
 
-def test_unresolved_denominator_reference_keeps_point_and_affected_arm(monkeypatch):
-    def unresolved(tail: float, dof: float) -> float:
-        raise ArithmeticError("Student-t inversion did not converge")
-
-    monkeypatch.setattr("increment.estimation.switchback_metrics.student_t_isf", unresolved)
-    fit = switchback_ratio([(5, 1, 3, 1), (5, 1, 3, 2)], alpha=0.05)
+def test_unrepresentable_denominator_critical_keeps_point_and_affected_arm():
+    # With one degree of freedom the Cauchy critical is cot(pi * alpha / 2),
+    # larger than the biggest float here, while both rates remain finite.
+    fit = switchback_ratio([(5, 1, 3, 1), (5, 1, 3, 2)], alpha=1e-310)
     assert fit.point == 3 and fit.se is None and fit.dof is None
     assert fit.reason == "numeric_range" and fit.arm == "control"
 

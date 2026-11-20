@@ -212,9 +212,13 @@ def test_fixed_count_preserves_small_contrasts_between_large_integer_totals():
 
 
 def test_fixed_count_ledger_keeps_all_assigned_cells_without_a_paired_order_test():
-    from increment._evidence_types import AssignmentEvidence, AssignmentRequest
     from increment.estimation.assignment_integrity import assignment_integrity
-    from increment.evidence import evidence_provider, request_evidence
+    from increment.evidence import (
+        AssignmentEvidence,
+        AssignmentRequest,
+        evidence_provider,
+        request_evidence,
+    )
     from tests.analysis_factory import held_source
 
     assignment = _assignment(3, 1, "shared_block")

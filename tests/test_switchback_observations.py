@@ -9,8 +9,13 @@ import polars as pl
 import pyarrow as pa
 import pytest
 
-from increment import MetricSpec, from_switchback_frame, run, workflows
-from increment._frame_switchback_observations import SwitchbackObservationSchedule
+from increment import (
+    MetricSpec,
+    SwitchbackObservationSchedule,
+    from_switchback_frame,
+    run,
+    workflows,
+)
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.kernel.experiment import Experiment
 from increment.power.switchback import SwitchbackBaseline

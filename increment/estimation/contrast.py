@@ -106,7 +106,7 @@ _REFUSALS = refusals(
         "estimation.contrast.procedure_alpha": "procedure alpha must be in (0, 1), got {procedure}",
         "estimation.contrast.one_sided_alpha": "one-sided alpha={procedure} doubles to alpha_eff={alpha_eff} >= 1: no displayable two-sided interval exists at that level",
         "estimation.contrast.contrast_interval_half": "contrast interval half-width must be finite",
-        "estimation.contrast.metric_components": "The retained metric components must match the declared metric and independent replicate count.",
+        "estimation.contrast.metric_components": "The retained components for {metric!r} must match the declared metric and independent replicate count.",
     },
 )
 _raise = raiser(_REFUSALS)
