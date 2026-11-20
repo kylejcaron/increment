@@ -673,10 +673,27 @@ def wheel_smoke(session: nox.Session) -> None:
 
 @nox.session(python="3.12", reuse_venv=False)
 def wheel_smoke_demo(session: nox.Session) -> None:
-    """Install the built wheel with the demo extra and run the DuckDB memtable
-    probe, which fails when a dependency breaks Ibis create_table from PyArrow."""
+    """Smoke-test the installed demo extra against registry or candidate dependencies."""
     script = Path("scripts/wheel_smoke.py").resolve()
-    session.install(f"{_single_wheel(session)}[demo]")
+    demo_wheel = f"{_single_wheel(session)}[demo]"
+    if session.posargs == ["--candidate-core"]:
+        with TemporaryDirectory(prefix="metric-definitions-wheel-") as core_dist:
+            session.run(
+                "uv",
+                "build",
+                "--directory",
+                "packages/metric-definitions",
+                "--wheel",
+                "--out-dir",
+                core_dist,
+                external=True,
+            )
+            (core_wheel,) = Path(core_dist).glob("metric_definitions-*.whl")
+            session.install(demo_wheel, str(core_wheel))
+    elif session.posargs:
+        session.error("wheel_smoke_demo only accepts --candidate-core")
+    else:
+        session.install(demo_wheel)
     with TemporaryDirectory(prefix="increment-wheel-smoke-demo-") as tmp, session.chdir(tmp):
         session.run("python", str(script), "--demo-extras")
 

@@ -154,7 +154,10 @@ from increment.query.fact_resolution import (
     null_value_count,
     refuse_null_fact_values,
     resolve_fact_source_sql,
+    resolve_shared_roster,
     validate_fact_source_schema,
+    validate_shared_fact,
+    validate_shared_roster,
     with_null_counts,
 )
 from increment.query.integrity import (
@@ -192,6 +195,11 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
 )
+from increment.semantics.shared import (
+    _refuse_shared_trigger,
+    _refuse_uncaptured_shared_metric,
+    refuse_shared_metric,
+)
 from increment.sequential_source import SequentialSourceMixin
 from increment.sources import (
     MIXED_ASSIGNMENT_LABEL,
@@ -214,6 +222,7 @@ if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Observational, Randomized
     from increment.semantics.models import FactRef
+    from increment.semantics.shared import BoundSharedMetric, SharedRoster
     from increment.sequential_state import SequentialCheckpoint
     from increment.sources import Grain, _BuiltinMomentSource
 
@@ -227,6 +236,19 @@ def _effective_snapshot_edge(*args: Any, **kwargs: Any) -> Any:
 
 
 _SNAPSHOT_HORIZON_RELATION_KEY = "__increment_readout_snapshot_horizon__"
+_SHARED_ROSTER_STREAM_PREFIX = "shared-roster:"
+
+
+def _shared_roster_stream(roster: SharedRoster) -> str:
+    return f"{_SHARED_ROSTER_STREAM_PREFIX}{roster.table}:{roster.key}"
+
+
+def _shared_fact_keys(bindings: Sequence[BoundSharedMetric]) -> dict[str, set[str]]:
+    keys: dict[str, set[str]] = {}
+    for binding in bindings:
+        for fact in binding.facts:
+            keys.setdefault(fact.source, set()).add(fact.row_key)
+    return keys
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +312,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     @property
     def evidence(self) -> EvidenceCapabilities:
+        shared = self._defs._shared_metrics
         return EvidenceCapabilities(
             kind="definitions",
             grains=self.capabilities,
@@ -331,6 +354,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             temporal_quantiles=False,
             temporal_clusters=False,
             dimensioned_daily_metrics="declared",
+            snapshot_required_metrics=()
+            if shared is None
+            else tuple(binding.name for binding in shared.metrics),
+            roster_required_metrics=()
+            if shared is None
+            else tuple(binding.name for binding in shared.metrics if binding.roster is not None),
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -412,6 +441,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._mixed_assignment_fingerprint: int | None = None
         self._mixed_assignment_prefix_id: str | None = None
         self._retained_snapshot_integrity = False
+        self._validated_shared_metrics: frozenset[str] = frozenset()
         self._mixed_assignment_warned = False
         self._union_horizon_cache: ir.Scalar | None = None
         self._union_horizon_metric_cache: dict[tuple[Metric, ...], ir.Scalar] = {}
@@ -429,6 +459,93 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._assignment_validation_depth = 0
         self._materialized = False
         self._exp_lookup_exposures = {e.name: e for e in self._defs.exposures}
+
+    def _shared_bindings(self, metrics: Sequence[Metric]) -> tuple[BoundSharedMetric, ...]:
+        shared = self._defs._shared_metrics
+        if shared is None:
+            return ()
+        names = {metric.name for metric in metrics}
+        return tuple(binding for binding in shared.metrics if binding.name in names)
+
+    def _validate_shared_scope(self, bindings: Sequence[BoundSharedMetric]) -> None:
+        for binding in bindings:
+            if binding.unit != self._experiment.unit:
+                refuse_shared_metric(
+                    binding.name,
+                    f"the metric uses {binding.unit!r} but the experiment uses {self._experiment.unit!r}",
+                    route="bind the metric to the experiment's unit",
+                )
+            if binding.roster is not None and self._experiment.trigger is not None:
+                _refuse_shared_trigger(binding.name, self._experiment.name)
+
+    def validate_scope_capture(self, scope: EvidenceScope) -> None:
+        """Refuse to read shared metrics outside a validated warehouse capture."""
+        bindings = self._shared_bindings(scope.metrics)
+        self._validate_shared_scope(bindings)
+        if not scope.snapshot:
+            self._require_validated_shared_capture(bindings)
+
+    def _require_validated_shared_capture(self, bindings: Sequence[BoundSharedMetric]) -> None:
+        for binding in bindings:
+            if binding.name not in self._validated_shared_metrics:
+                _refuse_uncaptured_shared_metric(binding.name)
+
+    def _snapshot_auxiliary_relations(
+        self, bindings: Sequence[BoundSharedMetric], horizon: Table | None
+    ) -> dict[str, Table]:
+        relations: dict[str, Table] = {}
+        for binding in bindings:
+            roster = binding.roster
+            if roster is None:
+                continue
+            key = _shared_roster_stream(roster)
+            if key not in relations:
+                relations[key] = resolve_shared_roster(self._con, roster, metric=binding.name)
+        if horizon is not None:
+            relations[_SNAPSHOT_HORIZON_RELATION_KEY] = horizon
+        return relations
+
+    def validate_shared_metrics(self) -> None:
+        """Check only the experiment's planned shared metrics at binding."""
+        bindings = self._shared_bindings(self._metrics)
+        self._validate_shared_scope(bindings)
+        self._validate_shared_inputs(bindings)
+
+    def _validate_shared_inputs(self, bindings: Sequence[BoundSharedMetric]) -> None:
+        if not bindings:
+            return
+        captured = self._session._source_tables is not None
+        sources = {source.name: source for source in self._defs.fact_sources}
+        checked_facts = set()
+        checked_rosters = set()
+        for binding in bindings:
+            for fact in binding.facts:
+                if fact in checked_facts:
+                    continue
+                source = sources[fact.source]
+                validate_shared_fact(
+                    self._con,
+                    resolve_fact_source_sql(self._session.source_sql, source),
+                    source,
+                    fact,
+                    metric=binding.name,
+                    unit=binding.unit,
+                    captured=captured,
+                )
+                checked_facts.add(fact)
+            roster = binding.roster
+            if roster is not None and roster not in checked_rosters:
+                eligible = (
+                    self._session.source_sql(_shared_roster_stream(roster))
+                    if captured
+                    else resolve_shared_roster(self._con, roster, metric=binding.name)
+                )
+                validate_shared_roster(
+                    self._con, self._get_exposures(), eligible, roster=roster, metric=binding.name
+                )
+                checked_rosters.add(roster)
+        if captured:
+            self._validated_shared_metrics = frozenset(binding.name for binding in bindings)
 
     @property
     def context(self) -> SourceContext:
@@ -982,6 +1099,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     }
                 )
 
+        for binding in self._shared_bindings(scope.metrics):
+            if binding.roster is not None:
+                stream = _shared_roster_stream(binding.roster)
+                streams[stream] = stream
         if tables is None:
             return dict(sorted(streams.items()))
         return self._captured_streams(tables)
@@ -1002,7 +1123,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         captured_streams: dict[str, str] = {}
         for query in tables:
             identities = labels.get(query)
-            if identities is None:
+            if query.startswith(_SHARED_ROSTER_STREAM_PREFIX):
+                captured_streams[query] = query
+            elif identities is None:
                 captured_streams[f"source:{query}"] = query
             else:
                 captured_streams.update({identity: identity for identity in identities})
@@ -1019,6 +1142,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         configs: Sequence[ResolvedMetricConfig] | None = None,
         snapshot_horizon_relation: Table | None = None,
         assignment_requests: Sequence[AssignmentRequest] = (),
+        shared: Sequence[BoundSharedMetric] = (),
     ) -> DefinitionsMomentSource:
         """Capture the experiment's input streams before any data validation."""
         if self._session._source_tables is not None:
@@ -1049,7 +1173,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # Exposure/trigger SQL stays unscoped: it defines enrollment and the
         # observation window, so filtering it by those same values is circular.
         # Shared fact sources also remain unscoped.
-        unscoped_queries: set[str] = set()
+        shared_keys = _shared_fact_keys(shared)
+        unscoped_queries = {fact_sources[name].sql for name in shared_keys}
         exposure_sql_queries: set[str] = set()
 
         def add_fact(fact: str, *, unscoped: bool = False) -> str:
@@ -1136,6 +1261,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         for source in sources.values():
             required_columns = {
                 *source.entities,
+                *shared_keys.get(source.name, ()),
                 self._experiment.unit,
                 *((self._experiment.cluster,) if self._experiment.cluster is not None else ()),
                 source.timestamp_column,
@@ -1203,15 +1329,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._session._require_snapshot_temp_privilege()
         # Scoping, preflight validation and the pin read one resolution of each live source.
         with self._session.resolving_each_source_once():
-            enrolled = self._scope_enrolled_units()
             # The generous lower margin limits only the snapshot copy, not builder
             # windows, and absorbs day-boundary edge cases. Add no upper ts bound:
             # `_data_as_of` needs later events to prove freshness; a horizon cap would
             # stop it at the last in-window event and censor every enrolled unit.
-            window_start = self._experiment.start - dt.timedelta(
-                days=self._experiment.n_pre_periods + 1
+            scope = SourceScope(
+                enrolled_units=self._scope_enrolled_units(),
+                window_start=self._experiment.start
+                - dt.timedelta(days=self._experiment.n_pre_periods + 1),
             )
-            scope = SourceScope(enrolled_units=enrolled, window_start=window_start)
             for source in sources.values():
                 self._session.preflight_fact_source_schema(
                     source, require_event=source.name in event_source_names
@@ -1221,10 +1347,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 column_hints=column_hints,
                 column_projections=column_projections,
                 scope=scope,
-                extra_relations=(
-                    {}
-                    if snapshot_horizon_relation is None
-                    else {_SNAPSHOT_HORIZON_RELATION_KEY: snapshot_horizon_relation}
+                extra_relations=self._snapshot_auxiliary_relations(
+                    shared, snapshot_horizon_relation
                 ),
             )
             mixed_timestamp_kinds = self._timestamp_kinds_mixed()
@@ -1312,6 +1436,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         assignment_requests: Sequence[AssignmentRequest] = (),
     ):
         """Bind assignment, outcomes, freshness and extensions to one execution."""
+        shared = self._shared_bindings(self._horizon_metrics if metrics is None else metrics)
+        self._validate_shared_scope(shared)
         pinned = self._pinned_source(
             metrics=metrics,
             horizon_metrics=horizon_metrics,
@@ -1321,8 +1447,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             configs=configs,
             snapshot_horizon_relation=snapshot_horizon_relation,
             assignment_requests=assignment_requests,
+            shared=shared,
         )
         try:
+            if pinned is self:
+                pinned._require_validated_shared_capture(shared)
+            else:
+                pinned._validate_shared_inputs(shared)
             yield pinned
         finally:
             if pinned is not self:
@@ -5158,6 +5289,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             return export_source_moments(
                 self, path, observational_refusal=self._refuse_observational_quantile
             )
+        if self._session._source_tables is None and self._shared_bindings(self._metrics):
+            with self._pinned_source_execution(metrics=self._metrics) as pinned:
+                return pinned.export_moments(path)
         from increment._source_identity import source_identity
         from increment.decision_wire import compiled_plan_to_json
         from increment.query.cuped import (
@@ -5888,7 +6022,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 property_name,
                 prop.dtype == "string",
             )
-        if outcome_stage == "raw" and self._session._source_tables is None:
+        if self._session._source_tables is None and (
+            outcome_stage == "raw" or self._shared_bindings((metric,))
+        ):
             measure_sources = tuple(
                 _find_fact_source(self._defs, covariate.measure.fact)[0].name
                 for covariate in declared_covariates.values()

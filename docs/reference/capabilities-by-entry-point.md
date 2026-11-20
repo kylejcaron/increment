@@ -29,6 +29,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 | Capability | Unit summary | Unit panel | Switchback panel | Definitions | Unit-day artifact | Portable moments |
 |---|---|---|---|---|---|---|
+| Shared definition: completed-order ratio | [not comparable](#capability-ingresses-shared-warehouse-metric-from_unit_summary) | [not comparable](#capability-ingresses-shared-warehouse-metric-from_unit_panel) | [not comparable](#capability-ingresses-shared-warehouse-metric-from_switchback_panel) | [supported](#capability-ingresses-shared-warehouse-metric-from_definitions) | [supported](#capability-ingresses-shared-warehouse-metric-from_unit_day_artifact) | [not comparable](#capability-ingresses-shared-warehouse-metric-from_moments) |
 | Declared + exploratory metrics in one physical capture | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_unit_summary) | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_unit_panel) | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_switchback_panel) | [supported (conditional)](#capability-ingresses-shared-capture-exploratory-from_definitions) | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_moments) |
 | Whole-window + daily scopes in one physical capture | [refused (conditional)](#capability-ingresses-shared-capture-multiview-from_unit_summary) | [supported (conditional)](#capability-ingresses-shared-capture-multiview-from_unit_panel) | [refused (conditional)](#capability-ingresses-shared-capture-multiview-from_switchback_panel) | [supported (conditional)](#capability-ingresses-shared-capture-multiview-from_definitions) | [supported (conditional)](#capability-ingresses-shared-capture-multiview-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-shared-capture-multiview-from_moments) |
 | Mean CUPED, fixed horizon | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_summary) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_panel) | [refused](#capability-ingresses-mean-cuped-fixed-horizon-from_switchback_panel) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_definitions) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_day_artifact) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_moments) |
@@ -109,6 +110,79 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 | Mixed-covariate CUPED × breakouts | [source limited](#capability-ingresses-cuped-linear-interaction-breakouts-from_unit_summary) | [supported](#capability-ingresses-cuped-linear-interaction-breakouts-from_unit_panel) | [source limited](#capability-ingresses-cuped-linear-interaction-breakouts-from_switchback_panel) | [supported](#capability-ingresses-cuped-linear-interaction-breakouts-from_definitions) | [supported](#capability-ingresses-cuped-linear-interaction-breakouts-from_unit_day_artifact) | [source limited](#capability-ingresses-cuped-linear-interaction-breakouts-from_moments) |
 | Mixed-covariate CUPED × multiplicity roles | [supported](#capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_unit_summary) | [supported](#capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_unit_panel) | [source limited](#capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_switchback_panel) | [supported](#capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_definitions) | [supported](#capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_unit_day_artifact) | [supported](#capability-ingresses-cuped-linear-interaction-multiplicity_roles-from_moments) |
 | Mixed-covariate CUPED × triggered population | [source limited](#capability-ingresses-cuped-linear-interaction-triggered_population-from_unit_summary) | [source limited](#capability-ingresses-cuped-linear-interaction-triggered_population-from_unit_panel) | [source limited](#capability-ingresses-cuped-linear-interaction-triggered_population-from_switchback_panel) | [supported](#capability-ingresses-cuped-linear-interaction-triggered_population-from_definitions) | [supported](#capability-ingresses-cuped-linear-interaction-triggered_population-from_unit_day_artifact) | [source limited](#capability-ingresses-cuped-linear-interaction-triggered_population-from_moments) |
+
+<span id="capability-ingresses-shared-warehouse-metric"></span>
+
+### Shared definition: completed-order ratio
+
+<span id="capability-ingresses-shared-warehouse-metric-from_unit_summary"></span>
+
+#### Shared definition: completed-order ratio — Unit summary
+
+**Recorded path:** `from_unit_summary`
+
+**Status:** not comparable
+
+**Classification:** SOURCE
+
+**Reason:** this comparison starts with native and shared warehouse YAML.
+
+<span id="capability-ingresses-shared-warehouse-metric-from_unit_panel"></span>
+
+#### Shared definition: completed-order ratio — Unit panel
+
+**Recorded path:** `from_unit_panel`
+
+**Status:** not comparable
+
+**Classification:** SOURCE
+
+**Reason:** this comparison starts with native and shared warehouse YAML.
+
+<span id="capability-ingresses-shared-warehouse-metric-from_switchback_panel"></span>
+
+#### Shared definition: completed-order ratio — Switchback panel
+
+**Recorded path:** `from_switchback_panel`
+
+**Status:** not comparable
+
+**Classification:** SOURCE
+
+**Reason:** this comparison starts with native and shared warehouse YAML.
+
+<span id="capability-ingresses-shared-warehouse-metric-from_definitions"></span>
+
+#### Shared definition: completed-order ratio — Definitions
+
+**Recorded path:** `from_definitions`
+
+**Status:** supported
+
+**Note:** Opt in to selected shared metrics from the native definitions file.
+
+<span id="capability-ingresses-shared-warehouse-metric-from_unit_day_artifact"></span>
+
+#### Shared definition: completed-order ratio — Unit-day artifact
+
+**Recorded path:** `from_unit_day_artifact`
+
+**Status:** supported
+
+**Note:** Matches the prepared unit-day data; does not read shared YAML.
+
+<span id="capability-ingresses-shared-warehouse-metric-from_moments"></span>
+
+#### Shared definition: completed-order ratio — Portable moments
+
+**Recorded path:** `from_moments`
+
+**Status:** not comparable
+
+**Classification:** SOURCE
+
+**Reason:** this comparison starts with native and shared warehouse YAML.
+
 
 <span id="capability-ingresses-shared-capture-exploratory"></span>
 

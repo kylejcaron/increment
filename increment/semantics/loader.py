@@ -36,7 +36,9 @@ from increment.semantics.models import (
     DEFINITION_REFUSALS,
     ConversionMetric,
     Definitions,
+    FactSource,
     MeanMetric,
+    _Base,
     consistency_message,
 )
 
@@ -193,6 +195,10 @@ _NO_YAML_FILES_WARNING = WarningSpec(
 _MERGE_LISTS = {"fact_sources", "dim_sources", "exposures", "metrics", "experiments"}
 
 
+class _FactSources(_Base):
+    fact_sources: tuple[FactSource, ...] = ()
+
+
 def load(path: str | Path) -> Definitions:
     """Inspect experiment and metric declarations without a warehouse connection.
 
@@ -268,7 +274,33 @@ def _load(path_obj: Path, *, advise: bool) -> Definitions:
             sources=provenance.origins,
         )
 
-    defs = _validate(raw, path_obj, provenance)
+    shared = None
+    if "metric_definitions" in raw:
+        from increment.semantics.shared import bind_shared
+
+        declaring_file = Path(provenance.scalars["metric_definitions"])
+        root = path_obj if path_obj.is_dir() else path_obj.parent
+        fact_sources = _validate(
+            {"fact_sources": raw.get("fact_sources", [])}, path_obj, provenance, model=_FactSources
+        ).fact_sources
+        metrics, shared = bind_shared(
+            raw.pop("metric_definitions"), declaring_file, root, fact_sources
+        )
+        provenance.record({"metrics": metrics}, str(declaring_file))
+        raw.setdefault("metrics", []).extend(metrics)
+        dup_errors = []
+        _check_category_duplicates(raw["metrics"], "metric", provenance.origins, dup_errors)
+        if dup_errors:
+            refuse(
+                _DUPLICATES,
+                message="; ".join(dup_errors),
+                path=str(path_obj),
+                sources=provenance.origins,
+            )
+    defs = _validate(raw, path_obj, provenance, model=Definitions)
+    if shared is not None:
+        assert defs.__pydantic_private__ is not None
+        defs.__pydantic_private__["_shared_metrics"] = shared
 
     # day_boundary inheritance lives on Definitions itself
     # (`_inherit_day_boundary`), so model_validate and load() agree.
@@ -338,10 +370,12 @@ class _Provenance:
         return files[0] if len(files) == 1 else None
 
 
-def _validate(raw: dict[str, Any], path: Path, provenance: _Provenance) -> Definitions:
+def _validate[T: _Base](
+    raw: dict[str, Any], path: Path, provenance: _Provenance, *, model: type[T]
+) -> T:
     """Validate merged definitions; each failure names the file holding its item."""
     try:
-        return Definitions.model_validate(raw)
+        return model.model_validate(raw)
     except _DefinitionError as exc:
         context = {**exc.context, "path": str(path)}
         message = exc.message
@@ -407,6 +441,38 @@ def _load_single(path: Path) -> tuple[dict[str, Any], _Provenance]:
     return data, provenance
 
 
+def _shared_manifest_candidate(path: Path) -> bool:
+    """Discover the include without constructing referenced YAML as native data."""
+    try:
+        with path.open() as stream:
+            node = yaml.compose(stream, Loader=yaml.SafeLoader)
+    except (OSError, ValueError, yaml.YAMLError):
+        # The owning reader reports the error with its own validation context.
+        return False
+    return isinstance(node, yaml.MappingNode) and any(
+        isinstance(key, yaml.ScalarNode)
+        and (key.value == "metric_definitions" or key.tag == "tag:yaml.org,2002:merge")
+        for key, _ in node.value
+    )
+
+
+def _directory_includes(
+    path: Path, files: Sequence[Path]
+) -> tuple[dict[Path, dict[str, Any]], set[Path]]:
+    native: dict[Path, dict[str, Any]] = {}
+    included: set[Path] = set()
+    for file in files:
+        if _shared_manifest_candidate(file):
+            data = _read_yaml(file)
+            native[file] = data
+            if "metric_definitions" in data:
+                from increment.semantics.shared import shared_path
+
+                target = shared_path(data["metric_definitions"], file, path)
+                included.add(target)
+    return native, included
+
+
 def _load_dir(path: Path, *, advise: bool) -> tuple[dict[str, Any], _Provenance]:
     merged: dict[str, Any] = {}
     provenance = _Provenance()
@@ -416,8 +482,15 @@ def _load_dir(path: Path, *, advise: bool) -> tuple[dict[str, Any], _Provenance]
         # A warning, not a refusal: an empty directory is a valid workflow,
         # but is more often a typo'd path whose symptom lands far from the cause.
         warn(_NO_YAML_FILES_WARNING, context={"path": path}, stacklevel=4)
+    native, included = _directory_includes(path, files)
     for yaml_file in files:
-        data = _read_yaml(yaml_file)
+        if yaml_file.resolve() in included:
+            if yaml_file in native and "metric_definitions" in native[yaml_file]:
+                from increment.semantics.shared import refuse_recursive_include
+
+                refuse_recursive_include(yaml_file)
+            continue
+        data = native[yaml_file] if yaml_file in native else _read_yaml(yaml_file)
         _validate_merge_sections(data, yaml_file)
         for key, value in data.items():
             if key in _MERGE_LISTS:

@@ -567,6 +567,15 @@ _RETENTION_CATALOG_READS = {
 }
 
 _INGRESS_ROWS: tuple[EntryRow, ...] = (
+    _case_row(
+        "shared-warehouse-metric",
+        "Shared definition: completed-order ratio",
+        "shared-completed-order-value",
+        notes={
+            D: "Opt in to selected shared metrics from the native definitions file.",
+            A: "Matches the prepared unit-day data; does not read shared YAML.",
+        },
+    ),
     _row(
         "shared-capture-exploratory",
         "Declared + exploratory metrics in one physical capture",

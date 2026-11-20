@@ -186,6 +186,7 @@ def _resolve(
                     operation=scope_operation(exp, scope),
                     metric_name=str(metric_name),
                     options=operation_options(exp, scope),
+                    live=exp.request_options.get("coherence") == "live",
                     exploratory_metric=exploratory_metric,
                 ):
                     append_unique(refusal)

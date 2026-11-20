@@ -575,7 +575,8 @@ jobs:
         with: {enable-cache: true}
       - run: uv build --sdist --wheel --out-dir dist
       - run: uvx twine check --strict dist/*
-      - run: uv run --with nox nox -s wheel_smoke wheel_smoke_demo
+      - run: uv run --with nox nox -s wheel_smoke
+      - run: uv run --with nox nox -s wheel_smoke_demo -- --candidate-core
       - name: Reject artifacts with no package in them
         run: |
           set -euo pipefail
@@ -758,7 +759,8 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv build --wheel --out-dir dist
-      - run: uv run --with nox nox -s wheel_smoke wheel_smoke_demo
+      - run: uv run --with nox nox -s wheel_smoke
+      - run: uv run --with nox nox -s wheel_smoke_demo -- --candidate-core
 
   wheel-smoke-windows:
     needs: changes
@@ -775,7 +777,8 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv build --wheel --out-dir dist
-      - run: uv run --with nox nox -s wheel_smoke wheel_smoke_demo
+      - run: uv run --with nox nox -s wheel_smoke
+      - run: uv run --with nox nox -s wheel_smoke_demo -- --candidate-core
 
   test-weakening:
     if: github.event_name == 'pull_request'

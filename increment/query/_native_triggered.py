@@ -196,6 +196,10 @@ class TriggeredPopulationSource:
     def readout_execution(self):
         return self._source.readout_execution()
 
+    def validate_scope_capture(self, scope: EvidenceScope) -> None:
+        """Apply the underlying warehouse's capture requirements."""
+        self._source.validate_scope_capture(scope)
+
     @contextmanager
     def readout_snapshot(
         self,
