@@ -89,6 +89,14 @@ layer = "core"
 depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity", "increment._assignment_refusals", "increment._optional"]
 
 [[modules]]
+path = "increment.semantics.overlap"
+layer = "core"
+depends_on = [
+  "increment._canonical", "increment._overlap_evidence", "increment._overlap_refusals",
+  "increment.errors",
+]
+
+[[modules]]
 path = "increment._canonical"
 layer = "core"
 depends_on = []
@@ -453,6 +461,16 @@ depends_on = []
 path = "increment._evidence_types"
 layer = "core"
 depends_on = ["increment._immutable", "increment._moment_plan", "increment.errors", "increment.semantics"]
+
+[[modules]]
+path = "increment._overlap_evidence"
+layer = "core"
+depends_on = ["increment._canonical", "increment._overlap_refusals", "increment.errors"]
+
+[[modules]]
+path = "increment._overlap_refusals"
+layer = "core"
+depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.estimation"
