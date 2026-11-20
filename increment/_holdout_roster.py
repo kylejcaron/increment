@@ -179,21 +179,26 @@ def _membership_claims(
     unmatched = crosses_freeze = False
     for event in events.values():
         by_unit = _original_at(identity, event.unit_id, event.assigned_at)
+        if by_unit is not None and first[by_unit].entry_id == event.entry_id:
+            if by_unit in included:
+                claims[by_unit].append(event)
+            continue
+        if event.assigned_at >= freeze:
+            continue
         transaction = entries.get(event.entry_id)
         by_entry = transaction.unit_id if transaction is not None else None
-        if by_unit is not None and by_unit in included:
-            claims[by_unit].append(event)
-        if by_entry is not None and by_entry != by_unit and by_entry in included:
-            claims[by_entry].append(event)
-        if event.assigned_at < freeze:
-            # A known later first entry contradicts this clock; it does not resolve the ID.
-            if any(
-                unit is not None and unit in first and first[unit].entered_at >= freeze
-                for unit in (event.unit_id, by_entry)
-            ):
-                crosses_freeze = True
-            elif by_unit is None and by_entry is None:
-                unmatched = True
+        # A later first entry contradicts this clock; it does not resolve the ID.
+        if any(
+            unit is not None and unit in first and first[unit].entered_at >= freeze
+            for unit in (event.unit_id, by_entry)
+        ):
+            crosses_freeze = True
+        else:
+            unmatched = True
+        # Preserve evidence of a bad claim without competing with a verified one.
+        for unit in (by_unit, by_entry):
+            if unit is not None and unit in included:
+                claims.setdefault(unit, [])
     return claims, unmatched, crosses_freeze
 
 
@@ -230,18 +235,14 @@ def _original_membership(
     study: HoldoutStudy,
     entry: Entry,
     claims: list[MembershipEvent],
-    identity: dict[str, IdentitySpan],
     replay: _ArchiveReplay,
 ) -> MembershipEvent | None:
     first: MembershipEvent | None = None
     for claim in claims:
-        if claim.assigned_at < entry.entered_at:
-            return None
-        if claim.assigned_at > entry.entered_at:
+        if claim.assigned_at != entry.entered_at:
             continue
         if (
-            claim.entry_id != entry.entry_id
-            or claim.unit_id != entry.unit_id
+            claim.unit_id != entry.unit_id
             or claim.law_id != study.law_id
             or claim.available_at < claim.assigned_at
             or (first is not None and claim.payload != first.payload)
@@ -254,8 +255,6 @@ def _original_membership(
         if (
             claim.assigned_at > entry.entered_at
             and claim.assigned_at <= claim.available_at
-            and claim.entry_id == entry.entry_id
-            and _original_at(identity, claim.unit_id, claim.assigned_at) == entry.unit_id
             and (claim.payload.group != first.payload.group or claim.law_id != first.law_id)
         ):
             return None
@@ -374,10 +373,10 @@ def resolve_roster(
         if unit in uncertain or unit in early:
             selection = True
             continue
-        if not (candidates := claims.get(unit)):
+        if (candidates := claims.get(unit)) is None:
             missing_membership = True
             continue
-        original = _original_membership(study, entry, candidates, identity, replay)
+        original = _original_membership(study, entry, candidates, replay)
         if original is None:
             unresolved = True
             continue

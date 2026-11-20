@@ -530,6 +530,33 @@ def test_successor_id_used_before_rename_is_unmatched_not_a_competing_assignment
     assert member.group == "held_out"
 
 
+def test_known_transaction_cannot_cover_an_invalid_asof_membership_identity(
+    comparison: Comparison,
+) -> None:
+    study, window, snapshot = comparison
+    original = next(row for row in snapshot.memberships if row.unit_id == "acct:4")
+    mismatched = {
+        **dict(original),
+        "event_id": "sdk/mismatched",
+        "entry_id": "entry-1",
+        "assigned_at": "2025-03-04T00:00:00Z",
+        "available_at": "2025-03-04T00:01:00Z",
+    }
+    snapshot = _snapshot(snapshot, memberships=(*snapshot.memberships, mismatched))
+
+    roster = resolve_roster(study, window, snapshot)
+
+    assert [reason.code for reason in roster.reasons] == ["holdout.original_assignment_unresolved"]
+    assert roster.n_unclassified == 0
+    assert roster.eligible == ArmCounts(assigned=3, measured=3)
+    assigned_at = {member.original_id: member.assigned_at for member in roster.members}
+    assert assigned_at["acct:1"] == _at("2025-01-02T00:00:00Z")
+    assert assigned_at["acct:4"] == _at("2025-03-05T00:00:00Z")
+    panel = observed_outcomes(window, snapshot, roster)
+    assert panel is not None
+    assert panel.held_out == panel.eligible == (3, 3, None)
+
+
 def test_unclassified_measured_entrant_withholds_both_observed_means(
     comparison: Comparison,
 ) -> None:
