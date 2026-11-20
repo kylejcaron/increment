@@ -209,8 +209,8 @@ def regress_raw_trials(
         ready,
         {
             "empty_cell": np.broadcast_to(empty, fit.shape),
-            "singleton_cell": np.broadcast_to(singleton, fit.shape) & point,
-            "zero_cell_variance": constant & point & ~singleton,
+            "singleton_cell": np.broadcast_to(singleton, fit.shape),
+            "zero_cell_variance": constant,
             "small_cell": small,
             "sparse_binary_events": sparse,
         },

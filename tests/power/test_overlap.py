@@ -251,6 +251,27 @@ def test_raw_regression_does_not_fit_a_constant_non_dyadic_cell():
     assert not ref.ready[0, 0, 0]
 
 
+def test_raw_regression_reports_all_required_cell_defects_even_without_a_point():
+    assignments = np.array([[1, 2, 2, 3, 3]], dtype=np.int64)
+    outcomes = np.array([[[2.0], [0.5], [0.5], [1.0], [3.0]]])
+    ref = regress_raw_trials(
+        assignments,
+        outcomes,
+        contrast=contrast_matrix(0.25, 0.75)[[7]],
+        binary_metrics=(),
+        raw_boundary=np.zeros((1, 1)),
+        direction=np.zeros((1, 1), dtype=np.int64),
+        alpha=0.05,
+    )
+    assert {name for name, mask in ref.reasons.items() if mask[0, 0, 0]} == {
+        "empty_cell",
+        "singleton_cell",
+        "zero_cell_variance",
+    }
+    assert np.isnan(ref.estimate[0, 0, 0])
+    assert not ref.ready[0, 0, 0] and not ref.favorable[0, 0, 0]
+
+
 def test_reference_support_audit_catches_approvals_based_on_points():
     assignments = np.repeat(np.arange(4, dtype=np.int64), (32, 32, 29, 32))[None, :]
     labels = assignments[0]
