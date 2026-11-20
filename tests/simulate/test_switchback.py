@@ -854,6 +854,7 @@ def test_shared_schedule_block_t_refuses_degenerate_cycle_order_smoke():
         seed=2026,
     )
     result = run_switchback_end_to_end(scenario, replications=40)
+    assert result.reference_kind == "block_t"
     assert result.attempted == 40
     assert result.failed >= 1
     assert result.failure_reasons.keys() <= {"source.frame.switchback.schedule"}

@@ -1302,7 +1302,7 @@ def main() -> None:
 
 
 class SwitchbackEvalResult(_FrozenResultModel):
-    """Monte Carlo summaries for the qualified unit-t switchback approximation.
+    """Monte Carlo summaries for unit-t or shared-block-t switchback inference.
 
     Retains one-outcome numeric dictionaries (keyed ``"outcome"``, the
     switchback panel's sole metric) for consumer compatibility, with the
@@ -1312,7 +1312,7 @@ class SwitchbackEvalResult(_FrozenResultModel):
     always scores exactly one outcome.
     """
 
-    reference_kind: Literal["unit_t_approximation"] = "unit_t_approximation"
+    reference_kind: Literal["unit_t_approximation", "block_t"] = "unit_t_approximation"
     bias: Mapping[str, float | None]
     bias_mcse: Mapping[str, float | None]
     coverage_conditional: Mapping[str, float | None]
@@ -1417,7 +1417,7 @@ def run_switchback_end_to_end(
     scenario: SwitchbackScenario,
     replications: int = 1,
 ) -> SwitchbackEvalResult:
-    """Evaluate the qualified unit-t approximation on deterministic switchback data.
+    """Evaluate the declared unit- or block-level reference on seeded switchback data.
 
     Bias and coverage target the treatment effect over the retained steps.
     A whole-replication failure (any coded refusal building or analyzing
@@ -1445,6 +1445,7 @@ def run_switchback_end_to_end(
         and scenario.true_carryover_order > scenario.declared_carryover_order
     )
     return SwitchbackEvalResult(
+        reference_kind="block_t" if scenario.shared_schedule else "unit_t_approximation",
         bias={"outcome": stats.bias},
         bias_mcse={"outcome": stats.bias_mcse},
         coverage_conditional={"outcome": stats.coverage_conditional},

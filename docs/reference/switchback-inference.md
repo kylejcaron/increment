@@ -486,6 +486,37 @@ is a separate check. The corrected N4/C1/p.9 counterexample retains
 miscoverage lower bounds `.05653644209396722` and `.05635913367335912`; a
 unit-t pivot cannot certify it.
 
+### Coverage with few units or blocks
+
+A small-sample simulation of the default t intervals at the null gave the
+following results. Each row represents 512 attempts with no residual
+carryover. “Covered” counts intervals containing zero out of **all**
+attempts, not just the attempts that produced an interval.
+
+| Independent draws | CT probability | Interval returned | Covered |
+|---|---:|---:|---:|
+| 4 units, 1 cycle each | 0.5 | 512 | 445 |
+| 4 units, 1 cycle each | 0.8 | 512 | 302 |
+| 6 shared blocks, 3 roster members | 0.5 | 498 | 496 |
+| 6 shared blocks, 3 roster members | 0.8 | 382 | 382 |
+
+In the four-unit skewed design the nominal 95% interval covered only 59%
+of attempts (Monte Carlo standard error 2.2 percentage points). In the
+skewed shared design every *returned* interval covered, but 130 attempts
+had no interval. Even before observing outcomes, the probability of both
+orders occurring there is only `1 - 0.8**6 - 0.2**6`, about 74%.
+
+To reproduce, use `run_switchback_end_to_end` at revision `77ab667b`
+with `SwitchbackScenario(seed=20261119, treatment_effect=0, unit_effect_sd=0,
+temporal_effect=2, noise_sd=1, washout_steps=1, observation_steps=3,
+carryover_amplitude=3)`, the counts and CT probability above, and
+`shared_schedule=True` only for the last two rows. With the same draws,
+one genuinely contaminated observation step left in the window
+(`true_carryover_order=1`, `declared_carryover_order=0`) moved the
+four-unit, balanced design's mean estimate to −1.55 (MC SE 0.17);
+discarding it gave −0.03 (MC SE 0.09). This checks a specified contamination
+model, not whether carryover has ended in an observed experiment.
+
 ### Representative release checks
 
 !!! warning "The unit-cycle campaign has not been executed"
