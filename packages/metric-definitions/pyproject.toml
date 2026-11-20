@@ -1,5 +1,5 @@
 [project]
-name = "metric-definitions"
+name = "increment-metrics"
 version = "0.1.0a1"
 description = "Portable definitions for analytical measures and metrics."
 readme = "README.md"
@@ -16,10 +16,10 @@ build-backend = "hatchling.build"
 dev = ["pytest>=9,<10", "ruff>=0.17.3", "tach>=0.35.3,<0.36", "ty>=0.0.64,<0.0.65", "types-PyYAML"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/metric_definitions"]
+packages = ["src/increment_metrics"]
 
 [tool.hatch.build.targets.wheel.shared-data]
-"examples/shop" = "share/metric-definitions/examples/shop"
+"examples/shop" = "share/increment-metrics/examples/shop"
 
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/examples/shop", "/README.md", "/LICENSE", "/NOTICE", "/pyproject.toml"]

@@ -19,8 +19,8 @@ SOURCE_DATE_EPOCH=$(jq -r '.core.source_date_epoch' "$receipt") \
 sha256sum "$wheel_dir"/*.whl
 export INCREMENT_PYTHON="$PWD/.venv/bin/python"
 export TERRINE_PYTHON="$TERRINE_CHECKOUT/.venv/bin/python"
-uv pip install --no-deps --reinstall-package metric-definitions --python "$INCREMENT_PYTHON" "$wheel_dir"/*.whl
-uv pip install --no-deps --reinstall-package metric-definitions --python "$TERRINE_PYTHON" "$wheel_dir"/*.whl
+uv pip install --no-deps --reinstall-package increment-metrics --python "$INCREMENT_PYTHON" "$wheel_dir"/*.whl
+uv pip install --no-deps --reinstall-package increment-metrics --python "$TERRINE_PYTHON" "$wheel_dir"/*.whl
 node_version=$(jq -r '.malloy.node' "$receipt")
 npm exec --yes --package="node@$node_version" -- npm ci --prefix "$core/conformance/malloy"
 MALLOY_NODE=$(npm exec --yes --package="node@$node_version" -- which node)

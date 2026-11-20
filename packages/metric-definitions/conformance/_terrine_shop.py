@@ -10,7 +10,7 @@ import ibis
 import terrine as tr
 from terrine.data import BoundCoverage
 
-from metric_definitions import Catalog, FormulaMetric, load
+from increment_metrics import Catalog, FormulaMetric, load
 
 _COMPONENTS = {
     "captured_order_count": "order_count",
