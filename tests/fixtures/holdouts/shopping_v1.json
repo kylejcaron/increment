@@ -1,0 +1,125 @@
+{
+  "study": {
+    "study_id": "shopping-25",
+    "registration_ref": "registration/shopping-25/2025-01-01",
+    "registered_at": "2025-01-01T00:00:00Z",
+    "population_id": "shopping-subscribers",
+    "population_version": "1",
+    "eligibility_rule_ref": "eligibility/shopping-subscribers/1",
+    "common_entry_ref": "census/subscriber-first-entry/1",
+    "entry_basis": "pretreatment_first_entry",
+    "assignment_unit": "subscriber",
+    "law_id": "shopping-independent/v1",
+    "law_ref": "assignment/shopping-independent/v1",
+    "allocation_scheme": "iid_bernoulli",
+    "no_interference": true,
+    "design_ref": "design/shopping-25/1",
+    "holdout_key": "shopping",
+    "holdout_probability": "0.10",
+    "baseline_version": "baseline/1",
+    "policy_id": "shop",
+    "policy_version": "v1",
+    "scope_kind": "global",
+    "components": [
+      {"launch_id": "A", "target": "shopping-a"},
+      {"launch_id": "B", "target": "shopping-b"}
+    ],
+    "registered_window": {
+      "population_id": "shopping-subscribers",
+      "population_version": "1",
+      "outcome_id": "orders",
+      "outcome_version": "v1",
+      "outcome_unit": "orders per subscriber",
+      "freeze_at": "2025-03-10T00:00:00Z",
+      "start": "2025-03-10T00:00:00Z",
+      "end": "2025-04-10T00:00:00Z",
+      "final_as_of": "2025-04-12T00:00:00Z"
+    }
+  },
+  "window": {
+    "study_id": "shopping-25",
+    "registration_ref": "registration/shopping-25/2025-01-01",
+    "window_id": "mar-orders",
+    "locked_at": "2025-03-01T00:00:00Z",
+    "lock_ref": "locks/shopping-25/mar-orders/2025-03-01",
+    "terms": {
+      "population_id": "shopping-subscribers",
+      "population_version": "1",
+      "outcome_id": "orders",
+      "outcome_version": "v1",
+      "outcome_unit": "orders per subscriber",
+      "freeze_at": "2025-03-10T00:00:00Z",
+      "start": "2025-03-10T00:00:00Z",
+      "end": "2025-04-10T00:00:00Z",
+      "final_as_of": "2025-04-12T00:00:00Z"
+    }
+  },
+  "snapshot": {
+    "study_id": "shopping-25",
+    "registration_ref": "registration/shopping-25/2025-01-01",
+    "window_id": "mar-orders",
+    "snapshot_ref": "exports/shopping-25/sdk/2025-04-12",
+    "as_of": "2025-04-12T00:00:00Z",
+    "membership_source": "sdk",
+    "entry_source_ref": "exports/shopping-25/common-entry/2025-04-12",
+    "entry_complete_through": "2025-04-12T00:00:00Z",
+    "history_ref": "exports/shopping-25/rollout-history/2025-04-12",
+    "outcome_source_ref": "exports/shopping-25/orders/2025-04-12",
+    "entries": [
+      {"entry_id": "entry-1", "unit_id": "acct:1", "entered_at": "2025-01-02T00:00:00Z", "eligible": true, "rule_ref": "eligibility/shopping-subscribers/1", "available_at": "2025-01-02T00:01:00Z"},
+      {"entry_id": "entry-2", "unit_id": "acct:2", "entered_at": "2025-01-02T00:00:00Z", "eligible": true, "rule_ref": "eligibility/shopping-subscribers/1", "available_at": "2025-01-02T00:01:00Z"},
+      {"entry_id": "entry-3", "unit_id": "acct:3", "entered_at": "2025-01-02T00:00:00Z", "eligible": true, "rule_ref": "eligibility/shopping-subscribers/1", "available_at": "2025-01-02T00:01:00Z"},
+      {"entry_id": "entry-4", "unit_id": "acct:4", "entered_at": "2025-03-05T00:00:00Z", "eligible": true, "rule_ref": "eligibility/shopping-subscribers/1", "available_at": "2025-03-05T00:01:00Z"},
+      {"entry_id": "entry-5", "unit_id": "acct:5", "entered_at": "2025-03-10T00:00:00Z", "eligible": true, "rule_ref": "eligibility/shopping-subscribers/1", "available_at": "2025-03-10T00:01:00Z"},
+      {"entry_id": "entry-15", "unit_id": "acct:15", "entered_at": "2025-01-02T00:00:00Z", "eligible": true, "rule_ref": "eligibility/shopping-subscribers/1", "available_at": "2025-01-02T00:01:00Z"},
+      {"entry_id": "entry-16", "unit_id": "acct:16", "entered_at": "2025-01-02T00:00:00Z", "eligible": true, "rule_ref": "eligibility/shopping-subscribers/1", "available_at": "2025-01-02T00:01:00Z"}
+    ],
+    "memberships": [
+      {"event_id": "sdk/entry-1", "entry_id": "entry-1", "unit_id": "acct:1", "assigned_at": "2025-01-02T00:00:00Z", "available_at": "2025-01-02T00:01:00Z", "law_id": "shopping-independent/v1", "payload": {"protocol": 1, "revision": "r1", "holdout": "shopping", "group": "eligible", "group_bps": 9000}},
+      {"event_id": "sdk/entry-2", "entry_id": "entry-2", "unit_id": "acct:2", "assigned_at": "2025-01-02T00:00:00Z", "available_at": "2025-01-02T00:01:00Z", "law_id": "shopping-independent/v1", "payload": {"protocol": 1, "revision": "r1", "holdout": "shopping", "group": "held_out", "group_bps": 1000}},
+      {"event_id": "sdk/entry-3", "entry_id": "entry-3", "unit_id": "acct:3", "assigned_at": "2025-01-02T00:00:00Z", "available_at": "2025-01-02T00:01:00Z", "law_id": "shopping-independent/v1", "payload": {"protocol": 1, "revision": "r1", "holdout": "shopping", "group": "eligible", "group_bps": 9000}},
+      {"event_id": "sdk/entry-4", "entry_id": "entry-4", "unit_id": "acct:4", "assigned_at": "2025-03-05T00:00:00Z", "available_at": "2025-03-05T00:01:00Z", "law_id": "shopping-independent/v1", "payload": {"protocol": 1, "revision": "r1", "holdout": "shopping", "group": "eligible", "group_bps": 9000}},
+      {"event_id": "sdk/entry-5", "entry_id": "entry-5", "unit_id": "acct:5", "assigned_at": "2025-03-10T00:00:00Z", "available_at": "2025-03-10T00:01:00Z", "law_id": "shopping-independent/v1", "payload": {"protocol": 1, "revision": "r1", "holdout": "shopping", "group": "eligible", "group_bps": 9000}},
+      {"event_id": "sdk/entry-15", "entry_id": "entry-15", "unit_id": "acct:15", "assigned_at": "2025-01-02T00:00:00Z", "available_at": "2025-01-02T00:01:00Z", "law_id": "shopping-independent/v1", "payload": {"protocol": 1, "revision": "r1", "holdout": "shopping", "group": "held_out", "group_bps": 1000}},
+      {"event_id": "sdk/entry-16", "entry_id": "entry-16", "unit_id": "acct:16", "assigned_at": "2025-01-02T00:00:00Z", "available_at": "2025-01-02T00:01:00Z", "law_id": "shopping-independent/v1", "payload": {"protocol": 1, "revision": "r1", "holdout": "shopping", "group": "held_out", "group_bps": 1000}}
+    ],
+    "configs": [
+      {"revision": "r1", "archive_ref": "archives/shopping-sdk/r1", "effective_from": "2025-01-01T00:00:00Z", "effective_to": "2025-04-12T00:00:00Z", "sdk_json": "{\"protocol\":1,\"revision\":\"r1\",\"experiments\":[{\"key\":\"shopping-a\",\"enrollment_bps\":10000,\"arms\":[{\"key\":\"baseline\",\"weight_bps\":5000},{\"key\":\"feature\",\"weight_bps\":5000}]},{\"key\":\"shopping-b\",\"enrollment_bps\":10000,\"arms\":[{\"key\":\"baseline\",\"weight_bps\":5000},{\"key\":\"feature\",\"weight_bps\":5000}]}],\"layers\":[],\"holdouts\":[{\"key\":\"shopping\",\"held_out_bps\":1000,\"targets\":[\"shopping-a\",\"shopping-b\"]}]}"}
+    ],
+    "aliases": [],
+    "phases": [
+      {"launch_id": "A", "target": "shopping-a", "feature_version": "baseline/1", "rollout_revision": "A/off", "config_revision": "r1", "from_at": "2025-01-01T00:00:00Z", "to_at": "2025-01-15T00:00:00Z", "eligible_offer_probability": 0, "baseline_version": "baseline/1", "actual_ref": "history/A/off", "available_at": "2025-01-15T00:00:00Z"},
+      {"launch_id": "A", "target": "shopping-a", "feature_version": "A/1", "rollout_revision": "A/ramp/1", "config_revision": "r1", "from_at": "2025-01-15T00:00:00Z", "to_at": "2025-03-20T00:00:00Z", "eligible_offer_probability": 0.5, "baseline_version": "baseline/1", "actual_ref": "history/A/ramp/1", "available_at": "2025-03-20T00:00:00Z"},
+      {"launch_id": "A", "target": "shopping-a", "feature_version": "A/2", "rollout_revision": "A/ramp/2", "config_revision": "r1", "from_at": "2025-03-20T00:00:00Z", "to_at": "2025-04-10T00:00:00Z", "eligible_offer_probability": 0.5, "baseline_version": "baseline/1", "actual_ref": "history/A/ramp/2", "available_at": "2025-04-10T00:00:00Z"},
+      {"launch_id": "B", "target": "shopping-b", "feature_version": "baseline/1", "rollout_revision": "B/off", "config_revision": "r1", "from_at": "2025-01-01T00:00:00Z", "to_at": "2025-03-15T00:00:00Z", "eligible_offer_probability": 0, "baseline_version": "baseline/1", "actual_ref": "history/B/off", "available_at": "2025-03-15T00:00:00Z"},
+      {"launch_id": "B", "target": "shopping-b", "feature_version": "B/1", "rollout_revision": "B/ramp/1", "config_revision": "r1", "from_at": "2025-03-15T00:00:00Z", "to_at": "2025-04-10T00:00:00Z", "eligible_offer_probability": 0.5, "baseline_version": "baseline/1", "actual_ref": "history/B/ramp/1", "available_at": "2025-04-10T00:00:00Z"}
+    ],
+    "coverage": [],
+    "decisions": [],
+    "deliveries": [],
+    "outcomes": [
+      {"unit_id": "acct:1", "window_id": "mar-orders", "outcome_version": "v1", "start": "2025-03-10T00:00:00Z", "end": "2025-04-10T00:00:00Z", "observed_through": "2025-04-10T00:00:00Z", "available_at": "2025-04-11T00:00:00Z", "state": "measured", "value": 10, "reason": null},
+      {"unit_id": "acct:2", "window_id": "mar-orders", "outcome_version": "v1", "start": "2025-03-10T00:00:00Z", "end": "2025-04-10T00:00:00Z", "observed_through": "2025-04-10T00:00:00Z", "available_at": "2025-04-11T00:00:00Z", "state": "measured", "value": 8, "reason": null},
+      {"unit_id": "acct:3", "window_id": "mar-orders", "outcome_version": "v1", "start": "2025-03-10T00:00:00Z", "end": "2025-04-10T00:00:00Z", "observed_through": "2025-04-10T00:00:00Z", "available_at": "2025-04-11T00:00:00Z", "state": "measured", "value": 12, "reason": null},
+      {"unit_id": "acct:4", "window_id": "mar-orders", "outcome_version": "v1", "start": "2025-03-10T00:00:00Z", "end": "2025-04-10T00:00:00Z", "observed_through": "2025-04-10T00:00:00Z", "available_at": "2025-04-11T00:00:00Z", "state": "measured", "value": 14, "reason": null},
+      {"unit_id": "acct:15", "window_id": "mar-orders", "outcome_version": "v1", "start": "2025-03-10T00:00:00Z", "end": "2025-04-10T00:00:00Z", "observed_through": "2025-04-10T00:00:00Z", "available_at": "2025-04-11T00:00:00Z", "state": "measured", "value": 10, "reason": null},
+      {"unit_id": "acct:16", "window_id": "mar-orders", "outcome_version": "v1", "start": "2025-03-10T00:00:00Z", "end": "2025-04-10T00:00:00Z", "observed_through": "2025-04-10T00:00:00Z", "available_at": "2025-04-11T00:00:00Z", "state": "measured", "value": 12, "reason": null}
+    ]
+  },
+  "external_assignment": {
+    "study_id": "shopping-25",
+    "registration_ref": "registration/shopping-25/2025-01-01",
+    "window_id": "mar-orders",
+    "snapshot_ref": "exports/shopping-25/external-example/2025-04-12",
+    "as_of": "2025-04-12T00:00:00Z",
+    "membership_source": "external",
+    "entry_source_ref": "exports/shopping-25/common-entry/2025-04-12",
+    "memberships": [
+      {"event_id": "ext/entry-1", "entry_id": "entry-1", "unit_id": "acct:1", "assigned_at": "2025-01-02T00:00:00Z", "available_at": "2025-01-02T00:01:00Z", "law_id": "shopping-independent/v1", "payload": {"holdout_key": "shopping", "revision": "r1", "group": "eligible", "holdout_probability": "0.10", "assignment_ref": "ext/r1/entry-1"}},
+      {"event_id": "ext/entry-2", "entry_id": "entry-2", "unit_id": "acct:2", "assigned_at": "2025-01-02T00:00:00Z", "available_at": "2025-01-02T00:01:00Z", "law_id": "shopping-independent/v1", "payload": {"holdout_key": "shopping", "revision": "r1", "group": "held_out", "holdout_probability": "0.10", "assignment_ref": "ext/r1/entry-2"}}
+    ],
+    "configs": [
+      {"revision": "r1", "archive_ref": "archives/shopping-external/r1", "effective_from": "2025-01-01T00:00:00Z", "effective_to": "2025-04-12T00:00:00Z", "external_policy": {"holdout_key": "shopping", "targets": ["shopping-a", "shopping-b"], "assignment_unit": "subscriber", "law_id": "shopping-independent/v1", "holdout_probability": "0.10"}}
+    ]
+  }
+}
