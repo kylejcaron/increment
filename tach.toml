@@ -227,6 +227,11 @@ layer = "core"
 depends_on = ["increment._assignment_ledger_contract", "increment._assignment_refusals"]
 
 [[modules]]
+path = "increment._holdout_roster"
+layer = "core"
+depends_on = ["increment._holdout_records", "increment.assignment", "increment.errors"]
+
+[[modules]]
 path = "increment._trigger_integrity"
 layer = "core"
 depends_on = ["increment.errors"]
