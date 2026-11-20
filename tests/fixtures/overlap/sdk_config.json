@@ -1,0 +1,15 @@
+{
+  "protocol": 1,
+  "revision": "archive-v1",
+  "layers": [],
+  "experiments": [
+    {
+      "key": "A", "enrollment_bps": 10000,
+      "arms": [{"key": "off", "weight_bps": 2500}, {"key": "on", "weight_bps": 7500}]
+    },
+    {
+      "key": "B", "enrollment_bps": 10000,
+      "arms": [{"key": "off", "weight_bps": 7500}, {"key": "on", "weight_bps": 2500}]
+    }
+  ]
+}
