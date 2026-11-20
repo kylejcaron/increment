@@ -152,8 +152,8 @@ def _rows(
             )
             scoped = scoped.with_columns(bad.alias("__overlap_submicrosecond"))
         if scoped.implementation.is_pandas_like():
-            # Preserve the physical null bitmap rather than iterating NA/NaT sentinels.
-            rows = scoped.to_arrow().to_pylist()
+            # Keep the physical null bitmap without treating the index as a column.
+            rows = nw.maybe_reset_index(scoped).to_arrow().to_pylist()
         else:
             rows = list(scoped.iter_rows(named=True))
     except Exception:
@@ -195,13 +195,23 @@ def _decision_pair(
     return decisions.get((unit, plan.a.target)), decisions.get((unit, plan.b.target))
 
 
-def _invalid_disposition(row: _Row, factor: OverlapFactor) -> bool:
+def _last_eligibility(row: _Row) -> datetime:
+    return max(row["eligibility_at_a"], row["eligibility_at_b"])
+
+
+def _invalid_disposition(row: _Row, factor: OverlapFactor, *, sdk: bool) -> bool:
     status, selected, arm, weight = (
         row["status"],
         row["selected_experiment"],
         row["arm"],
         row["assigned_weight"],
     )
+    if (
+        sdk
+        and factor.layer is None
+        and (status == "unallocated" or selected not in (None, factor.experiment))
+    ):
+        return True
     if status in ("held_out", "unallocated"):
         return selected is not None or arm is not None or weight is not None
     if status == "not_enrolled":
@@ -253,12 +263,12 @@ def _validate_entry(
         ),
         (
             "eligibility_after_start",
-            lambda r: max(r["eligibility_at_a"], r["eligibility_at_b"]) > plan.start,
+            lambda r: _last_eligibility(r) > plan.start,
         ),
         (
             "eligibility_not_before_either_decision",
             lambda r: any(
-                max(r["eligibility_at_a"], r["eligibility_at_b"]) >= d["decided_at"]
+                _last_eligibility(r) >= d["decided_at"]
                 for d in _decision_pair(r["unit_id"], plan, decisions)
                 if d is not None
             ),
@@ -273,7 +283,12 @@ def _validate_entry(
         ("archive_mismatch", lambda d: d["archive_sha256"] != archives[d["target"]]),
         ("decision_after_start", lambda d: d["decided_at"] > plan.start),
         ("invalid_status", lambda d: d["status"] not in DECISION_STATUSES),
-        ("invalid_disposition", lambda d: _invalid_disposition(d, factors[d["target"]])),
+        (
+            "invalid_disposition",
+            lambda d: _invalid_disposition(
+                d, factors[d["target"]], sdk=plan.law.origin == "sdk_v1"
+            ),
+        ),
     )
     if plan.law.gate_basis == "preassigned_roster":
         both = [r for r in roster if r["eligible_a"] and r["eligible_b"]]
@@ -334,6 +349,7 @@ def _spine(
 def _delivery_counts(
     plan: OverlapPlan,
     capture: OverlapCapture,
+    roster: dict[_Key, _Row],
     deliveries: Iterable[_Row],
     decisions: dict[_Key, _Row],
     spine: dict[str, CellId],
@@ -344,6 +360,10 @@ def _delivery_counts(
         deliveries,
         ("delivery_before_start", lambda d: d["delivered_at"] < plan.start),
         ("delivery_after_cutoff", lambda d: d["delivered_at"] > capture.cutoff),
+        (
+            "eligibility_not_before_delivery",
+            lambda d: _last_eligibility(roster[(d["unit_id"],)]) >= d["delivered_at"],
+        ),
     )
     factors = {plan.a.experiment: ("A", plan.a), plan.b.experiment: ("B", plan.b)}
     matching: Counter[tuple[DeliveryCellId, str]] = Counter()
@@ -351,6 +371,8 @@ def _delivery_counts(
     delivered: Counter[tuple[DeliveryCellId, str]] = Counter()
     seen: set[tuple[str, str]] = set()
     for event in deliveries:
+        if event["delivered_at"] >= plan.end:
+            continue
         unit = event["unit_id"]
         side, factor = factors[event["experiment"]]
         decision = decisions.get((unit, factor.target))
@@ -541,7 +563,9 @@ def capture_overlap_frame(
     _validate_entry(plan, entry, attempts, events)
     eligibility, gates, spine = _spine(plan, entry.values(), attempts)
     assigned = Counter(spine.values())
-    delivery_counts = _delivery_counts(plan, capture, events.values(), attempts, spine, assigned)
+    delivery_counts = _delivery_counts(
+        plan, capture, entry, events.values(), attempts, spine, assigned
+    )
     cells = _cells(plan, capture, indexed["outcomes"], spine, assigned)
     return OverlapEvidence(
         plan=plan,

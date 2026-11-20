@@ -9,11 +9,14 @@ from hashlib import sha256
 from typing import NoReturn, Self, cast, final
 
 from increment._assignment_refusals import refuse_assignment_replay_mismatch
-from increment._overlap_evidence import FACTOR_IDS, FactorId, _utc_microsecond
+from increment._overlap_evidence import _SURROGATE, FACTOR_IDS, FactorId, _utc_microsecond
 from increment._overlap_refusals import EVIDENCE_INVALID, LAW_UNSUPPORTED, PLAN_INVALID
 from increment.assignment import AllocationEvaluator, Decision, compile_allocation
-from increment.assignment._config import _is_scalar, _Layer
-from increment.assignment._hash import _FULL
+from increment.assignment._archive import (
+    ArchivedFactor,
+    describe_archived_factor,
+    has_archived_target,
+)
 from increment.errors import CodedError, refuse
 from increment.semantics.overlap import (
     OverlapClaim,
@@ -90,6 +93,10 @@ def _matches_record(submitted: object, expected: object) -> bool:
     return submitted == expected
 
 
+def _is_identity(value: object) -> bool:
+    return type(value) is str and bool(value) and _SURROGATE.search(value) is None
+
+
 def sdk_overlap_decision(
     *,
     study_id: str,
@@ -104,7 +111,11 @@ def sdk_overlap_decision(
     projecting a batch under the same allocation snapshot.
     """
     archive = _archive(config)
-    if not _is_scalar(study_id) or not _is_scalar(unit_id) or not isinstance(decided_at, datetime):
+    if (
+        not _is_identity(study_id)
+        or not _is_identity(unit_id)
+        or not isinstance(decided_at, datetime)
+    ):
         refuse(EVIDENCE_INVALID, role="decisions", reason="invalid_value", count=1)
     try:
         instant = _utc_microsecond(decided_at)
@@ -123,7 +134,7 @@ def _sdk_row(
     decision: Decision,
 ) -> dict[str, object]:
     target = decision.get("target") if type(decision) is dict else None
-    if not _is_scalar(target) or target not in archive._evaluator._allocation.targets:
+    if not has_archived_target(target, archive._evaluator):
         refuse_assignment_replay_mismatch(details="decision")
     expected = archive._evaluator.decide(target, unit_id)
     if not _matches_record(decision, expected):
@@ -149,49 +160,31 @@ def _factor(
     experiment: str,
     off: str,
     on: str,
-) -> tuple[OverlapFactor, int, bytes | None, int]:
+) -> tuple[OverlapFactor, ArchivedFactor]:
     label = side.lower()
-    allocation = archive._evaluator._allocation
-    configured = allocation.targets.get(target) if _is_scalar(target) else None
-    if configured is None:
-        refuse(PLAN_INVALID, field=f"{label}_target", reason="unknown_target")
-    if not _is_scalar(experiment):
-        refuse(PLAN_INVALID, field=f"{label}_experiment", reason="not_in_target")
-    width = _FULL
-    layer = None
-    if isinstance(configured, _Layer):
-        selected = next(
-            (row for row in configured.ranges if row.experiment.key == experiment), None
-        )
-        if selected is None:
-            refuse(PLAN_INVALID, field=f"{label}_experiment", reason="not_in_target")
-        layer = target
-        width = selected.end - selected.start
-        configured = selected.experiment
-    elif configured.key != experiment:
-        refuse(PLAN_INVALID, field=f"{label}_experiment", reason="not_in_target")
-    arms = {arm.key: arm.weight_bps for arm in configured.arms}
+    configured = describe_archived_factor(archive._evaluator, target, experiment)
+    if isinstance(configured, str):
+        field = "target" if configured == "unknown_target" else "experiment"
+        refuse(PLAN_INVALID, field=f"{label}_{field}", reason=configured)
+    arms = dict(configured.arms)
     if len(arms) != 2:
         refuse(LAW_UNSUPPORTED, reason="nonbinary_experiment", factors=(side,))
     for field, arm_key in (("off", off), ("on", on)):
-        if not _is_scalar(arm_key) or arm_key not in arms:
+        if type(arm_key) is not str or arm_key not in arms:
             refuse(PLAN_INVALID, field=f"{label}_{field}", reason="unknown_arm")
-    holdout = allocation.covered.get(target)
     return (
         OverlapFactor(
             target=target,
-            experiment=configured.key,
-            revision=allocation.revision,
+            experiment=configured.experiment,
+            revision=configured.revision,
             off=off,
             on=on,
             off_weight=arms[off],
             on_weight=arms[on],
-            arm_draw_id=sha256(configured.arm_prefix).hexdigest(),
-            layer=layer,
+            arm_draw_id=configured.arm_draw_id,
+            layer=configured.layer,
         ),
-        min(width, configured.enrollment_bps),
-        None if holdout is None else holdout.prefix,
-        0 if holdout is None else holdout.held_out_bps,
+        configured,
     )
 
 
@@ -229,13 +222,17 @@ def sdk_overlap_plan(  # noqa: PLR0913 — archive selectors and registered plan
         if type(a_config) is bytes and type(b_config) is bytes and a_config == b_config
         else _archive(b_config)
     )
-    a, a_gate, a_holdout, a_held = _factor("A", a_archive, a_target, a_experiment, a_off, a_on)
-    b, b_gate, b_holdout, b_held = _factor("B", b_archive, b_target, b_experiment, b_off, b_on)
-    if a_holdout is not None and a_holdout == b_holdout and a_held != b_held:
+    a, a_rules = _factor("A", a_archive, a_target, a_experiment, a_off, a_on)
+    b, b_rules = _factor("B", b_archive, b_target, b_experiment, b_off, b_on)
+    if (
+        a_rules.holdout_domain is not None
+        and a_rules.holdout_domain == b_rules.holdout_domain
+        and a_rules.held_out_bps != b_rules.held_out_bps
+    ):
         refuse(LAW_UNSUPPORTED, reason="shared_gate_mismatch", factors=FACTOR_IDS)
-    if min(a_gate, b_gate) == 0 or max(a_held, b_held) == _FULL:
+    if not (a_rules.can_assign and b_rules.can_assign):
         admission = "joint_gate_impossible"
-    elif a_gate == b_gate == _FULL and a_held == b_held == 0:
+    elif a_rules.always_assign and b_rules.always_assign:
         admission = "both_guaranteed"
     else:
         admission = "joint_gate_required"

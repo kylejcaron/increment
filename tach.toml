@@ -249,6 +249,15 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment.overlap"
+layer = "core"
+depends_on = [
+  "increment._frame_overlap",
+  "increment._overlap_sdk",
+  "increment.semantics.overlap",
+]
+
+[[modules]]
 path = "increment._trigger_integrity"
 layer = "core"
 depends_on = ["increment.errors"]
