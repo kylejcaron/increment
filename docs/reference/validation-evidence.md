@@ -599,7 +599,7 @@ computed enclosure resolves to absolute error at most `1e-6` conditional on that
 
 **Basis and evidence limits:** `tests/estimation/test_ratio.py::TestRatioStatisticalValidation::test_se_within_5pc_of_bootstrap` compares the delta SE with 2000 bootstrap replications on 2000 units, within 5%; `tests/estimation/test_ratio.py::test_unclustered_ratio_interval_coverage_is_nominal` measures coverage at a 20% lift over 1500 draws with 500 units per arm, within three Monte Carlo standard errors of 95%. These bounded simulations do not cover arbitrary rates or denominator distributions. No third-party comparison was attempted because `mratios` was unavailable. [Limitations](../limitations.md#signed-effects-require-a-suitable-scale-and-reference)
 
-**Entry points and parity:** [matrix](capabilities-by-entry-point.md#what-runs-where): `ratio-run-none-utc-error`: `supported` (`from_switchback_frame` refuses it as `source_limited`, `source.frame.switchback.metric`)
+**Entry points and parity:** [matrix](capabilities-by-entry-point.md#what-runs-where): `ratio-run-none-utc-error` is `supported`. `from_switchback_frame` estimates the [absolute rate difference](switchback-inference.md#ratios-and-forecast-adjusted-means), not parallel-arm ratio lift. The bootstrap and coverage studies above concern only the parallel-arm method.
 
 
 ### Joint relative inversion
@@ -716,7 +716,7 @@ computed enclosure resolves to absolute error at most `1e-6` conditional on that
 
 **Basis and evidence limits:** An analytic lower bound on the miscoverage of the unit-t pivot in one small-N cell (4 units, 1 cycle, CT probability 0.9) is 0.0565 at effect 0 and 0.0564 at effect 1 against a nominal 0.05, pinned by `tests/simulate/test_unit_cycle_calibration.py::test_corrected_counterexample_and_corrected_envelope`; it is a derivation that contradicts nominal coverage there. Two slow parameter-recovery cells run the default independent unit-cycle path end to end (`tests/simulate/test_switchback.py::test_supported_switchback_calibration_is_covered` and `tests/simulate/test_switchback.py::test_switchback_null_effect_type_i_calibration`: 120 units, 4 cycles, 24 replications each, treatment effects 2.0 and 0.0); each asserts only that unconditional coverage lies between 0.80 and 1.0 and that bias is below 0.15, a weak floor on a small replication count that does not establish nominal coverage.
 
-**Entry points and parity:** [matrix](capabilities-by-entry-point.md#what-runs-where): `mean-run-none-utc-error` and `conversion-run-none-utc-error`: `from_switchback_frame` is `supported`; `ratio-run-none-utc-error`, `retention-run-none-utc-error` and `quantile-run-none-utc-error`: `from_switchback_frame` is `source_limited` (`source.frame.switchback.metric`)
+**Entry points and parity:** [matrix](capabilities-by-entry-point.md#what-runs-where): `from_switchback_frame` supports `mean-run-none-utc-error` and `conversion-run-none-utc-error`. It also supports `ratio-run-none-utc-error` through `switchback_ratio_delta_t`, a separate reference for absolute rate differences. `retention-run-none-utc-error` and `quantile-run-none-utc-error` remain `source_limited` (`source.frame.switchback.metric`).
 
 
 ### Switchback variance envelope
