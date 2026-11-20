@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from increment._binding import ExperimentReader
+    from increment._frame_switchback_observations import SwitchbackObservationSchedule
     from increment._run import RunResult, run
     from increment.builders import (
         from_definitions,
@@ -67,6 +68,7 @@ __all__ = [
     "load_definitions",
     "from_unit_day_artifact",
     "from_switchback_frame",
+    "SwitchbackObservationSchedule",
     "from_moments",
     "Runnable",
     "runnable",
@@ -108,6 +110,10 @@ _LAZY_IMPORTS = {
     "load_definitions": ("increment.semantics.loader", "load"),
     "from_unit_day_artifact": ("increment.builders", "from_unit_day_artifact"),
     "from_switchback_frame": ("increment.builders", "from_switchback_frame"),
+    "SwitchbackObservationSchedule": (
+        "increment._frame_switchback_observations",
+        "SwitchbackObservationSchedule",
+    ),
     "from_moments": ("increment.builders", "from_moments"),
     "Runnable": ("increment.kernel.resolver", "Runnable"),
     "runnable": ("increment.kernel.resolver", "runnable"),

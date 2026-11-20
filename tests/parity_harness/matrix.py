@@ -198,9 +198,9 @@ def iter_asymptotic_retention_cells() -> Iterator[Cell]:
 @dataclass(frozen=True)
 class Runs:
     """The ingress produces rows. A matched-arm ingress's rows are compared with every other
-    running matched-arm ingress; ``from_switchback_panel`` (a different estimand) is run on its
-    own and its rows are only required to exist. ``limited`` names the row fields the ingress
-    cannot supply: they are left out of its comparison and make the verdict source-limited."""
+    running matched-arm ingress; switchback contrasts have their own estimand and reference.
+    ``limited`` names the row fields the ingress cannot supply: they are left out of its
+    comparison and make the verdict source-limited."""
 
     limited: tuple[str, ...] = ()
 
@@ -731,19 +731,20 @@ _SPECS: dict[str, Spec] = {
     ),
     "REF:source.frame.switchback.metric#type": Spec(
         "source_limited",
-        "switchback metrics must be a mean or a conversion",
+        "a switchback frame has no retention or quantile contrast",
         f"{_CAPABILITIES}: quantile rows (refused at the metric-type gate)",
         "declaration",
     ),
     "REF:source.frame.switchback.metric#method": Spec(
-        "source_limited",
-        "switchback procedures apply no decision-method variance reduction",
-        f"{_CAPABILITIES}: the switchback panel supports neither sequential inference nor CUPED",
+        "construction_limited",
+        "forecast adjustment fits a signed retained-total difference for a mean, not a "
+        "conversion probability or a difference of arm rates",
+        "docs/reference/switchback-inference.md",
         "declaration",
     ),
     "REF:source.frame.switchback.metric#missing": Spec(
         "source_limited",
-        "switchback aggregation applies no missing-value policy",
+        "a dense switchback frame cannot skip retained responses or treat absence as zero",
         "increment/switchback.py::_SWITCHBACK_METRIC",
         "declaration",
     ),
@@ -762,7 +763,7 @@ _SPECS: dict[str, Spec] = {
     "REF:source.frame.switchback.plan#inference": Spec(
         "source_limited",
         "switchback contrasts support fixed inference only",
-        f"{_CAPABILITIES}: the switchback panel supports neither sequential inference nor CUPED",
+        f"{_CAPABILITIES}: sequential plan on a switchback panel",
         "declaration",
     ),
     "REF:source.frame.switchback.plan#margin": Spec(
@@ -953,7 +954,13 @@ def supported_verdict(cell: Cell, ingress: str, method: str) -> Verdict:
         "a bounded exposure window and day boundary" if cell.windowed else "",
         "an exposure date and an observation band" if cell.base == "retention" else "",
         "a declared breakout dimension" if cell.view == "breakout" else "",
-        "" if method == "values" else _OPTION_PREREQUISITE[cell.option],
+        (
+            "a separate table of retained-window forecasts fixed before assignment"
+            if ingress == "from_switchback_panel" and cell.option == "cuped"
+            else ""
+            if method == "values"
+            else _OPTION_PREREQUISITE[cell.option]
+        ),
     ]
     prerequisites = "; ".join(n for n in needs if n)
     reason = (
@@ -1245,52 +1252,59 @@ RULES: dict[str, tuple[Box, ...]] = {
     ),
     "from_switchback_panel": (
         box("REF:definition.retention.metric_window_days", "windowed_retention", "run breakout", "none cuped cluster sequential observational ni_margin", "*", "rows"),
-        box("REF:facade.analysis.contrast_unavailable", "mean conversion", "breakout", "none", "error", "rows"),
+        box("REF:facade.analysis.contrast_unavailable", "mean conversion ratio", "breakout", "none", "error", "rows"),
+        box("REF:facade.analysis.contrast_unavailable", "mean", "breakout", "cuped", "error", "rows"),
         box("REF:frame.metric.cuped_does_apply", "quantile windowed_quantile", "run breakout", "cuped", "*", "rows"),
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "run breakout", "none cluster sequential observational ni_margin", "*", "rows"),
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "run breakout", "winsor_fixed winsor_percentile", "*", "rows"),
         box("REF:frame.metric_unknown_type", "total active windowed_total windowed_active", "run breakout", "none cuped winsor_fixed winsor_percentile sequential ni_margin", "*", "rows"),
-        box("REF:source.frame.switchback.metric#method", "mean conversion windowed_mean windowed_conversion", "run breakout", "cuped", "error", "rows"),
-        box("REF:source.frame.switchback.metric#missing", "mean conversion windowed_mean windowed_conversion", "run breakout", "none cuped sequential ni_margin", "zero skip", "rows"),
-        box("REF:source.frame.switchback.metric#window", "windowed_mean windowed_conversion", "run breakout", "none sequential ni_margin", "error", "rows"),
+        box("REF:source.frame.switchback.metric#method", "conversion ratio windowed_conversion windowed_ratio", "run breakout", "cuped", "error", "rows"),
+        box("REF:source.frame.switchback.metric#missing", "mean conversion ratio windowed_mean windowed_conversion windowed_ratio", "run breakout", "none cuped sequential ni_margin", "zero skip", "rows"),
+        box("REF:source.frame.switchback.metric#window", "windowed_mean windowed_conversion windowed_ratio", "run breakout", "none sequential ni_margin", "error", "rows"),
+        box("REF:source.frame.switchback.metric#window", "windowed_mean", "run breakout", "cuped", "error", "rows"),
         box("REF:source.frame.switchback.metric#winsor", "mean windowed_mean", "run breakout", "winsor_fixed winsor_percentile", "error zero skip", "rows"),
-        box("REF:source.frame.switchback.plan#inference", "mean conversion", "run breakout", "sequential", "error", "rows"),
-        box("REF:source.frame.switchback.plan#margin", "mean conversion", "run breakout", "ni_margin", "error", "rows"),
-        box("RUNS", "mean conversion", "run", "none", "error", "rows"),
+        box("REF:source.frame.switchback.plan#inference", "mean conversion ratio", "run breakout", "sequential", "error", "rows"),
+        box("REF:source.frame.switchback.plan#margin", "mean conversion ratio", "run breakout", "ni_margin", "error", "rows"),
+        box("RUNS", "mean conversion ratio", "run", "none", "error", "rows"),
+        box("RUNS", "mean", "run", "cuped", "error", "rows"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "run breakout", "*", "impute", "rows"),
-        box("REF:source.frame.switchback.metric#type", "ratio retention quantile windowed_ratio", "run breakout", "none cuped sequential ni_margin", "error zero skip", "rows"),
+        box("REF:source.frame.switchback.metric#type", "retention quantile", "run breakout", "none cuped sequential ni_margin", "error zero skip", "rows"),
         box("EXC:TypeError#cluster", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "run breakout", "cluster", "*", "rows"),
         box("REF:source.frame.switchback.identification", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "run breakout", "observational", "*", "rows"),
         box("REF:definition.retention.metric_window_days", "windowed_retention", "daily asof", "none cuped cluster sequential observational ni_margin", "*", "values"),
-        box("REF:facade.analysis.contrast_unavailable", "mean conversion", "daily asof", "none", "error", "values"),
+        box("REF:facade.analysis.contrast_unavailable", "mean conversion ratio", "daily asof", "none", "error", "values"),
+        box("REF:facade.analysis.contrast_unavailable", "mean", "daily asof", "cuped", "error", "values"),
         box("REF:frame.metric.cuped_does_apply", "quantile windowed_quantile", "daily asof", "cuped", "*", "values"),
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "daily asof", "none cluster sequential observational ni_margin", "*", "values"),
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "daily asof", "winsor_fixed winsor_percentile", "*", "values"),
         box("REF:frame.metric_unknown_type", "total active windowed_total windowed_active", "daily asof", "none cuped winsor_fixed winsor_percentile sequential ni_margin", "*", "values"),
-        box("REF:source.frame.switchback.metric#method", "mean conversion windowed_mean windowed_conversion", "daily asof", "cuped", "error", "values"),
-        box("REF:source.frame.switchback.metric#missing", "mean conversion windowed_mean windowed_conversion", "daily asof", "none cuped sequential ni_margin", "zero skip", "values"),
-        box("REF:source.frame.switchback.metric#window", "windowed_mean windowed_conversion", "daily asof", "none sequential ni_margin", "error", "values"),
+        box("REF:source.frame.switchback.metric#method", "conversion ratio windowed_conversion windowed_ratio", "daily asof", "cuped", "error", "values"),
+        box("REF:source.frame.switchback.metric#missing", "mean conversion ratio windowed_mean windowed_conversion windowed_ratio", "daily asof", "none cuped sequential ni_margin", "zero skip", "values"),
+        box("REF:source.frame.switchback.metric#window", "windowed_mean windowed_conversion windowed_ratio", "daily asof", "none sequential ni_margin", "error", "values"),
+        box("REF:source.frame.switchback.metric#window", "windowed_mean", "daily asof", "cuped", "error", "values"),
         box("REF:source.frame.switchback.metric#winsor", "mean windowed_mean", "daily asof", "winsor_fixed winsor_percentile", "error zero skip", "values"),
-        box("REF:source.frame.switchback.plan#inference", "mean conversion", "daily asof", "sequential", "error", "values"),
-        box("REF:source.frame.switchback.plan#margin", "mean conversion", "daily asof", "ni_margin", "error", "values"),
+        box("REF:source.frame.switchback.plan#inference", "mean conversion ratio", "daily asof", "sequential", "error", "values"),
+        box("REF:source.frame.switchback.plan#margin", "mean conversion ratio", "daily asof", "ni_margin", "error", "values"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "daily asof", "*", "impute", "values"),
-        box("REF:source.frame.switchback.metric#type", "ratio retention quantile windowed_ratio", "daily asof", "none cuped sequential ni_margin", "error zero skip", "values"),
+        box("REF:source.frame.switchback.metric#type", "retention quantile", "daily asof", "none cuped sequential ni_margin", "error zero skip", "values"),
         box("EXC:TypeError#cluster", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "cluster", "*", "values"),
         box("REF:source.frame.switchback.identification", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "observational", "*", "values"),
         box("REF:definition.retention.metric_window_days", "windowed_retention", "daily asof", "none cuped cluster sequential observational ni_margin", "*", "lift"),
-        box("REF:facade.analysis.contrast_unavailable", "mean conversion", "daily asof", "none", "error", "lift"),
+        box("REF:facade.analysis.contrast_unavailable", "mean conversion ratio", "daily asof", "none", "error", "lift"),
+        box("REF:facade.analysis.contrast_unavailable", "mean", "daily asof", "cuped", "error", "lift"),
         box("REF:frame.metric.cuped_does_apply", "quantile windowed_quantile", "daily asof", "cuped", "*", "lift"),
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "daily asof", "none cluster sequential observational ni_margin", "*", "lift"),
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "daily asof", "winsor_fixed winsor_percentile", "*", "lift"),
         box("REF:frame.metric_unknown_type", "total active windowed_total windowed_active", "daily asof", "none cuped winsor_fixed winsor_percentile sequential ni_margin", "*", "lift"),
-        box("REF:source.frame.switchback.metric#method", "mean conversion windowed_mean windowed_conversion", "daily asof", "cuped", "error", "lift"),
-        box("REF:source.frame.switchback.metric#missing", "mean conversion windowed_mean windowed_conversion", "daily asof", "none cuped sequential ni_margin", "zero skip", "lift"),
-        box("REF:source.frame.switchback.metric#window", "windowed_mean windowed_conversion", "daily asof", "none sequential ni_margin", "error", "lift"),
+        box("REF:source.frame.switchback.metric#method", "conversion ratio windowed_conversion windowed_ratio", "daily asof", "cuped", "error", "lift"),
+        box("REF:source.frame.switchback.metric#missing", "mean conversion ratio windowed_mean windowed_conversion windowed_ratio", "daily asof", "none cuped sequential ni_margin", "zero skip", "lift"),
+        box("REF:source.frame.switchback.metric#window", "windowed_mean windowed_conversion windowed_ratio", "daily asof", "none sequential ni_margin", "error", "lift"),
+        box("REF:source.frame.switchback.metric#window", "windowed_mean", "daily asof", "cuped", "error", "lift"),
         box("REF:source.frame.switchback.metric#winsor", "mean windowed_mean", "daily asof", "winsor_fixed winsor_percentile", "error zero skip", "lift"),
-        box("REF:source.frame.switchback.plan#inference", "mean conversion", "daily asof", "sequential", "error", "lift"),
-        box("REF:source.frame.switchback.plan#margin", "mean conversion", "daily asof", "ni_margin", "error", "lift"),
+        box("REF:source.frame.switchback.plan#inference", "mean conversion ratio", "daily asof", "sequential", "error", "lift"),
+        box("REF:source.frame.switchback.plan#margin", "mean conversion ratio", "daily asof", "ni_margin", "error", "lift"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "daily asof", "*", "impute", "lift"),
-        box("REF:source.frame.switchback.metric#type", "ratio retention quantile windowed_ratio", "daily asof", "none cuped sequential ni_margin", "error zero skip", "lift"),
+        box("REF:source.frame.switchback.metric#type", "retention quantile", "daily asof", "none cuped sequential ni_margin", "error zero skip", "lift"),
         box("EXC:TypeError#cluster", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "cluster", "*", "lift"),
         box("REF:source.frame.switchback.identification", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "observational", "*", "lift"),
     ),

@@ -307,8 +307,7 @@ def _row_planning_baseline_quantile() -> None:
 
     print(
         "planning_baseline_quantile: from_switchback_frame: not attempted "
-        "(switchback metrics must be type='mean' or type='conversion', "
-        "source.frame.switchback.metric)"
+        "(a switchback panel has no quantile contrast)"
     )
     con.disconnect()
 

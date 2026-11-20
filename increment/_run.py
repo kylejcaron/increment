@@ -594,13 +594,13 @@ def _execution_identity_fields(
         contrast = _contrast_context(binding)
         procedure = None if contrast is None else contrast.procedures.get(key.metric)
         reference = None if procedure is None else procedure.reference
+        config = None if reference is None else reference.model_dump(mode="json")
+        if procedure is not None and procedure.forecast_column is not None:
+            config = {"reference": config, "forecast_column": procedure.forecast_column}
         return {
             "metric_hash": metric_hash(metric),
             "estimator_id": key.method,
-            "method_config_hash": contract_hash(
-                "contrast_reference_config",
-                None if reference is None else reference.model_dump(mode="json"),
-            ),
+            "method_config_hash": contract_hash("contrast_reference_config", config),
             "method_instance_id": f"{key.metric}:{key.method_role}:{key.method}",
         }
     if key.method is None and key.method_role is None:

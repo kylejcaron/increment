@@ -149,6 +149,8 @@ def _contrast_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict:
         or result.alternative != procedure.alternative
         or result.null_abs != procedure.null_abs
         or result.alpha != procedure.alpha
+        or result.forecast_column != procedure.forecast_column
+        or result.reference_spec != procedure.reference
     ):
         refuse_store(
             "store.decision.reference_invalid",
@@ -157,7 +159,14 @@ def _contrast_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict:
         )
     contrast = import_module("increment.estimation.contrast")
     available = contrast.contrast_evidence_available(result)
-    in_scope = result.decision_scope_complete is not False
+    # An unavailable measurement on another metric cannot alter this independent test.
+    missing = (result.decision_scope_reason_context or {}).get("unavailable_metrics")
+    in_scope = result.decision_scope_complete is not False or (
+        result.decision_scope_reason_code == "readout.scope.decision_incomplete"
+        and isinstance(missing, (tuple, list))
+        and bool(missing)
+        and result.metric not in missing
+    )
     status: Literal["reject", "retain", "not_evaluated"] = (
         "not_evaluated"
         if not available or not in_scope
@@ -166,7 +175,9 @@ def _contrast_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict:
         else "retain"
     )
     reason_codes = (
-        (result.decision_scope_reason_code or "decision.scope.incomplete",)
+        (result.failure_code,)
+        if result.failure_code is not None
+        else (result.decision_scope_reason_code or "decision.scope.incomplete",)
         if not in_scope
         else ("evidence.p_value.unavailable",)
         if not available

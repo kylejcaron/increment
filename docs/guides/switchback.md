@@ -1,49 +1,51 @@
 # Fixed-horizon switchback contrasts
 
-Use a switchback when a store, city or market must alternate between
-treatment and control over time instead of splitting users into groups.
-`from_switchback_frame` estimates an **additive difference over retained
-windows**, not per-user relative lift.
+Use a switchback when treatment changes over time within a store, city or
+market. The question is additive: *how many more orders per store and
+retained window?* An 80% treatment schedule does not make the answer a
+percent lift. The example below reads the assignment log, compares three
+metrics and uses the orders pilot to size a future study.
 
 ## Supported contract
 
-Prepare an eager pandas, Polars or PyArrow frame with one row for each
-unit, cycle, period and step. A cycle has two periods: one control and one
-treatment. Every period must contain the complete declared step range.
-Choose mean or conversion metrics and a `Randomized` design with exactly
-one control and one treatment arm, allocated `0.5`/`0.5`.
+Declare one control arm, one treatment arm, equal-duration periods and a
+fixed analysis horizon. Use an eager pandas, Polars or PyArrow frame.
+The randomization determines both the arm allocation and what counts as
+an independent replicate.
 
 ### Choose the order law
 
 Choose the declaration that matches how the schedule was actually drawn.
 CT means control then treatment; TC means treatment then control.
 
-- **Each unit-cycle draws its own order:** declare
-  `IndependentBernoulliOrder(probability_ct=...)`. The independent replicate
-  is a unit; ordinary inference needs at least two.
-- **A whole roster follows one order per block:** declare
-  `SharedScheduleOrder(probability_ct=...)`. The independent replicate is a
-  two-period block; at least two are needed, with both orders realized.
+- **One period per arm:** `IndependentBernoulliOrder(probability_ct=p)`
+  draws an order independently for each unit-cycle;
+  `SharedScheduleOrder(probability_ct=p)` draws it once for the entire
+  roster in each two-period block. The allocation is 50/50 in either case.
+  Even `p=0.8` means an 80% chance of CT, **not** 80% exposure to treatment.
+- **A fixed number of treated periods:** `FixedCountOrder` draws exactly
+  `m` of `K` positions uniformly without replacement (`K >= 3`, `0 < m < K`).
+  Set treatment allocation to `m/K`. Use `independence_unit="unit_cycle"`
+  for a new draw per unit-cycle, or `"shared_block"` for a common draw
+  across the roster. Don't use this for a deterministic rotation, a
+  calendar restriction or a scheduler that favors particular positions.
 
-The default independent-order analysis uses a qualified unit-t
-approximation with `n_units - 1` degrees of freedom. A shared schedule uses
-an approximate block-t interval with `n_blocks - 1`. Neither is an exact
-finite-sample coverage guarantee or a boundary for repeated decisions.
-Small-sample unit-t calibration failures remain unresolved; see
-[certification limits](../reference/switchback-inference.md#response-meaning-and-independent-certification).
-
-`probability_ct` describes independent Bernoulli order draws, not fixed
-CT/TC counts. There is no finite-population correction. A shared schedule
-requires a fixed, complete roster; duplicating that roster uniformly
-changes neither the effect scale nor the number of independent blocks.
+With independent orders, inference averages each unit's cycles and uses
+the variation between units. With a shared order, it averages the roster
+in each block and uses the variation between blocks. Adding stores to the
+same blocks does not add independent draws. Neither t interval guarantees
+finite-sample coverage: in one paired four-unit study design, the nominal
+95% interval covered zero on only 302 of 512 null attempts. See the
+[paired measurements](../reference/switchback-inference.md#coverage-with-few-units-or-blocks);
+they are not a calibration of the fixed-count design below.
 
 ### Washout and carryover
 
-Each period has `washout_steps + observation_steps` rows. Discard the
+Each period has `washout_steps + observation_steps` scheduled steps. Discard the
 washout and then `carryover_order` extra steps; the retained count is
 `observation_steps - carryover_order`. Orders 0, 1 and 2 are supported
-under both laws when enough steps remain. Mean metrics sum retained
-values; conversion metrics use `any` across the retained steps.
+when enough steps remain. A mean sums the retained values in each period.
+A conversion is one indicator: did **any** event occur in those steps?
 
 !!! warning "Discard enough time for carryover to end"
     The assumption `no_residual_carryover_after_discarded_steps` must hold
@@ -51,148 +53,238 @@ values; conversion metrics use `any` across the retained steps.
     whether randomization happened or treatment carryover has vanished.
     Residual carryover can bias the estimate and invalidate the interval.
 
-## A nondegenerate shared example
+## Analyze an 80% treatment schedule
 
-This complete, hand-constructed example represents four independent block
-draws shared by three stores. Each period has one washout step and three
-observation steps; order one discards the first observation step too.
-The large values in discarded steps do not enter the result.
+Two stores share a schedule. In each of 48 blocks the scheduler chooses
+one of five positions uniformly for control; the other four get treatment.
+Count orders per store during the retained step. Also ask whether adjusting
+orders for forecast demand changes the estimate, and how the average
+refund amount differs between arms.
+
+### 1. Declare the design and the decisions
 
 ```python
-import math
+from datetime import date
+from random import Random
 
-import pandas as pd
+import polars as pl
 
-import increment
-from increment.estimators import (
-    SharedScheduleOrder,
-    SwitchbackAssignment,
-    SwitchbackWindow,
+from increment import (
+    AnalysisPlan,
+    Method,
+    MetricSpec,
+    Randomized,
+    SwitchbackObservationSchedule,
+    from_switchback_frame,
+    run,
 )
-from increment.workflows import assignment_diagnostic
+from increment.estimators import FixedCountOrder, SwitchbackAssignment, SwitchbackWindow
+from increment.power import ContrastDecisionProcedure, switchback_profile_plan
+from increment.workflows import planning_baseline
 
-orders = [("control", "treatment")] * 2 + [("treatment", "control")] * 2
-shifts = [-1, 1, -2, 2]
-panel = pd.DataFrame(
+stores = ("north", "south")
+n_blocks = 48
+assignment = SwitchbackAssignment(
+    periods_per_cycle=5,
+    sequence=FixedCountOrder(treated_periods=4, independence_unit="shared_block"),
+    window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+)
+design = Randomized(control_group="control", allocation={"control": 0.2, "treatment": 0.8})
+metrics = [
+    MetricSpec(name="orders", preferred_direction="increase"),
+    MetricSpec(
+        name="adjusted_orders",
+        value_column="orders",
+        decision_method=Method.cuped(covariates="forecast"),
+    ),
+    MetricSpec(name="refund_per_return", type="ratio", numerator="refund", denominator="returns"),
+]
+alpha = 0.05
+plan = AnalysisPlan(primary=[m.name for m in metrics], alternative="two-sided", alpha=alpha)
+```
+
+### 2. Keep the forecasts, assignments and responses separate
+
+CUPED needs one numeric forecast of the retained-window total per
+store, block and position. Here demand varies by store and position;
+the forecast is fixed before anyone knows the assigned arm. The latest
+`forecast_at` must be strictly earlier than the earliest `assigned_at`.
+Neither washout outcomes nor a forecast copied from the outcome table
+establish that timing.
+
+```python
+forecasts = pl.DataFrame(
     [
         {
-            "unit": f"u{unit}",
-            "cycle": block,
-            "period": period,
-            "step": step,
-            "group": group,
-            "value": 999 if step < 2 else 10 + (effect + shifts[block]) * (group == "treatment"),
+            "store": store,
+            "block": block,
+            "position": pos,
+            "forecast": 40 + 3 * i + 2 * pos,
+            "forecast_at": date(2025, 1, 1),
+            "assigned_at": date(2025, 1, 2),
         }
-        for unit, effect in enumerate([4, 6, 8])
-        for block, order in enumerate(orders)
-        for period, group in enumerate(order)
-        for step in range(4)
+        for i, store in enumerate(stores)
+        for block in range(n_blocks)
+        for pos in range(5)
     ]
 )
-experiment, reader = increment.from_switchback_frame(
-    panel,
-    unit="unit",
-    cycle="cycle",
-    period="period",
-    step="step",
-    group="group",
-    metrics={"value": "mean"},
-    identification=increment.Randomized(
-        control_group="control",
-        allocation={"control": 0.5, "treatment": 0.5},
-    ),
-    assignment=SwitchbackAssignment(
-        sequence=SharedScheduleOrder(probability_ct=0.5),
-        window=SwitchbackWindow(washout_steps=1, observation_steps=3, carryover_order=1),
-    ),
+
+rng = Random(29)
+controls = [rng.randrange(5) for _ in range(n_blocks)]
+assignments = pl.DataFrame(
+    [
+        {
+            "store": store,
+            "block": block,
+            "position": pos,
+            "arm": "control" if pos == control else "treatment",
+        }
+        for block, control in enumerate(controls)
+        for store in stores
+        for pos in range(5)
+    ]
 )
-result = increment.run(experiment, reader).readout()[0]
-diagnostics = assignment_diagnostic(experiment, reader)
-assert math.isclose(result.estimate.value, 12)
-assert math.isclose(result.standard_error, math.sqrt(40 / 12))
-assert result.n_blocks == 4 and result.n_units == 3 and result.dof == 3
-assert result.observation_steps == 3 and result.retained_steps == 2
-print(f"retained-window difference: {result.estimate.value:g}")
-print(f"independent blocks: {result.n_blocks}; roster units: {result.n_units}")
-print(f"degrees of freedom: {result.dof:g}")
+schedule = SwitchbackObservationSchedule(assignments=assignments, units=stores, cycles=n_blocks)
 ```
 
-<!-- output -->
-```text
-retained-window difference: 12
-independent blocks: 4; roster units: 3
-degrees of freedom: 3
+For this example, generate the response table separately. Only step 1
+is retained. Every retained step was measured; in treatment, there were
+no returns. Those are observed zeros, not missing data.
+
+```python
+keys = ["store", "block", "position"]
+records = []
+for row in assignments.join(forecasts, on=keys).iter_rows(named=True):
+    treated = row["arm"] == "treatment"
+    noise = (row["block"] + 2 * row["position"]) % 7 - 3
+    returns = int(not treated)
+    records.append(
+        {
+            **{key: row[key] for key in keys},
+            "step": 1,
+            "orders": row["forecast"] + noise + 2 * treated,
+            "returns": returns,
+            "refund": 12 * returns,
+        }
+    )
+observations = pl.DataFrame(records)
 ```
 
-The block contributions are 10, 14, 8 and 16, averaging **12 additional
-outcome units per store's two-step retained window**. This is not 12% lift
-or 12 per user. The standard error is `sqrt(40 / 12)`, based on four
-blocks—not the twelve store-block combinations.
+### 3. Read the three decisions and keep the orders pilot
 
-## Results and diagnostics
+```python
+import json
 
-`readout()` returns one `ContrastResult` per selected metric. Read
-`estimate`, `lb`, `ub` and `standard_error` on the additive scale. Conversion
-contrasts measure a probability difference; they are not event-count gains.
-The result also records the method, order law, retained window and counts.
-See [result fields and diagnostics](../reference/switchback-inference.md#result-fields-and-diagnostics)
-for their exact meanings and portable schema.
+experiment, reader = from_switchback_frame(
+    observations,
+    unit="store",
+    cycle="block",
+    period="position",
+    step="step",
+    group="arm",
+    metrics=metrics,
+    identification=design,
+    assignment=assignment,
+    plan=plan,
+    schedule=schedule,
+    pre_assignment_forecasts=forecasts,
+)
+with reader:
+    results = run(experiment, reader).readout().to_frame(backend="polars")
+    pilot = planning_baseline(experiment, reader, "orders")
 
-`assignment_diagnostic(experiment, reader)` checks the schedule and reports
-realized CT/TC counts. It is not an SRM test, has no p-value, and gives no
-anytime-valid guarantee. `health_check` marks assignment balance unavailable
-and `srm` refuses for this design; their exact codes are in the reference.
+rows = {row["metric"]: row for row in results.to_dicts()}
+assert rows["orders"]["sampling_available"] and rows["orders"]["dof"] == n_blocks - 1
+assert (
+    rows["adjusted_orders"]["sampling_available"] and rows["adjusted_orders"]["dof"] == n_blocks - 2
+)
+refund = rows["refund_per_return"]
+assert refund["estimate"] is None and not refund["sampling_available"]
+reason = json.loads(refund["failure_context"])
+assert (reason["reason"], reason["arm"]) == ("zero_denominator", "treatment")
+print(results.select("metric", "estimate", "standard_error", "dof"))
+```
 
-## Randomizing at a market or geo grain
+Read the orders row in **orders per store per retained window**. CUPED
+compares outcome contrasts at zero forecast contrast, refitting when each
+block is left out; it does not treat the forecast adjustment as known.
+Average refund per return is undefined in treatment: no point, interval
+or decision. The orders rows still use the full roster. A weak but
+nonzero denominator can instead give a descriptive point without a test.
 
-For independent orders, set `unit` to the entity that drew its own order.
-Pre-aggregate to `geo × cycle × period × step` before passing geo data.
-The independent replicates are geos, not their underlying users.
+### 4. Size a future study with the same randomization
 
-When the whole market flips together, use `SharedScheduleOrder`. Even one
-geo can be a roster, but you still need independent two-period blocks and
-both realized orders. More roster members do not add degrees of freedom.
+For orders, assume treatment adds the same amount to each retained-window
+total. The planner subtracts the fitted shift from treated pilot windows,
+resamples entire blocks (both stores together), then redraws the positions
+under the 4-of-5 law. Match the prospective decision: the zero null is
+two-sided, and the plan splits its alpha across the three primary metrics.
 
-Independent per-geo orders make the contrast design-unbiased, but do not
-make outcomes independent. Shared time shocks, correlated schedules and
-interference can violate the inference assumptions; see
-[switchback independence](../limitations.md#switchback-inference-requires-independent-units-or-blocks).
+```python
+procedure = ContrastDecisionProcedure(
+    metric="orders",
+    role="primary",
+    alternative="two-sided",
+    preferred_direction="increase",
+    null_abs=0.0,
+    alpha=alpha / len(metrics),
+    reference=None,
+)
+grid = switchback_profile_plan(
+    pilot,
+    procedure,
+    sizes=(8, 32, 64),
+    effects=(0.0, 0.25, 6.0),
+    target_power=0.8,
+    repetitions=512,
+    seed=29,
+)
+for point in grid.points:
+    print(
+        point.n, point.delta, point.rejected, point.attempts, point.power_lower, point.power_upper
+    )
+size = grid.grid_size(6.0)
+mde = grid.grid_mde(64)
+print("First block count at +6 orders:", size.status, size.value)
+print("First effect at 64 blocks:", mde.status, mde.value)
+```
+
+Eight blocks can miss a position entirely in control. Such attempts,
+zero standard errors and other failed decisions stay in the denominator:
+power is **rejections / attempts**, not rejections / successful fits.
+`attained` means the lower Monte Carlo bound reaches 80% and every earlier
+candidate's upper bound is below 80%. `undecided` is not a recommendation
+to take a later point. Neither answer says what happens between grid points.
+The bounds describe simulation error under this pilot model, not uncertainty
+about the pilot or the real test's false-positive rate.
 
 ## When it refuses
 
-Check for missing or duplicate cells, incomplete steps, inconsistent orders
-across a shared roster, and an implausible CT/TC split. Shared schedules
-also refuse if only CT or only TC occurs, even when that split is plausible.
-If block contributions have zero spread, decision evidence is unavailable:
-bounds and confidence level are numeric nulls, not an invented interval.
+- **No separate log?** Supply every unit × cycle × period × step with its
+  arm and outcome, including discarded steps. In this dense format a gap
+  cannot distinguish missing assignment from missing measurement.
+- **A separate log?** A missing assignment, conflicting arm or duplicate
+  key invalidates the study. With a valid log, an unobserved retained
+  response leaves only its metric unavailable (`unobserved_response`).
+  An absent event row can count as zero only with `missing="zero"` and that
+  metric in `complete_event_metrics`. A null in a recorded row, an absent
+  denominator or a missing forecast is never filled with zero.
+- **No support at a position?** Fixed-count analysis requires each position
+  to appear in both arms across the independent draws. Shared paired
+  schedules need both CT and TC. More roster members cannot repair either.
 
-For skewed shared schedules, plan enough blocks to realize both orders.
-The power solvers already account for that admission probability. See
-[schedule refusals](../reference/switchback-inference.md#when-it-refuses).
-
-## Deliberate refusals
-
-Find exact codes, exception types, unsupported metric/plan options and
-`run()` override rules in the
-[refusal inventory](../reference/switchback-inference.md#deliberate-refusals).
-Use `from_frame` or `from_definitions` for a parallel A/B analysis, not a
-switchback declaration.
+`increment.workflows.assignment_diagnostic` reports schedule integrity, not
+a sample-ratio test or proof the scheduler drew uniformly. For exact reasons
+and result fields, see the [inference reference](../reference/switchback-inference.md).
 
 ## Optional finite-sample references and research laws
 
-Ordinary inference and pilot planning need no certificate. If you can
-justify a prospective residual-variance upper bound, a
-`UnitCycleVarianceEnvelope` provides a different, finite-sample construction
-under its declared model. A pilot variance or observed standard error is
-**not** such a bound. See the
-[envelope assumptions and interval](../reference/switchback-inference.md#optional-finite-sample-references-and-research-laws)
-and [complete-law power planning](../reference/switchback-inference.md#complete-law-power-planning).
-
-For ordinary [switchback power planning](power-analysis.md#switchback-contrasts),
-pilot moments give a moment-t approximation. Two-sided MDE planning keeps
-the signed additive effect: it searches below the null for
-`preferred_direction="decrease"` and above otherwise, within any declared
-`effect_bounds`.
+For a paired unadjusted mean with independent unit-cycle orders, a
+prospective `UnitCycleVarianceEnvelope` supports a different finite-sample
+interval under its declared model. A pilot variance is **not** such a bound.
+See the [envelope assumptions](../reference/switchback-inference.md#optional-finite-sample-references-and-research-laws)
+and the [planning guide](power-analysis.md#switchback-contrasts) for the
+distinction between paired mean, trajectory and conversion pilots.
 
 ## Response meaning and independent certification
 

@@ -34,6 +34,10 @@ if TYPE_CHECKING:
     from increment.kernel.experiment import Experiment
     from increment.power import Baseline
     from increment.power.switchback import SwitchbackBaseline
+    from increment.power.switchback_profiles import (
+        SwitchbackConversionBaseline,
+        SwitchbackTrajectoryBaseline,
+    )
     from increment.sources import _BuiltinMomentSource
     from increment.switchback import SwitchbackAssignmentDiagnostic
 
@@ -265,7 +269,7 @@ def _assignment_diagnostic_binding(binding: SourceBinding) -> SwitchbackAssignme
 
 def planning_baseline(
     experiment: Experiment, reader: ExperimentReader, metric: str
-) -> Baseline | SwitchbackBaseline:
+) -> Baseline | SwitchbackBaseline | SwitchbackTrajectoryBaseline | SwitchbackConversionBaseline:
     """The planning input a power solver needs, computed from this experiment's data.
 
     The experiment is a prior or pilot experiment (or an in-flight experiment's
@@ -297,9 +301,10 @@ def planning_baseline(
     each candidate size. ``Baseline.model_validate_json(baseline.model_dump_json())``
     restores an arm baseline as the class it was, a quantile baseline included.
 
-    A switchback experiment (``from_switchback_frame``) returns the pilot-fitted
-    :class:`~increment.power.switchback.SwitchbackBaseline` for the
-    ``switchback_*`` solvers.
+    A paired switchback mean returns a ``SwitchbackBaseline`` for the moment-based
+    solvers. A fixed-count mean returns whole pilot trajectories. A conversion
+    metric returns retained-window control risk. Use ``switchback_profile_plan``
+    for these last two designs; its power includes unavailable experiments.
 
     Refuses by source, naming which, where the source cannot supply what the
     metric type or declared design needs -- including a declared trigger whose
@@ -310,7 +315,7 @@ def planning_baseline(
 
 def _planning_baseline_binding(
     binding: SourceBinding, metric: str
-) -> Baseline | SwitchbackBaseline:
+) -> Baseline | SwitchbackBaseline | SwitchbackTrajectoryBaseline | SwitchbackConversionBaseline:
     source = binding.source
     if binding.state.family == "contrast":
         context = cast("ContrastContext", binding.context)

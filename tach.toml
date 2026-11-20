@@ -257,6 +257,7 @@ path = "increment.estimation.decision_types"
 layer = "core"
 depends_on = [
   "increment._literals",
+  "increment._unit_cycle",
   "increment.errors", "increment.estimation._certified", "increment.estimation._sequential_likelihood",
   "increment.estimation.advisory",
   "increment.estimation.sequential_result", "increment.sequential_state",
@@ -698,21 +699,27 @@ layer = "core"
 depends_on = [
   "increment._unit_cycle",
   "increment.compatibility",
+  "increment.declarations",
   "increment.errors",
   "increment.estimation._tails",
   "increment.estimation.arm_contract",
   "increment.estimation.contrast_results",
   "increment.estimation.decision_types",
+  "increment.estimation.switchback_metrics",
   "increment.estimation.results",
   "increment.semantics",
 ]
+
+[[modules]]
+path = "increment.estimation.switchback_metrics"
+layer = "core"
+depends_on = ["increment.estimation._student_t"]
 
 [[modules]]
 path = "increment.estimation.contrast_results"
 layer = "core"
 depends_on = [
   "increment._canonical",
-  "increment._immutable",
   "increment._literals",
   "increment._unit_cycle",
   "increment.declarations",
@@ -1137,6 +1144,20 @@ layer = "core"
 depends_on = ["increment._day_axis_labels", "increment._frame_validation", "increment._window", "increment.errors", "increment.sequential_state", "increment.sources"]
 
 [[modules]]
+path = "increment._frame_switchback_metrics"
+layer = "core"
+depends_on = [
+  "increment._frame_validation", "increment.estimation.contrast", "increment.semantics",
+]
+
+[[modules]]
+path = "increment._frame_switchback_observations"
+layer = "core"
+depends_on = [
+  "increment._frame_validation", "increment._study", "increment.errors",
+]
+
+[[modules]]
 path = "increment._frame_validation"
 layer = "core"
 depends_on = ["increment._evidence_types", "increment._labels", "increment._metric_specs", "increment.errors", "increment.plan", "increment.semantics", "increment.sources", "increment.estimation.armstats", "increment.estimation._readout_refusals", "increment.estimation.diagnostics"]
@@ -1180,6 +1201,7 @@ layer = "core"
 depends_on = [
   "increment._source_types", "increment._assignment_refusals", "increment._evidence_types",
   "increment._frame_validation", "increment._metric_specs", "increment._study",
+  "increment._frame_switchback_metrics", "increment._frame_switchback_observations", "increment.power.switchback_profiles",
   "increment.decision", "increment.errors", "increment.power.switchback", "increment.semantics",
   "increment._unit_cycle", "increment._frame_ledger", "increment.estimation.contrast_results", "increment.estimation.contrast",
 ]
@@ -1298,6 +1320,7 @@ path = "increment.power"
 layer = "core"
 depends_on = [
   "increment.power.core", "increment.power.curve", "increment.power.pairwise", "increment.power.switchback", "increment.power.unit_cycle", "increment.estimation.arm_contract",
+  "increment.power.switchback_profiles", "increment.estimation.decision_types",
 ]
 
 [[modules]]
@@ -1333,6 +1356,14 @@ layer = "core"
 depends_on = [
   "increment.compatibility", "increment.errors", "increment.estimation.decision_types",
   "increment.power._noncentral_t", "increment.power._search", "increment.power._validation", "increment.semantics", "increment.estimation.contrast_results",
+]
+
+[[modules]]
+path = "increment.power.switchback_profiles"
+layer = "core"
+depends_on = [
+  "increment._unit_cycle", "increment.errors", "increment.estimation._tails", "increment.estimation.decision_types",
+  "increment.power._validation", "increment.power.switchback", "increment.semantics",
 ]
 
 [[modules]]

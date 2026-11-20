@@ -2318,6 +2318,7 @@ def _validate_switchback_domains(
     period: str,
     step: str,
     total_steps: int,
+    periods_per_cycle: int = 2,
     reject_missingness: Callable[..., NoReturn],
     reject_domain: Callable[..., NoReturn],
 ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
@@ -2345,7 +2346,7 @@ def _validate_switchback_domains(
     periods = _switchback_integral_domain(
         frame,
         column=period,
-        expected=(0, 1),
+        expected=range(periods_per_cycle),
         label="period",
         reject=reject_domain,
     )
@@ -2361,15 +2362,15 @@ def _validate_switchback_domains(
 
 @dataclass(frozen=True, slots=True)
 class SwitchbackSchedule:
-    """Realized two-period orders of a validated, complete switchback schedule.
-
-    ``units`` lists the distinct unit labels in frame-engine sort order and
-    ``control_first`` holds one flag per unit-cycle in that unit order with
-    cycles ascending: True when the realized order is control then treatment.
-    """
+    """Complete assignment indicators in sorted unit, cycle, and period order."""
 
     units: tuple[object, ...]
-    control_first: np.ndarray
+    treated: np.ndarray
+
+    @property
+    def control_first(self) -> np.ndarray:
+        """Realized CT indicators for a paired order."""
+        return ~self.treated[..., 0]
 
     @property
     def ct_cycles(self) -> int:
@@ -2383,26 +2384,25 @@ class SwitchbackSchedule:
 def _validate_switchback_schedule(
     frame: nw.DataFrame[Any],
     *,
-    unit: str,
-    cycle: str,
-    period: str,
-    step: str,
+    keys: tuple[str, str, str, str],
     group: str,
     control: str,
     treatment: str,
     cycles: Sequence[int],
     total_steps: int,
+    periods_per_cycle: int = 2,
+    treated_periods: int = 1,
     reject_missingness: Callable[..., NoReturn],
     reject_schedule: Callable[..., NoReturn],
 ) -> SwitchbackSchedule:
-    """Validate one complete two-period schedule and return its realized orders."""
+    """Validate every assigned cell, then check the treatment quota in each draw."""
     if _missing_count(frame, group):
         reject_missingness(
             message=f"switchback group column {group!r} contains null/NaN values",
             column=group,
             reason="null_group",
         )
-    keys = [unit, cycle, period, step]
+    unit, cycle, period, step = keys
     duplicates = frame.group_by(keys).agg(nw.len().alias("__rows__")).filter(nw.col("__rows__") > 1)
     if not duplicates.is_empty():
         reject_schedule(
@@ -2425,7 +2425,7 @@ def _validate_switchback_schedule(
 
     ordered_units = sorted(observed_by_unit, key=repr)
     cycle_count = _range_cardinality(cycles) if isinstance(cycles, range) else len(cycles)
-    expected_per_unit = cycle_count * 2 * total_steps
+    expected_per_unit = cycle_count * periods_per_cycle * total_steps
     missing_by_unit = {
         value: expected_per_unit - observed_by_unit[value]
         for value in ordered_units
@@ -2446,7 +2446,7 @@ def _validate_switchback_schedule(
         for unit_value in missing_by_unit:
             unit_steps = observed_steps.get(unit_value, {})
             for current_cycle in cycles:
-                for current_period in (0, 1):
+                for current_period in range(periods_per_cycle):
                     missing_step = _first_missing_switchback_step(
                         unit_steps.get((current_cycle, current_period), set()),
                         total_steps,
@@ -2475,21 +2475,20 @@ def _validate_switchback_schedule(
             reason="incomplete_schedule",
         )
 
-    # The schedule is complete: every unit holds every cycle and both periods,
-    # so one row per cell sorted by unit, cycle, period reshapes exactly.
+    # Every unit holds every cycle and position, so sorted cells reshape exactly.
     cells = (
         frame.group_by([unit, cycle, period])
         .agg(nw.col(group).n_unique().alias("__arms__"), nw.col(group).min().alias(group))
         .sort(unit, cycle, period)
     )
-    shape = (len(observed_by_unit), cycle_count, 2)
+    shape = (len(observed_by_unit), cycle_count, periods_per_cycle)
     single = np.asarray(cells["__arms__"].to_list(), dtype=np.int64).reshape(shape) == 1
     labels = np.asarray(cells[group].to_list(), dtype=object).reshape(shape)
-    units = tuple(cells[unit].gather_every(cycle_count * 2).to_list())
-    both_single = single.all(axis=2)
-    control_first = both_single & (labels[..., 0] == control) & (labels[..., 1] == treatment)
-    treatment_first = both_single & (labels[..., 0] == treatment) & (labels[..., 1] == control)
-    valid = control_first | treatment_first
+    units = tuple(cells[unit].gather_every(cycle_count * periods_per_cycle).to_list())
+    treated = labels == treatment
+    valid = (single & (treated | (labels == control))).all(axis=2) & (
+        treated.sum(axis=2) == treated_periods
+    )
     if not valid.all():
         # Report the first offending unit-cycle in stable unit order.
         offending = next(
@@ -2525,8 +2524,8 @@ def _validate_switchback_schedule(
             )
         reject_schedule(
             message=(
-                "switchback schedule requires exactly one control/treatment "
-                f"period per unit-cycle; got {sequence!r}"
+                f"switchback schedule requires exactly {treated_periods} treated "
+                f"period(s) per unit-cycle; got {sequence!r}"
             ),
             unit=unit_value,
             cycle=current_cycle,
@@ -2534,7 +2533,7 @@ def _validate_switchback_schedule(
             observed_arms=sequence,
             reason="invalid_period_assignment",
         )
-    return SwitchbackSchedule(units=units, control_first=control_first)
+    return SwitchbackSchedule(units=units, treated=treated)
 
 
 def _validate_switchback_metric_values(

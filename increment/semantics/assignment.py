@@ -32,6 +32,12 @@ _REFUSALS = refusals(
     {
         "definition.assignment.reject_bool": "expected an int, got a bool",
         "definition.assignment.carryover_order_type": "carryover_order must be a non-boolean int",
+        "definition.assignment.fixed_count": (
+            "Cannot choose {treated_periods} treated positions in a fixed-count cycle of "
+            "{periods_per_cycle} periods: use at least three periods and leave both arms present. "
+            "For two periods use IndependentBernoulliOrder or SharedScheduleOrder "
+            "with probability_ct=0.5."
+        ),
         "definition.assignment.carryover_order_range": "carryover_order={carryover_order} must satisfy 0 <= carryover_order < observation_steps={observation_steps}; an order at or past observation_steps would discard the entire retained window",
     },
 )
@@ -87,8 +93,16 @@ class SharedScheduleOrder(_AssignmentModel):
     independence_unit: Literal["shared_block"] = "shared_block"
 
 
+class FixedCountOrder(_AssignmentModel):
+    """Uniformly choose a fixed number of treated positions in each cycle."""
+
+    scheme: Literal["fixed_count"] = "fixed_count"
+    treated_periods: int = Field(gt=0, strict=True)
+    independence_unit: Literal["unit_cycle", "shared_block"]
+
+
 AssignmentSequence = Annotated[
-    IndependentBernoulliOrder | SharedScheduleOrder, Field(discriminator="scheme")
+    IndependentBernoulliOrder | SharedScheduleOrder | FixedCountOrder, Field(discriminator="scheme")
 ]
 
 
@@ -139,9 +153,59 @@ class SwitchbackWindow(_AssignmentModel):
 
 class SwitchbackAssignment(_AssignmentModel):
     kind: Literal["switchback"] = "switchback"
-    periods_per_cycle: Literal[2] = 2
+    periods_per_cycle: int = Field(default=2, strict=True)
     sequence: AssignmentSequence
     window: SwitchbackWindow
+
+    @model_validator(mode="before")
+    @classmethod
+    def _paired_periods(cls, value: Any) -> Any:
+        """Keep the original two-period literal validation for paired orders."""
+        if isinstance(value, Mapping) and "periods_per_cycle" in value:
+            sequence = value.get("sequence")
+            scheme = (
+                sequence.get("scheme")
+                if isinstance(sequence, Mapping)
+                else getattr(sequence, "scheme", None)
+            )
+            if scheme != "fixed_count":
+                periods = value["periods_per_cycle"]
+                if periods != 2:
+                    from pydantic import ValidationError
+
+                    raise ValidationError.from_exception_data(
+                        cls.__name__,
+                        [
+                            {
+                                "type": "literal_error",
+                                "loc": ("periods_per_cycle",),
+                                "input": periods,
+                                "ctx": {"expected": "2"},
+                            }
+                        ],
+                    )
+                return {**value, "periods_per_cycle": 2}
+        return value
+
+    @model_validator(mode="after")
+    def _interior_count(self) -> SwitchbackAssignment:
+        if isinstance(self.sequence, FixedCountOrder) and (
+            self.periods_per_cycle < 3 or self.sequence.treated_periods >= self.periods_per_cycle
+        ):
+            _raise(
+                "definition.assignment.fixed_count",
+                periods_per_cycle=self.periods_per_cycle,
+                treated_periods=self.sequence.treated_periods,
+            )
+        return self
+
+    @property
+    def exposure(self) -> tuple[float, float]:
+        """Declared control and treatment probabilities averaged over positions."""
+        if isinstance(self.sequence, FixedCountOrder):
+            m, k = self.sequence.treated_periods, self.periods_per_cycle
+            return (k - m) / k, m / k
+        return 0.5, 0.5
 
 
 Assignment = Annotated[ParallelAssignment | SwitchbackAssignment, Field(discriminator="kind")]
@@ -347,6 +411,7 @@ class AssignmentSpec:
 __all__ = [
     "AssignmentSpec",
     "Assignment",
+    "FixedCountOrder",
     "IndependentBernoulliOrder",
     "ParallelAssignment",
     "SharedScheduleOrder",

@@ -16,7 +16,12 @@ from increment.decision import ContrastDecisionProcedure, ContrastSource
 from increment.declarations import Method
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.errors import refuse as _refuse
-from increment.estimation.contrast import compute_contrast
+from increment.estimation.contrast import (
+    SwitchbackMetricStats,
+    UnavailableContrastStats,
+    compute_contrast,
+    unavailable_contrast,
+)
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.inference import Prior
 from increment.estimation.results import LiftEstimate
@@ -122,8 +127,10 @@ class ContrastHandler:
                     metric_name=metric.name,
                 )
             if (
-                source.context.study.assignment.sequence.scheme == "independent_bernoulli_order"
+                source.context.study.assignment.sequence.independence_unit == "unit_cycle"
                 and procedure.reference is None
+                and metric.type != "ratio"
+                and procedure.forecast_column is None
             ):
                 _unit_refuse(
                     "unit_cycle.envelope_required",
@@ -145,19 +152,30 @@ class ContrastHandler:
 
         self.preflight(source, request)
         results = []
+        failures = {}
         stats = {}
         for metric in request.metrics:
             procedure = request.procedures[metric.name]
-            stats[metric.name] = load_contrast_stats(
+            evidence = load_contrast_stats(
                 source,
                 ContrastStatsRequest(metric),
                 execution_context=execution_context,
             )
-            results.append(compute_contrast(stats[metric.name], procedure).results[0])
+            stats[metric.name] = evidence
+            computation = compute_contrast(evidence, procedure)
+            results.extend(computation.results)
+            if computation.failures and isinstance(
+                evidence, (SwitchbackMetricStats, UnavailableContrastStats)
+            ):
+                (failure,) = computation.failures.values()
+                failures[metric.name] = failure
+                if not computation.results:
+                    results.append(unavailable_contrast(evidence, procedure, failure))
         rows = scope_contrast_results(
             results,
             metrics=request.metrics,
             stats=stats,
+            failures=failures,
             procedures=request.procedures,
             source_identity_record=source_identity(source),
             coherence=(

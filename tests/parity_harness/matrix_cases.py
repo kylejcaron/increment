@@ -526,7 +526,8 @@ def switchback_frame() -> pd.DataFrame:
             order = ("control", "treatment") if (u + cycle) % 2 == 0 else ("treatment", "control")
             for period, arm in enumerate(order):
                 for step in range(2):
-                    value = 2.0 + (u % 3) + cycle + (1.5 if arm == "treatment" else 0.0) + 0.25 * u
+                    effect = (2.0, 1.0, 4.0, 1.0)[u % 4] if arm == "treatment" else 0.0
+                    value = 2.0 + (u % 3) + cycle + 0.25 * u + effect
                     rows.append(
                         {
                             "unit": f"u{u}",
@@ -539,13 +540,30 @@ def switchback_frame() -> pd.DataFrame:
                             "sessions": 1 + (u % 2),
                             "returned": float(step),
                             "latency": 100.0 + u + (10.0 if arm == "treatment" else 0.0),
-                            "pre_revenue": 1.0 + (u % 4),
-                            "pre_converted": u % 2,
                             "cluster_id": f"k{u // 2}",
                             "tenure": float(u),
                         }
                     )
     return pd.DataFrame(rows)
+
+
+def _switchback_forecasts() -> pd.DataFrame:
+    """One forecast of the retained total per position, fixed before the first assignment."""
+    return pd.DataFrame(
+        [
+            {
+                "unit": f"u{u}",
+                "cycle": cycle,
+                "period": period,
+                "pre_revenue": 5 + period * (1 - cycle) * (1 + u % 4),
+                "forecast_at": dt.datetime(2025, 1, 1, tzinfo=dt.UTC),
+                "assigned_at": dt.datetime(2025, 1, 2, tzinfo=dt.UTC),
+            }
+            for u in range(md.scaled_units_per_arm(base=8))
+            for cycle in range(2)
+            for period in range(2)
+        ]
+    )
 
 
 def _switchback_builder(cell: Cell) -> Callable[[], Bound]:
@@ -572,6 +590,8 @@ def _switchback_builder(cell: Cell) -> Callable[[], Bound]:
                 window=SwitchbackWindow(washout_steps=1, observation_steps=1),
             ),
         }
+        if cell.base == "mean" and cell.option == "cuped":
+            kwargs["pre_assignment_forecasts"] = _switchback_forecasts()
         if cell.option in ("sequential", "ni_margin"):
             kwargs["plan"] = plan_for(cell, frame=True)
         if cell.option == "cluster":

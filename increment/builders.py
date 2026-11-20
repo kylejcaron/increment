@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 if TYPE_CHECKING:
     from ibis.backends.sql import SQLBackend
 
+    from increment._frame_switchback_observations import SwitchbackObservationSchedule
     from increment._metric_specs import MetricsArg
     from increment.artifacts import SourceSnapshotEvidence
     from increment.decision import ContrastSource
@@ -357,7 +358,7 @@ def _bind_artifact(
     return bind_source(source, source.context.design)
 
 
-def _bind_switchback(
+def _bind_switchback(  # noqa: PLR0913
     frame: IntoDataFrame,
     *,
     unit: str,
@@ -371,6 +372,8 @@ def _bind_switchback(
     experiment_id: str = "frame",
     plan: AnalysisPlan | None = None,
     contrast_references: Mapping[str, UnitCycleReference] | None = None,
+    schedule: SwitchbackObservationSchedule | None = None,
+    pre_assignment_forecasts: IntoDataFrame | None = None,
 ) -> SourceBinding:
     from increment.switchback import from_switchback_panel
 
@@ -387,6 +390,8 @@ def _bind_switchback(
         experiment_id=experiment_id,
         plan=plan,
         contrast_references=contrast_references,
+        schedule=schedule,
+        pre_assignment_forecasts=pre_assignment_forecasts,
     )
     binding = bind_source(cast(Any, source), identification)
     return SourceBinding(binding.state, input_backend=_input_backend_of(frame))
@@ -937,7 +942,7 @@ def from_unit_day_artifact(
     )
 
 
-def from_switchback_frame(
+def from_switchback_frame(  # noqa: PLR0913
     frame: IntoDataFrame,
     *,
     unit: str,
@@ -951,6 +956,8 @@ def from_switchback_frame(
     experiment_id: str = "frame",
     plan: AnalysisPlan | None = None,
     contrast_references: Mapping[str, UnitCycleReference] | None = None,
+    schedule: SwitchbackObservationSchedule | None = None,
+    pre_assignment_forecasts: IntoDataFrame | None = None,
 ) -> tuple[Experiment, ExperimentReader]:
     binding = _bind_switchback(
         frame,
@@ -965,6 +972,8 @@ def from_switchback_frame(
         experiment_id=experiment_id,
         plan=plan,
         contrast_references=contrast_references,
+        schedule=schedule,
+        pre_assignment_forecasts=pre_assignment_forecasts,
     )
     return resolver_for(binding)
 

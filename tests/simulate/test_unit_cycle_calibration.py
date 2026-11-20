@@ -186,6 +186,7 @@ def assert_public_parity(periods, ct, cell, effect, *, envelope=None, alternativ
         assert stats.ct_cycles == int(orders.sum())
         assert stats.tc_cycles == orders.size - int(orders.sum())
         assert stats.minimum_cycles_per_unit == stats.maximum_cycles_per_unit == cell.cycles
+        assert row.estimate is not None
         assert row.estimate.value == pytest.approx(point, abs=2e-12)
         assert row.standard_error == pytest.approx(
             float(np.std(units, ddof=1) / math.sqrt(cell.units)), abs=2e-12
@@ -429,6 +430,7 @@ def test_legitimate_same_order_and_zero_sample_variance_keep_envelope(alternativ
             src.contrast_stats(src.metrics[0]), procedure(envelope, alternative)
         ).results[0]
         assert row.standard_error == 0
+        assert row.estimate is not None
         assert row.estimate.lb is not None or row.estimate.ub is not None
 
 
@@ -598,6 +600,7 @@ class Accounting:
             refused, _, _ = admission_oracle(cell.units * cell.cycles, cell.probability_ct)
             self.disagreed += int(int(ct.sum()) not in refused or "split" not in reason)
             return
+        assert row.estimate is not None
         self.p += 1
         delta = row.estimate.value - self.mean
         self.mean += delta / self.p
@@ -933,6 +936,7 @@ def test_zero_envelope_singleton_keeps_ht_point_outside_interval():
     periods = np.broadcast_to([0.0, 2.0], (4, 1, 2))
     src = source(periods, ct, cell, envelope)
     result = estimate_contrast(src.contrast_stats(src.metrics[0]), procedure(envelope)).results[0]
+    assert result.estimate is not None
     assert result.estimate.value == pytest.approx(2 / (2 * 0.9))
     assert result.estimate.lb is not None and result.estimate.ub is not None
     assert result.estimate.lb <= 2 <= result.estimate.ub
@@ -964,6 +968,7 @@ def test_closed_threshold_ties_agree_with_evidence(alternative):
     evidence = next(iter(computation.evidence.values()))
     assert isinstance(evidence, PValueEvidence)
     assert evidence.p_value >= 0.05
+    assert result.estimate is not None
     assert result.estimate.lb is None or result.estimate.lb <= 0
     assert result.estimate.ub is None or result.estimate.ub >= 0
 
@@ -1055,6 +1060,7 @@ def test_exact_cycle_average_oracle_preserves_strict_evidence_inside_float_displ
         src.contrast_stats(src.metrics[0]), procedure(envelope, null=null)
     )
     row = computation.results[0]
+    assert row.estimate is not None
     point, slope, _, _ = scalar_observation(observed, ct, cell.probability_ct)
     assert point == Fraction(1, 3)
     expected = scalar_reference(

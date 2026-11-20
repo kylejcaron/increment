@@ -169,6 +169,14 @@ class SwitchbackBaseline(CodedModel, BaseModel):
                 value=self.aggregation,
                 constraint="constant-additive model requires aggregation='sum'",
             )
+        if self.assignment.sequence.scheme == "fixed_count":
+            _invalid(
+                "baseline",
+                "Fixed-count planning requires complete retained trajectories.",
+                field="assignment.sequence.scheme",
+                value="fixed_count",
+                route="Use switchback_profile_plan with a SwitchbackTrajectoryBaseline.",
+            )
         if self.control_group == self.treatment_group:
             _invalid(
                 "baseline",
@@ -471,7 +479,9 @@ def _admission_probability(n: int, baseline: SwitchbackBaseline) -> float:
     """
     if baseline.planning_grain != "shared_block":
         return 1.0
-    p = baseline.assignment.sequence.probability_ct
+    sequence = baseline.assignment.sequence
+    assert sequence.scheme == "shared_schedule"
+    p = sequence.probability_ct
     return 1.0 - p**n - (1.0 - p) ** n
 
 

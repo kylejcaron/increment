@@ -1,4 +1,4 @@
-"""Scope records for switchback contrast readouts, which remain all-or-nothing."""
+"""Source-scoped switchback estimates and reasons for unavailable decisions."""
 
 from __future__ import annotations
 
@@ -6,14 +6,16 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment._canonical import canonical_digest_bytes, canonical_json_bytes
-from increment.estimation.assignment_integrity import assignment_integrity
+from increment.estimation.assignment_integrity import assignment_integrity, fixed_count_integrity
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.readout_types import (
+    CellFailure,
     CellKey,
     CellRecord,
     PopulationRoster,
     ReadoutMetadata,
     ReadoutScope,
+    SamplingInference,
     SourceReadoutScope,
     cell_order,
 )
@@ -23,8 +25,13 @@ from increment.readouts._source_digest import component, composite_source, input
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from increment.estimation.contrast import ContrastStats
+    from increment.estimation.contrast import (
+        ContrastStats,
+        SwitchbackMetricStats,
+        UnavailableContrastStats,
+    )
     from increment.estimation.contrast_results import ContrastResult
+    from increment.estimation.decision_types import DecisionFailure
     from increment.semantics.models import Metric
 
 
@@ -32,19 +39,17 @@ def scope_contrast_results(
     results: Sequence[ContrastResult],
     *,
     metrics: Sequence[Metric],
-    stats: Mapping[str, ContrastStats],
+    stats: Mapping[str, ContrastStats | SwitchbackMetricStats | UnavailableContrastStats],
     procedures: Mapping[str, Any],
+    failures: Mapping[str, DecisionFailure] | None = None,
     component_source: str | None = None,
     dimension: str | None = None,
     source_identity_record: Mapping[str, Any] | None = None,
     coherence: Literal["captured", "live"] | None = None,
     effective_modes: Mapping[str, Literal["captured", "live", "provider"]] | None = None,
 ) -> ContrastResults:
-    """Attach scope to a complete set of contrast results.
-
-    A contrast cannot partially fail: every selected metric either yields its result or the
-    request refuses, so the single assigned population is decision complete.
-    """
+    """Stamp every selected contrast, including cells without a decision."""
+    failures = failures or {}
     components = [
         component(
             kind="unit_evidence_rows",
@@ -59,7 +64,7 @@ def scope_contrast_results(
         for metric, value in stats.items()
     ]
     source = composite_source(components)
-    construction_fields = (
+    construction_fields = {
         "aggregation",
         "probability_ct",
         "randomization_law",
@@ -78,8 +83,11 @@ def scope_contrast_results(
         "tc_cycles",
         "minimum_cycles_per_unit",
         "maximum_cycles_per_unit",
-    )
-    construction = {metric: value.model_dump(mode="json") for metric, value in stats.items()}
+        "periods_per_cycle",
+        "treated_periods",
+        "treatment_probability",
+        "forecast_column",
+    }
     request = {
         "kind": "contrast",
         "metrics": sorted(stats),
@@ -88,8 +96,8 @@ def scope_contrast_results(
         },
         "populations": ["assigned"],
         "construction": {
-            metric: {key: construction[metric][key] for key in construction_fields}
-            for metric in sorted(construction)
+            metric: stats[metric].model_dump(mode="json", include=construction_fields)
+            for metric in sorted(stats)
         },
     }
     snapshot_id = (
@@ -109,12 +117,18 @@ def scope_contrast_results(
     )
 
     metric_types = declared_metric_types(metrics)
+    complete = not failures
+    scope_reason = {"unavailable_metrics": tuple(sorted(failures))} if failures else None
     stamped = [
         row.model_copy(
             update={
                 "source_snapshot_id": snapshot_id,
                 "metric_type": declared_metric_type(row, metric_types),
-                "decision_scope_complete": True,
+                "decision_scope_complete": complete,
+                "decision_scope_reason_code": (
+                    None if complete else "readout.scope.decision_incomplete"
+                ),
+                "decision_scope_reason_context": scope_reason,
             }
         )
         for row in results
@@ -124,7 +138,17 @@ def scope_contrast_results(
     arms = tuple(
         sorted({group for row in results for group in (row.control_group, row.treatment_group)})
     )
-    integrity = assignment_integrity(None, None)
+    design = next(iter(stats.values()), None)
+    if design is not None and design.randomization_law == "fixed_count":
+        assert design.periods_per_cycle is not None and design.treated_periods is not None
+        integrity = fixed_count_integrity(
+            periods=design.periods_per_cycle,
+            treated=design.treated_periods,
+            grain=design.independence_grain,
+            draws=design.n_blocks if design.n_blocks is not None else design.n_cycles,
+        )
+    else:
+        integrity = assignment_integrity(None, None)
     source_scope = SourceReadoutScope(
         source_snapshot_id=snapshot_id,
         cells=ordered,
@@ -137,7 +161,7 @@ def scope_contrast_results(
                 complete=True,
             ),
         ),
-        decision_complete_by_population={"assigned": True},
+        decision_complete_by_population={"assigned": complete},
         integrity=(integrity,),
     )
     scope = ReadoutScope(
@@ -150,7 +174,21 @@ def scope_contrast_results(
     )
     metadata = ReadoutMetadata(
         scope=scope,
-        cells=tuple(CellRecord(cell=cell, source_snapshot_id=snapshot_id) for cell in ordered),
+        cells=tuple(
+            CellRecord(
+                cell=cell,
+                source_snapshot_id=snapshot_id,
+                failure=CellFailure(
+                    hypothesis=cell.hypothesis(), code=failure.code, context=failure.context
+                ),
+                sampling=SamplingInference(
+                    available=False, reason_code=failure.code, reason_context=failure.context
+                ),
+            )
+            if (failure := failures.get(cell.metric)) is not None
+            else CellRecord(cell=cell, source_snapshot_id=snapshot_id)
+            for cell in ordered
+        ),
         coherence=coherence,
         effective_modes=effective_modes or {},
     )

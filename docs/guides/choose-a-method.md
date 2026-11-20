@@ -58,17 +58,18 @@ The [notebook](../examples/encouragement.md) also monitors LATE over time.
 
 ## Treatment alternates within units or a shared roster over time
 
-Use a [fixed-horizon switchback](switchback.md) when randomized treatment order
-alternates over time. Declare a two-period `SwitchbackAssignment` and washout;
-the result is an additive difference, not relative lift. Inference assumes no
-residual carryover after washout.
+Use a [fixed-horizon switchback](switchback.md) when units alternate
+between treatment and control over time. Declare the actual schedule:
+one period per arm with randomized order, or a uniform draw of a fixed
+number of treated positions per cycle. A shared schedule supplies one
+independent draw per block, not one per roster member. Discard enough
+steps for carryover to end.
 
-Two schedule types are supported: independent orders within each unit-cycle,
-or one shared order per two-period block for a fixed roster. The
-[switchback guide](switchback.md#supported-contract) covers their different
-intervals, optional carryover adjustment, and restrictions. This route does
-not support sequential inference, CUPED, multiplicity adjustment or arm-method
-overrides.
+Compare retained totals, conversion probabilities or ratios of totals on
+an additive scale. A mean can use CUPED with a separately recorded
+pre-assignment forecast. Use the [switchback guide](switchback.md#supported-contract)
+for the required inputs and approximate intervals. This is not a sequential
+test; arm-method overrides and secondary discovery families do not apply.
 
 ## Choosing decision and sensitivity methods
 Choose one `decision_method` per metric. Optional `sensitivity_methods` show

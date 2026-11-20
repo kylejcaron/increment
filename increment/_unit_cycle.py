@@ -257,9 +257,9 @@ def unit_cycle_envelope_cutoff(
         _refuse("unit_cycle.invalid_design", reason="alpha must be in (0,1)")
     if alternative not in ALTERNATIVE_VALUES:
         _refuse("unit_cycle.invalid_design", reason="unsupported alternative")
-    rule = unit_cycle_admission_rule(
-        n * envelope.cycles_per_unit, envelope.assignment.sequence.probability_ct
-    )
+    sequence = envelope.assignment.sequence
+    assert sequence.scheme == "independent_bernoulli_order"  # validated by the envelope
+    rule = unit_cycle_admission_rule(n * envelope.cycles_per_unit, sequence.probability_ct)
     remaining = Fraction(alpha) - Fraction(rule.refusal_probability_upper)
     if remaining <= 0:
         _refuse(

@@ -170,6 +170,13 @@ gates, not observed results.
 - **Switchbacks:** carryover is assumed away, not tested, and the default t
   reference is approximate ([carryover](limitations.md#switchback-carryover-is-assumed-away-not-tested),
   [reference](limitations.md#the-switchback-t-reference-is-itself-an-approximation)).
+  [Measured coverage with few units or blocks](reference/switchback-inference.md#coverage-with-few-units-or-blocks)
+  separates returned intervals from all attempted experiments.
+- **Two-stage saturation (research only):** with 40 clusters per saturation level,
+  one influential untreated outcome per cluster, and 99% versus 1% treated,
+  the proposed 5% test rejected a true null on **22.15%** of assignments.
+  No production inference or sizing is offered. Reproduce the exact evaluation
+  with `python -m calibration.randomized_saturation` in the repository.
 - **Adaptive logged policies:** refused. Historical coverage figures predate the
   gate and cannot be reproduced from the retained estimator
   ([measurements](reference/validation-evidence.md#adaptive-logger-measurements),

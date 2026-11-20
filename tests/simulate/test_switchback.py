@@ -158,7 +158,11 @@ def test_noisy_scenario_reaches_actual_estimation_and_pilot_sizing(law):
     from increment.estimation.contrast import estimate_contrast
     from increment.estimation.decision_types import ContrastDecisionProcedure
     from increment.frame import from_switchback_panel
-    from increment.power import switchback_achieved_power, switchback_minimum_detectable_effect
+    from increment.power import (
+        SwitchbackBaseline,
+        switchback_achieved_power,
+        switchback_minimum_detectable_effect,
+    )
     from increment.semantics.unit_cycle import UnitCycleTApproximation
 
     approximation = UnitCycleTApproximation()
@@ -203,10 +207,12 @@ def test_noisy_scenario_reaches_actual_estimation_and_pilot_sizing(law):
     )
     result = estimate_contrast(src.contrast_stats(src.metrics[0]), proc).results[0]
     pilot = src.planning_baseline(src.metrics[0], delta_ref=1)
+    assert isinstance(pilot, SwitchbackBaseline)
     prediction = switchback_achieved_power(4, 1, pilot, proc)
     assert prediction.standard_error == pytest.approx(result.standard_error)
     assert result.standard_error is not None
     assert result.standard_error > 0 and result.dof == 3
+    assert result.estimate is not None
     assert result.estimate.lb is not None and result.estimate.ub is not None
     mde = switchback_minimum_detectable_effect(4, pilot, proc, target_power=0.8)
     if mde.mde_abs is not None:
@@ -858,3 +864,8 @@ def test_shared_schedule_block_t_refuses_degenerate_cycle_order_smoke():
     assert result.attempted == 40
     assert result.failed >= 1
     assert result.failure_reasons.keys() <= {"source.frame.switchback.schedule"}
+
+    refused = run_switchback_end_to_end(scenario.model_copy(update={"n_cycles": 1}), replications=2)
+    assert refused.point_estimable == 0
+    assert refused.failed == refused.attempted == 2
+    assert refused.reference_kind == "block_t"

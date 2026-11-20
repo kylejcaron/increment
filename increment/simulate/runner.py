@@ -1410,6 +1410,7 @@ def _run_switchback_replication(scenario: SwitchbackScenario) -> Estimate:
     results = run(experiment, resolver).readout()
     assert isinstance(results, ContrastResults)
     (row,) = results
+    assert row.estimate is not None  # This simulation generates complete dense mean outcomes.
     return row.estimate
 
 
