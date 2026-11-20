@@ -270,6 +270,26 @@ def test_snapshot_schema_refusals_redact_enclosing_and_embedded_values(
         assert secret not in repr(cause.errors())
 
 
+def test_truncated_snapshot_json_does_not_echo_submitted_evidence() -> None:
+    unit = "private-account-7e39"
+    value = "76392107.4375"
+    truncated = f'{{"outcomes":[{{"unit_id":"{unit}","value":{value}}}]'
+
+    with pytest.raises(ValidationError) as error:
+        HoldoutSnapshot.model_validate_json(truncated, strict=True, context={"label": "import"})
+
+    failure = error.value
+    details = failure.errors()
+    assert [(detail["type"], detail["loc"], detail.get("input")) for detail in details] == [
+        ("json_invalid", (), None),
+    ]
+    assert failure.__cause__ is None
+    assert failure.__context__ is None
+    for diagnostic in (str(failure), repr(details), failure.json()):
+        assert unit not in diagnostic
+        assert value not in diagnostic
+
+
 def test_direct_outcome_cross_field_refusal_redacts_its_cause(shopping: dict[str, Any]) -> None:
     secret = "private-account-7e39"
     outcome = shopping["snapshot"]["outcomes"][0] | {
@@ -311,7 +331,20 @@ def test_transport_retains_opaque_ids_exact_decimals_and_utc(shopping: dict[str,
     study = HoldoutStudy.model_validate(shopping["study"])
 
     assert encoded == reordered.model_dump_json()
-    restored = HoldoutSnapshot.model_validate_json(encoded)
+    restored = HoldoutSnapshot.model_validate_json(
+        encoded, extra="forbid", context={"label": "import"}, by_name=True
+    )
+    header = {
+        key: value for key, value in json.loads(encoded).items() if not isinstance(value, list)
+    }
+    strict_header = HoldoutSnapshot.model_validate_json(
+        json.dumps(header),
+        strict=True,
+        context={"label": "import"},
+        by_alias=False,
+        by_name=True,
+    )
+    assert strict_header.snapshot_ref == snapshot.snapshot_ref
     assert restored.model_dump_json() == encoded
     restored_entry = next(row for row in restored.entries if row.entry_id == "entry-1")
     assert restored_entry.unit_id == " É:01 "

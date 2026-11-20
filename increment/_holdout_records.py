@@ -17,7 +17,9 @@ from typing import (
     NamedTuple,
     NoReturn,
     NotRequired,
+    Self,
     TypedDict,
+    Unpack,
     cast,
 )
 
@@ -36,6 +38,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.config import ExtraValues
 from pydantic_core import ErrorDetails, InitErrorDetails, PydanticCustomError
 
 from increment._immutable import _FrozenMapping
@@ -134,10 +137,41 @@ class _HoldoutRecord(CodedModel, BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
 
 
+class _JSONValidationOptions(TypedDict, total=False):
+    strict: bool | None
+    extra: ExtraValues | None
+    context: object
+    by_alias: bool | None
+    by_name: bool | None
+
+
 class _PrivateEvidence(_HoldoutRecord):
     """Keep untrusted observation values out of schema diagnostics."""
 
     model_config = ConfigDict(hide_input_in_errors=True)
+
+    @classmethod
+    def model_validate_json(
+        cls, json_data: str | bytes | bytearray, **options: Unpack[_JSONValidationOptions]
+    ) -> Self:
+        try:
+            return super().model_validate_json(json_data, **options)
+        except ValidationError as error:
+            # The parser runs before any model validator and reports the raw input.
+            details = error.errors(include_input=False, include_context=False, include_url=False)
+            if len(details) != 1 or details[0]["loc"]:
+                raise
+            kind = details[0]["type"]
+            if kind == "json_invalid":
+                detail = InitErrorDetails(
+                    type=kind, loc=(), input=None, ctx={"error": "malformed or truncated input"}
+                )
+            elif kind == "json_type":
+                detail = InitErrorDetails(type=kind, loc=(), input=None)
+            else:
+                raise
+            redacted = ValidationError.from_exception_data(error.title, [detail], hide_input=True)
+        raise redacted
 
     @model_validator(mode="wrap")
     @classmethod
