@@ -336,3 +336,49 @@ def test_native_assignment_ledger_does_not_substitute_for_headline_exposures(tmp
             )
     assert error.value.code == "overlap.scan.invalid"
     assert error.value.context["reason"] == "focal_facts_not_verified"
+
+
+def test_binding_rejects_even_a_full_table_sample(tmp_path):
+    definitions = _write_definitions(
+        tmp_path / "definitions",
+        facts=FACT_SOURCES.replace(
+            "FROM analytics.event_log", "FROM analytics.event_log TABLESAMPLE SYSTEM (100 PERCENT)"
+        ),
+    )
+    path = tmp_path / "facts.duckdb"
+    _publish(path)
+    capture = _empty_capture(definitions)
+    with _reader(path, definitions) as (experiment, reader, con):
+        manifest = _manifest(path, con, experiment, capture)
+        with pytest.raises(CodedError) as error:
+            bind_interaction_scan(
+                capture, source=InteractionDuckDBSource(experiment, reader, manifest)
+            )
+    assert error.value.code == "overlap.scan.invalid"
+    assert error.value.context["reason"] == "focal_facts_not_verified"
+
+
+def test_manifest_fingerprint_survives_reader_timezone_change(tmp_path):
+    definitions = _write_definitions(tmp_path / "definitions")
+    path = tmp_path / "facts.duckdb"
+    _publish(path)
+    con = ibis.duckdb.connect(path)
+    try:
+        con.raw_sql("ALTER TABLE analytics.event_log ADD COLUMN archived_at TIMESTAMPTZ")
+        con.raw_sql("UPDATE analytics.event_log SET archived_at = '2025-05-02 00:00:00+00'")
+        con.raw_sql("CHECKPOINT")
+    finally:
+        con.disconnect()
+    capture = _empty_capture(definitions)
+    with _reader(path, definitions) as (experiment, reader, con):
+        con.con.execute("SET TimeZone = 'UTC'")
+        manifest = _manifest(path, con, experiment, capture)
+        con.con.execute("SET TimeZone = 'America/Los_Angeles'")
+        bound = bind_interaction_scan(
+            capture, source=InteractionDuckDBSource(experiment, reader, manifest)
+        )
+        dashboard = prepare_dashboard(experiment, reader, config=_CONFIG, interactions=bound)
+        assert dashboard.interactions is not None
+        assert con.con.execute("SELECT current_setting('TimeZone')").fetchone() == (
+            "America/Los_Angeles",
+        )

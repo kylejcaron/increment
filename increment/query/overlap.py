@@ -337,7 +337,10 @@ def _native_interaction_fact(backend: Backend, table: ir.Table) -> SourceFact | 
     _, catalog, schema, name, *_ = rows[0]
     ordered = table.select(*sorted(table.columns))
     layout = tuple((key, str(dtype)) for key, dtype in ordered.schema().items())
-    (digest,) = _query(backend.con, backend, _feed_digest(ordered, "roster"))
+    with backend.con.cursor() as cursor:
+        cursor.execute("SET TimeZone = 'UTC'")
+        cursor.execute("SET default_collation = ''")
+        (digest,) = _query(cursor, backend, _feed_digest(ordered, "roster"))
     return SourceFact(
         coordinate=(catalog, schema, name),
         content_sha256=_identity(
@@ -388,7 +391,14 @@ def _sealed_focal_fact(
         ):
             return None
         source = select.args["from_"].this
-        if not isinstance(source, exp.Table) or not source.db or source.alias:
+        if (
+            not isinstance(source, exp.Table)
+            or not isinstance(source.this, exp.Identifier)
+            or not source.db
+            or any(
+                value for key, value in source.args.items() if key not in {"this", "db", "catalog"}
+            )
+        ):
             return None
         if source.catalog and source.catalog.translate(_ASCII_FOLD) != catalog.translate(
             _ASCII_FOLD
