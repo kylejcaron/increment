@@ -47,10 +47,12 @@ Pass the captured evidence to `analyze_overlap`, not the single-experiment `run`
 
 Register the metric and comparison pairs that can drive decisions before looking at outcomes. The Welch intervals are approximate, even after adjusting for all registered claims (Bonferroni). An unavailable result still counts in that adjustment.
 
-- `criteria_met`: Every registered primary benefit and guardrail **for launching both** passed. A higher-is-better benefit interval must be entirely above zero. A guardrail's upper bound must be below the allowed increase. Landing exactly on a threshold is inconclusive.
+- `criteria_met`: Every registered primary benefit and guardrail **for launching both** passed.
 - `not_met`: The required results were available, but at least one did not pass. This does not necessarily mean harm.
 - `insufficient_evidence`: A required result was unavailable or had too little data, or delivery disagreed with assignment. If delivery disagreed, estimates still describe what happened under the original assignments, not what a rollout as planned would do.
 - `not_requested`: No primary claim was registered for launching both.
+
+A benefit passes when the whole interval favors treatment. For a guardrail where lower is better, the upper bound must be below the allowed increase. Where higher is better, the lower bound must be above the negative of the allowed decrease. A bound exactly on the threshold is inconclusive.
 
 Secondary results cannot make up for a failed or unavailable criterion. A required group needs at least 30 assigned units; for a binary outcome it also needs at least 10 successes and 10 failures. An interval may be shown below those limits, but cannot support a decision. Missing, pending, or empty groups yield no estimate for comparisons that need them. A group with one outcome or identical outcomes yields no interval for those comparisons.
 
