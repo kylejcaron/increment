@@ -40,6 +40,7 @@ core = [
   "increment.workflows",
   "increment._analysis*",
   "increment.summaries",
+  "increment.spillover",
   "increment.switchback",
   "increment.winsor*",
   "increment.errors",

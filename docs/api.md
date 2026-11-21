@@ -1118,6 +1118,55 @@ across publication and requests.
 
 ::: increment.digest.extension_source_provenance_sha256
 
+## Two-stage spillover
+
+Use `increment.spillover` before assigning groups and people, not an experiment
+builder or `run`. `SpilloverGroup` names the eligible members and integer low/high
+treatment quotas of one group. `SpilloverDesign` freezes those groups, the number
+drawn high within each stratum, a binary outcome and its observation window.
+Draw policies independently across strata. Given those policies, draw offers
+independently across groups; each draw is uniform among subsets of its fixed size.
+
+`plan_spillover(design, *, meaningful_effect, baseline_rate=None)` takes a signed
+absolute risk difference and, optionally, one comparable pre-assignment rate.
+Read `plan.message` for advice, `plan.evidence.status` for the planning decision,
+and `plan.evidence.reason` if the interval checks did not pass. Without the
+rate, power is not assessed.
+
+After the observation window closes, call
+`plan.analyze(group_high=..., treated=..., outcomes=...)` on the same plan.
+Supply the assigned policy for every group, offer status for every person,
+and the outcome for every person who received no offer.
+
+`result.estimate` gives each eligible person equal weight, not each group.
+For each group, Increment multiplies the observed rate among people without
+offers by the full group size. Within each stratum, it compares the average
+of these totals under the high and low policies, then combines the differences
+to estimate the high-minus-low change per person. Simply pooling people
+without offers weights groups by how many people remain untreated, not by
+how many were eligible.
+With unequal group sizes the estimate, or its interval endpoints, can fall
+outside `[-1, 1]`. They are not clipped and are not individual probabilities.
+
+`result.lower` and `result.upper` give an approximate 95% interval in
+proportion units, or `None`. Read `result.unavailable_reason` for the reason;
+for example, one group per policy in a stratum cannot establish a range.
+`result.planning_status` preserves the decision recorded before assignment.
+This route handles one yes/no outcome at one fixed time. It does not take
+ratio metrics, CUPED adjustment, winsorization, breakouts, repeated looks
+or multiplicity options.
+
+For the interval, groups must not influence each other; within each group,
+outcomes may depend on the number of treated peers but not their identities.
+The planning checks cover modeled outcomes, not every possible trial. See the
+[worked example and launch decisions](guides/spillover.md).
+
+::: increment.spillover.SpilloverGroup
+
+::: increment.spillover.SpilloverDesign
+
+::: increment.spillover.plan_spillover
+
 ## Logged-policy evaluation
 
 Off-policy contrast compares two registered policies using a decision trace

@@ -434,3 +434,8 @@ sequential_snapshot: Retrieve a source's current sequential checkpoint.
 srm: Check assignment counts against the declared allocation.
 trigger_rates: Read each arm's observed trigger rate.
 unit_counts: Read enrolled unit counts by group.
+
+[increment.spillover]
+SpilloverGroup: Record who belongs to a group and how many offers it would receive under each policy.
+SpilloverDesign: Freeze the eligible groups, the number receiving more offers, the outcome and its time window.
+plan_spillover: Check a proposed two-stage offer experiment and analyze the people who received no offer.

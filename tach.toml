@@ -29,6 +29,26 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment._spillover_design"
+layer = "core"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment.estimation.spillover"
+layer = "core"
+depends_on = ["increment._spillover_design", "increment.errors"]
+
+[[modules]]
+path = "increment.power._spillover"
+layer = "core"
+depends_on = ["increment._spillover_design", "increment.errors", "increment.estimation.spillover"]
+
+[[modules]]
+path = "increment.spillover"
+layer = "core"
+depends_on = ["increment._spillover_design", "increment.errors", "increment.estimation.spillover", "increment.power._spillover"]
+
+[[modules]]
 path = "increment.experimental"
 layer = "core"
 depends_on = []
