@@ -263,6 +263,7 @@ def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope])
         assignment_requests=tuple(
             item for request in requests for item in request.assignment_requests
         ),
+        interaction_facts=any(request.interaction_facts for request in requests),
     )
 
 
@@ -304,6 +305,8 @@ def scope_source(src: EvidenceSource, scope: EvidenceScope) -> Iterator[Evidence
                     if scope.horizon_metrics is None
                     else scope.horizon_metrics
                 )
+            if scope.interaction_facts and declared_evidence(source).kind == "definitions":
+                snapshot_options["interaction_facts"] = True
             if (
                 scope.checkpoint_only
                 and scope.execution

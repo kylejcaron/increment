@@ -888,6 +888,8 @@ def test_empty_native_null_audits_refuse_before_returning_rows_or_batches(tmp_pa
 
 
 def test_definitions_assignment_ledger_uses_explicit_role_mapping(tmp_path):
+    from increment._binding import binding_for
+    from increment._dashboard_capture import capture_dashboard
     from increment.evidence import (
         AssignmentEvidence,
         AssignmentRequest,
@@ -1046,6 +1048,28 @@ experiments:
         assert evidence.population == "assigned"
         assert evidence.versions == (3,)
         assert evidence.periods == ("global",)
+
+        binding = binding_for(analysis_experiment, analysis_resolver)
+        ledger = binding.experiment.assignment_ledger
+
+        def verify_ledger(capture):
+            session = capture.binding.source._session
+            assert session._snapshot_inputs is not None
+            assert set(session.source_sql(ledger.sql).columns) == set(ledger.roles.values())
+            assert ledger.sql in session._snapshot_inputs
+
+        capture_dashboard(
+            binding, verify_ledger, metrics=provider.context.metrics, interaction_facts=True
+        )
+
+        def verify_ordinary_pin(capture):
+            session = capture.binding.source._session
+            assert session._snapshot_inputs is None
+            with pytest.raises(CapabilityError) as omitted:
+                session.source_sql(ledger.sql)
+            assert omitted.value.code == "query.session.snapshot.source_missing"
+
+        capture_dashboard(binding, verify_ordinary_pin, metrics=provider.context.metrics)
     finally:
         if artifact is not None:
             artifact[1].close()

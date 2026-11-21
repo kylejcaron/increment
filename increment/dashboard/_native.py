@@ -15,22 +15,27 @@ from __future__ import annotations
 
 import html
 import json
-from collections.abc import Mapping, Sequence
-from dataclasses import fields, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, fields, replace
 from typing import TYPE_CHECKING, Any
 
 import coeftable as ct
 import narwhals as nw
+import pandas as pd
 from coeftable.collapsible import make_collapsible
 from coeftable.frame import SPLIT_JOINER
 from coeftable.labels import ROW_LABEL
 
 from increment.dashboard._format import guardrail_text
+from increment.dashboard._theme import coeftable_theme
 from increment.tables import readout_table
 
 if TYPE_CHECKING:
     # Annotation-only: great_tables is a transitive dependency and this module is private.
+    from coeftable.spec import Cell, Footer, Prepared, Scan
     from great_tables._gt_data import FormatFn, FormatterSkipElement
+
+    from increment.dashboard._theme import DashboardTheme
 
 __all__ = [
     "append_diagnostics",
@@ -208,4 +213,96 @@ def resize_forest(table: ct.CoefTable, *, width: int, height: int) -> None:
     table.columns = tuple(
         replace(column, width=width, height=height) if isinstance(column, ct.Forest) else column
         for column in table.columns
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionNativeRow:
+    """An identified row with stored numbers and an escaped label fragment."""
+
+    key: str
+    label_html: str
+    estimate: float | None
+    lower: float | None
+    upper: float | None
+    status: str
+
+
+class _InteractionForest(ct.Forest):
+    def prepare(self, scan: Scan) -> Prepared:
+        # Only the plot uses normalized coordinates; Estimate displays the stored numbers.
+        source = ct.Estimate(self.of, "plot_point", ci=("plot_lower", "plot_upper"))
+        return super().prepare(replace(scan, columns=(source,)))
+
+    def cell(self, ctx: Cell) -> str:
+        return _decorative_svg(super().cell(ctx))
+
+    def footer(self, ctx: Footer) -> str | None:
+        markup = super().footer(ctx)
+        return _decorative_svg(markup) if markup is not None else None
+
+
+def _decorative_svg(markup: str) -> str:
+    return markup.replace("<svg ", '<svg aria-hidden="true" focusable="false" ', 1)
+
+
+def interaction_native(
+    rows: Sequence[InteractionNativeRow],
+    *,
+    row_heading: str,
+    extent: float,
+    number: Callable[[float], str],
+    axis_number: Callable[[float], str],
+    theme: DashboardTheme,
+) -> str:
+    """Render stored points and bounds on the same zero-centered metric axis."""
+    points, lower, upper = (
+        [getattr(row, field) for row in rows] for field in ("estimate", "lower", "upper")
+    )
+    plotted_points = [point / extent if point is not None else None for point in points]
+    # A point with no interval is a marker, not a bar with two open ends.
+    data = pd.DataFrame(
+        {
+            "row_key": [row.key for row in rows],
+            "point": points,
+            "lower": lower,
+            "upper": upper,
+            "plot_point": plotted_points,
+            "plot_lower": [
+                bound / extent if bound is not None else point
+                for bound, point in zip(lower, plotted_points, strict=True)
+            ],
+            "plot_upper": [
+                bound / extent if bound is not None else point
+                for bound, point in zip(upper, plotted_points, strict=True)
+            ],
+            "status": [html.escape(row.status) for row in rows],
+        }
+    )
+    estimate = ct.Estimate("Change in effect", "point", ci=("lower", "upper"), fmt=number)
+    table = ct.CoefTable(
+        data,
+        rows="row_key",
+        columns=(
+            estimate,
+            _InteractionForest(
+                "Interval plot",
+                of=estimate.label,
+                ylim=(-1.0, 1.0),
+                width=theme.charts.segment_forest_width,
+                height=theme.charts.segment_forest_height,
+                axis_fmt=lambda tick: axis_number(tick * extent),
+            ),
+            ct.Passthrough("Status", "status"),
+        ),
+        color_rule=lambda *_: "neutral",
+        theme=coeftable_theme(theme),
+    )
+    labels = {row.key: row.label_html for row in rows}
+    return (
+        table.gt()
+        .cols_label(row_key=row_heading)
+        .fmt(lambda key: labels.get(key, ""), columns="row_key")
+        .fmt(lambda value: value, columns=["Status", "Interval plot", estimate.label])
+        .as_raw_html()
     )

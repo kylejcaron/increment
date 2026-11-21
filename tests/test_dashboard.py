@@ -1616,6 +1616,109 @@ def test_document_embeds_untrusted_payload_text_as_inert_json(storefront_payload
     assert json.loads(block.group(1))["title"] == hostile
 
 
+@pytest.mark.slow
+def test_interaction_report_uses_the_frozen_family_after_pair_evidence_replay(tmp_path):
+    from dataclasses import replace
+
+    from examples.interaction_discovery import open_example
+    from increment.dashboard import dashboard_html
+    from increment.dashboard._app import build_payload
+    from increment.errors import CodedError
+    from increment.overlap import bind_interaction_scan, capture_interaction_scan
+
+    with open_example(tmp_path, triggered=True) as example:
+        experiment = example.source.experiment
+        hidden = example.prepare()
+        replayed = example.prepare(show_second_metric=True, replay_pairs=True)
+        partial = replace(
+            example,
+            observed_inventory=example.observed_inventory.model_copy(
+                update={"coverage": "partial"}
+            ),
+        ).prepare()
+        manifest = example.source.manifest
+        first, *other_feeds = manifest.pair_feeds
+        wrong_fact = first.fact.model_copy(update={"content_sha256": "a" * 64})
+        wrong_feed = first.model_copy(update={"fact": wrong_fact})
+        swapped = replace(
+            example.source,
+            manifest=manifest.model_copy(update={"pair_feeds": (wrong_feed, *other_feeds)}),
+        )
+        original = capture_interaction_scan(
+            example.plan,
+            observed_inventory=example.observed_inventory,
+            evidence_by_study=example.evidence_by_study,
+        )
+        with pytest.raises(CodedError) as wrong_published_feed:
+            bind_interaction_scan(original, source=swapped)
+        assert wrong_published_feed.value.context["reason"] == "pair_evidence_mismatch"
+
+    expected = (-0.077580046, -0.022419954)
+    for snapshot in (hidden, replayed):
+        scan = snapshot.interactions
+        assert scan is not None and scan.plan.family_size == 18
+        direct = next(
+            row
+            for row in scan.rows
+            if row.key.metric == "save_rate"
+            and row.key.contrast == "interaction"
+            and row.key.pair.candidate.experiment_id == "product_cards"
+        )
+        assert (direct.lower, direct.upper) == pytest.approx(expected, abs=1e-7)
+
+    hidden_payload = build_payload(experiment, snapshot=hidden)
+    before = hidden_payload["populationViews"]["assigned"]["interactions"]
+    after = build_payload(experiment, snapshot=replayed)["populationViews"]["assigned"][
+        "interactions"
+    ]
+    assert [item["key"] for item in before["metricOptions"]] == ["save_rate"]
+    assert {item["key"] for item in after["metricOptions"]} == {"save_rate", "share_rate"}
+    assert (
+        before["metrics"]["save_rate"]["explanation"]
+        == after["metrics"]["save_rate"]["explanation"]
+    )
+    assert len(before["reversals"]) == 1
+    assert before["health"] == []
+    tips = next(
+        pair["id"]
+        for pair in before["metrics"]["save_rate"]["pairs"]
+        if pair["label"] == "Search tips"
+    )
+    assert 'data-inc-cell="11"' in before["metrics"]["save_rate"]["details"][tips]
+    assert (
+        before["metrics"]["save_rate"]["details"][tips].count('data-inc-reason="empty_cell"') >= 1
+    )
+    assert "metrics" not in hidden_payload["populationViews"]["triggered"]["interactions"]
+    incomplete = build_payload(experiment, snapshot=partial)["populationViews"]["assigned"][
+        "interactions"
+    ]
+    assert incomplete["metrics"]["save_rate"]["explanation"] == ""
+    assert not incomplete["reversals"] and incomplete["health"]
+    assert tips in dashboard_html(experiment, snapshot=hidden)
+
+
+@pytest.mark.slow
+def test_interaction_binding_rejects_rewritten_summary_with_authentic_feed_receipts(tmp_path):
+    from examples.interaction_discovery import open_example
+    from increment.errors import CodedError
+    from increment.overlap import bind_interaction_scan, capture_interaction_scan
+
+    with open_example(tmp_path) as example:
+        authentic = example.evidence_by_study["product_cards"]
+        altered = authentic.model_dump()
+        altered["cells"][0].update(n_success=0, anchor=0.0, mean_delta=0.0, m2=0.0)
+        forged = type(authentic).model_validate(altered)
+        candidate = capture_interaction_scan(
+            example.plan,
+            observed_inventory=example.observed_inventory,
+            evidence_by_study={**example.evidence_by_study, "product_cards": forged},
+        )
+        with pytest.raises(CodedError) as error:
+            bind_interaction_scan(candidate, source=example.source)
+    assert error.value.code == "overlap.scan.invalid"
+    assert error.value.context["reason"] == "pair_evidence_mismatch"
+
+
 @pytest.mark.parametrize("method_role", ["decision", "sensitivity"])
 def test_removed_set_column_preserves_disconnected_numeric_bounds(
     storefront: DashboardSnapshot,

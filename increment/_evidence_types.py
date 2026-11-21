@@ -294,6 +294,7 @@ class EvidenceScope:
     checkpoint_only: bool = False
     execution: bool = False
     assignment_requests: tuple[AssignmentRequest, ...] = ()
+    interaction_facts: bool = False
 
 
 EVIDENCE_REQUEST_DEPENDENCIES: tuple[tuple[str, str, Callable[[Any], str] | None], ...] = (

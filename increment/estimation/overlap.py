@@ -289,12 +289,23 @@ def _member_alpha(plan: OverlapPlan) -> float | None:
     return plan.alpha / len(plan.claims) or None
 
 
-def _member_tail(plan: OverlapPlan) -> float:
+def _member_tail(alpha: float, members: int) -> float:
     # Allocate the one-sided tail directly from the registered alpha. Never
     # round it above the family budget, including at the subnormal boundary.
-    exact = Fraction(plan.alpha) / (2 * len(plan.claims))
+    exact = Fraction(alpha) / (2 * members)
     tail = float(exact)
     return math.nextafter(tail, 0.0) if tail > exact else tail
+
+
+def _simultaneous_interval(
+    estimate: float, se: float, df: float, *, tail: float, metric: str
+) -> tuple[float, float]:
+    try:
+        # Doubling and the helper's halving recover the certified tail exactly.
+        critical = two_sided_critical_value(student_t_isf, 2.0 * tail, df, what=_INTERVAL)
+    except ArithmeticError:
+        refuse(NUMERIC_RANGE, metric=metric, quantity="critical_value")
+    return wald_bounds(estimate, critical, se, what=_INTERVAL)
 
 
 def _boundary_p(estimate: float, boundary: float, se: float, df: float) -> float | None:
@@ -329,12 +340,7 @@ def _row(
         se, df = _welch(weights, cells)
     if claim is not None and se is not None:
         assert df is not None and estimate is not None and boundary is not None
-        try:
-            # Doubling and the helper's halving recover the certified tail exactly.
-            critical = two_sided_critical_value(student_t_isf, 2.0 * tail, df, what=_INTERVAL)
-        except ArithmeticError:
-            refuse(NUMERIC_RANGE, metric=metric.name, quantity="critical_value")
-        lower, upper = wald_bounds(estimate, critical, se, what=_INTERVAL)
+        lower, upper = _simultaneous_interval(estimate, se, df, tail=tail, metric=metric.name)
         p = _boundary_p(estimate, boundary, se, df)
         if p is None:
             reasons = (*reasons, _P_RANGE)
@@ -373,7 +379,7 @@ def _overlap_rows(
 ) -> tuple[OverlapRow, ...]:
     """Estimate and decide from trusted metric-major cells, without a source receipt."""
     alpha = _member_alpha(plan)
-    tail = _member_tail(plan)
+    tail = _member_tail(plan.alpha, len(plan.claims))
     weights = _exact_weights(plan)
     claims = {(claim.metric, claim.contrast): claim for claim in plan.claims}
     return tuple(
@@ -532,7 +538,9 @@ class OverlapResult(OverlapModel):
             self._invalid_field("rows", "row_order")
         claims = {(c.metric, c.contrast): c for c in self.plan.claims}
         alpha = _member_alpha(self.plan)
-        if any(row.lower is not None for row in self.rows) and not _member_tail(self.plan):
+        if any(row.lower is not None for row in self.rows) and not _member_tail(
+            self.plan.alpha, len(self.plan.claims)
+        ):
             self._invalid_field("rows", "unresolvable_tail")
         weights = _exact_weights(self.plan)
         size = len(CONTRAST_IDS)

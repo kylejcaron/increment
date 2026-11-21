@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, replace
 from importlib import resources
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import anywidget
 import marimo as mo
@@ -28,6 +28,7 @@ from increment.dashboard._data import (
     ExploreView,
     _require_same_experiment,
     all_metrics,
+    dashboard_interaction_scan,
     enriched_rows,
     group_data_csv,
     load_explore,
@@ -81,6 +82,7 @@ from increment.dashboard._html import (
     temporal_refusal_table,
     unavailable_point_note,
 )
+from increment.dashboard._interaction_html import interaction_tables
 from increment.dashboard._references import (
     ReferenceCatalog,
     build_reference_catalog,
@@ -95,8 +97,9 @@ from increment.tables import _binomial_qualification_disclosure
 
 if TYPE_CHECKING:
     from increment.kernel.experiment import Experiment
+    from increment.semantics.interaction_scan import InteractionScan, ScanRow
 
-__all__ = ["build_payload", "document", "health_status", "render_dashboard"]
+__all__ = ["build_payload", "dashboard_html", "document", "health_status", "render_dashboard"]
 
 _MARKER = "<!-- DASHBOARD_DATA -->"
 _FRAME_HEIGHT = "1400px"
@@ -114,6 +117,11 @@ _VIEW_TITLES = {
     "cumulative_values": "Cumulative per-arm values",
     "daily_values": "Daily per-arm values",
 }
+
+
+def dashboard_html(experiment: Experiment, *, snapshot: DashboardSnapshot) -> str:
+    """Export one prepared dashboard as standalone HTML without reopening its source."""
+    return document(build_payload(experiment, snapshot=snapshot))
 
 
 def render_dashboard(experiment: Experiment, *, snapshot: DashboardSnapshot) -> mo.ui.anywidget:
@@ -145,7 +153,7 @@ class DashboardWidget(anywidget.AnyWidget):
 
     def __init__(self, experiment: Experiment, *, snapshot: DashboardSnapshot) -> None:
         super().__init__(
-            document=document(build_payload(experiment, snapshot=snapshot)),
+            document=dashboard_html(experiment, snapshot=snapshot),
             exploratory_metrics=list(snapshot.config.exploratory_metrics),
         )
         self._experiment = experiment
@@ -160,7 +168,7 @@ class DashboardWidget(anywidget.AnyWidget):
         self.status = "updating"
         try:
             snapshot = show_exploratory_metrics(self._snapshot, requested)
-            page = document(build_payload(self._experiment, snapshot=snapshot))
+            page = dashboard_html(self._experiment, snapshot=snapshot)
         except CodedError as exc:
             self.status = f"{exc} ({exc.code})"
             self.exploratory_metrics = list(current)
@@ -255,12 +263,155 @@ def build_payload(experiment: Experiment, *, snapshot: DashboardSnapshot) -> dic
             if population == "triggered"
             else ""
         )
+        if (interactions := _interaction_payload(scoped, population)) is not None:
+            payload["interactions"] = interactions
         views[population] = payload
     result = dict(views[default])
     result["defaultPopulation"] = default
     result["populationOptions"] = list(populations)
     result["populationViews"] = views
     return result
+
+
+def _supported_direction(row: ScanRow) -> int:
+    if row.decision != "detected" or row.lower is None or row.upper is None:
+        return 0
+    return 1 if row.lower > 0 else -1 if row.upper < 0 else 0
+
+
+def _rollout_context(scan: InteractionScan, metric: str) -> list[dict[str, str]]:
+    rows = {(row.key.pair, row.key.contrast): row for row in scan.rows if row.key.metric == metric}
+    entries = []
+    focal = scan.plan.scope.focal.entry.display_name
+    for detail in scan.details:
+        if (
+            detail.status != "captured"
+            or detail.reasons
+            or any(delivery.n_inconsistent for delivery in detail.delivery_counts)
+        ):
+            continue
+        key = detail.candidate.key
+        off = _supported_direction(rows[key, "focal_given_other_off"])
+        on = _supported_direction(rows[key, "focal_given_other_on"])
+        if not off or off != -on or not _supported_direction(rows[key, "interaction"]):
+            continue
+        other = detail.candidate.entry.display_name
+        first, second = ("raised", "lowered") if off > 0 else ("lowered", "raised")
+        entries.append(
+            {
+                "metric": metric,
+                "pair": key.pair_id,
+                "text": (
+                    f"Among units eligible and assigned to both experiments, {focal} "
+                    f"{first} {_label(metric)} with {other} off and {second} it with {other} on. "
+                    "This is separate from the effect across the whole experiment."
+                ),
+            }
+        )
+    return entries
+
+
+def _interaction_payload(
+    snapshot: DashboardSnapshot, population: Literal["assigned", "triggered"]
+) -> dict[str, Any] | None:
+    scan = snapshot.interactions
+    if scan is None:
+        if snapshot.interaction_source_unverified:
+            return {
+                "status": "Not checked here: the overlap data could not be matched to this snapshot."
+            }
+        return None
+    if population == "triggered":
+        return {
+            "status": "Not checked for the triggered population. These comparisons need all assigned units."
+        }
+    scope = scan.plan.scope
+    inventory = scan.plan.inventory
+    observed = scan.observed_inventory
+    inventory_name = inventory.universe_id
+    if inventory.version is not None:
+        inventory_name += f", version {inventory.version}"
+    if (
+        observed is not None
+        and (observed.source_id, observed.universe_id) == (scope.source_id, scope.universe_id)
+        and observed.version is not None
+        and observed.version != inventory.version
+    ):
+        inventory_name += f" (observed version {observed.version})"
+    scan_scope = (
+        f"Source: {scope.source_id}. Inventory: {inventory_name}. "
+        f"Fixed cutoff: {scope.cutoff.isoformat(sep=' ')}."
+    )
+    if scan.no_candidates:
+        return {
+            "status": "This inventory lists no other experiments running in the outcome window. "
+            + scan_scope
+        }
+    status = {
+        "complete": "",
+        "partial": "The experiment list is incomplete or changed. No adjusted intervals or detections are reported.",
+        "not_captured": "The experiment list was not verified. No adjusted intervals or detections are reported.",
+    }[scan.coverage]
+    selected = [
+        metric.name
+        for metric in all_metrics(snapshot)
+        if dashboard_interaction_scan(snapshot, metric=metric.name, population=population)
+        is not None
+    ]
+    family = scan.plan.family_size
+    explanation = (
+        f"Bonferroni shares the error budget across all {family} planned comparisons, including "
+        f"hidden metrics and comparisons we couldn't estimate. Together the intervals have "
+        f"approximately {(1.0 - scope.alpha):.1%} coverage at the fixed cutoff "
+        f"{scope.cutoff:%Y-%m-%d %H:%M:%S UTC}. Opening a pair does not change the adjustment."
+        if family and scan.coverage == "complete"
+        else ""
+    )
+    pairs = []
+    health = []
+    if scan.coverage != "complete":
+        health.append("The source did not establish a complete list of overlapping experiments.")
+    names = Counter(detail.candidate.entry.display_name for detail in scan.details)
+    for detail in scan.details:
+        entry = detail.candidate.entry
+        label = entry.display_name
+        if names[label] > 1:
+            identity = entry.identity
+            label += f" ({identity.target} / {identity.experiment_id} / {identity.revision})"
+        pairs.append({"id": detail.candidate.key.pair_id, "label": label})
+        reasons = {reason.code for reason in (*detail.candidate.reasons, *detail.reasons)}
+        if "archive_missing" in reasons:
+            health.append(f"The original assignment record for {label} was not captured.")
+        elif "pair_evidence_missing" in reasons:
+            health.append(f"Original assignment and outcome evidence for {label} is missing.")
+        if "delivery_conflicts" in reasons:
+            health.append(
+                f"Some deliveries for the comparison with {label} did not match assignment."
+            )
+    count = len(pairs)
+    metric_status = status or f"{count} concurrent experiment{'s' if count != 1 else ''}."
+    metric_packets = {}
+    for metric in selected:
+        fragments = interaction_tables(scan, metric_key=metric, theme=snapshot.config.theme)
+        metric_packets[metric] = {
+            "status": f"{metric_status} {scan_scope}",
+            "explanation": explanation,
+            "overview": fragments.overview,
+            "details": dict(fragments.details),
+            "pairs": pairs,
+        }
+    return {
+        "status": (status or "No planned interaction metrics are shown in this view.")
+        + f" {scan_scope}",
+        "metricOptions": [{"key": metric, "label": _label(metric)} for metric in selected],
+        "metrics": metric_packets,
+        "reversals": (
+            _rollout_context(scan, snapshot.primary_metric)
+            if snapshot.primary_metric in selected
+            else []
+        ),
+        "health": health,
+    }
 
 
 def _build_payload_for_population(

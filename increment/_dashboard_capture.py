@@ -15,7 +15,7 @@ from increment._binding import _UNDECLARED_BREAKOUT, SourceBinding
 from increment._breakout_readouts import run_breakout, run_breakout_rows
 from increment._day_axis import require_arm_state, run_asof, run_asof_lift, run_daily
 from increment._evidence_loaders import load_dashboard_group_data
-from increment._evidence_types import EvidenceScope
+from increment._evidence_types import AssignmentRequest, EvidenceScope
 from increment._source_admission import _require_analysis_operation
 from increment._source_operations import DashboardGroupData, DashboardGroupDataOperation
 from increment._source_types import declared_evidence
@@ -59,6 +59,7 @@ def capture_dashboard[T](
     operation: Callable[[DashboardCapture], T],
     *,
     metrics: Sequence[Metric],
+    interaction_facts: bool = False,
 ) -> T:
     """Run *operation* against one isolated, pinned copy of *binding*'s source.
 
@@ -66,6 +67,9 @@ def capture_dashboard[T](
     fact sources; include any saved metric the operation adds through
     ``exploratory_metrics``. An added metric outside the pin is refused rather than read
     from a later state. The caller's binding and its connection are left untouched.
+
+    An interaction proof also needs the expressions that supplied the pin and, when
+    declared, the assignment ledger.
     """
     require_arm_state(binding, "dashboard_snapshot")
     _require_analysis_operation(
@@ -76,9 +80,23 @@ def capture_dashboard[T](
             "with a warehouse connection."
         ),
     )
+    state = binding.state
+    assignment_requests = (
+        (AssignmentRequest(experiment=state.experiment.name),)
+        if interaction_facts
+        and isinstance(state, DefinitionsArmAnalysisState)
+        and state.experiment.assignment_ledger is not None
+        else ()
+    )
     scoped = acquire_dashboard_scope(
         binding.source,
-        EvidenceScope(metrics=tuple(metrics), snapshot=True, include_breakouts=True),
+        EvidenceScope(
+            metrics=tuple(metrics),
+            snapshot=True,
+            include_breakouts=True,
+            assignment_requests=assignment_requests,
+            interaction_facts=interaction_facts,
+        ),
     )
     with scoped as pinned:
         return operation(DashboardCapture(binding.with_source(pinned)))

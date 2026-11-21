@@ -65,6 +65,54 @@ pass the result to `analyze_overlap`. These calls do not use `run` or any of its
 single-experiment builders. For warehouse capture, bind the original four tables
 with [`increment.query.overlap`](reference/overlap-warehouse.md).
 
+### Interaction discovery
+
+Use these public names from `increment.overlap` to prepare one exploratory
+scan for the focal experiment's dashboard:
+
+1. Identify each archived assignment revision with `ExperimentIdentity`.
+   Describe its active dates, unit, arms, and assignment archive in an
+   `InventoryEntry`. Use `FocalStudy` to specify the focal entry and the
+   common eligibility and enrollment rules.
+2. Call `freeze_interaction_scan` with the source's outcome-free
+   `InteractionInventory`, the focal study, the `OverlapMetric` definitions,
+   the window, cutoff, and family error budget. Set each metric's
+   `definition_sha256` with `interaction_metric_sha256` on its metric
+   declaration from `increment.load_definitions`.
+3. At the fixed cutoff, call `capture_interaction_scan` with the frozen plan,
+   the independent `ObservedInventory` from the same source (or `None` when
+   not captured), and `evidence_by_study`, a mapping from study ID to original
+   `OverlapEvidence`. Use `capture_overlap_warehouse` on the original four
+   tables, or restore the evidence with
+   `OverlapEvidence.from_json(payload, expected_sha256=...)`. Missing pair
+   inputs remain visible as unavailable.
+4. Publish the original inputs in one immutable DuckDB file. Before
+   checkpointing, add one native row to `main.increment_interaction_generation`
+   with `version = 1` and a `generation_id` unique to that publication.
+   Publish a separate `SourceGenerationManifest` from the archive owner's
+   input mapping: the inventory source ID, generation ID, file SHA-256,
+   cutoff, frozen `plan.plan_id` and focal `experiment.hash()`. Use
+   `interaction_duckdb_fact` on each qualified focal table for
+   `focal_assignments`, `focal_exposures` if exposures use a separate table,
+   and the `(metric name, SourceFact)` entries in `focal_outcomes`. Record each
+   original pair input as a `StudyFeedFact`:
+   study ID, role, and a `SourceFact` with the qualified coordinate and the
+   digest in the receipt's `duckdb-rows-v1:` feed version.
+5. Open that DuckDB file read-only and build the focal experiment and reader
+   with `increment.from_definitions`. Construct
+   `InteractionDuckDBSource(experiment, reader, manifest)` from the published
+   manifest, not a new map inferred from an arbitrary pair receipt.
+   Call `bind_interaction_scan(capture, source=source)` to verify the inputs
+   and evaluate the scan once. Pass its return value as `interactions=`
+   to `increment.dashboard.prepare_dashboard`.
+   Use `increment.dashboard.dashboard_html(experiment, snapshot=snapshot)`
+   to save the prepared dashboard without an open connection.
+
+Use `analyze_interaction_scan(capture)` for standalone exploratory inference
+without dashboard binding. It does not return the verified attachment
+required by `prepare_dashboard`. See the
+[offline example](guides/dashboard.md#check-for-interactions-with-other-experiments).
+
 ## Compatibility policy
 
 This policy defines the compatibility promise beginning with release 1.0.0. It
@@ -91,8 +139,8 @@ namespace:
   presentation and synthetic data;
 - `increment.errors` for errors and warnings callers catch;
 - `increment.assignment` for optional deterministic assignment and holdout records;
-- `increment.overlap` and `increment.query.overlap` for the two-experiment
-  workflow and verified DuckDB input binding;
+- `increment.overlap` and `increment.query.overlap` for the registered
+  two-experiment workflow, interaction discovery, and verified DuckDB inputs;
 - `increment.query` for `build_panel_for_metric`, `panel_sql`, and `summary_sql`.
   Each operates on an `(experiment, reader)` pair; SQL previews preserve
   their optional-breakout defaults and use adopted SQL as the summary fallback.
@@ -1989,6 +2037,10 @@ shapes, and statistical disclosures.
 accepted by `load_explore` and `render_explore`.
 
 ::: increment.dashboard.prepare_dashboard
+
+The optional keyword `interactions=` accepts the verified result of
+`increment.overlap.bind_interaction_scan`. Omit it to prepare the usual
+single-experiment dashboard without checking overlap.
 
 ::: increment.dashboard.render_dashboard
 

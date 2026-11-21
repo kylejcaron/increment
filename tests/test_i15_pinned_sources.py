@@ -152,6 +152,7 @@ def test_pin_sources_is_one_server_side_snapshot_without_client_collection(monke
             patch.setattr(con, "create_table", capture)
             patch.setattr(con, "to_pyarrow", no_collect)
             pinned = WarehouseSession(con, Definitions(dialect="duckdb")).pin_sources(queries)
+        assert pinned._snapshot_inputs is None
         assert len(snapshots) == 1
         con.raw_sql("UPDATE raw_left SET revision=2, value=99")
         con.raw_sql("UPDATE raw_right SET revision=2, value=99")
@@ -203,7 +204,8 @@ def test_pin_sources_scopes_a_fact_branch_to_enrolled_units_and_window():
             select * from (values
               ('u1', DATE '2024-01-05', 10.0),
               ('u2', DATE '2024-01-06', 20.0),
-              ('u3', DATE '2023-06-01', 30.0)   -- outside the window
+              ('u2', DATE '2023-06-01', 30.0),  -- outside the window
+              ('u3', DATE '2024-01-07', 40.0)   -- not enrolled
             ) t(user_id, event_at, value)
             """
         )
@@ -214,13 +216,20 @@ def test_pin_sources_scopes_a_fact_branch_to_enrolled_units_and_window():
             enrolled_units=enrolled_units,
             window_start=datetime(2024, 1, 1),
         )
+        sql = "SELECT * FROM events"
         pinned = session.pin_sources(
-            ("SELECT * FROM events",),
-            column_hints={"SELECT * FROM events": ("user_id", "event_at")},
+            (sql,),
+            column_hints={sql: ("user_id", "event_at")},
+            column_projections={sql: ("user_id", "event_at")},
             scope=scope,
+            retain_snapshot_inputs=True,
         )
-        result = con.to_pyarrow(pinned.source_sql("SELECT * FROM events")).to_pylist()
-        assert {row["user_id"] for row in result} == {"u1", "u2"}
+        result = con.to_pyarrow(pinned.source_sql(sql))
+        assert sorted(result["user_id"].to_pylist()) == ["u1", "u2"]
+        assert pinned._snapshot_inputs is not None
+        native = con.to_pyarrow(pinned._snapshot_inputs[sql])
+        assert native.column_names == ["user_id", "event_at"]
+        assert sorted(native["user_id"].to_pylist()) == ["u1", "u2"]
     finally:
         con.disconnect()
 

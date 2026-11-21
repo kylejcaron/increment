@@ -32,6 +32,16 @@ NUMERIC_RANGE = RefusalSpec(
     InvalidRequestError,
     template="Metric {metric} has an out-of-range {quantity}.",
 )
+SCAN_INVALID = RefusalSpec(
+    "overlap.scan.invalid",
+    InvalidRequestError,
+    template="Invalid interaction scan field {field}: {reason}.",
+)
+SCAN_CUTOFF_MISMATCH = RefusalSpec(
+    "overlap.scan.cutoff_mismatch",
+    InvalidRequestError,
+    template="Expected interaction scan cutoff {expected_cutoff}; got {actual_cutoff}.",
+)
 
 OVERLAP_REFUSALS = {
     spec.code: spec
@@ -42,5 +52,7 @@ OVERLAP_REFUSALS = {
         EVIDENCE_INVALID,
         FORMAT_INVALID,
         NUMERIC_RANGE,
+        SCAN_INVALID,
+        SCAN_CUTOFF_MISMATCH,
     )
 }
