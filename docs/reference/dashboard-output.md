@@ -390,11 +390,17 @@ per metric so each keeps its own refusal.
 ### Interactions
 
 Explore shows one row per concurrent experiment for the selected metric.
-Each row estimates, in absolute units, how much the focal treatment effect
-changes when the other treatment is on rather than off. The selected pair's
-detail shows both conditional effects, the direct difference, and the four
-assignment groups. Plots within a metric use the same scale for the overview
-and pair detail; different metrics have separate scales.
+Each row estimates how much the focal experiment's effect changes when the other
+experiment is on rather than off. Pair details show both effects, their
+difference, and the four assignment groups. Overview and pair plots share a
+scale within the selected metric.
+
+- **Relative lift** divides each effect by its focal-off mean with the other
+  experiment at the same setting. The difference between those two percent lifts is
+  measured in points of relative lift. This is the default when the metric has
+  a bounded relative comparison.
+- **Absolute** shows effects and their difference in the metric's original
+  units (percentage points for rates).
 
 | Inventory coverage | What the screen can say |
 |---|---|
@@ -410,17 +416,23 @@ Complete inventory coverage does not make all pair data complete. A
 comparison that needs a missing, pending, or empty group has no estimate;
 the affected comparison and its exact reason remain visible. An available
 estimate can lack an interval, or an interval can be too weakly supported
-to justify a conclusion. **Change detected** means the supported interval
-excludes zero; **None detected** means it contains or touches zero. Neither
-the sign of the interaction nor the strength of an individual comparison
-determines whether a rollout is favorable.
+to justify a conclusion. **Higher with other on** or **Lower with other on**
+means the supported interval for the difference excludes zero. **None detected**
+means it contains or touches zero. Neither outcome is a rollout decision.
 
 #### Interaction family and intervals
 
-The scan uses approximate two-sided Welch intervals with a Bonferroni
-adjustment, separate from Explore Overview's BH correction and from the
-registered pair workflow. The family counts three comparisons per frozen
-candidate and metric: the two conditional effects and their difference.
+Absolute intervals use the two-sided Welch approximation. Relative intervals
+account for uncertainty in the baseline using a two-sided Fieller interval.
+A zero, negative, or imprecisely measured baseline can prevent a relative
+result even when the absolute result is available. The interval for the
+difference in relative lift subtracts the two adjusted lift intervals,
+using the lowest and highest possible differences of their endpoints.
+
+Bonferroni adjusts each scale separately; coverage is not guaranteed jointly
+across both scales. This adjustment is separate from Explore Overview's BH
+correction and the registered pair workflow. The family counts three
+comparisons per frozen candidate and metric: the two effects and their difference.
 For three candidates and two metrics, the divisor is 18, even if a row is
 unavailable or a metric is hidden. Changing the metric, selecting a pair
 by name, or opening it from Readout does not change the family, level, or

@@ -7,6 +7,7 @@ const template = readFileSync(new URL("../../increment/dashboard/_shell.html", i
 const bridgeSource = readFileSync(new URL("../../increment/dashboard/_bridge.js", import.meta.url), "utf8");
 const { default: bridge } = await import(`data:text/javascript,${encodeURIComponent(bridgeSource)}`);
 const matchingDetail = "Preview cards: −5 pp [−7.76, −2.24]";
+const relativeDetail = "Preview cards: −16.3 points of relative lift";
 const unavailableDetail = "Search tips: nobody was assigned both on";
 
 function page(configure) {
@@ -22,6 +23,11 @@ function page(configure) {
           status: "Three concurrent experiments",
           explanation: "18 planned comparisons",
           overview: "Preview cards and other experiments",
+          defaultScale: "relative",
+          relative: {
+            overview: "Change in relative lift across experiments",
+            details: { "cards-v1": relativeDetail, "tips-v2": unavailableDetail },
+          },
           pairs: [
             { id: "cards-v1", label: "Preview cards" },
             { id: "tips-v2", label: "Search tips" },
@@ -62,6 +68,14 @@ test("rollout context opens exact pair within Explore without replacing the head
   assert.equal(dashboard.tabs.explore.getAttribute("aria-selected"), "true");
   assert.equal(get("explore-interactions").hidden, false);
   assert.equal(get("interaction-pair").value, "cards-v1");
+  assert.equal(get("interaction-scale").value, "relative");
+  assert.equal(get("interaction-overview").innerHTML, "Change in relative lift across experiments");
+  assert.equal(get("interaction-detail-body").innerHTML, relativeDetail);
+  const scale = get("interaction-scale");
+  scale.value = "absolute";
+  scale.dispatch("change");
+  assert.equal(get("interaction-pair").value, "cards-v1");
+  assert.equal(get("interaction-overview").innerHTML, "Preview cards and other experiments");
   assert.equal(get("interaction-detail-body").innerHTML, matchingDetail);
   assert.equal(dashboard.heroEffect.textContent, "+0.5 pp");
 });
@@ -135,6 +149,9 @@ function refreshInteractionPage(changeScan = () => {}) {
     const pair = get("interaction-pair");
     pair.value = "tips-v2";
     pair.dispatch("change");
+    const scale = get("interaction-scale");
+    scale.value = "absolute";
+    scale.dispatch("change");
     const heading = get("interaction-detail-heading");
     heading.focus();
     get("explore-interactions").dispatch("focusin", { target: heading });
@@ -161,6 +178,7 @@ test("live metric refresh restores the interaction view, selected metric and pai
   assert.equal(get("explore-interactions").hidden, false);
   assert.equal(get("interaction-metric").value, "retention");
   assert.equal(get("interaction-pair").value, "tips-v2");
+  assert.equal(get("interaction-scale").value, "absolute");
   assert.equal(get("interaction-detail-body").innerHTML, retentionDetail);
   assert.equal(dashboard.document.activeElement?.id, "interaction-detail-heading");
 });
