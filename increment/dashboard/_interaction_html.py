@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING
 
 from increment.dashboard._native import InteractionNativeRow, interaction_native
 from increment.dashboard._theme import MIDNIGHT
+from increment.estimation.interaction_scan import _relative_interaction_rows
 from increment.semantics.interaction_scan import SCAN_CONTRASTS
 
 if TYPE_CHECKING:
+    from increment.dashboard._native import InteractionTone
     from increment.dashboard._theme import DashboardTheme
     from increment.semantics.interaction_scan import (
         InteractionScan,
@@ -41,6 +43,11 @@ _CONTRAST_LABELS = {
     "focal_given_other_on": "Focal effect with other on",
     "interaction": "Change in focal effect (other on minus off)",
 }
+_RELATIVE_LABELS = {
+    "focal_given_other_off": "Focal lift with other off (%)",
+    "focal_given_other_on": "Focal lift with other on (%)",
+    "interaction": "Change in relative lift (points)",
+}
 _REASONS = {
     "allocation_switch": "an assignment changed during the study",
     "archive_missing": "the assignment record was not captured",
@@ -51,6 +58,9 @@ _REASONS = {
     "pending_outcomes": "outcomes are still pending",
     "singleton_cell": "only one outcome was observed",
     "small_cell": "too few outcomes were observed",
+    "relative_baseline_nonpositive": "the baseline is zero or negative",
+    "relative_baseline_uncertain": "the baseline is too uncertain for a finite relative interval",
+    "relative_moments_unavailable": "the outcome data needed for relative lift are missing",
     "sparse_binary_events": "too few events or non-events were observed",
     "unit_namespace_mismatch": "the experiments assigned different kinds of units",
     "unsupported_arms": "the experiment did not have two assignment groups",
@@ -64,14 +74,23 @@ class InteractionTables:
 
     overview: str
     details: Mapping[str, str]
+    has_interaction: bool
 
 
 def interaction_tables(
-    scan: InteractionScan, *, metric_key: str, theme: DashboardTheme = MIDNIGHT
+    scan: InteractionScan,
+    *,
+    metric_key: str,
+    theme: DashboardTheme = MIDNIGHT,
+    relative: bool = False,
 ) -> InteractionTables:
     """Render the selected metric without refitting or changing the scan family."""
     metric = {item.name: item for item in scan.plan.metrics}[metric_key]
-    rows = tuple(row for row in scan.rows if row.key.metric == metric_key)
+    rows = (
+        _relative_interaction_rows(scan, metric_key)
+        if relative
+        else tuple(row for row in scan.rows if row.key.metric == metric_key)
+    )
     extent = (
         max(
             (
@@ -85,13 +104,15 @@ def interaction_tables(
         or 1.0
     )
     binary = metric.kind == "binary_mean"
-    unit = "percentage points" if binary else metric.unit
+    unit = "points of relative lift" if relative else "percentage points" if binary else metric.unit
+    labels = _RELATIVE_LABELS if relative else _CONTRAST_LABELS
 
     def number(value: float) -> str:
-        return _number(value, binary=binary, signed=True)
+        places = 1 if relative else 2 if binary else None
+        return _number(value, percent=relative or binary, signed=True, places=places)
 
     def axis_number(value: float) -> str:
-        return _number(value, binary=binary, signed=True, digits=3)
+        return _number(value, percent=relative or binary, signed=True)
 
     names = Counter(detail.candidate.entry.display_name for detail in scan.details)
     summary = []
@@ -114,28 +135,33 @@ def interaction_tables(
         contrast_rows = [
             _native_row(
                 row,
-                f"{pair_id}-{row.key.contrast}",
-                f'<span data-inc-contrast="{row.key.contrast}">{_CONTRAST_LABELS[row.key.contrast]}</span>',
-                status if row is direct else _status(row, detail, (*row.reasons, *detail.reasons)),
+                key=f"{pair_id}-{row.key.contrast}",
+                label=f'<span data-inc-contrast="{row.key.contrast}">{labels[row.key.contrast]}</span>',
+                status=status
+                if row is direct
+                else _status(row, detail, (*row.reasons, *detail.reasons), better=metric.better),
+                tone=_effect_tone(row, metric.better),
             )
             for row in group
         ]
         contrasts = interaction_native(
             contrast_rows,
             row_heading="Comparison",
+            estimate_heading="Estimate",
             extent=extent,
             number=number,
             axis_number=axis_number,
             theme=theme,
         )
         details[pair_id] = _pair_detail(
-            scan.plan.scope, metric, detail, pair_id, unit, group, contrasts
+            scan.plan.scope, metric, detail, pair_id, unit, group, contrasts, relative=relative
         )
 
     if summary:
         table = interaction_native(
             summary,
             row_heading="Other experiment",
+            estimate_heading="Change in relative lift" if relative else "Change in effect",
             extent=extent,
             number=number,
             axis_number=axis_number,
@@ -151,21 +177,33 @@ def interaction_tables(
             if scan.no_candidates
             else "<p>No candidates are shown; the experiment inventory was not verified as complete.</p>"
         )
-    return InteractionTables(overview, MappingProxyType(details))
+    return InteractionTables(
+        overview,
+        MappingProxyType(details),
+        any(row.key.contrast == "interaction" and row.lower is not None for row in rows),
+    )
 
 
-def _number(value: float, *, binary: bool = False, signed: bool = False, digits: int = 8) -> str:
+def _number(
+    value: float, *, percent: bool = False, signed: bool = False, places: int | None = None
+) -> str:
     if not value:
         return "0"
-    scaled = value * 100 if binary else value
+    scaled = value * 100 if percent else value
     # A finite raw number can exceed the float range in display units.
     display = scaled if isfinite(scaled) else Decimal(str(value)).scaleb(2)
-    text = format(display, f"{'+' if signed else ''}.{digits}g")
+    sign = "+" if signed else ""
+    if places is not None and 10.0**-places <= abs(display) < 1000:
+        text = format(display, f"{sign}.{places}f").rstrip("0").rstrip(".")
+    else:
+        text = format(display, f"{sign}.3g")
     return f"−{text[1:]}" if text.startswith("-") else text
 
 
-def _native_row(row: ScanRow, key: str, label: str, status: str) -> InteractionNativeRow:
-    return InteractionNativeRow(key, label, row.estimate, row.lower, row.upper, status)
+def _native_row(
+    row: ScanRow, key: str, label: str, status: str, tone: InteractionTone = "neutral"
+) -> InteractionNativeRow:
+    return InteractionNativeRow(key, label, row.estimate, row.lower, row.upper, status, tone)
 
 
 def _pair_button(entry: InventoryEntry, pair_id: str, *, repeated: bool) -> str:
@@ -201,18 +239,37 @@ def _reason_text(reason: ScanReason, detail: PairDetail, *, locate: bool = False
     return message
 
 
-def _status(row: ScanRow, detail: PairDetail, reasons: tuple[ScanReason, ...]) -> str:
+def _effect_tone(row: ScanRow, better: str) -> InteractionTone:
+    if row.key.contrast == "interaction" or row.decision != "detected":
+        return "neutral"
+    rises = row.lower is not None and row.lower > 0
+    return "favorable" if rises == (better == "higher") else "unfavorable"
+
+
+def _status(
+    row: ScanRow, detail: PairDetail, reasons: tuple[ScanReason, ...], *, better: str = ""
+) -> str:
     if row.availability in ("unavailable", "fitted_small"):
         label = (
             "Couldn’t estimate"
             if row.availability == "unavailable"
             else "Insufficient evidence for a conclusion"
         )
-        return f"{label} · {_reason_text(reasons[0], detail, locate=True)}" if reasons else label
+        reason = next(
+            (reason for reason in reasons if reason.code.startswith("relative_")),
+            reasons[0] if reasons else None,
+        )
+        return f"{label} · {_reason_text(reason, detail, locate=True)}" if reason else label
     if row.lower is None:
         return "Estimate only · no interval"
     if row.decision == "detected":
-        return "Change detected"
+        if row.key.contrast == "interaction":
+            return (
+                "Higher with other on"
+                if row.lower is not None and row.lower > 0
+                else "Lower with other on"
+            )
+        return "Favorable" if _effect_tone(row, better) == "favorable" else "Unfavorable"
     if row.decision == "none_detected":
         return "None detected"
     return "No conclusion"
@@ -244,6 +301,8 @@ def _pair_detail(
     unit: str,
     rows: tuple[ScanRow, ...],
     contrasts: str,
+    *,
+    relative: bool,
 ) -> str:
     reasons = tuple(
         dict.fromkeys(
@@ -261,7 +320,7 @@ def _pair_detail(
     context = (
         f"<dt>Focal experiment</dt><dd>{_experiment(scope.focal.entry)}</dd>"
         f"<dt>Other experiment</dt><dd>{_experiment(detail.candidate.entry)}</dd>"
-        f"<dt>Metric</dt><dd>{escape(metric.name)} ({escape(unit)})</dd>"
+        f"<dt>Metric</dt><dd>{escape(metric.name)} ({escape(metric.unit)})</dd>"
         f"<dt>Entry opened</dt><dd>{scope.entry_open.isoformat(sep=' ')}</dd>"
         f"<dt>Outcome window</dt><dd>{scope.start.isoformat(sep=' ')} to "
         f"{scope.end.isoformat(sep=' ')} (end excluded)</dd>"
@@ -275,10 +334,15 @@ def _pair_detail(
         why = ""
     general = _reason_list(tuple(reason for reason in reasons if reason.cell is None), detail)
     assignments = _assignment_table(metric, detail, rows, reasons)
+    units = (
+        "Each lift compares the focal experiment on vs. off at the same setting of the "
+        "other experiment. The difference is in points of relative lift."
+        if relative
+        else f"Units: {escape(unit)}."
+    )
     return (
         f'<section class="inc-interaction-detail" data-inc-pair-detail="{pair_id}">'
-        f"<p>{_conclusion(direct)}</p>{why}"
-        f'<p class="inc-interaction-units">Units: {escape(unit)}.</p>'
+        f'<p>{_conclusion(direct)}</p>{why}<p class="inc-interaction-units">{units}</p>'
         '<div class="inc-interaction-contrasts" role="region" aria-label="Pair estimates" '
         f'tabindex="0">{contrasts}</div>{general}{assignments}<details class="inc-interaction-scope">'
         f"<summary>Experiment scope and dates</summary><dl>{context}</dl></details></section>"

@@ -17,7 +17,7 @@ import html
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import coeftable as ct
 import narwhals as nw
@@ -216,6 +216,9 @@ def resize_forest(table: ct.CoefTable, *, width: int, height: int) -> None:
     )
 
 
+type InteractionTone = Literal["favorable", "unfavorable", "neutral"]
+
+
 @dataclass(frozen=True, slots=True)
 class InteractionNativeRow:
     """An identified row with stored numbers and an escaped label fragment."""
@@ -226,16 +229,21 @@ class InteractionNativeRow:
     lower: float | None
     upper: float | None
     status: str
+    tone: InteractionTone
 
 
+@dataclass(frozen=True)
 class _InteractionForest(ct.Forest):
+    tones: tuple[InteractionTone, ...] = ()
+
     def prepare(self, scan: Scan) -> Prepared:
         # Only the plot uses normalized coordinates; Estimate displays the stored numbers.
         source = ct.Estimate(self.of, "plot_point", ci=("plot_lower", "plot_upper"))
         return super().prepare(replace(scan, columns=(source,)))
 
     def cell(self, ctx: Cell) -> str:
-        return _decorative_svg(super().cell(ctx))
+        tone = self.tones[ctx.index]
+        return _decorative_svg(super().cell(replace(ctx, color_rule=lambda *_: tone)))
 
     def footer(self, ctx: Footer) -> str | None:
         markup = super().footer(ctx)
@@ -250,6 +258,7 @@ def interaction_native(
     rows: Sequence[InteractionNativeRow],
     *,
     row_heading: str,
+    estimate_heading: str,
     extent: float,
     number: Callable[[float], str],
     axis_number: Callable[[float], str],
@@ -276,10 +285,14 @@ def interaction_native(
                 bound / extent if bound is not None else point
                 for bound, point in zip(upper, plotted_points, strict=True)
             ],
-            "status": [html.escape(row.status) for row in rows],
+            "status": [
+                f'<span class="inc-interaction-{row.tone}">{html.escape(row.status)}</span>'
+                for row in rows
+            ],
         }
     )
-    estimate = ct.Estimate("Change in effect", "point", ci=("lower", "upper"), fmt=number)
+    estimate = ct.Estimate(estimate_heading, "point", ci=("lower", "upper"), fmt=number)
+    table_theme = coeftable_theme(theme)
     table = ct.CoefTable(
         data,
         rows="row_key",
@@ -292,11 +305,11 @@ def interaction_native(
                 width=theme.charts.segment_forest_width,
                 height=theme.charts.segment_forest_height,
                 axis_fmt=lambda tick: axis_number(tick * extent),
+                tones=tuple(row.tone for row in rows),
             ),
             ct.Passthrough("Status", "status"),
         ),
-        color_rule=lambda *_: "neutral",
-        theme=coeftable_theme(theme),
+        theme=replace(table_theme, neutral=table_theme.muted),
     )
     labels = {row.key: row.label_html for row in rows}
     return (

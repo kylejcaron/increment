@@ -556,7 +556,9 @@ depends_on = [
   "increment._overlap_evidence",
   "increment._overlap_refusals",
   "increment.errors",
+  "increment.estimation._tails",
   "increment.estimation.overlap",
+  "increment.estimation.results",
   "increment.semantics.interaction_scan",
   "increment.semantics.overlap",
 ]
@@ -1872,6 +1874,7 @@ layer = "core"
 depends_on = [
   "increment.dashboard._native",
   "increment.dashboard._theme",
+  "increment.estimation.interaction_scan",
   "increment.semantics.interaction_scan",
 ]
 

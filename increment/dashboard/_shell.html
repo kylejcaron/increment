@@ -222,12 +222,15 @@ button.metric-select { cursor: pointer; }
 .interaction-context li + li { margin-top: 8px; }
 .inc-interaction-pair { color: var(--accent); padding: 2px 4px; border: 0; background: transparent; text-align: left; overflow-wrap: anywhere; }
 .inc-interaction-units { color: var(--muted); font-size: 13px; }
+.inc-interaction-favorable { color: var(--favorable); font-weight: 600; }
+.inc-interaction-unfavorable { color: var(--unfavorable); font-weight: 600; }
+.inc-interaction-neutral { color: var(--muted); }
 .inc-interaction-cells { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table-surface .inc-interaction-cells { min-width: 0; }
 .inc-interaction-contrasts { overflow-x: auto; }
 .inc-interaction-cells caption { text-align: left; font-weight: 650; padding: 12px 8px 8px; }
-.inc-interaction-cells th, .inc-interaction-cells td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; }
-.inc-interaction-cells thead { color: var(--muted); }
+#interaction-detail-body .inc-interaction-cells :is(th, td) { padding: 8px; border: 1px solid var(--line); text-align: left; }
+#interaction-detail-body .inc-interaction-cells thead { color: var(--muted); background: var(--tint); }
 .inc-interaction-cells tbody td:nth-child(-n+4) { font-variant-numeric: tabular-nums; }
 .inc-interaction-cells ul { margin: 0; padding-inline-start: 1.2em; }
 .inc-interaction-scope { margin: 12px 0; }
@@ -749,6 +752,12 @@ button.metric-select { cursor: pointer; }
         <div class="interaction-controls" id="interaction-controls" hidden>
           <label>Metric <select id="interaction-metric"></select></label>
           <label>Go to experiment <select id="interaction-pair"></select></label>
+          <label>Effect scale
+            <select id="interaction-scale">
+              <option value="relative">Relative lift</option>
+              <option value="absolute">Absolute</option>
+            </select>
+          </label>
         </div>
         <div class="table-surface native-output" id="interaction-overview" role="region" aria-label="Interactions across experiments" tabindex="0" hidden></div>
         <details id="interaction-methods" class="metric-detail plot-notes" hidden>
@@ -1220,10 +1229,11 @@ button.metric-select { cursor: pointer; }
   const MODE_TEXT = { relative: 'cumulative relative lift versus the control arm', cumulative: 'cumulative per-arm absolute values', daily: 'daily per-arm absolute values' };
   let interactionMetric = null;
   let interactionPair = null;
+  let interactionScale = null;
   let interactionFocus = null;
   let interactionFocusPair = null;
   const interactionFocusIds = new Set([
-    'interaction-metric', 'interaction-pair', 'interaction-overview',
+    'interaction-metric', 'interaction-pair', 'interaction-scale', 'interaction-overview',
     'interaction-detail-heading', 'close-interaction-detail',
   ]);
 
@@ -1245,6 +1255,7 @@ button.metric-select { cursor: pointer; }
   }
 
   function restoreInteractions(selection) {
+    interactionScale = ['relative', 'absolute'].includes(selection.scale) ? selection.scale : null;
     openInteractions(selection.metric, selection.pair);
     if (!interactionMetric || interactionMetric !== selection.metric) return;
     if (selection.focusPair) {
@@ -1276,8 +1287,12 @@ button.metric-select { cursor: pointer; }
     context.append(el('h3', { text: 'Rollout context' }), list);
   }
 
+  function interactionView(packet) {
+    return (interactionScale || packet?.defaultScale) === 'relative' ? packet?.relative : packet;
+  }
+
   function renderInteractionDetail(packet, moveFocus = false) {
-    const content = own(packet?.details, interactionPair);
+    const content = own(interactionView(packet)?.details, interactionPair);
     const pair = (packet?.pairs || []).find((entry) => entry.id === interactionPair);
     if (!content || !pair) interactionPair = null;
     $('interaction-pair').value = interactionPair || '';
@@ -1302,6 +1317,7 @@ button.metric-select { cursor: pointer; }
       interactionFocusPair = null;
     }
     const packet = own(scan?.metrics, interactionMetric);
+    const view = interactionView(packet);
     const controls = $('interaction-controls');
     const metric = $('interaction-metric');
     const pair = $('interaction-pair');
@@ -1311,9 +1327,10 @@ button.metric-select { cursor: pointer; }
     pair.replaceChildren(el('option', { value: '', text: 'Choose…' }),
       ...(packet?.pairs || []).map((option) => el('option', { value: option.id, text: option.label })));
     pair.disabled = !packet?.pairs?.length;
+    $('interaction-scale').value = interactionScale || packet?.defaultScale || 'absolute';
     $('interaction-status').textContent = packet?.status || scan?.status || 'Overlapping experiments were not checked for this snapshot.';
-    $('interaction-overview').hidden = !packet?.overview;
-    mountNative($('interaction-overview'), packet?.overview || '');
+    $('interaction-overview').hidden = !view?.overview;
+    mountNative($('interaction-overview'), view?.overview || '');
     $('interaction-methods').hidden = !packet?.explanation;
     $('interaction-explanation').textContent = packet?.explanation || '';
     renderInteractionDetail(packet);
@@ -1322,6 +1339,10 @@ button.metric-select { cursor: pointer; }
   $('interaction-metric').addEventListener('change', (event) => {
     interactionMetric = event.target.value;
     interactionPair = null;
+    renderInteractions();
+  });
+  $('interaction-scale').addEventListener('change', (event) => {
+    interactionScale = event.target.value;
     renderInteractions();
   });
   $('interaction-pair').addEventListener('change', (event) => {
@@ -1591,7 +1612,7 @@ button.metric-select { cursor: pointer; }
     // A live host acknowledges at once; silence means no running notebook can re-render the page.
     waiting = setTimeout(() => setStatus('Changing added metrics needs a running notebook; this page is a static snapshot.', 'error'), 4000);
     const interaction = exploreState.view === 'interactions' ? {
-      metric: interactionMetric, pair: interactionPair,
+      metric: interactionMetric, pair: interactionPair, scale: interactionScale,
       focus: interactionFocus, focusPair: interactionFocusPair,
     } : null;
     toHost({ type: 'set-exploratory-metrics', metrics: next, interaction });

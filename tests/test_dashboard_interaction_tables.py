@@ -237,9 +237,9 @@ def test_stored_rate_numbers_and_absence_are_visible_in_both_levels(_scan):
     first_row = _accessible_numbers(_candidate_row(fragments.overview, first))
     first_detail = _accessible_numbers(fragments.details[first])
     assert "percentage points" in first_detail and "percentage points" in _text(fragments.overview)
-    for number in ("−5", "−7.556624", "−2.443376"):
+    for number in ("−5", "−7.56", "−2.44"):
         assert number in first_row and number in first_detail
-    for number in ("+3", "+1.163917", "+4.836083", "−2", "−3.779279", "−0.220721"):
+    for number in ("+3", "+1.16", "+4.84", "−2", "−3.78", "−0.22"):
         assert number in first_detail
     unavailable = _candidate_row(fragments.overview, second)
     assert "Couldn’t estimate · nobody was assigned both on" in _text(unavailable)
@@ -251,6 +251,19 @@ def test_stored_rate_numbers_and_absence_are_visible_in_both_levels(_scan):
     )
     assert re.search(r">0</span>", point_only)
     assert "<svg " in point_only and "<polygon" not in point_only
+
+
+def test_relative_pair_shows_its_own_lifts_and_supported_metric_direction(_scan):
+    from increment.dashboard._interaction_html import interaction_tables
+
+    (first, second) = tuple(detail.candidate.key.pair_id for detail in _scan.details)
+    fragments = interaction_tables(_scan, metric_key="save", relative=True)
+    comparison = _accessible_numbers(fragments.details[first])
+    assert "Change in relative lift" in comparison
+    assert "+9.7" in comparison and "−6.7" in comparison and "−16.3" in comparison
+    assert "Favorable" in comparison and "Unfavorable" in comparison
+    assert "Lower with other on" in comparison
+    assert "baseline is zero or negative" in _accessible_numbers(fragments.details[second])
 
 
 def test_outlying_stored_bound_shares_an_unclipped_axis_and_small_fit_keeps_interval(_scan):

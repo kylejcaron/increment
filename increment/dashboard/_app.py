@@ -361,9 +361,11 @@ def _interaction_payload(
     family = scan.plan.family_size
     explanation = (
         f"Bonferroni shares the error budget across all {family} planned comparisons, including "
-        f"hidden metrics and comparisons we couldn't estimate. Together the intervals have "
-        f"approximately {(1.0 - scope.alpha):.1%} coverage at the fixed cutoff "
-        f"{scope.cutoff:%Y-%m-%d %H:%M:%S UTC}. Opening a pair does not change the adjustment."
+        f"hidden metrics and comparisons we couldn't estimate. On each scale, the intervals have "
+        f"approximately {(1.0 - scope.alpha):.1%} coverage together at the fixed cutoff "
+        f"{scope.cutoff:%Y-%m-%d %H:%M:%S UTC}. The scales are adjusted separately, not jointly. "
+        "The interval for the change in relative lift uses the two adjusted lift intervals. "
+        "Opening a pair does not change the adjustment."
         if family and scan.coverage == "complete"
         else ""
     )
@@ -393,11 +395,16 @@ def _interaction_payload(
     metric_packets = {}
     for metric in selected:
         fragments = interaction_tables(scan, metric_key=metric, theme=snapshot.config.theme)
+        relative = interaction_tables(
+            scan, metric_key=metric, theme=snapshot.config.theme, relative=True
+        )
         metric_packets[metric] = {
             "status": f"{metric_status} {scan_scope}",
             "explanation": explanation,
             "overview": fragments.overview,
             "details": dict(fragments.details),
+            "relative": {"overview": relative.overview, "details": dict(relative.details)},
+            "defaultScale": "relative" if relative.has_interaction else "absolute",
             "pairs": pairs,
         }
     return {

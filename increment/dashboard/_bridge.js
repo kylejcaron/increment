@@ -42,6 +42,7 @@ function render({ model, el }) {
       interactionSelection = interaction && typeof interaction === "object" ? {
         metric: asString(interaction.metric),
         pair: asString(interaction.pair),
+        scale: asString(interaction.scale),
         focus: asString(interaction.focus),
         focusPair: asString(interaction.focusPair),
       } : null;

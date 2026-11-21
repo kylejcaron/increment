@@ -278,16 +278,19 @@ example closes the database.
    subset, not a correction to the headline or a rollout recommendation.
    Select **See comparison** to open that pair in Explore.
 2. In **Interactions**, choose a **Metric**. Open a row by name or use
-   **Go to experiment** to open the same comparison directly. Read the focal
-   effect with the other experiment off, the effect with it on, and the
-   difference between them. Effects use absolute units (percentage points for
-   rates); pairs can have different denominators. **None detected** does not
-   mean the two effects are equal. Open **Why these intervals are wider** to
-   see which comparisons count in the adjustment, even when not displayed.
-3. Open the row that couldn't be estimated. Its reason is visible without a
-   hover. In **Outcomes by assignment**, nobody was assigned both treatments,
-   so the effect with the other experiment on and the difference are
-   unavailable. The off comparison still has an estimate and an interval.
+   **Go to experiment**. **Relative lift** is the default when the metric has
+   a pair with a bounded relative comparison. Each lift uses the focal-off
+   group with the other experiment at the same setting as its baseline.
+   The change in relative lift is the difference of the two lifts, in points.
+   Choose **Absolute** to see the original units (percentage points for rates).
+   Green and red mark effects in or against the metric's desired direction
+   when the adjusted interval supports that conclusion. The change between
+   effects stays neutral; **None detected** does not mean the effects are equal.
+   Open **Why these intervals are wider** to see what counts in the adjustment.
+3. Open a row that couldn't be estimated. **Outcomes by assignment** shows
+   which groups were measured. An empty group prevents comparisons that need
+   it; a baseline that is zero, negative, or too uncertain can prevent a
+   relative estimate even when **Absolute** is available.
    An empty group or a detected change is not a Health warning; Health flags
    verified missing or invalid inputs, such as a missing feed or broken
    assignment.

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from fractions import Fraction
+from itertools import batched
 
 from increment._overlap_evidence import OverlapCell
 from increment._overlap_refusals import NUMERIC_RANGE, SCAN_INVALID
 from increment.errors import CodedError, refuse
+from increment.estimation._tails import student_t_isf, two_sided_critical_value
 from increment.estimation.overlap import (
     _PAIRS,
     _availability,
@@ -19,9 +22,11 @@ from increment.estimation.overlap import (
     _point,
     _reasons,
     _required_cells,
+    _rounded,
     _simultaneous_interval,
     _welch,
 )
+from increment.estimation.results import _fraction_endpoint, _quadratic_intervals
 from increment.semantics.interaction_scan import (
     SCAN_CONTRASTS,
     InteractionScan,
@@ -143,6 +148,129 @@ def _contrast(
         evidence_sha256=evidence_sha256,
         decision=decision,
     )
+
+
+def _relative_unavailable(row: ScanRow, *reasons: ScanReason) -> ScanRow:
+    return _unavailable_row(
+        row.key,
+        tuple(dict.fromkeys((*row.reasons, *reasons))),
+        cells=row.cells,
+        evidence_sha256=row.evidence_sha256,
+    )
+
+
+def _relative_result(
+    row: ScanRow, estimate: float, lower: float | None = None, upper: float | None = None
+) -> ScanRow:
+    decision = None
+    if row.availability == "decided" and lower is not None and upper is not None:
+        decision = "detected" if lower > 0.0 or upper < 0.0 else "none_detected"
+    return row.model_copy(
+        update={
+            "estimate": estimate,
+            "lower": lower,
+            "upper": upper,
+            "se": None,
+            "df": None,
+            "decision": decision,
+        }
+    )
+
+
+def _relative_effect(
+    row: ScanRow, control: OverlapCell | None, treated: OverlapCell | None, *, tail: float | None
+) -> ScanRow:
+    if row.estimate is None:
+        return row
+    if control is None or control.anchor is None or control.mean_delta is None:
+        return _relative_unavailable(row, ScanReason(code="relative_moments_unavailable"))
+    baseline = Fraction(control.anchor) + Fraction(control.mean_delta)
+    if baseline <= 0:
+        return _relative_unavailable(
+            row, ScanReason(code="relative_baseline_nonpositive", cell=control.cell)
+        )
+    if treated is None or treated.anchor is None or treated.mean_delta is None:
+        return _relative_unavailable(row, ScanReason(code="relative_moments_unavailable"))
+    effect = Fraction(treated.anchor) + Fraction(treated.mean_delta) - baseline
+    try:
+        estimate = _rounded(effect / baseline, metric=row.key.metric, quantity="relative_lift")
+        if not tail or row.lower is None or control.m2 is None or treated.m2 is None:
+            return _relative_result(row, estimate)
+        nc, nt = control.n_observed, treated.n_observed
+        critical = two_sided_critical_value(
+            student_t_isf, 2.0 * tail, min(nc, nt) - 1, what="relative interaction interval"
+        )
+        squared = Fraction(critical) ** 2
+        vc = squared * Fraction(control.m2) / (nc * (nc - 1))
+        vt = squared * Fraction(treated.m2) / (nt * (nt - 1))
+        # Invert (effect - lift * baseline)^2 <= q² Var(treated - (1 + lift) * control).
+        a = baseline**2 - vc
+        if a <= 0:
+            return _relative_unavailable(
+                row, ScanReason(code="relative_baseline_uncertain", cell=control.cell)
+            )
+        ((lower, upper),) = _quadratic_intervals(
+            a, -2 * (effect * baseline + vc), effect**2 - vc - vt
+        )
+    except ArithmeticError:
+        return _relative_unavailable(row, ScanReason(code=NUMERIC_RANGE.code))
+    except CodedError as exc:
+        if exc.code not in _INTERVAL_REFUSALS:
+            raise
+        return _relative_unavailable(row, ScanReason(code=exc.code))
+    return _relative_result(row, estimate, lower, upper)
+
+
+def _relative_difference(row: ScanRow, off: ScanRow, on: ScanRow) -> ScanRow:
+    if row.estimate is None or off.estimate is None or on.estimate is None:
+        return _relative_unavailable(row, *off.reasons, *on.reasons)
+    lower = upper = None
+    try:
+        estimate = _rounded(
+            Fraction(on.estimate) - Fraction(off.estimate),
+            metric=row.key.metric,
+            quantity="relative_interaction",
+        )
+        # Either simultaneous simple-effect interval missing means no bound on their difference.
+        if (
+            row.lower is not None
+            and on.lower is not None
+            and on.upper is not None
+            and off.lower is not None
+            and off.upper is not None
+        ):
+            lower = _fraction_endpoint(Fraction(on.lower) - Fraction(off.upper), upper=False)
+            upper = _fraction_endpoint(Fraction(on.upper) - Fraction(off.lower), upper=True)
+    except ArithmeticError:
+        return _relative_unavailable(row, ScanReason(code=NUMERIC_RANGE.code))
+    except CodedError as exc:
+        if exc.code != NUMERIC_RANGE.code:
+            raise
+        return _relative_unavailable(row, ScanReason(code=exc.code))
+    return _relative_result(row, estimate, lower, upper)
+
+
+def _relative_interaction_rows(scan: InteractionScan, metric: str) -> tuple[ScanRow, ...]:
+    """Project adjusted simple lifts to their difference, separately from the absolute view."""
+    rows = (row for row in scan.rows if row.key.metric == metric)
+    members = scan.plan.family_size
+    tail = (
+        _member_tail(scan.plan.scope.alpha, members)
+        if scan.coverage == "complete" and members
+        else None
+    )
+    result = []
+    for detail, (off, on, direct) in zip(
+        scan.details, batched(rows, len(SCAN_CONTRASTS)), strict=True
+    ):
+        cells = {cell.cell: cell for cell in detail.cells if cell.metric == metric}
+        off_treated, on_control = ("01", "10") if detail.focal_side == "B" else ("10", "01")
+        relative_off = _relative_effect(off, cells.get("00"), cells.get(off_treated), tail=tail)
+        relative_on = _relative_effect(on, cells.get(on_control), cells.get("11"), tail=tail)
+        result.extend(
+            (relative_off, relative_on, _relative_difference(direct, relative_off, relative_on))
+        )
+    return tuple(result)
 
 
 def _detail(pair: PairInput) -> PairDetail:

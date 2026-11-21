@@ -9,6 +9,7 @@ import pytest
 from scipy.stats import t
 
 from increment._overlap_evidence import CELL_IDS, FactorId, OverlapCell, overlap_binary_moments
+from increment.estimation import interaction_scan as scan_estimation
 from increment.estimation.interaction_scan import evaluate_interaction_scan
 from increment.estimation.overlap import analyze_overlap
 from increment.semantics.interaction_scan import (
@@ -276,6 +277,55 @@ def test_frozen_family_includes_unavailable_candidates_and_metrics(
             assert row.reasons[0].code == (
                 "metric_missing" if row.evidence_sha256 else "pair_evidence_missing"
             )
+
+
+@pytest.mark.parametrize("side", ["A", "B"])
+def test_relative_bounds_account_for_each_baseline_and_the_full_family(saved_pair, side):
+    counts = (10_000,) * 4
+    evidence = _evidence(
+        saved_pair, _binary_cells(counts, (3100, 3400, 3000, 2800)), focal_side=side
+    )
+    scan = evaluate_interaction_scan(
+        _capture(evidence, focal_side=side, candidates=3, other_metric=True)
+    )
+    off, on, difference = (
+        row
+        for row in scan_estimation._relative_interaction_rows(scan, "orders")
+        if row.evidence_sha256
+    )
+    pairs = ((0.31, 0.34), (0.30, 0.28)) if side == "A" else ((0.31, 0.30), (0.34, 0.28))
+    critical = t.isf(0.05 / 36, 9999)
+    estimates = []
+    intervals = []
+    for row, (control, treated) in zip((off, on), pairs, strict=True):
+        assert row.estimate == pytest.approx(treated / control - 1)
+        assert row.lower is not None and row.estimate is not None and row.upper is not None
+        assert row.lower < row.estimate < row.upper
+        for lift in (row.lower, row.upper):
+            ratio = 1 + lift
+            se = math.sqrt((treated * (1 - treated) + ratio**2 * control * (1 - control)) / 9999)
+            assert abs((treated - ratio * control) / se) == pytest.approx(critical)
+        estimates.append(row.estimate)
+        intervals.append((row.lower, row.upper))
+    assert difference.estimate == pytest.approx(estimates[1] - estimates[0])
+    (off_lower, off_upper), (on_lower, on_upper) = intervals
+    assert (difference.lower, difference.upper) == pytest.approx(
+        (on_lower - off_upper, on_upper - off_lower)
+    )
+
+
+def test_weak_relative_baseline_does_not_erase_the_other_comparison(saved_pair):
+    cells = _mean_cells((-0.99, -0.60, 1.0, 2.0), (1.0,) * 4, (40.0,) * 4)
+    scan = evaluate_interaction_scan(_capture(_evidence(saved_pair, cells)))
+    off, on, difference = scan_estimation._relative_interaction_rows(scan, "orders")
+    assert off.estimate is off.lower is off.upper is None
+    assert off.reasons[-1] == ScanReason(code="relative_baseline_uncertain", cell="00")
+    assert on.estimate == pytest.approx(0.5)
+    assert on.lower is not None and on.estimate is not None and on.upper is not None
+    assert on.lower < on.estimate < on.upper
+    assert difference.estimate is difference.decision is None
+    assert difference.reasons[-1] == off.reasons[-1]
+    assert scan.rows[0].estimate == pytest.approx(0.39)
 
 
 def test_missing_both_on_cell_after_replay_keeps_off_and_full_family(saved_pair):
