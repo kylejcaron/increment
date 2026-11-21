@@ -37,7 +37,7 @@ from increment._evidence_refusals import CONTRAST_UNAVAILABLE
 from increment._execute import run_whole_window
 from increment._exploratory import available_metrics
 from increment._interaction_binding import (
-    validate_dashboard_interaction,
+    interaction_pin_metrics,
     verify_dashboard_interaction,
 )
 from increment._interpretation import (
@@ -738,10 +738,6 @@ def _prepare_dashboard(
     )
     primary_metric = _declared_primary(definition)
     control_group, treatment_group = _declared_arms(definition, config)
-    if interactions is not None:
-        validate_dashboard_interaction(
-            interactions, experiment, binding, (control_group, treatment_group)
-        )
     metrics = _declared_metrics(binding, definition)
     offered = _offered_metrics(binding, config)
     shown_models = _shown_metrics(offered, config.exploratory_metrics)
@@ -861,7 +857,16 @@ def _prepare_dashboard(
         return payload, health_report, population_collections, scan
 
     payload, health_report, population_collections, scan = capture_dashboard(
-        binding, _read, metrics=(*metrics, *offered)
+        binding,
+        _read,
+        metrics=interaction_pin_metrics(
+            interactions,
+            experiment,
+            binding,
+            (control_group, treatment_group),
+            (*metrics, *offered),
+        ),
+        interaction_facts=interactions is not None,
     )
     allocation = payload.allocation
     allocation_refusal = payload.allocation_refusal

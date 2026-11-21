@@ -30,6 +30,9 @@ from increment.semantics.interaction_scan import (
     InteractionInventory,
     InventoryEntry,
     ObservedInventory,
+    SourceFact,
+    SourceGenerationManifest,
+    StudyFeedFact,
     freeze_interaction_scan,
 )
 from increment.semantics.overlap import (
@@ -73,6 +76,9 @@ __all__ = [
     "OverlapPowerResult",
     "OverlapResult",
     "OverlapSdkArchive",
+    "SourceFact",
+    "SourceGenerationManifest",
+    "StudyFeedFact",
     "analyze_interaction_scan",
     "analyze_overlap",
     "bind_interaction_scan",
@@ -80,6 +86,7 @@ __all__ = [
     "capture_overlap_frame",
     "capture_overlap_warehouse",
     "freeze_interaction_scan",
+    "interaction_duckdb_fact",
     "interaction_metric_sha256",
     "sdk_overlap_decision",
     "sdk_overlap_plan",
@@ -97,6 +104,13 @@ def bind_interaction_scan(
 ) -> VerifiedInteractionAttachment:
     """Verify the scan's supplied data and prepare its evidence for a dashboard."""
     return bind_scan(capture, source, evaluate_interaction_scan)
+
+
+def interaction_duckdb_fact(table: Table) -> SourceFact:
+    """Record a qualified focal table for publication with the sealed DuckDB generation."""
+    from increment.query.overlap import interaction_duckdb_fact as fingerprint
+
+    return fingerprint(table)
 
 
 def capture_overlap_warehouse(

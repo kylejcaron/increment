@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import file_digest, sha256
 from math import isfinite
 from pathlib import Path
@@ -44,7 +44,7 @@ from increment._overlap_refusals import (
     SCAN_INVALID,
 )
 from increment.errors import refuse
-from increment.semantics.interaction_scan import SourceFact, StudyFeedFact
+from increment.semantics.interaction_scan import FocalSourceFacts, SourceFact, StudyFeedFact
 from increment.semantics.overlap import (
     OverlapCapture,
     OverlapCell,
@@ -299,7 +299,7 @@ def _sealed_duckdb_generation(con: Backend) -> tuple[str, str] | None:
     if con.name != "duckdb":
         return None
     rows = con.con.execute(
-        "SELECT database_name, path, readonly FROM duckdb_databases() WHERE NOT internal"
+        "SELECT database_name, path, readonly FROM system.main.duckdb_databases() WHERE NOT internal"
     ).fetchall()
     if len(rows) != 1:
         return None
@@ -316,11 +316,67 @@ def _sealed_duckdb_generation(con: Backend) -> tuple[str, str] | None:
         return None
 
 
+def _interaction_coordinate(table: ir.Table) -> tuple[str, str, str] | None:
+    op = table.op()
+    if isinstance(op, ops.DatabaseTable) and op.namespace.catalog and op.namespace.database:
+        return op.namespace.catalog, op.namespace.database, op.name
+    return None
+
+
+def _native_interaction_fact(backend: Backend, table: ir.Table) -> SourceFact | None:
+    coordinate = _interaction_coordinate(table)
+    op = table.op()
+    if coordinate is None or not isinstance(op, ops.DatabaseTable) or op.source is not backend:
+        return None
+    rows = backend.con.execute(
+        _CATALOG,
+        [list(table.columns), *(part.translate(_ASCII_FOLD) for part in coordinate)],
+    ).fetchall()
+    if not rows or any(row[7] for row in rows) or not _uncollated_table(rows[0][4]):
+        return None
+    _, catalog, schema, name, *_ = rows[0]
+    ordered = table.select(*sorted(table.columns))
+    layout = tuple((key, str(dtype)) for key, dtype in ordered.schema().items())
+    (digest,) = _query(backend.con, backend, _feed_digest(ordered, "roster"))
+    return SourceFact(
+        coordinate=(catalog, schema, name),
+        content_sha256=_identity(
+            "increment.interaction.fact.v1", (layout, digest["version_roster"])
+        ),
+    )
+
+
+def interaction_duckdb_fact(table: ir.Table) -> SourceFact:
+    """Fingerprint one qualified native DuckDB table for a published source manifest."""
+    op = table.op()
+    if isinstance(op, ops.DatabaseTable) and isinstance(op.source, Backend):
+        try:
+            fact = _native_interaction_fact(op.source, table)
+        except (DuckDBError, IbisError, OSError, SqlglotError):
+            fact = None
+        if fact is not None:
+            return fact
+    refuse(SCAN_INVALID, field="source", reason="native_facts_required")
+
+
+def _published_generation_id(backend: Backend, catalog: str) -> str | None:
+    try:
+        marker = backend.table("increment_interaction_generation", database=(catalog, "main"))
+        if _interaction_coordinate(marker) is None:
+            return None
+        records = _query(backend.con, backend, marker.select("version", "generation_id").limit(2))
+    except (DuckDBError, IbisError, OSError, KeyError):
+        return None
+    if len(records) != 1 or records[0]["version"] != 1:
+        return None
+    identifier = records[0]["generation_id"]
+    return identifier if isinstance(identifier, str) and identifier else None
+
+
 def _sealed_focal_fact(
-    backend: Backend, seal: tuple[str, str], query: str, pinned: ir.Table
+    backend: Backend, catalog: str, query: str, pinned: ir.Table, original: ir.Table
 ) -> SourceFact | None:
-    """Verify a pinned projection of a native table in the sealed catalog."""
-    catalog, dataset_sha256 = seal
+    """Check the actual pinned projection against its source-owned native input."""
     try:
         select = sqlglot.parse_one(query, dialect="duckdb")
         if (
@@ -338,33 +394,13 @@ def _sealed_focal_fact(
             _ASCII_FOLD
         ):
             return None
-        rows = backend.con.execute(
-            _CATALOG,
-            [
-                list(pinned.columns),
-                catalog.translate(_ASCII_FOLD),
-                source.db.translate(_ASCII_FOLD),
-                source.name.translate(_ASCII_FOLD),
-            ],
-        ).fetchall()
-        if not rows or any(row[7] for row in rows) or not _uncollated_table(rows[0][4]):
-            return None
-        _, db, schema, name, *_ = rows[0]
-        physical = backend.table(name, database=(db, schema)).select(*pinned.columns)
-        expected = _feed_digest(physical, "roster")
+        physical = backend.table(source.name, database=(catalog, source.db))
+        expected = _feed_digest(original, "roster")
         observed = _feed_digest(pinned, "outcomes")
         (digests,) = _query(backend.con, backend, expected.cross_join(observed))
         if digests["version_roster"] != digests["version_outcomes"]:
             return None
-        coordinate = (db, schema, name)
-        # The pinned columns can differ when the dashboard shows other metrics.
-        # Bind the verified coordinate to the entire sealed database instead.
-        return SourceFact(
-            coordinate=coordinate,
-            content_sha256=_identity(
-                "increment.interaction.focal.v1", (dataset_sha256, coordinate)
-            ),
-        )
+        return _native_interaction_fact(backend, physical)
     except (DuckDBError, IbisError, OSError, SqlglotError, KeyError):
         return None
 
@@ -376,47 +412,64 @@ def _focal_query(source: Any, fact: str | None) -> str | None:
     return None
 
 
-def interaction_focal_facts(
-    source: Any, plan: InteractionScanPlan
-) -> tuple[str, SourceFact, SourceFact] | None:
+def interaction_focal_facts(source: Any, plan: InteractionScanPlan) -> FocalSourceFacts | None:
     """Read only the declared projections already pinned for the definitions reader."""
     session = source._session
     backend = session.con
-    if not isinstance(backend, Backend) or session._source_tables is None:
+    projections = session._source_tables
+    originals = session._snapshot_inputs
+    if not isinstance(backend, Backend) or projections is None or originals is None:
         return None
     generation = _sealed_duckdb_generation(backend)
-    if generation is None or session.source_snapshot_evidence is None:
+    snapshot = session.source_snapshot_evidence
+    if generation is None or snapshot is None:
         return None
-    plan.scope.require_cutoff(session.source_snapshot_evidence.observation_cutoff_ts)
+    catalog, dataset = generation
+    identifier = _published_generation_id(backend, catalog)
+    if identifier is None:
+        return None
+    plan.scope.require_cutoff(snapshot.observation_cutoff_ts)
     definition = source._experiment
     ledger = definition.assignment_ledger
     exposure = source._exp_lookup_exposures[definition.exposure]
     assignment_sql = (
         ledger.sql if ledger is not None else exposure.sql or _focal_query(source, exposure.fact)
     )
-    metric_sources = {metric.name: getattr(metric, "fact", None) for metric in source._defs.metrics}
-    outcome_queries = {
-        _focal_query(source, metric_sources.get(metric.name)) for metric in plan.metrics
-    }
-    if assignment_sql is None or len(outcome_queries) != 1 or None in outcome_queries:
-        return None
-    (outcome_sql,) = outcome_queries
-    assert outcome_sql is not None
-    _, dataset = generation
-    projections = session._source_tables
-    if assignment_sql not in projections or outcome_sql not in projections:
+    if (
+        assignment_sql is None
+        or assignment_sql not in projections
+        or assignment_sql not in originals
+    ):
         return None
     assignments = _sealed_focal_fact(
-        backend, generation, assignment_sql, projections[assignment_sql]
+        backend, catalog, assignment_sql, projections[assignment_sql], originals[assignment_sql]
     )
     if assignments is None:
         return None
-    outcomes = (
-        assignments
-        if assignment_sql == outcome_sql
-        else _sealed_focal_fact(backend, generation, outcome_sql, projections[outcome_sql])
+    metrics = {metric.name: metric for metric in source._defs.metrics}
+    feed_names = {fact.name: feed.name for feed in source._defs.fact_sources for fact in feed.facts}
+    by_query = {assignment_sql: assignments}
+    outcomes = []
+    horizons = []
+    for planned in plan.metrics:
+        metric = metrics[planned.name]
+        query = _focal_query(source, metric.fact)
+        if query is None or query not in projections or query not in originals:
+            return None
+        if query not in by_query:
+            fact = _sealed_focal_fact(backend, catalog, query, projections[query], originals[query])
+            if fact is None:
+                return None
+            by_query[query] = fact
+        edge, certified = source._metric_snapshot_edges(metric, snapshot)
+        if edge < plan.scope.end.date() - timedelta(days=1):
+            refuse(SCAN_INVALID, field="source", reason="focal_outcome_window_incomplete")
+        watermark = snapshot.complete_through_by_feed.get(feed_names[metric.fact])
+        outcomes.append((planned.name, by_query[query]))
+        horizons.append((planned.name, watermark, edge, certified))
+    return FocalSourceFacts(
+        identifier, dataset, assignments, tuple(sorted(outcomes)), tuple(sorted(horizons))
     )
-    return None if outcomes is None else (dataset, assignments, outcomes)
 
 
 def interaction_pair_facts(

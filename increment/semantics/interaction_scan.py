@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Annotated, Literal, NoReturn, Self
 
 from pydantic import Field, StrictFloat
@@ -752,11 +753,16 @@ class SourceGenerationManifest(_ScanModel):
     generation_id: Identity
     dataset_sha256: Sha256
     cutoff: Instant
+    scan_plan_id: Sha256
+    definition_sha256: Sha256
     focal_assignments: SourceFact
-    focal_outcomes: SourceFact
+    focal_outcomes: Ordered[tuple[tuple[Identity, SourceFact], ...]]
     pair_feeds: Ordered[tuple[StudyFeedFact, ...]]
 
     def _validate_overlap(self) -> Self:
+        if len({metric for metric, _ in self.focal_outcomes}) != len(self.focal_outcomes):
+            self._invalid_field("focal_outcomes", "duplicate_metric")
+        object.__setattr__(self, "focal_outcomes", tuple(sorted(self.focal_outcomes)))
         if len({(feed.study_id, feed.role) for feed in self.pair_feeds}) != len(self.pair_feeds):
             self._invalid_field("pair_feeds", "duplicate_feed")
         feeds = sorted(
@@ -764,6 +770,17 @@ class SourceGenerationManifest(_ScanModel):
         )
         object.__setattr__(self, "pair_feeds", tuple(feeds))
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class FocalSourceFacts:
+    """Verified focal data and the planned metrics' effective input horizons."""
+
+    generation_id: str
+    dataset_sha256: str
+    assignments: SourceFact
+    outcomes: tuple[tuple[str, SourceFact], ...]
+    horizons: tuple[tuple[str, datetime | None, date, date | None], ...]
 
 
 class FocalBindingReceipt(_ScanModel):

@@ -285,7 +285,7 @@ EvidenceExecutionContext: Hold one pinned evidence scope across a run.
 [increment.overlap]
 ExperimentIdentity: Identify one archived assignment regime.
 FocalStudy: Describe the experiment whose effect you want to compare.
-InteractionDuckDBSource: Point the interaction scan to its original DuckDB tables.
+InteractionDuckDBSource: Point the interaction scan to a published DuckDB generation.
 InteractionInventory: Supply the published list of experiments before outcomes.
 InventoryEntry: Describe one experiment in the published list.
 ObservedInventory: Declare which experiments the source covered at the analysis cutoff.
@@ -300,6 +300,9 @@ OverlapPlan: Register the population, calendar, assignments, outcomes, and claim
 OverlapPowerResult: Read simulated decision rates and their Monte Carlo uncertainty.
 OverlapResult: Read the effects and decisions or reopen the saved result.
 OverlapSdkArchive: Parse the original allocation file once and preserve its identity.
+SourceFact: Record a source table and what it contains.
+SourceGenerationManifest: Identify the sealed generation and its intended focal and pair inputs.
+StudyFeedFact: Match one original pair input to its study and role.
 analyze_interaction_scan: Estimate changes in effect across the planned comparisons.
 analyze_overlap: Read both-launch, conditional, marginal, and interaction effects.
 bind_interaction_scan: Verify the scan inputs and prepare the evidence for a dashboard.
@@ -307,6 +310,7 @@ capture_interaction_scan: Match archived pair results to the planned experiment 
 capture_overlap_frame: Reduce four supplied dataframes to bounded cell summaries.
 capture_overlap_warehouse: Reduce four bound warehouse tables without transferring unit rows.
 freeze_interaction_scan: Fix the experiments, outcomes and cutoff before looking at results.
+interaction_duckdb_fact: Fingerprint a native DuckDB table for a source manifest.
 interaction_metric_sha256: Identify a saved metric definition before collecting pair outcomes.
 sdk_overlap_decision: Convert one persisted allocator decision under its original configuration.
 sdk_overlap_plan: Register an overlap plan using the archived allocator rules.

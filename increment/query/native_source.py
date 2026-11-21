@@ -221,7 +221,11 @@ if TYPE_CHECKING:
     from increment._evidence_types import RowValue
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Observational, Randomized
-    from increment.semantics.interaction_scan import InteractionScanPlan, SourceFact, StudyFeedFact
+    from increment.semantics.interaction_scan import (
+        FocalSourceFacts,
+        InteractionScanPlan,
+        StudyFeedFact,
+    )
     from increment.semantics.models import FactRef
     from increment.semantics.overlap import OverlapEvidence
     from increment.semantics.shared import BoundSharedMetric, SharedRoster
@@ -373,9 +377,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             "observation_mapping": self._sequential_observation_mapping(),
         }
 
-    def interaction_focal_facts(
-        self, plan: InteractionScanPlan
-    ) -> tuple[str, SourceFact, SourceFact] | None:
+    def interaction_focal_facts(self, plan: InteractionScanPlan) -> FocalSourceFacts | None:
         """Verify focal facts on this pinned source if its backend can seal them."""
         if self._con.name != "duckdb":
             return None
@@ -1163,6 +1165,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         snapshot_horizon_relation: Table | None = None,
         assignment_requests: Sequence[AssignmentRequest] = (),
         shared: Sequence[BoundSharedMetric] = (),
+        interaction_facts: bool = False,
     ) -> DefinitionsMomentSource:
         """Capture the experiment's input streams before any data validation."""
         if self._session._source_tables is not None:
@@ -1370,6 +1373,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 extra_relations=self._snapshot_auxiliary_relations(
                     shared, snapshot_horizon_relation
                 ),
+                retain_snapshot_inputs=interaction_facts,
             )
             mixed_timestamp_kinds = self._timestamp_kinds_mixed()
 
@@ -1454,6 +1458,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         configs: Sequence[ResolvedMetricConfig] | None = None,
         snapshot_horizon_relation: Table | None = None,
         assignment_requests: Sequence[AssignmentRequest] = (),
+        interaction_facts: bool = False,
     ):
         """Bind assignment, outcomes, freshness and extensions to one execution."""
         shared = self._shared_bindings(self._horizon_metrics if metrics is None else metrics)
@@ -1468,6 +1473,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             snapshot_horizon_relation=snapshot_horizon_relation,
             assignment_requests=assignment_requests,
             shared=shared,
+            interaction_facts=interaction_facts,
         )
         try:
             if pinned is self:
@@ -1514,6 +1520,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         reuse_retained_snapshot_integrity: bool = False,
         assignment_requests: Sequence[Any] = (),
         horizon_metrics: Sequence[Metric] = (),
+        interaction_facts: bool = False,
     ) -> Iterator[_BuiltinMomentSource]:
         """Pin selected metrics, requested uptake streams, and optionally breakout properties.
 
@@ -1590,6 +1597,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             configs=configs,
             snapshot_horizon_relation=snapshot_horizon_relation,
             assignment_requests=tuple(assignment_requests),
+            interaction_facts=interaction_facts,
         ) as pinned:
             previous_horizon = pinned._fixed_event_horizon
             previous_override = pinned._has_fixed_event_horizon_override

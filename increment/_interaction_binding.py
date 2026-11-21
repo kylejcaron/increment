@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from hashlib import sha256
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from increment._binding import binding_for
@@ -28,6 +27,7 @@ if TYPE_CHECKING:
     from increment._binding import ExperimentReader, SourceBinding
     from increment.kernel.experiment import Experiment
     from increment.semantics.interaction_scan import (
+        FocalSourceFacts,
         InteractionScan,
         InteractionScanPlan,
         ScanCapture,
@@ -37,28 +37,19 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class InteractionDuckDBSource:
-    """Read-only definitions reader and original table coordinates for measured pairs."""
+    """Read-only definitions reader and its independently published generation manifest."""
 
     experiment: Experiment
     reader: ExperimentReader
-    pair_tables: Mapping[str, Mapping[str, tuple[str, str, str]]]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "pair_tables",
-            MappingProxyType(
-                {study: MappingProxyType(dict(feeds)) for study, feeds in self.pair_tables.items()}
-            ),
-        )
+    manifest: SourceGenerationManifest
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class VerifiedInteractionAttachment:
     """Bounded result issued by the qualified source operation; no open reader."""
 
     value: InteractionAttachment
-    manifest: SourceGenerationManifest
+    facts: FocalSourceFacts
 
 
 def interaction_metric_sha256(metric: Metric) -> str:
@@ -94,7 +85,7 @@ def _check_focal_definition(
             definition.plan.inference is not None
             and definition.plan.inference.sequential is not None
         )
-        or _fixed_utc(definition.start) != scope.start
+        or datetime.combine(definition.start_day, time.min, UTC) != scope.start
         or horizon is None
         or datetime.combine(_fixed_utc(horizon).date() + timedelta(days=1), time.min, UTC)
         != scope.end
@@ -122,6 +113,16 @@ def _check_focal_definition(
     return tuple(matching), sha256(canonical_json_bytes(recipes)).hexdigest()
 
 
+def _check_manifest_focal(manifest: SourceGenerationManifest, facts: FocalSourceFacts) -> None:
+    if (facts.generation_id, facts.dataset_sha256) != (
+        manifest.generation_id,
+        manifest.dataset_sha256,
+    ):
+        refuse(SCAN_INVALID, field="source", reason="different_source_generation")
+    if (facts.assignments, facts.outcomes) != (manifest.focal_assignments, manifest.focal_outcomes):
+        refuse(SCAN_INVALID, field="source", reason="focal_facts_not_verified")
+
+
 def bind_scan(
     capture: ScanCapture,
     source: InteractionDuckDBSource,
@@ -135,33 +136,35 @@ def bind_scan(
     retained = tuple(
         pair.value.evidence for pair in capture.pairs if isinstance(pair.value, CapturedPair)
     )
-    if any(item.plan.study_id not in source.pair_tables for item in retained):
-        refuse(SCAN_INVALID, field="pair_sources", reason="study_inventory_mismatch")
+    manifest = source.manifest
+    scope.require_cutoff(manifest.cutoff)
+    if (manifest.source_id, manifest.scan_plan_id, manifest.definition_sha256) != (
+        scope.source_id,
+        plan.plan_id,
+        source.experiment.hash(),
+    ):
+        refuse(SCAN_INVALID, field="manifest", reason="focal_definition_mismatch")
+    published = {}
+    for feed in manifest.pair_feeds:
+        published.setdefault(feed.study_id, {})[feed.role] = feed.fact
+    if any(item.plan.study_id not in published for item in retained):
+        refuse(SCAN_INVALID, field="manifest", reason="study_inventory_mismatch")
 
-    def verify(pin: DashboardCapture) -> SourceGenerationManifest:
+    def verify(pin: DashboardCapture) -> FocalSourceFacts:
         pinned = pin.binding.source
         facts = load_interaction_focal_facts(pinned, plan)
         if facts is None:
             refuse(SCAN_INVALID, field="source", reason="focal_facts_not_verified")
-        dataset, assignment, outcomes = facts
-        feeds = tuple(
-            feed
-            for item in retained
-            for feed in load_interaction_pair_facts(
-                pinned, item, source.pair_tables[item.plan.study_id]
-            )
-        )
-        return SourceGenerationManifest(
-            source_id=scope.source_id,
-            generation_id=f"duckdb-file-sha256:{dataset}",
-            dataset_sha256=dataset,
-            cutoff=scope.cutoff,
-            focal_assignments=assignment,
-            focal_outcomes=outcomes,
-            pair_feeds=feeds,
-        )
+        _check_manifest_focal(manifest, facts)
+        for item in retained:
+            declared = published[item.plan.study_id]
+            tables = {role: fact.coordinate for role, fact in declared.items()}
+            proven = load_interaction_pair_facts(pinned, item, tables)
+            if declared != {feed.role: feed.fact for feed in proven}:
+                refuse(SCAN_INVALID, field="manifest", reason="pair_evidence_mismatch")
+        return facts
 
-    manifest = capture_dashboard(binding, verify, metrics=metrics)
+    facts = capture_dashboard(binding, verify, metrics=metrics, interaction_facts=True)
     evaluated = evaluate(capture)
     receipt = FocalBindingReceipt(
         scan_plan_id=plan.plan_id,
@@ -179,29 +182,40 @@ def bind_scan(
         generation_id=manifest.generation_id,
         dataset_sha256=manifest.dataset_sha256,
         focal_assignment_sha256=manifest.focal_assignments.content_sha256,
-        focal_outcome_sha256=manifest.focal_outcomes.content_sha256,
+        focal_outcome_sha256=sha256(
+            canonical_json_bytes(
+                [(key, fact.content_sha256) for key, fact in manifest.focal_outcomes]
+            )
+        ).hexdigest(),
         pair_evidence_sha256=tuple(item.evidence_sha256 for item in retained),
     )
-    return VerifiedInteractionAttachment(
-        InteractionAttachment(scan=evaluated, focal_receipt=receipt), manifest
+    attachment = object.__new__(VerifiedInteractionAttachment)
+    object.__setattr__(
+        attachment, "value", InteractionAttachment(scan=evaluated, focal_receipt=receipt)
     )
+    object.__setattr__(attachment, "facts", facts)
+    return attachment
 
 
-def validate_dashboard_interaction(
-    attachment: VerifiedInteractionAttachment,
+def interaction_pin_metrics(
+    attachment: VerifiedInteractionAttachment | None,
     experiment: Experiment,
     binding: SourceBinding,
     arms: tuple[str, str],
-) -> None:
-    """Reject mismatched declarations before the dashboard reads any results."""
+    display_metrics: tuple[Metric, ...],
+) -> tuple[Metric, ...]:
+    """Include hidden scan recipes in the pin without exposing them on the dashboard."""
+    if attachment is None:
+        return display_metrics
     if not isinstance(attachment, VerifiedInteractionAttachment):
         refuse(SCAN_INVALID, field="interactions", reason="verified_source_required")
     receipt = attachment.value.focal_receipt
     if (receipt.definition_sha256, receipt.arms) != (experiment.hash(), arms):
         refuse(SCAN_INVALID, field="interactions", reason="different_focal_experiment")
-    _, recipes = _check_focal_definition(experiment, binding, attachment.value.scan.plan)
+    metrics, recipes = _check_focal_definition(experiment, binding, attachment.value.scan.plan)
     if recipes != receipt.metrics_sha256:
         refuse(SCAN_INVALID, field="interactions", reason="focal_recipe_mismatch")
+    return tuple({metric.name: metric for metric in (*display_metrics, *metrics)}.values())
 
 
 def verify_dashboard_interaction(
@@ -211,7 +225,8 @@ def verify_dashboard_interaction(
     facts = load_interaction_focal_facts(pinned.source, attachment.value.scan.plan)
     if facts is None:
         return None
-    manifest = attachment.manifest
-    if facts != (manifest.dataset_sha256, manifest.focal_assignments, manifest.focal_outcomes):
+    if facts.horizons != attachment.facts.horizons:
+        refuse(SCAN_INVALID, field="interactions", reason="different_focal_observation_horizon")
+    if facts != attachment.facts:
         refuse(SCAN_INVALID, field="interactions", reason="different_source_generation")
     return attachment.value.scan
