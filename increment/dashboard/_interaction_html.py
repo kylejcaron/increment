@@ -90,6 +90,9 @@ def interaction_tables(
     def number(value: float) -> str:
         return _number(value, binary=binary, signed=True)
 
+    def axis_number(value: float) -> str:
+        return _number(value, binary=binary, signed=True, digits=3)
+
     names = Counter(detail.candidate.entry.display_name for detail in scan.details)
     summary = []
     details = {}
@@ -118,7 +121,12 @@ def interaction_tables(
             for row in group
         ]
         contrasts = interaction_native(
-            contrast_rows, row_heading="Comparison", extent=extent, number=number, theme=theme
+            contrast_rows,
+            row_heading="Comparison",
+            extent=extent,
+            number=number,
+            axis_number=axis_number,
+            theme=theme,
         )
         details[pair_id] = _pair_detail(
             scan.plan.scope, metric, detail, pair_id, unit, group, contrasts
@@ -126,7 +134,12 @@ def interaction_tables(
 
     if summary:
         table = interaction_native(
-            summary, row_heading="Other experiment", extent=extent, number=number, theme=theme
+            summary,
+            row_heading="Other experiment",
+            extent=extent,
+            number=number,
+            axis_number=axis_number,
+            theme=theme,
         )
         overview = (
             '<p class="inc-interaction-units">Change in the focal effect with the other '
@@ -141,13 +154,13 @@ def interaction_tables(
     return InteractionTables(overview, MappingProxyType(details))
 
 
-def _number(value: float, *, binary: bool = False, signed: bool = False) -> str:
+def _number(value: float, *, binary: bool = False, signed: bool = False, digits: int = 8) -> str:
     if not value:
         return "0"
     scaled = value * 100 if binary else value
     # A finite raw number can exceed the float range in display units.
     display = scaled if isfinite(scaled) else Decimal(str(value)).scaleb(2)
-    text = format(display, "+.8g" if signed else ".8g")
+    text = format(display, f"{'+' if signed else ''}.{digits}g")
     return f"−{text[1:]}" if text.startswith("-") else text
 
 
@@ -255,12 +268,20 @@ def _pair_detail(
         f"<dt>Data cutoff</dt><dd>{scope.cutoff.isoformat(sep=' ')}</dd>"
         f"<dt>Target</dt><dd>{target} <small>({escape(scope.focal.population_id)})</small></dd>"
     )
+    direct = rows[-1]
+    if direct.availability in ("unavailable", "fitted_small") and reasons:
+        why = f"<p>{escape(_status(direct, detail, reasons))}.</p>"
+    else:
+        why = ""
     general = _reason_list(tuple(reason for reason in reasons if reason.cell is None), detail)
     assignments = _assignment_table(metric, detail, rows, reasons)
     return (
         f'<section class="inc-interaction-detail" data-inc-pair-detail="{pair_id}">'
-        f"<h3>Pair evidence</h3><p>{_conclusion(rows[-1])}</p><dl>{context}</dl>"
-        f"{contrasts}{general}{assignments}</section>"
+        f"<p>{_conclusion(direct)}</p>{why}"
+        f'<p class="inc-interaction-units">Units: {escape(unit)}.</p>'
+        '<div class="inc-interaction-contrasts" role="region" aria-label="Pair estimates" '
+        f'tabindex="0">{contrasts}</div>{general}{assignments}<details class="inc-interaction-scope">'
+        f"<summary>Experiment scope and dates</summary><dl>{context}</dl></details></section>"
     )
 
 
@@ -300,10 +321,11 @@ def _assignment_table(
             f"<td>{notes or ('Counts not captured' if count is None else '—')}</td></tr>"
         )
     return (
-        '<table class="inc-interaction-cells"><caption>Outcomes by assignment</caption>'
+        '<div class="table-surface"><table class="inc-interaction-cells">'
+        "<caption>Outcomes by assignment</caption>"
         '<thead><tr><th scope="col">Assignment</th><th scope="col">Assigned</th>'
         f'<th scope="col">Observed</th><th scope="col">{heading}</th>'
-        f'<th scope="col">Notes</th></tr></thead><tbody>{"".join(body)}</tbody></table>'
+        f'<th scope="col">Notes</th></tr></thead><tbody>{"".join(body)}</tbody></table></div>'
     )
 
 

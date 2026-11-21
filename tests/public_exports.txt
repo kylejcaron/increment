@@ -109,6 +109,7 @@ DashboardTypography: Adjust dashboard fonts and text sizes.
 DashboardConfig: Configure how a dashboard displays an experiment.
 DashboardSnapshot: Hold one prepared dashboard reading of an experiment.
 ExploreView: Type the advanced dashboard views.
+dashboard_html: Save a prepared dashboard as standalone HTML.
 dashboard_styles: Embed the dashboard stylesheet.
 group_data_csv: Export a dashboard's group data as CSV.
 load_explore: Load one advanced dashboard view.
@@ -287,6 +288,7 @@ ExperimentIdentity: Identify one archived assignment regime.
 FocalStudy: Describe the experiment whose effect you want to compare.
 InteractionDuckDBSource: Point the interaction scan to a published DuckDB generation.
 InteractionInventory: Supply the published list of experiments before outcomes.
+InteractionScanPlan: Read which comparisons belong to the frozen scan.
 InventoryEntry: Describe one experiment in the published list.
 ObservedInventory: Declare which experiments the source covered at the analysis cutoff.
 OverlapCapture: Describe the source versions and dates covered by all four inputs.

@@ -155,7 +155,7 @@ printing always uses light mode. To customize fonts, colors, or sizes, see
 | Tab | Use it to |
 |---|---|
 | **Readout** | Read the declared primary, secondary, and guardrail results |
-| **Explore** | Compare segments, added metrics, and changes over time |
+| **Explore** | Compare segments, added metrics, time series, and [interactions](#check-for-interactions-with-other-experiments) |
 | **Health** | Inspect allocation, enrollment, and diagnostic warnings |
 | **Report** | Export the full captured readout or print a summary |
 
@@ -252,6 +252,66 @@ read the separate allocation check. See
 
 No segment selector is expected when no breakouts were declared; this is a
 [supported case](../reference/dashboard-output.md#no-breakout-experiments).
+
+### Check for interactions with other experiments
+
+Use **Explore → Interactions** to ask whether any concurrent experiment changed
+the effect of the experiment you opened (the *focal* experiment). If you named
+the pair and registered comparisons to guide a rollout, use the
+[registered overlap workflow](overlapping-experiments.md) instead. To estimate
+detection chances for that specified pair before launch, see
+[interaction power planning](overlapping-experiments.md#plan-for-detecting-an-interaction-before-launch).
+
+From a repository checkout, run this synthetic example (`demo` supplies the
+warehouse dependencies and DuckDB):
+
+```bash
+uv run --extra demo --extra dashboard python examples/interaction_discovery.py interaction_discovery.html
+```
+
+Open `interaction_discovery.html` in your browser. It works offline, after the
+example closes the database.
+
+1. Start in **Readout**. The primary result keeps its original population,
+   uncertainty, and decision. **Rollout context** is a separate, neutral
+   note about a supported reversal on a jointly eligible and randomized
+   subset, not a correction to the headline or a rollout recommendation.
+   Select **See comparison** to open that pair in Explore.
+2. In **Interactions**, choose a **Metric**. Open a row by name or use
+   **Go to experiment** to open the same comparison directly. Read the focal
+   effect with the other experiment off, the effect with it on, and the
+   difference between them. Effects use absolute units (percentage points for
+   rates); pairs can have different denominators. **None detected** does not
+   mean the two effects are equal. Open **Why these intervals are wider** to
+   see which comparisons count in the adjustment, even when not displayed.
+3. Open the row that couldn't be estimated. Its reason is visible without a
+   hover. In **Outcomes by assignment**, nobody was assigned both treatments,
+   so the effect with the other experiment on and the difference are
+   unavailable. The off comparison still has an estimate and an interval.
+   An empty group or a detected change is not a Health warning; Health flags
+   verified missing or invalid inputs, such as a missing feed or broken
+   assignment.
+
+To prepare your own dashboard, start with a named assignment inventory, not
+successful pair results or a single-experiment reader. Before entry, freeze
+the candidate universe, eligibility rules, metrics, fixed window, and cutoff.
+At the cutoff, obtain an independent record of inventory coverage and the
+original roster, first assignments, deliveries, and outcomes for each measured
+pair. Bind them from the same sealed DuckDB data as the focal dashboard; the
+[public API](../api.md#interaction-discovery) lists the calls in order.
+Incomplete coverage cannot establish that no other experiments were in scope
+or support scan-wide inference. With only the focal reader, prepare as usual:
+overlap is reported as not checked.
+
+For the same look, recover missing records from the original archive. Reload
+the [original `OverlapEvidence` JSON](../reference/saved-formats.md#overlap-evidence-and-results)
+using its separately saved digest. Reprepare with the same frozen plan,
+inventory records, and sealed data. If you cannot verify the original
+records, keep the affected result unavailable.
+A new cutoff is a new look, not a refresh of the old one; don't use later
+outcomes or an outcome-picked pair list to fill gaps in a frozen scan. The
+[output reference](../reference/dashboard-output.md#interaction-family-and-intervals)
+explains what counts in the adjustment, even when it isn't displayed.
 
 ## 5. Export the captured result
 

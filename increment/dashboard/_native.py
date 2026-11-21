@@ -252,6 +252,7 @@ def interaction_native(
     row_heading: str,
     extent: float,
     number: Callable[[float], str],
+    axis_number: Callable[[float], str],
     theme: DashboardTheme,
 ) -> str:
     """Render stored points and bounds on the same zero-centered metric axis."""
@@ -290,7 +291,7 @@ def interaction_native(
                 ylim=(-1.0, 1.0),
                 width=theme.charts.segment_forest_width,
                 height=theme.charts.segment_forest_height,
-                axis_fmt=lambda tick: number(tick * extent),
+                axis_fmt=lambda tick: axis_number(tick * extent),
             ),
             ct.Passthrough("Status", "status"),
         ),

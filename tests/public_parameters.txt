@@ -138,6 +138,7 @@ step: Column identifying steps within a switchback period.
 store: Policy for materializing warehouse reductions.
 study_id: Stable identifier for the study.
 summary: Per-arm summary statistics.
+table: Native source table to read or identify.
 target: Policy, population, layer, or standalone experiment to evaluate.
 withheld: Arm-specific adjustment evidence omitted with its refusal.
 target_power: Desired probability of detecting the target effect.

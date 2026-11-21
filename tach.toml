@@ -1818,6 +1818,7 @@ depends_on = [
   "increment.dashboard._format",
   "increment.dashboard._native",
   "increment.dashboard._theme",
+  "increment.dashboard._interaction_html",
   "increment._binding",
   "increment._breakout_readouts",
   "increment._canonical",
