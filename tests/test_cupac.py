@@ -11,6 +11,7 @@ import increment
 from increment.errors import InvalidRequestError
 from increment.estimation.results import LiftEstimate
 from tests.mc import nominal_band
+from tests.warning_codes import allow_warning_codes
 
 _MU0 = 20.0
 _TAU = 0.6
@@ -113,6 +114,8 @@ def _coverage_trial(i: int, *, metric: _Metric, scenario: _Scenario, n_per_arm: 
 @pytest.mark.parametrize("scenario", _SCENARIOS)
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
+# Random assignment can produce chance imbalance; keep those draws in the sample.
+@allow_warning_codes("estimation.cuped.covariate_imbalance")
 def test_cupac_coverage_and_bias(metric, scenario):
     reps = 1500
     covered, errors = zip(
