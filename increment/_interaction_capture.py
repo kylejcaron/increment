@@ -127,6 +127,7 @@ def capture_interaction_scan(
     """
     coverage: ScanCoverage = "not_captured"
     candidates = {candidate.key.candidate: candidate for candidate in plan.candidates}
+    observed_exclusions: dict[ExperimentIdentity, tuple[ScanReason, ...]] = {}
     if observed_inventory is not None:
         observed_coverage = observed_inventory.coverage_for(plan.scope)
         if (observed_inventory.universe_id, observed_inventory.source_id) != (
@@ -143,16 +144,20 @@ def capture_interaction_scan(
             ):
                 coverage = "complete"
         for candidate in plan.candidates_for(observed_inventory):
-            candidates.setdefault(candidate.key.candidate, candidate)
+            identity = candidate.key.candidate
+            candidates.setdefault(identity, candidate)
+            if candidate.reasons:
+                observed_exclusions[identity] = candidate.reasons
     matched = _received_pairs(plan, candidates, evidence_by_study)
     pairs = []
     for identity in sorted(candidates, key=lambda identity: identity.sort_key):
         candidate = candidates[identity]
         value = matched.get(identity)
-        if value is None:
-            value = UnavailablePair(
-                reasons=candidate.reasons or (ScanReason(code="pair_evidence_missing"),)
-            )
+        observed_reasons = observed_exclusions.get(identity, ())
+        if value is None or observed_reasons:
+            reasons = value.reasons if isinstance(value, UnavailablePair) else candidate.reasons
+            reasons = tuple(dict.fromkeys((*reasons, *observed_reasons)))
+            value = UnavailablePair(reasons=reasons or (ScanReason(code="pair_evidence_missing"),))
         pairs.append(PairInput(candidate=candidate, value=value))
     return ScanCapture(
         plan=plan, observed_inventory=observed_inventory, coverage=coverage, pairs=tuple(pairs)

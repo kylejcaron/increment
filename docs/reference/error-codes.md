@@ -18996,7 +18996,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `field`, `reason`
 
-**Registering modules:** `increment._overlap_refusals`, `increment.semantics.interaction_scan`
+**Registering modules:** `increment._interaction_capture`, `increment._overlap_refusals`, `increment.semantics.interaction_scan`
 
 <span id="family-package"></span>
 

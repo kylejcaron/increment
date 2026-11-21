@@ -207,6 +207,32 @@ def test_inventory_drift_retains_both_rosters_without_moving_the_family(publishe
     assert captured.pairs[2].candidate.entry.archive_sha256 == "d" * 64
 
 
+def test_observed_exclusions_apply_to_supplied_and_missing_pairs_without_rewriting_family(
+    published_pairs,
+):
+    plan = published_pairs.plan
+    observed = observed_at_look(plan)
+    a, b, c, d = observed.entries
+    same_layer = b.model_copy(update={"reasons": ("same_layer",)})
+    new_revision = d.model_copy(
+        update={"identity": d.identity.model_copy(update={"revision": "v2"})}
+    )
+    observed = observed.model_copy(update={"entries": (a, same_layer, c, d, new_revision)})
+    capture = capture_interaction_scan(
+        plan,
+        observed_inventory=observed,
+        evidence_by_study=published_pairs.evidence_by_study,
+    )
+    assert capture.coverage == "partial"
+    assert capture.plan.family_id == plan.family_id
+    supplied, peer, missing, added = capture.pairs
+    assert (supplied.candidate, peer.candidate, missing.candidate) == plan.candidates
+    assert supplied.value == UnavailablePair(reasons=(ScanReason(code="same_layer"),))
+    assert isinstance(peer.value, CapturedPair)
+    for pair in (missing, added):
+        assert pair.value == UnavailablePair(reasons=(ScanReason(code="allocation_switch"),))
+
+
 def test_published_roster_alone_cannot_certify_no_candidates(restored_pair):
     plan, _ = restored_pair
     plan = plan.model_copy(
