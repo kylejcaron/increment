@@ -395,12 +395,13 @@ experiment is on rather than off. Pair details show both effects, their
 difference, and the four assignment groups. Overview and pair plots share a
 scale within the selected metric.
 
-- **Relative lift** divides each effect by its focal-off mean with the other
-  experiment at the same setting. The difference between those two percent lifts is
-  measured in percentage points (`pp`). This is the default when the metric has
-  a bounded relative comparison.
-- **Absolute** shows effects and their difference in the metric's original
-  units (percentage points for rates).
+- **% lift vs. control** divides each effect by its focal-off mean with the
+  other experiment at the same setting. The difference between those lifts
+  uses percentage points of lift (`pp of lift`). This is the default when
+  the metric has a bounded relative comparison.
+- The option named for the metric shows effects and their difference in its
+  own units. For a rate, `pp of save rate` means percentage points of save
+  rate, not of lift.
 
 | Inventory coverage | What the screen can say |
 |---|---|
@@ -442,7 +443,7 @@ within-pair independent assignment and outcome requirements still apply.
 
 These exploratory comparisons describe pairs, not a combination of three
 or more treatments. The **Possible interaction** badge is based on the
-adjusted absolute interval. It opens the detected pair in Relative lift
+adjusted absolute interval. It opens the detected pair in **% lift vs. control**
 if that scale also detects the change. The primary result is unchanged.
 
 ### Time series and dates

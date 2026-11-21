@@ -388,6 +388,7 @@ def _interaction_payload(
             "details": dict(fragments.details),
             "relative": {"overview": relative.overview, "details": dict(relative.details)},
             "defaultScale": "relative" if relative.has_interaction else "absolute",
+            "absoluteLabel": f"{_label(metric)} in {fragments.absolute_unit}",
             "pairs": pairs,
         }
     return {

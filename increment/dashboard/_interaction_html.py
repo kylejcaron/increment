@@ -38,16 +38,6 @@ _ASSIGNMENTS = {
     "01": "focal off, other on",
     "11": "both on",
 }
-_CONTRAST_LABELS = {
-    "focal_given_other_off": "Focal effect with other off",
-    "focal_given_other_on": "Focal effect with other on",
-    "interaction": "Change in focal effect (other on minus off)",
-}
-_RELATIVE_LABELS = {
-    "focal_given_other_off": "Focal lift with other off",
-    "focal_given_other_on": "Focal lift with other on",
-    "interaction": "Change in relative lift (points)",
-}
 _REASONS = {
     "allocation_switch": "an assignment changed during the study",
     "archive_missing": "the assignment record was not captured",
@@ -76,6 +66,7 @@ class InteractionTables:
     details: Mapping[str, str]
     has_interaction: bool
     detected_pairs: frozenset[str]
+    absolute_unit: str
 
 
 def interaction_tables(
@@ -105,8 +96,14 @@ def interaction_tables(
         or 1.0
     )
     binary = metric.kind == "binary_mean"
-    unit = "" if relative else "percentage points" if binary else metric.unit
-    labels = _RELATIVE_LABELS if relative else _CONTRAST_LABELS
+    unit = "percentage points" if binary else metric.unit
+    metric_name = escape(metric.name.replace("_", " "))
+    focal = escape(scan.plan.scope.focal.entry.display_name)
+    basis = "lift" if relative else f"effect on {metric_name}"
+    effect_suffix = "%" if relative else " pp" if binary else f" {escape(unit)}"
+    change_suffix = (
+        " pp of lift" if relative else f" pp of {metric_name}" if binary else effect_suffix
+    )
 
     def number(value: float) -> str:
         places = 1 if relative else 2 if binary else None
@@ -123,6 +120,12 @@ def interaction_tables(
         pair_id = detail.candidate.key.pair_id
         direct = group[-1]
         entry = detail.candidate.entry
+        other = escape(entry.display_name)
+        labels = (
+            f"{focal}’s {basis} with {other} off",
+            f"{focal}’s {basis} with {other} on",
+            f"How {other} changed {focal}’s {basis}",
+        )
         reasons = (*direct.reasons, *detail.reasons, *detail.candidate.reasons)
         status = _status(direct, detail, reasons)
         summary.append(
@@ -132,21 +135,21 @@ def interaction_tables(
                 _pair_button(entry, pair_id, repeated=names[entry.display_name] > 1),
                 status,
                 _effect_tone(direct, metric.better),
-                suffix=" pp" if relative else "",
+                suffix=change_suffix,
             )
         )
         contrast_rows = [
             _native_row(
                 row,
                 key=f"{pair_id}-{row.key.contrast}",
-                label=f'<span data-inc-contrast="{row.key.contrast}">{labels[row.key.contrast]}</span>',
+                label=f'<span data-inc-contrast="{row.key.contrast}">{label}</span>',
                 status=status
                 if row is direct
                 else _status(row, detail, (*row.reasons, *detail.reasons), better=metric.better),
                 tone=_effect_tone(row, metric.better),
-                suffix=(" pp" if row is direct else "%") if relative else "",
+                suffix=change_suffix if row is direct else effect_suffix,
             )
-            for row in group
+            for row, label in zip(group, labels, strict=True)
         ]
         contrasts = interaction_native(
             contrast_rows,
@@ -157,21 +160,18 @@ def interaction_tables(
             axis_number=axis_number,
             theme=theme,
         )
-        details[pair_id] = _pair_detail(
-            scan.plan.scope, metric, detail, pair_id, unit, group, contrasts
-        )
+        details[pair_id] = _pair_detail(scan.plan.scope, metric, detail, pair_id, group, contrasts)
 
     if summary:
-        table = interaction_native(
+        overview = interaction_native(
             summary,
             row_heading="Other experiment",
-            estimate_heading="Change in relative lift" if relative else "Change in effect",
+            estimate_heading="Change in lift" if relative else f"Change in effect on {metric_name}",
             extent=extent,
             number=number,
             axis_number=axis_number,
             theme=theme,
         )
-        overview = _units_note(unit) + table
     else:
         overview = (
             "<p>No concurrent experiments were in scope.</p>"
@@ -183,11 +183,8 @@ def interaction_tables(
         MappingProxyType(details),
         any(row.key.contrast == "interaction" and row.lower is not None for row in rows),
         frozenset(row.key for row in summary if row.tone == "detected"),
+        unit,
     )
-
-
-def _units_note(unit: str) -> str:
-    return f'<p class="inc-interaction-units">Units: {escape(unit)}.</p>' if unit else ""
 
 
 def _number(
@@ -304,7 +301,6 @@ def _pair_detail(
     metric: OverlapMetric,
     detail: PairDetail,
     pair_id: str,
-    unit: str,
     rows: tuple[ScanRow, ...],
     contrasts: str,
 ) -> str:
@@ -335,7 +331,6 @@ def _pair_detail(
     assignments = _assignment_table(metric, detail, rows, reasons)
     return (
         f'<section class="inc-interaction-detail" data-inc-pair-detail="{pair_id}">'
-        f"{_units_note(unit)}"
         '<div class="inc-interaction-contrasts" role="region" aria-label="Pair estimates" '
         f'tabindex="0">{contrasts}</div>{general}{assignments}<details class="inc-interaction-scope">'
         f"<summary>Experiment scope and dates</summary><dl>{context}</dl></details></section>"

@@ -236,10 +236,11 @@ def test_stored_rate_numbers_and_absence_are_visible_in_both_levels(_scan):
     first, second = tuple(fragments.details)
     first_row = _accessible_numbers(_candidate_row(fragments.overview, first))
     first_detail = _accessible_numbers(fragments.details[first])
-    assert "percentage points" in first_detail and "percentage points" in _text(fragments.overview)
-    for number in ("−5", "−7.56", "−2.44"):
-        assert number in first_row and number in first_detail
-    for number in ("+3", "+1.16", "+4.84", "−2", "−3.78", "−0.22"):
+    assert "−5 pp of save" in first_row and "−5 pp of save" in first_detail
+    for bound in ("−7.56 pp of save", "−2.44 pp of save"):
+        assert bound in first_row and bound in first_detail
+    assert "How " + _NAME + " changed Same name’s effect on save" in first_detail
+    for number in ("+3 pp", "+1.16 pp", "+4.84 pp", "−2 pp", "−3.78 pp", "−0.22 pp"):
         assert number in first_detail
     unavailable = _candidate_row(fragments.overview, second)
     assert "Couldn’t estimate · nobody was assigned both on" in _text(unavailable)
@@ -249,7 +250,7 @@ def test_stored_rate_numbers_and_absence_are_visible_in_both_levels(_scan):
     point_only = next(
         row for row in re.findall(r"<tr\b[^>]*>.*?</tr>", detail, re.S) if "Estimate only" in row
     )
-    assert re.search(r">0</span>", point_only)
+    assert re.search(r">0 pp</span>", point_only)
     assert "<svg " in point_only and "<polygon" not in point_only
 
 
@@ -259,13 +260,13 @@ def test_relative_pair_shows_its_own_lifts_and_supported_metric_direction(_scan)
     (first, second) = tuple(detail.candidate.key.pair_id for detail in _scan.details)
     fragments = interaction_tables(_scan, metric_key="save", relative=True)
     comparison = _accessible_numbers(fragments.details[first])
-    assert "Change in relative lift" in comparison
+    assert "How " + _NAME + " changed Same name’s lift" in comparison
     assert re.search(r"\+9\.7% \[\+[\d.]+%, \+[\d.]+%\]", comparison)
     assert "−6.7%" in comparison
-    assert "−16.3 pp [" in comparison and "−16.3%" not in comparison
+    assert "−16.3 pp of lift" in comparison and "−16.3%" not in comparison
     detected = _candidate_row(fragments.overview, first)
     overview = _accessible_numbers(detected)
-    assert "−16.3 pp [" in overview and "%" not in overview
+    assert "−16.3 pp of lift" in overview and "%" not in overview
     assert re.search(r'<rect\b[^>]+\bfill="var\(--inc-dashboard-theme-accent,', detected)
     assert "Favorable" in comparison and "Unfavorable" in comparison
     assert "Lower with other on" in comparison
@@ -282,8 +283,9 @@ def test_outlying_stored_bound_shares_an_unclipped_axis_and_small_fit_keeps_inte
     assert "None detected" in _text(_candidate_row(overview, first))
     assert "insufficient evidence" in _text(detail).lower()
     assert "−1.6e+308" in _text(detail) and "+1.6e+308" in _text(detail)
-    assert "−5 [−7, −3]" in _accessible_numbers(_candidate_row(overview, second))
-    assert "−5 [−7, −3]" in _accessible_numbers(fragments.details[second])
+    assert "−5 USD/account [−7 USD/account, −3 USD/account]" in _accessible_numbers(
+        _candidate_row(overview, second)
+    )
     assert _assignment_rows(detail)[0][1:4] == ("2", "2", "27.5")
     axes = [re.findall(r"<text\b[^>]*>([^<]+)</text>", fragment) for fragment in (overview, detail)]
     assert axes[0] and axes[0] == axes[1]

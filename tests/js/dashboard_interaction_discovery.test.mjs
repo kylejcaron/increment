@@ -25,6 +25,7 @@ function page(configure) {
           explanation: "18 planned comparisons",
           overview: "Preview cards and other experiments",
           defaultScale: "relative",
+          absoluteLabel: "Save rate in percentage points",
           relative: {
             overview: "Change in relative lift across experiments",
             details: { "cards-v1": relativeDetail, "tips-v2": unavailableDetail },
@@ -120,6 +121,7 @@ function refreshInteractionPage(changeScan = () => {}) {
     scan.metricOptions.push({ key: "retention", label: "Retention" });
     scan.metrics.retention = {
       ...scan.metrics.save,
+      absoluteLabel: "Retention in percentage points",
       details: { ...scan.metrics.save.details, "tips-v2": retentionDetail },
     };
   };

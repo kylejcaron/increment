@@ -219,7 +219,6 @@ button.metric-select { cursor: pointer; }
 .interaction-detail { border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 16px; margin: 12px 0; }
 .interaction-detail h3 { margin-bottom: 8px; }
 .inc-interaction-pair { color: var(--accent); padding: 2px 4px; border: 0; background: transparent; text-align: left; overflow-wrap: anywhere; }
-.inc-interaction-units { color: var(--muted); font-size: 13px; }
 .inc-interaction-favorable { color: var(--favorable); font-weight: 600; }
 .inc-interaction-unfavorable { color: var(--unfavorable); font-weight: 600; }
 .inc-interaction-detected { color: var(--accent); font-weight: 600; }
@@ -752,12 +751,7 @@ button.metric-select { cursor: pointer; }
         <div class="interaction-controls" id="interaction-controls" hidden>
           <label>Metric <select id="interaction-metric"></select></label>
           <label>Go to experiment <select id="interaction-pair"></select></label>
-          <label>Effect scale
-            <select id="interaction-scale">
-              <option value="relative">Relative lift</option>
-              <option value="absolute">Absolute</option>
-            </select>
-          </label>
+          <label>Show effects as <select id="interaction-scale"></select></label>
         </div>
         <div class="table-surface native-output" id="interaction-overview" role="region" aria-label="Interactions across experiments" tabindex="0" hidden></div>
         <details id="interaction-methods" class="metric-detail plot-notes" hidden>
@@ -1310,7 +1304,12 @@ button.metric-select { cursor: pointer; }
     pair.replaceChildren(el('option', { value: '', text: 'Choose…' }),
       ...(packet?.pairs || []).map((option) => el('option', { value: option.id, text: option.label })));
     pair.disabled = !packet?.pairs?.length;
-    $('interaction-scale').value = interactionScale || packet?.defaultScale || 'absolute';
+    const scale = $('interaction-scale');
+    scale.replaceChildren(...(packet ? [
+      el('option', { value: 'relative', text: '% lift vs. control' }),
+      el('option', { value: 'absolute', text: packet.absoluteLabel }),
+    ] : []));
+    scale.value = interactionScale || packet?.defaultScale || 'absolute';
     $('interaction-status').textContent = packet?.status || scan?.status || 'Overlapping experiments were not checked for this snapshot.';
     $('interaction-overview').hidden = !view?.overview;
     mountNative($('interaction-overview'), view?.overview || '');

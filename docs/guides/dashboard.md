@@ -274,15 +274,15 @@ example closes the database.
 
 1. Select **Possible interaction** next to the experiment name to open a
    comparison where the adjusted interval for the change in absolute effect
-   excludes zero. It opens in **Relative lift** if that scale also detects a
+   excludes zero. It opens in **% lift vs. control** if that view also detects a
    change. The badge doesn't change the primary result. If it isn't shown,
    the interaction check may be inconclusive or unavailable.
 2. In **Interactions**, choose a **Metric**. Open a row by name or use
-   **Go to experiment**. **Relative lift** is the default when the metric has
-   a pair with a bounded relative comparison. Each lift uses the focal-off
-   group with the other experiment at the same setting as its baseline.
-   The lifts use `%`; their difference uses percentage points (`pp`).
-   Choose **Absolute** to see the original units (percentage points for rates).
+   **Go to experiment**. Under **Show effects as**, **% lift vs. control**
+   divides each effect by its baseline: the group with the focal experiment
+   off and the other experiment at the same setting. The difference between
+   those lifts is labeled `pp of lift`. The other option uses the metric’s
+   units: **Save rate in percentage points**, for example.
    Green and red mark effects in or against the metric's desired direction
    when the adjusted interval supports that conclusion. The change between
    effects uses an accent color when a change is detected; the color isn't a
@@ -290,7 +290,7 @@ example closes the database.
 3. Open a row that couldn't be estimated. **Outcomes by assignment** shows
    which groups were measured. An empty group prevents comparisons that need
    it; a baseline that is zero, negative, or too uncertain can prevent a
-   relative estimate even when **Absolute** is available.
+   relative estimate even when the result in the metric’s units is available.
    An empty group or a detected change is not a Health warning; Health flags
    verified missing or invalid inputs, such as a missing feed or broken
    assignment.
