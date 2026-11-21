@@ -137,6 +137,7 @@ def test_cupac_coverage_and_bias(metric, scenario):
 
 @pytest.mark.parametrize("metric", _METRICS)
 @pytest.mark.parametrize("scenario", _SCENARIOS)
+@pytest.mark.slow
 def test_cupac_coverage_smoke(metric, scenario):
     reps = 40
     covered = [

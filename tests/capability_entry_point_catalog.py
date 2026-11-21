@@ -604,6 +604,16 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
         "mean_ratio_conversion_cuped_fixed_horizon",
         from_switchback_panel=(_matrix("ratio-run-cuped-utc-error", SB),),
     ),
+    _case_row(
+        "cuped-external-prediction",
+        "Mean CUPED with a frozen external prediction, fixed horizon",
+        "cuped_external_prediction_fixed_horizon",
+        notes={
+            D: "Bind the named pre-exposure score on the CUPED sensitivity.",
+            A: "Reopen the artifact with the saved score and matching definition binding.",
+            M: "Replay a cube exported with the score's moments.",
+        },
+    ),
     _row(
         "mixed-covariate-cuped-fixed-horizon",
         "Mixed-covariate CUPED, fixed-horizon mean/ratio",

@@ -22,6 +22,9 @@ oracle. Switchback estimates a different quantity (a fixed-horizon contrast
 over a switchback schedule), so it is exercised independently rather than
 compared row for row with that oracle.
 
+For one frozen score per unit, see the [CUPAC recipe](../guides/cupac.md)
+and its [fixed-horizon mean comparison](#capability-ingresses-cuped-external-prediction).
+
 Regenerate the evidence-backed tables with `uv run python scripts/render_capability_table.py` (or check them with `uv run python scripts/render_capability_table.py --check`). A bounded behavioral probe is `uv run --extra demo --extra tables --extra dashboard python scripts/probe_capability_table.py --case encouragement_margin_guardrail`; it exercises only that named parity case, not the full corpus.
 
 <!-- capability-table:ingresses:start -->
@@ -34,6 +37,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 | Whole-window + daily scopes in one physical capture | [refused (conditional)](#capability-ingresses-shared-capture-multiview-from_unit_summary) | [supported (conditional)](#capability-ingresses-shared-capture-multiview-from_unit_panel) | [refused (conditional)](#capability-ingresses-shared-capture-multiview-from_switchback_panel) | [supported (conditional)](#capability-ingresses-shared-capture-multiview-from_definitions) | [supported (conditional)](#capability-ingresses-shared-capture-multiview-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-shared-capture-multiview-from_moments) |
 | Mean CUPED, fixed horizon | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_summary) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_panel) | [refused](#capability-ingresses-mean-cuped-fixed-horizon-from_switchback_panel) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_definitions) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_day_artifact) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_moments) |
 | Ratio CUPED, fixed horizon | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_unit_summary) | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_unit_panel) | [refused](#capability-ingresses-ratio-cuped-fixed-horizon-from_switchback_panel) | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_definitions) | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_unit_day_artifact) | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_moments) |
+| Mean CUPED with a frozen external prediction, fixed horizon | [supported](#capability-ingresses-cuped-external-prediction-from_unit_summary) | [supported](#capability-ingresses-cuped-external-prediction-from_unit_panel) | [refused](#capability-ingresses-cuped-external-prediction-from_switchback_panel) | [supported](#capability-ingresses-cuped-external-prediction-from_definitions) | [supported](#capability-ingresses-cuped-external-prediction-from_unit_day_artifact) | [supported](#capability-ingresses-cuped-external-prediction-from_moments) |
 | Mixed-covariate CUPED, fixed-horizon mean/ratio | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_unit_summary) | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_unit_panel) | [source limited (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_switchback_panel) | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_definitions) | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_moments) |
 | Ratio denominator-precision advisory, fixed horizon | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_summary) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_panel) | [refused](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_switchback_panel) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_definitions) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_moments) |
 | Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_unit_summary) | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_unit_panel) | [not comparable (conditional)](#capability-ingresses-informative-log-lift-priors-from_switchback_panel) | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_definitions) | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_moments) |
@@ -516,6 +520,71 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 **Recorded path:** `from_moments`
 
 **Status:** supported
+
+
+<span id="capability-ingresses-cuped-external-prediction"></span>
+
+### Mean CUPED with a frozen external prediction, fixed horizon
+
+<span id="capability-ingresses-cuped-external-prediction-from_unit_summary"></span>
+
+#### Mean CUPED with a frozen external prediction, fixed horizon — Unit summary
+
+**Recorded path:** `from_unit_summary`
+
+**Status:** supported
+
+<span id="capability-ingresses-cuped-external-prediction-from_unit_panel"></span>
+
+#### Mean CUPED with a frozen external prediction, fixed horizon — Unit panel
+
+**Recorded path:** `from_unit_panel`
+
+**Status:** supported
+
+<span id="capability-ingresses-cuped-external-prediction-from_switchback_panel"></span>
+
+#### Mean CUPED with a frozen external prediction, fixed horizon — Switchback panel
+
+**Recorded path:** `from_switchback_panel`
+
+**Status:** refused
+
+**Classification:** SOURCE
+
+**Codes:** `source.frame.switchback.metric`
+
+**Reason:** switchback procedures do not use CUPED.
+
+<span id="capability-ingresses-cuped-external-prediction-from_definitions"></span>
+
+#### Mean CUPED with a frozen external prediction, fixed horizon — Definitions
+
+**Recorded path:** `from_definitions`
+
+**Status:** supported
+
+**Note:** Bind the named pre-exposure score on the CUPED sensitivity.
+
+<span id="capability-ingresses-cuped-external-prediction-from_unit_day_artifact"></span>
+
+#### Mean CUPED with a frozen external prediction, fixed horizon — Unit-day artifact
+
+**Recorded path:** `from_unit_day_artifact`
+
+**Status:** supported
+
+**Note:** Reopen the artifact with the saved score and matching definition binding.
+
+<span id="capability-ingresses-cuped-external-prediction-from_moments"></span>
+
+#### Mean CUPED with a frozen external prediction, fixed horizon — Portable moments
+
+**Recorded path:** `from_moments`
+
+**Status:** supported
+
+**Note:** Replay a cube exported with the score's moments.
 
 
 <span id="capability-ingresses-mixed-covariate-cuped-fixed-horizon"></span>

@@ -1172,6 +1172,189 @@ def _fixed_horizon_case(
     )
 
 
+def _cuped_external_prediction_case() -> ParityCase:
+    """Compare one frozen score bound to the scalar CUPED sensitivity."""
+    import json
+
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+
+    scores = [2.0 + i % 9 + i / 64 for i in range(80)]
+    summary = pd.DataFrame(
+        [
+            {
+                "user_id": f"u{i:02}",
+                "variant": "treatment" if i % 2 else "control",
+                "prediction": prediction,
+                "revenue": 20.0 + 0.75 * prediction + (i % 7) / 8 + i % 2,
+            }
+            for i, prediction in enumerate(scores)
+        ]
+    )
+    times = (ds._PURCHASE_AT, dt.datetime(2025, 1, 11, 4))
+    panel = pd.concat(
+        [
+            summary.assign(date=at.date(), revenue=summary["revenue"] * fraction)
+            for at, fraction in zip(times, (0.25, 0.75), strict=True)
+        ],
+        ignore_index=True,
+    )
+    allocation = {"control": 0.5, "treatment": 0.5}
+    design = Randomized(control_group="control", allocation=allocation)
+    plan = AnalysisPlan(primary="revenue")
+    decision = Method.unadjusted(name="unadjusted")
+    metric = MetricSpec(
+        name="revenue",
+        preferred_direction="increase",
+        decision_method=decision,
+        sensitivity_methods=(Method.cuped(covariates="prediction"),),
+    )
+
+    def definitions(*, artifact: bool) -> Bound:
+        outcomes = summary[["user_id", "variant", "revenue"]]
+        rows = [
+            row
+            for user_id, variant, revenue in outcomes.itertuples(index=False, name=None)
+            for row in (
+                ds._row(
+                    user_id,
+                    ds._EXPOSURE_AT,
+                    "exposure",
+                    group_id=variant,
+                    experiment_id="exp",
+                ),
+                ds._row(user_id, times[0], "purchase", revenue=revenue * 0.25),
+                ds._row(user_id, times[1], "purchase", revenue=revenue * 0.75),
+                ds._row(user_id, ds._FRESHNESS_PAD_AT, "purchase", revenue=0.0),
+            )
+        ]
+        binding = CupedCovariateBinding(
+            name="prediction", kind="continuous", property="prediction", source="scores"
+        )
+        warehouse_plan = AnalysisPlan(
+            primary=ExperimentMetric(
+                metric="revenue",
+                decision_method=MethodSpec(name="unadjusted", procedure="unadjusted"),
+                sensitivity_methods=(
+                    MethodSpec(name="cuped", variance_reduction="cuped", covariates=(binding,)),
+                ),
+            )
+        )
+        payload = ds.definitions_dict(plan=warehouse_plan, allocation=allocation)
+        payload["experiments"][0]["n_pre_periods"] = 0
+        payload["metrics"] = payload["metrics"][:1]
+        payload["metrics"][0]["window_days"] = 2
+        events = payload["fact_sources"][0]
+        events["facts"] = events["facts"][:2]
+        events["properties"] = []
+        payload["fact_sources"].append(
+            {
+                "name": "scores",
+                "sql": "SELECT user_id, event_at, prediction FROM scores",
+                "timestamp_column": "event_at",
+                "entities": ["user_id"],
+                "facts": [],
+                "properties": [
+                    {
+                        "name": "prediction",
+                        "column": "prediction",
+                        "dtype": "float",
+                        "as_of": "pre_exposure",
+                    }
+                ],
+            }
+        )
+        con = ds.duckdb_connection(rows)
+        try:
+            con.create_table(
+                "scores",
+                obj=summary[["user_id", "prediction"]].assign(event_at=ds._PRE_PURCHASE_AT),
+            )
+            native = _definitions_file_binding(con, "cupac.yaml", json.dumps(payload), "exp")
+        except BaseException:
+            con.disconnect()
+            raise
+        # The named property is in the artifact's saved data, not its pre-period extension.
+        return (
+            _publish_and_adopt(con, native, kinds=())
+            if artifact
+            else _track_connection(native, con)
+        )
+
+    def frame(*, is_panel: bool = False) -> Bound:
+        shape: dict[str, Any] = (
+            {"shape": "panel", "date": "date"} if is_panel else {"shape": "summary"}
+        )
+        return builders.from_frame(
+            panel if is_panel else summary,
+            unit="user_id",
+            group="variant",
+            design=design,
+            metrics=[metric],
+            plan=plan,
+            **shape,
+        )
+
+    def switchback() -> Bound:
+        return builders.from_switchback_frame(
+            pd.DataFrame(
+                [
+                    {
+                        "unit": unit,
+                        "cycle": 0,
+                        "period": period,
+                        "step": 0,
+                        "arm": ("control", "treatment")[period],
+                        "revenue": 10.0 + period,
+                        "prediction": prediction,
+                    }
+                    for unit, prediction in zip(("a", "b"), scores[:2], strict=True)
+                    for period in (0, 1)
+                ]
+            ),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="arm",
+            metrics=[MetricSpec(name=metric.name, sensitivity_methods=metric.sensitivity_methods)],
+            identification=design,
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+            ),
+        )
+
+    def probe(results: Any) -> None:
+        assert {(row.method, row.method_role) for row in results} == {
+            ("unadjusted", "decision"),
+            ("cuped", "sensitivity"),
+        }
+        for result in results:
+            result.require_lift()
+
+    return ParityCase(
+        id="cuped_external_prediction_fixed_horizon",
+        build={
+            "from_definitions": partial(definitions, artifact=False),
+            "from_unit_day_artifact": partial(definitions, artifact=True),
+            "from_unit_summary": frame,
+            "from_unit_panel": partial(frame, is_panel=True),
+            "from_moments": lambda: _export_and_replay(
+                frame(), [MetricSpec(name="revenue", preferred_direction="increase")]
+            ),
+            "from_switchback_panel": switchback,
+        },
+        metrics=("revenue",),
+        readout_probe=probe,
+        moment_input_rows=partial(_export_factory_rows_and_close, frame),
+        slow=True,
+    )
+
+
 def _mean_ratio_conversion_cuped_case() -> ParityCase:
     return _fixed_horizon_case(
         id="mean_ratio_conversion_cuped_fixed_horizon",
@@ -10175,6 +10358,7 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _encouragement_multi_metric_breakout_case(),
     _inferred_null_metric_case(),
     _switchback_neighboring_integer_case(),
+    _cuped_external_prediction_case(),
     _mean_ratio_conversion_cuped_case(),
     _artifact_context_format_two_case(),
     _artifact_context_format_one_refusal_case(),

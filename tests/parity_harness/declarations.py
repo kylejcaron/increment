@@ -1073,6 +1073,18 @@ PARITY_DECLARATIONS = MappingProxyType(
             waive=(("from_switchback_panel", "SOURCE: switchback is a different design."),),
             refusals=(("from_switchback_panel", "source.frame.switchback.metric"),),
         ),
+        "cuped_external_prediction_fixed_horizon": ParityDeclaration(
+            attempted=(
+                "from_definitions",
+                "from_unit_day_artifact",
+                "from_unit_summary",
+                "from_unit_panel",
+                "from_moments",
+                "from_switchback_panel",
+            ),
+            waive=(("from_switchback_panel", "SOURCE: switchback procedures do not use CUPED."),),
+            refusals=(("from_switchback_panel", "source.frame.switchback.metric"),),
+        ),
         "mean_ratio_conversion_cuped_fixed_horizon": ParityDeclaration(
             attempted=(
                 "from_definitions",

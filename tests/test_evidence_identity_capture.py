@@ -439,6 +439,9 @@ def test_frozen_operations_merge_expands_payloads_and_keeps_disjoint_coordinates
     _write_operation_inventory(
         tmp_path, "shared-metric-definitions", {"shared": {"from_moments": absence}}
     )
+    _write_operation_inventory(
+        tmp_path, "cupac-external-prediction", {"new": {"from_unit_panel": refusal}}
+    )
 
     record = capture_script.load_frozen_operations_capture(tmp_path)
 
@@ -448,7 +451,7 @@ def test_frozen_operations_merge_expands_payloads_and_keeps_disjoint_coordinates
             "from_unit_panel": refusal,
             "from_moments": absence,
         },
-        "new": {"from_moments": absence},
+        "new": {"from_moments": absence, "from_unit_panel": refusal},
     }
     assert record["cutovers"] == {
         cutover: {"schema_version": 1, "cutover": cutover}
@@ -457,6 +460,7 @@ def test_frozen_operations_merge_expands_payloads_and_keeps_disjoint_coordinates
             "pre-kernel-asof",
             "relative-prior-v1",
             "shared-metric-definitions",
+            "cupac-external-prediction",
         )
     }
 
@@ -481,8 +485,13 @@ def test_frozen_operations_reject_duplicate_scenario_ingress(tmp_path: Path) -> 
 
 @pytest.mark.integration
 def test_frozen_operations_require_every_cutover(tmp_path: Path) -> None:
-    for cutover in ("pre-kernel", "pre-kernel-asof", "relative-prior-v1"):
+    for cutover in (
+        "pre-kernel",
+        "pre-kernel-asof",
+        "relative-prior-v1",
+        "shared-metric-definitions",
+    ):
         _write_operation_inventory(tmp_path, cutover, {})
 
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(FileNotFoundError, match="cupac-external-prediction"):
         capture_script.load_frozen_operations_capture(tmp_path)
