@@ -6,7 +6,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from fractions import Fraction
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 import numpy as np
 from pydantic import (
@@ -28,6 +28,7 @@ from increment._unit_cycle import (
     _refuse as _unit_refuse,
 )
 from increment.compatibility import Unsupported, refuse_unsupported
+from increment.declarations import freeze, thaw
 from increment.errors import (
     CodedModel,
     InvalidRequestError,
@@ -40,27 +41,41 @@ from increment.estimation.arm_contract import (
     ContrastCompatibilityRequest,
 )
 from increment.estimation.contrast_results import (
+    ContrastAggregation,
     ContrastResult,
     IndependenceGrain,
     RandomizationLaw,
+    _contrast_identity,
+    _FixedCountMetadata,
+    _valid_missing_response,
     _validate_assignment_metadata,
     _validate_order_counts,
     _validate_replication_counts,
     _validate_retained_window,
 )
-from increment.estimation.decision_types import ContrastDecisionProcedure, FixedInference, NoFamily
+from increment.estimation.decision_types import (
+    ContrastDecisionProcedure,
+    ContrastHypothesisKey,
+    DecisionComputation,
+    DecisionFailure,
+    FixedInference,
+    NoFamily,
+    PValueEvidence,
+)
 from increment.estimation.results import (
     Estimate,
     RejectionSide,
     contrast_evidence_available,
+    contrast_p_value,
     contrast_rejection_side,
     contrast_stat_sig,
 )
+from increment.estimation.switchback_metrics import (
+    SwitchbackMetricFit,
+    switchback_cuped,
+    switchback_ratio,
+)
 from increment.semantics.unit_cycle import UnitCycleVarianceEnvelope
-
-if TYPE_CHECKING:
-    from increment.decision import DecisionComputation
-
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -91,6 +106,7 @@ _REFUSALS = refusals(
         "estimation.contrast.procedure_alpha": "procedure alpha must be in (0, 1), got {procedure}",
         "estimation.contrast.one_sided_alpha": "one-sided alpha={procedure} doubles to alpha_eff={alpha_eff} >= 1: no displayable two-sided interval exists at that level",
         "estimation.contrast.contrast_interval_half": "contrast interval half-width must be finite",
+        "estimation.contrast.metric_components": "The retained components for {metric!r} must match the declared metric and independent replicate count.",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -152,7 +168,7 @@ class ContrastPartition(CodedModel, BaseModel):
     metric: str = Field(min_length=1)
     aggregation: Literal["sum", "any"]
     probability_ct: float = Field(gt=0.0, lt=1.0)
-    randomization_law: RandomizationLaw
+    randomization_law: Literal["independent_bernoulli_order", "shared_schedule"]
     independence_grain: IndependenceGrain
     washout_steps: int = Field(default=0, ge=0, strict=True)
     carryover_order: int = Field(ge=0, strict=True)
@@ -273,7 +289,7 @@ class ContrastPartition(CodedModel, BaseModel):
         return self
 
 
-class ContrastStats(CodedModel, BaseModel):
+class ContrastStats(_FixedCountMetadata):
     """Centered moments over the declared independent replicate grain.
 
     Unit-cycle envelope evidence additionally requires ``exact_delta_total``,
@@ -284,7 +300,7 @@ class ContrastStats(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
     metric: str = Field(min_length=1)
     aggregation: Literal["sum", "any"]
-    probability_ct: float = Field(gt=0.0, lt=1.0)
+    probability_ct: float | None = Field(gt=0.0, lt=1.0)
     randomization_law: RandomizationLaw
     independence_grain: IndependenceGrain
     washout_steps: int = Field(default=0, ge=0, strict=True)
@@ -319,14 +335,30 @@ class ContrastStats(CodedModel, BaseModel):
     def _distinct_groups(self) -> ContrastStats:
         _validate_retained_window(self.observation_steps, self.retained_steps, self.carryover_order)
         _validate_assignment_metadata(self.randomization_law, self.independence_grain)
+        self._validate_exposure(self.randomization_law, self.probability_ct)
         _validate_replication_counts(
-            self.randomization_law, self.n_units, self.n_cycles, self.n_blocks
+            self.randomization_law,
+            self.independence_grain,
+            self.n_units,
+            self.n_cycles,
+            self.n_blocks,
         )
         _validate_order_counts(
             self.randomization_law, self.n_cycles, self.n_blocks, self.ct_cycles, self.tc_cycles
         )
         if self.control_group == self.treatment_group:
             _raise("estimation.contrast.contrast_stats.control_group_treatment")
+        if self.randomization_law == "fixed_count":
+            if self.mean_slope != 1 or any(
+                value is not None
+                for value in (
+                    self.minimum_cycles_per_unit,
+                    self.maximum_cycles_per_unit,
+                    self.exact_delta_total,
+                )
+            ):
+                _unit_refuse("unit_cycle.sufficient_state", reason="invalid_fixed_count_metadata")
+            return self
         metadata = (
             self.mean_slope,
             self.minimum_cycles_per_unit,
@@ -352,6 +384,104 @@ class ContrastStats(CodedModel, BaseModel):
             ):
                 _unit_refuse("unit_cycle.sufficient_state", reason="inconsistent_unit_counts")
         return self
+
+
+class _MetricDesign(_FixedCountMetadata):
+    """Design metadata available independently of a metric's measurements."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
+    metric: str = Field(min_length=1)
+    aggregation: ContrastAggregation
+    forecast_column: str | None = Field(default=None, min_length=1, exclude_if=lambda v: v is None)
+    probability_ct: float | None = Field(gt=0, lt=1)
+    randomization_law: RandomizationLaw
+    independence_grain: IndependenceGrain
+    washout_steps: int = Field(default=0, ge=0, strict=True)
+    carryover_order: int = Field(ge=0, strict=True)
+    observation_steps: int = Field(ge=1, strict=True)
+    retained_steps: int = Field(ge=1, strict=True)
+    identifying_assumption: Literal["no_residual_carryover_after_discarded_steps"] = (
+        "no_residual_carryover_after_discarded_steps"
+    )
+    control_group: str = Field(min_length=1)
+    treatment_group: str = Field(min_length=1)
+    n_units: int = Field(ge=1, strict=True)
+    n_cycles: int = Field(ge=1, strict=True)
+    n_blocks: int | None = Field(default=None, ge=1, strict=True)
+    ct_cycles: int | None = Field(default=None, ge=0, strict=True)
+    tc_cycles: int | None = Field(default=None, ge=0, strict=True)
+    mean_slope: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    minimum_cycles_per_unit: int | None = Field(default=None, ge=1, strict=True)
+    maximum_cycles_per_unit: int | None = Field(default=None, ge=1, strict=True)
+
+    @model_validator(mode="after")
+    def _valid_schedule(self):
+        _validate_retained_window(self.observation_steps, self.retained_steps, self.carryover_order)
+        _validate_assignment_metadata(self.randomization_law, self.independence_grain)
+        self._validate_exposure(self.randomization_law, self.probability_ct)
+        _validate_replication_counts(
+            self.randomization_law,
+            self.independence_grain,
+            self.n_units,
+            self.n_cycles,
+            self.n_blocks,
+        )
+        _validate_order_counts(
+            self.randomization_law, self.n_cycles, self.n_blocks, self.ct_cycles, self.tc_cycles
+        )
+        if self.control_group == self.treatment_group:
+            _raise("estimation.contrast.contrast_stats.control_group_treatment")
+        if self.forecast_column is not None and self.aggregation != "sum":
+            _raise("estimation.contrast.metric_components", metric=self.metric)
+        return self
+
+
+class SwitchbackMetricStats(_MetricDesign):
+    """Exact joint arm totals or signed outcome and forecast contrasts, one per replicate."""
+
+    ratio_components: tuple[tuple[Fraction, Fraction, Fraction, Fraction], ...] = ()
+    cuped_outcomes: tuple[Fraction, ...] = ()
+    cuped_predictors: tuple[Fraction, ...] = ()
+
+    @model_validator(mode="after")
+    def _component_counts(self):
+        n = self.n_blocks if self.independence_grain == "shared_block" else self.n_units
+        if self.aggregation == "ratio":
+            valid = len(self.ratio_components) == n and not (
+                self.cuped_outcomes or self.cuped_predictors
+            )
+        else:
+            valid = (
+                self.forecast_column is not None
+                and not self.ratio_components
+                and len(self.cuped_outcomes) == len(self.cuped_predictors) == n
+            )
+        if not valid:
+            _raise("estimation.contrast.metric_components", metric=self.metric)
+        return self
+
+
+class UnavailableContrastStats(_MetricDesign):
+    """Complete assignment evidence with missing measurements for this metric only."""
+
+    failure_code: Literal["source.frame.switchback.response_unobserved"]
+    failure_context: Mapping[str, object]
+
+    @model_validator(mode="after")
+    def _missing_measurements(self):
+        if not _valid_missing_response(
+            self.failure_context, self.metric, self.control_group, self.treatment_group
+        ):
+            _raise("estimation.contrast.metric_components", metric=self.metric)
+        object.__setattr__(self, "failure_context", freeze(self.failure_context))
+        return self
+
+    @field_serializer("failure_context")
+    def _dump_context(self, value):
+        return thaw(value)
+
+
+type ContrastEvidenceStats = ContrastStats | SwitchbackMetricStats | UnavailableContrastStats
 
 
 def _unit_centered_moments(values: Any) -> tuple[Any, Any, Any]:
@@ -589,6 +719,8 @@ def _envelope_result(
         or stats.metric != envelope.metric
         or stats.control_group != envelope.control_group
         or stats.treatment_group != envelope.treatment_group
+        or envelope.assignment.sequence.scheme != "independent_bernoulli_order"
+        or stats.probability_ct is None
         or stats.probability_ct != envelope.assignment.sequence.probability_ct
         or stats.washout_steps != window.washout_steps
         or stats.observation_steps != window.observation_steps
@@ -705,19 +837,10 @@ def _envelope_result(
     )
 
 
-def _estimate_contrast_result(
-    stats: ContrastStats, procedure: ContrastDecisionProcedure
-) -> ContrastResult:
-    """Estimate an HT contrast using its declared unit envelope or t reference.
-
-    ``ContrastStats`` carries shifted deltas over independent units or blocks:
-    ``reference_delta`` is one observed replicate value and ``mean_residual`` is
-    the mean of all replicate values after subtracting that reference.  Reconstruct
-    the t-reference point estimate with ``math.fsum`` so a large offset never
-    gets subtracted from an unshifted online mean. Envelope evidence instead
-    uses the exact raw-row HT total, rounding its mean once for reporting.
-    """
-    if not isinstance(stats, ContrastStats):
+def _validated_inputs(
+    stats: ContrastEvidenceStats, procedure: ContrastDecisionProcedure
+) -> tuple[ContrastEvidenceStats, ContrastDecisionProcedure]:
+    if not isinstance(stats, (ContrastStats, SwitchbackMetricStats, UnavailableContrastStats)):
         _raise("estimation.contrast.stats_contraststats", stats=type(stats).__name__)
     if not isinstance(procedure, ContrastDecisionProcedure):
         _raise(
@@ -740,22 +863,29 @@ def _estimate_contrast_result(
             Unsupported("contrast.inference"),
             message="switchback contrasts do not support sequential inference",
         )
-    if stats.aggregation not in ("sum", "any"):
+    if isinstance(stats, ContrastStats) and stats.aggregation not in ("sum", "any"):
         refuse_unsupported(
             Unsupported("contrast.metric"),
-            message=(
-                "switchback contrasts support only additive sum or conversion any "
-                "aggregation; ratio, quantile, and retention adaptations are unsupported"
-            ),
+            message=("additive switchback statistics require sum or any aggregation"),
         )
 
     # Both models are frozen, but model_construct/object.__setattr__ can still
     # create invalid instances.  Revalidation is therefore intentional here,
     # not redundant with the constructor.
-    stats = ContrastStats.model_validate(stats)
+    stats = type(stats).model_validate(stats)
     procedure = ContrastDecisionProcedure.model_validate(procedure)
-    shared = stats.randomization_law == "shared_schedule"
-    if not shared and procedure.reference is None:
+    shared = stats.independence_grain == "shared_block"
+    forecast = None if isinstance(stats, ContrastStats) else stats.forecast_column
+    fitted = stats.aggregation == "ratio" or forecast is not None
+    if fitted and procedure.reference is not None:
+        _unit_refuse(
+            "unit_cycle.reference_mismatch",
+            metric=stats.metric,
+            reason="unadjusted_reference_on_joint_metric",
+        )
+    if forecast != procedure.forecast_column:
+        _unit_refuse("unit_cycle.reference_mismatch", metric=stats.metric, reason="forecast_column")
+    if not shared and not fitted and procedure.reference is None:
         _unit_refuse(
             "unit_cycle.envelope_required",
             reason="unit_cycle_reference_required",
@@ -770,10 +900,7 @@ def _estimate_contrast_result(
             stats=stats.metric,
         )
 
-    if isinstance(procedure.reference, UnitCycleVarianceEnvelope):
-        return _envelope_result(stats, procedure, procedure.reference)
-
-    return _t_reference_result(stats, procedure, shared=shared)
+    return stats, procedure
 
 
 def _t_reference_result(
@@ -872,6 +999,9 @@ def _t_reference_result(
         estimand=estimand,
         aggregation=stats.aggregation,
         probability_ct=stats.probability_ct,
+        periods_per_cycle=stats.periods_per_cycle,
+        treated_periods=stats.treated_periods,
+        treatment_probability=stats.treatment_probability,
         randomization_law=stats.randomization_law,
         independence_grain=stats.independence_grain,
         carryover_order=stats.carryover_order,
@@ -898,20 +1028,135 @@ def _t_reference_result(
     )
 
 
+def _metric_row(
+    stats: _MetricDesign,
+    procedure: ContrastDecisionProcedure,
+    estimate: Estimate | None,
+    *,
+    se: float | None = None,
+    dof: int | None = None,
+    failure: DecisionFailure | None = None,
+) -> ContrastResult:
+    method, reference, estimand = _contrast_identity(
+        stats.aggregation,
+        stats.forecast_column,
+        stats.independence_grain,
+        procedure.reference,
+        procedure.alternative,
+    )
+    return ContrastResult(
+        **stats.model_dump(include=set(_MetricDesign.model_fields)),
+        method=method,
+        reference=reference,
+        estimand=estimand,
+        reference_spec=procedure.reference,
+        role=procedure.role,
+        alternative=procedure.alternative,
+        null_abs=procedure.null_abs,
+        preferred_direction=procedure.preferred_direction,
+        alpha=procedure.alpha,
+        estimate=estimate,
+        standard_error=se,
+        dof=dof,
+        failure_code=None if failure is None else failure.code,
+        failure_context=None if failure is None else failure.context,
+    )
+
+
+def unavailable_contrast(
+    stats: SwitchbackMetricStats | UnavailableContrastStats,
+    procedure: ContrastDecisionProcedure,
+    failure: DecisionFailure,
+) -> ContrastResult:
+    """Project a requested cell whose estimator returned no point."""
+    return _metric_row(stats, procedure, None, failure=failure)
+
+
+def _metric_endpoint(point: float, se: float, signed_critical: float) -> float:
+    bound = point + signed_critical * se
+    if math.isfinite(bound) or not math.isfinite(signed_critical):
+        return bound
+    # The half-width can overflow before cancellation with the point.
+    try:
+        return float(Fraction(point) + Fraction(signed_critical) * Fraction(se))
+    except OverflowError:
+        return bound
+
+
+def _metric_computation(
+    stats: SwitchbackMetricStats | UnavailableContrastStats,
+    procedure: ContrastDecisionProcedure,
+) -> DecisionComputation[ContrastResult]:
+    key = ContrastHypothesisKey(stats.metric, stats.control_group, stats.treatment_group)
+    if isinstance(stats, UnavailableContrastStats):
+        failure = DecisionFailure(key, stats.failure_code, stats.failure_context)
+        return DecisionComputation(results=(), evidence={}, failures={key: failure})
+    fit = (
+        switchback_ratio(stats.ratio_components, alpha=procedure.alpha)
+        if stats.aggregation == "ratio"
+        else switchback_cuped(stats.cuped_outcomes, stats.cuped_predictors)
+    )
+    if fit.reason is None:
+        assert fit.point is not None and fit.se is not None and fit.dof is not None
+        tail = procedure.alpha / 2 if procedure.alternative == "two-sided" else procedure.alpha
+        try:
+            critical = student_t_isf(tail, fit.dof)
+        except ArithmeticError:
+            critical = math.nan
+        lower = (
+            None
+            if procedure.alternative == "less"
+            else _metric_endpoint(fit.point, fit.se, -critical)
+        )
+        upper = (
+            None
+            if procedure.alternative == "greater"
+            else _metric_endpoint(fit.point, fit.se, critical)
+        )
+        if critical > 0 and all(
+            v is None or (math.isfinite(v) and v != fit.point) for v in (lower, upper)
+        ):
+            estimate = Estimate(
+                value=fit.point,
+                lb=lower,
+                ub=upper,
+                open_side="upper" if upper is None else "lower" if lower is None else None,
+                alpha=procedure.alpha,
+                level=math.fsum((1.0, -procedure.alpha)),
+            )
+            row = _metric_row(stats, procedure, estimate, se=fit.se, dof=fit.dof)
+            p = contrast_p_value(row)
+            assert p is not None
+            evidence = PValueEvidence(key, row.method, p, row.reference)
+            return DecisionComputation(results=(row,), evidence={key: evidence}, failures={})
+        fit = SwitchbackMetricFit(point=fit.point, reason="numeric_range")
+    context: dict[str, object] = {"reason": fit.reason, "metric": stats.metric}
+    if fit.arm is not None:
+        context["arm"] = stats.treatment_group if fit.arm == "treatment" else stats.control_group
+    failure = DecisionFailure(key, "evidence.p_value.unavailable", context)
+    rows = (
+        ()
+        if fit.point is None
+        else (_metric_row(stats, procedure, Estimate(value=fit.point), failure=failure),)
+    )
+    return DecisionComputation(results=rows, evidence={}, failures={key: failure})
+
+
 def estimate_contrast(
-    stats: ContrastStats, procedure: ContrastDecisionProcedure
+    stats: ContrastEvidenceStats, procedure: ContrastDecisionProcedure
 ) -> DecisionComputation[ContrastResult]:
     """Estimate one contrast and retain its typed decision evidence."""
     from scipy.stats import t as _t
 
-    from increment.estimation.decision_types import (
-        ContrastHypothesisKey,
-        DecisionComputation,
-        DecisionFailure,
-        PValueEvidence,
-    )
-
-    result = _estimate_contrast_result(stats, procedure)
+    stats, procedure = _validated_inputs(stats, procedure)
+    if not isinstance(stats, ContrastStats):
+        return _metric_computation(stats, procedure)
+    if isinstance(procedure.reference, UnitCycleVarianceEnvelope):
+        result = _envelope_result(stats, procedure, procedure.reference)
+    else:
+        result = _t_reference_result(
+            stats, procedure, shared=stats.independence_grain == "shared_block"
+        )
     hypothesis = ContrastHypothesisKey(result.metric, result.control_group, result.treatment_group)
 
     if not contrast_evidence_available(result):
@@ -928,8 +1173,9 @@ def estimate_contrast(
         )
         return DecisionComputation(results=(result,), evidence={hypothesis: evidence}, failures={})
     assert result.standard_error is not None and result.dof is not None
+    assert result.estimate is not None
     statistic = (result.estimate.value - result.null_abs) / result.standard_error
-    if result.randomization_law == "independent_bernoulli_order":
+    if result.independence_grain == "unit_cycle":
         _, p_value = _unit_t_reference(
             result.estimate.value,
             result.standard_error,

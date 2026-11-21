@@ -1244,6 +1244,7 @@ Run calibration commands from the checkout with `uv run python -m`:
 | `calibration.inference_diagnostics` | Inference and winsorization diagnostics |
 | `calibration.sequential` | Sequential-inference research campaign |
 | `calibration.unit_cycle` | Unit-cycle switchback research campaign |
+| `calibration.randomized_saturation` | Exact two-stage spillover evaluation and model-specific power grid |
 | `calibration.binomial_grid` | Deterministic rare-event probability integration |
 | `calibration.bernoulli_prior` | Bernoulli prior-weight study |
 | `calibration.ratio_precision` | Ratio-denominator precision study |

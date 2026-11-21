@@ -1,4 +1,4 @@
-# Traced on commit: 12f6f6e96e231336a651bfbb6001bbc501df116b
+# Traced on commit: d628a43ec954281b507401c162517f733cec307c
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -21,6 +21,8 @@ increment._exploratory
 increment._finite_sample_refusals
 increment._frame_moments
 increment._frame_panel
+increment._frame_switchback_metrics
+increment._frame_switchback_observations
 increment._frame_validation
 increment._health
 increment._identity
@@ -101,6 +103,7 @@ increment.estimation.asymptotic_mean
 increment.estimation.binomial_rr
 increment.estimation.contrast
 increment.estimation.contrast_results
+increment.estimation.conversion_delta
 increment.estimation.conversion_route
 increment.estimation.crossfit
 increment.estimation.cuped
@@ -129,6 +132,7 @@ increment.estimation.results
 increment.estimation.risk_difference
 increment.estimation.sequential
 increment.estimation.sequential_result
+increment.estimation.switchback_metrics
 increment.estimation.variance
 increment.estimation.winsor
 increment.estimators
@@ -143,6 +147,19 @@ increment.kernel.ports
 increment.kernel.program_refusals
 increment.kernel.resolver
 increment.plan
+increment.power
+increment.power._binomial
+increment.power._noncentral_t
+increment.power._search
+increment.power._shared
+increment.power._validation
+increment.power.core
+increment.power.curve
+increment.power.pairwise
+increment.power.sequential
+increment.power.switchback
+increment.power.switchback_profiles
+increment.power.unit_cycle
 increment.query
 increment.query._artifact_float
 increment.query._cuped_cells

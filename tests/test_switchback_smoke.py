@@ -56,6 +56,7 @@ def test_public_switchback_surface_smoke():
         ),
     )
     result = contrast_rows(view_readout(experiment, resolver))[0]
+    assert result.estimate is not None
     assert math.isfinite(result.estimate.value)
     assert assignment_diagnostic(experiment, resolver).n_units == 2
 
@@ -98,6 +99,7 @@ def test_zero_variance_contrast_is_not_stat_sig():
         ),
     )
     result = contrast_rows(view_readout(experiment, resolver))[0]
+    assert result.estimate is not None
     assert result.standard_error == 0.0
     assert result.estimate.lb is None and result.estimate.ub is None
     row = contrast_results_to_readout([result])[0]
@@ -158,6 +160,7 @@ def test_shared_schedule_public_surface_smoke():
         ),
     )
     result = contrast_rows(view_readout(experiment, resolver))[0]
+    assert result.estimate is not None
     assert math.isfinite(result.estimate.value)
     assert result.estimate.value == pytest.approx(6.0)
     assert result.method == "switchback_block_t"
@@ -217,6 +220,7 @@ def test_shared_schedule_zero_variance_contrast_is_not_stat_sig():
     result = results[0]
     assert result.standard_error == 0.0
     estimate = result.estimate
+    assert estimate is not None
     assert estimate.value == pytest.approx(5.0)
     assert (estimate.lb, estimate.ub, estimate.level, estimate.alpha) == (None, None, None, None)
     frame = results.to_frame(backend="polars")
@@ -375,6 +379,7 @@ def test_public_retained_window_metadata_and_effect_round_trip(shared, carryover
     result = contrast_rows(results)[0]
     retained = 3 - carryover_order
     expected_se = retained * (math.sqrt(10 / 12) if shared else math.sqrt(8 / 6))
+    assert result.estimate is not None
     assert result.estimate.value == pytest.approx(6 * retained)
     assert result.standard_error == pytest.approx(expected_se)
     assert result.dof == (3 if shared else 2)

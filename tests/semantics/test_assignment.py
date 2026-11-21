@@ -54,7 +54,7 @@ def test_switchback_assignment_rejects_sequence_and_window_violations():
         lambda: SwitchbackWindow(washout_steps=-1, observation_steps=1),
         lambda: SwitchbackWindow(washout_steps=0, observation_steps=0),
         lambda: SwitchbackAssignment(
-            periods_per_cycle=3,  # ty: ignore[invalid-argument-type]
+            periods_per_cycle=3,
             sequence=IndependentBernoulliOrder(),
             window=SwitchbackWindow(washout_steps=0, observation_steps=1),
         ),

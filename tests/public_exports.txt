@@ -40,6 +40,7 @@ from_definitions: Build an experiment and reader from warehouse definitions, or 
 load_definitions: List experiments and their declared metrics from YAML without connecting.
 from_unit_day_artifact: Build an experiment and reader from a unit-day artifact.
 from_switchback_frame: Build an experiment and reader from a switchback panel.
+SwitchbackObservationSchedule: Match observed outcomes to a known assignment roster and horizon.
 from_moments: Build an experiment and reader from retained moments.
 render: Display qualified result cells for review.
 
@@ -239,6 +240,7 @@ Assignment: Type the assignment declaration accepted by planning and switchback 
 ParallelAssignment: Declare ordinary parallel-arm assignment for planning.
 IndependentBernoulliOrder: Declare independent per-unit switchback orders.
 SharedScheduleOrder: Declare one switchback schedule shared by every unit.
+FixedCountOrder: Randomly treat a fixed number of periods in each switchback cycle.
 SwitchbackWindow: Declare a switchback washout and observation window.
 SwitchbackAssignment: Declare a switchback assignment mechanism.
 ParallelStudyEnvelope: Bind a parallel design to its study identity.
@@ -285,6 +287,11 @@ EvidenceExecutionContext: Hold one pinned evidence scope across a run.
 [increment.power]
 SwitchbackBaseline: Supply switchback planning variance and correlation assumptions.
 SwitchbackPowerResult: Read a switchback power solver's answer.
+ContrastDecisionProcedure: Specify the additive null, tail and significance level for a switchback power plan.
+SwitchbackTrajectoryBaseline: Retain whole pilot trajectories for unequal-exposure planning.
+SwitchbackConversionBaseline: Specify retained-window event risk for conversion planning.
+SwitchbackProfilePlan: Read power bounds and the first resolved size or effect on the tested grid.
+switchback_profile_plan: Estimate power over a grid of switchback sizes and effects, counting refused experiments.
 switchback_achieved_power: Compute achieved power for a switchback design.
 switchback_minimum_detectable_effect: Compute the minimum detectable effect of a switchback design.
 switchback_required_blocks_or_units: Size a switchback design in blocks or units.

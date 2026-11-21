@@ -116,6 +116,7 @@ _EXPORTS = {
     "WireFormatError": ("increment.errors", "WireFormatError"),
     "Assignment": ("increment.semantics.assignment", "Assignment"),
     "ParallelAssignment": ("increment.semantics.assignment", "ParallelAssignment"),
+    "FixedCountOrder": ("increment.semantics.assignment", "FixedCountOrder"),
     "IndependentBernoulliOrder": ("increment.semantics.assignment", "IndependentBernoulliOrder"),
     "SharedScheduleOrder": ("increment.semantics.assignment", "SharedScheduleOrder"),
     "SwitchbackWindow": ("increment.semantics.assignment", "SwitchbackWindow"),
@@ -282,6 +283,9 @@ if TYPE_CHECKING:
         Assignment as Assignment,
     )
     from increment.semantics.assignment import (
+        FixedCountOrder as FixedCountOrder,
+    )
+    from increment.semantics.assignment import (
         IndependentBernoulliOrder as IndependentBernoulliOrder,
     )
     from increment.semantics.assignment import (
@@ -444,6 +448,7 @@ __all__ = [
     "WireFormatError",
     "Assignment",
     "ParallelAssignment",
+    "FixedCountOrder",
     "IndependentBernoulliOrder",
     "SharedScheduleOrder",
     "SwitchbackWindow",

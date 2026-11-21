@@ -1743,6 +1743,16 @@ def project_effect(row) -> EffectEstimate:
 
     if contrast:
         estimate = row.estimate
+        failure = getattr(row, "failure_context", None)
+        if failure:
+            return EffectEstimate(
+                None if estimate is None else estimate.value,
+                None,
+                None,
+                None,
+                "absolute",
+                str(failure["reason"]),
+            )
         return EffectEstimate(estimate.value, estimate.lb, estimate.ub, estimate.alpha, "absolute")
 
     if requested == "absolute":

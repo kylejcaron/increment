@@ -54,16 +54,81 @@ def _e(
 _RATIO_ADVISORY_TEST = "tests/estimation/test_ratio_denominator_precision.py::test_advisory_reaches_every_path_that_estimates_a_ratio_metric"
 RATIO_DENOMINATOR_ADVISORY = ConsumerContract(
     "ratio-denominator-advisory-fixed-horizon",
-    tuple(
+    (
+        *(
+            _e(
+                f"{ingress}-advisory",
+                "ratio lift with an imprecise denominator",
+                ingress,
+                "fixed horizon; same matched units; denominator relative SE exceeds advisory threshold",
+                "supported",
+                evidence=(_RATIO_ADVISORY_TEST,),
+            )
+            for ingress in MATCHED_ARM_INGRESSES
+        ),
         _e(
-            f"{ingress}-advisory",
-            "ratio lift with an imprecise denominator",
-            ingress,
-            "fixed horizon; same matched units; denominator relative SE exceeds advisory threshold",
-            "supported",
-            evidence=(_RATIO_ADVISORY_TEST,),
-        )
-        for ingress in MATCHED_ARM_INGRESSES
+            "switchback-weak-denominator",
+            "sampling inference for a retained-window ratio difference",
+            "from_switchback_panel",
+            "the denominator is nonzero but its marginal t interval includes zero",
+            "unavailable",
+            codes=("evidence.p_value.unavailable",),
+            reason="The absolute rate difference keeps its point but has no sampling interval or decision.",
+            evidence=(
+                "tests/test_switchback_metric_readout.py::test_unavailable_ratios_keep_their_point_status_and_valid_siblings_in_storage",
+            ),
+        ),
+    ),
+)
+
+SWITCHBACK_FORECAST = ConsumerContract(
+    "switchback-scalar-forecast",
+    (
+        _e(
+            "missing-forecast",
+            "mean CUPED without a separate pre-assignment forecast table",
+            "from_switchback_panel",
+            "the predictor column is present only in the response frame",
+            "refused",
+            codes=("source.frame.switchback.metric",),
+            reason="A response column does not establish when the forecast was fixed.",
+            stage="construction",
+            evidence=(
+                "tests/test_switchback_metric_inputs.py::test_only_complete_pre_assignment_measurements_can_adjust_a_mean",
+            ),
+        ),
+    ),
+)
+
+SWITCHBACK_PLAN = ConsumerContract(
+    "switchback-plan",
+    (
+        _e(
+            "explicit-correction",
+            "declare a fixed-horizon switchback plan",
+            "from_switchback_panel",
+            "explicit plan q or Bonferroni view correction",
+            "refused",
+            codes=("source.frame.switchback.plan",),
+            reason="A switchback can report multiple metrics but does not adjust a decision family.",
+            stage="construction",
+            evidence=(
+                "tests/test_readouts_switchback.py::test_switchback_plan_multiplicity_refusals_precede_frame_access",
+            ),
+        ),
+        _e(
+            "sequential-ratio-cuped",
+            "declare a CUPED ratio with sequential monitoring",
+            "from_switchback_panel",
+            "ratio adjustment is checked before the sequential plan",
+            "refused",
+            codes=("source.frame.switchback.metric",),
+            reason="Only a mean accepts the scalar forecast adjustment.",
+            stage="construction",
+            evidence=(
+                "tests/test_readouts_switchback.py::test_switchback_plan_refusals_are_coded_before_frame_access",
+            ),
+        ),
     ),
 )
 
@@ -367,7 +432,7 @@ PLANNING_BASELINE = ConsumerContract(
             "a quantile metric is refused at the switchback metric-type gate before any frame is read",
             "refused",
             codes=("source.frame.switchback.metric",),
-            reason="switchback metrics are mean or conversion only",
+            reason="a switchback panel does not identify a quantile contrast",
             stage="construction",
             evidence=(_BASELINE_SWITCHBACK,),
         ),
@@ -555,7 +620,7 @@ UNBOUNDED_RETENTION_SEQUENTIAL = ConsumerContract(
             "switchback source refuses retention metric before sequential monitoring",
             "refused",
             codes=("source.frame.switchback.metric",),
-            reason="switchback source only constructs its supported mean/conversion metrics",
+            reason="the switchback source has no retention contrast",
             stage="construction",
             evidence=(
                 "tests/test_frame_switchback.py::test_switchback_unbounded_retention_refuses_before_sequential_monitoring",
@@ -685,6 +750,8 @@ CONFOUNDING_SENSITIVITY = ConsumerContract(
 
 CONSUMER_CONTRACTS = (
     RATIO_DENOMINATOR_ADVISORY,
+    SWITCHBACK_FORECAST,
+    SWITCHBACK_PLAN,
     FIXED_WINSOR_SEQUENTIAL,
     BOUNDED_CONVERSION_SEQUENTIAL,
     MEAN_CUPED_ASYMPTOTIC,

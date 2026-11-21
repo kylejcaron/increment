@@ -38,6 +38,7 @@ from increment.estimation.arm_contract import (
     PlanningFamilyExpansion,
     RelativeDecisionPolicy,
 )
+from increment.estimation.decision_types import ContrastDecisionProcedure
 from increment.power.core import (
     Baseline,
     PowerDesign,
@@ -61,6 +62,12 @@ from increment.power.switchback import (
     switchback_minimum_detectable_effect,
     switchback_required_blocks_or_units,
 )
+from increment.power.switchback_profiles import (
+    SwitchbackConversionBaseline,
+    SwitchbackProfilePlan,
+    SwitchbackTrajectoryBaseline,
+    switchback_profile_plan,
+)
 from increment.power.unit_cycle import (
     UnitCyclePowerLowerBoundResult,
     unit_cycle_power_lower_bound,
@@ -68,6 +75,11 @@ from increment.power.unit_cycle import (
 
 __all__ = [
     "SwitchbackBaseline",
+    "SwitchbackConversionBaseline",
+    "SwitchbackProfilePlan",
+    "SwitchbackTrajectoryBaseline",
+    "ContrastDecisionProcedure",
+    "switchback_profile_plan",
     "SwitchbackPowerResult",
     "switchback_achieved_power",
     "switchback_minimum_detectable_effect",

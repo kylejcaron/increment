@@ -418,6 +418,7 @@ class CaseResult:
     source_content_digests: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Each constructor's declared preferred_direction per metric, None where it declares none.
     declared_directions: dict[str, dict[str, str | None]] = field(default_factory=dict)
+    refusal_contexts: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @allow_declared_overrides
@@ -555,7 +556,7 @@ def run_case(
     case: ParityCase, *, coherence: Literal["captured", "live"] | None = None
 ) -> CaseResult:
     """Attempt every constructor `case.build` lists; return normalized rows
-    for the ones that succeeded, the `.code` for the ones that raised, and
+    for the ones that succeeded, the code and context for the ones that refused, and
     (when `case.sequential`) each surviving constructor's `SequentialCapture`
     (a path-independent fingerprint plus the raw `prefix_id`, both derived
     from the same `SequentialSnapshot`). Raises (not returns) any
@@ -569,6 +570,7 @@ def run_case(
     """
     rows: dict[str, dict[tuple, dict[str, dict[str, Any]]]] = {}
     refusals: dict[str, str] = {}
+    refusal_contexts: dict[str, dict[str, Any]] = {}
     absences: dict[str, Absence] = {}
     sequential_state: dict[str, SequentialCapture] = {}
     advisory_counts: dict[str, int] = {}
@@ -638,6 +640,7 @@ def run_case(
                     f"{case.id}: {name} was waived for {expected!r} but raised {exc.code!r}"
                 ) from exc
             refusals[name] = exc.code
+            refusal_contexts[name] = dict(exc.context)
         finally:
             if bound is not None:
                 _close_parity_binding(bound)
@@ -646,6 +649,7 @@ def run_case(
     return CaseResult(
         rows=rows,
         refusals=refusals,
+        refusal_contexts=refusal_contexts,
         sequential_state=sequential_state,
         absences=absences,
         advisory_counts=advisory_counts,

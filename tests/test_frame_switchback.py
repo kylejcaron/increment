@@ -488,6 +488,7 @@ def test_exact_raw_scalar_envelope_residual(effect, null, p_value):
     exact = Fraction(effect) * Fraction(2, 3)
     assert stats.exact_delta_total == (exact.numerator, exact.denominator)
     result = estimate_contrast(stats, procedure(reference, metric="mean", null_abs=null)).results[0]
+    assert result.estimate is not None
     assert result.estimate.value == float(exact)
     assert result.residual_p_value == p_value
     assert result.refusal_probability_upper == result.residual_cutoff == 0
@@ -529,6 +530,7 @@ def test_five_raw_rows_true_null_is_exact_under_row_permutations(ct, alternative
         result = estimate_contrast(
             stats, procedure(reference, metric="mean", null_abs=1.1, alternative=alternative)
         ).results[0]
+        assert result.estimate is not None
         assert result.estimate.value == float(exact)
         assert result.residual_p_value == 1.0
         if alternative != "less":
@@ -561,6 +563,7 @@ def test_five_raw_rows_exact_state_survives_cycle_and_partition_permutations():
         whole_stats, procedure(reference, metric="mean", null_abs=1.1)
     ).results[0]
     assert expected.residual_p_value == 1.0
+    assert expected.estimate is not None
     assert expected.estimate.value == float(exact_mean)
     parts = []
     for unit in orders:
@@ -723,6 +726,7 @@ def test_all_same_order_unit_point_has_no_fabricated_interval():
         ),
     )
     row = result.results[0]
+    assert row.estimate is not None
     assert row.estimate.value == pytest.approx(1 / 1.8)
     assert row.standard_error == 0
     assert row.estimate.lb is None and row.estimate.ub is None
@@ -1004,6 +1008,7 @@ def test_switchback_randomizes_at_the_declared_unit_grain_not_only_users():
 
     metric = next(m for m in source.context.metrics if m.name == "revenue")
     stats = source.contrast_stats(metric)
+    assert isinstance(stats, ContrastStats)
 
     # Degrees of freedom come from the geo count, not the row count.
     assert stats.n_units == 3
@@ -1122,14 +1127,10 @@ def test_switchback_is_eager_only():
 
 def test_switchback_rejects_unsupported_metric_types():
     with pytest.raises(CapabilityError) as raised:
-        _source(
-            metrics=[
-                MetricSpec(name="ratio", type="ratio", numerator="mean", denominator="converted")
-            ]
-        )
+        _source(metrics=[MetricSpec(name="median", type="quantile", quantile=0.5)])
     assert raised.value.code == "source.frame.switchback.metric"
     assert raised.value.context["reason"] == "unsupported_metric_type"
-    assert raised.value.context["metrics"] == ("ratio",)
+    assert raised.value.context["metrics"] == ("median",)
 
 
 def test_switchback_inverse_probability_recovers_homogeneous_treatment_effect():
@@ -1380,6 +1381,7 @@ def test_switchback_preserves_representable_mean_when_cycle_sum_overflows():
         null_abs=0.0,
     )
     result = estimate_contrast(source.contrast_stats(source.metrics[0]), procedure).results[0]
+    assert result.estimate is not None
     assert result.estimate.value == 1e308
 
 
@@ -1631,6 +1633,7 @@ def test_shared_inference_uses_blocks_even_with_one_roster_member():
     )
     result = _shared_result(rows)
     assert (result.n_units, result.n_blocks, result.dof) == (1, 3, 2)
+    assert result.estimate is not None
     assert result.estimate.value == pytest.approx(6.0)
     assert result.standard_error == pytest.approx(math.sqrt(4.0 / 3))
 
@@ -1698,6 +1701,7 @@ def test_shared_schedule_whole_roster_cloning_preserves_estimate_se_and_evidence
     assert cloned.ct_cycles == original.ct_cycles == 2
     assert cloned.tc_cycles == original.tc_cycles == 2
     assert cloned.dof == original.dof == 3
+    assert cloned.estimate is not None and original.estimate is not None
     assert cloned.estimate.value == pytest.approx(original.estimate.value)
     assert cloned.standard_error == pytest.approx(original.standard_error)
     assert original.standard_error == pytest.approx(math.sqrt(10.0 / 12))
@@ -2009,6 +2013,7 @@ def test_neighboring_integer_responses_preserve_exact_totals_across_order_and_pa
             result = estimate_contrast(
                 stats, procedure(reference, metric="mean", null_abs=1)
             ).results[0]
+            assert result.estimate is not None
             assert result.estimate.value == float(expected_total / 2)
             assert result.residual_p_value == 1
         else:
@@ -2067,6 +2072,7 @@ def test_neighboring_integer_period_levels_preserve_float_contrasts(offset, shar
     expected_se = abs(1 / (4 * p_ct) - 1 / (4 * (1 - p_ct))) if shared else 0
     for ordered in (rows, rows[::-1]):
         result = _shared_result(ordered, assignment=assignment)
+        assert result.estimate is not None
         assert result.estimate.value == pytest.approx(expected)
         assert result.standard_error == pytest.approx(expected_se)
         if expected_se:

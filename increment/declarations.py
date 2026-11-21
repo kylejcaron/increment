@@ -165,7 +165,7 @@ class CellKey(_ReadoutModel):
     method: str | None
     method_role: Literal["decision", "sensitivity"] | None
     estimand: str | None
-    aggregation: Literal["sum", "any"] | None = None
+    aggregation: Literal["sum", "any", "ratio"] | None = None
     analysis_population: Population
     value_scale: Literal["relative", "absolute"] | None = None
     inference: Literal["fixed", "always_valid", "asymptotic_mean"] | None = None

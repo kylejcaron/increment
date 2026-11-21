@@ -3,8 +3,9 @@
 A fixed-horizon unit-grain ratio row whose denominator mean is poorly
 resolved in either arm carries a ``ratio_denominator_precision`` note that
 names the arm, the statistic and the threshold; a well-resolved denominator
-carries none. The note reaches every ingress path that estimates a ratio
-metric, and the interval itself is unchanged by it.
+carries none. The note reaches every parallel-arm ingress that estimates
+a ratio, and the interval itself is unchanged by it. A switchback estimates
+an absolute difference of arm rates under a different interval policy.
 """
 
 from __future__ import annotations

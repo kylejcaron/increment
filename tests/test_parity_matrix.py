@@ -5,7 +5,8 @@ day_boundary x missing, what each of the six ingress constructors must do: run, 
 recorded code, or be structurally unable to express the request. The five matched-arm
 ingresses that run are compared with each other within 1e-9 relative;
 ``from_switchback_panel`` (a different estimand) is run on its own, with its rows required to
-exist but never compared. ``test_cell`` builds the cell on each ingress, runs it, and asserts
+exist but never compared to a parallel-arm lift. Its ratio and adjusted mean have separate
+numeric oracles. ``test_cell`` builds the cell on each ingress, runs it, and asserts
 exactly that, so a stale refusal code, a refusal that became a number, a number that became a
 refusal and a numeric disagreement all fail.
 
@@ -34,12 +35,14 @@ import itertools
 import json
 from collections.abc import Iterable
 from dataclasses import replace
+from statistics import linear_regression, pvariance
 from typing import cast
 
 import pytest
 
 from tests.parity_harness import matrix, matrix_cases
 from tests.parity_harness.cases import ParityCase
+from tests.parity_harness.matrix_data import scaled_units_per_arm
 from tests.parity_harness.runner import CaseResult, assert_parity, run_case
 
 # Advisories (a dropped-row count, a small-K cluster note) are not part of a cell's contract.
@@ -422,6 +425,61 @@ def _switchback(cell: matrix.Cell, method: str, disposition: matrix.Disposition)
     result = run_case(case)
     _assert_runners_produced_rows(case, outcomes, result)
     assert_parity(case, result)
+    if cell.option == "cuped" and cell.base in {"mean", "conversion", "ratio"}:
+        # These declaration traps share a code: a code match alone cannot tell whether
+        # missingness, the method, or the window was rejected first.
+        expected = {}
+        if cell.missing in {"zero", "skip"}:
+            expected = {
+                "field": "missing",
+                "reason": "ignored_metric_option",
+                "metric": matrix_cases.METRIC_NAME,
+                "policy": cell.missing,
+            }
+        elif cell.missing == "error" and cell.base != "mean":
+            expected = {
+                "field": "decision_method",
+                "reason": "cuped_requires_mean",
+                "metric": matrix_cases.METRIC_NAME,
+            }
+        elif cell.missing == "error" and cell.windowed:
+            expected = {"field": "window_days", "reason": "unsupported_metric_option"}
+        if expected:
+            actual = result.refusal_contexts["from_switchback_panel"]
+            assert {key: actual[key] for key in expected} == expected
+    if (
+        cell.view == "run"
+        and cell.missing == "error"
+        and (cell.metric, cell.option)
+        in {
+            ("ratio", "none"),
+            ("mean", "cuped"),
+        }
+    ):
+        n = scaled_units_per_arm(base=8)
+        (methods,) = result.rows["from_switchback_panel"].values()
+        if cell.metric == "ratio":
+            # Each four units add 8 to the treated numerator and supply 6 sessions per arm.
+            expected_method, point, df_cost = "switchback_ratio_delta_t", 4 / 3, 1
+            # The paired influence differences are (4, -10, 16, -10) / 9 per quartet.
+            variance = 118 / (81 * (n - 1))
+        else:
+            # Each quartet has x=(1/2,-1,3/2,-2), y=(2,1,4,1). Slope=24/29,
+            # intercept=2 - slope*(-1/4), not the unadjusted point of 2.
+            expected_method, point, df_cost = "switchback_cuped_jackknife_t", 64 / 29, 2
+            x = (0.5, -1.0, 1.5, -2.0) * (n // 4)
+            y = (2.0, 1.0, 4.0, 1.0) * (n // 4)
+            # There are only four distinct leave-one-unit-out samples, equally frequent.
+            deleted = [
+                linear_regression(x[:i] + x[i + 1 :], y[:i] + y[i + 1 :]).intercept
+                for i in range(4)
+            ]
+            variance = (n - 1) * pvariance(deleted)
+        assert methods.keys() == {expected_method}
+        row = methods[expected_method]["contrast"]
+        assert row["estimate"]["value"] == pytest.approx(point, rel=1e-9)
+        assert row["standard_error"] ** 2 == pytest.approx(variance, rel=1e-9)
+        assert row["dof"] == n - df_cost
 
 
 def test_every_cell_is_dispositioned_and_its_split_explained():
@@ -612,7 +670,6 @@ def test_percentile_winsor_size_route_runs_the_analytic_interval_on_every_raw_so
     """Past the pooled-size threshold the default route executes the influence interval;
     every raw-outcome source agrees and records the executed method."""
     from tests.parity_harness.cases import _winsor_size_routed_case
-    from tests.parity_harness.matrix_data import scaled_units_per_arm
 
     case = _winsor_size_routed_case()
     result = run_case(case)

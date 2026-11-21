@@ -360,6 +360,9 @@ def test_batched_actual_kernels_equal_separate_public_sources(shared):
             )
             batched_result = estimate_contrast(stats, _procedure(metric_name, shared=shared))
             row, expected = batched_result.results[0], direct_result.results[0]
+            assert row.estimate is not None
+            assert expected.estimate is not None
+
             _assert_metadata(row, cell)
             assert row.estimate.value == pytest.approx(expected.estimate.value, abs=1e-12)
             assert row.standard_error == pytest.approx(expected.standard_error, rel=1e-12)
@@ -432,6 +435,8 @@ def test_source_estimator_and_planning_variance_calibration(cell_index, cell, re
                     continue
             computation = estimate_contrast(reduce_contrast_partitions([part]), runtime_procedure)
             row = computation.results[0]
+            assert row.estimate is not None
+
             _assert_metadata(row, cell)
             assert row.standard_error is not None
             assert not computation.failures, computation.failures

@@ -68,7 +68,24 @@ def _safe_projection_fields(row: LiftEstimate) -> dict[str, Any]:
     return {name: row_fields[name] for name in _PROJECTION_FIELDS if name in row_fields}
 
 
+_TYPED_REPORT_MODELS = {
+    "breakout": "BreakoutEstimate",
+    "daily_metric": "DailyMetricValue",
+    "asof_metric": "DailyMetricValue",
+    "daily_lift": "DailyLiftEstimate",
+    "asof_lift": "DailyLiftEstimate",
+    "switchback_variance": "ContrastResult",
+    "switchback_unit_t_approximation": "ContrastResult",
+    "switchback_block_t": "ContrastResult",
+    "switchback_unit_variance_envelope": "ContrastResult",
+    "switchback_ratio_delta_t": "ContrastResult",
+    "switchback_cuped_jackknife_t": "ContrastResult",
+}
+
+
 def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
+    if identity.key.kind == "contrast" and getattr(row, "failure_code", None) is not None:
+        return project_effect(row)
     if hasattr(row, "lift"):
         effect = project_effect(row)
         reason = next(
@@ -160,23 +177,13 @@ def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
 def _restore_typed_report_row(row_kind: str, row_payload: Mapping[str, Any]) -> Any:
     from importlib import import_module
 
+    model_name = _TYPED_REPORT_MODELS[row_kind]
     module_name = (
         "increment.breakout.estimates"
-        if row_kind in {"breakout", "daily_metric", "asof_metric", "daily_lift", "asof_lift"}
+        if model_name != "ContrastResult"
         else "increment.estimation.contrast_results"
     )
     module = import_module(module_name)
-    model_name = {
-        "breakout": "BreakoutEstimate",
-        "daily_metric": "DailyMetricValue",
-        "asof_metric": "DailyMetricValue",
-        "daily_lift": "DailyLiftEstimate",
-        "asof_lift": "DailyLiftEstimate",
-        "switchback_variance": "ContrastResult",
-        "switchback_unit_t_approximation": "ContrastResult",
-        "switchback_block_t": "ContrastResult",
-        "switchback_unit_variance_envelope": "ContrastResult",
-    }[row_kind]
     return getattr(module, model_name).model_validate_json(_json(_plain(row_payload["data"])))
 
 
@@ -327,17 +334,9 @@ class ResultCell:
         )
         allowed_row_kinds = {
             "lift_estimate",
-            "breakout",
-            "daily_lift",
-            "daily_metric",
-            "asof_lift",
-            "asof_metric",
+            *_TYPED_REPORT_MODELS,
             "cate",
-            "switchback_variance",
             "cate_validation",
-            "switchback_unit_t_approximation",
-            "switchback_block_t",
-            "switchback_unit_variance_envelope",
             "sensitivity",
             "targeting",
             "targeting_selection",
@@ -855,17 +854,7 @@ class ResultCell:
         )
         if state is not None:
             return _restore_row(state.fields)
-        if self.row_payload is not None and self.row_kind in {
-            "breakout",
-            "daily_metric",
-            "asof_metric",
-            "daily_lift",
-            "asof_lift",
-            "switchback_variance",
-            "switchback_unit_t_approximation",
-            "switchback_block_t",
-            "switchback_unit_variance_envelope",
-        }:
+        if self.row_payload is not None and self.row_kind in _TYPED_REPORT_MODELS:
             row = _restore_typed_report_row(self.row_kind, self.row_payload)
             status = self.components["sampling"][0]
             if status.code != _UNRECORDED_SAMPLING:
@@ -1130,17 +1119,6 @@ class ResultCell:
             summary_data["intervals"] = tuple(
                 tuple(interval) for interval in summary_data.get("intervals", ())
             )
-        typed_report_rows = {
-            "breakout",
-            "daily_metric",
-            "asof_metric",
-            "daily_lift",
-            "asof_lift",
-            "switchback_variance",
-            "switchback_unit_t_approximation",
-            "switchback_block_t",
-            "switchback_unit_variance_envelope",
-        }
         if row is not None:
             sampling_state = components["sampling"][0].state
             sequential_state = components["sequential"][0].state
@@ -1149,7 +1127,7 @@ class ResultCell:
                 if sampling_state in {"available", "advisory"} or sequential_state == "available"
                 else None
             )
-        elif row_payload is not None and row_kind in typed_report_rows:
+        elif row_payload is not None and row_kind in _TYPED_REPORT_MODELS:
             typed_row = _restore_typed_report_row(row_kind, row_payload)
             summary = _report_summary(typed_row, identity)
         else:

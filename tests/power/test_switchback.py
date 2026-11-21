@@ -910,6 +910,8 @@ def test_pilot_covariance_predicts_actual_shifted_panel_uncertainty(case):
     stats = source.contrast_stats(metric)
     n = stats.n_blocks if case["shared"] else stats.n_units
     reference = estimate_contrast(stats, decision).results[0]
+    assert reference.estimate is not None
+
     assert b.delta_ref == pytest.approx(reference.estimate.value)
     assert achieved(n, b.delta_ref, b, decision).standard_error == pytest.approx(
         reference.standard_error,

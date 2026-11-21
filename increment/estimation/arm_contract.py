@@ -810,29 +810,30 @@ class ContrastEvidenceContract:
     def runtime_support(self, request: ContrastCompatibilityRequest) -> Support:
         if request.decision.family.kind != "none":
             return Unsupported("contrast.decision")
-        # ``SwitchbackAssignment.sequence`` is a validated two-member
-        # discriminated union; every accepted request has a supported scheme.
-        scheme = request.assignment.sequence.scheme
+        sequence = request.assignment.sequence
         # ContrastCompatibilityRequest fixes inference to FixedInference.
-        if request.metric.metric_type not in ("mean", "conversion"):
+        if request.metric.metric_type not in ("mean", "conversion", "ratio"):
             return Unsupported("contrast.metric")
         if request.metric.value_scale != "absolute":
             return Unsupported("contrast.decision")
-        if scheme == "shared_schedule":
+        ratio = request.metric.metric_type == "ratio"
+        if sequence.independence_unit == "shared_block":
             # The independent replicate is the block, not the roster unit:
             # a shared schedule needs at least two blocks, never two units.
             return Supported(
                 assumptions=("no_residual_carryover_after_discarded_steps", "independent_blocks"),
                 floor=IndependentBlockFloor(minimum_total_blocks=2),
-                reference="block_t",
+                reference="switchback_ratio_delta_t" if ratio else "block_t",
             )
         return Supported(
             assumptions=("no_residual_carryover_after_discarded_steps", "independent_units"),
             floor=IndependentUnitFloor(minimum_total_units=2),
-            reference="unit_t",
+            reference="switchback_ratio_delta_t" if ratio else "unit_t",
         )
 
     def planning_support(self, request: ContrastCompatibilityRequest) -> Support:
+        if request.metric.metric_type == "ratio":
+            return Unsupported("contrast.metric")
         return self.runtime_support(request)
 
 

@@ -2743,11 +2743,31 @@ def contrast_evidence_available(result: ContrastResult) -> bool:
     )
 
 
-def contrast_stat_sig(result: ContrastResult) -> bool:
+def contrast_p_value(result: ContrastResult) -> float | None:
+    """Sampling tail against the contrast's declared additive null."""
+    if not contrast_evidence_available(result):
+        return None
+    if result.method == "switchback_unit_variance_envelope":
+        return result.residual_p_value
+    assert result.estimate is not None and result.standard_error is not None
+    point, se, null = result.estimate.value, result.standard_error, result.null_abs
+    if not math.isfinite(point - null):
+        # Opposite-signed levels may overflow before division even when t is finite.
+        point, null, se = point / se, null / se, 1.0
+    return _additive_tail_p_value(point, se, null, result.alternative, result.dof)
+
+
+def contrast_stat_sig(result: ContrastResult) -> bool | None:
     """Return the contrast's table/readout decision verdict."""
+    if result.failure_code is not None:
+        return None
+    if result.method in ("switchback_ratio_delta_t", "switchback_cuped_jackknife_t"):
+        p = contrast_p_value(result)
+        return None if p is None else p < result.alpha
     if not contrast_evidence_available(result):
         return False
     estimate = result.estimate
+    assert estimate is not None
     if result.method == "switchback_unit_variance_envelope":
         assert result.residual_p_value is not None
         return result.residual_p_value < result.alpha
@@ -2774,11 +2794,14 @@ def contrast_rejection_side(result: ContrastResult) -> RejectionSide | None:
     if not contrast_stat_sig(result):
         return None
     estimate = result.estimate
+    assert estimate is not None
     if result.alternative != "two-sided":
         return result.alternative
     if result.method == "switchback_unit_variance_envelope":
         assert result.residual_side is not None
         return result.residual_side
+    if result.method in ("switchback_ratio_delta_t", "switchback_cuped_jackknife_t"):
+        return "greater" if estimate.value > result.null_abs else "less"
     if estimate.lb is not None and estimate.lb > result.null_abs:
         return "greater"
     return "less"

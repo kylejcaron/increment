@@ -47,6 +47,7 @@ from increment.estimation.results import (
     LiftEstimate,
     _outward,
     _selection_qualification,
+    contrast_p_value,
     conversion_route_label,
     row_decision_available,
     row_decision_scale,
@@ -375,23 +376,25 @@ def contrast_results_to_readout(
     for result in results:
         estimate = result.estimate
         stat_sig = contrast_stat_sig(result)
+        lower = None if estimate is None else estimate.lb
+        upper = None if estimate is None else estimate.ub
         rows.append(
             {
                 "metric": result.metric,
                 "method": result.method,
                 "method_role": result.method_role,
-                "lift": estimate.value,
-                "lower": estimate.lb,
-                "higher": estimate.ub,
-                "level": estimate.level,
+                "lift": None if estimate is None else estimate.value,
+                "lower": lower,
+                "higher": upper,
+                "level": None if estimate is None else estimate.level,
                 "stat_sig": stat_sig,
                 "group_id": result.treatment_group,
                 "control_group": result.control_group,
                 "treatment_group": result.treatment_group,
                 "null_lift": 0.0,
                 "null_abs": result.null_abs,
-                "abs_lb": estimate.lb,
-                "abs_ub": estimate.ub,
+                "abs_lb": lower,
+                "abs_ub": upper,
                 "estimand": result.estimand,
                 "value_scale": "absolute",
                 "preferred_direction": result.preferred_direction,
@@ -419,8 +422,8 @@ def contrast_results_to_readout(
                 "dof": result.dof,
                 "alternative": result.alternative,
                 "alpha": result.alpha,
-                "coverage_alpha": estimate.alpha,
-                "open_side": estimate.open_side,
+                "coverage_alpha": None if estimate is None else estimate.alpha,
+                "open_side": None if estimate is None else estimate.open_side,
                 "dof_unavailable_reason": result.dof_unavailable_reason,
                 "standard_error_unavailable_reason": result.standard_error_unavailable_reason,
                 "mean_slope": result.mean_slope,
@@ -456,6 +459,23 @@ def contrast_results_to_readout(
                 "family_size": None,
             }
         )
+        if result.randomization_law == "fixed_count":
+            rows[-1].update(
+                periods_per_cycle=result.periods_per_cycle,
+                treated_periods=result.treated_periods,
+                treatment_probability=result.treatment_probability,
+            )
+        if result.forecast_column is not None:
+            rows[-1]["forecast_column"] = result.forecast_column
+        if result.aggregation == "ratio" or result.forecast_column is not None:
+            rows[-1]["p_value"] = contrast_p_value(result)
+        if result.failure_code is not None:
+            rows[-1].update(
+                failure_code=result.failure_code,
+                failure_context=result.failure_context,
+                point_available=estimate is not None,
+                sampling_available=False,
+            )
     return rows
 
 

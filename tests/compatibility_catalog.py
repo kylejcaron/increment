@@ -29,15 +29,24 @@ from increment._plan_compatibility import (
 from increment.errors import CapabilityError, UnsupportedRequestError
 from increment.estimation.arm_contract import (
     ARM_EVIDENCE_CONTRACT,
+    CONTRAST_EVIDENCE_CONTRACT,
+    AbsoluteDecisionPolicy,
     AnalysisAxes,
     ArmCompatibilityRequest,
+    ContrastCompatibilityRequest,
     FamilyPolicy,
     MethodCapability,
     MetricCapabilities,
     RelativeDecisionPolicy,
 )
+from increment.estimation.decision_types import FixedInference
 from increment.estimation.sequential import AlwaysValid
-from increment.semantics.assignment import ParallelAssignment
+from increment.semantics.assignment import (
+    IndependentBernoulliOrder,
+    ParallelAssignment,
+    SwitchbackAssignment,
+    SwitchbackWindow,
+)
 from tests.doc_evidence import resolve_evidence_function
 from tests.sequential_cases import registration
 
@@ -138,9 +147,15 @@ MATRIX: dict[str, dict[str, Cell]] = {
         "active": _NA_REPORT_LAYER,
     },
     "cuped": {
-        "mean": S(),
-        "conversion": S(),
-        "ratio": S(note="numerator and denominator each adjusted; induced covariance retained"),
+        "mean": S(
+            note="Parallel arms use a per-unit covariate. A switchback mean requires "
+            "separate retained-window forecasts fixed before assignment."
+        ),
+        "conversion": S(note="Parallel arms only; switchback forecast adjustment requires a mean."),
+        "ratio": S(
+            note="Parallel arms adjust both components and retain their covariance. "
+            "A switchback ratio has no CUPED decision method."
+        ),
         "retention": S(note="native path via Experiment.n_pre_periods"),
         "quantile": R(
             "CUPED does not apply to quantile",
@@ -624,6 +639,45 @@ def _always_valid_quantile_report(role: Literal["primary", "secondary"]):
     )
 
 
+def _switchback_ratio_report(*, family: bool) -> CompatibilityReport:
+    request = ContrastCompatibilityRequest(
+        assignment=SwitchbackAssignment(
+            sequence=IndependentBernoulliOrder(),
+            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+        ),
+        inference=FixedInference(),
+        estimand="retained_window_ratio_difference",
+        metric=MetricCapabilities(
+            metric_type="ratio",
+            value_scale="absolute",
+            winsorization="none",
+            outcome_window="bounded",
+            uptake_window="not_applicable",
+        ),
+        decision=AbsoluteDecisionPolicy(
+            alternative="two-sided",
+            null_abs=0,
+            family=(
+                FamilyPolicy(kind="bonferroni", axes=("metric",), nominal_alpha=0.05)
+                if family
+                else FamilyPolicy(kind="none", axes=(), nominal_alpha=0.05)
+            ),
+        ),
+    )
+    return inspect_compatibility(
+        (
+            CompatibilityCheck(
+                capability="contrast",
+                request=request,
+                evaluate=CONTRAST_EVIDENCE_CONTRACT.runtime_support,
+                observe=partial(
+                    default_support_observe, capability="contrast", evidence_source="contract"
+                ),
+            ),
+        )
+    )
+
+
 SCENARIOS = (
     Scenario(
         id="always-valid-quantile",
@@ -686,6 +740,56 @@ SCENARIOS = (
             ),
         ),
         evaluate=partial(_always_valid_quantile_report, "secondary"),
+    ),
+    Scenario(
+        id="paired-switchback-ratio",
+        axes=(
+            ("capability", "estimate"),
+            ("metric_type", "ratio"),
+            ("assignment", "paired_switchback"),
+            ("multiplicity", "disabled"),
+        ),
+        expected_runtime="supported",
+        expected_family="not_applicable",
+        explanation=(
+            "The fixed-horizon point is the treatment rate minus the control rate. "
+            "Uncertainty uses paired arm totals, not independent arm errors. A zero "
+            "denominator removes the point; a weak nonzero denominator removes the interval."
+        ),
+        alternative=None,
+        evidence=(
+            EvidenceRef(
+                kind="integration",
+                path="tests/test_switchback_metric_readout.py",
+                test="test_unavailable_ratios_keep_their_point_status_and_valid_siblings_in_storage",
+            ),
+        ),
+        evaluate=partial(_switchback_ratio_report, family=False),
+    ),
+    Scenario(
+        id="paired-switchback-ratio-family",
+        axes=(
+            ("capability", "estimate"),
+            ("metric_type", "ratio"),
+            ("assignment", "paired_switchback"),
+            ("multiplicity", "bonferroni"),
+        ),
+        expected_runtime="refused",
+        expected_family="not_applicable",
+        explanation=(
+            "A switchback contrast tests one absolute difference. It does not supply "
+            "Bonferroni-adjusted decisions for a family of metrics. Declaring view multiplicity "
+            "on the frame builder refuses earlier, with source.frame.switchback.plan."
+        ),
+        alternative=None,
+        evidence=(
+            EvidenceRef(
+                kind="unit",
+                path="tests/test_readouts_switchback.py",
+                test="test_switchback_plan_multiplicity_refusals_precede_frame_access",
+            ),
+        ),
+        evaluate=partial(_switchback_ratio_report, family=True),
     ),
 )
 

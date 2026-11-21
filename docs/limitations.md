@@ -120,11 +120,11 @@ that skew was found. The unchanged interval may under-cover in some measured reg
     - **Sequential:** separate registered observation-model contract;
       fixed-horizon approximations do not establish anytime validity.
     - **Quantiles:** inversion of an order-statistic bracket (Woodruff), not a delta method.
-    - **Switchback:** independent unit-cycle orders use default
-      `UnitCycleTApproximation` (sample variance, at least two units,
-      `dof = n_units - 1`); a valid prospective `UnitCycleVarianceEnvelope`
-      is a separate stronger route supporting one unit. Shared schedules use
-      block-t on at least two blocks.
+    - **Switchback:** unadjusted outcomes use a t approximation over units
+      or shared blocks. A paired independent-unit mean can instead use a
+      prospective `UnitCycleVarianceEnvelope`. Ratios use a joint
+      first-order approximation; forecast-adjusted means use a jackknife
+      that leaves out one independent unit or block at a time.
     - **Observational adjusted methods:** influence-function sandwich.
 
     Estimating the variance does not by itself forfeit finite-sample validity — under
@@ -818,27 +818,29 @@ alpha are not on the same scale. Compare their p-values instead.
 
 ### The switchback t reference is itself an approximation
 
-The default switchback reference, `UnitCycleTApproximation`, is a t test on the sample
-variance of the per-unit contributions. It is an approximation, and the declared floor
-admits as few as two units, where it is weakest. A prospective `UnitCycleVarianceEnvelope`
-gives a finite-sample bound instead, but only under a residual-variance assumption you
-justify externally; a fitted pilot variance is not a valid envelope. Shared schedules use a
-block-t reference over at least two blocks.
+The unadjusted switchback t reference uses the sample variance across
+independent units or blocks. Two replicates can supply a variance, not
+a coverage guarantee. For paired independent orders, a prospective
+`UnitCycleVarianceEnvelope` can bound a mean contrast under an externally
+justified residual-variance assumption. It is not a fitted pilot variance
+and does not cover fixed-count schedules, ratios or forecast adjustment.
 
 Coverage degrades with few units, an assignment probability far from 0.5, and skewed,
 heteroskedastic or high-leverage outcomes; the asymmetric/skew calibration includes a
 small-N counterexample to nominal coverage. Adding roster units to a shared schedule
-does not add replication.
+does not add replication. See [coverage among returned intervals versus
+coverage per attempted experiment](reference/switchback-inference.md#coverage-with-few-units-or-blocks)
+for measurements on the paired designs, not calibration of other schedules.
 
 ??? info "Statistical details: the unit-cycle t reference"
-    Independent unit-cycle orders use `UnitCycleTApproximation()` by default
-    (equivalent to passing it) unless a valid prospective `UnitCycleVarianceEnvelope`
-    is supplied; the shared-block reference is separate. Both use the independent
+    Unadjusted independent-unit results use `UnitCycleTApproximation()` by
+    default; for paired means a prospective `UnitCycleVarianceEnvelope`
+    is a separate option. The unit and block t intervals both use the independent
     contributions' sample variance. That is not a claim of finite-sample coverage, and the
     approximation is not confined to discrete outcomes.
 
-    Under independent unit-cycle orders, each mean-outcome contribution is inverse-probability
-    weighted, so it takes
+    Under independent **paired** orders, each unit-cycle mean-outcome
+    contribution is inverse-probability weighted, so conditional on the outcomes it takes
     one of only two values, and those two are asymmetric whenever the declared CT/TC probability
     is not 0.5. The per-unit deltas are means of such contributions, so the t reference relies on
     those means being approximately Normal — a condition that is not among the contract's
@@ -881,28 +883,30 @@ establish that the scheduler was random or that carryover has vanished.
     remains past that point, the contrast can be biased and the interval need not cover.
 
     `from_switchback_frame` retains `step >= washout_steps + carryover_order` for declared orders
-    0, 1, and 2 (whenever enough observation steps remain) under both `IndependentBernoulliOrder`
-    and `SharedScheduleOrder`; declaring an order only records the assumption; nothing here proves
-    carryover actually vanished by that point.
+    0, 1, and 2 whenever enough observation steps remain. This rule applies
+    to paired and fixed-count schedules; neither the log nor the forecast
+    verifies that carryover actually vanished by that point.
 
 
 ### Switchback inference requires independent units or blocks
 
-The unit-cycle estimator assumes units are independent of each other and that each
-unit's order was drawn independently; a shared seed, a balanced or stratified schedule,
-or interference between units breaks that, and the direction of the error is not
-characterized. A shared schedule is declared with `SharedScheduleOrder` and analysed at the
-block grain, where the block is the replicate and cloning the roster changes nothing.
+Independent-unit inference assumes independent units and independent
+draws of the schedule. Deliberately coupling different units' draws,
+for example to force balance between units, breaks that assumption.
+When all units share one order, declare that and count independent
+blocks instead. Cloning the roster creates no new replication.
 
-The schedule integrity check refuses an implausibly lopsided realized split
-(`source.frame.switchback.schedule`, reason `implausible_realized_split`); it cannot
-establish independent randomization or absence of carryover. Interference biases the
-point estimate and can make the interval anticonservative as well.
+A paired schedule can refuse an implausible CT/TC split. A fixed-count
+schedule checks the treated count in each draw and whether every position
+was seen in both arms across draws. Neither check establishes how the
+scheduler randomized. A nonuniform choice of the treated subset can bias
+the fixed-count estimate even when every block has the right treatment
+share. Interference can also bias the point and invalidate its interval.
 
 ??? info "Statistical details: correlated schedules, shared shocks, interference and shared-schedule blocks"
-    Under independent unit-cycle orders, the estimator averages all cycles within a labelled
-    unit and applies a t test
-    with `n_units - 1` degrees of freedom. This accommodates arbitrary serial correlation
+    For an unadjusted outcome under independent unit-cycle orders, the
+    estimator averages cycles within units and uses a t reference
+    with `n_units - 1` degrees of freedom. This accommodates serial correlation
     *within* a unit, which is the point of the design. It assumes the units are independent of
     each other, and that each unit's order was drawn independently.
 
@@ -910,10 +914,11 @@ point estimate and can make the interval anticonservative as well.
     depends on the randomization law and on which target you are inferring about, and none of it
     is characterized here:
 
-    - **Correlated schedules.** If unit orders are not drawn independently — a shared seed, or a
-      balanced or stratified schedule — independent-unit inference is not valid. The direction of
-      the error depends on both the randomization law and how units' potential outcomes respond to
-      order, not the law alone: when units respond to order in the same direction, shared orders
+    - **Correlated schedules.** If unit orders are coupled across units — for
+      example, everyone follows the same draw or cross-unit quotas constrain
+      the draws — independent-unit inference is not valid. The direction of
+      the error depends on how units respond to order: when units respond
+      in the same direction, shared orders
       tend to induce positive covariance between contributions and balanced schedules tend to
       induce negative covariance (leaving the independent-unit standard error conservative); when
       units respond to order in opposite directions, these signs can reverse.
@@ -940,15 +945,17 @@ point estimate and can make the interval anticonservative as well.
     reference (`n_blocks - 1` degrees of freedom): the independent replicate is the block, not
     the roster unit, so a uniformly cloned roster changes neither the estimate nor its width.
 
-    Both laws target the mean-unit retained-window additive effect. Results record
-    `observation_steps` and `retained_steps=observation_steps-carryover_order`; the
-    total/conversion estimand labels explicitly name that retained window.
+    A shared fixed-count draw likewise supplies just one block contrast.
+    A mean targets retained-window totals; a conversion targets retained-window
+    event probabilities. A ratio compares arm-specific ratios of totals,
+    not an average of individual rates.
 
     A schedule integrity check cannot establish either independent randomization or absence of
-    carryover. Under a unit-cycle declaration, a realized schedule too lopsided to be plausible
-    (for example 320 CT and 0 TC unit-cycle draws) refuses before statistics are constructed
-    with `source.frame.switchback.schedule` and reason `implausible_realized_split`. Correctly
-    declared, nondegenerate shared schedules are supported.
+    carryover. Under a paired unit-cycle declaration, a realized schedule too
+    lopsided to be plausible (for example 320 CT and 0 TC unit-cycle draws)
+    refuses with `source.frame.switchback.schedule` and reason
+    `implausible_realized_split`. Under fixed count, no equality of realized
+    subset frequencies is required.
 
 
 ## Repeated monitoring
@@ -1294,21 +1301,20 @@ a ceiling below one, and `required_sample_size` refuses a target above it with
 
 ### Switchback planning requires its own model
 
-Switchback planning conditions on a pilot's fitted effect and covariance; it does not
-include their estimation uncertainty or certify finite-sample calibration. Parallel-arm
-`Baseline.icc` does not describe within-unit switchback dependence; see the
-[switchback guide](guides/switchback.md).
+Choose a model for the **retained window** and the actual randomization.
+An unadjusted paired mean uses a moment-t approximation fitted to the
+pilot's effect and covariance. For fixed-count means, resampling whole
+unit trajectories or whole roster blocks assumes a representative pilot
+and a constant additive treatment effect. Conversion sizing instead
+assumes independent window indicators given arm, with control and
+treatment risks both in `[0, 1]`. It does not model shared shocks or serial
+dependence in event risk. Neither model sizes a ratio or an adjusted mean.
 
-??? info "Statistical details: pilot-conditioned switchback power"
-    Ordinary switchback planning derives its reference effect and centered
-    contribution/order-slope covariance from a validated pilot, at the independent
-    unit or shared-block grain. Moment-t power conditions on those fitted estimates;
-    it does not account for their estimation uncertainty or certify finite-sample
-    calibration. Optional prospective envelopes and complete-law research oracles
-    retain separate lower-bound and Monte Carlo meanings. Existing small-sample
-    failures and the unresolved computational-certification work remain; see the
-    [switchback guide](guides/switchback.md).
-    Parallel-arm `Baseline.icc` does not describe within-unit switchback dependence.
+Grid power counts rejections out of **all** attempts, including schedules
+without support and fits with no usable uncertainty. Its simultaneous
+bounds quantify simulation error, not pilot uncertainty or test
+calibration. Parallel-arm `Baseline.icc` cannot substitute for a schedule
+and response model. See the [switchback planning guide](guides/power-analysis.md#switchback-contrasts).
 
 
 ## Observational estimands

@@ -596,7 +596,10 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
         "mean-cuped-fixed-horizon",
         "Mean CUPED, fixed horizon",
         "mean_ratio_conversion_cuped_fixed_horizon",
-        from_switchback_panel=(_matrix("mean-run-cuped-utc-error", SB),),
+        from_switchback_panel=(
+            _matrix("mean-run-cuped-utc-error", SB, condition="separate pre-assignment forecasts"),
+            _consumer("switchback-scalar-forecast", "missing-forecast"),
+        ),
     ),
     _case_row(
         "ratio-cuped-fixed-horizon",
@@ -619,9 +622,23 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
             SB: (_consumer("mixed-cuped-fixed-horizon", "switchback_source_limited"),),
         },
     ),
+    _matrix_row(
+        "ratio-fixed-horizon",
+        "Unadjusted ratio, fixed horizon",
+        "ratio-run-none-utc-error",
+        from_switchback_panel=(
+            _matrix("ratio-run-none-utc-error", SB, condition="treatment rate minus control rate"),
+        ),
+    ),
+    _case_row(
+        "fixed-horizon-decision-multiplicity",
+        "Fixed-horizon decisions with an explicit multiplicity policy",
+        "multiplicity_primary_secondaries_guardrail",
+        from_switchback_panel=(_consumer("switchback-plan", "explicit-correction"),),
+    ),
     _row(
         "ratio-denominator-advisory-fixed-horizon",
-        "Ratio denominator-precision advisory, fixed horizon",
+        "Ratio denominator precision, fixed horizon",
         {
             **{
                 ingress: (
@@ -629,7 +646,11 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
                 )
                 for ingress in (S, P, D, A, M)
             },
-            SB: (_matrix("ratio-run-none-utc-error", SB),),
+            SB: (
+                _consumer(
+                    "ratio-denominator-advisory-fixed-horizon", "switchback-weak-denominator"
+                ),
+            ),
         },
     ),
     _conditional_case_row(
@@ -712,7 +733,7 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
             ("overlapping arm denominators", "audit-adjusted-ratio-anchor"),
             ("separated arm denominators", "audit-adjusted-ratio-anchor-resolved"),
         ),
-        from_switchback_panel=(_matrix("ratio-run-cuped-utc-error", SB),),
+        from_switchback_panel=(_consumer("switchback-plan", "sequential-ratio-cuped"),),
         notes={
             S: "asymptotic route",
             D: "asymptotic route",

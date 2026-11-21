@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from increment._literals import Alternative, PreferredDirection, Role
+from increment._unit_cycle import _refuse as _unit_refuse
 from increment.errors import (
     CodedModel,
     InvalidRequestError,
@@ -89,11 +90,20 @@ class ContrastDecisionProcedure(CodedModel, BaseModel):
     alpha: float = Field(gt=0.0, lt=1.0)
     preferred_direction: PreferredDirection | None = None
     reference: UnitCycleReference | None = None
+    forecast_column: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
     family: NoFamily = NoFamily()
     inference: FixedInference = FixedInference()
 
     @model_validator(mode="after")
     def _one_sided_alpha(self) -> ContrastDecisionProcedure:
+        if self.forecast_column is not None and self.reference is not None:
+            _unit_refuse(
+                "unit_cycle.reference_mismatch",
+                metric=self.metric,
+                reason="unadjusted_reference_on_joint_metric",
+            )
         if (
             isinstance(self.reference, UnitCycleVarianceEnvelope)
             and self.metric != self.reference.metric

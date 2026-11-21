@@ -9942,7 +9942,7 @@ def _cuped_covariate_name_frame_case() -> ParityCase:
             "from_definitions": "SOURCE: this parity case compares summary and panel frames.",
             "from_unit_day_artifact": "SOURCE: this parity case compares summary and panel frames.",
             "from_moments": "SOURCE: moments carry no covariate column.",
-            "from_switchback_panel": "SOURCE: switchback contrasts do not use CUPED.",
+            "from_switchback_panel": "SOURCE: this unit-level covariate is not a pre-assignment forecast for each scheduled period.",
         },
     )
 

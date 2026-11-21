@@ -6,26 +6,45 @@ result fields and limits of each statistical reference.
 
 ## Input and schedule validation
 
-The input is an eager DataFrame with one row per **unit × cycle × period ×
-step** cell. Pass the column names for `unit`, `cycle`, `period`, `step`, and
-`group`, plus a mapping or sequence of mean or conversion metrics, and declare:
+`from_switchback_frame` takes an eager dataframe, column names (`unit`,
+`cycle`, `period`, `step`, `group`), metric declarations, a two-arm
+`Randomized` design and a `SwitchbackAssignment`. Match the allocation to
+the scheduler, not to the realized data:
 
-| Argument | Requirement |
-|---|---|
-| `identification` | A `Randomized` design with exactly one treatment arm and one control arm, allocation exactly `0.5`/`0.5`. |
-| `assignment` | A `SwitchbackAssignment` with `periods_per_cycle=2`; choose the [order law](../guides/switchback.md#choose-the-order-law) that matches the actual schedule. |
-| `SwitchbackWindow` | `washout_steps`, `observation_steps`, and `carryover_order` (default `0`): extra observation steps discarded after washout. Orders `0`, `1`, and `2` are supported under both laws whenever enough steps remain. |
+| Sequence | Periods in each cycle | Control / treatment allocation |
+|---|---|---|
+| `IndependentBernoulliOrder` or `SharedScheduleOrder` | Two; one period per arm. CT probability is an **order** probability. | `0.5`, `0.5` |
+| `FixedCountOrder(treated_periods=m, independence_unit=...)` | `K >= 3`; draw `m` of `K` equal-duration positions uniformly without replacement, `0 < m < K`. | `(K-m)/K`, `m/K` |
 
-The panel validator requires non-empty labels, exact integer (not
-boolean) `cycle`, `period`, and `step` values, contiguous cycles `0..C-1`
-for every unit, periods exactly `{0, 1}`, and every period's complete
-step range `0..washout_steps + observation_steps - 1`. Every unit-cycle
-must contain one control and one treatment period. Missing cells,
-duplicate cells, invalid labels, non-finite outcomes, and an incomplete
-schedule are coded input refusals. A declared unit-cycle variance
-envelope supports one unit; its descriptive sample SE is then null with
-reason `insufficient_replicates`.
+Cycles, periods and steps are contiguous, zero-based integer axes, not
+booleans. In a dense frame, supply one row with its arm and response at
+every unit × cycle × period × step, including washout. Duplicate keys,
+gaps and nulls do not establish a schedule. Every shared block must have
+the same schedule across its roster.
 
+**Separate assignment log.** Pass `schedule=SwitchbackObservationSchedule(
+assignments=..., units=..., cycles=...)` when the log, not the response
+table, records who was assigned. The log has one `group` per unit, cycle
+and period, no step axis. Declare the complete roster and expected cycle
+count independently of observed outcomes: a missing last cycle or entire
+unit is an error. An observation may omit `group`; if included, it must
+match. A repeated or off-schedule observation key invalidates the study
+even if it is in washout.
+
+Under a valid log, a missing discarded step is harmless. An unmeasured
+retained step makes its **metric** unavailable, not the whole study.
+For sparse event feeds, an absent event value or numerator counts as zero
+only when `MetricSpec(missing="zero", ...)` and `complete_event_metrics`
+name that same metric. A recorded null is unknown; denominators and forecasts
+are never supplied by this rule. There is no complete-case comparison.
+
+**Separate forecast table.** For scalar mean CUPED, `pre_assignment_forecasts`
+needs exactly one finite numeric forecast per unit × cycle × period.
+Use the builder's key column names. `forecast_at` and `assigned_at` must
+both be dates, or both datetimes with the same time zone. The latest
+forecast must strictly precede the first assignment, not merely the
+response. Name the predictor in
+`MetricSpec(..., decision_method=Method.cuped(covariates="forecast"))`.
 
 The retained window is defined in the guide's
 [washout and carryover section](../guides/switchback.md#washout-and-carryover).
@@ -34,20 +53,20 @@ vanished.
 
 ## Contrast calculation
 
-For independent unit-cycle orders, each cycle contribution is
-inverse-probability weighted using the declared CT/TC order probability,
-then averaged over a unit's cycles; the final contrast averages those
-unit contributions. For shared schedules, each period's retained outcomes
-are first averaged across the fixed roster, then inverse-probability
-weighted into a block contribution; the final contrast averages those
-block contributions. Independent unit-cycle inference automatically
-records `UnitCycleTApproximation`; an explicit, justified prospective
-envelope remains optional. Neither reference is a sequential boundary.
+### Unadjusted means and conversions
+
+Reduce each period to its retained total (mean metric) or an indicator for
+any event (conversion). For a unit-cycle draw, compute a contrast per
+cycle and average a unit's cycles; for a shared draw, average over the
+fixed roster within the block. Average the resulting independent
+replicates. Under either schedule use their sample SD divided by the
+square root of their number, with approximate t inference on `n-1`
+degrees of freedom. Neither t reference is a sequential boundary.
 Integer outcomes retain their exact signed differences before division
 or floating-point conversion, so large common offsets cannot erase a
 representable treatment contrast.
 
-For shared block `b`, write the roster means in its two retained periods
+For a **paired** shared block `b`, write the roster means in its two periods
 as `M1_b` and `M2_b`. Its contribution is `(M2_b - M1_b)/(2p)` for CT and
 `(M1_b - M2_b)/(2(1-p))` for TC, where `p=probability_ct`. The estimate
 is the mean of the `B` block contributions, with standard error
@@ -57,66 +76,118 @@ or an exact finite-sample coverage guarantee. Heterogeneous fixed-block
 effects can make its variance conservative. Generalizing to future
 blocks additionally requires a superpopulation interpretation.
 
-Under a positive prospective envelope, zero observed between-unit spread
+Under a positive prospective **paired independent-unit** envelope, zero observed between-unit spread
 does not remove the interval: its uncertainty comes from the declared
 residual variance bound. A zero envelope identifies a singleton under its
 declared model; it must never be inferred from a zero sample standard
 error. Legitimate all-CT or all-TC observations remain admissible when
 the split check accepts them.
 
+For a **fixed-count** draw let `Y[j]` be the retained response at position
+`j` and `Z[j]` its treatment indicator. Every `m`-subset is equally likely,
+so each treatment probability is `p=m/K`. The draw contributes
+
+$$
+\frac{1}{K}\sum_j \left[\frac{Z_jY_j}{p}-
+\frac{(1-Z_j)Y_j}{1-p}\right]
+= \operatorname{mean}_{T}(Y)-\operatorname{mean}_{C}(Y).
+$$
+
+The fixed count alone does not justify those weights. For instance, with
+untreated outcomes `(1, 0, 0)`, one treated slot and no treatment effect,
+the contrast is 1 when the first slot is treated and −1/2 otherwise. It
+averages to zero under uniform drawing but to 1/4 if the first slot is
+treated half the time. Seeing both arms at every position is required to
+analyze the schedule; it does not establish uniform randomization.
+
+### Ratios and forecast-adjusted means
+
+A ratio metric compares **two ratios of totals**, not the mean of period
+rates. Within each independent replicate, compute arm-specific weighted
+numerator and denominator totals using each position's arm probabilities.
+For arm \(a\), write those contributions as \(Y_{ai},D_{ai}\) and the
+rate as \(r_a=\bar Y_a/\bar D_a\). The point is \(r_T-r_C\).
+
+- A zero denominator in either arm gives `zero_denominator` and no point.
+  If a nonzero denominator's two-sided t interval at the metric's allocated
+  alpha includes zero, `weak_denominator` retains the point only. The
+  reason identifies the affected arm.
+- Otherwise use the sample SD of
+  \((Y_{Ti}-r_T D_{Ti})/\bar D_T-(Y_{Ci}-r_C D_{Ci})/\bar D_C\)
+  divided by \(\sqrt n\), with `n-1` degrees of freedom. Keeping the two
+  arms together preserves their covariance. This first-order approximation
+  needs stable denominators; the separate denominator checks are not a
+  joint coverage guarantee or a Fieller interval.
+
+For **mean CUPED**, form a signed contrast of the frozen forecast with the
+same order weights as the outcome. Regress the outcome contrasts on the
+forecast contrasts with an intercept. The adjusted point is the intercept
+at forecast contrast zero, its *randomization* expectation; subtracting
+the observed forecast mean would change the answer. Refit without each
+independent unit or block in turn. The jackknife standard error uses the
+variation in those intercepts, with a t reference on `n-2` degrees of
+freedom. A constant predictor gives no adjusted point (`rank_deficient`);
+if deleting one replicate makes the slope unidentified, the full-fit point
+is descriptive only (`high_leverage`). Neither fit falls back to an
+unadjusted decision.
 
 ### Market and geo units
 
-For independent unit-cycle orders, `unit` names whatever entity drew its own
-treatment order. For a market or geo switchback, pass the geo column as
-`unit` and pre-aggregate the metric to `geo x cycle x period x step` first;
-the validator's shape requirements then apply per geo. `n_units` is the number
-of geos, and the default unit-t approximation uses `dof=n_units-1` (an
-optional prospective envelope uses that `N` in its variance bound and reports
-`dof=None`). Each geo must draw its order independently, as
-`independent_bernoulli_order` asserts.
-
-When the whole market flips together, use
-`SharedScheduleOrder(probability_ct=...)`: each two-period cycle is an
-independent block with one common order across the complete geo roster. This
-supports even one geo given at least two blocks, with `dof = n_blocks - 1`
-regardless of roster size.
+Set `unit` to the entity that drew its own schedule. For a geo experiment,
+aggregate raw measurements to geo × cycle × period × step first.
+When all geos follow one common draw, use `SharedScheduleOrder` for a
+pair or `FixedCountOrder(..., independence_unit="shared_block")` for
+multiple periods. Even one geo can be a roster; the independent sample
+size is the number of blocks, not the number of geo-block rows.
 
 
 ## Result fields and diagnostics
 
-`run(experiment, reader).readout()` returns `ContrastResults`, a typed list of `ContrastResult`
-objects, one per selected metric, each with `method_role="decision"` and
-`assignment="switchback"` (see [Reading results](result-fields.md) for
-contrast rows and [Multiplicity](../guides/multiplicity.md) for status definitions):
+`run(experiment, reader).readout().to_frame(...)` gives a row per selected
+metric. Each has `method_role="decision"` and `assignment="switchback"`.
+See [Reading results](result-fields.md) for contrast rows and
+[Multiplicity](../guides/multiplicity.md) for status definitions.
 
 - **`estimate`, `lb`, `ub`, `standard_error`:** the additive effect and its
   interval, with the declared `alpha`, `alternative`, and `null_abs`.
-- **`method`:** `switchback_unit_t_approximation` (default unit-cycle),
-  `switchback_unit_variance_envelope` (prospectively bounded unit-cycle), or
-  `switchback_block_t` (shared schedule).
-- **`estimand`:** `mean_unit_retained_window_difference` for a unit-cycle
-  envelope; `retained_window_total_difference` (mean) or
-  `retained_window_conversion_difference` (conversion) for shared schedules.
+- **`method`:** unadjusted rows use `switchback_unit_t_approximation`,
+  `switchback_unit_variance_envelope` or `switchback_block_t`. Ratios use
+  `switchback_ratio_delta_t`, adjusted means `switchback_cuped_jackknife_t`.
+  `forecast_column` identifies the predictor; changing it changes the
+  method identity even if the numerical estimates coincide.
+- **`estimand`:** for example, `retained_window_total_difference` (a
+  difference in totals), `retained_window_conversion_difference` (a
+  probability difference), or `retained_window_ratio_difference` (a
+  difference in rates). None is relative lift.
 - **`n_units`, `n_cycles`, `n_blocks`, `dof`:** roster and replicate counts.
   For a shared schedule, `n_units` is the roster size and
   `n_cycles=n_units*n_blocks`; roster size is not the inferential sample size.
 - **`ct_cycles`, `tc_cycles`:** realized order draws: unit-cycle draws under
   `independent_bernoulli_order`, block draws under `shared_schedule`.
+- **`periods_per_cycle`, `treated_periods`, `treatment_probability`:**
+  fixed-count rows record `K`, `m` and `m/K` instead. `probability_ct`,
+  `ct_cycles` and `tc_cycles` are null; CT and TC are not cycle types here.
 - **`aggregation`, `probability_ct`, `randomization_law`, `independence_grain`,
   `carryover_order`, `observation_steps`, `retained_steps`,
   `identifying_assumption`:** the declared design, echoed;
   `retained_steps=observation_steps-carryover_order`.
+- **`point_available`, `sampling_available`, `failure_code`, `failure_context`:**
+  distinguish no answer from a point without a test. A missing retained
+  response records `unobserved_response`, `missing_count`, `first_missing_key`
+  in unit/cycle/period/step order, and the arm at that key. Other metrics
+  keep their own results; `decision_scope_complete` is false when a required
+  decision is missing. No zero estimate or non-rejection is substituted.
 
 `increment.workflows.assignment_diagnostic(experiment, reader)` returns the
 validated schedule evidence for an experiment built with
 `from_switchback_frame`:
 `probability_ct`, `randomization_law`, `independence_grain`,
 `schedule_complete`, `n_units`, `n_cycles`, `n_blocks` for shared schedules,
-`ct_count` and `tc_count` (unit-cycle draws under the unit-cycle law, block
-draws under the shared law), washout/observation/retained step and row
-counts, `carryover_order`, `identifying_assumption`, and any integrity
-failures. It is not an SRM test and contains no p-value or anytime-valid
+`ct_count` and `tc_count` for paired draws or the declared fixed-count
+exposure, washout/observation/retained step and row counts, `carryover_order`,
+`identifying_assumption`, and any integrity failures. For fixed count it
+checks the number of treated positions and realized support, not equality
+of pattern frequencies. It is not an SRM test and contains no p-value or anytime-valid
 guarantee. Unit-arm checks do not apply to switchback order randomization:
 `health_check` reports assignment balance as unavailable
 (`integrity.switchback_assignment_law`) and `srm` refuses with
@@ -129,7 +200,7 @@ probability-difference meaning.
 
 ### The portable schema
 
-The schema distinguishes unit-cycle envelope results (`n_blocks=null`,
+For unadjusted metrics the schema distinguishes unit-cycle envelope results (`n_blocks=null`,
 `reference="residual_chebyshev"` or `"residual_cantelli"`, `dof=null`,
 `dof_unavailable_reason="not_applicable"`), sample-based unit-cycle
 approximations (`method="switchback_unit_t_approximation"`,
@@ -140,7 +211,7 @@ reference metadata fail coded. The panel entry point selects the unit or
 block reduction from the declared sequence, and the estimator uses the
 corresponding reference.
 
-`ContrastStats` and `ContrastResult` evidence carries `ct_cycles` and
+Under the paired laws, `ContrastStats` and `ContrastResult` carry `ct_cycles` and
 `tc_cycles` in JSON, result frames, and readout rows; they sum to
 `n_cycles` under `independent_bernoulli_order` and to `n_blocks` under
 `shared_schedule`, regardless of roster size. Invalid sums raise
@@ -151,31 +222,37 @@ independent units or holding 0 (TC) or 1 (CT) for shared blocks.
 Reduction sums these counts once per disjoint key; counts cannot be
 inferred from `probability_ct`. Independent-order evidence may omit both
 counts, which stay numeric nulls rather than being reconstructed;
-supplying only one count is invalid, and shared-schedule evidence always
-requires both. `observation_steps` and `retained_steps` are required in
-both JSON forms; order zero retains the full observation window.
+supplying only one count is invalid, and paired shared-schedule evidence
+requires both. Paired payloads do not need the new fixed-count fields.
+`observation_steps` and `retained_steps` identify the window; order zero
+retains the full observation window.
+
+Metric failures keep the original metric, treatment arm, method and reason
+through the readout, JSON and saved run, including a run in which every
+decision is unavailable. Read the numeric null as “not estimated”, not a
+zero-length interval.
 
 ## When it refuses
 
 Construction refuses before any statistics are built:
 
-- A degenerate split (for example `ct=320`, `tc=0`, with a binomial check
+- A degenerate paired split (for example `ct=320`, `tc=0`, with a binomial check
   below `1e-6`) or an incompatible unit-cycle declaration. A plausible split
   cannot prove the declaration is truthful.
-- A shared schedule whose blocks never realize one of the two orders at all,
-  even when the split looks plausible: 6 blocks at `probability_ct=0.8` land
-  all-CT about 26% of the time (`0.8**6`), and block-t's between-block
-  variance would then measure only observation noise, never the treatment
-  contrast. An implausible split under the shared law also refuses, using
-  block draw counts.
+- A shared paired schedule with just one realized order. Six blocks at
+  `probability_ct=0.8` land all-CT about 26% of the time (`0.8**6`).
+  This refuses even when the split is plausible; the split check counts
+  block draws, not roster members.
+- A fixed-count schedule with the wrong `m`, with conflicting positions
+  across a shared block, or with a position never observed in one arm
+  (`missing_position_support`). More rows from an existing block do not
+  supply a missing draw.
 
-!!! warning "Plan skewed shared schedules with more blocks"
-    `switchback_achieved_power` and the solvers built on it already multiply
-    by the probability that a shared-schedule design of that block count and
-    `probability_ct` is admissible at all
-    (`1 - probability_ct**n_blocks - (1 - probability_ct)**n_blocks`), so a
-    skewed `probability_ct` with few blocks is sized with more blocks, not
-    silently under-powered.
+The paired mean moment-t solvers multiply by the probability of seeing
+both orders in a shared schedule, `1 - p**n_blocks - (1-p)**n_blocks`.
+This factor alone is not a replay of every split or outcome-based failure.
+The [profile grid planner](planning-methods.md#switchback-contrasts)
+counts admission and rejection jointly for its supported models.
 
 Relabeling an independent-order panel as shared does not create uncertainty:
 zero block spread yields zero SE, unavailable decision evidence, and
@@ -185,27 +262,36 @@ numeric-null bounds and confidence level, never a fabricated interval.
 
 Switchback construction failures expose these stable codes:
 
-- **`source.frame.switchback.assignment`:** the assignment is not a two-period
-  `SwitchbackAssignment` with a declared `IndependentBernoulliOrder` or
-  `SharedScheduleOrder` sequence.
+- **`source.frame.switchback.assignment`:** not a supported switchback
+  assignment. The paired sequences require two periods.
+- **`definition.assignment.fixed_count`:** with a positive treated count,
+  the cycle must have at least three periods and at least one control.
+  There is no position-probability override; unknown fields such as
+  `position_probabilities` refuse with `model.field.unknown`.
 - **`source.frame.switchback.identification`:** identification is not
-  `Randomized`, does not contain exactly one control and one treatment, or has
-  invalid allocation weights. A non-50/50 allocation raises this same code
-  when a `SwitchbackStudyEnvelope` is constructed.
-- **`source.frame.switchback.metric`:** a metric type or option is outside
-  mean/conversion switchback support (ratio, quantile, retention, winsorization,
-  non-default missingness, CUPED, method/prior declarations, or a window option).
+  `Randomized`, does not name exactly one control and one treatment, or
+  the declared allocation is invalid for the schedule.
+- **`source.frame.switchback.metric`:** an unsupported metric or option,
+  such as quantile, retention, winsorization, `missing="skip"`, CUPED on
+  a ratio or conversion, a sensitivity method or a prior.
 - **`source.frame.switchback.columns`:** a required column is missing, or the
   group labels are empty/non-string.
 - **`source.frame.switchback.domain`:** unit labels or cycle/period/step domains
-  are invalid, including non-contiguous cycles or periods outside `{0, 1}`.
-- **`source.frame.switchback.schedule`:** schedule cells are missing/duplicated,
-  steps are incomplete, a unit-cycle does not contain one control and one
-  treatment period, a shared schedule's realized order disagrees across the
-  roster within a block, the realized CT/TC split is implausible under the
-  declared `probability_ct`, or a shared schedule realizes only one cycle order
-  across all declared blocks (a positivity failure, even when the split is plausible).
-- **`source.frame.switchback.missingness`:** a required schedule or metric value is null.
+  are invalid, including non-contiguous cycles or out-of-range positions.
+- **`source.frame.switchback.schedule`:** examples include duplicate cells,
+  a gap in a dense schedule, the wrong treated count, a shared schedule
+  that differs between units, insufficient position support or a paired
+  schedule that fails its realized-order check.
+- **`source.frame.switchback.missingness`:** a required value is null on
+  the dense route.
+- **`source.frame.switchback.assignment_unrecorded`:** a declared unit,
+  cycle and period lacks a logged arm. Restore the assignment log, not
+  an outcome row.
+- **`source.frame.switchback.event_coverage`:** `missing="zero"` and the
+  declaration of a complete event feed do not match.
+- **`source.frame.switchback.response_unobserved`:** with a valid log, a
+  required retained measurement is unavailable. The readout keeps the
+  metric with its reason; requesting its pilot refuses.
 - **`source.frame.switchback.numeric`:** a metric, aggregate, inverse-probability
   contribution, or reduction is non-finite or overflows.
 - **`source.frame.switchback.units`:** fewer than two units are present for the
@@ -242,14 +328,14 @@ results and role-aware method controls are separate from this contrast family.
 
 ## Optional finite-sample references and research laws
 
-If you can justify a prospective upper bound on the residual variance, supply
-`contrast_references={metric_name: envelope}` to `from_switchback_frame` or the
-source-level `increment.switchback.from_switchback_panel`. A `UnitCycleVarianceEnvelope` binds the
-assignment and window, metric and arm labels, response meaning, cycles per
-unit, the residual variance bound, and the provenance of the assumption: who
-declared it and why. Software does not prove it true. Ordinary construction
-without a reference selects the qualified unit-t approximation; no certificate
-is required for inference or pilot planning.
+For a paired unadjusted mean under independent unit-cycle orders, a
+prospective residual-variance upper bound can replace the sample-based
+reference. Supply `contrast_references={metric_name: envelope}` to
+`from_switchback_frame`. A `UnitCycleVarianceEnvelope` binds the assignment,
+window, metric and arms, response meaning, cycles per unit, variance bound
+and its provenance: who declared it and why. Software does not prove it
+true. Without it the default paired unit-t approximation needs no
+certificate for inference or pilot planning.
 
 !!! warning "A pilot variance is not a prospective bound"
     A pilot variance or observed standard error is not a prospective upper
@@ -447,9 +533,9 @@ with default fixed-query power and `mc_error=mc_error_per_n`.
 
 ## Response meaning and independent certification
 
-Switchback contrasts use inverse-probability CT/TC weighting, then average
-equally over cycles within each unit and over independent units. Supplied
-responses may be totals or pre-normalized means from equal or unequal
+The paired independent-unit comparisons below weight by CT/TC probability,
+then average equally over cycles within each unit and over independent
+units. Supplied responses may be totals or pre-normalized means from equal or unequal
 underlying micro-observation counts; the runtime receives neither
 micro-counts nor a second weighting selector, and unequal retained
 schedule-row counts remain outside the complete-schedule contract.
@@ -485,6 +571,49 @@ admitted HT-point bias. Public source/estimate/evidence/frame/wire parity
 is a separate check. The corrected N4/C1/p.9 counterexample retains
 miscoverage lower bounds `.05653644209396722` and `.05635913367335912`; a
 unit-t pivot cannot certify it.
+
+### Coverage with few units or blocks
+
+A nominal 95% interval need not cover in 95% of small switchbacks. Each
+row below represents 512 attempted experiments at zero treatment effect.
+`True/discarded` counts contaminated post-washout steps and the steps the
+analyst discarded. The point and interval were available on the same draws.
+
+| Independent replicates | CT probability | True/discarded | Returned | Covered | Coverage given interval | Coverage per attempt | Mean returned estimate |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 4 units | .5 | 0/0 | 512 | 445 | .869 ± .015 | .869 ± .015 | −.043 ± .140 |
+| 4 units | .5 | 1/0 | 512 | 445 | .869 ± .015 | .869 ± .015 | −1.548 ± .172 |
+| 4 units | .5 | 1/1 | 512 | 447 | .873 ± .015 | .873 ± .015 | −.029 ± .094 |
+| 4 units | .8 | 0/0 | 512 | 302 | .590 ± .022 | .590 ± .022 | .053 ± .167 |
+| 4 units | .8 | 1/0 | 512 | 302 | .590 ± .022 | .590 ± .022 | −1.423 ± .230 |
+| 4 units | .8 | 1/1 | 512 | 309 | .604 ± .022 | .604 ± .022 | .028 ± .114 |
+| 6 shared blocks | .5 | 0/0 | 498 | 496 | .996 ± .003 | .969 ± .008 | −.043 ± .101 |
+| 6 shared blocks | .5 | 1/0 | 498 | 485 | .974 ± .007 | .947 ± .010 | −1.538 ± .108 |
+| 6 shared blocks | .5 | 1/1 | 498 | 496 | .996 ± .003 | .969 ± .008 | −.014 ± .068 |
+| 6 shared blocks | .8 | 0/0 | 382 | 382 | 1.000 ± .000 | .746 ± .019 | −1.241 ± .116 |
+| 6 shared blocks | .8 | 1/0 | 382 | 382 | 1.000 ± .000 | .746 ± .019 | −2.684 ± .137 |
+| 6 shared blocks | .8 | 1/1 | 382 | 382 | 1.000 ± .000 | .746 ± .019 | −.846 ± .079 |
+
+`±` is one estimated Monte Carlo standard error, not an interval for an
+individual study. A zero estimated MC error when every returned interval
+covers is not proof of perfect coverage. Returned-estimate means condition
+on schedule admission and need not have the unconditional design expectation.
+
+In the four-unit skewed design the nominal 95% interval covered only 59%
+of attempts (Monte Carlo standard error 2.2 percentage points). In the
+skewed shared design every *returned* interval covered, but 130 attempts
+had no interval. Even before observing outcomes, the probability of both
+orders occurring there is only `1 - 0.8**6 - 0.2**6`, about 74%.
+
+To reproduce, use `run_switchback_end_to_end` at revision `77ab667b`
+with `SwitchbackScenario(seed=20261119, treatment_effect=0, unit_effect_sd=0,
+temporal_effect=2, noise_sd=1, washout_steps=1, observation_steps=3,
+carryover_amplitude=3)`. Use one cycle per unit in the four-unit design,
+or `shared_schedule=True`, three roster members and six cycles for shared
+blocks. Set `true_carryover_order` and `declared_carryover_order` as shown.
+Discarding the genuinely contaminated step reduced bias in the balanced
+unit design; this checks a specified contamination model, not whether
+carryover has ended in an observed experiment.
 
 ### Representative release checks
 
