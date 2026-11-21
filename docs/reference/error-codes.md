@@ -25458,7 +25458,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Error class:** `InvalidRequestError`
 
-**Context keys:** —
+**Context keys:** `baseline_rate`
 
 **Registering modules:** `increment.power._spillover`
 
@@ -25474,7 +25474,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Error class:** `InvalidRequestError`
 
-**Context keys:** —
+**Context keys:** `meaningful_effect`
 
 **Registering modules:** `increment.power._spillover`
 
