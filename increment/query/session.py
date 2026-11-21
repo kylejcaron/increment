@@ -1962,6 +1962,7 @@ class WarehouseSession:
         self._defs = defs
         self._fact_tables: dict[tuple[str, str, bool, bool], Table] = {}
         self._source_tables: dict[str, Table] | None = None
+        self._snapshot_inputs: Mapping[str, ir.Table] | None = None
         self._dim_tables: dict[str, Table] = {}
         self._materialized: list[_MaterializedRelation] = []
         # Suffix every temp-table name so sessions sharing one `con` never collide on
@@ -2244,12 +2245,14 @@ class WarehouseSession:
         scope: SourceScope | None = None,
         source_snapshot_evidence: SourceSnapshotEvidence | None = None,
         extra_relations: Mapping[str, Table] = MappingProxyType({}),
+        retain_snapshot_inputs: bool = False,
     ) -> WarehouseSession:
         """Capture all requested streams in one execution, preserving their types.
         `column_hints` maps exact query text to `(unit_column, timestamp_column)`; either or both
         may be `None` when that predicate does not apply to this stream. `scope=None` pushes no
         predicates. `extra_relations` adds Ibis relations under lookup keys; unlike SQL queries,
         these are already expressed in the executing backend's native relation model.
+        `retain_snapshot_inputs` keeps the exact input expressions before tagging, not their rows.
 
         Each stream occupies distinct typed columns of a tagged UNION ALL. The tagged relation
         stays in a warehouse TEMP table. Subsequent validation and reductions read only that
@@ -2332,6 +2335,10 @@ class WarehouseSession:
             for table in pinned._source_tables.values()
             for relation in table.op().find(ops.DatabaseTable)
         )
+        if retain_snapshot_inputs:
+            pinned._snapshot_inputs = MappingProxyType(
+                dict(zip((*queries, *extra_relations), tables, strict=True))
+            )
         return pinned
 
     def fact_table(
@@ -2493,6 +2500,7 @@ class WarehouseSession:
         self._arrow_results.clear()
         self._arrow_cache_bytes = 0
         self._captured_relations = None
+        self._snapshot_inputs = None
 
     @property
     def materialized_names(self) -> list[str]:

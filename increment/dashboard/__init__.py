@@ -20,7 +20,7 @@ from increment._optional import require_dashboard
 
 require_dashboard()
 
-from increment.dashboard._app import render_dashboard
+from increment.dashboard._app import dashboard_html, render_dashboard
 from increment.dashboard._data import (
     DashboardConfig,
     DashboardSnapshot,
@@ -60,6 +60,7 @@ __all__ = [
     "DashboardConfig",
     "DashboardSnapshot",
     "ExploreView",
+    "dashboard_html",
     "dashboard_styles",
     "group_data_csv",
     "load_explore",

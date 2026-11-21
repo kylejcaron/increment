@@ -36,6 +36,10 @@ from increment._day_axis import run_asof, run_asof_lift, run_asof_lift_together_
 from increment._evidence_refusals import CONTRAST_UNAVAILABLE
 from increment._execute import run_whole_window
 from increment._exploratory import available_metrics
+from increment._interaction_binding import (
+    interaction_pin_metrics,
+    verify_dashboard_interaction,
+)
 from increment._interpretation import (
     interpret_readout,
     readout_evidence_columns,
@@ -90,8 +94,10 @@ if TYPE_CHECKING:
     from increment._binding import ExperimentReader, SourceBinding
     from increment._dashboard_capture import DashboardCapture
     from increment._evidence_types import RowValue
+    from increment._interaction_binding import VerifiedInteractionAttachment
     from increment.estimation.results import LiftEstimate
     from increment.kernel.experiment import Experiment
+    from increment.semantics.interaction_scan import InteractionScan
     from increment.semantics.models import Experiment as ExperimentDefinition
     from increment.semantics.models import Metric, MultiplicitySpec
     from increment.tables import ReadoutValue
@@ -339,6 +345,8 @@ class DashboardSnapshot:
         default_factory=dict
     )
     view_multiplicity: MultiplicitySpec | None = None
+    interactions: InteractionScan | None = None
+    interaction_source_unverified: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metrics", tuple(self.metrics))
@@ -692,7 +700,11 @@ def _each_warning_once() -> Iterator[None]:
 
 
 def prepare_dashboard(
-    experiment: Experiment, reader: ExperimentReader, *, config: DashboardConfig
+    experiment: Experiment,
+    reader: ExperimentReader,
+    *,
+    config: DashboardConfig,
+    interactions: VerifiedInteractionAttachment | None = None,
 ) -> DashboardSnapshot:
     """Run the headline readout once and capture it as a read-only snapshot.
 
@@ -704,13 +716,20 @@ def prepare_dashboard(
     keeps ownership of ``reader`` and its connection: nothing here closes or replaces them,
     and the snapshot retains neither. Repeated ratio cautions become one summary;
     each distinct unrelated warning is shown once. Details remain on affected results.
+
+    ``interactions`` comes from ``bind_interaction_scan``. It is checked against
+    the pinned inputs and never replaces or recomputes the headline.
     """
     with _each_warning_once():
-        return _prepare_dashboard(experiment, reader, config=config)
+        return _prepare_dashboard(experiment, reader, config=config, interactions=interactions)
 
 
 def _prepare_dashboard(
-    experiment: Experiment, reader: ExperimentReader, *, config: DashboardConfig
+    experiment: Experiment,
+    reader: ExperimentReader,
+    *,
+    config: DashboardConfig,
+    interactions: VerifiedInteractionAttachment | None,
 ) -> DashboardSnapshot:
     binding = binding_for(experiment, reader)
     definition = _supported_experiment(binding)
@@ -738,8 +757,10 @@ def _prepare_dashboard(
         DashboardSnapshotPayload,
         ExperimentHealth,
         dict[Literal["assigned", "triggered"], LiftEstimates],
+        InteractionScan | None,
     ]:
         pinned = capture.binding
+        scan = None if interactions is None else verify_dashboard_interaction(pinned, interactions)
         allocation, allocation_refusal = _allocation_check(capture, config)
         allocation_history, allocation_history_refusal = _allocation_history(
             pinned, allocation_refusal
@@ -833,10 +854,19 @@ def _prepare_dashboard(
             population_estimates=population_estimates,
             explore=explore,
         )
-        return payload, health_report, population_collections
+        return payload, health_report, population_collections, scan
 
-    payload, health_report, population_collections = capture_dashboard(
-        binding, _read, metrics=(*metrics, *offered)
+    payload, health_report, population_collections, scan = capture_dashboard(
+        binding,
+        _read,
+        metrics=interaction_pin_metrics(
+            interactions,
+            experiment,
+            binding,
+            (control_group, treatment_group),
+            (*metrics, *offered),
+        ),
+        interaction_facts=interactions is not None,
     )
     allocation = payload.allocation
     allocation_refusal = payload.allocation_refusal
@@ -921,7 +951,22 @@ def _prepare_dashboard(
         config=config,
         computed_at=dt.datetime.now(dt.UTC),
         view_multiplicity=definition.plan.view_multiplicity,
+        interactions=scan,
+        interaction_source_unverified=interactions is not None and scan is None,
     )
+
+
+def dashboard_interaction_scan(
+    snapshot: DashboardSnapshot,
+    *,
+    metric: str,
+    population: Literal["assigned", "triggered"],
+) -> InteractionScan | None:
+    """Look up a planned interaction metric from the assigned population only."""
+    scan = snapshot.interactions
+    if population != "assigned" or scan is None:
+        return None
+    return scan if any(item.name == metric for item in scan.plan.metrics) else None
 
 
 _DEFINITION_REQUIRED = "the dashboard needs an experiment built by from_definitions"

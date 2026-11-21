@@ -138,6 +138,7 @@ step: Column identifying steps within a switchback period.
 store: Policy for materializing warehouse reductions.
 study_id: Stable identifier for the study.
 summary: Per-arm summary statistics.
+table: Native source table to read or identify.
 target: Policy, population, layer, or standalone experiment to evaluate.
 withheld: Arm-specific adjustment evidence omitted with its refusal.
 target_power: Desired probability of detecting the target effect.
@@ -203,3 +204,9 @@ evidence: Validated bounded cell summaries for the registered overlap design.
 n_target: Planned number of units randomized in both experiments.
 cell_outcomes: Prespecified joint outcome vectors for each assignment cell.
 replications: Number of independent draws to use in the simulation.
+inventory: Published list of experiments fixed before collecting outcomes.
+observed_inventory: Source's record of which experiments were covered at the cutoff.
+focal: The experiment whose effect is compared.
+cutoff: The scheduled instant at which the evidence is read.
+evidence_by_study: Original bounded pair results keyed by their study identifiers.
+interactions: Verified interaction comparisons displayed alongside the captured readout.

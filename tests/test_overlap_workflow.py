@@ -12,6 +12,7 @@ import ibis
 import pyarrow as pa
 import pytest
 
+from increment._interaction_capture import capture_interaction_scan
 from increment.assignment import compile_allocation
 from increment.errors import CodedError
 from increment.overlap import (
@@ -28,6 +29,8 @@ from increment.overlap import (
     simulate_overlap,
 )
 from increment.query.overlap import bind_overlap_warehouse
+from increment.semantics.interaction_scan import CapturedPair
+from tests.test_interaction_capture import observed_at_look, scan_for_pair
 
 if TYPE_CHECKING:
     from ibis.backends.duckdb import Backend
@@ -135,14 +138,30 @@ def _scientific_projection(evidence):
     )
 
 
-def _round_trip(evidence):
+def _round_trip(evidence: OverlapEvidence) -> OverlapEvidence:
     restored = OverlapEvidence.from_json(
         evidence.to_json(), expected_sha256=evidence.evidence_sha256
     )
     result = analyze_overlap(restored)
     replay = OverlapResult.from_json(result.to_json(), expected_sha256=result.result_sha256)
     assert replay.to_json() == result.to_json()
-    assert _scientific_projection(restored) == _scientific_projection(evidence)
+    return restored
+
+
+def _scan_pair_receipt(evidence: OverlapEvidence) -> OverlapEvidence:
+    plan = scan_for_pair(evidence)
+    capture = capture_interaction_scan(
+        plan,
+        observed_inventory=observed_at_look(plan),
+        evidence_by_study={evidence.plan.study_id: evidence},
+    )
+    assert capture.coverage == "complete"
+    (pair,) = capture.pairs
+    assert isinstance(pair.value, CapturedPair)
+    assert pair.value.focal_side == "A"
+    assert not pair.value.metric_issues
+    assert pair.value.evidence.evidence_sha256 == evidence.evidence_sha256
+    return pair.value.evidence
 
 
 def _sdk_plan(contract, a_config, b_config, *, target="jointly_eligible"):
@@ -230,11 +249,13 @@ def test_public_sdk_external_frame_warehouse_and_wire(tmp_path, external_contrac
             warehouse_tables = _publish_tables(con, inputs)
             bound = bind_overlap_warehouse(plan, capture=capture, **warehouse_tables)
             warehouse = capture_overlap_warehouse(plan, capture=bound, **warehouse_tables)
+            assert frame.capture.generation_id != warehouse.capture.generation_id
             _assert_tiny_science(frame)
             for result in (frame, warehouse):
                 assert result.capture.archive_sha256 == plan.law.archive_sha256
-                _round_trip(result)
-                projections.append(_scientific_projection(result))
+                restored = _round_trip(result)
+                for bundle in (result, restored):
+                    projections.append(_scientific_projection(_scan_pair_receipt(bundle)))
 
         plan = plans[0]
         inputs = relations[0]

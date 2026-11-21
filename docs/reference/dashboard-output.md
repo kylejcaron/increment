@@ -71,6 +71,11 @@ in the snapshot, including arms, windows, breakouts, and policy. A matching
 experiment name alone is insufficient. Sequential decisions keep each displayed
 metric's checkpoint, including an earlier checkpoint for a stopped secondary.
 
+Pass `interactions=attachment` to add an optional [interaction scan](../api.md#interaction-discovery).
+Preparation independently checks that the attachment and the focal dashboard
+use the same definition, fixed window, cutoff, and sealed DuckDB data. A
+matching experiment name, timestamp, or row count is not enough.
+
 ### Statistical cautions
 
 A successful preparation combines repeated ratio cautions into one
@@ -382,6 +387,65 @@ breakout. Segment reads are per metric; combining them under a BH breakout
 policy would incorrectly join their families. A refused joint read is retried
 per metric so each keeps its own refusal.
 
+### Interactions
+
+Explore shows one row per concurrent experiment for the selected metric.
+Each row estimates how much the focal experiment's effect changes when the other
+experiment is on rather than off. Pair details show both effects, their
+difference, and the four assignment groups. Overview and pair plots share a
+scale within the selected metric.
+
+- **% lift vs. control** divides each effect by its focal-off mean with the
+  other experiment at the same setting. The difference between those lifts
+  uses percentage points (`pp`). This is the default when the metric has
+  a bounded relative comparison.
+- The option named for the metric shows effects and their difference in its
+  own units. For a rate, `pp of save rate` means percentage points of save
+  rate, not of lift.
+
+| Inventory coverage | What the screen can say |
+|---|---|
+| Not checked | No scan was supplied or the inventory was not captured. |
+| Partial | Known pairs can show descriptive estimates, but no scan-wide intervals or conclusions. |
+| Complete | The source confirms which experiments were in scope, including if there were none. |
+
+Complete coverage requires both the inventory frozen before entry and the
+record at the cutoff to cover entry through the end of the outcome window
+and agree on the assignment revisions in scope.
+
+Complete inventory coverage does not make all pair data complete. A
+comparison that needs a missing, pending, or empty group has no estimate;
+the affected comparison and its exact reason remain visible. An available
+estimate can lack an interval, or an interval can be too weakly supported
+to justify a conclusion. **Higher with other on** or **Lower with other on**
+means the supported interval for the difference excludes zero. **None detected**
+means it contains or touches zero. Neither outcome is a rollout decision.
+
+#### Interaction family and intervals
+
+Absolute intervals use the two-sided Welch approximation. Relative intervals
+account for uncertainty in the baseline using a two-sided Fieller interval.
+A zero, negative, or imprecisely measured baseline can prevent a relative
+result even when the absolute result is available. The interval for the
+difference in relative lift subtracts the two adjusted lift intervals,
+using the lowest and highest possible differences of their endpoints.
+
+Bonferroni adjusts each scale separately; coverage is not guaranteed jointly
+across both scales. This adjustment is separate from Explore Overview's BH
+correction and the registered pair workflow. The family counts three
+comparisons per frozen candidate and metric: the two effects and their difference.
+For three candidates and two metrics, the divisor is 18, even if a row is
+unavailable or a metric is hidden. Changing the metric, selecting a pair
+by name, or opening it from Readout does not change the family, level, or
+bounds. See **Scope and interval adjustment** for the family size, level,
+and fixed look. The adjustment does not require independent pairs; the
+within-pair independent assignment and outcome requirements still apply.
+
+These exploratory comparisons describe pairs, not a combination of three
+or more treatments. The **Possible interaction** badge is based on the
+adjusted absolute interval. It opens the detected pair in **% lift vs. control**
+if that scale also detects the change. The primary result is unchanged.
+
 ### Time series and dates
 
 **Whole experiment** shows all primary, secondary, and guardrail metrics;
@@ -515,6 +579,14 @@ select embedded data without a Python kernel. Static exports show captured
 added metrics, but changing that selection requires a running notebook; the
 control explains this rather than applying the change. Neither form refreshes
 data without re-preparation.
+
+Static HTML keeps the same captured interaction rows, intervals, counts,
+and reasons as the notebook. Metric selection and named pair navigation
+work offline. When shown in Report and print, the interaction evidence is
+identified as exploratory and does not enter the headline CSV. There is no
+separate saved scan: HTML is a read-only export, not an input to preparation.
+Keep the [original inputs](../guides/dashboard.md#check-for-interactions-with-other-experiments)
+to reproduce the same look.
 
 The masthead's light/dark toggle changes tables, charts, and surrounding
 surfaces without changing evidence or selections. It follows the operating

@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, replace
 from importlib import resources
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import anywidget
 import marimo as mo
@@ -28,6 +28,7 @@ from increment.dashboard._data import (
     ExploreView,
     _require_same_experiment,
     all_metrics,
+    dashboard_interaction_scan,
     enriched_rows,
     group_data_csv,
     load_explore,
@@ -81,6 +82,7 @@ from increment.dashboard._html import (
     temporal_refusal_table,
     unavailable_point_note,
 )
+from increment.dashboard._interaction_html import interaction_tables
 from increment.dashboard._references import (
     ReferenceCatalog,
     build_reference_catalog,
@@ -95,8 +97,9 @@ from increment.tables import _binomial_qualification_disclosure
 
 if TYPE_CHECKING:
     from increment.kernel.experiment import Experiment
+    from increment.semantics.interaction_scan import ScanRow
 
-__all__ = ["build_payload", "document", "health_status", "render_dashboard"]
+__all__ = ["build_payload", "dashboard_html", "document", "health_status", "render_dashboard"]
 
 _MARKER = "<!-- DASHBOARD_DATA -->"
 _FRAME_HEIGHT = "1400px"
@@ -114,6 +117,11 @@ _VIEW_TITLES = {
     "cumulative_values": "Cumulative per-arm values",
     "daily_values": "Daily per-arm values",
 }
+
+
+def dashboard_html(experiment: Experiment, *, snapshot: DashboardSnapshot) -> str:
+    """Export one prepared dashboard as standalone HTML without reopening its source."""
+    return document(build_payload(experiment, snapshot=snapshot))
 
 
 def render_dashboard(experiment: Experiment, *, snapshot: DashboardSnapshot) -> mo.ui.anywidget:
@@ -145,7 +153,7 @@ class DashboardWidget(anywidget.AnyWidget):
 
     def __init__(self, experiment: Experiment, *, snapshot: DashboardSnapshot) -> None:
         super().__init__(
-            document=document(build_payload(experiment, snapshot=snapshot)),
+            document=dashboard_html(experiment, snapshot=snapshot),
             exploratory_metrics=list(snapshot.config.exploratory_metrics),
         )
         self._experiment = experiment
@@ -160,7 +168,7 @@ class DashboardWidget(anywidget.AnyWidget):
         self.status = "updating"
         try:
             snapshot = show_exploratory_metrics(self._snapshot, requested)
-            page = document(build_payload(self._experiment, snapshot=snapshot))
+            page = dashboard_html(self._experiment, snapshot=snapshot)
         except CodedError as exc:
             self.status = f"{exc} ({exc.code})"
             self.exploratory_metrics = list(current)
@@ -255,12 +263,142 @@ def build_payload(experiment: Experiment, *, snapshot: DashboardSnapshot) -> dic
             if population == "triggered"
             else ""
         )
+        if (interactions := _interaction_payload(scoped, population)) is not None:
+            payload["interactions"] = interactions
         views[population] = payload
     result = dict(views[default])
     result["defaultPopulation"] = default
     result["populationOptions"] = list(populations)
     result["populationViews"] = views
     return result
+
+
+def _supported_direction(row: ScanRow) -> int:
+    if row.decision != "detected" or row.lower is None or row.upper is None:
+        return 0
+    return 1 if row.lower > 0 else -1 if row.upper < 0 else 0
+
+
+def _interaction_payload(
+    snapshot: DashboardSnapshot, population: Literal["assigned", "triggered"]
+) -> dict[str, Any] | None:
+    scan = snapshot.interactions
+    if scan is None:
+        if snapshot.interaction_source_unverified:
+            return {
+                "status": "Not checked here: the overlap data could not be matched to this snapshot."
+            }
+        return None
+    if population == "triggered":
+        return {
+            "status": "Not checked for the triggered population. These comparisons need all assigned units."
+        }
+    scope = scan.plan.scope
+    inventory = scan.plan.inventory
+    observed = scan.observed_inventory
+    inventory_name = inventory.universe_id
+    if inventory.version is not None:
+        inventory_name += f", version {inventory.version}"
+    if (
+        observed is not None
+        and (observed.source_id, observed.universe_id) == (scope.source_id, scope.universe_id)
+        and observed.version is not None
+        and observed.version != inventory.version
+    ):
+        inventory_name += f" (observed version {observed.version})"
+    scan_scope = (
+        f"Source: {scope.source_id}. Inventory: {inventory_name}. "
+        f"Fixed cutoff: {scope.cutoff.isoformat(sep=' ')}."
+    )
+    if scan.no_candidates:
+        return {"status": "No concurrent experiments in this window.", "scope": scan_scope}
+    status = {
+        "complete": "",
+        "partial": "The experiment list is incomplete or changed. No adjusted intervals or detections are reported.",
+        "not_captured": "The experiment list was not verified. No adjusted intervals or detections are reported.",
+    }[scan.coverage]
+    selected = [
+        metric.name
+        for metric in all_metrics(snapshot)
+        if dashboard_interaction_scan(snapshot, metric=metric.name, population=population)
+        is not None
+    ]
+    family = scan.plan.family_size
+    explanation = (
+        f"Bonferroni shares the error budget across all {family} planned comparisons, including "
+        f"hidden metrics and comparisons we couldn't estimate. On each scale, the intervals have "
+        f"approximately {(1.0 - scope.alpha):.1%} coverage together at the fixed cutoff "
+        f"{scope.cutoff:%Y-%m-%d %H:%M:%S UTC}. The scales are adjusted separately, not jointly. "
+        "The interval for the change in relative lift uses the two adjusted lift intervals. "
+        "Opening a pair does not change the adjustment. "
+        "None detected does not establish that the effects are equal."
+        if family and scan.coverage == "complete"
+        else ""
+    )
+    pairs = []
+    health = []
+    if scan.coverage != "complete":
+        health.append("The source did not establish a complete list of overlapping experiments.")
+    names = Counter(detail.candidate.entry.display_name for detail in scan.details)
+    for detail in scan.details:
+        entry = detail.candidate.entry
+        label = entry.display_name
+        if names[label] > 1:
+            identity = entry.identity
+            label += f" ({identity.target} / {identity.experiment_id} / {identity.revision})"
+        pairs.append({"id": detail.candidate.key.pair_id, "label": label})
+        reasons = {reason.code for reason in (*detail.candidate.reasons, *detail.reasons)}
+        if "archive_missing" in reasons:
+            health.append(f"The original assignment record for {label} was not captured.")
+        elif "pair_evidence_missing" in reasons:
+            health.append(f"Original assignment and outcome evidence for {label} is missing.")
+        if "delivery_conflicts" in reasons:
+            health.append(
+                f"Some deliveries for the comparison with {label} did not match assignment."
+            )
+    count = len(pairs)
+    metric_status = status or f"{count} concurrent experiment{'s' if count != 1 else ''}."
+    # Trigger the badge from the absolute family only, not the union of both scales.
+    alert_row = min(
+        (
+            row
+            for row in scan.rows
+            if row.key.metric in selected
+            and row.key.contrast == "interaction"
+            and _supported_direction(row)
+        ),
+        key=lambda row: row.key.metric != snapshot.primary_metric,
+        default=None,
+    )
+    alert = None
+    metric_packets = {}
+    for metric in selected:
+        fragments = interaction_tables(scan, metric_key=metric, theme=snapshot.config.theme)
+        relative = interaction_tables(
+            scan, metric_key=metric, theme=snapshot.config.theme, relative=True
+        )
+        if alert_row is not None and alert_row.key.metric == metric:
+            pair_id = alert_row.key.pair.pair_id
+            scale = "relative" if pair_id in relative.detected_pairs else "absolute"
+            alert = {"metric": metric, "pair": pair_id, "scale": scale}
+        metric_packets[metric] = {
+            "status": metric_status,
+            "explanation": explanation,
+            "overview": fragments.overview,
+            "details": dict(fragments.details),
+            "relative": {"overview": relative.overview, "details": dict(relative.details)},
+            "defaultScale": "relative" if relative.has_interaction else "absolute",
+            "absoluteLabel": f"{_label(metric)} in {fragments.absolute_unit}",
+            "pairs": pairs,
+        }
+    return {
+        "status": status or "No planned interaction metrics are shown in this view.",
+        "scope": scan_scope,
+        "metricOptions": [{"key": metric, "label": _label(metric)} for metric in selected],
+        "metrics": metric_packets,
+        "alert": alert,
+        "health": health,
+    }
 
 
 def _build_payload_for_population(

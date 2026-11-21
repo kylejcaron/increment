@@ -3,13 +3,14 @@
 // The page posts {source: "inc-dashboard", type: "ready" | "set-exploratory-metrics" | "set-population"}.
 // This widget answers {source: "inc-dashboard-host", type: "bridge" | "status" | "restore"}.
 // Python re-renders the same snapshot when `exploratory_metrics` changes and replaces
-// `document`; the replacement page restores the active population and reopens Explore.
+// `document`; the replacement page restores the population and any active interaction selection.
 function render({ model, el }) {
   const frame = document.createElement("iframe");
   frame.className = "inc-dashboard-frame";
   frame.title = "Experiment dashboard";
   let reopen = null;
   let selectedPopulation = null;
+  let interactionSelection = null;
   let peer = null;
 
   const post = (message) => {
@@ -31,9 +32,20 @@ function render({ model, el }) {
       const restore = { type: "restore" };
       if (reopen) restore.view = reopen;
       if (selectedPopulation) restore.population = selectedPopulation;
+      if (reopen && interactionSelection) restore.interaction = interactionSelection;
       if (reopen || selectedPopulation) post(restore);
+      interactionSelection = null;
       reopen = null;
     } else if (message.type === "set-exploratory-metrics" && Array.isArray(message.metrics)) {
+      const interaction = message.interaction;
+      const asString = (value) => typeof value === "string" ? value : null;
+      interactionSelection = interaction && typeof interaction === "object" ? {
+        metric: asString(interaction.metric),
+        pair: asString(interaction.pair),
+        scale: asString(interaction.scale),
+        focus: asString(interaction.focus),
+        focusPair: asString(interaction.focusPair),
+      } : null;
       model.set("exploratory_metrics", message.metrics.map(String));
       model.save_changes();
     } else if (message.type === "set-population" && typeof message.population === "string") {

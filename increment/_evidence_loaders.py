@@ -41,6 +41,12 @@ from increment.errors import CapabilityError, _ArtifactContractErrorMarker
 
 if TYPE_CHECKING:
     from increment.kernel.context import EvidenceExecutionContext
+    from increment.semantics.interaction_scan import (
+        FocalSourceFacts,
+        InteractionScanPlan,
+        StudyFeedFact,
+    )
+    from increment.semantics.overlap import OverlapEvidence
 
 
 def load_moments_batch(
@@ -264,6 +270,24 @@ def load_dashboard_group_data(
             metrics=metrics, checkpoints=checkpoints, population=population
         )
     )
+
+
+def load_interaction_focal_facts(
+    source: EvidenceSource, plan: InteractionScanPlan
+) -> FocalSourceFacts | None:
+    """Verify the focal fact projections on the existing pinned definitions source."""
+    if not is_builtin_source(source) or declared_evidence(source).kind != "definitions":
+        return None
+    return cast(Any, source).interaction_focal_facts(plan)
+
+
+def load_interaction_pair_facts(
+    source: EvidenceSource,
+    evidence: OverlapEvidence,
+    tables: Mapping[str, tuple[str, str, str]],
+) -> tuple[StudyFeedFact, ...]:
+    """Verify original warehouse evidence against its qualified physical feeds."""
+    return cast(Any, source).interaction_pair_facts(evidence, tables)
 
 
 def build_triggered_srm_provider(

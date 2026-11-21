@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
-from hashlib import sha256
+from datetime import datetime, timedelta
+from hashlib import file_digest, sha256
 from math import isfinite
 from pathlib import Path
 from string import ascii_lowercase, ascii_uppercase
@@ -37,8 +37,14 @@ from increment._overlap_evidence import (
     PREASSIGNED_GATE_COLUMNS,
     overlap_binary_moments,
 )
-from increment._overlap_refusals import CAPTURE_INVALID, EVIDENCE_INVALID, NUMERIC_RANGE
+from increment._overlap_refusals import (
+    CAPTURE_INVALID,
+    EVIDENCE_INVALID,
+    NUMERIC_RANGE,
+    SCAN_INVALID,
+)
 from increment.errors import refuse
+from increment.semantics.interaction_scan import FocalSourceFacts, SourceFact, StudyFeedFact
 from increment.semantics.overlap import (
     OverlapCapture,
     OverlapCell,
@@ -51,6 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
     from increment._overlap_evidence import CellId, FactorId, FeedRole, OverlapColumn
+    from increment.semantics.interaction_scan import InteractionScanPlan
     from increment.semantics.overlap import OverlapFactor, OverlapMetric
 
 
@@ -285,6 +292,236 @@ def _query(cursor: DuckDBPyConnection, backend: Backend, expr: ir.Table) -> list
     )
     names = [column[0] for column in result.description]
     return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+
+
+def _sealed_duckdb_generation(con: Backend) -> tuple[str, str] | None:
+    """Identify a checkpointed DuckDB input opened as the only read-only catalog."""
+    if con.name != "duckdb":
+        return None
+    rows = con.con.execute(
+        "SELECT database_name, path, readonly FROM system.main.duckdb_databases() WHERE NOT internal"
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    catalog, location, read_only = rows[0]
+    if not read_only or location is None:
+        return None
+    try:
+        path = Path(location).resolve(strict=True)
+        if not path.is_file() or path.with_suffix(path.suffix + ".wal").exists():
+            return None
+        with path.open("rb") as database:
+            return catalog, file_digest(database, "sha256").hexdigest()
+    except OSError:
+        return None
+
+
+def _interaction_coordinate(table: ir.Table) -> tuple[str, str, str] | None:
+    op = table.op()
+    if isinstance(op, ops.DatabaseTable) and op.namespace.catalog and op.namespace.database:
+        return op.namespace.catalog, op.namespace.database, op.name
+    return None
+
+
+def _native_interaction_fact(backend: Backend, table: ir.Table) -> SourceFact | None:
+    coordinate = _interaction_coordinate(table)
+    op = table.op()
+    if coordinate is None or not isinstance(op, ops.DatabaseTable) or op.source is not backend:
+        return None
+    rows = backend.con.execute(
+        _CATALOG,
+        [list(table.columns), *(part.translate(_ASCII_FOLD) for part in coordinate)],
+    ).fetchall()
+    if not rows or any(row[7] for row in rows) or not _uncollated_table(rows[0][4]):
+        return None
+    _, catalog, schema, name, *_ = rows[0]
+    ordered = table.select(*sorted(table.columns))
+    layout = tuple((key, str(dtype)) for key, dtype in ordered.schema().items())
+    with backend.con.cursor() as cursor:
+        cursor.execute("SET TimeZone = 'UTC'")
+        cursor.execute("SET default_collation = ''")
+        (digest,) = _query(cursor, backend, _feed_digest(ordered, "roster"))
+    return SourceFact(
+        coordinate=(catalog, schema, name),
+        content_sha256=_identity(
+            "increment.interaction.fact.v1", (layout, digest["version_roster"])
+        ),
+    )
+
+
+def interaction_duckdb_fact(table: ir.Table) -> SourceFact:
+    """Fingerprint one qualified native DuckDB table for a published source manifest."""
+    op = table.op()
+    if isinstance(op, ops.DatabaseTable) and isinstance(op.source, Backend):
+        try:
+            fact = _native_interaction_fact(op.source, table)
+        except (DuckDBError, IbisError, OSError, SqlglotError):
+            fact = None
+        if fact is not None:
+            return fact
+    refuse(SCAN_INVALID, field="source", reason="native_facts_required")
+
+
+def _published_generation_id(backend: Backend, catalog: str) -> str | None:
+    try:
+        marker = backend.table("increment_interaction_generation", database=(catalog, "main"))
+        if _native_interaction_fact(backend, marker) is None:
+            return None
+        records = _query(backend.con, backend, marker.select("version", "generation_id").limit(2))
+    except (DuckDBError, IbisError, OSError, KeyError):
+        return None
+    if len(records) != 1 or records[0]["version"] != 1:
+        return None
+    identifier = records[0]["generation_id"]
+    return identifier if isinstance(identifier, str) and identifier else None
+
+
+def _sealed_focal_fact(
+    backend: Backend, catalog: str, query: str, pinned: ir.Table, original: ir.Table
+) -> SourceFact | None:
+    """Check the actual pinned projection against its source-owned native input."""
+    try:
+        select = sqlglot.parse_one(query, dialect="duckdb")
+        if (
+            not isinstance(select, exp.Select)
+            or select.expressions != [exp.Star()]
+            or any(
+                value for key, value in select.args.items() if key not in {"expressions", "from_"}
+            )
+        ):
+            return None
+        source = select.args["from_"].this
+        if (
+            not isinstance(source, exp.Table)
+            or not isinstance(source.this, exp.Identifier)
+            or not source.db
+            or any(
+                value for key, value in source.args.items() if key not in {"this", "db", "catalog"}
+            )
+        ):
+            return None
+        if source.catalog and source.catalog.translate(_ASCII_FOLD) != catalog.translate(
+            _ASCII_FOLD
+        ):
+            return None
+        physical = backend.table(source.name, database=(catalog, source.db))
+        expected = _feed_digest(original, "roster")
+        observed = _feed_digest(pinned, "outcomes")
+        (digests,) = _query(backend.con, backend, expected.cross_join(observed))
+        if digests["version_roster"] != digests["version_outcomes"]:
+            return None
+        return _native_interaction_fact(backend, physical)
+    except (DuckDBError, IbisError, OSError, SqlglotError, KeyError):
+        return None
+
+
+def _focal_query(source: Any, fact: str | None) -> str | None:
+    for relation in source._defs.fact_sources:
+        if any(item.name == fact for item in relation.facts):
+            return relation.sql if not relation.dims else None
+    return None
+
+
+def interaction_focal_facts(source: Any, plan: InteractionScanPlan) -> FocalSourceFacts | None:
+    """Read only the declared projections already pinned for the definitions reader."""
+    session = source._session
+    backend = session.con
+    projections = session._source_tables
+    originals = session._snapshot_inputs
+    if not isinstance(backend, Backend) or projections is None or originals is None:
+        return None
+    generation = _sealed_duckdb_generation(backend)
+    snapshot = session.source_snapshot_evidence
+    if generation is None or snapshot is None:
+        return None
+    catalog, dataset = generation
+    identifier = _published_generation_id(backend, catalog)
+    if identifier is None:
+        return None
+    plan.scope.require_cutoff(snapshot.observation_cutoff_ts)
+    definition = source._experiment
+    ledger = definition.assignment_ledger
+    exposure = source._exp_lookup_exposures[definition.exposure]
+    exposure_sql = exposure.sql or _focal_query(source, exposure.fact)
+    assignment_sql = ledger.sql if ledger is not None else exposure_sql
+    by_query: dict[str, SourceFact] = {}
+
+    def verify(query: str | None) -> SourceFact | None:
+        if query is None or query not in projections or query not in originals:
+            return None
+        if query not in by_query:
+            fact = _sealed_focal_fact(backend, catalog, query, projections[query], originals[query])
+            if fact is None:
+                return None
+            by_query[query] = fact
+        return by_query[query]
+
+    assignments, exposures = verify(assignment_sql), verify(exposure_sql)
+    if assignments is None or exposures is None:
+        return None
+    metrics = {metric.name: metric for metric in source._defs.metrics}
+    feed_names = {fact.name: feed.name for feed in source._defs.fact_sources for fact in feed.facts}
+    outcomes = []
+    horizons = []
+    for planned in plan.metrics:
+        metric = metrics[planned.name]
+        fact = verify(_focal_query(source, metric.fact))
+        if fact is None:
+            return None
+        edge, certified = source._metric_snapshot_edges(metric, snapshot)
+        if edge < plan.scope.end.date() - timedelta(days=1):
+            refuse(SCAN_INVALID, field="source", reason="focal_outcome_window_incomplete")
+        watermark = snapshot.complete_through_by_feed.get(feed_names[metric.fact])
+        outcomes.append((planned.name, fact))
+        horizons.append((planned.name, watermark, edge, certified))
+    return FocalSourceFacts(
+        generation_id=identifier,
+        dataset_sha256=dataset,
+        assignments=assignments,
+        exposures=exposures,
+        outcomes=tuple(sorted(outcomes)),
+        horizons=tuple(sorted(horizons)),
+    )
+
+
+def interaction_pair_facts(
+    source: Any,
+    evidence: OverlapEvidence,
+    tables: Mapping[str, tuple[str, str, str]],
+) -> tuple[StudyFeedFact, ...]:
+    """Check bounded warehouse evidence against the original native relations."""
+    backend = source._session.con
+    if evidence.ingress != "warehouse" or frozenset(tables) != frozenset(FEED_ROLES):
+        refuse(SCAN_INVALID, field="pair_sources", reason="warehouse_receipt_required")
+    try:
+        roster, decisions, deliveries, outcomes = (
+            backend.table(name, database=(catalog, schema))
+            for role in FEED_ROLES
+            for catalog, schema, name in (tables[role],)
+        )
+    except (DuckDBError, IbisError, OSError):
+        refuse(SCAN_INVALID, field="pair_sources", reason="pair_relation_unavailable")
+    verified = capture_overlap_warehouse(
+        evidence.plan,
+        capture=evidence.capture,
+        roster=roster,
+        decisions=decisions,
+        deliveries=deliveries,
+        outcomes=outcomes,
+    )
+    if verified.evidence_sha256 != evidence.evidence_sha256:
+        refuse(SCAN_INVALID, field="pair_sources", reason="pair_evidence_mismatch")
+    return tuple(
+        StudyFeedFact(
+            study_id=evidence.plan.study_id,
+            role=role,
+            fact=SourceFact(
+                coordinate=tables[role],
+                content_sha256=evidence.capture.feed(role).version.removeprefix("duckdb-rows-v1:"),
+            ),
+        )
+        for role in FEED_ROLES
+    )
 
 
 def bind_overlap_warehouse(

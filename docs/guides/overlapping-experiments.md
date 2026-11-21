@@ -56,8 +56,22 @@ A benefit passes when the whole interval favors treatment. For a guardrail where
 
 Secondary results cannot make up for a failed or unavailable criterion. A required group needs at least 30 assigned units; for a binary outcome it also needs at least 10 successes and 10 failures. An interval may be shown below those limits, but cannot support a decision. Missing, pending, or empty groups yield no estimate for comparisons that need them. A group with one outcome or identical outcomes yields no interval for those comparisons.
 
-## Rehearse the design before starting
+## Plan for detecting an interaction before launch
 
-Use `simulate_overlap` with the expected number of units randomized in both experiments and one dataframe of representative outcomes for each of the four assignment groups, even a rare one. The simulation varies group sizes using the planned assignment probabilities and samples related metrics together, such as an order and its cost. It assumes complete outcomes and delivery as planned; it does not predict missing outcomes or show that your inputs represent real traffic.
+Use `simulate_overlap` before starting to ask: if B's effect changes by an amount that matters when A is on, how often will this design detect it? Supply the expected number of accounts **randomized in both experiments**, not the sum of two enrollment forecasts or the number merely eligible for both.
 
-Count every trial, including trials with empty groups or too little data. The Monte Carlo interval reflects the number of simulation draws, not uncertainty about the effect in the real experiment. Check the chance of clearing the launch criteria separately from the chance of detecting an interaction.
+From the repository root, compare two forecasts for the same checkout-and-promotion pair:
+
+```sh
+uv run python examples/overlap_power.py
+```
+
+The example registers one two-sided interaction claim for orders per account. The four dataframes describe outcomes for neither treatment, A only, B only, and both. Each is a hypothetical distribution with four equally likely account outcomes and the same spread. Their means are 10, 11, 13, and 12, respectively: B adds 3 orders without A but only 1 with A, an interaction of −2 orders per account. Each simulation draws new group sizes using the planned assignment probabilities and samples account outcomes with replacement within each group. With multiple metrics, keep each account's metrics together in one row. Use samples that reflect the registered measurement window and metric definitions; the simulation assumes complete outcomes and delivery as planned.
+
+A and B independently treat 20% and 10% of jointly enrolled accounts, so only 2% are expected to get both. At **1,200** accounts, expect 24 in that group, below the 30-account minimum for a decision. Only 264 of 2,000 runs were ready to test the interaction, and 136 detected it. The estimated detection chance is **6.8%** (136 out of **all 2,000** runs, not just the 264 ready ones). At **4,000** accounts, expect 80 in the both-on group. All 2,000 runs were ready, and **91.3%** detected the same interaction.
+
+If you need to know whether B works differently with A before choosing a rollout sequence, plan for more joint enrollment before starting or don't rely on this design to settle the choice. A run that doesn't detect an interaction doesn't show that B works the same with and without A.
+
+The 95% Monte Carlo intervals describe uncertainty from the finite number of simulated runs, not whether the assumed outcomes or effect reflect real traffic. Power here means the chance of detecting the assumed nonzero interaction. If you instead assume exactly zero interaction, detections estimate the false-detection rate. This example does not request joint launch criteria; if you register them, check the chance of meeting them separately from the chance of detecting an interaction.
+
+This is planning for one specified pair, not for discovery across a larger set of pairs. Correcting for multiple comparisons limits false detections; it cannot make up for small groups. The pair simulation does not estimate power for a discovery scan.
