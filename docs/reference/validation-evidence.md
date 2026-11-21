@@ -345,9 +345,18 @@ group assignments.
 **What planning checks.** Given one historical rate, the plan distributes the
 rounded baseline event count three ways: proportional to group size, largest
 groups first, and smallest groups first. It crosses these with four high-policy
-schedules: no change, cancelling gains and losses, and the requested signed
-change either spread or concentrated. The reported effect reflects the actual
-integer number of changed outcomes. For each of the 12 labeled scenarios,
+schedules: no change, cancelling gains and losses, and the requested change
+either spread across groups or concentrated in a few. The planner rounds
+the change to whole people. For example, `0.09998` on a roster of 20,000
+rounds to 2,000 additional events: the planner tests a
+10-percentage-point increase and names that change in its launch message.
+
+At a 1% baseline on 10,000 people, a five-point increase means 500 additional
+events. Only 100 baseline events can be lost, so the zero-average scenario can
+offset at most 100 gains with 100 losses. This limit does not reduce the
+500-event increase tested in the scenarios with a benefit.
+
+For each of the 12 labeled scenarios,
 v1 uses 65,536 independent assignments (PCG64, seed 9501), drawing the group
 policy within each stratum and untreated successes without replacement within
 each group. A missing interval counts as a miss and never as a detection.

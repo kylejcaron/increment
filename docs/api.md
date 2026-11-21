@@ -1133,15 +1133,28 @@ Read `plan.message` for advice, `plan.evidence.status` for the planning decision
 and `plan.evidence.reason` if the interval checks did not pass. Without the
 rate, power is not assessed.
 
-At the fixed horizon, call `plan.analyze(group_high=..., treated=..., outcomes=...)`
-on the same plan. Supply group-ID and person-ID assignment maps and all observed
-untreated outcomes. `result.estimate` is the person-weighted high-minus-low
-difference for untreated people. `result.lower` and `result.upper` are approximate
-95% interval endpoints or `None`; `result.unavailable_reason` explains missing
-bounds. `result.planning_status` is the decision recorded before assignment.
-The estimate and interval endpoints are not clipped to `[-1, 1]`: for unequal
-group sizes, a realized estimate can extend outside the range of the true
-risk difference. These are not individual event probabilities.
+After the observation window closes, call
+`plan.analyze(group_high=..., treated=..., outcomes=...)` on the same plan.
+Supply the assigned policy for every group, offer status for every person,
+and the outcome for every person who received no offer.
+
+`result.estimate` gives each eligible person equal weight, not each group.
+For each group, Increment multiplies the observed rate among people without
+offers by the full group size. Within each stratum, it compares the average
+of these totals under the high and low policies, then combines the differences
+to estimate the high-minus-low change per person. Simply pooling people
+without offers weights groups by how many people remain untreated, not by
+how many were eligible.
+With unequal group sizes the estimate, or its interval endpoints, can fall
+outside `[-1, 1]`. They are not clipped and are not individual probabilities.
+
+`result.lower` and `result.upper` give an approximate 95% interval in
+proportion units, or `None`. Read `result.unavailable_reason` for the reason;
+for example, one group per policy in a stratum cannot establish a range.
+`result.planning_status` preserves the decision recorded before assignment.
+This route handles one yes/no outcome at one fixed time. It does not take
+ratio metrics, CUPED adjustment, winsorization, breakouts, repeated looks
+or multiplicity options.
 
 For the interval, groups must not influence each other; within each group,
 outcomes may depend on the number of treated peers but not their identities.
