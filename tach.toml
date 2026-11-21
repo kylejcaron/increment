@@ -43,6 +43,11 @@ layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
+path = "increment._holdout_records"
+layer = "core"
+depends_on = ["increment._immutable", "increment.assignment", "increment.errors"]
+
+[[modules]]
 path = "increment._optional"
 layer = "core"
 depends_on = ["increment.errors"]
@@ -138,6 +143,10 @@ path = "increment._source_operations"
 layer = "core"
 depends_on = ["increment._source_types", "increment.errors"]
 
+[[modules]]
+path = "increment._holdout_exposure"
+layer = "core"
+depends_on = ["increment._canonical", "increment._holdout_records"]
 
 [[modules]]
 path = "increment._source_admission"
@@ -216,6 +225,11 @@ depends_on = ["increment._assignment_refusals", "increment._identity"]
 path = "increment._frame_ledger"
 layer = "core"
 depends_on = ["increment._assignment_ledger_contract", "increment._assignment_refusals"]
+
+[[modules]]
+path = "increment._holdout_roster"
+layer = "core"
+depends_on = ["increment._holdout_records", "increment.assignment", "increment.errors"]
 
 [[modules]]
 path = "increment._trigger_integrity"
@@ -300,6 +314,11 @@ depends_on = [
   "increment.errors", "increment.estimation._sequential_likelihood",
   "increment.estimation.asymptotic_mean", "increment.semantics",
 ]
+
+[[modules]]
+path = "increment._holdout_look"
+layer = "core"
+depends_on = ["increment._holdout_records", "increment.errors"]
 
 [[modules]]
 path = "increment.estimation.sequential_result"
@@ -1367,6 +1386,15 @@ depends_on = ["increment._finite_sample_refusals", "increment.errors", "incremen
 path = "increment.power._noncentral_t"
 layer = "core"
 depends_on = ["increment._literals", "increment.estimation._tails"]
+
+[[modules]]
+path = "increment.power.holdout"
+layer = "core"
+depends_on = [
+  "increment._holdout_look", "increment._holdout_records", "increment.errors",
+  "increment.estimation._tails", "increment.estimation.armstats",
+  "increment.power._noncentral_t", "increment.power._shared",
+]
 
 [[modules]]
 path = "increment.breakout.projection"
