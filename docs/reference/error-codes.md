@@ -18948,7 +18948,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `metric`, `quantity`
 
-**Registering modules:** `increment._frame_overlap`, `increment._overlap_evidence`, `increment._overlap_refusals`, `increment.estimation.overlap`, `increment.power.overlap`, `increment.query.overlap`
+**Registering modules:** `increment._frame_overlap`, `increment._overlap_evidence`, `increment._overlap_refusals`, `increment.estimation.interaction_scan`, `increment.estimation.overlap`, `increment.power.overlap`, `increment.query.overlap`
 
 <span id="overlap.plan.invalid"></span>
 
@@ -18996,7 +18996,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `field`, `reason`
 
-**Registering modules:** `increment._interaction_capture`, `increment._overlap_refusals`, `increment.semantics.interaction_scan`
+**Registering modules:** `increment._interaction_binding`, `increment._interaction_capture`, `increment._overlap_refusals`, `increment.estimation.interaction_scan`, `increment.query.overlap`, `increment.semantics.interaction_scan`
 
 <span id="family-package"></span>
 

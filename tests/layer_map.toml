@@ -29,6 +29,7 @@ core = [
   "increment._evidence*",
   "increment._source*",
   "increment._overlap_evidence",
+  "increment._interaction_binding",
   "increment._interaction_capture",
   "increment._overlap_refusals",
   "increment.semantics.interaction_scan",

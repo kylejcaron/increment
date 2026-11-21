@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from hashlib import sha256
+from hashlib import file_digest, sha256
 from math import isfinite
 from pathlib import Path
 from string import ascii_lowercase, ascii_uppercase
@@ -37,8 +37,14 @@ from increment._overlap_evidence import (
     PREASSIGNED_GATE_COLUMNS,
     overlap_binary_moments,
 )
-from increment._overlap_refusals import CAPTURE_INVALID, EVIDENCE_INVALID, NUMERIC_RANGE
+from increment._overlap_refusals import (
+    CAPTURE_INVALID,
+    EVIDENCE_INVALID,
+    NUMERIC_RANGE,
+    SCAN_INVALID,
+)
 from increment.errors import refuse
+from increment.semantics.interaction_scan import SourceFact, StudyFeedFact
 from increment.semantics.overlap import (
     OverlapCapture,
     OverlapCell,
@@ -51,6 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
     from increment._overlap_evidence import CellId, FactorId, FeedRole, OverlapColumn
+    from increment.semantics.interaction_scan import InteractionScanPlan
     from increment.semantics.overlap import OverlapFactor, OverlapMetric
 
 
@@ -285,6 +292,171 @@ def _query(cursor: DuckDBPyConnection, backend: Backend, expr: ir.Table) -> list
     )
     names = [column[0] for column in result.description]
     return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+
+
+def _sealed_duckdb_generation(con: Backend) -> tuple[str, str] | None:
+    """Identify a checkpointed DuckDB input opened as the only read-only catalog."""
+    if con.name != "duckdb":
+        return None
+    rows = con.con.execute(
+        "SELECT database_name, path, readonly FROM duckdb_databases() WHERE NOT internal"
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    catalog, location, read_only = rows[0]
+    if not read_only or location is None:
+        return None
+    try:
+        path = Path(location).resolve(strict=True)
+        if not path.is_file() or path.with_suffix(path.suffix + ".wal").exists():
+            return None
+        with path.open("rb") as database:
+            return catalog, file_digest(database, "sha256").hexdigest()
+    except OSError:
+        return None
+
+
+def _sealed_focal_fact(
+    backend: Backend, seal: tuple[str, str], query: str, pinned: ir.Table
+) -> SourceFact | None:
+    """Verify a pinned projection of a native table in the sealed catalog."""
+    catalog, dataset_sha256 = seal
+    try:
+        select = sqlglot.parse_one(query, dialect="duckdb")
+        if (
+            not isinstance(select, exp.Select)
+            or select.expressions != [exp.Star()]
+            or any(
+                value for key, value in select.args.items() if key not in {"expressions", "from_"}
+            )
+        ):
+            return None
+        source = select.args["from_"].this
+        if not isinstance(source, exp.Table) or not source.db or source.alias:
+            return None
+        if source.catalog and source.catalog.translate(_ASCII_FOLD) != catalog.translate(
+            _ASCII_FOLD
+        ):
+            return None
+        rows = backend.con.execute(
+            _CATALOG,
+            [
+                list(pinned.columns),
+                catalog.translate(_ASCII_FOLD),
+                source.db.translate(_ASCII_FOLD),
+                source.name.translate(_ASCII_FOLD),
+            ],
+        ).fetchall()
+        if not rows or any(row[7] for row in rows) or not _uncollated_table(rows[0][4]):
+            return None
+        _, db, schema, name, *_ = rows[0]
+        physical = backend.table(name, database=(db, schema)).select(*pinned.columns)
+        expected = _feed_digest(physical, "roster")
+        observed = _feed_digest(pinned, "outcomes")
+        (digests,) = _query(backend.con, backend, expected.cross_join(observed))
+        if digests["version_roster"] != digests["version_outcomes"]:
+            return None
+        coordinate = (db, schema, name)
+        # The pinned columns can differ when the dashboard shows other metrics.
+        # Bind the verified coordinate to the entire sealed database instead.
+        return SourceFact(
+            coordinate=coordinate,
+            content_sha256=_identity(
+                "increment.interaction.focal.v1", (dataset_sha256, coordinate)
+            ),
+        )
+    except (DuckDBError, IbisError, OSError, SqlglotError, KeyError):
+        return None
+
+
+def _focal_query(source: Any, fact: str | None) -> str | None:
+    for relation in source._defs.fact_sources:
+        if any(item.name == fact for item in relation.facts):
+            return relation.sql if not relation.dims else None
+    return None
+
+
+def interaction_focal_facts(
+    source: Any, plan: InteractionScanPlan
+) -> tuple[str, SourceFact, SourceFact] | None:
+    """Read only the declared projections already pinned for the definitions reader."""
+    session = source._session
+    backend = session.con
+    if not isinstance(backend, Backend) or session._source_tables is None:
+        return None
+    generation = _sealed_duckdb_generation(backend)
+    if generation is None or session.source_snapshot_evidence is None:
+        return None
+    plan.scope.require_cutoff(session.source_snapshot_evidence.observation_cutoff_ts)
+    definition = source._experiment
+    ledger = definition.assignment_ledger
+    exposure = source._exp_lookup_exposures[definition.exposure]
+    assignment_sql = (
+        ledger.sql if ledger is not None else exposure.sql or _focal_query(source, exposure.fact)
+    )
+    metric_sources = {metric.name: getattr(metric, "fact", None) for metric in source._defs.metrics}
+    outcome_queries = {
+        _focal_query(source, metric_sources.get(metric.name)) for metric in plan.metrics
+    }
+    if assignment_sql is None or len(outcome_queries) != 1 or None in outcome_queries:
+        return None
+    (outcome_sql,) = outcome_queries
+    assert outcome_sql is not None
+    _, dataset = generation
+    projections = session._source_tables
+    if assignment_sql not in projections or outcome_sql not in projections:
+        return None
+    assignments = _sealed_focal_fact(
+        backend, generation, assignment_sql, projections[assignment_sql]
+    )
+    if assignments is None:
+        return None
+    outcomes = (
+        assignments
+        if assignment_sql == outcome_sql
+        else _sealed_focal_fact(backend, generation, outcome_sql, projections[outcome_sql])
+    )
+    return None if outcomes is None else (dataset, assignments, outcomes)
+
+
+def interaction_pair_facts(
+    source: Any,
+    evidence: OverlapEvidence,
+    tables: Mapping[str, tuple[str, str, str]],
+) -> tuple[StudyFeedFact, ...]:
+    """Check bounded warehouse evidence against the original native relations."""
+    backend = source._session.con
+    if evidence.ingress != "warehouse" or frozenset(tables) != frozenset(FEED_ROLES):
+        refuse(SCAN_INVALID, field="pair_sources", reason="warehouse_receipt_required")
+    try:
+        roster, decisions, deliveries, outcomes = (
+            backend.table(name, database=(catalog, schema))
+            for role in FEED_ROLES
+            for catalog, schema, name in (tables[role],)
+        )
+    except (DuckDBError, IbisError, OSError):
+        refuse(SCAN_INVALID, field="pair_sources", reason="pair_relation_unavailable")
+    verified = capture_overlap_warehouse(
+        evidence.plan,
+        capture=evidence.capture,
+        roster=roster,
+        decisions=decisions,
+        deliveries=deliveries,
+        outcomes=outcomes,
+    )
+    if verified.evidence_sha256 != evidence.evidence_sha256:
+        refuse(SCAN_INVALID, field="pair_sources", reason="pair_evidence_mismatch")
+    return tuple(
+        StudyFeedFact(
+            study_id=evidence.plan.study_id,
+            role=role,
+            fact=SourceFact(
+                coordinate=tables[role],
+                content_sha256=evidence.capture.feed(role).version.removeprefix("duckdb-rows-v1:"),
+            ),
+        )
+        for role in FEED_ROLES
+    )
 
 
 def bind_overlap_warehouse(

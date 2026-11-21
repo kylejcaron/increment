@@ -245,6 +245,20 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment._interaction_binding"
+layer = "core"
+depends_on = [
+  "increment._binding",
+  "increment._canonical",
+  "increment._dashboard_capture",
+  "increment._evidence_loaders",
+  "increment._overlap_refusals",
+  "increment.errors",
+  "increment.semantics",
+  "increment.semantics.interaction_scan",
+]
+
+[[modules]]
 path = "increment._interaction_capture"
 layer = "core"
 depends_on = [
@@ -272,10 +286,14 @@ path = "increment.overlap"
 layer = "core"
 depends_on = [
   "increment._frame_overlap",
+  "increment._interaction_binding",
+  "increment._interaction_capture",
   "increment._overlap_sdk",
+  "increment.estimation.interaction_scan",
   "increment.estimation.overlap",
   "increment.power.overlap",
   "increment.query.overlap",
+  "increment.semantics.interaction_scan",
   "increment.semantics.overlap",
 ]
 
@@ -1298,6 +1316,7 @@ depends_on = [
   "increment._assignment_ledger_contract", "increment._frame_ledger",
   "increment.query.artifact_ports",
   "increment.query._day_offsets",
+  "increment.query.overlap",
   "increment.query._summary_sql",
   "increment.query._workflows", "increment.estimation.variance", "increment.estimation.cuped.multicovariate", "increment.estimation.cuped.inference", "increment.estimation.engine", "increment.estimation.cuped._numeric", "increment.estimation._readout_refusals", "increment.estimation.cuped.cells", "increment.estimation.armstats", "increment.estimation.cuped.encoding", "increment.estimation.cuped.types",
 ]
@@ -1311,6 +1330,7 @@ depends_on = [
   "increment._overlap_evidence",
   "increment._overlap_refusals",
   "increment.errors",
+  "increment.semantics.interaction_scan",
   "increment.semantics.overlap",
 ]
 
@@ -1807,6 +1827,7 @@ depends_on = [
   "increment._evidence_refusals",
   "increment._execute",
   "increment._exploratory",
+  "increment._interaction_binding",
   "increment._interpretation",
   "increment._optional",
   "increment._readout_html",

@@ -10,7 +10,6 @@ from increment.semantics.interaction_scan import (
     CapturedPair,
     ExperimentIdentity,
     InteractionScanPlan,
-    MetricIssue,
     ObservedInventory,
     PairInput,
     ScanCandidate,
@@ -18,9 +17,10 @@ from increment.semantics.interaction_scan import (
     ScanCoverage,
     ScanReason,
     UnavailablePair,
+    _metric_issues,
     _pair_scope_issue,
 )
-from increment.semantics.overlap import OverlapEvidence, OverlapFactor, OverlapPlan
+from increment.semantics.overlap import OverlapEvidence, OverlapFactor
 
 
 def _identity(factor: OverlapFactor) -> ExperimentIdentity:
@@ -31,25 +31,6 @@ def _identity(factor: OverlapFactor) -> ExperimentIdentity:
 
 def _invalid_evidence(reason: str) -> NoReturn:
     refuse(SCAN_INVALID, field="evidence_by_study", reason=reason)
-
-
-def _metric_issues(scan: InteractionScanPlan, pair: OverlapPlan) -> tuple[MetricIssue, ...]:
-    by_name = {metric.name: metric for metric in pair.metrics}
-    issues = []
-    for metric in scan.metrics:
-        actual = by_name.get(metric.name)
-        if actual is None:
-            code = "metric_missing"
-        elif (actual.definition_sha256, actual.unit, actual.kind) != (
-            metric.definition_sha256,
-            metric.unit,
-            metric.kind,
-        ):
-            code = "metric_mismatch"
-        else:
-            continue
-        issues.append(MetricIssue(metric=metric.name, reasons=(ScanReason(code=code),)))
-    return tuple(issues)
 
 
 def _match_pair(

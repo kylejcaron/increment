@@ -221,7 +221,9 @@ if TYPE_CHECKING:
     from increment._evidence_types import RowValue
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Observational, Randomized
+    from increment.semantics.interaction_scan import InteractionScanPlan, SourceFact, StudyFeedFact
     from increment.semantics.models import FactRef
+    from increment.semantics.overlap import OverlapEvidence
     from increment.semantics.shared import BoundSharedMetric, SharedRoster
     from increment.sequential_state import SequentialCheckpoint
     from increment.sources import Grain, _BuiltinMomentSource
@@ -370,6 +372,24 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             "metrics": self._metrics,
             "observation_mapping": self._sequential_observation_mapping(),
         }
+
+    def interaction_focal_facts(
+        self, plan: InteractionScanPlan
+    ) -> tuple[str, SourceFact, SourceFact] | None:
+        """Verify focal facts on this pinned source if its backend can seal them."""
+        if self._con.name != "duckdb":
+            return None
+        from increment.query.overlap import interaction_focal_facts
+
+        return interaction_focal_facts(self, plan)
+
+    def interaction_pair_facts(
+        self, evidence: OverlapEvidence, tables: Mapping[str, tuple[str, str, str]]
+    ) -> tuple[StudyFeedFact, ...]:
+        """Verify the archived pair receipts on an already qualified DuckDB source."""
+        from increment.query.overlap import interaction_pair_facts
+
+        return interaction_pair_facts(self, evidence, tables)
 
     def __init__(
         self,
