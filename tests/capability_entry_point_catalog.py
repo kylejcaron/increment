@@ -1553,6 +1553,15 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
         },
     ),
     _row(
+        "untreated-spillover",
+        "Two-stage untreated spillover contrast",
+        {
+            ingress: (_consumer("spillover_family_boundary", f"{ingress}_not_expressible"),)
+            for ingress in INGRESSES
+        },
+        family=(_consumer("spillover_family_boundary", "untreated_contrast_supported"),),
+    ),
+    _row(
         "logged-policy-contrast",
         "Logged-policy contrast",
         {

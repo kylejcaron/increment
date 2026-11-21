@@ -8,7 +8,7 @@ Context keys include template fields, explicitly declared keys and named rendere
 
 ## Registered refusal codes
 
-[`absorption.*`](#family-absorption) · [`adjust.*`](#family-adjust) · [`allocation.*`](#family-allocation) · [`analysis.*`](#family-analysis) · [`arm.*`](#family-arm) · [`arm_planning.*`](#family-arm_planning) · [`artifact.*`](#family-artifact) · [`artifact_contract.*`](#family-artifact_contract) · [`breakout.*`](#family-breakout) · [`cate.*`](#family-cate) · [`compatibility.*`](#family-compatibility) · [`contrast.*`](#family-contrast) · [`conversion_inference.*`](#family-conversion_inference) · [`dashboard.*`](#family-dashboard) · [`decision.*`](#family-decision) · [`definition.*`](#family-definition) · [`design.*`](#family-design) · [`estimation.*`](#family-estimation) · [`evidence.*`](#family-evidence) · [`facade.*`](#family-facade) · [`family.*`](#family-family) · [`frame.*`](#family-frame) · [`identification.*`](#family-identification) · [`impute.*`](#family-impute) · [`install.*`](#family-install) · [`integrity.*`](#family-integrity) · [`kernel.*`](#family-kernel) · [`logged_policy.*`](#family-logged_policy) · [`model.*`](#family-model) · [`moments.*`](#family-moments) · [`package.*`](#family-package) · [`plan.*`](#family-plan) · [`power.*`](#family-power) · [`query.*`](#family-query) · [`readout.*`](#family-readout) · [`report.*`](#family-report) · [`reporting.*`](#family-reporting) · [`results.*`](#family-results) · [`sensitivity.*`](#family-sensitivity) · [`sequential.*`](#family-sequential) · [`simulate.*`](#family-simulate) · [`source.*`](#family-source) · [`store.*`](#family-store) · [`tables.*`](#family-tables) · [`unit_cycle.*`](#family-unit_cycle) · [`wire.*`](#family-wire)
+[`absorption.*`](#family-absorption) · [`adjust.*`](#family-adjust) · [`allocation.*`](#family-allocation) · [`analysis.*`](#family-analysis) · [`arm.*`](#family-arm) · [`arm_planning.*`](#family-arm_planning) · [`artifact.*`](#family-artifact) · [`artifact_contract.*`](#family-artifact_contract) · [`breakout.*`](#family-breakout) · [`cate.*`](#family-cate) · [`compatibility.*`](#family-compatibility) · [`contrast.*`](#family-contrast) · [`conversion_inference.*`](#family-conversion_inference) · [`dashboard.*`](#family-dashboard) · [`decision.*`](#family-decision) · [`definition.*`](#family-definition) · [`design.*`](#family-design) · [`estimation.*`](#family-estimation) · [`evidence.*`](#family-evidence) · [`facade.*`](#family-facade) · [`family.*`](#family-family) · [`frame.*`](#family-frame) · [`identification.*`](#family-identification) · [`impute.*`](#family-impute) · [`install.*`](#family-install) · [`integrity.*`](#family-integrity) · [`kernel.*`](#family-kernel) · [`logged_policy.*`](#family-logged_policy) · [`model.*`](#family-model) · [`moments.*`](#family-moments) · [`package.*`](#family-package) · [`plan.*`](#family-plan) · [`power.*`](#family-power) · [`query.*`](#family-query) · [`readout.*`](#family-readout) · [`report.*`](#family-report) · [`reporting.*`](#family-reporting) · [`results.*`](#family-results) · [`sensitivity.*`](#family-sensitivity) · [`sequential.*`](#family-sequential) · [`simulate.*`](#family-simulate) · [`source.*`](#family-source) · [`spillover.*`](#family-spillover) · [`store.*`](#family-store) · [`tables.*`](#family-tables) · [`unit_cycle.*`](#family-unit_cycle) · [`wire.*`](#family-wire)
 
 <span id="family-absorption"></span>
 
@@ -25313,6 +25313,170 @@ The cause depends on the supplied context; read the raised message. [Message rul
 **Context keys:** `axis_kind`, `issue`, `value`
 
 **Registering modules:** `increment._frame_panel`
+
+<span id="family-spillover"></span>
+
+## `spillover.*`
+
+<span id="spillover.counts.invalid"></span>
+
+### `spillover.counts.invalid`
+
+**Cause and message:**
+
+<p>Invalid spillover counts: {requirement}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `requirement`
+
+**Registering modules:** `increment.estimation.spillover`
+
+<span id="spillover.design.duplicate"></span>
+
+### `spillover.design.duplicate`
+
+**Cause and message:**
+
+<p>The roster repeats {field} {identifier!r}; each must be unique.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `identifier`
+
+**Registering modules:** `increment._spillover_design`
+
+<span id="spillover.design.invalid"></span>
+
+### `spillover.design.invalid`
+
+**Cause and message:**
+
+<p>Invalid {field}: {requirement}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `requirement`
+
+**Registering modules:** `increment._spillover_design`
+
+<span id="spillover.design.quota"></span>
+
+### `spillover.design.quota`
+
+**Cause and message:**
+
+<p>Invalid {field}: {requirement}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `requirement`
+
+**Registering modules:** `increment._spillover_design`
+
+<span id="spillover.design.required"></span>
+
+### `spillover.design.required`
+
+**Cause and message:**
+
+<p>Provide the two-stage design frozen before assignment.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** —
+
+**Registering modules:** `increment.spillover`
+
+<span id="spillover.log.binary"></span>
+
+### `spillover.log.binary`
+
+**Cause and message:**
+
+<p>The {field} log entry for {identifier!r} must be a boolean or an integer 0 or 1.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `identifier`
+
+**Registering modules:** `increment._spillover_design`
+
+<span id="spillover.log.keys"></span>
+
+### `spillover.log.keys`
+
+**Cause and message:**
+
+<p>Invalid {field} log: {requirement}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `requirement`
+
+**Registering modules:** `increment._spillover_design`
+
+<span id="spillover.log.quota"></span>
+
+### `spillover.log.quota`
+
+**Cause and message:**
+
+<p>The {field} log records {observed} for {identifier!r}, but the design requires {expected}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `expected`, `field`, `identifier`, `observed`
+
+**Registering modules:** `increment._spillover_design`
+
+<span id="spillover.planning.baseline_rate"></span>
+
+### `spillover.planning.baseline_rate`
+
+**Cause and message:**
+
+<p>Use a pre-assignment event rate between 0 and 1, or omit it for a point estimate only.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** —
+
+**Registering modules:** `increment.power._spillover`
+
+<span id="spillover.planning.meaningful_effect"></span>
+
+### `spillover.planning.meaningful_effect`
+
+**Cause and message:**
+
+<p>Give a nonzero change between -1 and 1 in the probability of the outcome.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** —
+
+**Registering modules:** `increment.power._spillover`
 
 <span id="family-store"></span>
 

@@ -16,6 +16,7 @@ mathematical guarantee.
 | Meta-analysis: DL, HKSJ and HT | [EV-META-DL-HKSJ-HT](#ev-meta-dl-hksj-ht) |
 | Quantile order-statistic bracket | [EV-QUANTILE-QBINOM](#ev-quantile-qbinom) |
 | DML, AIPW and IPTW aggregation | [EV-ADJ-DML-AIPW-IPTW](#ev-adj-dml-aipw-iptw) |
+| Two-stage untreated spillover | [EV-SPILLOVER-RCT2](#ev-spillover-rct2) |
 | Marginal confounding bound | [EV-CONFOUNDING-MARGINAL](#ev-confounding-marginal) |
 | Segment posterior quadrature | [EV-META-POSTERIOR-QUAD](#ev-meta-posterior-quad) |
 | Welch arithmetic | [EV-WELCH-ARITHMETIC](#ev-welch-arithmetic) |
@@ -80,7 +81,7 @@ no current large-design timing is inferred from the earlier PR45 probes.
 - **`none_found`:** a matched reference was looked for and not found.
   Independent-reference classification is not applicable.
 
-Ordinary tests read frozen JSON only: no R, no network, no external package at test time. The
+Ordinary comparison tests use frozen values: no R, network or external reference package at test time. The
 comparisons below are at estimator level unless the direct-coverage fields name an entry point. A
 transitive ingress is claimed only where a parity-matrix cell or parity case exercises the same
 estimator path; cross-ingress equivalence is owned by the parity harness
@@ -305,6 +306,95 @@ These records compare the named estimator and assumptions, not every use of the 
 
 **One-time regeneration (2026-10-03, macOS arm64):** CSV byte-identical; fixture differs only in the trailing newline, every value identical
 
+
+### EV-SPILLOVER-RCT2
+
+**Matched comparison (`third_party_tool`).** The [two-stage spillover
+plan](../guides/spillover.md) uses the untreated policy contrast in
+[Jiang, Imai & Malani (2023)](https://imai.fas.harvard.edu/research/twostage.html).
+The reference is R 4.4.2 with [RCT2 v0.0.1 `CalAPO`](https://github.com/cran/RCT2/blob/5820e34f4a20ca116f0b7fd069ebdf735523324d/R/CalAPO.R).
+This is **not** `Test2SRE`, the joint test for treated and untreated people.
+
+**Inputs and result.** In one stratum of six groups, sizes were `(4,5,6,8,7,9)`;
+groups 1, 3 and 6 (numbered from 1) were assigned high. Treated counts were
+`(3,2,4,3,2,6)` and untreated event counts were `(1,1,0,2,4,1)`. To give each
+person equal weight in RCT2's group average, scale each outcome by group size
+divided by mean group size. Take the untreated component, reversing its sign
+from low-minus-high to high-minus-low. The executed reference returned
+**−0.17777777777777776** for the point and **0.0651968734020016** for its variance.
+The comparison uses absolute tolerance `1e-14` on each for floating-point
+arithmetic: `tests/estimation/test_spillover.py::test_rct2_unequal_size_person_weighted_untreated_contrast`.
+It checks the estimator, not power, coverage, or other experiment entry points.
+
+**Reproduce the comparison.** Save the pinned R source linked above (SHA-256
+`db9f91a162f366af68974757d0a485d2a02fd5b55c624ecf45f5a2ec3473d648`).
+Run `Rscript tests/oracles/generate/gen_spillover_oracle.R /path/to/CalAPO.R`.
+The included [guide example](../guides/spillover.md#after-the-window-closes-reconcile-both-logs)
+uses the same data with no baseline rate; its point does not qualify an interval.
+
+**Scope of the interval.** The two-sided 95% Normal interval is asymptotic in
+independent, informative groups. Randomization must follow both uniform
+fixed-count laws. Within-group outcomes may depend on **how many** peers receive
+treatment, not **which** peers; there must be no influence across groups.
+A large number of people, or even a minimum group count, does not establish
+coverage. On a nine-group example with offsetting changes and exactly zero
+average effect, the unguarded interval excluded zero on 12 of 60 possible
+group assignments.
+
+**What planning checks.** Given one historical rate, the plan distributes the
+rounded baseline event count three ways: proportional to group size, largest
+groups first, and smallest groups first. It crosses these with four high-policy
+schedules: no change, cancelling gains and losses, and the requested signed
+change either spread or concentrated. The reported effect reflects the actual
+integer number of changed outcomes. For each of the 12 labeled scenarios,
+v1 uses 65,536 independent assignments (PCG64, seed 9501), drawing the group
+policy within each stratum and untreated successes without replacement within
+each group. A missing interval counts as a miss and never as a detection.
+
+There are **24 one-sided exact binomial bounds**, each at tail probability
+`0.05/24`: one upper bound on missing the true effect or giving no interval
+in each of the 12 scenarios, and lower and upper bounds on direction-correct
+detection in the six nonzero scenarios. This gives at least 95% simultaneous
+confidence **about these simulation probabilities for this one plan**, not
+95% coverage for every future outcome schedule. All 12 upper miss bounds must
+be at most 5.5% before interpreting detection as usable power. A false call
+under a null is an interval excluding zero; it is counted separately from an
+unavailable interval. Under an alternative, the interval must strictly exclude
+zero in the intended direction. If all six lower detection bounds reach 80%,
+the plan meets its modeled detection target; if any upper bound is below 80%,
+it is underpowered; otherwise the decision is inconclusive. Neither low power
+nor an inconclusive power decision, by itself, withholds the live interval.
+
+**Operating limit and reproduction.** The planner allows at most 134,217,728
+group-by-assignment draws per scenario (2,048 groups at the fixed draw count).
+This is a computational limit, not an inferential cutoff: larger designs can
+still identify a point. To repeat the predefined planning comparisons from a
+source checkout, use `python -m calibration.spillover`. These modeled checks
+do not test whether real offices are isolated or whether peer identities matter.
+
+**Six predefined plans.** Each office has 20 eligible people; five receive an
+offer under the low policy and ten under the high policy. Exactly half the
+offices get each policy. The historical event rate is 25%. “Worst miss” is
+the largest upper bound across all 12 scenarios. Detection bounds are for
+the least favorable of the six alternatives by lower bound; they are not
+reported as usable power when the interval check fails.
+
+| Offices | Change to detect | Worst miss (upper) | Detection bounds | Launch advice |
+|---:|---:|---:|---:|---|
+| 240 | +10 points | 5.46% | 40.4–41.5% | Underpowered |
+| 240 | +1 point | 5.44% | 3.5–3.9% | Underpowered |
+| 500 | +10 points | 6.52% | — | Estimate only |
+| 500 | +1 point | 6.51% | — | Estimate only |
+| 1,000 | +10 points | 5.32% | 94.2–94.7% | Meets target |
+| 1,000 | +1 point | 5.34% | 5.3–5.8% | Underpowered |
+
+The 500-office case failed the interval check, although the smaller and larger
+designs passed. With fixed counts and events concentrated in particular offices,
+the possible estimates are discrete: the interval need not improve at every
+group count. Recheck the actual roster rather than treating 1,000 as a minimum.
+All six plans together took 177 seconds in one contended arm64 run (219 MiB peak resident
+memory). The campaign also analyzes one realized assignment per roster through
+the public API, returning bounds for the qualified designs and none for 500 offices.
 
 ## In-repo derivations and calibration evidence
 

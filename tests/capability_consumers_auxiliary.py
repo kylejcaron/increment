@@ -1084,6 +1084,40 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
         ),
     ),
     ConsumerContract(
+        "spillover_family_boundary",
+        tuple(
+            _expectation(
+                f"{ingress}_not_expressible",
+                "plan.analyze(group_high=..., treated=..., outcomes=...)",
+                ingress,
+                "An ordinary experiment assignment cannot represent this two-stage design",
+                "not_expressible",
+                "tests.test_spillover_capability::test_ordinary_and_two_stage_assignments_are_not_interchangeable",
+                reason="Use plan_spillover with the frozen two-stage design instead.",
+                stage="construction",
+            )
+            for ingress in (
+                "from_unit_summary",
+                "from_unit_panel",
+                "from_switchback_panel",
+                "from_definitions",
+                "from_unit_day_artifact",
+                "from_moments",
+            )
+        )
+        + (
+            _expectation(
+                "untreated_contrast_supported",
+                "plan.analyze(group_high=..., treated=..., outcomes=...)",
+                "plan_spillover",
+                "Both assignment logs match the design and all untreated outcomes are recorded; "
+                "without a baseline rate only the person-weighted point estimate is reported",
+                "supported",
+                "tests.test_spillover::test_unassessed_trial_keeps_point_and_distinguishes_observed_scarcity",
+            ),
+        ),
+    ),
+    ConsumerContract(
         "logged_policy_family_boundary",
         tuple(
             _expectation(

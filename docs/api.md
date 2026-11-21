@@ -1118,6 +1118,40 @@ across publication and requests.
 
 ::: increment.digest.extension_source_provenance_sha256
 
+## Two-stage spillover
+
+Use `increment.spillover` before assigning groups and people, not an experiment
+builder or `run`. `SpilloverGroup` names the eligible members and integer low/high
+treatment quotas of one group. `SpilloverDesign` freezes those groups, the number
+drawn high within each stratum, a binary outcome and its observation window.
+
+`plan_spillover(design, *, meaningful_effect, baseline_rate=None)` takes a signed
+absolute risk difference and, optionally, one comparable pre-assignment rate.
+Read `plan.message` for advice, `plan.evidence.status` for the planning decision,
+and `plan.evidence.reason` if the interval checks did not pass. Without the
+rate, power is not assessed.
+
+At the fixed horizon, call `plan.analyze(group_high=..., treated=..., outcomes=...)`
+on the same plan. Supply group-ID and person-ID assignment maps and all observed
+untreated outcomes. `result.estimate` is the person-weighted high-minus-low
+difference for untreated people. `result.lower` and `result.upper` are approximate
+95% interval endpoints or `None`; `result.unavailable_reason` explains missing
+bounds. `result.planning_status` is the decision recorded before assignment.
+The estimate and interval endpoints are not clipped to `[-1, 1]`: for unequal
+group sizes, a realized estimate can extend outside the range of the true
+risk difference. These are not individual event probabilities.
+
+For the interval, groups must not influence each other; within each group,
+outcomes may depend on the number of treated peers but not their identities.
+The planning checks cover modeled outcomes, not every possible trial. See the
+[worked example and launch decisions](guides/spillover.md).
+
+::: increment.spillover.SpilloverGroup
+
+::: increment.spillover.SpilloverDesign
+
+::: increment.spillover.plan_spillover
+
 ## Logged-policy evaluation
 
 Off-policy contrast compares two registered policies using a decision trace
