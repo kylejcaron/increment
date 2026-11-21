@@ -216,7 +216,7 @@ def resize_forest(table: ct.CoefTable, *, width: int, height: int) -> None:
     )
 
 
-type InteractionTone = Literal["favorable", "unfavorable", "neutral"]
+type InteractionTone = Literal["favorable", "unfavorable", "neutral", "detected"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,16 +230,18 @@ class InteractionNativeRow:
     upper: float | None
     status: str
     tone: InteractionTone
-    show_percent: bool
+    suffix: str
 
 
 @dataclass(frozen=True)
 class _InteractionEstimate(ct.Estimate):
-    percent_rows: frozenset[str] = frozenset()
+    suffixes: tuple[str, ...] = ()
 
     def cell(self, ctx: Cell) -> str:
-        if ctx.row_key in self.percent_rows:
-            return ct.Estimate.cell(replace(self, fmt=lambda value: f"{self.fmt(value)}%"), ctx)
+        if suffix := self.suffixes[ctx.index]:
+            return ct.Estimate.cell(
+                replace(self, fmt=lambda value: f"{self.fmt(value)}{suffix}"), ctx
+            )
         return super().cell(ctx)
 
 
@@ -254,7 +256,9 @@ class _InteractionForest(ct.Forest):
 
     def cell(self, ctx: Cell) -> str:
         tone = self.tones[ctx.index]
-        return _decorative_svg(super().cell(replace(ctx, color_rule=lambda *_: tone)))
+        theme = replace(ctx.theme, neutral=ctx.theme.muted) if tone == "neutral" else ctx.theme
+        role = "neutral" if tone == "detected" else tone
+        return _decorative_svg(super().cell(replace(ctx, theme=theme, color_rule=lambda *_: role)))
 
     def footer(self, ctx: Footer) -> str | None:
         markup = super().footer(ctx)
@@ -307,9 +311,8 @@ def interaction_native(
         "point",
         ci=("lower", "upper"),
         fmt=number,
-        percent_rows=frozenset(row.key for row in rows if row.show_percent),
+        suffixes=tuple(row.suffix for row in rows),
     )
-    table_theme = coeftable_theme(theme)
     table = ct.CoefTable(
         data,
         rows="row_key",
@@ -326,7 +329,7 @@ def interaction_native(
             ),
             ct.Passthrough("Status", "status"),
         ),
-        theme=replace(table_theme, neutral=table_theme.muted),
+        theme=coeftable_theme(theme),
     )
     labels = {row.key: row.label_html for row in rows}
     return (

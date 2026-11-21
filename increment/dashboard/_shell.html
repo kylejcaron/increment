@@ -216,13 +216,13 @@ button.metric-select { cursor: pointer; }
 .interaction-controls { display: flex; flex-wrap: wrap; gap: 10px 16px; margin: 12px 0; }
 .interaction-controls label { display: grid; gap: 4px; min-width: 0; }
 .interaction-controls select { border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: 6px 9px; max-width: 100%; }
-.interaction-context, .interaction-detail { border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 16px; margin: 12px 0; }
-.interaction-context h3, .interaction-detail h3 { margin-bottom: 8px; }
-.interaction-context li + li { margin-top: 8px; }
+.interaction-detail { border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 16px; margin: 12px 0; }
+.interaction-detail h3 { margin-bottom: 8px; }
 .inc-interaction-pair { color: var(--accent); padding: 2px 4px; border: 0; background: transparent; text-align: left; overflow-wrap: anywhere; }
 .inc-interaction-units { color: var(--muted); font-size: 13px; }
 .inc-interaction-favorable { color: var(--favorable); font-weight: 600; }
 .inc-interaction-unfavorable { color: var(--unfavorable); font-weight: 600; }
+.inc-interaction-detected { color: var(--accent); font-weight: 600; }
 .inc-interaction-neutral { color: var(--muted); }
 .inc-interaction-cells { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table-surface .inc-interaction-cells { min-width: 0; }
@@ -661,7 +661,6 @@ button.metric-select { cursor: pointer; }
         <h2>Experiment results</h2>
         <p>Effect estimates and uncertainty, grouped by their declared role.</p>
       </div>
-      <section class="interaction-context" id="rollout-context" aria-label="Rollout context" hidden></section>
       <div class="readout-layout" id="readout-layout">
         <div>
           <div class="table-surface native-output" id="readout-table"></div>
@@ -762,7 +761,8 @@ button.metric-select { cursor: pointer; }
         </div>
         <div class="table-surface native-output" id="interaction-overview" role="region" aria-label="Interactions across experiments" tabindex="0" hidden></div>
         <details id="interaction-methods" class="metric-detail plot-notes" hidden>
-          <summary>Why these intervals are wider</summary>
+          <summary>Scope and interval adjustment</summary>
+          <p id="interaction-scope"></p>
           <p id="interaction-explanation"></p>
         </details>
         <section class="interaction-detail" id="interaction-detail" aria-labelledby="interaction-detail-heading" hidden>
@@ -1183,7 +1183,6 @@ button.metric-select { cursor: pointer; }
   function mountReadout() {
     mountNative($('readout-table'), data.results, { metrics: 'select' });
     mountNative($('readout-provenance'), data.provenance);
-    renderRolloutContext();
     syncReadoutSelection();
     if (selectedReadoutMetric) openInspector(selectedReadoutMetric, { autoSelect: false });
   }
@@ -1271,24 +1270,6 @@ button.metric-select { cursor: pointer; }
     }
   }
 
-  function renderRolloutContext() {
-    const context = $('rollout-context');
-    const entries = data.interactions?.reversals || [];
-    context.hidden = entries.length === 0;
-    context.replaceChildren();
-    if (context.hidden) return;
-    const list = el('ul');
-    for (const entry of entries) {
-      const button = el('button', { type: 'button', text: 'See comparison' });
-      button.addEventListener('click', () => {
-        openInteractions(entry.metric, entry.pair);
-        if (interactionPair) $('interaction-detail-heading').focus();
-      });
-      list.append(el('li', {}, el('p', { text: entry.text }), button));
-    }
-    context.append(el('h3', { text: 'Rollout context' }), list);
-  }
-
   function interactionView(packet) {
     return (interactionScale || packet?.defaultScale) === 'relative' ? packet?.relative : packet;
   }
@@ -1333,7 +1314,9 @@ button.metric-select { cursor: pointer; }
     $('interaction-status').textContent = packet?.status || scan?.status || 'Overlapping experiments were not checked for this snapshot.';
     $('interaction-overview').hidden = !view?.overview;
     mountNative($('interaction-overview'), view?.overview || '');
-    $('interaction-methods').hidden = !packet?.explanation;
+    $('interaction-methods').hidden = !scan?.scope && !packet?.explanation;
+    $('interaction-scope').textContent = scan?.scope || '';
+    $('interaction-explanation').hidden = !packet?.explanation;
     $('interaction-explanation').textContent = packet?.explanation || '';
     renderInteractionDetail(packet);
   }
@@ -1714,6 +1697,7 @@ button.metric-select { cursor: pointer; }
     target.replaceChildren();
     if (!scan) return;
     target.append(el('h2', { className: 'rpt-h2', text: 'Exploratory interaction comparisons' }));
+    if (scan.scope) target.append(el('p', { text: scan.scope }));
     if (!options.length) {
       target.append(el('p', { text: scan.status }));
       return;
@@ -1857,7 +1841,7 @@ button.metric-select { cursor: pointer; }
     event.preventDefault();
     const alert = data.interactions?.alert;
     if (!alert) return;
-    interactionScale = 'absolute';
+    interactionScale = alert.scale;
     openInteractions(alert.metric, alert.pair);
     if (interactionPair) $('interaction-detail-heading').focus();
   });

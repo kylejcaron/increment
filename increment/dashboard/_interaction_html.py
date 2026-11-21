@@ -75,6 +75,7 @@ class InteractionTables:
     overview: str
     details: Mapping[str, str]
     has_interaction: bool
+    detected_pairs: frozenset[str]
 
 
 def interaction_tables(
@@ -104,7 +105,7 @@ def interaction_tables(
         or 1.0
     )
     binary = metric.kind == "binary_mean"
-    unit = "points of relative lift" if relative else "percentage points" if binary else metric.unit
+    unit = "" if relative else "percentage points" if binary else metric.unit
     labels = _RELATIVE_LABELS if relative else _CONTRAST_LABELS
 
     def number(value: float) -> str:
@@ -130,6 +131,8 @@ def interaction_tables(
                 pair_id,
                 _pair_button(entry, pair_id, repeated=names[entry.display_name] > 1),
                 status,
+                _effect_tone(direct, metric.better),
+                suffix=" pp" if relative else "",
             )
         )
         contrast_rows = [
@@ -141,7 +144,7 @@ def interaction_tables(
                 if row is direct
                 else _status(row, detail, (*row.reasons, *detail.reasons), better=metric.better),
                 tone=_effect_tone(row, metric.better),
-                show_percent=relative and row is not direct,
+                suffix=(" pp" if row is direct else "%") if relative else "",
             )
             for row in group
         ]
@@ -155,7 +158,7 @@ def interaction_tables(
             theme=theme,
         )
         details[pair_id] = _pair_detail(
-            scan.plan.scope, metric, detail, pair_id, unit, group, contrasts, relative=relative
+            scan.plan.scope, metric, detail, pair_id, unit, group, contrasts
         )
 
     if summary:
@@ -168,10 +171,7 @@ def interaction_tables(
             axis_number=axis_number,
             theme=theme,
         )
-        overview = (
-            '<p class="inc-interaction-units">Change in the focal effect with the other '
-            f"experiment on rather than off. Units: {escape(unit)}.</p>{table}"
-        )
+        overview = _units_note(unit) + table
     else:
         overview = (
             "<p>No concurrent experiments were in scope.</p>"
@@ -182,7 +182,12 @@ def interaction_tables(
         overview,
         MappingProxyType(details),
         any(row.key.contrast == "interaction" and row.lower is not None for row in rows),
+        frozenset(row.key for row in summary if row.tone == "detected"),
     )
+
+
+def _units_note(unit: str) -> str:
+    return f'<p class="inc-interaction-units">Units: {escape(unit)}.</p>' if unit else ""
 
 
 def _number(
@@ -208,10 +213,10 @@ def _native_row(
     status: str,
     tone: InteractionTone = "neutral",
     *,
-    show_percent: bool = False,
+    suffix: str = "",
 ) -> InteractionNativeRow:
     return InteractionNativeRow(
-        key, label, row.estimate, row.lower, row.upper, status, tone, show_percent
+        key, label, row.estimate, row.lower, row.upper, status, tone, suffix
     )
 
 
@@ -249,8 +254,10 @@ def _reason_text(reason: ScanReason, detail: PairDetail, *, locate: bool = False
 
 
 def _effect_tone(row: ScanRow, better: str) -> InteractionTone:
-    if row.key.contrast == "interaction" or row.decision != "detected":
+    if row.decision != "detected":
         return "neutral"
+    if row.key.contrast == "interaction":
+        return "detected"
     rises = row.lower is not None and row.lower > 0
     return "favorable" if rises == (better == "higher") else "unfavorable"
 
@@ -284,16 +291,6 @@ def _status(
     return "No conclusion"
 
 
-def _conclusion(direct: ScanRow) -> str:
-    if direct.decision == "detected":
-        return "The other experiment changed the focal experiment’s effect on this metric."
-    if direct.decision == "none_detected":
-        return "No change in the focal effect was detected. This does not establish that the effects are equal."
-    if direct.availability == "fitted_small":
-        return "The interval is shown, but there is insufficient evidence to conclude whether the other experiment changed the focal effect."
-    return "There is no conclusion about whether the other experiment changed the focal effect."
-
-
 def _experiment(entry: InventoryEntry) -> str:
     identity = entry.identity
     return (
@@ -310,8 +307,6 @@ def _pair_detail(
     unit: str,
     rows: tuple[ScanRow, ...],
     contrasts: str,
-    *,
-    relative: bool,
 ) -> str:
     reasons = tuple(
         dict.fromkeys(
@@ -336,22 +331,11 @@ def _pair_detail(
         f"<dt>Data cutoff</dt><dd>{scope.cutoff.isoformat(sep=' ')}</dd>"
         f"<dt>Target</dt><dd>{target} <small>({escape(scope.focal.population_id)})</small></dd>"
     )
-    direct = rows[-1]
-    if direct.availability in ("unavailable", "fitted_small") and reasons:
-        why = f"<p>{escape(_status(direct, detail, reasons))}.</p>"
-    else:
-        why = ""
     general = _reason_list(tuple(reason for reason in reasons if reason.cell is None), detail)
     assignments = _assignment_table(metric, detail, rows, reasons)
-    units = (
-        "Each lift compares the focal experiment on vs. off at the same setting of the "
-        "other experiment. The difference is in points of relative lift."
-        if relative
-        else f"Units: {escape(unit)}."
-    )
     return (
         f'<section class="inc-interaction-detail" data-inc-pair-detail="{pair_id}">'
-        f'<p>{_conclusion(direct)}</p>{why}<p class="inc-interaction-units">{units}</p>'
+        f"{_units_note(unit)}"
         '<div class="inc-interaction-contrasts" role="region" aria-label="Pair estimates" '
         f'tabindex="0">{contrasts}</div>{general}{assignments}<details class="inc-interaction-scope">'
         f"<summary>Experiment scope and dates</summary><dl>{context}</dl></details></section>"

@@ -1677,13 +1677,13 @@ def test_interaction_report_uses_the_frozen_family_after_pair_evidence_replay(tm
         before["metrics"]["save_rate"]["explanation"]
         == after["metrics"]["save_rate"]["explanation"]
     )
-    assert len(before["reversals"]) == 1
     cards = next(
         pair["id"]
         for pair in before["metrics"]["save_rate"]["pairs"]
         if pair["label"] == "Product cards"
     )
-    assert before["alert"] == after["alert"] == {"metric": "save_rate", "pair": cards}
+    expected_alert = {"metric": "save_rate", "pair": cards, "scale": "relative"}
+    assert before["alert"] == after["alert"] == expected_alert
     assert before["health"] == []
     tips = next(
         pair["id"]
@@ -1700,7 +1700,7 @@ def test_interaction_report_uses_the_frozen_family_after_pair_evidence_replay(tm
         "interactions"
     ]
     assert incomplete["metrics"]["save_rate"]["explanation"] == ""
-    assert not incomplete["reversals"] and incomplete["health"]
+    assert incomplete["health"]
     assert not incomplete.get("alert")
     assert tips in dashboard_html(experiment, snapshot=hidden)
 

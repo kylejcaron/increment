@@ -18,7 +18,7 @@ function page(configure) {
     interactions: {
       status: "",
       metricOptions: [{ key: "save", label: "Save rate" }],
-      alert: { metric: "save", pair: "cards-v1" },
+      alert: { metric: "save", pair: "cards-v1", scale: "relative" },
       metrics: {
         save: {
           status: "Three concurrent experiments",
@@ -36,9 +36,6 @@ function page(configure) {
           details: { "cards-v1": matchingDetail, "tips-v2": unavailableDetail },
         },
       },
-      reversals: [
-        { metric: "save", pair: "cards-v1", text: "On jointly assigned accounts, the effect reversed with Preview cards." },
-      ],
       health: [],
     },
   };
@@ -57,15 +54,15 @@ function page(configure) {
   return loadDashboard(template.replace("<!-- DASHBOARD_DATA -->", JSON.stringify(payload)), configure);
 }
 
-test("rollout context opens exact pair within Explore without replacing the headline", () => {
+test("header alert opens relative evidence without adding a card or replacing the headline", () => {
   const dashboard = page();
   const get = (id) => dashboard.document.getElementById(id);
   dashboard.tabs.explore.dispatch("click");
   dashboard.tabs.readout.dispatch("click");
   assert.equal(dashboard.heroEffect.textContent, "+0.5 pp");
-  assert.match(get("rollout-context")?.textContent ?? "", /effect reversed with Preview cards/);
-  const button = get("rollout-context").querySelectorAll("button")[0];
-  button.dispatch("click");
+  assert.ok(!get("rollout-context"), "Readout should not have a second interaction callout");
+  get("hero-interaction").dispatch("click", { preventDefault() {} });
+  assert.equal(dashboard.document.activeElement?.id, "interaction-detail-heading");
   assert.equal(dashboard.tabs.explore.getAttribute("aria-selected"), "true");
   assert.equal(get("explore-interactions").hidden, false);
   assert.equal(get("interaction-pair").value, "cards-v1");
@@ -84,7 +81,7 @@ test("rollout context opens exact pair within Explore without replacing the head
 test("pair selection preserves the full family and switching population hides assigned evidence", () => {
   const dashboard = page();
   const get = (id) => dashboard.document.getElementById(id);
-  get("rollout-context")?.querySelectorAll("button")[0].dispatch("click");
+  get("hero-interaction").dispatch("click", { preventDefault() {} });
   assert.equal(get("interaction-explanation")?.textContent, "18 planned comparisons");
   const choice = get("interaction-pair");
   choice.value = "tips-v2";
@@ -98,8 +95,8 @@ test("pair selection preserves the full family and switching population hides as
   assert.equal(dashboard.heroEffect.textContent, "+0.7 pp");
 });
 
-test("header alert opens the exact absolute comparison and clears for the triggered view", () => {
-  const dashboard = page();
+test("absolute-only alert opens absolute evidence and clears for the triggered view", () => {
+  const dashboard = page((payload) => { payload.interactions.alert.scale = "absolute"; });
   const get = (id) => dashboard.document.getElementById(id);
   const badge = get("hero-interaction");
   assert.equal(badge?.hidden, false);
@@ -158,7 +155,7 @@ function refreshInteractionPage(changeScan = () => {}) {
     const flush = connect(before);
     flush();
     const get = (id) => before.document.getElementById(id);
-    get("rollout-context").querySelector("button").dispatch("click");
+    get("hero-interaction").dispatch("click", { preventDefault() {} });
     const metric = get("interaction-metric");
     metric.value = "retention";
     metric.dispatch("change");

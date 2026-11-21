@@ -274,20 +274,19 @@ example closes the database.
 
 1. Select **Possible interaction** next to the experiment name to open a
    comparison where the adjusted interval for the change in absolute effect
-   excludes zero. No badge does not mean no interaction: the scan may be
-   inconclusive or unavailable. The badge does not change the primary result.
-   **Rollout context** separately calls out a supported reversal; neither
-   is a rollout recommendation.
+   excludes zero. It opens in **Relative lift** if that scale also detects a
+   change. The badge doesn't change the primary result. If it isn't shown,
+   the interaction check may be inconclusive or unavailable.
 2. In **Interactions**, choose a **Metric**. Open a row by name or use
    **Go to experiment**. **Relative lift** is the default when the metric has
    a pair with a bounded relative comparison. Each lift uses the focal-off
    group with the other experiment at the same setting as its baseline.
-   The change in relative lift is the difference of the two lifts, in points.
+   The lifts use `%`; their difference uses percentage points (`pp`).
    Choose **Absolute** to see the original units (percentage points for rates).
    Green and red mark effects in or against the metric's desired direction
    when the adjusted interval supports that conclusion. The change between
-   effects stays neutral; **None detected** does not mean the effects are equal.
-   Open **Why these intervals are wider** to see what counts in the adjustment.
+   effects uses an accent color when a change is detected; the color isn't a
+   rollout recommendation. Open **Scope and interval adjustment** for details.
 3. Open a row that couldn't be estimated. **Outcomes by assignment** shows
    which groups were measured. An empty group prevents comparisons that need
    it; a baseline that is zero, negative, or too uncertain can prevent a

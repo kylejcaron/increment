@@ -397,7 +397,7 @@ scale within the selected metric.
 
 - **Relative lift** divides each effect by its focal-off mean with the other
   experiment at the same setting. The difference between those two percent lifts is
-  measured in points of relative lift. This is the default when the metric has
+  measured in percentage points (`pp`). This is the default when the metric has
   a bounded relative comparison.
 - **Absolute** shows effects and their difference in the metric's original
   units (percentage points for rates).
@@ -436,16 +436,14 @@ comparisons per frozen candidate and metric: the two effects and their differenc
 For three candidates and two metrics, the divisor is 18, even if a row is
 unavailable or a metric is hidden. Changing the metric, selecting a pair
 by name, or opening it from Readout does not change the family, level, or
-bounds. See **Why these intervals are wider** for the family size, level,
+bounds. See **Scope and interval adjustment** for the family size, level,
 and fixed look. The adjustment does not require independent pairs; the
 within-pair independent assignment and outcome requirements still apply.
 
 These exploratory comparisons describe pairs, not a combination of three
-or more treatments. Readout keeps its original analysis. A separate
-**Rollout context** note can link to a pair only for the matching metric and
-assigned population, when the supported direct interval excludes zero and
-the two conditional intervals exclude zero in opposite directions, with no
-unresolved source, assignment, or delivery conflict.
+or more treatments. The **Possible interaction** badge is based on the
+adjusted absolute interval. It opens the detected pair in Relative lift
+if that scale also detects the change. The primary result is unchanged.
 
 ### Time series and dates
 

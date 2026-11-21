@@ -97,7 +97,7 @@ from increment.tables import _binomial_qualification_disclosure
 
 if TYPE_CHECKING:
     from increment.kernel.experiment import Experiment
-    from increment.semantics.interaction_scan import InteractionScan, ScanRow
+    from increment.semantics.interaction_scan import ScanRow
 
 __all__ = ["build_payload", "dashboard_html", "document", "health_status", "render_dashboard"]
 
@@ -279,38 +279,6 @@ def _supported_direction(row: ScanRow) -> int:
     return 1 if row.lower > 0 else -1 if row.upper < 0 else 0
 
 
-def _rollout_context(scan: InteractionScan, metric: str) -> list[dict[str, str]]:
-    rows = {(row.key.pair, row.key.contrast): row for row in scan.rows if row.key.metric == metric}
-    entries = []
-    focal = scan.plan.scope.focal.entry.display_name
-    for detail in scan.details:
-        if (
-            detail.status != "captured"
-            or detail.reasons
-            or any(delivery.n_inconsistent for delivery in detail.delivery_counts)
-        ):
-            continue
-        key = detail.candidate.key
-        off = _supported_direction(rows[key, "focal_given_other_off"])
-        on = _supported_direction(rows[key, "focal_given_other_on"])
-        if not off or off != -on or not _supported_direction(rows[key, "interaction"]):
-            continue
-        other = detail.candidate.entry.display_name
-        first, second = ("raised", "lowered") if off > 0 else ("lowered", "raised")
-        entries.append(
-            {
-                "metric": metric,
-                "pair": key.pair_id,
-                "text": (
-                    f"Among units eligible and assigned to both experiments, {focal} "
-                    f"{first} {_label(metric)} with {other} off and {second} it with {other} on. "
-                    "This is separate from the effect across the whole experiment."
-                ),
-            }
-        )
-    return entries
-
-
 def _interaction_payload(
     snapshot: DashboardSnapshot, population: Literal["assigned", "triggered"]
 ) -> dict[str, Any] | None:
@@ -343,10 +311,7 @@ def _interaction_payload(
         f"Fixed cutoff: {scope.cutoff.isoformat(sep=' ')}."
     )
     if scan.no_candidates:
-        return {
-            "status": "This inventory lists no other experiments running in the outcome window. "
-            + scan_scope
-        }
+        return {"status": "No concurrent experiments in this window.", "scope": scan_scope}
     status = {
         "complete": "",
         "partial": "The experiment list is incomplete or changed. No adjusted intervals or detections are reported.",
@@ -365,7 +330,8 @@ def _interaction_payload(
         f"approximately {(1.0 - scope.alpha):.1%} coverage together at the fixed cutoff "
         f"{scope.cutoff:%Y-%m-%d %H:%M:%S UTC}. The scales are adjusted separately, not jointly. "
         "The interval for the change in relative lift uses the two adjusted lift intervals. "
-        "Opening a pair does not change the adjustment."
+        "Opening a pair does not change the adjustment. "
+        "None detected does not establish that the effects are equal."
         if family and scan.coverage == "complete"
         else ""
     )
@@ -392,14 +358,31 @@ def _interaction_payload(
             )
     count = len(pairs)
     metric_status = status or f"{count} concurrent experiment{'s' if count != 1 else ''}."
+    # Trigger the badge from the absolute family only, not the union of both scales.
+    alert_row = min(
+        (
+            row
+            for row in scan.rows
+            if row.key.metric in selected
+            and row.key.contrast == "interaction"
+            and _supported_direction(row)
+        ),
+        key=lambda row: row.key.metric != snapshot.primary_metric,
+        default=None,
+    )
+    alert = None
     metric_packets = {}
     for metric in selected:
         fragments = interaction_tables(scan, metric_key=metric, theme=snapshot.config.theme)
         relative = interaction_tables(
             scan, metric_key=metric, theme=snapshot.config.theme, relative=True
         )
+        if alert_row is not None and alert_row.key.metric == metric:
+            pair_id = alert_row.key.pair.pair_id
+            scale = "relative" if pair_id in relative.detected_pairs else "absolute"
+            alert = {"metric": metric, "pair": pair_id, "scale": scale}
         metric_packets[metric] = {
-            "status": f"{metric_status} {scan_scope}",
+            "status": metric_status,
             "explanation": explanation,
             "overview": fragments.overview,
             "details": dict(fragments.details),
@@ -407,31 +390,12 @@ def _interaction_payload(
             "defaultScale": "relative" if relative.has_interaction else "absolute",
             "pairs": pairs,
         }
-    # The header uses the absolute family only, not a union of two separately adjusted scales.
-    alert = min(
-        (
-            row
-            for row in scan.rows
-            if row.key.metric in metric_packets
-            and row.key.contrast == "interaction"
-            and _supported_direction(row)
-        ),
-        key=lambda row: row.key.metric != snapshot.primary_metric,
-        default=None,
-    )
     return {
-        "status": (status or "No planned interaction metrics are shown in this view.")
-        + f" {scan_scope}",
+        "status": status or "No planned interaction metrics are shown in this view.",
+        "scope": scan_scope,
         "metricOptions": [{"key": metric, "label": _label(metric)} for metric in selected],
         "metrics": metric_packets,
-        "alert": {"metric": alert.key.metric, "pair": alert.key.pair.pair_id}
-        if alert is not None
-        else None,
-        "reversals": (
-            _rollout_context(scan, snapshot.primary_metric)
-            if snapshot.primary_metric in selected
-            else []
-        ),
+        "alert": alert,
         "health": health,
     }
 
