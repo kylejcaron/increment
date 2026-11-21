@@ -362,7 +362,7 @@ def interaction_duckdb_fact(table: ir.Table) -> SourceFact:
 def _published_generation_id(backend: Backend, catalog: str) -> str | None:
     try:
         marker = backend.table("increment_interaction_generation", database=(catalog, "main"))
-        if _interaction_coordinate(marker) is None:
+        if _native_interaction_fact(backend, marker) is None:
             return None
         records = _query(backend.con, backend, marker.select("version", "generation_id").limit(2))
     except (DuckDBError, IbisError, OSError, KeyError):
@@ -432,28 +432,11 @@ def interaction_focal_facts(source: Any, plan: InteractionScanPlan) -> FocalSour
     definition = source._experiment
     ledger = definition.assignment_ledger
     exposure = source._exp_lookup_exposures[definition.exposure]
-    assignment_sql = (
-        ledger.sql if ledger is not None else exposure.sql or _focal_query(source, exposure.fact)
-    )
-    if (
-        assignment_sql is None
-        or assignment_sql not in projections
-        or assignment_sql not in originals
-    ):
-        return None
-    assignments = _sealed_focal_fact(
-        backend, catalog, assignment_sql, projections[assignment_sql], originals[assignment_sql]
-    )
-    if assignments is None:
-        return None
-    metrics = {metric.name: metric for metric in source._defs.metrics}
-    feed_names = {fact.name: feed.name for feed in source._defs.fact_sources for fact in feed.facts}
-    by_query = {assignment_sql: assignments}
-    outcomes = []
-    horizons = []
-    for planned in plan.metrics:
-        metric = metrics[planned.name]
-        query = _focal_query(source, metric.fact)
+    exposure_sql = exposure.sql or _focal_query(source, exposure.fact)
+    assignment_sql = ledger.sql if ledger is not None else exposure_sql
+    by_query: dict[str, SourceFact] = {}
+
+    def verify(query: str | None) -> SourceFact | None:
         if query is None or query not in projections or query not in originals:
             return None
         if query not in by_query:
@@ -461,14 +444,33 @@ def interaction_focal_facts(source: Any, plan: InteractionScanPlan) -> FocalSour
             if fact is None:
                 return None
             by_query[query] = fact
+        return by_query[query]
+
+    assignments, exposures = verify(assignment_sql), verify(exposure_sql)
+    if assignments is None or exposures is None:
+        return None
+    metrics = {metric.name: metric for metric in source._defs.metrics}
+    feed_names = {fact.name: feed.name for feed in source._defs.fact_sources for fact in feed.facts}
+    outcomes = []
+    horizons = []
+    for planned in plan.metrics:
+        metric = metrics[planned.name]
+        fact = verify(_focal_query(source, metric.fact))
+        if fact is None:
+            return None
         edge, certified = source._metric_snapshot_edges(metric, snapshot)
         if edge < plan.scope.end.date() - timedelta(days=1):
             refuse(SCAN_INVALID, field="source", reason="focal_outcome_window_incomplete")
         watermark = snapshot.complete_through_by_feed.get(feed_names[metric.fact])
-        outcomes.append((planned.name, by_query[query]))
+        outcomes.append((planned.name, fact))
         horizons.append((planned.name, watermark, edge, certified))
     return FocalSourceFacts(
-        identifier, dataset, assignments, tuple(sorted(outcomes)), tuple(sorted(horizons))
+        generation_id=identifier,
+        dataset_sha256=dataset,
+        assignments=assignments,
+        exposures=exposures,
+        outcomes=tuple(sorted(outcomes)),
+        horizons=tuple(sorted(horizons)),
     )
 
 

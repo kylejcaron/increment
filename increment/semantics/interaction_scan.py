@@ -756,6 +756,7 @@ class SourceGenerationManifest(_ScanModel):
     scan_plan_id: Sha256
     definition_sha256: Sha256
     focal_assignments: SourceFact
+    focal_exposures: SourceFact | None = None
     focal_outcomes: Ordered[tuple[tuple[Identity, SourceFact], ...]]
     pair_feeds: Ordered[tuple[StudyFeedFact, ...]]
 
@@ -779,6 +780,7 @@ class FocalSourceFacts:
     generation_id: str
     dataset_sha256: str
     assignments: SourceFact
+    exposures: SourceFact
     outcomes: tuple[tuple[str, SourceFact], ...]
     horizons: tuple[tuple[str, datetime | None, date, date | None], ...]
 

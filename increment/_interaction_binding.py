@@ -121,6 +121,8 @@ def _check_manifest_focal(manifest: SourceGenerationManifest, facts: FocalSource
         refuse(SCAN_INVALID, field="source", reason="different_source_generation")
     if (facts.assignments, facts.outcomes) != (manifest.focal_assignments, manifest.focal_outcomes):
         refuse(SCAN_INVALID, field="source", reason="focal_facts_not_verified")
+    if facts.exposures != (manifest.focal_exposures or manifest.focal_assignments):
+        refuse(SCAN_INVALID, field="source", reason="focal_exposures_not_verified")
 
 
 def bind_scan(

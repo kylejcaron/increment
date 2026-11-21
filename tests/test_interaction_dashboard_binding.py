@@ -172,6 +172,13 @@ def test_snapshot_rejects_same_count_data_from_another_sealed_generation(tmp_pat
         )
         snapshot = prepare_dashboard(experiment, reader, config=_CONFIG, interactions=attachment)
         headline = readout_csv(prepare_dashboard(experiment, reader, config=_CONFIG))
+        wrong_exposure = manifest.focal_assignments.model_copy(update={"content_sha256": "a" * 64})
+        mismatched = manifest.model_copy(update={"focal_exposures": wrong_exposure})
+        with pytest.raises(CodedError) as unknown_exposure:
+            bind_interaction_scan(
+                capture, source=InteractionDuckDBSource(experiment, reader, mismatched)
+            )
+        assert unknown_exposure.value.context["reason"] == "focal_exposures_not_verified"
     assert snapshot.interactions is not None and snapshot.interactions.no_candidates
     assert readout_csv(snapshot) == headline
 
