@@ -260,7 +260,11 @@ def test_relative_pair_shows_its_own_lifts_and_supported_metric_direction(_scan)
     fragments = interaction_tables(_scan, metric_key="save", relative=True)
     comparison = _accessible_numbers(fragments.details[first])
     assert "Change in relative lift" in comparison
-    assert "+9.7" in comparison and "−6.7" in comparison and "−16.3" in comparison
+    assert re.search(r"\+9\.7% \[\+[\d.]+%, \+[\d.]+%\]", comparison)
+    assert "−6.7%" in comparison
+    assert "−16.3 [" in comparison and "−16.3%" not in comparison
+    overview = _accessible_numbers(_candidate_row(fragments.overview, first))
+    assert "−16.3 [" in overview and "%" not in overview
     assert "Favorable" in comparison and "Unfavorable" in comparison
     assert "Lower with other on" in comparison
     assert "baseline is zero or negative" in _accessible_numbers(fragments.details[second])

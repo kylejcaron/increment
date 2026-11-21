@@ -407,11 +407,26 @@ def _interaction_payload(
             "defaultScale": "relative" if relative.has_interaction else "absolute",
             "pairs": pairs,
         }
+    # The header uses the absolute family only, not a union of two separately adjusted scales.
+    alert = min(
+        (
+            row
+            for row in scan.rows
+            if row.key.metric in metric_packets
+            and row.key.contrast == "interaction"
+            and _supported_direction(row)
+        ),
+        key=lambda row: row.key.metric != snapshot.primary_metric,
+        default=None,
+    )
     return {
         "status": (status or "No planned interaction metrics are shown in this view.")
         + f" {scan_scope}",
         "metricOptions": [{"key": metric, "label": _label(metric)} for metric in selected],
         "metrics": metric_packets,
+        "alert": {"metric": alert.key.metric, "pair": alert.key.pair.pair_id}
+        if alert is not None
+        else None,
         "reversals": (
             _rollout_context(scan, snapshot.primary_metric)
             if snapshot.primary_metric in selected

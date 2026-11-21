@@ -85,13 +85,12 @@ code, .number { font-family: var(--inc-dashboard-mono-font); font-variant-numeri
 .hero-meta { font-size: 11px; color: var(--muted); line-height: 1.65; margin: 0; overflow-wrap: anywhere; }
 .hero-description:empty, .hero-meta:empty { display: none; }
 
-/* The pill reports allocation only; its wording comes from the payload. */
-.health-pill {
+.hero-pill {
   font-size: 11px; line-height: 1.3; text-decoration: none; border-radius: 99px; padding: 7px 11px;
   white-space: nowrap; border: 1px solid var(--line); background: var(--tint); color: var(--muted);
 }
-.health-pill[data-kind="healthy"] { background: var(--favorable-bg); color: var(--favorable); border-color: var(--favorable-line); }
-.health-pill[data-kind="warning"] { background: var(--inconclusive-bg); color: var(--inconclusive); border-color: var(--line); }
+.hero-pill[data-kind="healthy"] { background: var(--favorable-bg); color: var(--favorable); border-color: var(--favorable-line); }
+.hero-pill[data-kind="warning"] { background: var(--inconclusive-bg); color: var(--inconclusive); border-color: var(--line); }
 .health-mark { font-size: 13px; margin-right: 4px; }
 
 .primary-box {
@@ -443,7 +442,7 @@ button.metric-select { cursor: pointer; }
   .hero-titleline { gap: 12px; margin: 10px 0; }
   .hero-titleline h1 { font-size: 33px; }
   .hero-description { font-size: 13px; }
-  .health-pill { white-space: normal; max-width: 100%; }
+  .hero-pill { white-space: normal; max-width: 100%; }
   .primary-box { padding: 15px 18px; }
   .primary-value { font-size: 32px; margin-bottom: 7px; }
   .tabs { gap: 23px; }
@@ -622,10 +621,12 @@ button.metric-select { cursor: pointer; }
       <div class="eyebrow">Experiment / captured snapshot</div>
       <div class="hero-titleline">
         <h1 id="hero-title"></h1>
-        <a class="health-pill" id="hero-health" href="#health" hidden aria-describedby="hero-health-detail">
+        <a class="hero-pill" id="hero-health" href="#health" hidden aria-describedby="hero-health-detail">
           <span class="health-mark" id="hero-health-mark" aria-hidden="true"></span><span id="hero-health-label"></span>
         </a>
         <span class="sr-only" id="hero-health-detail"></span>
+        <a class="hero-pill" id="hero-interaction" href="#explore" data-kind="warning" hidden
+           title="An adjusted interval for the change in absolute effect excludes zero.">Possible interaction</a>
       </div>
       <p class="hero-description" id="hero-description"></p>
       <p class="hero-meta" id="hero-meta"></p>
@@ -1034,6 +1035,7 @@ button.metric-select { cursor: pointer; }
     } else {
       pill.hidden = true;
     }
+    $('hero-interaction').hidden = !data.interactions?.alert;
   }
 
   /* ---------- Readout -------------------------------------------------------- */
@@ -1851,6 +1853,14 @@ button.metric-select { cursor: pointer; }
 
   $('brand').addEventListener('click', (event) => { event.preventDefault(); navigate('readout'); });
   $('hero-health').addEventListener('click', (event) => { event.preventDefault(); navigate('health'); });
+  $('hero-interaction').addEventListener('click', (event) => {
+    event.preventDefault();
+    const alert = data.interactions?.alert;
+    if (!alert) return;
+    interactionScale = 'absolute';
+    openInteractions(alert.metric, alert.pair);
+    if (interactionPair) $('interaction-detail-heading').focus();
+  });
   $('report-back').addEventListener('click', () => navigate('readout'));
   $('report-print').addEventListener('click', () => window.print());
   const tabs = [...document.querySelectorAll('[role="tab"]')];

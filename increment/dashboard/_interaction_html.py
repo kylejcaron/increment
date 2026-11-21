@@ -44,8 +44,8 @@ _CONTRAST_LABELS = {
     "interaction": "Change in focal effect (other on minus off)",
 }
 _RELATIVE_LABELS = {
-    "focal_given_other_off": "Focal lift with other off (%)",
-    "focal_given_other_on": "Focal lift with other on (%)",
+    "focal_given_other_off": "Focal lift with other off",
+    "focal_given_other_on": "Focal lift with other on",
     "interaction": "Change in relative lift (points)",
 }
 _REASONS = {
@@ -141,6 +141,7 @@ def interaction_tables(
                 if row is direct
                 else _status(row, detail, (*row.reasons, *detail.reasons), better=metric.better),
                 tone=_effect_tone(row, metric.better),
+                show_percent=relative and row is not direct,
             )
             for row in group
         ]
@@ -201,9 +202,17 @@ def _number(
 
 
 def _native_row(
-    row: ScanRow, key: str, label: str, status: str, tone: InteractionTone = "neutral"
+    row: ScanRow,
+    key: str,
+    label: str,
+    status: str,
+    tone: InteractionTone = "neutral",
+    *,
+    show_percent: bool = False,
 ) -> InteractionNativeRow:
-    return InteractionNativeRow(key, label, row.estimate, row.lower, row.upper, status, tone)
+    return InteractionNativeRow(
+        key, label, row.estimate, row.lower, row.upper, status, tone, show_percent
+    )
 
 
 def _pair_button(entry: InventoryEntry, pair_id: str, *, repeated: bool) -> str:

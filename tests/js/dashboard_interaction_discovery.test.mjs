@@ -18,6 +18,7 @@ function page(configure) {
     interactions: {
       status: "",
       metricOptions: [{ key: "save", label: "Save rate" }],
+      alert: { metric: "save", pair: "cards-v1" },
       metrics: {
         save: {
           status: "Three concurrent experiments",
@@ -95,6 +96,21 @@ test("pair selection preserves the full family and switching population hides as
   assert.equal(get("interaction-status").textContent, "Not checked for the triggered population.");
   assert.equal(get("interaction-detail-body").innerHTML, "");
   assert.equal(dashboard.heroEffect.textContent, "+0.7 pp");
+});
+
+test("header alert opens the exact absolute comparison and clears for the triggered view", () => {
+  const dashboard = page();
+  const get = (id) => dashboard.document.getElementById(id);
+  const badge = get("hero-interaction");
+  assert.equal(badge?.hidden, false);
+  badge.dispatch("click", { preventDefault() {} });
+  assert.equal(dashboard.tabs.explore.getAttribute("aria-selected"), "true");
+  assert.equal(get("interaction-scale").value, "absolute");
+  assert.equal(get("interaction-detail-body").innerHTML, matchingDetail);
+  assert.equal(dashboard.document.activeElement?.id, "interaction-detail-heading");
+  dashboard.populationSelect.value = "triggered";
+  dashboard.populationSelect.dispatch("change");
+  assert.equal(badge.hidden, true);
 });
 
 const retentionDetail = "Search tips: retention alongside concurrent assignment";

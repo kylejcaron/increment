@@ -1678,6 +1678,12 @@ def test_interaction_report_uses_the_frozen_family_after_pair_evidence_replay(tm
         == after["metrics"]["save_rate"]["explanation"]
     )
     assert len(before["reversals"]) == 1
+    cards = next(
+        pair["id"]
+        for pair in before["metrics"]["save_rate"]["pairs"]
+        if pair["label"] == "Product cards"
+    )
+    assert before["alert"] == after["alert"] == {"metric": "save_rate", "pair": cards}
     assert before["health"] == []
     tips = next(
         pair["id"]
@@ -1689,11 +1695,13 @@ def test_interaction_report_uses_the_frozen_family_after_pair_evidence_replay(tm
         before["metrics"]["save_rate"]["details"][tips].count('data-inc-reason="empty_cell"') >= 1
     )
     assert "metrics" not in hidden_payload["populationViews"]["triggered"]["interactions"]
+    assert not hidden_payload["populationViews"]["triggered"]["interactions"].get("alert")
     incomplete = build_payload(experiment, snapshot=partial)["populationViews"]["assigned"][
         "interactions"
     ]
     assert incomplete["metrics"]["save_rate"]["explanation"] == ""
     assert not incomplete["reversals"] and incomplete["health"]
+    assert not incomplete.get("alert")
     assert tips in dashboard_html(experiment, snapshot=hidden)
 
 

@@ -272,11 +272,12 @@ uv run --extra demo --extra dashboard python examples/interaction_discovery.py i
 Open `interaction_discovery.html` in your browser. It works offline, after the
 example closes the database.
 
-1. Start in **Readout**. The primary result keeps its original population,
-   uncertainty, and decision. **Rollout context** is a separate, neutral
-   note about a supported reversal on a jointly eligible and randomized
-   subset, not a correction to the headline or a rollout recommendation.
-   Select **See comparison** to open that pair in Explore.
+1. Select **Possible interaction** next to the experiment name to open a
+   comparison where the adjusted interval for the change in absolute effect
+   excludes zero. No badge does not mean no interaction: the scan may be
+   inconclusive or unavailable. The badge does not change the primary result.
+   **Rollout context** separately calls out a supported reversal; neither
+   is a rollout recommendation.
 2. In **Interactions**, choose a **Metric**. Open a row by name or use
    **Go to experiment**. **Relative lift** is the default when the metric has
    a pair with a bounded relative comparison. Each lift uses the focal-off

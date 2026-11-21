@@ -230,6 +230,17 @@ class InteractionNativeRow:
     upper: float | None
     status: str
     tone: InteractionTone
+    show_percent: bool
+
+
+@dataclass(frozen=True)
+class _InteractionEstimate(ct.Estimate):
+    percent_rows: frozenset[str] = frozenset()
+
+    def cell(self, ctx: Cell) -> str:
+        if ctx.row_key in self.percent_rows:
+            return ct.Estimate.cell(replace(self, fmt=lambda value: f"{self.fmt(value)}%"), ctx)
+        return super().cell(ctx)
 
 
 @dataclass(frozen=True)
@@ -291,7 +302,13 @@ def interaction_native(
             ],
         }
     )
-    estimate = ct.Estimate(estimate_heading, "point", ci=("lower", "upper"), fmt=number)
+    estimate = _InteractionEstimate(
+        estimate_heading,
+        "point",
+        ci=("lower", "upper"),
+        fmt=number,
+        percent_rows=frozenset(row.key for row in rows if row.show_percent),
+    )
     table_theme = coeftable_theme(theme)
     table = ct.CoefTable(
         data,
