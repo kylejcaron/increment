@@ -15,6 +15,7 @@ from sqlglot import exp
 from increment.errors import CodedError
 from increment.query.overlap import bind_overlap_warehouse, capture_overlap_warehouse
 from increment.semantics.overlap import OverlapCapture, OverlapPlan
+from tests._unit_boundary import backend_fixture
 
 pytestmark = pytest.mark.integration
 
@@ -67,7 +68,7 @@ _SCHEMAS = {
 }
 
 
-@pytest.fixture
+@backend_fixture()
 def warehouse(tmp_path):
     path = tmp_path / "overlap.duckdb"
     backend = ibis.duckdb.connect(path)
