@@ -7,14 +7,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment._frame_spillover import FrameSpilloverSource
-from increment._spillover_design import (
-    GroupProfile,
-    PolicyCell,
-    SpilloverComparison,
-    SpilloverDesign,
-)
+from increment import run
 from increment.errors import InvalidRequestError
+from increment.spillover import SpilloverComparison, SpilloverDesign, from_frame
 
 
 def _comparison(policy="half", reference="zero"):
@@ -54,6 +49,17 @@ def _frames():
         "offered": pd.DataFrame(offered, columns=["person_id", "offered"]),
         "outcomes": pd.DataFrame(outcomes, columns=["person_id", "outcome"]),
     }
+
+
+def _register(frames, design=None):
+    return from_frame(
+        frames["roster"],
+        offer_counts=frames["offer_counts"],
+        design=_design() if design is None else design,
+        group_policy=frames["group_policy"],
+        offered=frames["offered"],
+        outcomes=frames["outcomes"],
+    )
 
 
 def test_freezes_declared_order_and_snapshots_all_nested_values():
@@ -109,22 +115,31 @@ def test_comparison_needs_distinct_named_policies(p, r):
 
 def test_frame_summary_uses_equal_group_weights_and_only_unoffered_outcomes():
     frames = _frames()
-    source = FrameSpilloverSource(**frames)
-    population = source.freeze(_design())
-    assert [g.group_id for g in population.groups] == [2, 4, 6, 10, 12, 14]
-    assert population.groups[0] == GroupProfile(2, "all", 3, (3, 1, 0))
-    # Half: group totals 2 and 6; zero: group totals 0 and 2.
-    expected = (
-        PolicyCell("all", "half", 2, 4.0, 8.0, 5, 4),
-        PolicyCell("all", "zero", 2, 1.0, 2.0, 8, 2),
-    )
-    assert source.observe(population) == expected
+    experiment, reader = _register(frames)
+    groups = experiment.population.groups
+    assert [g.group_id for g in groups] == [2, 4, 6, 10, 12, 14]
+    first = groups[0]
+    assert (first.stratum, first.size, first.offers) == ("all", 3, (3, 1, 0))
+    with reader:
+        result = run(experiment, reader)
+    assert result.registration_id == experiment.registration_id
+    (row,) = result.comparisons
+    # Expand untreated events to group totals; two groups per arm represent all six.
+    half = (4 * 1 / 2 + 6 * 3 / 3) / 2
+    zero = (0 + 2) / 2
+    assert (row.policy, row.reference) == ("half", "zero")
+    assert row.estimate == (half - zero) * 6 / 24
+    assert row.observed_reason is None
+    assert row.lower is row.upper is None
+    assert row.qualification_reason == "missing_baseline_rate"
+
     offered_only = frames["offered"].loc[lambda t: t.offered, ["person_id"]].copy()
     offered_only["outcome"] = pd.array([1, *([None] * (len(offered_only) - 1))], dtype="Int64")
     frames["outcomes"] = pd.concat([offered_only, frames["outcomes"]], ignore_index=True)
-    shuffled = FrameSpilloverSource(**{k: v.iloc[::-1] for k, v in frames.items()})
-    assert shuffled.freeze(_design()) == population
-    assert shuffled.observe(population) == expected
+    shuffled, reader = _register({k: v.iloc[::-1] for k, v in frames.items()})
+    assert shuffled.registration_id == experiment.registration_id
+    with reader:
+        assert run(shuffled, reader) == result
 
 
 @pytest.mark.parametrize("field", ["roster", "offer_counts"])
@@ -132,7 +147,7 @@ def test_freeze_requires_projected_frames_not_mappings(field):
     frames = _frames()
     with pytest.raises(InvalidRequestError) as exc:
         inputs: dict[str, Any] = frames | {field: frames[field].to_dict()}
-        FrameSpilloverSource(**inputs).freeze(_design())
+        _register(inputs)
     assert exc.value.code == "spillover.design.invalid"
     assert exc.value.context["field"] == field
 
@@ -178,7 +193,7 @@ def test_prelaunch_inputs_require_unique_ownership_and_feasible_counts(role, cha
             "saturated_comparison": 4,
         }[change]
     with pytest.raises(InvalidRequestError) as exc:
-        FrameSpilloverSource(**frames).freeze(_design())
+        _register(frames)
     assert exc.value.code == f"spillover.design.{code}"
     assert exc.value.context["field"] == role
 
@@ -186,7 +201,7 @@ def test_prelaunch_inputs_require_unique_ownership_and_feasible_counts(role, cha
 @pytest.mark.parametrize("change", ["membership", "counts", "id_domain"])
 def test_readout_rechecks_frozen_membership_and_every_quota(change):
     frames = _frames()
-    population = FrameSpilloverSource(**frames).freeze(_design())
+    experiment, reader = _register(frames)
     if change == "membership":
         df = frames["roster"]
         df.loc[[0, 4], "group_id"] = [2, 10]
@@ -196,10 +211,11 @@ def test_readout_rechecks_frozen_membership_and_every_quota(change):
     else:
         for role in ("roster", "offer_counts", "group_policy"):
             frames[role]["group_id"] = frames[role].group_id.astype(str)
-    with pytest.raises(InvalidRequestError) as exc:
-        FrameSpilloverSource(**frames).observe(population)
+    with reader, pytest.raises(InvalidRequestError) as exc:
+        run(experiment, reader)
     assert exc.value.code == "spillover.roster.changed"
     assert set(exc.value.context) == {"field", "requirement"}
+    assert exc.value.context["field"] == "roster"
 
 
 @pytest.mark.parametrize("field", ["group_policy", "offered", "outcomes"])
@@ -213,9 +229,9 @@ def test_log_keys_never_drop_foreign_or_duplicate_rows_or_impute_missing(field, 
         frames[field] = pd.concat([log, log.iloc[:1]])
     else:
         log.iat[0, 0] = -1 if field == "group_policy" else "foreign"
-    source = FrameSpilloverSource(**frames)
-    with pytest.raises(InvalidRequestError) as exc:
-        source.observe(source.freeze(_design()))
+    experiment, reader = _register(frames)
+    with reader, pytest.raises(InvalidRequestError) as exc:
+        run(experiment, reader)
     assert exc.value.code == "spillover.log.keys"
     assert exc.value.context["field"] == field
 
@@ -236,9 +252,9 @@ def test_logs_require_binary_measurements_and_matching_key_domains(role, column,
     frames = _frames()
     frames[role] = frames[role].astype(object)
     frames[role].at[0, column] = value
-    source = FrameSpilloverSource(**frames)
-    with pytest.raises(InvalidRequestError) as exc:
-        source.observe(source.freeze(_design()))
+    experiment, reader = _register(frames)
+    with reader, pytest.raises(InvalidRequestError) as exc:
+        run(experiment, reader)
     assert exc.value.code == f"spillover.log.{code}"
     assert exc.value.context["field"] == role
 
@@ -246,10 +262,11 @@ def test_logs_require_binary_measurements_and_matching_key_domains(role, column,
 def test_optional_offered_measurement_cannot_be_nonbinary_even_in_uncompared_group():
     frames = _frames()
     frames["outcomes"].loc[len(frames["outcomes"])] = ["person/12/0", 2]
-    source = FrameSpilloverSource(**frames)
-    with pytest.raises(InvalidRequestError) as exc:
-        source.observe(source.freeze(_design()))
+    experiment, reader = _register(frames)
+    with reader, pytest.raises(InvalidRequestError) as exc:
+        run(experiment, reader)
     assert exc.value.code == "spillover.log.binary"
+    assert exc.value.context["field"] == "outcomes"
 
 
 @pytest.mark.parametrize("field", ["group_policy", "offered"])
@@ -266,9 +283,8 @@ def test_both_realized_quotas_are_local_not_just_trial_totals(field):
         df = frames[field]
         df.loc[df.person_id == "person/10/0", "offered"] = False
         df.loc[df.person_id == "person/2/0", "offered"] = True
-    source = FrameSpilloverSource(**frames)
-    population = source.freeze(design)
-    assert [(g.stratum, g.group_id) for g in population.groups] == [
+    experiment, reader = _register(frames, design)
+    assert [(g.stratum, g.group_id) for g in experiment.population.groups] == [
         ("east", 4),
         ("east", 6),
         ("east", 14),
@@ -276,8 +292,8 @@ def test_both_realized_quotas_are_local_not_just_trial_totals(field):
         ("west", 10),
         ("west", 12),
     ]
-    with pytest.raises(InvalidRequestError) as exc:
-        source.observe(population)
+    with reader, pytest.raises(InvalidRequestError) as exc:
+        run(experiment, reader)
     assert exc.value.code == "spillover.log.quota"
     assert exc.value.context["field"] == field
 
@@ -286,16 +302,17 @@ def test_stratum_totals_must_account_for_every_group():
     frames = _frames()
     design = replace(_design(), groups_per_policy={"all": {"zero": 2, "half": 2, "full": 1}})
     with pytest.raises(InvalidRequestError) as exc:
-        FrameSpilloverSource(**frames).freeze(design)
+        _register(frames, design)
     assert exc.value.code == "spillover.design.quota"
     assert exc.value.context["field"] == "groups_per_policy"
 
 
 def test_planning_needs_no_observed_frames_but_readout_requires_them():
     frames = _frames()
-    source = FrameSpilloverSource(roster=frames["roster"], offer_counts=frames["offer_counts"])
-    population = source.freeze(_design())
-    with pytest.raises(InvalidRequestError) as exc:
-        source.observe(population)
+    experiment, reader = from_frame(
+        frames["roster"], offer_counts=frames["offer_counts"], design=_design()
+    )
+    with reader, pytest.raises(InvalidRequestError) as exc:
+        run(experiment, reader)
     assert exc.value.code == "spillover.log.keys"
     assert exc.value.context["field"] == "group_policy"

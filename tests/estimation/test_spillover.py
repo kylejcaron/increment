@@ -5,21 +5,15 @@ from fractions import Fraction
 from itertools import combinations, product
 from math import sqrt
 from statistics import mean, variance
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import pytest
 from scipy.special import ndtr
 
-from increment._spillover_design import (
-    GroupProfile,
-    PolicyCell,
-    SpilloverComparison,
-    SpilloverDesign,
-    SpilloverPopulation,
-)
 from increment.errors import InvalidRequestError
-from increment.estimation import spillover as estimation
 from increment.estimation.spillover import (
     BatchCell,
     critical_value,
@@ -28,6 +22,7 @@ from increment.estimation.spillover import (
     summarize_cells,
     summarize_counts,
 )
+from increment.spillover import SpilloverComparison, SpilloverDesign, from_frame
 
 
 def _comparison(policy="upper", reference="base"):
@@ -35,7 +30,7 @@ def _comparison(policy="upper", reference="base"):
 
 
 def _group(i, size=4, offers=(1, 2), stratum="all"):
-    return GroupProfile(group_id=f"g{i:03d}", stratum=stratum, size=size, offers=offers)
+    return f"g{i:03d}", stratum, size, offers
 
 
 def _population(groups, quotas=None, comparisons=None):
@@ -49,7 +44,17 @@ def _population(groups, quotas=None, comparisons=None):
         outcome="visit",
         horizon="7d",
     )
-    return SpilloverPopulation(design=design, groups=groups, roster_digest="a" * 64)
+    roster = pd.DataFrame(
+        [(f"{g}/{j}", g, s) for g, s, n, _ in groups for j in range(n)],
+        columns=["person_id", "group_id", "stratum"],
+    )
+    counts = pd.DataFrame(
+        [(g, p, k) for g, _, _, ks in groups for p, k in zip(design.policies, ks, strict=True)],
+        columns=["group_id", "policy", "offers"],
+    )
+    experiment, reader = from_frame(roster, offer_counts=counts, design=design)
+    with reader:
+        return experiment.population
 
 
 def _cells(population, labels, events):
@@ -65,7 +70,7 @@ def _cells(population, labels, events):
             counts[key] += int(e)
             unoffered[key] += untreated
     return tuple(
-        PolicyCell(
+        SimpleNamespace(
             stratum=s,
             policy=p,
             groups=len(ts),
@@ -249,27 +254,27 @@ def test_projected_cell_batches_retain_point_for_nonfinite_variance():
     ]
 
 
-def test_bounded_batches_preserve_centering_and_cast_before_multiplication(monkeypatch):
+def test_bounded_batches_preserve_centering_and_cast_before_multiplication():
     # All nine copies of a fractional total are equal: mean rounding is not real spread.
     groups = tuple(_group(i, 120, (1, 7)) for i in range(18))
     pop = _population(groups)
-    assignment = np.tile([0, 1] * 9, (3, 1))
+    assignment = np.tile([0, 1] * 9, (16_384, 1))
     successes = np.full(assignment.shape, 73, dtype=np.int8)
-    successes[1, 3] += 1
-    successes[2, 0] -= 1
-    monkeypatch.setattr(estimation, "_WORK_CELLS", 18)
+    successes[1::3, 3] += 1
+    successes[2::3, 0] -= 1
     result = summarize_counts(pop, _comparison(), assignment, successes)
-    for i, row in enumerate(successes):
+    for i, row in enumerate(successes[:3]):
         point, se, reason = estimate_comparison(
             pop, _comparison(), _cells(pop, ["base", "upper"] * 9, row)
         )
-        assert result.estimate[i] == pytest.approx(point, rel=0, abs=1e-15)
-        assert reason_text(result.reason[i]) == reason
+        np.testing.assert_allclose(result.estimate[i::3], point, rtol=0, atol=1e-15)
+        assert {reason_text(c) for c in np.unique(result.reason[i::3])} == {reason}
         if se is None:
-            assert i == 0 and reason == "zero_variance" and np.isnan(result.standard_error[i])
+            assert i == 0 and reason == "zero_variance"
+            assert np.isnan(result.standard_error[i::3]).all()
         else:
             assert i != 0
-            assert result.standard_error[i] == pytest.approx(se, rel=1e-13)
+            np.testing.assert_allclose(result.standard_error[i::3], se, rtol=1e-13, atol=0)
 
 
 def test_group_size_and_nuisance_observations_are_not_comparison_outcome_variation():

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from importlib import import_module
+
 import ibis
 import pyarrow as pa
 import pytest
 
-from increment._spillover_design import SpilloverComparison, SpilloverDesign
 from increment.errors import CodedError
 from increment.query.spillover import WarehouseSpilloverSource
+from increment.spillover import SpilloverComparison, SpilloverDesign
+from tests._unit_boundary import backend_fixture
 
 pytestmark = pytest.mark.integration
 
@@ -14,7 +17,7 @@ _ROLES = ("roster", "offer_counts", "group_policy", "offered", "outcomes")
 _SIZES = (4, 2, 4, 8, 5, 3) * 2
 
 
-@pytest.fixture
+@backend_fixture()
 def trial():
     con = ibis.duckdb.connect()
     con.raw_sql("CREATE SCHEMA trial")
@@ -205,24 +208,28 @@ def test_observation_uses_one_immutable_capture(trial, monkeypatch):
 
 @pytest.mark.slow(reason="compiles every executed spillover reduction on four dialects")
 def test_active_spillover_queries_translate_on_verified_dialects(trial, monkeypatch):
-    from increment._compile_gaps import load_dialect_compiler
-    from increment.query.session import WarehouseSession
-
+    """Compile portable spillover reductions at the real database boundary."""
     con, design, source, launch = trial
-    fetch = WarehouseSession.fetch_arrow
+    fetch = con.to_pyarrow
     dialects = ("duckdb", "postgres", "snowflake", "bigquery")
     for dialect in dialects:
-        load_dialect_compiler(dialect)
+        import_module(f"ibis.backends.sql.compilers.{dialect}")
 
-    def compile_and_fetch(session, expr, **kwargs):
-        for dialect in dialects:
-            assert ibis.to_sql(expr.unbind(), dialect=dialect)
-        return fetch(session, expr, **kwargs)
+    def compile_and_fetch(expr, *args, **kwargs):
+        # Bucket hashes use this connection's native digest, not portable analysis SQL.
+        if "bucket_digest" not in expr.as_table().columns:
+            for dialect in dialects:
+                ibis.to_sql(expr, dialect=dialect)
+        return fetch(expr, *args, **kwargs)
 
-    monkeypatch.setattr(WarehouseSession, "fetch_arrow", compile_and_fetch)
+    monkeypatch.setattr(con, "to_pyarrow", compile_and_fetch)
     population = source.freeze(design)
     launch()
-    assert len(source.observe(population)) == 4
+    assert {(c.stratum, c.policy): c.mean_total for c in source.observe(population)} == {
+        (s, p): expected
+        for s in ("north", "south")
+        for p, expected in (("base", 0.5), ("more", 4.0))
+    }
 
 
 def test_registered_tables_do_not_follow_database_namespace_changes(tmp_path):
