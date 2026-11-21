@@ -37,6 +37,7 @@ core = [
   "increment._frame_overlap",
   "increment._overlap_sdk",
   "increment.assignment._archive",
+  "increment.estimation.interaction_scan",
   "increment.estimation.overlap",
   "increment.power.overlap",
   "increment.query.overlap",
