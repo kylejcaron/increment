@@ -101,9 +101,7 @@ def interaction_tables(
     focal = escape(scan.plan.scope.focal.entry.display_name)
     basis = "lift" if relative else f"effect on {metric_name}"
     effect_suffix = "%" if relative else " pp" if binary else f" {escape(unit)}"
-    change_suffix = (
-        " pp of lift" if relative else f" pp of {metric_name}" if binary else effect_suffix
-    )
+    change_suffix = " pp" if relative else f" pp of {metric_name}" if binary else effect_suffix
 
     def number(value: float) -> str:
         places = 1 if relative else 2 if binary else None

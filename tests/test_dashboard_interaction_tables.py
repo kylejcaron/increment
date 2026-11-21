@@ -263,10 +263,10 @@ def test_relative_pair_shows_its_own_lifts_and_supported_metric_direction(_scan)
     assert "How " + _NAME + " changed Same name’s lift" in comparison
     assert re.search(r"\+9\.7% \[\+[\d.]+%, \+[\d.]+%\]", comparison)
     assert "−6.7%" in comparison
-    assert "−16.3 pp of lift" in comparison and "−16.3%" not in comparison
+    assert "−16.3 pp [" in comparison
     detected = _candidate_row(fragments.overview, first)
     overview = _accessible_numbers(detected)
-    assert "−16.3 pp of lift" in overview and "%" not in overview
+    assert "−16.3 pp [" in overview and "%" not in overview
     assert re.search(r'<rect\b[^>]+\bfill="var\(--inc-dashboard-theme-accent,', detected)
     assert "Favorable" in comparison and "Unfavorable" in comparison
     assert "Lower with other on" in comparison

@@ -397,8 +397,8 @@ scale within the selected metric.
 
 - **% lift vs. control** divides each effect by its focal-off mean with the
   other experiment at the same setting. The difference between those lifts
-  uses percentage points of lift (`pp of lift`). This is the default when
-  the metric has a bounded relative comparison.
+  uses percentage points (`pp`). This is the default when the metric has
+  a bounded relative comparison.
 - The option named for the metric shows effects and their difference in its
   own units. For a rate, `pp of save rate` means percentage points of save
   rate, not of lift.

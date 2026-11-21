@@ -281,8 +281,8 @@ example closes the database.
    **Go to experiment**. Under **Show effects as**, **% lift vs. control**
    divides each effect by its baseline: the group with the focal experiment
    off and the other experiment at the same setting. The difference between
-   those lifts is labeled `pp of lift`. The other option uses the metric’s
-   units: **Save rate in percentage points**, for example.
+   those lifts uses percentage points (`pp`). The other option uses the
+   metric’s units: **Save rate in percentage points**, for example.
    Green and red mark effects in or against the metric's desired direction
    when the adjusted interval supports that conclusion. The change between
    effects uses an accent color when a change is detected; the color isn't a
