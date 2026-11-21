@@ -15,6 +15,7 @@ from increment.semantics.interaction_scan import (
     InteractionScan,
     InteractionScanPlan,
     InventoryEntry,
+    MetricIssue,
     ObservedInventory,
     PairDetail,
     PairEvidenceRef,
@@ -321,6 +322,45 @@ def test_restored_pair_evidence_cannot_be_carried_into_a_later_look(restored_pai
         "expected_cutoff": "2026-01-01T00:00:12.000000Z",
         "actual_cutoff": "2026-01-01T00:00:11.000000Z",
     }
+
+
+def test_exchange_requires_exact_metric_issues_without_dropping_compatible_siblings(restored_pair):
+    plan, evidence = restored_pair
+    planned_metrics = tuple(
+        metric.model_copy(update={"definition_sha256": "9" * 64})
+        if metric.name == "orders"
+        else metric
+        for metric in plan.metrics
+    )
+    plan = plan.model_copy(update={"metrics": (*planned_metrics, SAVE)})
+    candidate = plan.candidates[0]
+    missing = ScanReason(code="metric_missing")
+    mismatch = ScanReason(code="metric_mismatch")
+    issues = (
+        MetricIssue(metric="orders", reasons=(mismatch,)),
+        MetricIssue(metric="save", reasons=(missing,)),
+    )
+    captured = CapturedPair(evidence=evidence, focal_side="A", metric_issues=issues)
+    capture = ScanCapture(
+        plan=plan,
+        observed_inventory=None,
+        coverage="not_captured",
+        pairs=(PairInput(candidate=candidate, value=captured),),
+    )
+    assert capture.pairs[0].value == captured
+    assert plan.family_size == 9
+
+    for incorrect in ((), (*issues, MetricIssue(metric="complaint", reasons=(missing,)))):
+        submitted = captured.model_copy(update={"metric_issues": incorrect})
+        with pytest.raises(CodedError) as caught:
+            ScanCapture(
+                plan=plan,
+                observed_inventory=None,
+                coverage="not_captured",
+                pairs=(PairInput(candidate=candidate, value=submitted),),
+            )
+        assert caught.value.code == "overlap.scan.invalid"
+        assert caught.value.context == {"field": "metric_issues", "reason": "metric_issue_mismatch"}
 
 
 @pytest.mark.parametrize("mismatch", [None, "orientation", "candidate"])

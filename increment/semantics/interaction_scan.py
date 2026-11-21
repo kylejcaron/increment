@@ -434,6 +434,25 @@ class MetricIssue(_ScanModel):
     reasons: Ordered[tuple[ScanReason, ...]]
 
 
+def _metric_issues(scan: InteractionScanPlan, pair: OverlapPlan) -> tuple[MetricIssue, ...]:
+    by_name = {metric.name: metric for metric in pair.metrics}
+    issues = []
+    for metric in scan.metrics:
+        actual = by_name.get(metric.name)
+        if actual is None:
+            code = "metric_missing"
+        elif (actual.definition_sha256, actual.unit, actual.kind) != (
+            metric.definition_sha256,
+            metric.unit,
+            metric.kind,
+        ):
+            code = "metric_mismatch"
+        else:
+            continue
+        issues.append(MetricIssue(metric=metric.name, reasons=(ScanReason(code=code),)))
+    return tuple(issues)
+
+
 class CapturedPair(_ScanModel):
     """Validated bounded overlap evidence, with its original A/B orientation."""
 
@@ -576,6 +595,8 @@ class ScanCapture(_ScanModel):
                 )
                 if issue is not None:
                     self._invalid_field("pairs", issue)
+                if pair.value.metric_issues != _metric_issues(self.plan, pair.value.evidence.plan):
+                    self._invalid_field("metric_issues", "metric_issue_mismatch")
         return self
 
     @property
