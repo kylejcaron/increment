@@ -344,8 +344,8 @@ jobs:
 
   # Post-publication notification is opt-in; publishing never depends on it.
   website-notify:
-    needs: [build, github-release]
-    if: needs.build.outputs.prerelease == 'false' && vars.DOCS_SYNC_ENABLED == 'true'
+    needs: [github-release, pypi-smoke]
+    if: vars.DOCS_SYNC_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
