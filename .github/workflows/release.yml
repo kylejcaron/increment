@@ -6,7 +6,7 @@ name: release
 #   .github/workflows/bump.yml  -> creates the vX.Y.Z tag and dispatches this workflow
 #   this workflow               -> build, gate a stable version on its candidate's
 #                                  evidence, verify, publish to PyPI, GitHub Release,
-#                                  then (opt-in, stable only) notify the docs website
+#                                  then notify the docs website after PyPI smoke (opt-in)
 #
 # Publishing uses PyPI Trusted Publishing (OIDC). No API token is stored.
 # One-time setup on PyPI (Account -> Publishing, as a "pending publisher" if the
@@ -344,8 +344,8 @@ jobs:
 
   # Post-publication notification is opt-in; publishing never depends on it.
   website-notify:
-    needs: [build, github-release]
-    if: needs.build.outputs.prerelease == 'false' && vars.DOCS_SYNC_ENABLED == 'true'
+    needs: [github-release, pypi-smoke]
+    if: vars.DOCS_SYNC_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
