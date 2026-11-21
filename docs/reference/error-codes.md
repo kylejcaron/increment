@@ -18966,6 +18966,38 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Registering modules:** `increment._overlap_evidence`, `increment._overlap_refusals`, `increment._overlap_sdk`, `increment.power.overlap`, `increment.semantics.overlap`
 
+<span id="overlap.scan.cutoff_mismatch"></span>
+
+### `overlap.scan.cutoff_mismatch`
+
+**Cause and message:**
+
+<p>Expected interaction scan cutoff {expected_cutoff}; got {actual_cutoff}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `actual_cutoff`, `expected_cutoff`
+
+**Registering modules:** `increment._overlap_refusals`, `increment.semantics.interaction_scan`
+
+<span id="overlap.scan.invalid"></span>
+
+### `overlap.scan.invalid`
+
+**Cause and message:**
+
+<p>Invalid interaction scan field {field}: {reason}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `reason`
+
+**Registering modules:** `increment._overlap_refusals`, `increment.semantics.interaction_scan`
+
 <span id="family-package"></span>
 
 ## `package.*`
