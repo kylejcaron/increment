@@ -187,16 +187,19 @@ def _pair_rows(
     pair: PairInput, plan: InteractionScanPlan, detail: PairDetail, *, tail: float | None
 ) -> Iterator[ScanRow]:
     value = pair.value
-    if isinstance(value, UnavailablePair):
+    digest = detail.evidence.evidence_sha256 if detail.evidence is not None else None
+    if isinstance(value, UnavailablePair) or pair.candidate.reasons:
+        pair_reasons = (
+            value.reasons if isinstance(value, UnavailablePair) else pair.candidate.reasons
+        )
         for metric in plan.metrics:
             for contrast in SCAN_CONTRASTS:
                 key = ScanMemberKey(pair=pair.candidate.key, metric=metric.name, contrast=contrast)
-                yield _unavailable_row(key, value.reasons)
+                yield _unavailable_row(key, pair_reasons, evidence_sha256=digest)
         return
 
     evidence = value.evidence
-    assert detail.evidence is not None
-    digest = detail.evidence.evidence_sha256
+    assert digest is not None
     groups = {group[0].metric: group for group in _cell_groups(evidence.cells)}
     issues = {issue.metric: issue.reasons for issue in value.metric_issues}
     weights = _exact_weights(evidence.plan)

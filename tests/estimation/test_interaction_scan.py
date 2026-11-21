@@ -118,7 +118,13 @@ def _evidence(saved, cells, *, focal_side: FactorId = "A", alpha=0.05, conflict=
 
 
 def _capture(
-    evidence, *, focal_side: FactorId = "A", candidates=1, other_metric=False, partial=False
+    evidence,
+    *,
+    focal_side: FactorId = "A",
+    candidates=1,
+    other_metric=False,
+    partial=False,
+    candidate_reasons: tuple[str, ...] = (),
 ):
     pair = evidence.plan
 
@@ -138,6 +144,8 @@ def _capture(
     a = entry(pair.a, pair.law.archive_sha256[0])
     b = entry(pair.b, pair.law.archive_sha256[1])
     focal, other = (a, b) if focal_side == "A" else (b, a)
+    if candidate_reasons:
+        other = other.model_copy(update={"reasons": candidate_reasons})
     extras = tuple(
         other.model_copy(
             update={
@@ -443,3 +451,21 @@ def test_unrepresentable_tail_keeps_descriptive_fit_without_interval(saved_pair)
     assert off.availability == "descriptive"
     assert off.lower is off.upper is off.decision is None
     assert off.reasons == (ScanReason(code="estimation.tails.unresolvable"),)
+
+
+def test_excluded_candidate_retains_evidence_but_never_fits(saved_pair):
+    cells = _binary_cells((10_000,) * 4, (3100, 3400, 3000, 2800))
+    evidence = _evidence(saved_pair, cells)
+    capture = _capture(evidence, candidate_reasons=("allocation_switch",))
+
+    scan = evaluate_interaction_scan(capture)
+
+    assert tuple(row.key for row in scan.rows) == capture.plan.family_members
+    for row in scan.rows:
+        assert row.availability == "unavailable"
+        assert row.estimate is row.se is row.df is row.lower is row.upper is row.decision is None
+        assert row.reasons == (ScanReason(code="allocation_switch"),)
+        assert row.evidence_sha256 == evidence.evidence_sha256
+    (detail,) = scan.details
+    assert detail.evidence is not None
+    assert detail.evidence.evidence_sha256 == evidence.evidence_sha256
