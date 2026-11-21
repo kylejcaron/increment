@@ -56,6 +56,15 @@ a local allocation configuration. Its `AllocationEvaluator` returns a
 and omit the unit ID. See the [examples and deployment guide](guides/assign-experiments.md)
 and the [exact configuration and record fields](reference/assignment-protocol-v1.md).
 
+## Overlapping experiments
+
+Use [`increment.overlap`](guides/overlapping-experiments.md) to register, analyze,
+or rehearse two independently randomized binary experiments on the same units.
+Capture through `capture_overlap_frame` or `capture_overlap_warehouse`, then
+pass the result to `analyze_overlap`. These calls do not use `run` or any of its
+single-experiment builders. For warehouse capture, bind the original four tables
+with [`increment.query.overlap`](reference/overlap-warehouse.md).
+
 ## Compatibility policy
 
 This policy defines the compatibility promise beginning with release 1.0.0. It
@@ -82,6 +91,8 @@ namespace:
   presentation and synthetic data;
 - `increment.errors` for errors and warnings callers catch;
 - `increment.assignment` for optional deterministic assignment and holdout records;
+- `increment.overlap` and `increment.query.overlap` for the two-experiment
+  workflow and verified DuckDB input binding;
 - `increment.query` for `build_panel_for_metric`, `panel_sql`, and `summary_sql`.
   Each operates on an `(experiment, reader)` pair; SQL previews preserve
   their optional-breakout defaults and use adopted SQL as the summary fallback.

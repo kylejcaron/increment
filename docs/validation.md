@@ -102,7 +102,7 @@ for completed changes and remaining investigations (`1tce`, `xeth`, `0p4v`, `4xw
 ## Reference inventory
 
 The [evidence index](reference/validation-evidence.md#find-an-evidence-record) leads
-to all 19 evidence IDs. Each record keeps the method, guarantee, assumptions,
+to the named evidence records. Each record keeps the method, guarantee, assumptions,
 reference version, tolerance, source files, direct and transitive input-path
 coverage, and regimes not covered.
 
@@ -121,6 +121,7 @@ written in this repository is not independent review. See the exact
 | Clopper–Pearson single-arm interval | [EV-CP-BINOM-TEST](reference/validation-evidence.md#ev-cp-binom-test) |
 | Benjamini–Hochberg selection | [EV-BH-P-ADJUST](reference/validation-evidence.md#ev-bh-p-adjust) |
 | Meta-analysis: DL, HKSJ and HT | [EV-META-DL-HKSJ-HT](reference/validation-evidence.md#ev-meta-dl-hksj-ht) |
+| Eight contrasts for two independent experiments | [EV-OVERLAP-WELCH](reference/validation-evidence.md#ev-overlap-welch) |
 | Quantile order-statistic bracket | [EV-QUANTILE-QBINOM](reference/validation-evidence.md#ev-quantile-qbinom) |
 | DML, AIPW and IPTW aggregation | [EV-ADJ-DML-AIPW-IPTW](reference/validation-evidence.md#ev-adj-dml-aipw-iptw) |
 

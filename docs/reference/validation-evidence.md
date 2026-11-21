@@ -16,6 +16,7 @@ mathematical guarantee.
 | Meta-analysis: DL, HKSJ and HT | [EV-META-DL-HKSJ-HT](#ev-meta-dl-hksj-ht) |
 | Quantile order-statistic bracket | [EV-QUANTILE-QBINOM](#ev-quantile-qbinom) |
 | DML, AIPW and IPTW aggregation | [EV-ADJ-DML-AIPW-IPTW](#ev-adj-dml-aipw-iptw) |
+| Eight contrasts for two independent experiments | [EV-OVERLAP-WELCH](#ev-overlap-welch) |
 | Marginal confounding bound | [EV-CONFOUNDING-MARGINAL](#ev-confounding-marginal) |
 | Segment posterior quadrature | [EV-META-POSTERIOR-QUAD](#ev-meta-posterior-quad) |
 | Welch arithmetic | [EV-WELCH-ARITHMETIC](#ev-welch-arithmetic) |
@@ -94,6 +95,22 @@ A tolerance that is absolute is stated as absolute.
 ## Frozen comparisons against a third-party tool or independent primitive
 
 These records compare the named estimator and assumptions, not every use of the method.
+
+### EV-OVERLAP-WELCH
+
+**Method:** `increment.overlap.analyze_overlap` estimates prespecified fixed-window marginal, conditional, joint-launch and interaction effects in original outcome units.
+
+**Guarantee and assumptions:** approximate Welch intervals with Bonferroni adjustment, on independent units assigned under a registered product law. Requires pretreatment eligibility, no cross-unit interference, stable outcome definitions and complete fixed-window measurement. The adjustment does not make the component approximation exact.
+
+**Independent reference:** R 4.4.2 saturated regression and its signed covariance transformed from cell means, with independent `qt` and `pt` calls. `helper:tests/oracles/overlap_contrasts.R` generates `helper:tests/fixtures/overlap/regression_reference.json` (SHA-256 `73f0e5180fb3e0799f7bdd1d9f839df6510cf03ceb0053af750d04ef4d6faa05`). Compare all eight contrasts, covariance, degrees of freedom, adjusted bands and boundary probabilities in `test:tests/estimation/test_overlap.py::test_saturated_regression_reference`. Small-support and extreme-tail cases are checked separately in that module.
+
+**Input checks:** `test:tests/test_overlap_workflow.py::test_public_sdk_external_frame_warehouse_and_wire` compares archived assignments, an independent external log, frame and DuckDB capture, and checked replay. The aggregate-only DuckDB witness `test:tests/query/test_overlap.py::test_query_egress_is_aggregate_only` returned 9 rows × 83 scalar columns for both 3 and 1,003 supplied units, and 1 × 83 for a duplicate-key refusal (DuckDB 1.5.5, Ibis 12.0.0, macOS arm64). This is a transfer-size measurement, not a runtime promise.
+
+**Frozen simulation:** 960,000 synthetic attempts across 12 registered cases, with 20,000 attempts per case for each of four model-by-algorithm combinations. All 172 checks passed: 88 exact-binomial checks, 36 matched planning-rate checks and 48 support checks. The worst upper bound on false-claim approval was 1.860%, against a 6% limit; the worst upper bound on false joint clearance was 0.433%, also against 6%. Among the dense cases, the lowest lower bounds were 99.954% for complete issuance and 96.487% for simultaneous issued-and-cover, against 99% and 94% limits. The largest difference between matched planning rates was 0.605 percentage points. These are bounds and observations from the specified simulations, not guarantees for other data.
+
+**Reproduce:** `campaign:calibration.overlap --protocol calibration/protocols/overlap.md --out overlap-qualification.json`. The frozen protocol SHA-256 is `5863fb24ba484fcaf0ab9ce6338f0799f38b0c75371367da17135583375021ad`, with seed `2026111983`. The recorded run used source `bcb0365a`, Python 3.15.2, NumPy 2.5.4 and SciPy 1.18.1; its JSON SHA-256 is `f3528bf3c46c660366690b5f1d2f89689c8fa86a0a1ea9820d8cb1832ff8092f`. A later reporting correction counts overlapping reasons for unavailable reference rows separately. That changes reason totals only, not attempts, estimates, intervals, decisions or gates.
+
+**Limits:** Does not certify a real producer's assignment law or operating data. No clusters, dependent assignments, repeated looks, covariate adjustment, relative effects or warehouse engines other than the documented DuckDB path were verified for this workflow.
 
 
 ### EV-WELCH-T

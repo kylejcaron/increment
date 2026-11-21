@@ -32,8 +32,10 @@ PROMISED_NAMESPACES = {
     "increment.errors",
     "increment.estimators",
     "increment.evidence",
+    "increment.overlap",
     "increment.power",
     "increment.query",
+    "increment.query.overlap",
     "increment.results",
     "increment.simulate",
     "increment.store",
@@ -630,7 +632,7 @@ def _public_callable_parameters() -> dict[str, set[str]]:
     import importlib
 
     import increment
-    from increment import frame, workflows
+    from increment import frame, overlap, workflows
     from increment.assignment import AllocationEvaluator, compile_allocation
 
     callables = [
@@ -638,6 +640,9 @@ def _public_callable_parameters() -> dict[str, set[str]]:
     ]
     callables.extend(
         (f"workflows.{name}", function) for name, function in _root_export_functions(workflows)
+    )
+    callables.extend(
+        (f"overlap.{name}", function) for name, function in _root_export_functions(overlap)
     )
     for module_name, names in _SOURCE_OPERATIONS.items():
         module = importlib.import_module(f"increment.{module_name}")

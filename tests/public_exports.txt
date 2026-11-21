@@ -282,6 +282,25 @@ request_evidence: Request evidence with the shared capability checks.
 require_evidence: Refuse an undeclared operation inside a custom provider before reading.
 EvidenceExecutionContext: Hold one pinned evidence scope across a run.
 
+[increment.overlap]
+OverlapCapture: Describe the source versions and dates covered by all four inputs.
+OverlapClaim: Register which metric and comparison will drive a decision.
+OverlapEvidence: Save bounded cell summaries and reopen them with a pinned digest.
+OverlapFactor: Describe one external experiment's off and on assignment rules.
+OverlapFeed: Declare the identity, version, and time coverage of an input.
+OverlapLaw: Declare the source and independent assignment law for two experiments.
+OverlapMetric: Declare a fixed-window outcome and its decision role.
+OverlapPlan: Register the population, calendar, assignments, outcomes, and claims.
+OverlapPowerResult: Read simulated decision rates and their Monte Carlo uncertainty.
+OverlapResult: Read the effects and decisions or reopen the saved result.
+OverlapSdkArchive: Parse the original allocation file once and preserve its identity.
+analyze_overlap: Read both-launch, conditional, marginal, and interaction effects.
+capture_overlap_frame: Reduce four supplied dataframes to bounded cell summaries.
+capture_overlap_warehouse: Reduce four bound warehouse tables without transferring unit rows.
+sdk_overlap_decision: Convert one persisted allocator decision under its original configuration.
+sdk_overlap_plan: Register an overlap plan using the archived allocator rules.
+simulate_overlap: Rehearse decisions with prespecified per-cell outcome distributions.
+
 [increment.power]
 SwitchbackBaseline: Supply switchback planning variance and correlation assumptions.
 SwitchbackPowerResult: Read a switchback power solver's answer.
@@ -315,6 +334,10 @@ joint_q_power_random: Compute power to detect random segment spread.
 build_panel_for_metric: Build one metric's live warehouse panel.
 panel_sql: Preview a metric's panel SQL without executing it.
 summary_sql: Preview a metric's group-summary SQL without executing it.
+
+[increment.query.overlap]
+bind_overlap_warehouse: Bind declared coverage to verified DuckDB source identities and versions.
+capture_overlap_warehouse: Read only aggregated evidence from verified DuckDB tables.
 
 [increment.results]
 Estimate: Read a number with its quantified uncertainty.

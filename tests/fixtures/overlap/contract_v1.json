@@ -1,0 +1,611 @@
+{
+  "fixture_format": 1,
+  "evidence": {
+    "format": 1,
+    "plan": {
+      "study_id": "common-entry-v1",
+      "unit_namespace": "synthetic-accounts",
+      "population_id": "both-eligible-entrants",
+      "eligibility_rule_sha256": "b1509416455d8ce7b75dc1b6b082e42026b4830fdca18f3e23c4583e4dabf74e",
+      "enrollment_rule_sha256": "e12c2d1d9563ff90a88e3b469240ea1bd54550fa16bce95c95ba3554fe3e05fe",
+      "registered_at": "2025-12-31T23:59:59.000000Z",
+      "entry_open": "2026-01-01T00:00:00.000000Z",
+      "start": "2026-01-01T00:00:03.000001Z",
+      "end": "2026-01-01T00:00:10.000000Z",
+      "target": "jointly_eligible",
+      "alpha": 0.05,
+      "a": {
+        "target": "target-a",
+        "experiment": "experiment-a",
+        "revision": "rev-a",
+        "off": "off",
+        "on": "on",
+        "off_weight": 2500,
+        "on_weight": 7500,
+        "arm_draw_id": "producer-arm-a",
+        "layer": null
+      },
+      "b": {
+        "target": "target-b",
+        "experiment": "experiment-b",
+        "revision": "rev-b",
+        "off": "off",
+        "on": "on",
+        "off_weight": 3,
+        "on_weight": 1,
+        "arm_draw_id": "producer-arm-b",
+        "layer": null
+      },
+      "law": {
+        "scheme": "independent_unit_bernoulli",
+        "origin": "external",
+        "archive_sha256": [
+          "14f9efa475d1fb285ae1be349d42a9776402c9d69c18af9ab1319899d6340d7a",
+          "382d4a58d690fd1557478aeb8a5835341ee276f427a9c238f2dc98a95697c0a9"
+        ],
+        "gate_basis": "preassigned_roster",
+        "admission": "both_guaranteed",
+        "rule_source_id": "synthetic-randomization-service",
+        "rule_version": "v1",
+        "serving_barrier_id": "synthetic-common-entry-barrier"
+      },
+      "metrics": [
+        {
+          "name": "orders",
+          "unit": "orders per unit",
+          "definition_sha256": "f807343c92e9479844713f3ca9f2d95d4f86fc9072509a55786aa62d062732be",
+          "kind": "mean",
+          "role": "primary",
+          "better": "higher",
+          "margin_abs": 0
+        },
+        {
+          "name": "complaint",
+          "unit": "complaints per unit",
+          "definition_sha256": "00e11ade27da76523c128e5a37450fbc76acbebd0fb0cfe967f05e38f411ed0f",
+          "kind": "binary_mean",
+          "role": "guardrail",
+          "better": "lower",
+          "margin_abs": 0.02
+        }
+      ],
+      "claims": [
+        {
+          "metric": "orders",
+          "contrast": "b_given_a_on",
+          "alternative": "benefit"
+        },
+        {
+          "metric": "orders",
+          "contrast": "joint_launch",
+          "alternative": "benefit"
+        },
+        {
+          "metric": "orders",
+          "contrast": "interaction",
+          "alternative": "difference"
+        },
+        {
+          "metric": "complaint",
+          "contrast": "joint_launch",
+          "alternative": "noninferiority"
+        }
+      ]
+    },
+    "capture": {
+      "generation_id": "snapshot-v1",
+      "origin": "external",
+      "law_sha256": "f430f5694d8ea90e9b43ba189d8c094a0c761caae74de8124e03dbd8ff3cdf77",
+      "archive_sha256": [
+        "14f9efa475d1fb285ae1be349d42a9776402c9d69c18af9ab1319899d6340d7a",
+        "382d4a58d690fd1557478aeb8a5835341ee276f427a9c238f2dc98a95697c0a9"
+      ],
+      "cutoff": "2026-01-01T00:00:11.000000Z",
+      "feeds": [
+        {
+          "role": "roster",
+          "source_id": "synthetic-roster",
+          "version": "published-v1",
+          "recipe_sha256": "865062b612a7e4c2271a19d3051626ec27f7e0a33abee1b3592cf026e19ec2d9",
+          "covered_from": "2026-01-01T00:00:00.000000Z",
+          "complete_through": "2026-01-01T00:00:03.000001Z"
+        },
+        {
+          "role": "decisions",
+          "source_id": "synthetic-decisions",
+          "version": "published-v1",
+          "recipe_sha256": "bf289690c2345f5b11ba478a085eab61386d31d8cd7b2a951024baadc54b9019",
+          "covered_from": "2026-01-01T00:00:00.000000Z",
+          "complete_through": "2026-01-01T00:00:03.000001Z"
+        },
+        {
+          "role": "deliveries",
+          "source_id": "synthetic-deliveries",
+          "version": "published-v1",
+          "recipe_sha256": "8cf7f19d596f3f159aa25aa02d3b9f83f8385ecb4e9aea1f3c6d6fa7a742007b",
+          "covered_from": "2026-01-01T00:00:00.000000Z",
+          "complete_through": "2026-01-01T00:00:10.000000Z"
+        },
+        {
+          "role": "outcomes",
+          "source_id": "synthetic-outcomes",
+          "version": "published-v1",
+          "recipe_sha256": "4493022780eaebf8f9d1fccceac6c44be4e7d9d6f0eddbe401e0b01cdfec1454",
+          "covered_from": "2026-01-01T00:00:03.000001Z",
+          "complete_through": "2026-01-01T00:00:10.000000Z"
+        }
+      ]
+    },
+    "eligibility_counts": [
+      0,
+      0,
+      1,
+      2
+    ],
+    "gate_counts": [
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "delivery_counts": [
+      {
+        "cell": "00",
+        "factor": "A",
+        "n_without_delivery": 0,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      },
+      {
+        "cell": "00",
+        "factor": "B",
+        "n_without_delivery": 0,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      },
+      {
+        "cell": "10",
+        "factor": "A",
+        "n_without_delivery": 1,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      },
+      {
+        "cell": "10",
+        "factor": "B",
+        "n_without_delivery": 1,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      },
+      {
+        "cell": "01",
+        "factor": "A",
+        "n_without_delivery": 1,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      },
+      {
+        "cell": "01",
+        "factor": "B",
+        "n_without_delivery": 1,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      },
+      {
+        "cell": "11",
+        "factor": "A",
+        "n_without_delivery": 0,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      },
+      {
+        "cell": "11",
+        "factor": "B",
+        "n_without_delivery": 0,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      },
+      {
+        "cell": "outside_target",
+        "factor": "A",
+        "n_without_delivery": 0,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      },
+      {
+        "cell": "outside_target",
+        "factor": "B",
+        "n_without_delivery": 0,
+        "n_matching": 0,
+        "n_inconsistent": 0
+      }
+    ],
+    "cells": [
+      {
+        "metric": "orders",
+        "cell": "00",
+        "n_assigned": 0,
+        "n_observed": 0,
+        "n_missing": 0,
+        "n_pending": 0,
+        "n_success": null,
+        "anchor": null,
+        "mean_delta": null,
+        "m2": null
+      },
+      {
+        "metric": "orders",
+        "cell": "10",
+        "n_assigned": 1,
+        "n_observed": 1,
+        "n_missing": 0,
+        "n_pending": 0,
+        "n_success": null,
+        "anchor": 14,
+        "mean_delta": 0,
+        "m2": 0
+      },
+      {
+        "metric": "orders",
+        "cell": "01",
+        "n_assigned": 1,
+        "n_observed": 1,
+        "n_missing": 0,
+        "n_pending": 0,
+        "n_success": null,
+        "anchor": 13,
+        "mean_delta": 0,
+        "m2": 0
+      },
+      {
+        "metric": "orders",
+        "cell": "11",
+        "n_assigned": 0,
+        "n_observed": 0,
+        "n_missing": 0,
+        "n_pending": 0,
+        "n_success": null,
+        "anchor": null,
+        "mean_delta": null,
+        "m2": null
+      },
+      {
+        "metric": "complaint",
+        "cell": "00",
+        "n_assigned": 0,
+        "n_observed": 0,
+        "n_missing": 0,
+        "n_pending": 0,
+        "n_success": 0,
+        "anchor": null,
+        "mean_delta": null,
+        "m2": null
+      },
+      {
+        "metric": "complaint",
+        "cell": "10",
+        "n_assigned": 1,
+        "n_observed": 1,
+        "n_missing": 0,
+        "n_pending": 0,
+        "n_success": 0,
+        "anchor": 0,
+        "mean_delta": 0,
+        "m2": 0
+      },
+      {
+        "metric": "complaint",
+        "cell": "01",
+        "n_assigned": 1,
+        "n_observed": 1,
+        "n_missing": 0,
+        "n_pending": 0,
+        "n_success": 1,
+        "anchor": 1,
+        "mean_delta": 0,
+        "m2": 0
+      },
+      {
+        "metric": "complaint",
+        "cell": "11",
+        "n_assigned": 0,
+        "n_observed": 0,
+        "n_missing": 0,
+        "n_pending": 0,
+        "n_success": 0,
+        "anchor": null,
+        "mean_delta": null,
+        "m2": null
+      }
+    ],
+    "ingress": "frame",
+    "replay_status": "not_certified",
+    "evidence_sha256": "88df28f1d2bf64effd64ffc095e4dfa5b8e3ec9ed279c7794a3facd54838e944"
+  },
+  "wire": "{\"capture\":{\"archive_sha256\":[\"14f9efa475d1fb285ae1be349d42a9776402c9d69c18af9ab1319899d6340d7a\",\"382d4a58d690fd1557478aeb8a5835341ee276f427a9c238f2dc98a95697c0a9\"],\"cutoff\":\"2026-01-01T00:00:11.000000Z\",\"feeds\":[{\"complete_through\":\"2026-01-01T00:00:03.000001Z\",\"covered_from\":\"2026-01-01T00:00:00.000000Z\",\"recipe_sha256\":\"865062b612a7e4c2271a19d3051626ec27f7e0a33abee1b3592cf026e19ec2d9\",\"role\":\"roster\",\"source_id\":\"synthetic-roster\",\"version\":\"published-v1\"},{\"complete_through\":\"2026-01-01T00:00:03.000001Z\",\"covered_from\":\"2026-01-01T00:00:00.000000Z\",\"recipe_sha256\":\"bf289690c2345f5b11ba478a085eab61386d31d8cd7b2a951024baadc54b9019\",\"role\":\"decisions\",\"source_id\":\"synthetic-decisions\",\"version\":\"published-v1\"},{\"complete_through\":\"2026-01-01T00:00:10.000000Z\",\"covered_from\":\"2026-01-01T00:00:00.000000Z\",\"recipe_sha256\":\"8cf7f19d596f3f159aa25aa02d3b9f83f8385ecb4e9aea1f3c6d6fa7a742007b\",\"role\":\"deliveries\",\"source_id\":\"synthetic-deliveries\",\"version\":\"published-v1\"},{\"complete_through\":\"2026-01-01T00:00:10.000000Z\",\"covered_from\":\"2026-01-01T00:00:03.000001Z\",\"recipe_sha256\":\"4493022780eaebf8f9d1fccceac6c44be4e7d9d6f0eddbe401e0b01cdfec1454\",\"role\":\"outcomes\",\"source_id\":\"synthetic-outcomes\",\"version\":\"published-v1\"}],\"generation_id\":\"snapshot-v1\",\"law_sha256\":\"f430f5694d8ea90e9b43ba189d8c094a0c761caae74de8124e03dbd8ff3cdf77\",\"origin\":\"external\"},\"cells\":[{\"anchor\":null,\"cell\":\"00\",\"m2\":null,\"mean_delta\":null,\"metric\":\"orders\",\"n_assigned\":0,\"n_missing\":0,\"n_observed\":0,\"n_pending\":0,\"n_success\":null},{\"anchor\":14,\"cell\":\"10\",\"m2\":0,\"mean_delta\":0,\"metric\":\"orders\",\"n_assigned\":1,\"n_missing\":0,\"n_observed\":1,\"n_pending\":0,\"n_success\":null},{\"anchor\":13,\"cell\":\"01\",\"m2\":0,\"mean_delta\":0,\"metric\":\"orders\",\"n_assigned\":1,\"n_missing\":0,\"n_observed\":1,\"n_pending\":0,\"n_success\":null},{\"anchor\":null,\"cell\":\"11\",\"m2\":null,\"mean_delta\":null,\"metric\":\"orders\",\"n_assigned\":0,\"n_missing\":0,\"n_observed\":0,\"n_pending\":0,\"n_success\":null},{\"anchor\":null,\"cell\":\"00\",\"m2\":null,\"mean_delta\":null,\"metric\":\"complaint\",\"n_assigned\":0,\"n_missing\":0,\"n_observed\":0,\"n_pending\":0,\"n_success\":0},{\"anchor\":0,\"cell\":\"10\",\"m2\":0,\"mean_delta\":0,\"metric\":\"complaint\",\"n_assigned\":1,\"n_missing\":0,\"n_observed\":1,\"n_pending\":0,\"n_success\":0},{\"anchor\":1,\"cell\":\"01\",\"m2\":0,\"mean_delta\":0,\"metric\":\"complaint\",\"n_assigned\":1,\"n_missing\":0,\"n_observed\":1,\"n_pending\":0,\"n_success\":1},{\"anchor\":null,\"cell\":\"11\",\"m2\":null,\"mean_delta\":null,\"metric\":\"complaint\",\"n_assigned\":0,\"n_missing\":0,\"n_observed\":0,\"n_pending\":0,\"n_success\":0}],\"delivery_counts\":[{\"cell\":\"00\",\"factor\":\"A\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":0},{\"cell\":\"00\",\"factor\":\"B\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":0},{\"cell\":\"10\",\"factor\":\"A\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":1},{\"cell\":\"10\",\"factor\":\"B\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":1},{\"cell\":\"01\",\"factor\":\"A\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":1},{\"cell\":\"01\",\"factor\":\"B\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":1},{\"cell\":\"11\",\"factor\":\"A\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":0},{\"cell\":\"11\",\"factor\":\"B\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":0},{\"cell\":\"outside_target\",\"factor\":\"A\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":0},{\"cell\":\"outside_target\",\"factor\":\"B\",\"n_inconsistent\":0,\"n_matching\":0,\"n_without_delivery\":0}],\"eligibility_counts\":[0,0,1,2],\"evidence_sha256\":\"88df28f1d2bf64effd64ffc095e4dfa5b8e3ec9ed279c7794a3facd54838e944\",\"format\":1,\"gate_counts\":[2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],\"ingress\":\"frame\",\"plan\":{\"a\":{\"arm_draw_id\":\"producer-arm-a\",\"experiment\":\"experiment-a\",\"layer\":null,\"off\":\"off\",\"off_weight\":2500,\"on\":\"on\",\"on_weight\":7500,\"revision\":\"rev-a\",\"target\":\"target-a\"},\"alpha\":0.05,\"b\":{\"arm_draw_id\":\"producer-arm-b\",\"experiment\":\"experiment-b\",\"layer\":null,\"off\":\"off\",\"off_weight\":3,\"on\":\"on\",\"on_weight\":1,\"revision\":\"rev-b\",\"target\":\"target-b\"},\"claims\":[{\"alternative\":\"benefit\",\"contrast\":\"b_given_a_on\",\"metric\":\"orders\"},{\"alternative\":\"benefit\",\"contrast\":\"joint_launch\",\"metric\":\"orders\"},{\"alternative\":\"difference\",\"contrast\":\"interaction\",\"metric\":\"orders\"},{\"alternative\":\"noninferiority\",\"contrast\":\"joint_launch\",\"metric\":\"complaint\"}],\"eligibility_rule_sha256\":\"b1509416455d8ce7b75dc1b6b082e42026b4830fdca18f3e23c4583e4dabf74e\",\"end\":\"2026-01-01T00:00:10.000000Z\",\"enrollment_rule_sha256\":\"e12c2d1d9563ff90a88e3b469240ea1bd54550fa16bce95c95ba3554fe3e05fe\",\"entry_open\":\"2026-01-01T00:00:00.000000Z\",\"law\":{\"admission\":\"both_guaranteed\",\"archive_sha256\":[\"14f9efa475d1fb285ae1be349d42a9776402c9d69c18af9ab1319899d6340d7a\",\"382d4a58d690fd1557478aeb8a5835341ee276f427a9c238f2dc98a95697c0a9\"],\"gate_basis\":\"preassigned_roster\",\"origin\":\"external\",\"rule_source_id\":\"synthetic-randomization-service\",\"rule_version\":\"v1\",\"scheme\":\"independent_unit_bernoulli\",\"serving_barrier_id\":\"synthetic-common-entry-barrier\"},\"metrics\":[{\"better\":\"higher\",\"definition_sha256\":\"f807343c92e9479844713f3ca9f2d95d4f86fc9072509a55786aa62d062732be\",\"kind\":\"mean\",\"margin_abs\":0,\"name\":\"orders\",\"role\":\"primary\",\"unit\":\"orders per unit\"},{\"better\":\"lower\",\"definition_sha256\":\"00e11ade27da76523c128e5a37450fbc76acbebd0fb0cfe967f05e38f411ed0f\",\"kind\":\"binary_mean\",\"margin_abs\":0.02,\"name\":\"complaint\",\"role\":\"guardrail\",\"unit\":\"complaints per unit\"}],\"population_id\":\"both-eligible-entrants\",\"registered_at\":\"2025-12-31T23:59:59.000000Z\",\"start\":\"2026-01-01T00:00:03.000001Z\",\"study_id\":\"common-entry-v1\",\"target\":\"jointly_eligible\",\"unit_namespace\":\"synthetic-accounts\"},\"replay_status\":\"not_certified\"}",
+  "plan_sha256": "419f26ffe146404660a14dc2968af830720d89492858e71af28f0b862074cb5f",
+  "family_sha256": "3c6dc5cf7ea92bf036b8ac4cb23d2d6f609ada6bc56528ec9ffcedd5a0e35072",
+  "external": {
+    "roster": [
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "001",
+        "entry_at": "2026-01-01T00:00:00.000000Z",
+        "eligible_a": true,
+        "eligible_b": true,
+        "eligibility_at_a": "2026-01-01T00:00:00.000000Z",
+        "eligibility_at_b": "2026-01-01T00:00:00.000000Z",
+        "gate_a": true,
+        "gate_b": true,
+        "gate_at_a": "2026-01-01T00:00:00.000001Z",
+        "gate_at_b": "2026-01-01T00:00:00.000002Z"
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "1",
+        "entry_at": "2026-01-01T00:00:00.000000Z",
+        "eligible_a": true,
+        "eligible_b": true,
+        "eligibility_at_a": "2026-01-01T00:00:00.000000Z",
+        "eligibility_at_b": "2026-01-01T00:00:00.000000Z",
+        "gate_a": true,
+        "gate_b": true,
+        "gate_at_a": "2026-01-01T00:00:00.000001Z",
+        "gate_at_b": "2026-01-01T00:00:00.000002Z"
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "x",
+        "entry_at": "2026-01-01T00:00:00.000000Z",
+        "eligible_a": false,
+        "eligible_b": true,
+        "eligibility_at_a": "2026-01-01T00:00:00.000000Z",
+        "eligibility_at_b": "2026-01-01T00:00:00.000000Z",
+        "gate_a": null,
+        "gate_b": null,
+        "gate_at_a": null,
+        "gate_at_b": null
+      }
+    ],
+    "decisions": [
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "001",
+        "target": "target-a",
+        "decided_at": "2026-01-01T00:00:01.000000Z",
+        "revision": "rev-a",
+        "archive_sha256": "14f9efa475d1fb285ae1be349d42a9776402c9d69c18af9ab1319899d6340d7a",
+        "selected_experiment": "experiment-a",
+        "status": "assigned",
+        "arm": "on",
+        "assigned_weight": 7500
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "001",
+        "target": "target-b",
+        "decided_at": "2026-01-01T00:00:02.000000Z",
+        "revision": "rev-b",
+        "archive_sha256": "382d4a58d690fd1557478aeb8a5835341ee276f427a9c238f2dc98a95697c0a9",
+        "selected_experiment": "experiment-b",
+        "status": "assigned",
+        "arm": "off",
+        "assigned_weight": 3
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "1",
+        "target": "target-a",
+        "decided_at": "2026-01-01T00:00:01.000000Z",
+        "revision": "rev-a",
+        "archive_sha256": "14f9efa475d1fb285ae1be349d42a9776402c9d69c18af9ab1319899d6340d7a",
+        "selected_experiment": "experiment-a",
+        "status": "assigned",
+        "arm": "off",
+        "assigned_weight": 2500
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "1",
+        "target": "target-b",
+        "decided_at": "2026-01-01T00:00:02.000000Z",
+        "revision": "rev-b",
+        "archive_sha256": "382d4a58d690fd1557478aeb8a5835341ee276f427a9c238f2dc98a95697c0a9",
+        "selected_experiment": "experiment-b",
+        "status": "assigned",
+        "arm": "on",
+        "assigned_weight": 1
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "x",
+        "target": "target-b",
+        "decided_at": "2026-01-01T00:00:02.000000Z",
+        "revision": "rev-b",
+        "archive_sha256": "382d4a58d690fd1557478aeb8a5835341ee276f427a9c238f2dc98a95697c0a9",
+        "selected_experiment": "experiment-b",
+        "status": "assigned",
+        "arm": "off",
+        "assigned_weight": 3
+      }
+    ],
+    "deliveries": [],
+    "outcomes": [
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "001",
+        "metric": "orders",
+        "definition_sha256": "f807343c92e9479844713f3ca9f2d95d4f86fc9072509a55786aa62d062732be",
+        "window_start": "2026-01-01T00:00:03.000001Z",
+        "window_end": "2026-01-01T00:00:10.000000Z",
+        "value": 14,
+        "finalized_at": "2026-01-01T00:00:11.000000Z"
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "1",
+        "metric": "orders",
+        "definition_sha256": "f807343c92e9479844713f3ca9f2d95d4f86fc9072509a55786aa62d062732be",
+        "window_start": "2026-01-01T00:00:03.000001Z",
+        "window_end": "2026-01-01T00:00:10.000000Z",
+        "value": 13,
+        "finalized_at": "2026-01-01T00:00:11.000000Z"
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "x",
+        "metric": "orders",
+        "definition_sha256": "f807343c92e9479844713f3ca9f2d95d4f86fc9072509a55786aa62d062732be",
+        "window_start": "2026-01-01T00:00:03.000001Z",
+        "window_end": "2026-01-01T00:00:10.000000Z",
+        "value": 100,
+        "finalized_at": "2026-01-01T00:00:11.000000Z"
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "001",
+        "metric": "complaint",
+        "definition_sha256": "00e11ade27da76523c128e5a37450fbc76acbebd0fb0cfe967f05e38f411ed0f",
+        "window_start": "2026-01-01T00:00:03.000001Z",
+        "window_end": "2026-01-01T00:00:10.000000Z",
+        "value": 0,
+        "finalized_at": "2026-01-01T00:00:11.000000Z"
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "1",
+        "metric": "complaint",
+        "definition_sha256": "00e11ade27da76523c128e5a37450fbc76acbebd0fb0cfe967f05e38f411ed0f",
+        "window_start": "2026-01-01T00:00:03.000001Z",
+        "window_end": "2026-01-01T00:00:10.000000Z",
+        "value": 1,
+        "finalized_at": "2026-01-01T00:00:11.000000Z"
+      },
+      {
+        "study_id": "common-entry-v1",
+        "unit_id": "x",
+        "metric": "complaint",
+        "definition_sha256": "00e11ade27da76523c128e5a37450fbc76acbebd0fb0cfe967f05e38f411ed0f",
+        "window_start": "2026-01-01T00:00:03.000001Z",
+        "window_end": "2026-01-01T00:00:10.000000Z",
+        "value": 1,
+        "finalized_at": "2026-01-01T00:00:11.000000Z"
+      }
+    ],
+    "damage": {
+      "missing_b": {
+        "delete_decision": {
+          "unit_id": "1",
+          "target": "target-b"
+        },
+        "code": "evidence.assignment.invalid",
+        "context": {
+          "reason": "missing_decision",
+          "details": [
+            "B",
+            1
+          ]
+        }
+      },
+      "late_b_eligibility": {
+        "update_roster": {
+          "unit_id": "001",
+          "eligibility_at_b": "2026-01-01T00:00:01.000000Z"
+        },
+        "code": "overlap.evidence.invalid",
+        "context": {
+          "role": "roster",
+          "reason": "eligibility_not_before_either_decision",
+          "count": 1
+        }
+      }
+    }
+  },
+  "sdk": {
+    "archives": {
+      "full": {
+        "utf8": "{\"protocol\":1,\"revision\":\"archive-v1\",\"layers\":[],\"experiments\":[{\"key\":\"A\",\"enrollment_bps\":10000,\"arms\":[{\"key\":\"off\",\"weight_bps\":2500},{\"key\":\"on\",\"weight_bps\":7500}]},{\"key\":\"B\",\"enrollment_bps\":10000,\"arms\":[{\"key\":\"off\",\"weight_bps\":7500},{\"key\":\"on\",\"weight_bps\":2500}]}]}",
+        "sha256": "6f4b58f9ca7c00ddde42717a64210a36a93c36a83a4fc940c0dacc25e3480d32"
+      },
+      "partial": {
+        "utf8": "{\"protocol\":1,\"revision\":\"archive-v1\",\"layers\":[],\"experiments\":[{\"key\":\"A\",\"enrollment_bps\":8000,\"arms\":[{\"key\":\"off\",\"weight_bps\":2500},{\"key\":\"on\",\"weight_bps\":7500}]},{\"key\":\"B\",\"enrollment_bps\":10000,\"arms\":[{\"key\":\"off\",\"weight_bps\":7500},{\"key\":\"on\",\"weight_bps\":2500}]}]}",
+        "sha256": "41b3545a7981c78ef1fa9731a1e342c31a7a46e28db13d31edcd1b74f67c4ad0"
+      },
+      "same_layer": {
+        "utf8": "{\"protocol\":1,\"revision\":\"archive-v1\",\"layers\":[{\"key\":\"shared\",\"ranges\":[{\"experiment\":\"A\",\"start_bps\":0,\"end_bps\":5000},{\"experiment\":\"B\",\"start_bps\":5000,\"end_bps\":10000}]}],\"experiments\":[{\"key\":\"A\",\"enrollment_bps\":10000,\"arms\":[{\"key\":\"off\",\"weight_bps\":2500},{\"key\":\"on\",\"weight_bps\":7500}]},{\"key\":\"B\",\"enrollment_bps\":10000,\"arms\":[{\"key\":\"off\",\"weight_bps\":7500},{\"key\":\"on\",\"weight_bps\":2500}]}]}",
+        "sha256": "cbf19b27742f2b33ff823c9c881c765f01f897418d2e6df21a372e85a25d6d08"
+      }
+    },
+    "a": {
+      "target": "A",
+      "experiment": "A",
+      "off": "off",
+      "on": "on"
+    },
+    "b": {
+      "target": "B",
+      "experiment": "B",
+      "off": "off",
+      "on": "on"
+    }
+  },
+  "numeric_domain": {
+    "max_exact_integer": 9007199254740991,
+    "large_center": {
+      "anchor": 10000000000000000.0,
+      "mean_delta": 2.0,
+      "m2": 8.0,
+      "anchor_token": "10000000000000000"
+    }
+  },
+  "expected": {
+    "cell_order": [
+      "00",
+      "10",
+      "01",
+      "11"
+    ],
+    "cell_probabilities": [
+      "3/16",
+      "9/16",
+      "1/16",
+      "3/16"
+    ],
+    "sdk_a_on": "3/4",
+    "sdk_b_on": "1/4",
+    "illustrative_complete_cell_means": [
+      10,
+      14,
+      13,
+      12
+    ],
+    "illustrative_complete_contrasts": {
+      "a_marginal": 2.75,
+      "b_marginal": -0.75,
+      "b_given_a_on": -2,
+      "joint_launch": 2,
+      "interaction": -5
+    }
+  }
+}

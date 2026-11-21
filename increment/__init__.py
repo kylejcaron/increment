@@ -146,6 +146,7 @@ _SUBMODULES = frozenset(
         "errors",
         "estimators",
         "evidence",
+        "overlap",
         "power",
         "query",
         "results",
