@@ -27,7 +27,7 @@ from increment.overlap import (
     interaction_metric_sha256,
 )
 from increment.query.session import SourceSnapshotEvidence
-from tests.test_dashboard_capture import FACT_SOURCES, _event_rows, _write_definitions
+from tests.test_dashboard_capture import EXPERIMENTS, FACT_SOURCES, _event_rows, _write_definitions
 
 pytestmark = pytest.mark.integration
 
@@ -37,6 +37,25 @@ _END = datetime(2025, 2, 15, tzinfo=UTC)
 _CUTOFF = datetime(2025, 5, 2, tzinfo=UTC)
 _CONFIG = DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
 _GENERATION = "storefront-2025-05-02"
+_ASSIGNMENT_LEDGER = """
+    assignment_ledger:
+      sql: SELECT * FROM analytics.assignments
+      roles:
+        unit: subject
+        experiment: experiment_key
+        arm: arm_name
+        version: revision
+        period: period
+        allocated_at: assigned_at
+        exposed_at: exposure_at
+        triggered_at: trigger_at
+"""
+
+_NATIVE_EXPOSURE = """
+exposures:
+  - name: first_page_view
+    sql: SELECT * FROM analytics.enrollment
+"""
 
 
 @contextmanager
@@ -257,3 +276,63 @@ def test_manifest_cannot_identify_a_replaced_file_on_an_old_reader(tmp_path):
             )
     assert error.value.code == "overlap.scan.invalid"
     assert error.value.context["reason"] == "different_source_generation"
+
+
+def test_native_assignment_ledger_does_not_substitute_for_headline_exposures(tmp_path):
+    specs = EXPERIMENTS.replace(
+        "    allocation_scheme: independent",
+        "    allocation_scheme: independent\n" + _ASSIGNMENT_LEDGER,
+        1,
+    )
+    path = tmp_path / "facts.duckdb"
+    _publish(path)
+    con = ibis.duckdb.connect(path)
+    try:
+        con.raw_sql(
+            """CREATE TABLE analytics.enrollment AS
+            SELECT user_id AS unit_id, event_at AS ts, group_id, experiment_id
+            FROM analytics.event_log WHERE event = 'page_view' AND group_id IS NOT NULL"""
+        )
+        con.raw_sql(
+            """CREATE TABLE analytics.assignments AS
+            SELECT unit_id AS subject, experiment_id AS experiment_key, group_id AS arm_name,
+            3 AS revision, 'global' AS period, ts AS assigned_at, ts AS exposure_at,
+            NULL::TIMESTAMP AS trigger_at FROM analytics.enrollment"""
+        )
+        con.raw_sql("CREATE VIEW analytics.live_enrollment AS SELECT * FROM analytics.enrollment")
+        con.raw_sql("CHECKPOINT")
+    finally:
+        con.disconnect()
+
+    native = _write_definitions(tmp_path / "native", experiments=specs)
+    (native / "exposures.yaml").write_text(_NATIVE_EXPOSURE)
+    capture = _empty_capture(native)
+    with _reader(path, native) as (experiment, reader, con):
+        manifest = _manifest(path, con, experiment, capture)
+        [(catalog,)] = con.con.execute("SELECT current_database()").fetchall()
+        manifest = manifest.model_copy(
+            update={
+                "focal_assignments": interaction_duckdb_fact(
+                    con.table("assignments", database=(catalog, "analytics"))
+                ),
+                "focal_exposures": interaction_duckdb_fact(
+                    con.table("enrollment", database=(catalog, "analytics"))
+                ),
+            }
+        )
+        attachment = bind_interaction_scan(
+            capture, source=InteractionDuckDBSource(experiment, reader, manifest)
+        )
+        dashboard = prepare_dashboard(experiment, reader, config=_CONFIG, interactions=attachment)
+        assert dashboard.interactions is not None
+
+    live = _write_definitions(tmp_path / "live", experiments=specs)
+    (live / "exposures.yaml").write_text(_NATIVE_EXPOSURE.replace("enrollment", "live_enrollment"))
+    with _reader(path, live) as (experiment, reader, _):
+        exact = manifest.model_copy(update={"definition_sha256": experiment.hash()})
+        with pytest.raises(CodedError) as error:
+            bind_interaction_scan(
+                capture, source=InteractionDuckDBSource(experiment, reader, exact)
+            )
+    assert error.value.code == "overlap.scan.invalid"
+    assert error.value.context["reason"] == "focal_facts_not_verified"
