@@ -25,7 +25,7 @@ from increment._overlap_evidence import (
 )
 from increment._overlap_refusals import SCAN_CUTOFF_MISMATCH, SCAN_INVALID
 from increment.errors import refuse
-from increment.semantics.overlap import OverlapEvidence, OverlapMetric, OverlapTarget
+from increment.semantics.overlap import OverlapEvidence, OverlapMetric, OverlapPlan, OverlapTarget
 
 ScanCoverage = Literal["complete", "partial", "not_captured"]
 ScanContrast = Literal["focal_given_other_off", "focal_given_other_on", "interaction"]
@@ -457,6 +457,61 @@ class PairInput(_ScanModel):
     value: Annotated[CapturedPair | UnavailablePair, Field(discriminator="kind")]
 
 
+def _pair_scope_issue(
+    scope: ScanScope,
+    candidate: ScanCandidate,
+    *,
+    pair_plan: OverlapPlan,
+    focal_side: FactorId,
+) -> str | None:
+    focal = scope.focal
+    if focal_side == "A":
+        focal_factor, other_factor = pair_plan.a, pair_plan.b
+        focal_archive, other_archive = pair_plan.law.archive_sha256
+    else:
+        focal_factor, other_factor = pair_plan.b, pair_plan.a
+        other_archive, focal_archive = pair_plan.law.archive_sha256
+    factors = ((focal.entry, focal_factor), (candidate.entry, other_factor))
+    if any(
+        entry.identity.sort_key != (factor.target, factor.experiment, factor.revision)
+        for entry, factor in factors
+    ):
+        return "pair_identity_mismatch"
+    if any(entry.arms != (factor.off, factor.on) for entry, factor in factors):
+        return "arm_mismatch"
+    if (focal.entry.archive_sha256, candidate.entry.archive_sha256) != (
+        focal_archive,
+        other_archive,
+    ):
+        return "archive_mismatch"
+    if not pair_plan.unit_namespace == focal.entry.unit_namespace == candidate.entry.unit_namespace:
+        return "unit_namespace_mismatch"
+    for actual, expected, reason in (
+        (pair_plan.population_id, focal.population_id, "population_mismatch"),
+        (
+            pair_plan.eligibility_rule_sha256,
+            focal.eligibility_rule_sha256,
+            "eligibility_rule_mismatch",
+        ),
+        (
+            pair_plan.enrollment_rule_sha256,
+            focal.enrollment_rule_sha256,
+            "enrollment_rule_mismatch",
+        ),
+        (pair_plan.target, focal.target, "target_mismatch"),
+    ):
+        if actual != expected:
+            return reason
+    if (
+        (pair_plan.entry_open, pair_plan.start, pair_plan.end)
+        != (scope.entry_open, scope.start, scope.end)
+        or candidate.entry.active_from > scope.entry_open
+        or candidate.entry.active_until < scope.end
+    ):
+        return "incompatible_window"
+    return None
+
+
 def _check_exchange(
     plan: InteractionScanPlan,
     observed: ObservedInventory | None,
@@ -466,7 +521,8 @@ def _check_exchange(
     observed_coverage = "not_captured" if observed is None else observed.coverage_for(plan.scope)
     keys = tuple(candidate.key for candidate in candidates)
     actual = set(keys)
-    expected = {candidate.key for candidate in plan.candidates}
+    frozen = {candidate.key: candidate for candidate in plan.candidates}
+    expected = frozen.keys()
     if len(actual) != len(keys) or not expected <= actual:
         refuse(SCAN_INVALID, field="candidates", reason="duplicate_or_missing_candidate")
     scope = plan.scope
@@ -476,6 +532,14 @@ def _check_exchange(
         for key in keys
     ):
         refuse(SCAN_INVALID, field="candidates", reason="scope_mismatch")
+    for candidate in candidates:
+        original = frozen.get(candidate.key)
+        if original is not None and (
+            not _same_regime(original.entry, candidate.entry)
+            or original.entry.reasons != candidate.entry.reasons
+            or original.reasons != candidate.reasons
+        ):
+            refuse(SCAN_INVALID, field="candidates", reason="frozen_candidate_mismatch")
     if coverage == "complete" and (
         plan.roster_coverage != "complete"
         or observed_coverage != "complete"
@@ -504,6 +568,14 @@ class ScanCapture(_ScanModel):
         for pair in self.pairs:
             if isinstance(pair.value, CapturedPair):
                 self.plan.scope.require_cutoff(pair.value.evidence.capture.cutoff)
+                issue = _pair_scope_issue(
+                    self.plan.scope,
+                    pair.candidate,
+                    pair_plan=pair.value.evidence.plan,
+                    focal_side=pair.value.focal_side,
+                )
+                if issue is not None:
+                    self._invalid_field("pairs", issue)
         return self
 
     @property

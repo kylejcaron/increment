@@ -323,6 +323,77 @@ def test_restored_pair_evidence_cannot_be_carried_into_a_later_look(restored_pai
     }
 
 
+@pytest.mark.parametrize("mismatch", [None, "orientation", "candidate"])
+def test_capture_binds_restored_evidence_to_its_oriented_pair(restored_pair, mismatch):
+    plan, evidence = restored_pair
+    original_focal = plan.scope.focal
+    focal_b = original_focal.model_copy(update={"entry": plan.candidates[0].entry})
+    scope_b = plan.scope.model_copy(update={"focal": focal_b})
+    inventory = plan.inventory
+    if mismatch == "candidate":
+        other = original_focal.entry.model_copy(
+            update={
+                "identity": original_focal.entry.identity.model_copy(
+                    update={"revision": "unrelated"}
+                )
+            }
+        )
+        inventory = inventory.model_copy(update={"entries": (focal_b.entry, other)})
+    reversed_plan = plan.model_copy(update={"scope": scope_b, "inventory": inventory})
+    captured_pair = CapturedPair(
+        evidence=evidence, focal_side="A" if mismatch == "orientation" else "B"
+    )
+    pairs = (PairInput(candidate=reversed_plan.candidates[0], value=captured_pair),)
+    if mismatch is None:
+        capture = ScanCapture(
+            plan=reversed_plan, observed_inventory=None, coverage="not_captured", pairs=pairs
+        )
+        assert capture.pairs[0].value == captured_pair
+    else:
+        with pytest.raises(CodedError) as caught:
+            ScanCapture(
+                plan=reversed_plan, observed_inventory=None, coverage="not_captured", pairs=pairs
+            )
+        assert caught.value.code == "overlap.scan.invalid"
+        assert caught.value.context == {"field": "pairs", "reason": "pair_identity_mismatch"}
+
+
+@pytest.mark.parametrize("replacement", ["archive", "exclusion"])
+def test_partial_exchange_keeps_frozen_assignment_and_exclusions(replacement):
+    entry = inventory_entry("cards").model_copy(update={"reasons": ("same_layer",)})
+    plan = freeze(declared_inventory(entry))
+    observed_entry = entry.model_copy(update={"archive_sha256": "9" * 64})
+    observed = observed_inventory(declared_inventory(observed_entry))
+    value = UnavailablePair(reasons=(ScanReason(code="roster_drift"),))
+
+    frozen = plan.candidates[0]
+    renamed = frozen.model_copy(
+        update={"entry": entry.model_copy(update={"display_name": "New display name"})}
+    )
+    current = ScanCapture(
+        plan=plan,
+        observed_inventory=observed,
+        coverage="partial",
+        pairs=(PairInput(candidate=renamed, value=value),),
+    )
+    assert current.pairs[0].candidate.reasons == (ScanReason(code="same_layer"),)
+
+    substituted = (
+        plan.candidates_for(observed)[0]
+        if replacement == "archive"
+        else frozen.model_copy(update={"reasons": ()})
+    )
+    with pytest.raises(CodedError) as caught:
+        ScanCapture(
+            plan=plan,
+            observed_inventory=observed,
+            coverage="partial",
+            pairs=(PairInput(candidate=substituted, value=value),),
+        )
+    assert caught.value.code == "overlap.scan.invalid"
+    assert caught.value.context == {"field": "candidates", "reason": "frozen_candidate_mismatch"}
+
+
 def test_renderer_receives_numeric_nulls_and_cell_specific_reason(restored_pair):
     plan, evidence = restored_pair
     candidate = plan.candidates[0]
