@@ -245,6 +245,17 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment._interaction_capture"
+layer = "core"
+depends_on = [
+  "increment._overlap_evidence",
+  "increment._overlap_refusals",
+  "increment.errors",
+  "increment.semantics.interaction_scan",
+  "increment.semantics.overlap",
+]
+
+[[modules]]
 path = "increment._overlap_sdk"
 layer = "core"
 depends_on = [
