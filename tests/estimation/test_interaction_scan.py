@@ -328,6 +328,13 @@ def test_weak_relative_baseline_does_not_erase_the_other_comparison(saved_pair):
     assert scan.rows[0].estimate == pytest.approx(0.39)
 
 
+def test_relative_interaction_retains_the_difference_of_large_lifts(saved_pair):
+    cells = _mean_cells((0.0, 1e16, 0.0, 1e16), (1.0, 1.0, 1.0, 2.0), (40.0,) * 4)
+    scan = evaluate_interaction_scan(_capture(_evidence(saved_pair, cells)))
+    _, _, difference = scan_estimation._relative_interaction_rows(scan, "orders")
+    assert difference.estimate == pytest.approx(1.0)
+
+
 def test_missing_both_on_cell_after_replay_keeps_off_and_full_family(saved_pair):
     evidence = _evidence(
         saved_pair, _binary_cells((10_000, 10_000, 10_000, 0), (3100, 3400, 3000, 0))

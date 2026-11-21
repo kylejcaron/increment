@@ -179,23 +179,23 @@ def _relative_result(
 
 def _relative_effect(
     row: ScanRow, control: OverlapCell | None, treated: OverlapCell | None, *, tail: float | None
-) -> ScanRow:
+) -> tuple[ScanRow, Fraction | None]:
     if row.estimate is None:
-        return row
+        return row, None
     if control is None or control.anchor is None or control.mean_delta is None:
-        return _relative_unavailable(row, ScanReason(code="relative_moments_unavailable"))
+        return _relative_unavailable(row, ScanReason(code="relative_moments_unavailable")), None
     baseline = Fraction(control.anchor) + Fraction(control.mean_delta)
     if baseline <= 0:
-        return _relative_unavailable(
-            row, ScanReason(code="relative_baseline_nonpositive", cell=control.cell)
-        )
+        reason = ScanReason(code="relative_baseline_nonpositive", cell=control.cell)
+        return _relative_unavailable(row, reason), None
     if treated is None or treated.anchor is None or treated.mean_delta is None:
-        return _relative_unavailable(row, ScanReason(code="relative_moments_unavailable"))
+        return _relative_unavailable(row, ScanReason(code="relative_moments_unavailable")), None
     effect = Fraction(treated.anchor) + Fraction(treated.mean_delta) - baseline
+    lift = effect / baseline
     try:
-        estimate = _rounded(effect / baseline, metric=row.key.metric, quantity="relative_lift")
+        estimate = _rounded(lift, metric=row.key.metric, quantity="relative_lift")
         if not tail or row.lower is None or control.m2 is None or treated.m2 is None:
-            return _relative_result(row, estimate)
+            return _relative_result(row, estimate), lift
         nc, nt = control.n_observed, treated.n_observed
         critical = two_sided_critical_value(
             student_t_isf, 2.0 * tail, min(nc, nt) - 1, what="relative interaction interval"
@@ -206,28 +206,31 @@ def _relative_effect(
         # Invert (effect - lift * baseline)^2 <= q² Var(treated - (1 + lift) * control).
         a = baseline**2 - vc
         if a <= 0:
-            return _relative_unavailable(
-                row, ScanReason(code="relative_baseline_uncertain", cell=control.cell)
-            )
+            reason = ScanReason(code="relative_baseline_uncertain", cell=control.cell)
+            return _relative_unavailable(row, reason), None
         ((lower, upper),) = _quadratic_intervals(
             a, -2 * (effect * baseline + vc), effect**2 - vc - vt
         )
     except ArithmeticError:
-        return _relative_unavailable(row, ScanReason(code=NUMERIC_RANGE.code))
+        return _relative_unavailable(row, ScanReason(code=NUMERIC_RANGE.code)), None
     except CodedError as exc:
         if exc.code not in _INTERVAL_REFUSALS:
             raise
-        return _relative_unavailable(row, ScanReason(code=exc.code))
-    return _relative_result(row, estimate, lower, upper)
+        return _relative_unavailable(row, ScanReason(code=exc.code)), None
+    return _relative_result(row, estimate, lower, upper), lift
 
 
-def _relative_difference(row: ScanRow, off: ScanRow, on: ScanRow) -> ScanRow:
-    if row.estimate is None or off.estimate is None or on.estimate is None:
+def _relative_difference(
+    row: ScanRow, off_fit: tuple[ScanRow, Fraction | None], on_fit: tuple[ScanRow, Fraction | None]
+) -> ScanRow:
+    off, off_lift = off_fit
+    on, on_lift = on_fit
+    if row.estimate is None or off_lift is None or on_lift is None:
         return _relative_unavailable(row, *off.reasons, *on.reasons)
     lower = upper = None
     try:
         estimate = _rounded(
-            Fraction(on.estimate) - Fraction(off.estimate),
+            on_lift - off_lift,
             metric=row.key.metric,
             quantity="relative_interaction",
         )
@@ -265,11 +268,9 @@ def _relative_interaction_rows(scan: InteractionScan, metric: str) -> tuple[Scan
     ):
         cells = {cell.cell: cell for cell in detail.cells if cell.metric == metric}
         off_treated, on_control = ("01", "10") if detail.focal_side == "B" else ("10", "01")
-        relative_off = _relative_effect(off, cells.get("00"), cells.get(off_treated), tail=tail)
-        relative_on = _relative_effect(on, cells.get(on_control), cells.get("11"), tail=tail)
-        result.extend(
-            (relative_off, relative_on, _relative_difference(direct, relative_off, relative_on))
-        )
+        off_fit = _relative_effect(off, cells.get("00"), cells.get(off_treated), tail=tail)
+        on_fit = _relative_effect(on, cells.get(on_control), cells.get("11"), tail=tail)
+        result.extend((off_fit[0], on_fit[0], _relative_difference(direct, off_fit, on_fit)))
     return tuple(result)
 
 
