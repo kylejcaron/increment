@@ -62,12 +62,14 @@ estimates: Previously computed estimate rows.
 expected: Expected counts or values used for comparison.
 expected_allocation: Expected assignment share for each arm.
 expected_context: Expected context to validate against.
+expected_registration: Saved pre-launch identity used to verify the spillover design and eligible roster.
 experiment_id: Stable identifier for the analyzed experiment.
 experiment_name: Name of the experiment definition.
 exploratory_metrics: Metrics included in an exploratory family.
 exposure_date: Column recording exposure timing.
 extensions: Optional artifact evidence extensions.
 factor: Name of a declared adjustment factor.
+family: Select the ordinary experiment definitions or a two-stage spillover study.
 finalized: Whether the sequential checkpoint is final.
 fraction: Share of units selected for targeting.
 fractions: Candidate shares of units selected for targeting.

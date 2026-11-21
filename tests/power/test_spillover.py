@@ -1,34 +1,51 @@
 """Operating characteristics for the prospective two-stage binary model."""
 
 from dataclasses import FrozenInstanceError, replace
-from math import comb
+from itertools import combinations
+from math import comb, sqrt
 
 import numpy as np
 import pytest
-from scipy.stats import binom
+from scipy.stats import beta, binom, norm
 
-from increment._spillover_design import SpilloverDesign, SpilloverGroup
+from increment._spillover_design import (
+    GroupProfile,
+    SpilloverComparison,
+    SpilloverDesign,
+    SpilloverPopulation,
+)
 from increment.errors import CodedError
 from increment.estimation.spillover import summarize_counts
 from increment.power import _spillover as model
 
 
-def _design(sizes=(10, 10, 10, 10), *, strata=None, high=None):
+def _comparison(rate=0.4, effect=0.1, policy="upper"):
+    return SpilloverComparison(
+        policy=policy, reference="base", meaningful_effect=effect, baseline_rate=rate
+    )
+
+
+def _population(sizes=(10,) * 4, *, strata=None, quotas=None, comparisons=None, offers=None):
     strata = strata or ("all",) * len(sizes)
-    return SpilloverDesign(
-        groups=tuple(
-            SpilloverGroup(
-                group_id=f"g{i:04}",
-                members=tuple(f"{i}/{j}" for j in range(n)),
-                low_treated=1,
-                high_treated=n - 2,
-                stratum=s,
-            )
-            for i, (n, s) in enumerate(zip(sizes, strata, strict=True))
-        ),
-        high_groups=high or {"all": len(sizes) // 2},
+    quotas = quotas or {"all": {"base": len(sizes) - len(sizes) // 2, "upper": len(sizes) // 2}}
+    design = SpilloverDesign(
+        groups_per_policy=quotas,
+        comparisons=comparisons or (_comparison(),),
         outcome="renewed",
         horizon="90 days",
+    )
+    if offers is None:
+        offers = tuple(
+            tuple({"base": 1, "middle": 0, "upper": n - 2}[p] for p in design.policies)
+            for n in sizes
+        )
+    return SpilloverPopulation(
+        design=design,
+        groups=tuple(
+            GroupProfile(group_id=f"g{i:04}", size=n, stratum=s, offers=o)
+            for i, (n, s, o) in enumerate(zip(sizes, strata, offers, strict=True))
+        ),
+        roster_digest="f" * 64,
     )
 
 
@@ -38,7 +55,7 @@ def test_offsetting_and_signed_schedules_move_only_eligible_people():
         (4, (2, 3, 5, 6), (5, 2, 4, 5)),
         (-4, (1, 1, 3, 3), (1, 2, 4, 1)),
     ]:
-        cases = {s.schedule: s for s in model._schedules("spread", sizes, low, delta)}
+        cases = {s.schedule: s for s in model._schedules("spread", sizes, low, delta, (True,) * 4)}
         assert {key: s.high for key, s in cases.items()} == {
             "unchanged": low,
             "cancelling": (10, 2, 0, 0),
@@ -48,14 +65,14 @@ def test_offsetting_and_signed_schedules_move_only_eligible_people():
         assert cases["cancelling"].cancelling_pairs == 9
         assert all(s.true_effect == (sum(s.high) - sum(low)) / 40 for s in cases.values())
 
-    unequal = model._schedules("spread", (100, 10, 40, 20), (10, 3, 20, 4), 1)
+    unequal = model._schedules("spread", (100, 10, 40, 20), (10, 3, 20, 4), 1, (True,) * 4)
     cancelling = next(s for s in unequal if s.schedule == "cancelling")
     assert cancelling.high == (33, 0, 0, 4)  # rank by event fraction, not count
 
 
 def test_baseline_profiles_and_half_up_rounding_use_the_entire_roster():
     # 0.145 * 100 is a half-person tie, for both the baseline and the alternative.
-    cases = model._model_grid((10, 20, 30, 40), 0.145, -0.145)
+    cases = model._model_grid((10, 20, 30, 40), 0.145, -0.145, (True,) * 4)
     assert not isinstance(cases, str)
     assert len({(s.baseline_profile, s.schedule) for s in cases}) == 12
     assert {s.baseline_profile: s.low for s in cases} == {
@@ -67,7 +84,7 @@ def test_baseline_profiles_and_half_up_rounding_use_the_entire_roster():
 
 
 def test_rare_baseline_does_not_cap_a_feasible_meaningful_increase():
-    cases = model._model_grid((10,) * 1000, 0.01, 0.05)
+    cases = model._model_grid((10,) * 1000, 0.01, 0.05, (True,) * 1000)
     assert not isinstance(cases, str)
     assert len(cases) == 12
     for case in cases:
@@ -80,15 +97,17 @@ def test_rare_baseline_does_not_cap_a_feasible_meaningful_increase():
             assert case.true_effect == 0.05
 
 
+@pytest.mark.parametrize("family", [1, 3])
 @pytest.mark.parametrize("hits", [0, 7, 37])
-def test_exact_bounds_invert_each_of_the_24_one_sided_tails(hits):
-    lower, upper = model._lower(hits, 37), model._upper(hits, 37)
+def test_exact_bounds_invert_each_of_the_frozen_family_tails(hits, family):
+    tail = 0.05 / (24 * family)
+    lower, upper = model._lower(hits, 37, tail), model._upper(hits, 37, tail)
     if hits:
-        assert binom.sf(hits - 1, 37, lower) == pytest.approx(0.05 / 24)
+        assert binom.sf(hits - 1, 37, lower) == pytest.approx(tail)
     else:
         assert lower == 0
     if hits < 37:
-        assert binom.cdf(hits, 37, upper) == pytest.approx(0.05 / 24)
+        assert binom.cdf(hits, 37, upper) == pytest.approx(tail)
     else:
         assert upper == 1
 
@@ -106,7 +125,7 @@ def test_exact_bounds_invert_each_of_the_24_one_sided_tails(hits):
 )
 def test_invalid_planning_inputs_refuse_even_without_history(rate, effect, field):
     with pytest.raises(CodedError) as exc:
-        model.evaluate_design(_design(), rate, effect)
+        _comparison(rate=rate, effect=effect)
     assert exc.value.code == f"spillover.planning.{field}"
     assert set(exc.value.context) == {field}
 
@@ -122,27 +141,30 @@ def test_invalid_planning_inputs_refuse_even_without_history(rate, effect, field
     ],
 )
 def test_unassessable_models_keep_the_point_only_decision(rate, effect, reason):
-    result = model.evaluate_design(_design(), rate, effect)
+    comparison = _comparison(rate, effect)
+    result = model.evaluate_design(_population(comparisons=(comparison,)), comparison)
     assert not result.calibration_passed
     assert (result.status, result.reason, result.scenarios) == ("not_calibrated", reason, ())
 
 
 def test_scarcity_and_operational_limit_are_distinct_from_bad_calibration():
-    for design, reason in [
-        (_design((6,) * 5, high={"all": 1}), "too_few_groups"),
-        (_design((4,) * 2049), "simulation_budget_exceeded"),
+    for population, reason in [
+        (_population((6,) * 5, quotas={"all": {"base": 4, "upper": 1}}), "too_few_groups"),
+        (_population((4,) * 2049), "simulation_budget_exceeded"),
     ]:
-        result = model.evaluate_design(design, 0.4, 0.1)
+        result = model.evaluate_design(population, population.design.comparisons[0])
         assert (result.reason, result.scenarios) == (reason, ())
 
 
 def test_sampled_states_follow_both_quota_laws_and_reconcile_to_the_logged_contrast():
     sizes = (6, 7, 8, 9, 6, 7, 8, 9, 10)
-    design = _design(sizes, strata=("a",) * 4 + ("b",) * 5, high={"a": 2, "b": 3})
+    quotas = {"a": {"base": 2, "upper": 2}, "b": {"base": 2, "upper": 3}}
+    population = _population(sizes, strata=("a",) * 4 + ("b",) * 5, quotas=quotas)
+    comparison = population.design.comparisons[0]
     low, high_events = (3, 0, 8, 0, 0, 7, 0, 9, 0), (4,) * 9
     state = model._Scenario("spread", "spread", low, high_events, 9 / sum(sizes), None)
     histogram = np.zeros((2, 4), dtype=int)
-    for _, high, counts in model._states(design, (state,), 8192):
+    for _, high, counts in model._states(population, comparison, (state,), 8192):
         assert np.all(high[:, :4].sum(axis=1) == 2)
         assert np.all(high[:, 4:].sum(axis=1) == 3)
         for arm in (0, 1):
@@ -159,26 +181,29 @@ def test_sampled_states_follow_both_quota_laws_and_reconcile_to_the_logged_contr
         assert histogram[arm].sum() / 8192 == pytest.approx(0.5, abs=0.025)
         np.testing.assert_allclose(histogram[arm] / histogram[arm].sum(), expected, atol=0.035)
 
-    _, high, counts = next(model._states(design, (state,), 1))
-    _, repeated_high, repeated_counts = next(model._states(design, (state,), 1))
+    _, high, counts = next(model._states(population, comparison, (state,), 1))
+    _, repeated_high, repeated_counts = next(model._states(population, comparison, (state,), 1))
     np.testing.assert_array_equal(repeated_high, high)
     np.testing.assert_array_equal(repeated_counts, counts)
-    flags, assignments, outcomes = {}, {}, {}
-    for g, flag, count in zip(design.groups, high[0], counts[0], strict=True):
-        flags[g.group_id] = bool(flag)
-        quota = g.high_treated if flag else g.low_treated
-        for j, person in enumerate(g.members):
-            assignments[person] = j < quota
-            if j >= quota:
-                outcomes[person] = bool(j - quota < count)
-    logged_high, logged_successes = design.logged_counts(
-        group_high=flags, treated=assignments, outcomes=outcomes
-    )
-    simulated = summarize_counts(design, high, counts)
-    logged = summarize_counts(design, logged_high.reshape(1, -1), logged_successes.reshape(1, -1))
-    np.testing.assert_equal(simulated.estimate, logged.estimate)
-    np.testing.assert_equal(simulated.standard_error, logged.standard_error)
-    np.testing.assert_equal(simulated.reason, logged.reason)
+    totals = {(s, p): [] for s in quotas for p in quotas[s]}
+    for g, flag, count in zip(population.groups, high[0], counts[0], strict=True):
+        label = comparison.policy if flag else comparison.reference
+        quota = g.offers[population.design.policies.index(label)]
+        unoffered_outcomes = [int(j - quota < count) for j in range(quota, g.size)]
+        totals[g.stratum, label].append(g.size * sum(unoffered_outcomes) / len(unoffered_outcomes))
+    point = variance = 0.0
+    for s, law in quotas.items():
+        weight = sum(law.values()) / sum(sizes)
+        p, r = totals[s, "upper"], totals[s, "base"]
+        point += weight * (np.mean(p) - np.mean(r))
+        variance += weight**2 * (np.var(p, ddof=1) / len(p) + np.var(r, ddof=1) / len(r))
+    simulated = summarize_counts(population, comparison, high, counts)
+    assert simulated.estimate[0] == pytest.approx(point)
+    assert simulated.available[0] == (variance > 0)
+    if variance:
+        assert simulated.standard_error[0] == pytest.approx(sqrt(variance))
+    else:
+        assert np.isnan(simulated.standard_error[0])
 
 
 def test_unavailable_draws_count_as_misses_but_not_false_alarms():
@@ -188,7 +213,10 @@ def test_unavailable_draws_count_as_misses_but_not_false_alarms():
     events = (0, 0, 4, 4, 4)
     null = model._Scenario("spread", "unchanged", events, events, 0.0, None)
     all_zero = replace(null, low=(0,) * 5, high=(0,) * 5)
-    evidence, no_events = model._measure(_design((4,) * 5), (null, all_zero), 4096)
+    population = _population((4,) * 5)
+    evidence, no_events = model._measure(
+        population, population.design.comparisons[0], (null, all_zero), 4096
+    )
     assert no_events.misses == no_events.unavailable == no_events.attempts == 4096
     assert no_events.false_calls == 0 and no_events.miss_upper == 1
     assert evidence.attempts == 4096
@@ -202,31 +230,36 @@ def test_unavailable_draws_count_as_misses_but_not_false_alarms():
 
 def test_detection_is_strict_and_in_the_direction_of_the_modeled_effect():
     for effect in (0.2, -0.2):
-        estimates = np.array([effect, -effect, 0.0, effect, np.sign(effect) * model.Z95 * 0.1])
+        z = norm.isf(0.025)
+        estimates = np.array([effect, -effect, 0.0, effect, np.sign(effect) * z * 0.1])
         tally = model._Tally()
         tally.observe(
             estimates,
             np.array([0.01, 0.01, 0.01, 0.0, 0.1]),
             np.array([True, True, True, False, True]),
             effect,
+            z,
         )
         high = (2 if effect > 0 else 0,)
         case = model._Scenario("spread", "concentrated", (1,), high, effect, None)
-        record = tally.evidence(case)
+        record = tally.evidence(case, 0.05 / 24)
         assert (record.attempts, record.misses, record.unavailable) == (5, 3, 1)
         assert (record.correct_detections, record.wrong_direction_detections) == (1, 1)
         assert record.false_calls is None
-        assert record.detection_upper == pytest.approx(model._upper(1, 5))
+        assert record.detection_upper == pytest.approx(beta.isf(0.05 / 24, 2, 4))
 
 
 def test_a_single_adverse_profile_controls_the_joint_decision():
-    grid = model._model_grid((10,) * 4, 0.3, 0.1)
+    grid = model._model_grid((10,) * 4, 0.3, 0.1, (True,) * 4)
     assert not isinstance(grid, str)
     # At the simultaneous CP tail, 3,437 is the last passing miss count.
     good_null = model._Tally(attempts=65_536, misses=3437, positive=3437)
     good_alt = model._Tally(attempts=65_536, misses=3437, positive=60_000)
-    rows = tuple((good_alt if case.true_effect else good_null).evidence(case) for case in grid)
-    result = model._conclude(rows)
+    tail = 0.05 / 24
+    rows = tuple(
+        (good_alt if case.true_effect else good_null).evidence(case, tail) for case in grid
+    )
+    result = model._conclude(rows, 1)
     assert result.calibration_passed and result.status == "supported" and result.reason is None
     for obj, field in [(rows[0], "misses"), (result, "status")]:
         with pytest.raises(FrozenInstanceError):
@@ -234,19 +267,20 @@ def test_a_single_adverse_profile_controls_the_joint_decision():
     adverse = (
         (replace(rows[-1], detection_upper=0.79, detection_lower=0.78), "underpowered"),
         (replace(rows[-1], detection_lower=0.79, detection_upper=0.8), "inconclusive"),
-        (replace(good_alt, misses=3438).evidence(grid[-1]), "not_calibrated"),
+        (replace(good_alt, misses=3438).evidence(grid[-1], tail), "not_calibrated"),
         (replace(rows[-1], detection_lower=None), "not_calibrated"),
     )
     for row, status in adverse:
-        decision = model._conclude((*rows[:-1], row))
+        decision = model._conclude((*rows[:-1], row), 1)
         assert decision.status == status and decision.reason
         assert decision.calibration_passed == (status != "not_calibrated")
-    assert not model._conclude(rows[:1]).calibration_passed
+    assert not model._conclude(rows[:1], 1).calibration_passed
 
 
 @pytest.mark.slow
 def test_sparse_design_keeps_all_labelled_schedules_and_all_attempts():
-    result = model.evaluate_design(_design(), baseline_rate=0.025, meaningful_effect=0.1)
+    comparison = _comparison(rate=0.025)
+    result = model.evaluate_design(_population(comparisons=(comparison,)), comparison)
     assert (result.status, result.reason) == ("not_calibrated", "miss_bound_exceeded")
     assert len({row.name for row in result.scenarios}) == 12
     for row in result.scenarios:
@@ -256,3 +290,145 @@ def test_sparse_design_keeps_all_labelled_schedules_and_all_attempts():
             assert row.misses == row.unavailable + row.false_calls
         else:
             assert row.false_calls is None
+
+
+def test_equal_quota_groups_cannot_change_under_any_schedule():
+    mask = (False, True, True, False)
+    for delta in (-4, 4):
+        low = (0, 3, 7, 10)
+        cases = model._schedules("spread", (10,) * 4, low, delta, mask)
+        assert len(cases) == 4
+        for case in cases:
+            assert (case.high[0], case.high[3]) == (0, 10)
+            assert sum(case.high) - sum(low) == (delta if case.true_effect else 0)
+        assert cases[1].cancelling_pairs == 7
+
+    # The whole-roster increase is eight people. Ten of twenty non-events
+    # are movable in the spread profile, but none in the largest-first profile.
+    comparison = _comparison(rate=0.5, effect=0.2)
+    population = _population(comparisons=(comparison,), offers=((1, 3), (1, 3), (2, 2), (2, 2)))
+    result = model.evaluate_design(population, comparison)
+    assert (result.reason, result.scenarios) == ("effect_exceeds_capacity", ())
+    assert model._model_grid((10,) * 4, 0.5, -0.2, (False, False, True, True)) == (
+        "effect_exceeds_capacity"
+    )
+    assert model._model_grid((10,) * 4, 0.25, -0.025, (True, False, False, False)) == (
+        "degenerate_cancellation"
+    )
+
+
+def test_attempt_schedule_is_minimal_and_respects_both_work_bounds():
+    for m, expected in [(1, 65_536), (2, 196_608), (3, 262_144)]:
+        assert model._attempts(1000, m) == expected
+        if m > 1:
+            for b in range(65_536, expected + 1, 65_536):
+                # Invert the exact CP bound directly, independent of the planner's selection.
+                lo, hi = -1, b
+                while hi - lo > 1:
+                    k = (hi + lo) // 2
+                    if beta.isf(0.05 / (24 * m), k + 1, b - k) <= 0.055 / m:
+                        lo = k
+                    else:
+                        hi = k
+                risk = 12 * m * binom.sf(lo, b, 0.05 / m)
+                assert (risk <= 0.05) == (b == expected)
+    assert model._attempts(2048, 1) == 65_536
+    assert model._attempts(2049, 1) is None
+    # For two comparisons the per-pair allowance binds, for five the total binds.
+    for m in (2, 5):
+        b = model._attempts(10, m)
+        assert b is not None
+        max_groups = min(2**29 // b, 2**31 // (m * b))
+        assert model._attempts(max_groups, m) == b
+        assert model._attempts(max_groups + 1, m) is None
+
+
+def test_scarce_sibling_does_not_relax_tail_or_miss_cap():
+    first, scarce = _comparison(policy="middle"), _comparison()
+    pop = _population(
+        (6,) * 6,
+        quotas={"all": {"base": 2, "middle": 3, "upper": 1}},
+        comparisons=(first, scarce),
+    )
+    assert model.evaluate_design(pop, scarce).reason == "too_few_groups"
+    grid = model._model_grid((6,) * 6, 0.4, 0.1, (True,) * 6)
+    assert not isinstance(grid, str)
+    # With three all-event groups and three all-zero groups, nonzero-variance
+    # assignments can reach |estimate/SE| = 2 but never the two-pair cutoff.
+    events = (0, 0, 0, 6, 6, 6)
+    null = model._Scenario("spread", "unchanged", events, events, 0.0, None)
+    *rows, border = model._measure(pop, first, (*grid, null), 128)
+    assert border.false_calls == 0
+    assert 0 < border.misses == border.unavailable < 128
+    for row in rows:
+        upper = beta.isf(0.05 / 48, row.misses + 1, 128 - row.misses) if row.misses < 128 else 1
+        assert row.miss_upper == pytest.approx(upper)
+    optimistic = tuple(
+        replace(r, miss_upper=0.03, detection_lower=0.9, detection_upper=1) for r in rows
+    )
+    assert model._conclude(optimistic, 2).reason == "miss_bound_exceeded"
+
+
+@pytest.mark.parametrize("nuisance", [{"middle": 2}, {"middle": 1, "spare": 1}])
+def test_three_label_marginals_and_hypergeometric_histograms_match_enumeration(nuisance):
+    comparison = _comparison()
+    pop = _population(
+        (4,) * 6,
+        quotas={"all": {"base": 2, **nuisance, "upper": 2}},
+        offers=((0, *(4,) * len(nuisance), 2),) * 6,
+    )
+    # One exceptional group: reference sees its four events; policy sees
+    # zero or one from two draws; all other groups have no events.
+    case = model._Scenario("spread", "spread", (4,) + (0,) * 5, (1,) + (0,) * 5, -3 / 24, None)
+    draws = 8192
+    for _, assignment, counts in model._states(pop, comparison, (case,), draws):
+        for label in (0, 1, 2):
+            assert np.all(np.count_nonzero(assignment == label, axis=1) == 2)
+        assert np.all(counts[assignment == 2] == 0)
+        frequency = np.bincount(assignment[:, 0], minlength=3) / len(assignment)
+        np.testing.assert_allclose(frequency, 1 / 3, atol=0.035)
+
+    expected = []
+    for policy in combinations(range(6), 2):
+        for reference in combinations(set(range(6)).difference(policy), 2):
+            for unoffered in combinations(range(4), 2):
+                point = -0.5 if 0 in reference else 0.25 * (0 in policy and 0 in unoffered)
+                expected.append(point)
+    classes = model._classes(pop, comparison, case)
+    batches = tuple(model._frequency_batches(pop, comparison, classes, draws))
+    points = np.concatenate([b.estimate for b in batches])
+    errors = np.concatenate([b.standard_error for b in batches])
+    assert len(points) == draws
+    np.testing.assert_equal(np.isnan(errors), points == 0)
+    np.testing.assert_allclose(errors[points != 0], np.abs(points[points != 0]))
+    for value in set(expected):
+        probability = expected.count(value) / len(expected)
+        assert np.mean(points == value) == pytest.approx(probability, abs=0.025)
+
+
+def test_frequency_cells_preserve_small_spreads_on_large_group_totals():
+    counts = model._WeightedTotals(1)
+    rng = np.random.default_rng(0)
+    origin = 2**54
+    for offset in (0, 4, 8):
+        size = origin + offset
+        urn = model._Urn(size=size, draws=1, events=size)
+        counts.sample(rng, np.ones(1, dtype=int), urn, urn.bins())
+    cell = counts.cell()
+    assert cell.mean_total[0] == origin + 4
+    assert cell.ss[0] == pytest.approx(4**2 + 4**2)
+
+
+def test_conditional_histogram_splits_give_hypergeometric_not_binomial_masses():
+    for size, events, draws in [(11, 4, 5), (11, 9, 7), (2**54, 2, 2)]:
+        urn = model._Urn(size=size, events=events, draws=draws)
+        remaining = 1.0
+        actual = {}
+        for y, split in urn.bins():
+            actual[y] = remaining * split
+            remaining -= actual[y]
+        expected = {
+            y: comb(events, y) * comb(size - events, draws - y) / comb(size, draws)
+            for y in range(max(0, events + draws - size), min(events, draws) + 1)
+        }
+        assert actual == pytest.approx(expected, rel=1e-14, abs=0)

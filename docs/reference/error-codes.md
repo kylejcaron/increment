@@ -3624,7 +3624,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `message`
 
-**Registering modules:** `increment.semantics.loader`, `increment.semantics.models`
+**Registering modules:** `increment.semantics._spillover`, `increment.semantics.loader`, `increment.semantics.models`
 
 <span id="definition.encode_json_object"></span>
 
@@ -16016,7 +16016,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/builders.py#L49).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/builders.py#L51).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25340,13 +25340,13 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-<p>The roster repeats {field} {identifier!r}; each must be unique.</p>
+<p>Duplicate keys in {field}: {requirement}.</p>
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
 **Error class:** `InvalidRequestError`
 
-**Context keys:** `field`, `identifier`
+**Context keys:** `field`, `requirement`
 
 **Registering modules:** `increment._spillover_design`
 
@@ -25396,7 +25396,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** —
 
-**Registering modules:** `increment.spillover`
+**Registering modules:** `increment._spillover_design`
 
 <span id="spillover.log.binary"></span>
 
@@ -25404,13 +25404,13 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-<p>The {field} log entry for {identifier!r} must be a boolean or an integer 0 or 1.</p>
+<p>Invalid {field} value: {requirement}.</p>
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
 **Error class:** `InvalidRequestError`
 
-**Context keys:** `field`, `identifier`
+**Context keys:** `field`, `requirement`
 
 **Registering modules:** `increment._spillover_design`
 
@@ -25420,7 +25420,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-<p>Invalid {field} log: {requirement}.</p>
+<p>Invalid {field} records: {requirement}.</p>
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25436,13 +25436,13 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-<p>The {field} log records {observed} for {identifier!r}, but the design requires {expected}.</p>
+<p>The {field} log disagrees with the design: {requirement}.</p>
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
 **Error class:** `InvalidRequestError`
 
-**Context keys:** `expected`, `field`, `identifier`, `observed`
+**Context keys:** `field`, `requirement`
 
 **Registering modules:** `increment._spillover_design`
 
@@ -25460,7 +25460,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `baseline_rate`
 
-**Registering modules:** `increment.power._spillover`
+**Registering modules:** `increment._spillover_design`
 
 <span id="spillover.planning.meaningful_effect"></span>
 
@@ -25476,7 +25476,23 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `meaningful_effect`
 
-**Registering modules:** `increment.power._spillover`
+**Registering modules:** `increment._spillover_design`
+
+<span id="spillover.roster.changed"></span>
+
+### `spillover.roster.changed`
+
+**Cause and message:**
+
+<p>The frozen {field} no longer matches: {requirement}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `requirement`
+
+**Registering modules:** `increment._spillover_design`
 
 <span id="family-store"></span>
 

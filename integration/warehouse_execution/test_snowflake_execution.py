@@ -44,6 +44,12 @@ def test_summary_sql_preview(snowflake_con):
     run_summary_sql_probe(snowflake_con, dialect="snowflake")
 
 
+def test_spillover_policy_comparisons(snowflake_con, tmp_path):
+    from tests.spillover_trial import run_three_policy_probe
+
+    run_three_policy_probe(snowflake_con, tmp_path)
+
+
 def test_materialized_cache_reflects_true_correction(snowflake_con, monkeypatch):
     run_materialized_cache_correction_probe(
         snowflake_con, dialect="snowflake", monkeypatch=monkeypatch

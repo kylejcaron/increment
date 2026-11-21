@@ -41,6 +41,12 @@ def test_summary_sql_preview(postgres_con):
     run_summary_sql_probe(postgres_con, dialect="postgres")
 
 
+def test_spillover_policy_comparisons(postgres_con, tmp_path):
+    from tests.spillover_trial import run_three_policy_probe
+
+    run_three_policy_probe(postgres_con, tmp_path)
+
+
 @pytest.fixture
 def postgres_nonpublic_con(postgres_con):
     schema = f"cleanup_probe_{uuid4().hex}"

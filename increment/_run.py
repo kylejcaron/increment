@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Any, Literal, cast
+from functools import wraps
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from increment._analysis_config import UNSET, _Unset
 from increment._binding import require_reader
@@ -28,6 +29,7 @@ from increment.kernel.contracts import (
     method_estimator_id,
     metric_hash,
 )
+from increment.kernel.experiment import Experiment
 from increment.kernel.ports import (
     DecisionLogPort,
     ResultsStorePort,
@@ -59,8 +61,8 @@ if TYPE_CHECKING:
     from increment.estimation.readout_types import ReadoutMetadata
     from increment.estimation.results import LiftEstimate
     from increment.kernel.context import EvidenceExecutionContext
-    from increment.kernel.experiment import Experiment
     from increment.semantics.models import Metric
+    from increment.spillover import SpilloverExperiment, SpilloverReader, SpilloverResult
 
 
 _CONTRAST_CONTEXT_NOT_PORTABLE = RefusalSpec(
@@ -1192,6 +1194,56 @@ def _preflight_persistence(
         refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
 
 
+def _dispatch_run(ordinary: Callable[..., RunResult]) -> Callable[..., RunResult | SpilloverResult]:
+    """Route the exact keywords supplied without importing spillover on ordinary calls."""
+
+    @wraps(ordinary)
+    def dispatch(
+        experiment: object, reader: object, **kwargs: object
+    ) -> RunResult | SpilloverResult:
+        if not isinstance(experiment, Experiment):
+            from increment.spillover import SpilloverExperiment, SpilloverReader, _unsupported
+
+            if isinstance(experiment, SpilloverExperiment):
+                if kwargs:
+                    _unsupported(kwargs)
+                if not isinstance(reader, SpilloverReader):
+                    _refuse("kernel.run.reader_required", received=type(reader).__name__)
+                with translating_compile_gaps():
+                    return reader._read(experiment)
+        return ordinary(experiment, reader, **kwargs)
+
+    return dispatch
+
+
+@overload
+def run(
+    experiment: Experiment,
+    reader: ExperimentReader,
+    *,
+    views: Sequence[View] | None = None,
+    run_id: str | None = None,
+    results_store: ResultsStorePort | None = None,
+    decision_log: DecisionLogPort | None = None,
+    capture: SequentialCaptureRequest | None = None,
+    execution_context: EvidenceExecutionContext | None = None,
+    decision_method: Method | _Unset = UNSET,
+    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
+    prior: Prior | None | _Unset = UNSET,
+    metrics: Sequence[str | Metric] | None = None,
+    estimands: Sequence[str] | None = None,
+    value_scale: Mapping[str, ValueScale] | None = None,
+    exploratory_metrics: Sequence[str] | None = None,
+    population: Literal["assigned", "triggered"] | None = None,
+    coherence: Literal["captured", "live"] | _Unset = UNSET,
+) -> RunResult: ...
+
+
+@overload
+def run(experiment: SpilloverExperiment, reader: SpilloverReader) -> SpilloverResult: ...
+
+
+@_dispatch_run
 def run(  # noqa: PLR0913
     experiment: Experiment,
     reader: ExperimentReader,

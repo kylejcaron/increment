@@ -144,6 +144,16 @@ QR_CUPED_SOURCE_REFUSALS = {
     "from_switchback_panel": "source.frame.switchback.metric",
 }
 
+# This family needs two assignment logs, not the single arm of the scalar cells.
+SPILLOVER_DISPOSITIONS = {
+    "from_definitions": "supported",
+    "from_unit_day_artifact": "not_expressible",
+    "from_unit_summary": "not_expressible",
+    "from_unit_panel": "not_expressible",
+    "from_switchback_panel": "not_expressible",
+    "from_moments": "not_expressible",
+}
+
 
 @dataclass(frozen=True)
 class Cell:

@@ -171,11 +171,11 @@ gates, not observed results.
 - **Switchbacks:** carryover is assumed away, not tested, and the default t
   reference is approximate ([carryover](limitations.md#switchback-carryover-is-assumed-away-not-tested),
   [reference](limitations.md#the-switchback-t-reference-is-itself-an-approximation)).
-- **Two-stage spillover:** RCT2 matches one six-group point and variance, not a
-  coverage rate. Planning checks 12 modeled scenarios for one frozen design;
-  it does not establish coverage under cross-group influence, dependence on
-  the identities of treated peers, or unmodeled outcomes. See the
-  [evidence record](reference/validation-evidence.md#ev-spillover-rct2).
+- **Two-stage spillover:** two- and three-policy points and variances match the
+  published R implementation. That checks the calculation, not coverage.
+  Planning tests 12 modeled scenarios per registered pair. It cannot establish
+  coverage when groups influence each other, peer identity matters, or real
+  outcomes differ from those scenarios. See the [evidence record](reference/validation-evidence.md#ev-spillover-rct2).
 - **Adaptive logged policies:** refused. Historical coverage figures predate the
   gate and cannot be reproduced from the retained estimator
   ([measurements](reference/validation-evidence.md#adaptive-logger-measurements),

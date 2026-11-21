@@ -34,6 +34,24 @@ layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
+path = "increment._frame_spillover"
+layer = "core"
+depends_on = ["increment._spillover_design"]
+
+[[modules]]
+path = "increment.semantics._spillover"
+layer = "core"
+depends_on = ["increment._spillover_design", "increment.errors", "increment.semantics"]
+
+[[modules]]
+path = "increment.query.spillover"
+layer = "core"
+depends_on = [
+  "increment._compile_gaps", "increment._optional", "increment._spillover_design",
+  "increment.query", "increment.query.artifact_ports", "increment.semantics", "increment.semantics._spillover",
+]
+
+[[modules]]
 path = "increment.estimation.spillover"
 layer = "core"
 depends_on = ["increment._spillover_design", "increment.errors"]
@@ -41,12 +59,16 @@ depends_on = ["increment._spillover_design", "increment.errors"]
 [[modules]]
 path = "increment.power._spillover"
 layer = "core"
-depends_on = ["increment._spillover_design", "increment.errors", "increment.estimation.spillover"]
+depends_on = ["increment._spillover_design", "increment.estimation.spillover"]
 
 [[modules]]
 path = "increment.spillover"
 layer = "core"
-depends_on = ["increment._spillover_design", "increment.errors", "increment.estimation.spillover", "increment.power._spillover"]
+depends_on = [
+  "increment._canonical", "increment._evidence_loaders", "increment._frame_spillover",
+  "increment._spillover_design", "increment.errors", "increment.estimation.spillover",
+  "increment.kernel.contracts", "increment.power._spillover",
+]
 
 [[modules]]
 path = "increment.experimental"
@@ -2059,6 +2081,7 @@ depends_on = [
   "increment.decision", "increment.errors", "increment.frame",
   "increment.kernel", "increment.kernel.contracts",
   "increment.plan", "increment.query", "increment.semantics",
+  "increment.query.spillover", "increment.semantics._spillover", "increment.spillover",
   "increment.sequential_source", "increment.sources", "increment.switchback",
 ]
 
@@ -2111,6 +2134,7 @@ depends_on = [
   "increment._exploratory",
   "increment._interpretation",
   "increment._runnability",
+  "increment.spillover",
   "increment.semantics",
   "increment.errors",
   "increment.kernel.contracts",

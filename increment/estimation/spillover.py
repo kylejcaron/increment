@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from collections import Counter
+import math
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.special import ndtri_exp
 
-from increment._spillover_design import SpilloverDesign
+from increment._spillover_design import PolicyCell, SpilloverComparison, SpilloverPopulation
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
-
-Z95: Final = 1.959963984540054  # Upper 0.025 standard Normal critical value.
 
 _AVAILABLE, _TOO_FEW, _NO_VARIATION, _ZERO_VARIANCE, _NONFINITE = range(5)
 _REASON_TEXT = {
@@ -29,6 +28,13 @@ _INVALID_COUNTS = RefusalSpec(
 )
 # Bound working arrays independently of the number of assignments supplied.
 _WORK_CELLS = 262_144
+
+
+def critical_value(family_size: int) -> float:
+    """Two-sided 95% Bonferroni critical value for the frozen family."""
+    if isinstance(family_size, bool) or not isinstance(family_size, int) or family_size < 1:
+        refuse(_INVALID_COUNTS, requirement="family size must be a positive integer")
+    return float(-ndtri_exp(math.log(0.025) - math.log(family_size)))
 
 
 def reason_text(code: int | np.integer) -> str | None:
@@ -49,104 +55,231 @@ class SpilloverBatch:
         return self.reason == _AVAILABLE
 
 
-def _arm_moments(
-    totals: NDArray[np.float64], mask: NDArray[np.bool_], count: int, *, estimate_only: bool
-) -> tuple[NDArray[np.float64], NDArray[np.float64] | None]:
-    values = totals[mask].reshape(len(totals), count)
-    # Center before averaging: an identical noninteger total repeated in an arm has exactly zero spread.
-    origin = values[:, 0].copy()
-    values -= origin[:, None]
-    offset = values.mean(axis=1)
-    origin += offset
-    if estimate_only:
-        return origin, None
-    values -= offset[:, None]
-    sum_squares = np.einsum("ij,ij->i", values, values)
-    return origin, sum_squares / (count * (count - 1))
+@dataclass(frozen=True, slots=True)
+class BatchCell:
+    """Simulated means, centered sums of squares and unoffered counts in one policy cell."""
+
+    mean_total: NDArray[np.float64]
+    ss: NDArray[np.float64]
+    events: np.ndarray
+    unoffered: np.ndarray
 
 
 @dataclass(frozen=True, slots=True)
 class _Stratum:
+    name: str
     columns: slice
-    n_high: int
-    n_low: int
+    n_policy: int
+    n_reference: int
     weight: float
 
 
-def _strata(design: SpilloverDesign) -> tuple[_Stratum, ...]:
-    people = sum(len(g.members) for g in design.groups)
+def _strata(
+    population: SpilloverPopulation, comparison: SpilloverComparison
+) -> tuple[_Stratum, ...]:
+    people = sum(g.size for g in population.groups)
     start = 0
     strata = []
-    for stratum, groups in Counter(g.stratum for g in design.groups).items():
-        n_high = design.high_groups[stratum]
+    # Population columns are in canonical (stratum, group) order.
+    for name, quotas in sorted(population.design.groups_per_policy.items()):
+        groups = sum(quotas.values())
         strata.append(
-            _Stratum(slice(start, start + groups), n_high, groups - n_high, groups / people)
+            _Stratum(
+                name,
+                slice(start, start + groups),
+                quotas[comparison.policy],
+                quotas[comparison.reference],
+                groups / people,
+            )
         )
         start += groups
     return tuple(strata)
 
 
-def _summarize_rows(
-    high: NDArray[np.bool_],
-    successes: np.ndarray,
-    sizes: NDArray[np.int64],
-    low_untreated: NDArray[np.int64],
-    high_untreated: NDArray[np.int64],
+@dataclass(frozen=True, slots=True)
+class _Pair:
+    difference: NDArray[np.float64]
+    policy_ss: NDArray[np.float64]
+    reference_ss: NDArray[np.float64]
+    has_event: NDArray[np.bool_]
+    has_nonevent: NDArray[np.bool_]
+
+
+def _finish(
     strata: tuple[_Stratum, ...],
+    pairs: Iterable[_Pair],
     estimate: NDArray[np.float64],
     se: NDArray[np.float64],
     reason: NDArray[np.uint8],
 ) -> None:
-    untreated = np.where(high, high_untreated, low_untreated)
-    if np.any(successes < 0) or np.any(successes > untreated):
-        refuse(
-            _INVALID_COUNTS,
-            requirement="event counts must lie between zero and the untreated count",
-        )
-    # Convert before multiplying: n*y may exceed the capacity of the *input* integer dtype.
-    totals = np.multiply(successes, sizes, dtype=np.float64)
-    totals /= untreated
-    scarce = any(min(s.n_low, s.n_high) < 2 for s in strata)
-    for s in strata:
-        policy = high[:, s.columns]
-        if np.any(policy.sum(axis=1) != s.n_high):
-            refuse(
-                _INVALID_COUNTS,
-                requirement="each stratum must have its declared number of high groups",
-            )
-        values = totals[:, s.columns]
-        high_mean, high_var = _arm_moments(values, policy, s.n_high, estimate_only=scarce)
-        low_mean, low_var = _arm_moments(values, ~policy, s.n_low, estimate_only=scarce)
-        estimate += s.weight * (high_mean - low_mean)
-        if high_var is not None and low_var is not None:
-            se += s.weight**2 * (high_var + low_var)
-
+    # With T_j = n_j*y_j/u_j, each policy mean estimates a group total, not a rate.
+    # The stratum expands it to all G_s groups, then divides by full roster size N.
+    has_event = np.zeros(len(estimate), dtype=bool)
+    has_nonevent = np.zeros_like(has_event)
+    scarce = False
+    for s, pair in zip(strata, pairs, strict=True):
+        estimate += s.weight * pair.difference
+        if min(s.n_policy, s.n_reference) < 2:
+            scarce = True
+            continue
+        # SS/[g*(g-1)] is the sample variance of T divided by its cell count.
+        se += s.weight**2 / (s.n_policy * (s.n_policy - 1)) * pair.policy_ss
+        se += s.weight**2 / (s.n_reference * (s.n_reference - 1)) * pair.reference_ss
+        has_event |= pair.has_event
+        has_nonevent |= pair.has_nonevent
     if scarce:
         reason.fill(_TOO_FEW)
         se.fill(np.nan)
         return
-    # With explicit rosters, totals are bounded by group sizes and even their squared sums fit float64.
-    # A nonfinite variance is an arithmetic failure, not lack of events in an observed assignment.
     reason[~np.isfinite(se)] = _NONFINITE
     reason[se == 0] = _ZERO_VARIANCE
-    reason[~successes.any(axis=1) | ~(successes < untreated).any(axis=1)] = _NO_VARIATION
+    reason[~(has_event & has_nonevent)] = _NO_VARIATION
     se[reason != _AVAILABLE] = np.nan
     np.sqrt(se, out=se)
 
 
-def summarize_counts(
-    design: SpilloverDesign, high: NDArray[np.bool_], successes: np.ndarray
+def _empty_batch(rows: int) -> SpilloverBatch:
+    return SpilloverBatch(np.zeros(rows), np.zeros(rows), np.zeros(rows, dtype=np.uint8))
+
+
+def _cell_pairs(
+    strata: tuple[_Stratum, ...],
+    comparison: SpilloverComparison,
+    cells: Mapping[tuple[str, str], BatchCell],
+) -> Iterable[_Pair]:
+    for s in strata:
+        p = cells.get((s.name, comparison.policy))
+        r = cells.get((s.name, comparison.reference))
+        if p is None or r is None:
+            refuse(
+                _INVALID_COUNTS, requirement="supply one cell for each compared policy and stratum"
+            )
+        yield _Pair(
+            p.mean_total - r.mean_total,
+            p.ss,
+            r.ss,
+            (p.events > 0) | (r.events > 0),
+            (p.events < p.unoffered) | (r.events < r.unoffered),
+        )
+
+
+def summarize_cells(
+    population: SpilloverPopulation,
+    comparison: SpilloverComparison,
+    cells: Mapping[tuple[str, str], BatchCell],
 ) -> SpilloverBatch:
-    """Estimate high minus low from batch-by-group policies and integer untreated event counts.
+    """Finish pre-reduced simulations; cell fields are vectors over the same assignments."""
+    strata = _strata(population, comparison)
+    first = cells.get((strata[0].name, comparison.policy))
+    if first is None:
+        refuse(_INVALID_COUNTS, requirement="supply one cell for each compared policy and stratum")
+    result = _empty_batch(len(first.mean_total))
+    pairs = _cell_pairs(strata, comparison, cells)
+    _finish(strata, pairs, result.estimate, result.standard_error, result.reason)
+    return result
+
+
+def estimate_comparison(
+    population: SpilloverPopulation,
+    comparison: SpilloverComparison,
+    cells: Sequence[PolicyCell],
+) -> tuple[float, float | None, str | None]:
+    """Estimate policy minus reference; preserve the observed point when SE is unavailable."""
+    batched = {}
+    quotas = population.design.groups_per_policy
+    for cell in cells:
+        if cell.policy not in (comparison.policy, comparison.reference):
+            continue
+        key = (cell.stratum, cell.policy)
+        if (
+            key in batched
+            or cell.stratum not in quotas
+            or quotas[cell.stratum][cell.policy] != cell.groups
+        ):
+            refuse(
+                _INVALID_COUNTS, requirement="each compared cell must match its frozen group count"
+            )
+        batched[key] = BatchCell(
+            np.array([cell.mean_total]),
+            np.array([cell.ss]),
+            np.array([cell.events]),
+            np.array([cell.unoffered]),
+        )
+    batch = summarize_cells(population, comparison, batched)
+    reason = reason_text(batch.reason[0])
+    se = float(batch.standard_error[0]) if reason is None else None
+    return float(batch.estimate[0]), se, reason
+
+
+def _moments(
+    totals: NDArray[np.float64], mask: NDArray[np.bool_], count: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    if np.any(np.count_nonzero(mask, axis=1) != count):
+        refuse(_INVALID_COUNTS, requirement="each stratum must match its compared policy quotas")
+    values = totals[mask].reshape(len(totals), count)
+    # Center on an observed value before averaging. Repeated noninteger totals
+    # must have exactly zero spread, not a rounding artifact of the mean.
+    origin = values[:, 0].copy()
+    values -= origin[:, None]
+    offset = values.mean(axis=1)
+    origin += offset
+    values -= offset[:, None]
+    return origin, np.einsum("ij,ij->i", values, values)
+
+
+def _row_pair(
+    s: _Stratum,
+    assignment: np.ndarray,
+    successes: np.ndarray,
+    sizes: NDArray[np.int64],
+    policy_untreated: NDArray[np.int64],
+    reference_untreated: NDArray[np.int64],
+) -> _Pair:
+    policy = assignment == 1
+    reference = assignment == 0
+    other = assignment == 2
+    if assignment.min() < 0 or assignment.max() > 2:
+        refuse(_INVALID_COUNTS, requirement="use policy codes 0, 1 or 2")
+    untreated = np.where(policy, policy_untreated, reference_untreated)
+    untreated[other] = 0  # The marginal draw collects no outcomes under nuisance policies.
+    # Compare uint64 events without converting adjacent large integers to the same float.
+    limit = untreated.view(np.uint64) if successes.dtype.kind == "u" else untreated
+    if np.any(successes < 0) or np.any(successes > limit):
+        refuse(
+            _INVALID_COUNTS,
+            requirement="bound events by the unoffered count and supply zero for nuisance groups",
+        )
+    totals = np.multiply(successes, sizes, dtype=np.float64)
+    np.divide(totals, untreated, out=totals, where=~other)
+    p_mean, p_ss = _moments(totals, policy, s.n_policy)
+    r_mean, r_ss = _moments(totals, reference, s.n_reference)
+    return _Pair(
+        p_mean - r_mean,
+        p_ss,
+        r_ss,
+        successes.any(axis=1),
+        (successes < limit).any(axis=1),
+    )
+
+
+def summarize_counts(
+    population: SpilloverPopulation,
+    comparison: SpilloverComparison,
+    assignment: np.ndarray,
+    successes: np.ndarray,
+) -> SpilloverBatch:
+    """Estimate a directed contrast from simulated assignments and untreated event counts.
 
     Parameters
     ----------
-    design : SpilloverDesign
-        Frozen roster and policy-specific treatment counts.
-    high : NDArray[np.bool_]
-        Boolean policy assignments in canonical design order.
+    population : SpilloverPopulation
+        Frozen group roster and assignment law.
+    comparison : SpilloverComparison
+        Named policy minus reference.
+    assignment : np.ndarray
+        Integer batch-by-group array in canonical population order: reference=0, policy=1, other=2.
     successes : np.ndarray
-        Counts of events among the untreated under each realized policy.
+        Integer unoffered event counts in compared groups; zero in other columns.
 
     Returns
     -------
@@ -156,38 +289,54 @@ def summarize_counts(
     Notes
     -----
     For group j, T_j = n_j * successes_j / untreated_j estimates its untreated outcome total.
-    Stratum s contributes (G_s / N) times the difference of the two policy means of T_j, where
-    N is roster size. The variance contribution is (G_s / N)^2 times the sum of each arm's
-    sample variance divided by its group count (Jiang, Imai & Malani, Biometrics 2023).
+    Stratum s contributes (G_s / N) times the difference of the compared policy means of T_j,
+    with all randomized groups in G_s and all eligible people in N. Its variance contribution
+    is (G_s / N)^2 times the sum of each cell's sample variance divided by its group count
+    (Jiang, Imai & Malani, Biometrics 2023).
     Inference assumes outcomes depend on the number, not the identities, of treated peers.
     """
-    g = len(design.groups)
-    if high.ndim != 2 or high.shape[1] != g or high.shape != successes.shape:
+    g = len(population.groups)
+    if (
+        not isinstance(assignment, np.ndarray)
+        or not isinstance(successes, np.ndarray)
+        or assignment.ndim != 2
+        or assignment.shape[1] != g
+        or assignment.shape != successes.shape
+    ):
         refuse(
             _INVALID_COUNTS, requirement="supply aligned assignment-by-group arrays in design order"
         )
-    if high.dtype != np.bool_ or successes.dtype.kind not in "iu":
-        refuse(_INVALID_COUNTS, requirement="supply boolean policies and integer event counts")
-    sizes = np.fromiter((len(group.members) for group in design.groups), np.int64, count=g)
-    low_untreated = sizes - np.fromiter(
-        (group.low_treated for group in design.groups), np.int64, count=g
+    if assignment.dtype.kind not in "iu" or successes.dtype.kind not in "iu":
+        refuse(_INVALID_COUNTS, requirement="supply integer policy codes and integer event counts")
+    policy_idx = population.design.policies.index(comparison.policy)
+    reference_idx = population.design.policies.index(comparison.reference)
+    sizes = np.fromiter((group.size for group in population.groups), np.int64, count=g)
+    p_untreated = sizes - np.fromiter(
+        (group.offers[policy_idx] for group in population.groups), np.int64, count=g
     )
-    high_untreated = sizes - np.fromiter(
-        (group.high_treated for group in design.groups), np.int64, count=g
+    r_untreated = sizes - np.fromiter(
+        (group.offers[reference_idx] for group in population.groups), np.int64, count=g
     )
-    strata = _strata(design)
-    n = high.shape[0]
-    result = SpilloverBatch(np.zeros(n), np.zeros(n), np.zeros(n, dtype=np.uint8))
+    strata = _strata(population, comparison)
+    n = len(assignment)
+    result = _empty_batch(n)
     batch_rows = max(1, _WORK_CELLS // g)
     for start in range(0, n, batch_rows):
         rows = slice(start, start + batch_rows)
-        _summarize_rows(
-            high[rows],
-            successes[rows],
-            sizes,
-            low_untreated,
-            high_untreated,
+        pairs = (
+            _row_pair(
+                s,
+                assignment[rows, s.columns],
+                successes[rows, s.columns],
+                sizes[s.columns],
+                p_untreated[s.columns],
+                r_untreated[s.columns],
+            )
+            for s in strata
+        )
+        _finish(
             strata,
+            pairs,
             result.estimate[rows],
             result.standard_error[rows],
             result.reason[rows],

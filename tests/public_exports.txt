@@ -436,6 +436,9 @@ trigger_rates: Read each arm's observed trigger rate.
 unit_counts: Read enrolled unit counts by group.
 
 [increment.spillover]
-SpilloverGroup: Record who belongs to a group and how many offers it would receive under each policy.
-SpilloverDesign: Freeze the eligible groups, the number receiving more offers, the outcome and its time window.
-plan_spillover: Check a proposed two-stage offer experiment and analyze the people who received no offer.
+SpilloverComparison: Choose which two offer levels to compare and which change would matter.
+SpilloverDesign: Fix the offer levels, the number of groups assigned to each, and the comparisons before launch.
+SpilloverExperiment: Save the registered design and inspect the planning advice for each comparison.
+SpilloverReader: Read the two assignment logs and outcomes against the frozen roster.
+SpilloverResult: Read the change among people without an offer for each registered pair of policies.
+from_frame: Prepare a spillover experiment from local eligibility, offer-count and assignment tables.

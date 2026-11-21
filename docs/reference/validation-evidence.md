@@ -309,102 +309,31 @@ These records compare the named estimator and assumptions, not every use of the 
 
 ### EV-SPILLOVER-RCT2
 
-**Matched comparison (`third_party_tool`).** The [two-stage spillover
-plan](../guides/spillover.md) uses the untreated policy contrast in
-[Jiang, Imai & Malani (2023)](https://imai.fas.harvard.edu/research/twostage.html).
-The reference is R 4.4.2 with [RCT2 v0.0.1 `CalAPO`](https://github.com/cran/RCT2/blob/5820e34f4a20ca116f0b7fd069ebdf735523324d/R/CalAPO.R).
-This is **not** `Test2SRE`, the joint test for treated and untreated people.
+**What matches.** The untreated policy contrast in the [spillover guide](../guides/spillover.md) follows [Jiang, Imai & Malani (2023)](https://imai.fas.harvard.edu/research/twostage.html). The independent reference is [`CalAPO` in RCT2 v0.0.1](https://github.com/cran/RCT2/blob/5820e34f4a20ca116f0b7fd069ebdf735523324d/R/CalAPO.R), not `Test2SRE`, the joint test for treated and untreated people. We scale each person's outcome by their group size divided by the mean size **across the whole roster**. That gives people equal weight in RCT2's group average, even when a third policy is not part of a particular comparison.
 
-**Inputs and result.** In one stratum of six groups, sizes were `(4,5,6,8,7,9)`;
-groups 1, 3 and 6 (numbered from 1) were assigned high. Treated counts were
-`(3,2,4,3,2,6)` and untreated event counts were `(1,1,0,2,4,1)`. To give each
-person equal weight in RCT2's group average, scale each outcome by group size
-divided by mean group size. Take the untreated component, reversing its sign
-from low-minus-high to high-minus-low. The executed reference returned
-**−0.17777777777777776** for the point and **0.0651968734020016** for its variance.
-The comparison uses absolute tolerance `1e-14` on each for floating-point
-arithmetic: `tests/estimation/test_spillover.py::test_rct2_unequal_size_person_weighted_untreated_contrast`.
-It checks the estimator, not power, coverage, or other experiment entry points.
+| Six-group trial | Directed comparison | Point | Estimated variance |
+|---|---|---:|---:|
+| Two policies, sizes 4, 5, 6, 8, 7, 9 | More minus fewer | −0.17777778 | 0.06519687 |
+| Three policies, sizes 6, 8, 5, 7, 9, 10 | Middle minus base | +0.03015873 | 0.06292013 |
+| Same three-policy trial | Upper minus base | +0.48095238 | 0.05671202 |
 
-**Reproduce the comparison.** Save the pinned R source linked above (SHA-256
-`db9f91a162f366af68974757d0a485d2a02fd5b55c624ecf45f5a2ec3473d648`).
-Run `Rscript tests/oracles/generate/gen_spillover_oracle.R /path/to/CalAPO.R`.
-The included [guide example](../guides/spillover.md#after-the-window-closes-reconcile-both-logs)
-uses the same data with no baseline rate; its point does not qualify an interval.
+For the three-policy trial, the offer counts were 1, 2 and 3. The six groups were assigned base, middle, upper, base, middle, upper; counts of untreated successes were 0, 2, 2, 3, 1 and 4. These checks validate points and variances, not coverage. To reproduce, save the pinned R source above (SHA-256 `db9f91a162f366af68974757d0a485d2a02fd5b55c624ecf45f5a2ec3473d648`) and run `Rscript tests/oracles/generate/gen_spillover_oracle.R /path/to/CalAPO.R`.
 
-**Scope of the interval.** The two-sided 95% Normal interval is asymptotic in
-independent, informative groups. Draw policies independently across strata;
-conditional on those policies, draw offers independently across groups. Each
-draw is uniform at its fixed count. Within-group outcomes may depend on **how many** peers receive
-treatment, not **which** peers; there must be no influence across groups.
-A large number of people, or even a minimum group count, does not establish
-coverage. On a nine-group example with offsetting changes and exactly zero
-average effect, the unguarded interval excluded zero on 12 of 60 possible
-group assignments.
+**Why a range is conditional.** The Normal approximation relies on independent, informative groups. A large number of eligible people does not substitute for those groups. In a nine-group trial with gains and losses that cancelled exactly, the unguarded interval excluded zero in **12 of 60** possible assignments. Counting that as a real spillover one time in five is not acceptable for a nominal 95% interval.
 
-**What planning checks.** Given one historical rate, the plan distributes the
-rounded baseline event count three ways: proportional to group size, largest
-groups first, and smallest groups first. It crosses these with four high-policy
-schedules: no change, cancelling gains and losses, and the requested change
-either spread across groups or concentrated in a few. The planner rounds
-the change to whole people. For example, `0.09998` on a roster of 20,000
-rounds to 2,000 additional events: the planner tests a
-10-percentage-point increase and names that change in its launch message.
+**Before launch.** For each comparison, the planner distributes the historical number of events three ways: proportional to group size, largest groups first, and smallest groups first. It models four ways untreated outcomes could respond: no change, cancelling gains and losses, the requested change spread out, and that change concentrated. Only groups whose offer count would actually change can gain or lose events. Counts round to whole people. For example, a five-point gain in 10,000 people is 500 events; at a 1% baseline only 100 gains can be offset by 100 losses in the zero-average scenario.
 
-At a 1% baseline on 10,000 people, a five-point increase means 500 additional
-events. Only 100 baseline events can be lost, so the zero-average scenario can
-offset at most 100 gains with 100 losses. This limit does not reduce the
-500-event increase tested in the scenarios with a benefit.
+Each of these 12 scenarios draws policies at their registered counts within strata, then draws people without replacement in groups. A group assigned a third policy is neither treatment nor reference in that comparison. With $m$ registered comparisons, each nominal two-sided interval uses a Normal upper-tail probability of $0.025/m$. This protects the family via the sum of the individual error probabilities; it does not assume comparisons sharing a reference are independent. An unavailable comparison stays in $m$.
 
-For each of the 12 labeled scenarios,
-v1 uses 65,536 independent assignments (PCG64, seed 9501), drawing the group
-policy within each stratum and untreated successes without replacement within
-each group. A missing interval counts as a miss and never as a detection.
+An interval missing the true effect **or unavailable** counts as a miss. A detection must exclude zero in the intended direction. The planner computes 24 one-sided exact binomial bounds per comparison: 12 on misses, and two for detection in each of six nonzero scenarios. Each bound uses a tail probability of $0.05/(24m)$. All 12 upper miss bounds for a comparison must be at most $0.055/m$ before that comparison can give a live range. The plan meets its detection target if all six lower detection bounds reach 80%; it is underpowered if any upper bound falls below 80%. Otherwise the power decision is inconclusive. Low power alone does not suppress an interval.
 
-There are **24 one-sided exact binomial bounds**, each at tail probability
-`0.05/24`: one upper bound on missing the true effect or giving no interval
-in each of the 12 scenarios, and lower and upper bounds on direction-correct
-detection in the six nonzero scenarios. This gives at least 95% simultaneous
-confidence **about these simulation probabilities for this one plan**, not
-95% coverage for every future outcome schedule. All 12 upper miss bounds must
-be at most 5.5% before interpreting detection as usable power. A false call
-under a null is an interval excluding zero; it is counted separately from an
-unavailable interval. Under an alternative, the interval must strictly exclude
-zero in the intended direction. If all six lower detection bounds reach 80%,
-the plan meets its modeled detection target; if any upper bound is below 80%,
-it is underpowered; otherwise the decision is inconclusive. Neither low power
-nor an inconclusive power decision, by itself, withholds the live interval.
+The simultaneous confidence of the simulation bounds is **about the modeled scenarios**. A family coverage interpretation requires a real population consistent with the modeled behavior for every relevant pair. These simulations cannot verify isolation between groups, indifference to *which* peers got offers, or coverage for unmodeled responses.
 
-**Operating limit and reproduction.** The planner allows at most 134,217,728
-group-by-assignment draws per scenario (2,048 groups at the fixed draw count).
-This is a computational limit, not an inferential cutoff: larger designs can
-still identify a point. To repeat the predefined planning comparisons from a
-source checkout, use `python -m calibration.spillover`. These modeled checks
-do not test whether real offices are isolated or whether peer identities matter.
+**Reproduction and limits.** Run `python -m calibration.spillover` for the 1,000-group, three-level demonstration. Two comparisons share a zero-offer reference. The recorded outcomes have variation for one comparison but not its sibling; the first interval must still use the two-comparison cutoff. Run with `--two-policy` for the six one-comparison experiments with 240, 500, or 1,000 groups and targets of +10 or +1 percentage points. There is no recommended minimum group count; assess the actual roster.
 
-**Six predefined plans.** Each office has 20 eligible people; five receive an
-offer under the low policy and ten under the high policy. Exactly half the
-offices get each policy. The historical event rate is 25%. “Worst miss” is
-the largest upper bound across all 12 scenarios. Detection bounds are for
-the least favorable of the six alternatives by lower bound; they are not
-reported as usable power when the interval check fails.
+In the 1,000-group example there were 400 base, 300 middle and 300 upper groups, each with 20 people. The planner ran 196,608 assignments per scenario. The worst upper miss bounds were 2.733% and 2.709%, both below the 2.75% limit; neither comparison reached the detection target in every scenario. Planning took 3.55 seconds in one arm64 dataframe run. In the recorded assignment, middle minus base was +46.33 points with a simultaneous interval of +39.87 to +52.80 points. Upper minus base was zero; no variation meant no interval. These are reproducible example outcomes, not expected effects in a real trial.
 
-| Offices | Change to detect | Worst miss (upper) | Detection bounds | Launch advice |
-|---:|---:|---:|---:|---|
-| 240 | +10 points | 5.46% | 40.4–41.5% | Underpowered |
-| 240 | +1 point | 5.44% | 3.5–3.9% | Underpowered |
-| 500 | +10 points | 6.52% | — | Estimate only |
-| 500 | +1 point | 6.51% | — | Estimate only |
-| 1,000 | +10 points | 5.32% | 94.2–94.7% | Meets target |
-| 1,000 | +1 point | 5.34% | 5.3–5.8% | Underpowered |
-
-The 500-office case failed the interval check, although the smaller and larger
-designs passed. With fixed counts and events concentrated in particular offices,
-the possible estimates are discrete: the interval need not improve at every
-group count. Recheck the actual roster rather than treating 1,000 as a minimum.
-All six plans together took 177 seconds in one contended arm64 run (219 MiB peak resident
-memory). The campaign also analyzes one realized assignment per roster through
-the public API, returning bounds for the qualified designs and none for 500 offices.
+One registered comparison has 65,536 assignments per scenario and a work limit of 2,048 groups. For larger families the planner chooses the draw count **before** inspecting any simulated outcome, in multiples of 65,536. The per-comparison and whole-family work limits are $2^{29}$ and $2^{31}$ group-by-assignment draws per scenario, respectively. If the required check exceeds the budget, the affected comparison still reports a point and explains why it has no interval.
 
 ## In-repo derivations and calibration evidence
 

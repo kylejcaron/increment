@@ -99,7 +99,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 | Triggered daily/as-of outcome value and lift history (membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_unit_summary) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_unit_panel) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_switchback_panel) | [supported (conditional)](#capability-ingresses-triggered-day-axis-histories-from_definitions) | [supported (conditional)](#capability-ingresses-triggered-day-axis-histories-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_moments) |
 | Triggered encouragement compliance (daily and as-of lift, compliance only; uptake stays assignment-anchored while membership enters at first eligible trigger) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_unit_summary) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_unit_panel) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_switchback_panel) | [supported](#capability-ingresses-triggered-encouragement-compliance-from_definitions) | [supported](#capability-ingresses-triggered-encouragement-compliance-from_unit_day_artifact) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_moments) |
 | Triggered clustered daily/as-of outcome readouts | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_unit_summary) | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_unit_panel) | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_switchback_panel) | [refused / supported (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_definitions) | [refused / supported (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_moments) |
-| Two-stage untreated spillover contrast | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_summary) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_panel) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_switchback_panel) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_definitions) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_day_artifact) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_moments) |
+| Two-stage untreated spillover contrast | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_summary) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_panel) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_switchback_panel) | [supported (conditional)](#capability-ingresses-untreated-spillover-from_definitions) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_day_artifact) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_moments) |
 | Logged-policy contrast | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_unit_summary) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_unit_panel) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_switchback_panel) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_definitions) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_unit_day_artifact) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_moments) |
 | TabularPolicy persistence (JSON dump and validate) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_unit_summary) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_unit_panel) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_switchback_panel) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_definitions) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_unit_day_artifact) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_moments) |
 | Mixed-covariate CUPED × scalar cuped | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_summary) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_panel) | [source limited](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_switchback_panel) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_definitions) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_day_artifact) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_moments) |
@@ -7474,9 +7474,9 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Status:** not expressible
 
-**Reason:** Use plan_spillover with the frozen two-stage design instead.
+**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
 
-**Operation:** `plan.analyze(group_high=..., treated=..., outcomes=...)`
+**Operation:** `run(experiment, reader)`
 
 **Stage:** construction
 
@@ -7490,9 +7490,9 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Status:** not expressible
 
-**Reason:** Use plan_spillover with the frozen two-stage design instead.
+**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
 
-**Operation:** `plan.analyze(group_high=..., treated=..., outcomes=...)`
+**Operation:** `run(experiment, reader)`
 
 **Stage:** construction
 
@@ -7506,9 +7506,9 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Status:** not expressible
 
-**Reason:** Use plan_spillover with the frozen two-stage design instead.
+**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
 
-**Operation:** `plan.analyze(group_high=..., treated=..., outcomes=...)`
+**Operation:** `run(experiment, reader)`
 
 **Stage:** construction
 
@@ -7518,15 +7518,13 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Recorded path:** `from_definitions`
 
-**Condition:** An ordinary experiment assignment cannot represent this two-stage design
+**Condition:** The warehouse validates both assignment stages and returns summaries by policy and stratum
 
-**Status:** not expressible
+**Status:** supported
 
-**Reason:** Use plan_spillover with the frozen two-stage design instead.
+**Operation:** `from_definitions(..., family='spillover') and run()`
 
-**Operation:** `plan.analyze(group_high=..., treated=..., outcomes=...)`
-
-**Stage:** construction
+**Stage:** read
 
 <span id="capability-ingresses-untreated-spillover-from_unit_day_artifact"></span>
 
@@ -7538,9 +7536,9 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Status:** not expressible
 
-**Reason:** Use plan_spillover with the frozen two-stage design instead.
+**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
 
-**Operation:** `plan.analyze(group_high=..., treated=..., outcomes=...)`
+**Operation:** `run(experiment, reader)`
 
 **Stage:** construction
 
@@ -7554,9 +7552,9 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Status:** not expressible
 
-**Reason:** Use plan_spillover with the frozen two-stage design instead.
+**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
 
-**Operation:** `plan.analyze(group_high=..., treated=..., outcomes=...)`
+**Operation:** `run(experiment, reader)`
 
 **Stage:** construction
 
@@ -7564,11 +7562,11 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 #### Two-stage untreated spillover contrast: family-owned operations
 
-**Condition:** Both assignment logs match the design and all untreated outcomes are recorded; without a baseline rate only the person-weighted point estimate is reported
+**Condition:** Named offer policies and both assignment logs identify the untreated comparisons
 
 **Status:** supported
 
-**Operation:** `plan.analyze(group_high=..., treated=..., outcomes=...)`
+**Operation:** `spillover.from_frame() and run()`
 
 **Stage:** read
 

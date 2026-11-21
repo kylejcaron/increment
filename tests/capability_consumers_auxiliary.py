@@ -13,6 +13,7 @@ from tests.capability_contracts import (
     OutcomeKind,
     ParityDeclaration,
 )
+from tests.parity_harness.matrix import SPILLOVER_DISPOSITIONS
 
 
 def _expectation(
@@ -1088,32 +1089,33 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
         tuple(
             _expectation(
                 f"{ingress}_not_expressible",
-                "plan.analyze(group_high=..., treated=..., outcomes=...)",
+                "run(experiment, reader)",
                 ingress,
                 "An ordinary experiment assignment cannot represent this two-stage design",
                 "not_expressible",
                 "tests.test_spillover_capability::test_ordinary_and_two_stage_assignments_are_not_interchangeable",
-                reason="Use plan_spillover with the frozen two-stage design instead.",
+                reason="Use spillover.from_frame or from_definitions with the spillover family.",
                 stage="construction",
             )
-            for ingress in (
-                "from_unit_summary",
-                "from_unit_panel",
-                "from_switchback_panel",
-                "from_definitions",
-                "from_unit_day_artifact",
-                "from_moments",
-            )
+            for ingress, status in SPILLOVER_DISPOSITIONS.items()
+            if status == "not_expressible"
         )
         + (
             _expectation(
-                "untreated_contrast_supported",
-                "plan.analyze(group_high=..., treated=..., outcomes=...)",
-                "plan_spillover",
-                "Both assignment logs match the design and all untreated outcomes are recorded; "
-                "without a baseline rate only the person-weighted point estimate is reported",
+                "dataframe_supported",
+                "spillover.from_frame() and run()",
+                "spillover.from_frame",
+                "Named offer policies and both assignment logs identify the untreated comparisons",
                 "supported",
-                "tests.test_spillover::test_unassessed_trial_keeps_point_and_distinguishes_observed_scarcity",
+                "tests.test_spillover_capability::test_named_spillover_comparisons_match_through_frame_and_definitions",
+            ),
+            _expectation(
+                "warehouse_supported",
+                "from_definitions(..., family='spillover') and run()",
+                "from_definitions",
+                "The warehouse validates both assignment stages and returns summaries by policy and stratum",
+                "supported",
+                "tests.test_spillover_capability::test_named_spillover_comparisons_match_through_frame_and_definitions",
             ),
         ),
     ),

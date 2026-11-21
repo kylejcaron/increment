@@ -1,207 +1,148 @@
 """Binary untreated outcomes under fixed group-policy and within-group treatment counts."""
 
-from dataclasses import FrozenInstanceError, replace
+from collections import defaultdict
 from fractions import Fraction
 from itertools import combinations, product
 from math import sqrt
 from statistics import mean, variance
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pytest
 from scipy.special import ndtr
 
-from increment._spillover_design import SpilloverDesign, SpilloverGroup
+from increment._spillover_design import (
+    GroupProfile,
+    PolicyCell,
+    SpilloverComparison,
+    SpilloverDesign,
+    SpilloverPopulation,
+)
 from increment.errors import InvalidRequestError
-from increment.estimation.spillover import Z95, reason_text, summarize_counts
+from increment.estimation import spillover as estimation
+from increment.estimation.spillover import (
+    BatchCell,
+    critical_value,
+    estimate_comparison,
+    reason_text,
+    summarize_cells,
+    summarize_counts,
+)
 
 
-def _group(index, size=4, low=1, high=2, stratum="all"):
-    return SpilloverGroup(
-        str(index), tuple(f"{index}:{i}" for i in range(size)), low, high, stratum
+def _comparison(policy="upper", reference="base"):
+    return SpilloverComparison(policy=policy, reference=reference, meaningful_effect=0.1)
+
+
+def _group(i, size=4, offers=(1, 2), stratum="all"):
+    return GroupProfile(group_id=f"g{i:03d}", stratum=stratum, size=size, offers=offers)
+
+
+def _population(groups, quotas=None, comparisons=None):
+    design = SpilloverDesign(
+        groups_per_policy=(
+            {"all": {"base": len(groups) // 2, "upper": len(groups) // 2}}
+            if quotas is None
+            else quotas
+        ),
+        comparisons=(_comparison(),) if comparisons is None else comparisons,
+        outcome="visit",
+        horizon="7d",
+    )
+    return SpilloverPopulation(design=design, groups=groups, roster_digest="a" * 64)
+
+
+def _cells(population, labels, events):
+    # Independent cell reduction in rational arithmetic, in arbitrary evidence order.
+    totals = defaultdict(list)
+    counts = defaultdict(int)
+    unoffered = defaultdict(int)
+    for g, label, e in zip(population.groups, labels, events, strict=True):
+        untreated = g.size - g.offers[population.design.policies.index(label)]
+        if untreated:
+            key = (g.stratum, label)
+            totals[key].append(Fraction(g.size * int(e), untreated))
+            counts[key] += int(e)
+            unoffered[key] += untreated
+    return tuple(
+        PolicyCell(
+            stratum=s,
+            policy=p,
+            groups=len(ts),
+            mean_total=float(mean(ts)),
+            ss=float(sum((t - mean(ts)) ** 2 for t in ts)),
+            unoffered=unoffered[s, p],
+            events=counts[s, p],
+        )
+        for (s, p), ts in reversed(totals.items())
     )
 
 
-def _design(groups, high=None):
-    return SpilloverDesign(
-        groups, {"all": len(groups) // 2} if high is None else high, "visit", "7d"
+def _check_rct2(population, labels, events, comparison, point, variance_):
+    codes = np.array(
+        [[{comparison.reference: 0, comparison.policy: 1}.get(label, 2) for label in labels]],
+        dtype=np.int8,
     )
-
-
-def _trial():
-    groups = (_group("b"), _group("a"), _group("c"), _group("d"))
-    high = {g.group_id: i % 2 for i, g in enumerate(groups)}
-    treated = {
-        person: i < (g.high_treated if high[g.group_id] else g.low_treated)
-        for g in groups
-        for i, person in enumerate(g.members)
-    }
-    outcomes = {person: int(person.endswith(":3")) for person in treated if not treated[person]}
-    return _design(groups), high, treated, outcomes
-
-
-def test_design_snapshots_labels_members_and_quota_in_canonical_order():
-    people = ["amy", "bob", "cat"]
-    a = SpilloverGroup("z", people, 1, 2, "A")
-    groups = [_group("b", stratum="B"), a, _group("m", stratum="A"), _group("a", stratum="B")]
-    quotas = {"B": np.int64(1), "A": 1}
-    design = _design(groups, quotas)
-    people.clear()
-    groups.clear()
-    quotas.clear()
-    assert design.groups[1].members == ("amy", "bob", "cat")
-    assert [(g.stratum, g.group_id) for g in design.groups] == [
-        ("A", "m"),
-        ("A", "z"),
-        ("B", "a"),
-        ("B", "b"),
-    ]
-    assert dict(design.high_groups) == {"A": 1, "B": 1}
-    with pytest.raises(TypeError):
-        cast(Any, design.high_groups)["A"] = 0
-    with pytest.raises(FrozenInstanceError):
-        cast(Any, a).stratum = "B"
-
-
-@pytest.mark.parametrize(
-    ("changes", "code"),
-    [
-        ({"group_id": " "}, "spillover.design.invalid"),
-        ({"stratum": None}, "spillover.design.invalid"),
-        ({"members": "abcd"}, "spillover.design.invalid"),
-        ({"members": ("", "b", "c")}, "spillover.design.invalid"),
-        ({"members": ("a", "b", "a")}, "spillover.design.duplicate"),
-        ({"low_treated": True}, "spillover.design.quota"),
-        ({"high_treated": 2.0}, "spillover.design.quota"),
-        ({"high_treated": np.timedelta64(2, "ns")}, "spillover.design.quota"),
-        ({"low_treated": 0}, "spillover.design.quota"),
-        ({"low_treated": 2}, "spillover.design.quota"),
-        ({"high_treated": 4}, "spillover.design.quota"),
-    ],
-)
-def test_group_requires_identified_integer_laws_and_distinct_members(changes, code):
-    with pytest.raises(InvalidRequestError) as exc:
-        replace(_group(0), **changes)
-    assert exc.value.code == code
-
-
-@pytest.mark.parametrize(
-    ("changes", "code"),
-    [
-        ({"outcome": ""}, "spillover.design.invalid"),
-        ({"horizon": None}, "spillover.design.invalid"),
-        ({"groups": ()}, "spillover.design.invalid"),
-        ({"groups": ("a", "b")}, "spillover.design.invalid"),
-        ({"high_groups": {}}, "spillover.design.quota"),
-        ({"high_groups": {"all": 1, "other": 1}}, "spillover.design.quota"),
-        ({"high_groups": {"all": True}}, "spillover.design.quota"),
-        ({"high_groups": {"all": 1.0}}, "spillover.design.quota"),
-        ({"high_groups": {"all": 0}}, "spillover.design.quota"),
-        ({"high_groups": {"all": 2}}, "spillover.design.quota"),
-    ],
-)
-def test_design_refuses_unidentified_first_stage_or_unspecified_measure(changes, code):
-    with pytest.raises(InvalidRequestError) as exc:
-        replace(_design((_group(0), _group(1))), **changes)
-    assert exc.value.code == code
-
-
-def test_even_different_strata_cannot_reuse_group_or_person_ids():
-    a = _group("a")
-    b = _group("b", stratum="other")
-    for other in (replace(b, group_id="a"), replace(b, members=(*b.members[:-1], a.members[0]))):
-        with pytest.raises(InvalidRequestError) as exc:
-            _design((a, other, _group("c"), _group("d", stratum="other")), {"all": 1, "other": 1})
-        assert exc.value.code == "spillover.design.duplicate"
-
-
-def test_real_logs_match_ids_not_iteration_order_and_treated_outcomes_are_optional():
-    design, high, treated, outcomes = _trial()
-    outcomes["b:3"] = 0
-    assigned, counts = design.logged_counts(high, treated, outcomes)
-    assert assigned.dtype == np.bool_
-    np.testing.assert_array_equal(assigned, [[True, False, False, True]])
-    np.testing.assert_array_equal(counts, [[1, 0, 1, 1]])
-    all_outcomes = {**dict.fromkeys(treated, np.int8(1)), **outcomes}
-    reordered = dict(reversed(tuple(all_outcomes.items())))
-    np.testing.assert_array_equal(design.logged_counts(high, treated, reordered)[1], counts)
-
-
-@pytest.mark.parametrize("field", ["group_high", "treated", "outcomes"])
-@pytest.mark.parametrize("mismatch", ["missing", "extra", "replaced"])
-def test_real_logs_do_not_fill_missing_ids_or_drop_foreign_ids(field, mismatch):
-    design, group_high, treated, outcomes = _trial()
-    logs = {"group_high": group_high, "treated": treated, "outcomes": outcomes}
-    record = logs[field]
-    if mismatch != "extra":
-        del record[next(iter(record))]
-    if mismatch != "missing":
-        record["foreign"] = 0
-    with pytest.raises(InvalidRequestError) as exc:
-        design.logged_counts(**logs)
-    assert exc.value.code == "spillover.log.keys"
-    assert exc.value.context["field"] == field
-
-
-@pytest.mark.parametrize(
-    ("field", "key", "value"),
-    [
-        ("group_high", "a", "1"),
-        ("group_high", "b", np.float64(0.0)),
-        ("treated", "a:0", 2),
-        ("treated", "b:0", -1),
-        ("outcomes", "b:3", np.timedelta64(1, "ns")),
-        ("outcomes", "b:3", None),
-        (
-            "outcomes",
-            "b:0",
-            1.0,
-        ),  # Optional treated measurements still belong to a binary endpoint.
-    ],
-)
-def test_log_values_are_binary_without_truthiness_or_rounding(field, key, value):
-    design, group_high, treated, outcomes = _trial()
-    logs = {"group_high": group_high, "treated": treated, "outcomes": outcomes}
-    logs[field][key] = value
-    with pytest.raises(InvalidRequestError) as exc:
-        design.logged_counts(**logs)
-    assert exc.value.code == "spillover.log.binary"
-    assert exc.value.context["field"] == field
-
-
-def test_both_realized_quotas_are_local_not_just_roster_totals():
-    groups = tuple(_group(i, stratum="left" if i < 2 else "right") for i in range(4))
-    design = _design(groups, {"left": 1, "right": 1})
-    for high, treated_counts, field in (
-        ((1, 1, 0, 0), (2, 2, 1, 1), "group_high"),
-        ((1, 0, 1, 0), (1, 2, 2, 1), "treated"),
-    ):
-        group_high = {g.group_id: v for g, v in zip(groups, high, strict=True)}
-        treated = {
-            p: j < n
-            for g, n in zip(groups, treated_counts, strict=True)
-            for j, p in enumerate(g.members)
-        }
-        with pytest.raises(InvalidRequestError) as exc:
-            design.logged_counts(group_high, treated, dict.fromkeys(treated, 0))
-        assert exc.value.code == "spillover.log.quota"
-        assert exc.value.context["field"] == field
+    result = summarize_counts(population, comparison, codes, np.where(codes == 2, 0, events))
+    assert result.available.tolist() == [True]
+    assert result.estimate[0] == pytest.approx(point, rel=0, abs=1e-14)
+    assert result.standard_error[0] ** 2 == pytest.approx(variance_, rel=0, abs=1e-14)
+    estimate, se, reason = estimate_comparison(
+        population, comparison, _cells(population, labels, events)
+    )
+    assert reason is None and se is not None
+    assert estimate == pytest.approx(point, rel=0, abs=1e-14)
+    assert se**2 == pytest.approx(variance_, rel=0, abs=1e-14)
 
 
 def test_rct2_unequal_size_person_weighted_untreated_contrast():
     """RCT2 CalAPO.R at 5820e34f: scale by size/mean size; contrast high(0) minus low(0)."""
     sizes = [4, 5, 6, 8, 7, 9]
-    high = np.array([[True, False, True, False, False, True]])
+    labels = ["upper", "base", "upper", "base", "base", "upper"]
     low = [1, 2, 2, 3, 2, 4]
     high_quota = [3, 3, 4, 5, 4, 6]
-    groups = tuple(_group(i, n, low[i], high_quota[i]) for i, n in enumerate(sizes))
-    successes = np.array([[1, 1, 0, 2, 4, 1]])
-    result = summarize_counts(_design(groups), high, successes)
-    assert result.available.tolist() == [True]
-    assert reason_text(result.reason[0]) is None
-    assert result.estimate[0] == pytest.approx(-0.17777777777777776, abs=1e-14)
-    assert result.standard_error[0] ** 2 == pytest.approx(0.0651968734020016, abs=1e-14)
-    assert ndtr(-Z95) == pytest.approx(0.025, abs=1e-15)
+    pop = _population(tuple(_group(i, n, (low[i], high_quota[i])) for i, n in enumerate(sizes)))
+    _check_rct2(
+        pop, labels, [1, 1, 0, 2, 4, 1], _comparison(), -0.17777777777777776, 0.0651968734020016
+    )
+
+
+def test_rct2_three_policy_unequal_groups_shared_reference():
+    # All six groups enter CalAPO; the second contrast is nonadjacent in its APO vector.
+    sizes = (6, 8, 5, 7, 9, 10)
+    groups = tuple(_group(i, n, (1, 2, 3)) for i, n in enumerate(sizes))
+    comparisons = (_comparison("medium"), _comparison("upper"))
+    pop = _population(groups, {"all": {"base": 2, "medium": 2, "upper": 2}}, comparisons)
+    labels = ["base", "medium", "upper"] * 2
+    events = [0, 2, 2, 3, 1, 4]
+    _check_rct2(pop, labels, events, comparisons[0], 0.03015873015873019, 0.062920131015369099)
+    _check_rct2(pop, labels, events, comparisons[1], 0.480952380952380909, 0.056712018140589557)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_stratified_weights_include_both_saturated_nuisance_levels(reverse):
+    sizes = (4, 6, 5, 7, 8, 9, 3, 10, 6, 8, 2, 7, 8, 9)
+    groups = tuple(_group(i, n, (0, n, n, 1), "a" if i < 6 else "b") for i, n in enumerate(sizes))
+    quotas = {
+        "a": {"base": 2, "spare1": 1, "spare2": 1, "upper": 2},
+        "b": {"base": 2, "spare1": 2, "spare2": 2, "upper": 2},
+    }
+    comparison = _comparison("base", "upper") if reverse else _comparison()
+    pop = _population(groups, quotas, (comparison,))
+    labels = ["base", "base", "upper", "upper", "spare1", "spare2"] * 2 + ["spare1", "spare2"]
+    events = [1, 2, 4, 3, 0, 0, 2, 6, 5, 0, 0, 0, 0, 0]
+    # HT expansion: group differences in A and B are 11/4 and -1. Conditioning on
+    # the 49 people in eight realized comparison groups would instead give 7/49.
+    point = Fraction(17, 184)
+    var = Fraction(3445, 33856)
+    _check_rct2(pop, labels, events, comparison, float(-point if reverse else point), float(var))
+
+
+@pytest.mark.parametrize("family_size", [1, 2, 3, 10**18])
+def test_critical_value_inverts_the_family_upper_tail(family_size):
+    assert ndtr(-critical_value(family_size)) == pytest.approx(
+        0.025 / family_size, rel=2e-14, abs=0
+    )
 
 
 def test_enumerated_heterogeneous_null_has_twelve_false_calls_in_sixty_assignments():
@@ -211,7 +152,7 @@ def test_enumerated_heterogeneous_null_has_twelve_false_calls_in_sixty_assignmen
     high = (1, 0, *low[2:])
     assert sum(n * (h - l) for n, h, l in zip(sizes, high, low, strict=True)) == 0
     groups = tuple(_group(i, n, stratum="a" if i < 4 else "b") for i, n in enumerate(sizes))
-    design = _design(groups, {"a": 2, "b": 3})
+    pop = _population(groups, {"a": {"base": 2, "upper": 2}, "b": {"base": 2, "upper": 3}})
     policies, counts, points, variances = [], [], [], []
     for a, b in product(combinations(range(4), 2), combinations(range(4, 9), 3)):
         high_ids = {*a, *b}
@@ -234,19 +175,22 @@ def test_enumerated_heterogeneous_null_has_twelve_false_calls_in_sixty_assignmen
         abs(p) > 1.959963984540054 * sqrt(v) for p, v in zip(points, variances, strict=True)
     ]
     assert (sum(false_calls), len(false_calls)) == (12, 60)
-    result = summarize_counts(design, np.array(policies), np.array(counts))
+    result = summarize_counts(
+        pop, _comparison(), np.array(policies, dtype=np.uint8), np.array(counts)
+    )
     np.testing.assert_allclose(result.estimate, points, atol=1e-15)
     np.testing.assert_allclose(result.standard_error**2, variances, atol=1e-15)
     np.testing.assert_array_equal(
-        result.available & (abs(result.estimate) > Z95 * result.standard_error), false_calls
+        result.available & (abs(result.estimate) > critical_value(1) * result.standard_error),
+        false_calls,
     )
 
 
 def test_absent_events_unit_variation_and_independent_group_variation_are_distinct():
-    design = _design(tuple(_group(i, size=5) for i in range(6)))
-    high = np.tile([True] * 3 + [False] * 3, (4, 1))
+    pop = _population(tuple(_group(i, size=5) for i in range(6)))
+    assignment = np.tile([1] * 3 + [0] * 3, (4, 1))
     successes = np.array([[0] * 6, [3] * 3 + [4] * 3, [1] * 3 + [2] * 3, [0, 0, 1, 0, 0, 0]])
-    result = summarize_counts(design, high, successes)
+    result = summarize_counts(pop, _comparison(), assignment, successes)
     assert [reason_text(c) for c in result.reason] == [
         "no_outcome_variation",
         "no_outcome_variation",
@@ -258,43 +202,146 @@ def test_absent_events_unit_variation_and_independent_group_variation_are_distin
     assert np.isfinite(result.estimate).all()
     assert np.isnan(result.standard_error[:3]).all()
     assert result.standard_error[3] > 0
+    for i, row in enumerate(successes):
+        point, se, reason = estimate_comparison(
+            pop, _comparison(), _cells(pop, ["upper"] * 3 + ["base"] * 3, row)
+        )
+        assert point == pytest.approx(result.estimate[i])
+        assert reason == reason_text(result.reason[i])
+        assert (se is not None) == result.available[i]
 
 
-def test_group_size_variation_is_not_binary_outcome_variation():
-    sizes = [3, 4, 8, 9]
-    design = _design(tuple(_group(i, size=n) for i, n in enumerate(sizes)))
-    result = summarize_counts(
-        design, np.array([[True, True, False, False]]), np.array([[1, 2, 7, 8]])
+def test_outcome_variation_only_in_another_comparison_cannot_rescue_interval():
+    pop = _population(
+        tuple(_group(i, 6, (0, 1, 2)) for i in range(6)),
+        {"all": {"base": 2, "medium": 2, "upper": 2}},
+        (_comparison("medium"), _comparison()),
     )
-    assert result.estimate[0] == pytest.approx((3.5 - 8.5) * 4 / sum(sizes))
+    cells = _cells(pop, ["base", "medium", "upper"] * 2, [0, 0, 2, 0, 0, 4])
+    assert estimate_comparison(pop, _comparison("medium"), cells) == (
+        0.0,
+        None,
+        "no_outcome_variation",
+    )
+    assert estimate_comparison(pop, _comparison(), cells)[2] is None
+
+
+def test_projected_cell_batches_retain_point_for_nonfinite_variance():
+    pop = _population(tuple(_group(i) for i in range(4)))
+    reference = BatchCell(
+        mean_total=np.zeros(3), ss=np.array([0.0]), events=np.array([0]), unoffered=np.array([6])
+    )
+    policy = BatchCell(
+        mean_total=np.ones(3),
+        ss=np.array([2.0, float("inf"), float("nan")]),
+        events=np.array([1]),
+        unoffered=np.array([4]),
+    )
+    result = summarize_cells(
+        pop, _comparison(), {("all", "base"): reference, ("all", "upper"): policy}
+    )
+    np.testing.assert_array_equal(result.estimate, [0.25] * 3)
+    np.testing.assert_allclose(result.standard_error, [0.25, np.nan, np.nan])
+    assert [reason_text(c) for c in result.reason] == [
+        None,
+        "nonfinite_variance",
+        "nonfinite_variance",
+    ]
+
+
+def test_bounded_batches_preserve_centering_and_cast_before_multiplication(monkeypatch):
+    # All nine copies of a fractional total are equal: mean rounding is not real spread.
+    groups = tuple(_group(i, 120, (1, 7)) for i in range(18))
+    pop = _population(groups)
+    assignment = np.tile([0, 1] * 9, (3, 1))
+    successes = np.full(assignment.shape, 73, dtype=np.int8)
+    successes[1, 3] += 1
+    successes[2, 0] -= 1
+    monkeypatch.setattr(estimation, "_WORK_CELLS", 18)
+    result = summarize_counts(pop, _comparison(), assignment, successes)
+    for i, row in enumerate(successes):
+        point, se, reason = estimate_comparison(
+            pop, _comparison(), _cells(pop, ["base", "upper"] * 9, row)
+        )
+        assert result.estimate[i] == pytest.approx(point, rel=0, abs=1e-15)
+        assert reason_text(result.reason[i]) == reason
+        if se is None:
+            assert i == 0 and reason == "zero_variance" and np.isnan(result.standard_error[i])
+        else:
+            assert i != 0
+            assert result.standard_error[i] == pytest.approx(se, rel=1e-13)
+
+
+def test_group_size_and_nuisance_observations_are_not_comparison_outcome_variation():
+    sizes = [3, 4, 8, 9, 6]
+    pop = _population(
+        tuple(_group(i, n, (1, 1, 2)) for i, n in enumerate(sizes)),
+        {"all": {"base": 2, "spare": 1, "upper": 2}},
+    )
+    # Every compared unoffered person has the event. The different sizes create
+    # variation in T; the nuisance cell has both outcomes. Neither licenses an SE.
+    result = summarize_counts(
+        pop, _comparison(), np.array([[1, 1, 0, 0, 2]]), np.array([[1, 2, 7, 8, 0]])
+    )
+    point = (3.5 - 8.5) * 5 / sum(sizes)
+    assert result.estimate[0] == pytest.approx(point)
     assert reason_text(result.reason[0]) == "no_outcome_variation"
     assert np.isnan(result.standard_error[0])
+    cells = _cells(pop, ["upper", "upper", "base", "base", "spare"], [1, 2, 7, 8, 3])
+    observed, se, reason = estimate_comparison(pop, _comparison(), cells)
+    assert observed == pytest.approx(point)
+    assert se is None and reason == "no_outcome_variation"
 
 
 def test_one_group_in_an_arm_still_identifies_point_and_takes_reason_precedence():
-    design = _design((_group(0, size=3), _group(1, size=9)))
-    high = np.array([[True, False]])
-    result = summarize_counts(design, high, np.array([[1, 8]]))
+    pop = _population((_group(0, size=3), _group(1, size=9)))
+    result = summarize_counts(pop, _comparison(), np.array([[1, 0]]), np.array([[1, 8]]))
     # All untreated outcomes are one; unequal group sizes still give different estimated totals.
     assert result.estimate[0] == pytest.approx(-1.0)
     assert reason_text(result.reason[0]) == "too_few_groups"
     assert not result.available[0] and np.isnan(result.standard_error[0])
+    assert estimate_comparison(pop, _comparison(), _cells(pop, ["upper", "base"], [1, 8])) == (
+        -1.0,
+        None,
+        "too_few_groups",
+    )
 
 
 @pytest.mark.parametrize(
-    ("high", "successes"),
+    ("assignment", "successes"),
     [
-        ([True, False], [[1, 0]]),
-        ([[True, False]], [1, 0]),
-        ([[1, 0]], [[1, 0]]),
-        ([[True]], [[1]]),
-        ([[True, True]], [[1, 0]]),
-        ([[True, False]], [[1.25, 0]]),
-        ([[True, False]], [[3, 0]]),
-        ([[True, False]], [[0, -1]]),
+        ([1, 0], [[1, 0]]),
+        ([[1, 0]], [1, 0]),
+        ([[True, False]], [[1, 0]]),
+        ([[1.0, 0.0]], [[1, 0]]),
+        ([[1]], [[1]]),
+        ([[1, 1]], [[1, 0]]),
+        ([[1, 2]], [[1, 0]]),
+        ([[-1, 0]], [[1, 0]]),
+        ([[3, 0]], [[1, 0]]),
+        ([[1, 0]], [[1.25, 0]]),
+        ([[1, 0]], [[3, 0]]),
+        ([[1, 0]], [[0, -1]]),
     ],
 )
-def test_impossible_count_arrays_are_not_an_unavailable_estimate(high: Any, successes: Any):
+def test_impossible_count_arrays_are_not_an_unavailable_estimate(assignment: Any, successes: Any):
     with pytest.raises(InvalidRequestError) as exc:
-        summarize_counts(_design((_group(0), _group(1))), np.array(high), np.array(successes))
+        summarize_counts(
+            _population((_group(0), _group(1))),
+            _comparison(),
+            np.array(assignment),
+            np.array(successes),
+        )
     assert exc.value.code == "spillover.counts.invalid"
+
+
+def test_projected_assignments_require_local_quotas_and_zero_other_successes():
+    groups = tuple(_group(i, 6, (0, 1, 2), "a" if i < 3 else "b") for i in range(6))
+    pop = _population(groups, {s: {"base": 1, "medium": 1, "upper": 1} for s in ("a", "b")})
+    for assignment, counts in (
+        ([1, 0, 2, 1, 0, 2], [0, 0, 1, 0, 0, 0]),
+        ([1, 1, 2, 0, 0, 2], [0] * 6),
+    ):
+        with pytest.raises(InvalidRequestError) as exc:
+            summarize_counts(pop, _comparison(), np.array([assignment]), np.array([counts]))
+        assert exc.value.code == "spillover.counts.invalid"

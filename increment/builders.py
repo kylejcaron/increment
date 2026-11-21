@@ -8,8 +8,9 @@ import json
 import os
 import stat
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from functools import wraps
 from inspect import signature
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from increment.semantics.models import Experiment as AnalysisExperiment
     from increment.semantics.unit_cycle import UnitCycleReference
     from increment.sources import EvidenceSource
+    from increment.spillover import SpilloverExperiment, SpilloverReader
     from increment.switchback import SwitchbackAssignment
 
 
@@ -835,6 +837,85 @@ def from_frame(  # noqa: PLR0913
     return resolver_for(binding)
 
 
+def _check_family_options[**P, R](builder: Callable[P, R]) -> Callable[P, R]:
+    """Check the keywords actually supplied, including explicit ordinary defaults."""
+
+    @wraps(builder)
+    def bind(*args: P.args, **kwargs: P.kwargs) -> R:
+        if kwargs.get("family") == "spillover":
+            unsupported = kwargs.keys() - {
+                "definitions_path",
+                "con",
+                "family",
+                "experiment_name",
+                "expected_registration",
+            }
+            if unsupported:
+                from increment.spillover import _unsupported
+
+                _unsupported(unsupported)
+        elif "expected_registration" in kwargs:
+            _refuse(
+                "kernel.request.invalid", field="expected_registration requires family='spillover'"
+            )
+        return builder(*args, **kwargs)
+
+    return bind
+
+
+def _spillover_definitions(
+    path: Path, con: SQLBackend, experiment_name: str | None, expected_registration: str | None
+) -> tuple[SpilloverExperiment, SpilloverReader]:
+    if experiment_name is not None and (
+        not isinstance(experiment_name, str) or not experiment_name.strip()
+    ):
+        _refuse("kernel.request.invalid", field="experiment_name must be a nonempty name")
+
+    from increment.semantics._spillover import load_trials
+    from increment.spillover import _bind
+
+    trials = load_trials(path)
+    if experiment_name is None:
+        if len(trials) != 1:
+            _refuse("kernel.request.invalid", field="experiment_name is required")
+        trial = next(iter(trials.values()))
+    elif experiment_name not in trials:
+        _bind_raise(
+            "facade.analysis.unknown_experiment",
+            requested=experiment_name,
+            available=tuple(sorted(trials)),
+        )
+    else:
+        trial = trials[experiment_name]
+    require_warehouse("from_definitions")
+    from ibis.backends.sql import SQLBackend
+
+    from increment.query.spillover import WarehouseSpilloverSource
+
+    if not isinstance(con, SQLBackend):
+        _refuse("kernel.request.invalid", field="con must be an Ibis SQL connection")
+
+    return _bind(
+        WarehouseSpilloverSource(con, trial.relations),
+        trial.design,
+        experiment_id=trial.name,
+        recipe=(("source", "warehouse"), ("backend", con.name), *sorted(trial.relations.items())),
+        expected_registration=expected_registration,
+    )
+
+
+@overload
+def from_definitions(
+    definitions_path: str | os.PathLike[str],
+    con: SQLBackend,
+    *,
+    family: Literal["spillover"],
+    experiment_name: str | None = None,
+    expected_registration: str | None = None,
+) -> tuple[SpilloverExperiment, SpilloverReader]: ...
+
+
+@overload
 def from_definitions(
     definitions_path: str | os.PathLike[str],
     con: SQLBackend | None = None,
@@ -845,13 +926,43 @@ def from_definitions(
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     catalog_path: str | os.PathLike[str] | None = None,
-) -> tuple[Experiment, ExperimentReader]:
+) -> tuple[Experiment, ExperimentReader]: ...
+
+
+@_check_family_options
+def from_definitions(
+    definitions_path: str | os.PathLike[str],
+    con: SQLBackend | None = None,
+    *,
+    experiment_name: str | None = None,
+    backend: str | None = None,
+    store: Literal["auto", "always", "none"] = "auto",
+    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
+    catalog_path: str | os.PathLike[str] | None = None,
+    family: Literal["spillover"] | None = None,
+    expected_registration: str | None = None,
+) -> tuple[Experiment, ExperimentReader] | tuple[SpilloverExperiment, SpilloverReader]:
     """Bind warehouse definitions, including selected portable metrics, or reopen offline.
 
     ``catalog_path`` names the catalog file and puts its lock in the same
     directory. Use the same path to reopen offline. Omit it to keep both
     files beside the definitions.
+
+    Set ``family="spillover"`` with a connection to plan a registered two-stage trial.
+    On rebinding pass its saved ``expected_registration`` before reading observed logs.
     """
+    if family == "spillover":
+        if con is None:
+            _refuse(
+                "kernel.request.invalid",
+                field="a spillover experiment requires a warehouse connection",
+            )
+        return _spillover_definitions(
+            Path(definitions_path), con, experiment_name, expected_registration
+        )
+    if family is not None:
+        _refuse("kernel.request.invalid", field="family must be 'spillover' or omitted")
     require_warehouse("from_definitions")
     path = Path(definitions_path)
     catalog = _select_catalog_path(path, catalog_path)

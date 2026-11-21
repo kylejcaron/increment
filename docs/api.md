@@ -1120,52 +1120,27 @@ across publication and requests.
 
 ## Two-stage spillover
 
-Use `increment.spillover` before assigning groups and people, not an experiment
-builder or `run`. `SpilloverGroup` names the eligible members and integer low/high
-treatment quotas of one group. `SpilloverDesign` freezes those groups, the number
-drawn high within each stratum, a binary outcome and its observation window.
-Draw policies independently across strata. Given those policies, draw offers
-independently across groups; each draw is uniform among subsets of its fixed size.
+Use `increment.from_definitions(path, con, family="spillover")` for warehouse tables or `increment.spillover.from_frame(...)` for local dataframes. Both return an experiment and a reader. Call `increment.run(experiment, reader)` to read the comparisons.
 
-`plan_spillover(design, *, meaningful_effect, baseline_rate=None)` takes a signed
-absolute risk difference and, optionally, one comparable pre-assignment rate.
-Read `plan.message` for advice, `plan.evidence.status` for the planning decision,
-and `plan.evidence.reason` if the interval checks did not pass. Without the
-rate, power is not assessed.
+`SpilloverDesign` sets the number of groups assigned to each named offer level in each stratum, one binary outcome, its time window, and an ordered list of comparisons. A `SpilloverComparison` names the policy and reference, a signed meaningful change in proportion units, and an optional historical event rate for planning. The design compares different amounts of **one** offer, not different treatments.
 
-After the observation window closes, call
-`plan.analyze(group_high=..., treated=..., outcomes=...)` on the same plan.
-Supply the assigned policy for every group, offer status for every person,
-and the outcome for every person who received no offer.
+Before assignment, bind the eligible roster and the number of offers each group would make at each level. Check `experiment.planning` and save `experiment.registration_id`. To reopen, pass the saved value as `expected_registration` to the same builder and source recipe. To analyze, also supply the group policy log, individual offer log, and an explicit yes/no outcome for every person who got no offer. The [guide](guides/spillover.md) gives the five table schemas and an executable warehouse example.
 
-`result.estimate` gives each eligible person equal weight, not each group.
-For each group, Increment multiplies the observed rate among people without
-offers by the full group size. Within each stratum, it compares the average
-of these totals under the high and low policies, then combines the differences
-to estimate the high-minus-low change per person. Simply pooling people
-without offers weights groups by how many people remain untreated, not by
-how many were eligible.
-With unequal group sizes the estimate, or its interval endpoints, can fall
-outside `[-1, 1]`. They are not clipped and are not individual probabilities.
+`run(...).comparisons` keeps one row per registered comparison, in order. `estimate` is the change for people **without** an offer, under `policy` minus `reference`. Each eligible person counts equally: the calculation weights a group's observed untreated rate by its **full** size and combines the within-stratum policy differences. Simply pooling untreated people answers a different question. With unequal group sizes a point or interval endpoint can fall outside `[-1, 1]`; these are not probabilities for a single person.
 
-`result.lower` and `result.upper` give an approximate 95% interval in
-proportion units, or `None`. Read `result.unavailable_reason` for the reason;
-for example, one group per policy in a stratum cannot establish a range.
-`result.planning_status` preserves the decision recorded before assignment.
-This route handles one yes/no outcome at one fixed time. It does not take
-ratio metrics, CUPED adjustment, winsorization, breakouts, repeated looks
-or multiplicity options.
+`lower` and `upper` are approximate simultaneous 95% interval endpoints, or both `None`. `qualification_reason` records why the plan couldn't support a range; `observed_reason` separately records why the data couldn't. An unavailable comparison stays in the family size. This is a fixed-horizon analysis: no repeated looks, CUPED adjustment, ratio metrics, winsorization, breakouts, or automatic launch decision. See [assumptions and evidence](reference/validation-evidence.md#ev-spillover-rct2).
 
-For the interval, groups must not influence each other; within each group,
-outcomes may depend on the number of treated peers but not their identities.
-The planning checks cover modeled outcomes, not every possible trial. See the
-[worked example and launch decisions](guides/spillover.md).
-
-::: increment.spillover.SpilloverGroup
+::: increment.spillover.SpilloverComparison
 
 ::: increment.spillover.SpilloverDesign
 
-::: increment.spillover.plan_spillover
+::: increment.spillover.SpilloverExperiment
+
+::: increment.spillover.SpilloverReader
+
+::: increment.spillover.SpilloverResult
+
+::: increment.spillover.from_frame
 
 ## Logged-policy evaluation
 

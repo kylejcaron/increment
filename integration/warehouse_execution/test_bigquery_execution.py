@@ -30,6 +30,12 @@ def test_summary_sql_preview(bigquery_con):
     run_summary_sql_probe(bigquery_con, dialect="bigquery")
 
 
+def test_spillover_policy_comparisons(bigquery_con, tmp_path):
+    from tests.spillover_trial import run_three_policy_probe
+
+    run_three_policy_probe(bigquery_con, tmp_path)
+
+
 def test_bigquery_float_token_probe_matches_rows_by_id(monkeypatch):
     import struct
     from types import SimpleNamespace

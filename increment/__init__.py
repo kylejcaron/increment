@@ -150,6 +150,7 @@ _SUBMODULES = frozenset(
         "query",
         "results",
         "simulate",
+        "spillover",
         "store",
         "tables",
         "workflows",

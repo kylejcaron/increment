@@ -1556,10 +1556,17 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
         "untreated-spillover",
         "Two-stage untreated spillover contrast",
         {
-            ingress: (_consumer("spillover_family_boundary", f"{ingress}_not_expressible"),)
+            ingress: (
+                _consumer(
+                    "spillover_family_boundary",
+                    "warehouse_supported"
+                    if ingress == "from_definitions"
+                    else f"{ingress}_not_expressible",
+                ),
+            )
             for ingress in INGRESSES
         },
-        family=(_consumer("spillover_family_boundary", "untreated_contrast_supported"),),
+        family=(_consumer("spillover_family_boundary", "dataframe_supported"),),
     ),
     _row(
         "logged-policy-contrast",

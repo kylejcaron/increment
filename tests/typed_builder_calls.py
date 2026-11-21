@@ -5,16 +5,23 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping, Sequence
 from os import PathLike
+from typing import assert_type
+
+from ibis.backends.sql import SQLBackend
 
 from increment import (
     AnalysisPlan,
+    Experiment,
+    ExperimentReader,
     MetricSpec,
     Randomized,
+    RunResult,
     from_definitions,
     from_frame,
     from_moments,
     from_switchback_frame,
     from_unit_day_artifact,
+    run,
 )
 from increment.artifacts import SourceSnapshotEvidence
 from increment.estimators import MixturePrior, Normal, RelativeLiftPrior, StudentTPrior
@@ -22,6 +29,7 @@ from increment.frame import IntoDataFrame
 from increment.query.artifact_contract import ArtifactStore
 from increment.semantics.artifact import ArtifactContext, UnitDayArtifactRef
 from increment.semantics.unit_cycle import UnitCycleReference
+from increment.spillover import SpilloverExperiment, SpilloverReader, SpilloverResult
 from increment.switchback import SwitchbackAssignment
 
 
@@ -154,6 +162,16 @@ def definitions_calls(path: str | PathLike[str], evidence: SourceSnapshotEvidenc
         catalog_path="cache/experiment-catalog.json",
     )
     from_definitions(path, store="invalid")  # ty: ignore[invalid-argument-type]
+
+
+def spillover_calls(path: str | PathLike[str], con: SQLBackend) -> None:
+    ordinary, reader = assert_type(from_definitions(path, con), tuple[Experiment, ExperimentReader])
+    assert_type(run(ordinary, reader), RunResult)
+    trial, logs = assert_type(
+        from_definitions(path, con, family="spillover", expected_registration=None),
+        tuple[SpilloverExperiment, SpilloverReader],
+    )
+    assert_type(run(trial, logs), SpilloverResult)
 
 
 def relative_prior_calls(frame: IntoDataFrame) -> None:
