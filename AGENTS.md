@@ -69,6 +69,22 @@ every loader.
   digests). `tests/test_backend_portability.py` pins which dialects translate
   the analysis SQL.
 
+## Planning a feature
+
+Put a scope table just below the plan's goal, before architecture or tasks.
+If the plan already has a scope table, extend it rather than adding a second one.
+
+| What would an analyst try? | What works today? | What will this plan do? | Why, or how will we check? |
+|---|---|---|---|
+| Name the feature combination and data source | Cite the capability matrix, guide or test | Add, change, keep, defer, or leave open | Name the check, reason for deferral, or decision needed |
+
+Cover the requested path and nearby combinations an analyst would reasonably
+expect, not every permutation. For a switchback schedule, distinguish a new
+time split from comparing more than two versions; check dataframe and warehouse
+support separately. Give existing behavior its own row when it must keep
+working. Link deferred work to an existing issue if there is one. A row makes
+a decision visible; it does not authorize extra work.
+
 ## Making a change
 
 - Find the owner first: estimators in `estimation/`, loaders in `frame.py`,
