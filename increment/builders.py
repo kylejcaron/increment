@@ -895,11 +895,12 @@ def _spillover_definitions(
     if not isinstance(con, SQLBackend):
         _refuse("kernel.request.invalid", field="con must be an Ibis SQL connection")
 
+    source = WarehouseSpilloverSource(con, trial.relations)
     return _bind(
-        WarehouseSpilloverSource(con, trial.relations),
+        source,
         trial.design,
         experiment_id=trial.name,
-        recipe=(("source", "warehouse"), ("backend", con.name), *sorted(trial.relations.items())),
+        recipe=source.recipe,
         expected_registration=expected_registration,
     )
 

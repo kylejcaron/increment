@@ -35,7 +35,7 @@ spillovers:
 """)
 ```
 
-Point `relations` to tables or views for **this experiment**. Use a view to rename columns or limit the rows. Each customer has one roster row. Give the full plan, not just the offer count for the policy a store eventually received.
+Point `relations` to tables or views for **this experiment**. A short table name means the connection's current schema at registration. Give a fully qualified name if the table lives elsewhere. The reader stays bound to those locations even if you switch schemas. Use a view to rename columns or limit the rows. Each customer has one roster row. Give the full plan, not just the offer count for the policy a store eventually received.
 
 | Relation | Columns | When needed |
 |---|---|---|

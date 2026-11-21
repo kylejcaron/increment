@@ -335,6 +335,8 @@ In the 1,000-group example there were 400 base, 300 middle and 300 upper groups,
 
 One registered comparison has 65,536 assignments per scenario and a work limit of 2,048 groups. For larger families the planner chooses the draw count **before** inspecting any simulated outcome, in multiples of 65,536. The per-comparison and whole-family work limits are $2^{29}$ and $2^{31}$ group-by-assignment draws per scenario, respectively. If the required check exceeds the budget, the affected comparison still reports a point and explains why it has no interval.
 
+There is also a limit for a single exceptionally large group. If a scenario has at least a billion events or non-events in that group, the planner can still draw exactly when one of four counts (events, non-events, offered or not offered) is at most 64. Otherwise it reports `group_draw_exceeds_planning_limit` for that comparison. It does not discard the point estimate or other comparisons.
+
 ## In-repo derivations and calibration evidence
 
 These are not independent third-party references. They record what exists beyond the frozen comparisons.

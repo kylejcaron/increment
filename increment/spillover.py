@@ -59,8 +59,9 @@ class _ComparisonResult:
     def multiplicity(self) -> str:
         """How to interpret the interval alongside the other declared comparisons."""
         return (
-            f"Bonferroni adjustment for {self.family_size} declared comparison(s). Approximate "
-            "95% family coverage requires a world consistent with all their modeled scenarios."
+            f"Approximate 95% intervals adjusted for all {self.family_size} declared comparison(s) "
+            "using Bonferroni. Planning checks cover only the populations modeled for each "
+            "comparison, not every possible real population."
         )
 
 
@@ -108,6 +109,11 @@ class _ComparisonPlan:
             return (
                 "This design exceeds the planning limit. Before assignment, select a smaller "
                 "set of decision-relevant comparisons or report estimates without intervals."
+            )
+        if self.reason == "group_draw_exceeds_planning_limit":
+            return (
+                "A single group's simulated draw is too large to assess this comparison's "
+                "precision. Its estimate is still available after the experiment."
             )
         return (
             "This plan did not establish reliable uncertainty across the modeled scenarios. "

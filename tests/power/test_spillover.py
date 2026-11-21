@@ -432,3 +432,29 @@ def test_conditional_histogram_splits_give_hypergeometric_not_binomial_masses():
             for y in range(max(0, events + draws - size), min(events, draws) + 1)
         }
         assert actual == pytest.approx(expected, rel=1e-14, abs=0)
+
+
+def test_billion_member_group_with_two_offers_has_the_exact_untreated_count_law():
+    # 0, 1 or 2 of the two offered people are events; all remaining events are untreated.
+    n = 2_400_000_000
+    events = n // 2
+    pop = _population((10, 10, 10, n), offers=((0, 2),) * 4)
+    case = model._Scenario("spread", "unchanged", (3, 3, 3, events), (3, 3, 3, events), 0.0, None)
+    observed = np.zeros(3, dtype=int)
+    for _, assignment, counts in model._states(pop, pop.design.comparisons[0], (case,), 16_384):
+        assert np.all(counts[assignment[:, -1] == 0, -1] == events)
+        offered_events = events - counts[assignment[:, -1] == 1, -1]
+        observed += np.bincount(offered_events, minlength=3)
+    expected = [comb(events, i) * comb(n - events, 2 - i) / comb(n, 2) for i in range(3)]
+    np.testing.assert_allclose(observed / observed.sum(), expected, atol=0.025)
+
+
+def test_huge_wide_offer_draw_retains_an_unqualified_plan_before_simulating():
+    n = 2_400_000_000
+    comparison = _comparison(rate=0.25, effect=0.01)
+    pop = _population(
+        (20, 20, 20, n), comparisons=(comparison,), offers=((0, 2),) * 3 + ((0, n // 2),)
+    )
+    plan = model.evaluate_design(pop, comparison)
+    assert not plan.calibration_passed and plan.scenarios == ()
+    assert plan.reason == "group_draw_exceeds_planning_limit"

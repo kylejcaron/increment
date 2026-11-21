@@ -68,12 +68,16 @@ def write_study(path, design, names):
     )
 
 
-def warehouse_run(con, tmp_path, design, frames):
+def warehouse_run(con, tmp_path, design, frames, *, reader_con=None):
     """Open before assignment logs exist; clean up even when the readout refuses."""
     tag = uuid4().hex[:12]
     names = {role: f"spill_{tag}_{role}" for role in frames}
     path = tmp_path / "spillover.yaml"
-    write_study(path, design, names)
+    declared = names
+    if reader_con is not None:
+        namespace = f"{con.current_catalog}.{con.current_database}"
+        declared = {role: f"{namespace}.{name}" for role, name in names.items()}
+    write_study(path, design, declared)
     with ExitStack() as cleanup:
 
         def load(role):
@@ -82,15 +86,17 @@ def warehouse_run(con, tmp_path, design, frames):
 
         load("roster")
         load("offer_counts")
-        experiment, reader = from_definitions(path, con, family="spillover")
+        experiment, reader = from_definitions(
+            path, con if reader_con is None else reader_con, family="spillover"
+        )
         cleanup.enter_context(reader)
         for role in ("group_policy", "offered", "outcomes"):
             load(role)
         return run(experiment, reader)
 
 
-def run_three_policy_probe(con, tmp_path):
-    result = warehouse_run(con, tmp_path, *three_policy_trial())
+def run_three_policy_probe(con, tmp_path, *, reader_con=None):
+    result = warehouse_run(con, tmp_path, *three_policy_trial(), reader_con=reader_con)
     assert [(row.policy, row.reference) for row in result.comparisons] == [
         ("middle", "base"),
         ("upper", "base"),

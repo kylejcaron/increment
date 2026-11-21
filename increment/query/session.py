@@ -1347,11 +1347,12 @@ class WarehouseArtifactStore:
                     _raise("query.session.snapshot.materialization_failed")
                 cleanup = candidate
             live = self._con.table(relation_ref.relation.name, database=self._database)
-            snapshot_table = self._con.create_table(
+            snapshot_table = _create_session_temp(
+                self._con,
+                candidate,
                 snapshot_name,
                 live,
                 database=cast("Any", database),
-                temp=True,
                 overwrite=False,
             )
             op = snapshot_table.op()
@@ -1669,6 +1670,22 @@ def _temporary_relation_locator(con: SQLBackend, name: str) -> _MaterializedRela
     return None
 
 
+def _create_session_temp(
+    con: SQLBackend,
+    locator: _MaterializedRelation | None,
+    name: str,
+    expression: ir.Table,
+    **options: Any,
+) -> ir.Table:
+    if con.name == "bigquery" and locator is not None and locator.catalog and locator.schema:
+        # Ibis resolves the default dataset before handling temp=True. Use the
+        # same anonymous, expiring dataset it owns, including for project-only connections.
+        target = sqlglot.table(name, db=locator.schema, catalog=locator.catalog, quoted=True)
+        options["database"] = locator.schema
+        return con.create_table(target.sql(dialect="bigquery"), expression, **options)
+    return con.create_table(name, expression, temp=True, **options)
+
+
 def _temporary_relation_exists(con: SQLBackend, relation: _MaterializedRelation) -> bool:
     """Probe only the relation's owned temporary namespace."""
     if con.name == "duckdb":
@@ -1893,7 +1910,7 @@ class _WarehouseArtifactQrSession:
                 if _temporary_relation_exists(self._con, candidate):
                     _raise("query.session.snapshot.materialization_failed")
                 cleanup = candidate
-            create_kwargs: dict[str, Any] = {"temp": True}
+            create_kwargs: dict[str, Any] = {}
             if replace:
                 create_kwargs["overwrite"] = True
             if self._con.name == "snowflake":
@@ -1904,7 +1921,7 @@ class _WarehouseArtifactQrSession:
                 database = sqlglot.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
                 cleanup = _MaterializedRelation(name, name, catalog, schema)
                 create_kwargs["database"] = database
-            created = self._con.create_table(name, expr, **create_kwargs)
+            created = _create_session_temp(self._con, candidate, name, expr, **create_kwargs)
             operation = created.op()
             catalog = operation.namespace.catalog
             schema = operation.namespace.database
@@ -2436,7 +2453,7 @@ class WarehouseSession:
                 if _temporary_relation_exists(self._con, candidate):
                     _raise("query.session.snapshot.materialization_failed")
                 cleanup = candidate
-            create_kwargs: dict[str, Any] = {"temp": True}
+            create_kwargs: dict[str, Any] = {}
             if replace:
                 create_kwargs["overwrite"] = True
             if self._con.name == "snowflake":
@@ -2449,7 +2466,7 @@ class WarehouseSession:
                 database = sg.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
                 cleanup = _MaterializedRelation(name, name, catalog, schema)
                 create_kwargs["database"] = database
-            created = self._con.create_table(name, expr, **create_kwargs)
+            created = _create_session_temp(self._con, candidate, name, expr, **create_kwargs)
             op = created.op()
             if self._con.name == "postgres":
                 cleanup = _MaterializedRelation(name, op.name, None, "pg_temp")

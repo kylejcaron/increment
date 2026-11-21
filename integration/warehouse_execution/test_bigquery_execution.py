@@ -30,10 +30,16 @@ def test_summary_sql_preview(bigquery_con):
     run_summary_sql_probe(bigquery_con, dialect="bigquery")
 
 
-def test_spillover_policy_comparisons(bigquery_con, tmp_path):
+def test_spillover_policy_comparisons_without_a_default_dataset(bigquery_con, tmp_path):
+    import ibis
+
     from tests.spillover_trial import run_three_policy_probe
 
-    run_three_policy_probe(bigquery_con, tmp_path)
+    project_only = ibis.bigquery.connect(project_id=bigquery_con.current_catalog)
+    try:
+        run_three_policy_probe(bigquery_con, tmp_path, reader_con=project_only)
+    finally:
+        project_only.disconnect()
 
 
 def test_bigquery_float_token_probe_matches_rows_by_id(monkeypatch):

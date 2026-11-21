@@ -112,10 +112,11 @@ def test_frozen_profiles_and_bounded_two_stage_cells(trial, monkeypatch):
 
 
 def test_unverified_digest_refuses_before_relation_lookup(trial, monkeypatch):
-    con, design, source, _ = trial
+    con, design, _, _ = trial
     with monkeypatch.context() as guards, pytest.raises(CodedError) as exc:
         guards.setattr(con, "name", "unverified")
         guards.setattr(con, "table", lambda *a, **kw: pytest.fail("opened a relation"))
+        source = WarehouseSpilloverSource(con, {role: role for role in _ROLES})
         source.freeze(design)
     assert exc.value.code == "query.session.warehouse_artifact.verification_unavailable"
     assert "spillover.from_frame" in str(exc.value.context["route"])
@@ -222,3 +223,54 @@ def test_active_spillover_queries_translate_on_verified_dialects(trial, monkeypa
     population = source.freeze(design)
     launch()
     assert len(source.observe(population)) == 4
+
+
+def test_registered_tables_do_not_follow_database_namespace_changes(tmp_path):
+    from increment import from_definitions, run
+    from tests.spillover_trial import three_policy_trial, write_study
+
+    con = ibis.duckdb.connect()
+    design, frames = three_policy_trial()
+    path = tmp_path / "study.yaml"
+    write_study(path, design, {role: role for role in frames})
+    try:
+        for schema in ("original", "other"):
+            con.create_database(schema)
+            for role, frame in frames.items():
+                con.create_table(role, frame, database=schema)
+        con.raw_sql("UPDATE other.outcomes SET outcome = NOT outcome")
+        con.raw_sql("SET schema = 'original'")
+        experiment, reader = from_definitions(path, con, family="spillover")
+        with reader:
+            con.raw_sql("SET schema = 'other'")
+            rows = run(experiment, reader).comparisons
+        assert rows[1].estimate == pytest.approx(0.480952380952380909, rel=0, abs=1e-14)
+        with pytest.raises(CodedError) as exc:
+            from_definitions(
+                path, con, family="spillover", expected_registration=experiment.registration_id
+            )
+        assert exc.value.code == "spillover.roster.changed"
+    finally:
+        con.disconnect()
+
+
+def test_case_insensitive_connection_cannot_match_a_different_person(tmp_path):
+    from increment import from_definitions, run
+    from tests.spillover_trial import three_policy_trial, write_study
+
+    con = ibis.duckdb.connect()
+    design, frames = three_policy_trial()
+    path = tmp_path / "study.yaml"
+    write_study(path, design, {role: role for role in frames})
+    try:
+        con.raw_sql("SET default_collation = 'nocase'")
+        for role, frame in frames.items():
+            con.create_table(role, frame)
+        experiment, reader = from_definitions(path, con, family="spillover")
+        with reader:
+            con.raw_sql("UPDATE outcomes SET person_id = 'STORE-0/1' WHERE person_id = 'store-0/1'")
+            with pytest.raises(CodedError) as exc:
+                run(experiment, reader)
+        assert (exc.value.code, exc.value.context["field"]) == ("spillover.log.keys", "outcomes")
+    finally:
+        con.disconnect()

@@ -9,13 +9,19 @@ import hashlib
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 
 from increment._optional import require_warehouse
 
 require_warehouse("increment.query.spillover")
 
+import ibis.expr.datatypes as dt
+import ibis.expr.operations as ops
+import ibis.expr.rules as rlz
+import sqlglot as sg
 from ibis import Table
 from ibis.backends.sql import SQLBackend
+from ibis.backends.sql.compilers.base import SQLGlotCompiler
 from ibis.common.exceptions import TableNotFound
 
 from increment._compile_gaps import translating_compile_gaps
@@ -50,6 +56,38 @@ _LABEL_WHITESPACE = (
     + "".join(chr(i) for i in range(0x2000, 0x200B))
     + "\u2028\u2029\u202f\u205f\u3000"
 )
+_Locator = tuple[str, str, str]
+
+
+class _SpilloverExactText(ops.Value):
+    """Keep identifiers byte-distinct through SQL joins, grouping and uniqueness checks."""
+
+    arg: ops.Value[dt.String]
+    dtype = dt.string
+    shape = rlz.shape_like("arg")
+
+
+def _exact_text_sql(compiler: Any, _op: _SpilloverExactText, *, arg: Any):
+    dialect = compiler.dialect
+    if dialect == "duckdb" or dialect == "postgres":
+        collation = sg.to_identifier("binary" if dialect == "duckdb" else "C", quoted=True)
+    else:
+        # BigQuery and Snowflake: remove any inherited case/accent-insensitive collation.
+        collation = sg.exp.Literal.string("")
+    return sg.exp.Collate(this=arg, expression=collation)
+
+
+SQLGlotCompiler.visit__SpilloverExactText = _exact_text_sql  # ty: ignore[unresolved-attribute]
+
+
+def _exact_keys(table: Table) -> Table:
+    return table.mutate(
+        **{
+            name: _SpilloverExactText(table[name].op()).to_expr()
+            for name, dtype in table.schema().items()
+            if name in {"person_id", "group_id", "stratum", "policy"} and dtype.is_string()
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,21 +107,14 @@ class _Snapshot:
 
 @contextmanager
 def _capture(
-    con: SQLBackend, names: Mapping[str, str], roles: tuple[str, ...]
+    con: SQLBackend, names: Mapping[str, _Locator], roles: tuple[str, ...]
 ) -> Iterator[_Snapshot]:
-    _require_warehouse_digest_verifier(
-        con,
-        relation="roster",
-        digest_format=SQL_DIGEST_FORMAT,
-        route="use spillover.from_frame to analyze dataframes",
-    )
     live = WarehouseSession(con, Definitions())
     inputs = {}
     for role in roles:
-        *namespace, name = names[role].split(".")
-        database = ".".join(namespace) or None
+        catalog, schema, name = names[role]
         try:
-            table = con.table(name, database=database)
+            table = con.table(name, database=(catalog, schema))
         except TableNotFound:
             break
         columns = _PROJECTIONS[role]
@@ -95,7 +126,7 @@ def _capture(
     with translating_compile_gaps():
         pinned = live.pin_sources((), extra_relations=inputs)
         try:
-            yield _Snapshot(pinned, {role: pinned.source_sql(role) for role in inputs})
+            yield _Snapshot(pinned, {role: _exact_keys(pinned.source_sql(role)) for role in inputs})
         finally:
             pinned.drop_materialized()
 
@@ -353,7 +384,31 @@ class WarehouseSpilloverSource:
 
     def __init__(self, con: SQLBackend, relations: Mapping[str, object]) -> None:
         self._con = con
-        self._names = relation_names(relations)
+        parts = {role: name.split(".") for role, name in relation_names(relations).items()}
+        _require_warehouse_digest_verifier(
+            con,
+            relation="roster",
+            digest_format=SQL_DIGEST_FORMAT,
+            route="use spillover.from_frame to analyze dataframes",
+        )
+        shortest = min(map(len, parts.values()))
+        catalog = getattr(con, "current_catalog", None) if shortest < 3 else None
+        schema = getattr(con, "current_database", None) if shortest == 1 else None
+        self._names: dict[str, _Locator] = {}
+        rows = [("source", "warehouse"), ("backend", con.name)]
+        for role, path in sorted(parts.items()):
+            # A future assignment table need not exist yet. Unqualified names
+            # denote the launch schema, not whatever the search path later finds.
+            database = path[-2] if len(path) >= 2 else schema
+            project = path[0] if len(path) == 3 else catalog
+            if con.name == "bigquery" and len(path) == 2:
+                project = getattr(con, "billing_project", catalog)
+            if not project or not database:
+                refuse_input("spillover.design.invalid", "relations")
+            self._names[role] = (project, database, path[-1])
+            quoted = sg.table(path[-1], db=database, catalog=project, quoted=True)
+            rows.append((role, quoted.sql(dialect=con.dialect)))
+        self.recipe = tuple(rows)
 
     def freeze(self, design: SpilloverDesign) -> SpilloverPopulation:
         if not isinstance(design, SpilloverDesign):

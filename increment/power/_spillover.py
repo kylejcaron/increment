@@ -36,6 +36,8 @@ _ATTEMPT_UNIT = 65_536
 _PROFILES = ("spread", "largest_first", "smallest_first")
 _SCHEDULES = ("unchanged", "cancelling", "spread", "concentrated")
 _BLOCK_CELLS = 262_144
+_NUMPY_URN_LIMIT = 1_000_000_000  # Exclusive for each color, not for total group size.
+_MAX_DIRECT_DRAWS = 64
 
 _Counts = tuple[int, ...]
 _Status = Literal["supported", "underpowered", "inconclusive", "not_calibrated"]
@@ -170,6 +172,21 @@ def _model_grid(
     return tuple(cases)
 
 
+def _large_urn_draw(
+    rng: np.random.Generator, good: int, bad: int, draws: int, rows: int
+) -> np.ndarray:
+    # The intersection of a random subset and a fixed subset is symmetric in
+    # their sizes. Draw the smaller minority subset, then undo the complements.
+    size = good + bad
+    colors, sample = min(good, bad), min(draws, size - draws)
+    steps, targets = sorted((colors, sample))
+    hits = np.zeros(rows, dtype=np.int64)
+    for step in range(steps):
+        hits += rng.integers(size - step, size=rows) < targets - hits
+    in_sample = hits if good <= bad else sample - hits
+    return in_sample if draws <= size - draws else good - in_sample
+
+
 class _Population:
     """Separate fixed from stochastic columns of a policy's untreated event counts."""
 
@@ -179,6 +196,12 @@ class _Population:
         self.fixed = np.where(draws == sizes, good, np.where(bad == 0, draws, 0))
         self.variable = np.flatnonzero((good > 0) & (bad > 0) & (draws < sizes))
         self.good, self.bad, self.draws = (a[self.variable] for a in (good, bad, draws))
+        oversized = (self.good >= _NUMPY_URN_LIMIT) | (self.bad >= _NUMPY_URN_LIMIT)
+        self.large = [
+            (i, int(self.good[i]), int(self.bad[i]), int(self.draws[i]))
+            for i in np.flatnonzero(oversized)
+        ]
+        self.ordinary = np.flatnonzero(~oversized) if self.large else None
         self.lookup: np.ndarray | None = None
         if not self.variable.size:
             return
@@ -196,10 +219,19 @@ class _Population:
         if not self.variable.size:
             return self.fixed  # broadcasts over assignments
         shape = (rows, len(self.variable))
-        if self.lookup is None:
-            random = rng.hypergeometric(self.good, self.bad, self.draws, size=shape)
-        else:
+        if self.large:
+            random = np.empty(shape, dtype=np.int64)
+            cols = self.ordinary
+            if cols is not None and cols.size:
+                random[:, cols] = rng.hypergeometric(
+                    self.good[cols], self.bad[cols], self.draws[cols], size=(rows, len(cols))
+                )
+            for i, good, bad, draws in self.large:
+                random[:, i] = _large_urn_draw(rng, good, bad, draws, rows)
+        elif self.lookup is not None:
             random = self.lookup[rng.integers(len(self.lookup), size=shape)]
+        else:
+            random = rng.hypergeometric(self.good, self.bad, self.draws, size=shape)
         if len(self.variable) == len(self.fixed):
             return random
         result = np.broadcast_to(self.fixed, (rows, len(self.fixed))).copy()
@@ -563,4 +595,17 @@ def evaluate_design(
     grid = _model_grid(sizes, comparison.baseline_rate, comparison.meaningful_effect, movable)
     if isinstance(grid, str):
         return PlanningEvidence((), False, "not_calibrated", grid)
+    for i, group in enumerate(population.groups):
+        if group.size <= _NUMPY_URN_LIMIT:
+            continue
+        for policy, events in ((r, (s.low[i] for s in grid)), (p, (s.high[i] for s in grid))):
+            quota = group.offers[policy]
+            if min(quota, group.size - quota) > _MAX_DIRECT_DRAWS and any(
+                min(k, group.size - k) > _MAX_DIRECT_DRAWS
+                and max(k, group.size - k) >= _NUMPY_URN_LIMIT
+                for k in events
+            ):
+                return PlanningEvidence(
+                    (), False, "not_calibrated", "group_draw_exceeds_planning_limit"
+                )
     return _conclude(_measure(population, comparison, grid, attempts), family_size)
