@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from math import sqrt
+from statistics import NormalDist
+
 import pytest
 
 from increment.spillover import SpilloverDesign, SpilloverGroup, plan_spillover
@@ -30,3 +33,32 @@ def test_unassessed_trial_keeps_point_and_distinguishes_observed_scarcity():
     zero = plan.analyze(group_high=high, treated=treated, outcomes=dict.fromkeys(outcomes, 0))
     assert zero.estimate == 0 and zero.observed_reason == "no_outcome_variation"
     assert zero.qualification_reason == result.qualification_reason
+
+
+@pytest.mark.slow
+def test_underpowered_trial_reports_qualified_interval_unless_observed_outcomes_are_constant():
+    groups = tuple(
+        SpilloverGroup(f"g{i:03d}", tuple(f"{i}:{j}" for j in range(20)), 5, 10) for i in range(240)
+    )
+    design = SpilloverDesign(groups, {"all": 120}, "ordered", "one week")
+    plan = plan_spillover(design, baseline_rate=0.25, meaningful_effect=0.10)
+    assert plan.evidence.status == "underpowered"
+    high = {g.group_id: i < 120 for i, g in enumerate(groups)}
+    offered = {
+        u: j < (10 if high[g.group_id] else 5) for g in groups for j, u in enumerate(g.members)
+    }
+    events = {
+        u: int(i < 45 or 120 <= i < 135)
+        for i, g in enumerate(groups)
+        for u in g.members
+        if not offered[u]
+    }
+    result = plan.analyze(group_high=high, treated=offered, outcomes=events)
+    # Office rates are 0 or 1. The two arms have 45/120 and 15/120 successes.
+    margin = NormalDist().inv_cdf(0.975) * sqrt((0.375 * 0.625 + 0.125 * 0.875) / 119)
+    assert result.estimate == pytest.approx(0.25)
+    assert (result.lower, result.upper) == pytest.approx((0.25 - margin, 0.25 + margin))
+    assert result.unavailable_reason is None
+    zero = plan.analyze(group_high=high, treated=offered, outcomes=dict.fromkeys(events, 0))
+    assert zero.estimate == 0 and zero.lower is None and zero.upper is None
+    assert zero.observed_reason == "no_outcome_variation" and zero.qualification_reason is None
