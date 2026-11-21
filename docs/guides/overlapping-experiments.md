@@ -1,59 +1,61 @@
 # Analyze two overlapping experiments
 
-Use `increment.overlap` when two experiments independently assign the same kind of unit (for example, an account) to off or on, and you want to decide whether to ship both or add one after the other ships. An interaction measures how much one effect changes when the other treatment is on; it does not answer either launch question by itself.
+If two experiments ran on the same accounts, “Should we launch both?” and “Should we add B when A is already on?” can have different answers. Use `increment.overlap` when each experiment independently assigns accounts to off or on and you will analyze the results once, after a fixed measurement window.
 
-## First establish who could have received either treatment
+## See why the launch decisions differ
 
-Start with the original assignment configuration files, not dictionaries re-exported from them. Use `sdk_overlap_plan` with the archived configuration, the two target keys and focal experiments, the off/on arm labels, and your registered population, dates, metrics, and launch criteria. The archive establishes the allocator rules, revisions, and conditional arm probabilities. You supply the business eligibility rules, proof they were assessed before either assignment, and the serving and measurement dates. A hash checks that the captured inputs match a pinned receipt; it does not prove that the inputs or the described launch policy are true.
-
-Both experiments must cover one shared enrollment period. Base the decision on the intersection: units that met both eligibility rules and were randomized by both experiments. If each eligible account was certain to enter both, this is the jointly eligible audience. With additional enrollment gates, it is the jointly randomized audience, not everyone who could have qualified. A recorded gate decline is not randomized control. A missing decision is not control either. Two experiments competing for one mutually exclusive layer cannot provide this design.
-
-Prepare four inputs for a common fixed measurement window:
-
-| Input | What to retain |
-|---|---|
-| Roster | Stable text unit IDs, original entry time, both eligibility answers and when each was fixed. Keep entrants who never saw either treatment. |
-| Decisions | The actual first decision for each eligible target, including randomized off assignments and explicit gate declines. Convert persisted SDK decisions with `sdk_overlap_decision`. Do not regenerate absent records. |
-| Deliveries | Actual treatment deliveries with event IDs and timestamps, including delivery that did not follow the assigned arm. Focal deliveries may start at the common start, but must follow both eligibility determinations. Events at or after the window ends do not change its delivery summaries. |
-| Outcomes | One finalized outcome per registered metric and assigned unit for the same window. Record a measured zero as zero, not as a missing value. |
-
-Use `OverlapFeed` and `OverlapCapture` with source versions and coverage through the required dates. Supply materialized dataframes from the same captured generation to `capture_overlap_frame`; the dataframe itself cannot certify its source version. For warehouse inputs, use [verified local DuckDB tables](../reference/overlap-warehouse.md) with `capture_overlap_warehouse`. It checks the four versions against the actual relations and returns aggregate evidence, not unit rows.
-
-An external randomizer can supply an `OverlapLaw` and `OverlapFactor` with a documented independent assignment mechanism and an equivalent decision log. A pair of exposure tables or single-experiment summaries cannot supply that evidence.
-
-## Read the decision that matches the launch
-
-Run `analyze_overlap` on the captured evidence. Compare effects in the outcome's original units per originally assigned account. For a binary metric, an estimate of `0.01` means one percentage point. The labels `00`, `10`, `01`, and `11` mean neither treatment, A only, B only, and both.
-
-| Question | Row | Comparison |
-|---|---|---|
-| Ship both rather than neither? | `joint_launch` | `11 − 00` |
-| Add B when A is already on? | `b_given_a_on` | `11 − 10` |
-| Does B's effect change when A is on? | `interaction` | `(11 − 10) − (01 − 00)` |
-
-The readout also includes A's corresponding comparisons and the marginal effects under the other experiment's **planned** allocation, not the allocation observed in this run. A positive joint effect does not establish that adding B helps. A small or uncertain interaction does not establish that either launch clears its criteria.
-
-Run the synthetic checkout-and-promotion example from the repository root:
+From the repository root, run the synthetic checkout-and-promotion example:
 
 ```sh
 uv run python examples/overlap.py tests/fixtures/overlap/sdk_config.json
 ```
 
-It uses the archived allocator to assign a fixed cohort. The constructed outcomes improve by about two orders per account if both treatments launch, but fall by about two if B is added after A. A second, three-account rehearsal cannot support a joint decision. These are illustrations, not estimates from customer data.
+Launching both clears the preset criteria, with an estimated gain of **2 orders per account** versus launching neither. Adding B after A is already on estimates a **loss of 2 orders per account**, but that result is inconclusive. A second example with three accounts reports `insufficient_evidence`. Neither example uses customer data.
 
-Register the metric–comparison pairs that can drive decisions before looking at outcomes. The family is fixed: if a cell is absent, the affected rows report why and still count in the adjustment. The reported intervals use unequal-variance Welch approximations with a Bonferroni adjustment across the registered family. They are not exact finite-sample guarantees. The approximation does not become valid because multiplicity was accounted for. Use a benefit interval entirely above zero for a higher-is-better claim. For a lower-is-better guardrail with a maximum tolerated increase, use the upper bound: it must be strictly below the tolerance. A bound exactly on a threshold is inconclusive.
+The result labels `00`, `10`, `01`, and `11` mean neither treatment, A only, B only, and both.
 
-`criteria_met` for a joint launch requires every registered primary benefit and every registered guardrail to clear. A secondary result cannot make up for a failed or missing criterion. If any required cell has fewer than 30 assigned units (or a binary cell has fewer than 10 successes or 10 failures), the interval may be shown, but the claim is not usable for a decision. A missing, pending, or empty required cell does not produce a point estimate; a singleton or sample-constant cell does not produce an interval. No outcomes are imputed to empty cells. If deliveries disagree with the randomized assignments, the estimates still describe the actual implementation as assigned; a clean launch is not recommended on that basis.
+| Question | Result row | Comparison |
+|---|---|---|
+| Launch both rather than neither? | `joint_launch` | `11 − 00` |
+| Add B when A is already on? | `b_given_a_on` | `11 − 10` |
+| Does B's effect change when A is on? | `interaction` | `(11 − 10) − (01 − 00)` |
 
-## Rehearse a design before starting
+The interaction describes how B's effect changes with A. It does not say whether either launch meets its criteria.
 
-Use `simulate_overlap` with one representative dataframe of joint metric vectors per cell and the planned number of entrants expected to be randomized into both experiments. Estimate that count from both eligibility and enrollment together. The simulation varies cell sizes using the registered allocation and resamples metrics together so a success and its associated cost stay paired. Give each cell a prespecified outcome distribution, even if that cell is expected to be rare. The estimates assume complete mature measurements and delivery as designed. They do not forecast attrition or prove that those distributions describe your traffic.
+## Check which units belong in the analysis
 
-Report decisions across **all** simulated trials. A draw with an empty cell or insufficient support is not a success, and remains in the denominator. The Monte Carlo interval describes uncertainty from running a finite number of simulations, not uncertainty about the effect in the actual experiment. Compare the chance of clearing all launch criteria separately from the chance of detecting an interaction.
+The experiments must share one enrollment period. Analyze only units that met both eligibility rules **before either assignment** and were randomized in both experiments. That may be fewer units than were eligible for both: a gate decline or missing decision is not a control assignment. Experiments in the same mutually exclusive assignment layer cannot enroll a unit in both and do not qualify.
 
-## Check whether your design fits
+This method compares absolute means or binary rates on independent units. Assignment probabilities can differ between experiments or arms, but must stay fixed. Do not use it for more than two experiments, multi-arm or dependent assignments, clusters or blocks, relative lift or ratios, covariate adjustment, winsorization, or subgroup comparisons. Do not use these intervals to decide when to stop early.
 
-- **Supported:** Two concurrent binary experiments, independent assignment with constant (possibly unequal) weights, independent units, absolute unadjusted means or binary means, a fixed family of claims and one final look. Use frames, verified warehouse aggregates, or checked evidence replay for the same plan. Archive replay uses a separately pinned SHA-256. Portable exact counts and allocation weights are limited to `2**53 − 1`.
-- **Inputs cannot establish the result:** Separate experiment aggregates, exposure-only logs, and feeds without pretreatment eligibility, unit identity, assignment history or coherent source versions.
-- **Not covered by this method:** Relative lift and ratio-of-means, adjustment with covariates, clusters or blocks, winsorization, arbitrary subgroup breakouts, more than two factors, multiple treatment arms or dependent assignment. The standard `run` builders do not express this design.
-- **Do not stop early on these intervals:** Repeatedly applying a fixed-horizon test does not preserve its error limit. Finish the registered outcome window and analyze once.
+## Prepare the plan and inputs
+
+Read the original assignment configuration files as bytes. Pass those bytes, both target keys and experiment IDs, and their off/on labels to `sdk_overlap_plan`. Do not use dictionaries re-exported from the files. The archive supplies assignment rules, versions, and probabilities. You supply the eligibility rules, proof of when you applied them, and the registered dates, metrics, and launch criteria. If you use another randomizer, supply an `OverlapLaw`, `OverlapFactor` definitions, and records that establish independent assignment.
+
+| Input | What to keep |
+|---|---|
+| Roster | Stable text IDs, entry times, both eligibility answers and when each was fixed. Include units that received neither treatment. |
+| Assignments | The actual first decision for each eligible target, including off assignments and gate declines. Use `sdk_overlap_decision` for saved SDK decisions; do not reconstruct missing rows. |
+| Deliveries | Event IDs and times, even if delivery disagreed with assignment. Delivery can start at the shared start time, but must follow both eligibility checks. Only events inside the measurement window count toward delivery summaries. |
+| Outcomes | One finalized value per assigned unit and registered metric for the same window. Record a measured zero as zero, not as missing. |
+
+Record the source versions and dates covered in `OverlapFeed` and `OverlapCapture`. For dataframes, pass materialized inputs from the same snapshot to `capture_overlap_frame`; a dataframe cannot verify where it came from. For DuckDB, follow the [warehouse capture steps](../reference/overlap-warehouse.md). You can also [reload saved evidence for the same plan](../reference/saved-formats.md#overlap-evidence-and-results). Exposure logs or separate experiment summaries alone are not enough.
+
+## Read the result
+
+Pass the captured evidence to `analyze_overlap`, not the single-experiment `run` builders. Effects use the metric's original units per assigned unit: for a binary metric, `0.01` is one percentage point. The result also shows A's corresponding comparisons and each experiment's average effect under the other's **planned** assignment probabilities, not the observed split.
+
+Register the metric and comparison pairs that can drive decisions before looking at outcomes. The Welch intervals are approximate, even after adjusting for all registered claims (Bonferroni). An unavailable result still counts in that adjustment.
+
+- `criteria_met`: Every registered primary benefit and guardrail **for launching both** passed. A higher-is-better benefit interval must be entirely above zero. A guardrail's upper bound must be below the allowed increase. Landing exactly on a threshold is inconclusive.
+- `not_met`: The required results were available, but at least one did not pass. This does not necessarily mean harm.
+- `insufficient_evidence`: A required result was unavailable or had too little data, or delivery disagreed with assignment. If delivery disagreed, estimates still describe what happened under the original assignments, not what a rollout as planned would do.
+- `not_requested`: No primary claim was registered for launching both.
+
+Secondary results cannot make up for a failed or unavailable criterion. A required group needs at least 30 assigned units; for a binary outcome it also needs at least 10 successes and 10 failures. An interval may be shown below those limits, but cannot support a decision. Missing, pending, or empty groups yield no estimate for comparisons that need them. A group with one outcome or identical outcomes yields no interval for those comparisons.
+
+## Rehearse the design before starting
+
+Use `simulate_overlap` with the expected number of units randomized in both experiments and one dataframe of representative outcomes for each of the four assignment groups, even a rare one. The simulation varies group sizes using the planned assignment probabilities and samples related metrics together, such as an order and its cost. It assumes complete outcomes and delivery as planned; it does not predict missing outcomes or show that your inputs represent real traffic.
+
+Count every trial, including trials with empty groups or too little data. The Monte Carlo interval reflects the number of simulation draws, not uncertainty about the effect in the real experiment. Check the chance of clearing the launch criteria separately from the chance of detecting an interaction.

@@ -69,10 +69,15 @@ Applies to `ResultCell` and `AnalysisEnvelope`, including cells in a saved run.
 
 `OverlapEvidence.to_json()` and `OverlapResult.to_json()` write format 1.
 Their `from_json(..., expected_sha256=...)` readers accept only format 1 and
-require a separately retained digest. Invalid versions or mismatched digests
-refuse with `overlap.format.invalid`. Keep the evidence to rerun the analysis
-without rereading the source. The digest checks integrity, not whether a
-producer supplied complete data or followed its declared assignment rules.
+require a separately saved SHA-256 digest. Invalid versions or mismatched
+digests raise `overlap.format.invalid`. Keep the evidence to rerun the same
+plan without rereading the source. Counts and assignment weights cannot
+exceed `2**53 - 1`.
+
+For captured inputs and saved results, a matching digest shows that the
+contents match the original record. It cannot prove that the producer
+included all the data, followed its assignment rules, or described the
+launch policy accurately.
 
 ## Unit-day artifact context
 
