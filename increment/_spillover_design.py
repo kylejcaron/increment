@@ -153,7 +153,7 @@ def _untreated_successes(
 
 @dataclass(frozen=True, slots=True, init=False)
 class SpilloverDesign:
-    """A roster, uniform fixed-count laws at both stages, and one binary outcome window."""
+    """Freeze independent policy draws across strata and offer draws across groups given policy."""
 
     groups: tuple[SpilloverGroup, ...]
     high_groups: Mapping[str, int]

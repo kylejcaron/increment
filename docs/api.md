@@ -1124,6 +1124,8 @@ Use `increment.spillover` before assigning groups and people, not an experiment
 builder or `run`. `SpilloverGroup` names the eligible members and integer low/high
 treatment quotas of one group. `SpilloverDesign` freezes those groups, the number
 drawn high within each stratum, a binary outcome and its observation window.
+Draw policies independently across strata. Given those policies, draw offers
+independently across groups; each draw is uniform among subsets of its fixed size.
 
 `plan_spillover(design, *, meaningful_effect, baseline_rate=None)` takes a signed
 absolute risk difference and, optionally, one comparable pre-assignment rate.

@@ -5,7 +5,7 @@ Suppose you can offer training to either a small or a large number of people in 
 ## Before assignment: freeze the design
 
 1. Record the eligible people in each office, the binary outcome and its observation window. Each person must belong to exactly one office. If you randomize separately by region, for example, label each office with that region as its `stratum`.
-2. In each stratum, randomly select a fixed number of offices for the high policy; every subset of that size must be equally likely. Assign the rest low. In each office, randomly select a fixed number of people for offers, with every subset of the declared size equally likely. Both policies must leave untreated people, and the low quota must be positive and strictly smaller than the high quota.
+2. Independently in each stratum, draw a fixed number of offices for the high policy; assign the rest low. Then, given those policies, independently draw each office's fixed number of people for offers. At each draw, every eligible subset of that size must be equally likely. Do not reuse the same draw across regions or offices: correct quotas in the logs cannot establish independence. Both policies must leave untreated people, and the low quota must be positive and strictly smaller than the high quota.
 3. Choose the smallest **signed absolute change** worth detecting. If available, record one comparable pre-assignment event rate. You do not need individual histories, office-specific rates or a holdout. Save the roster, both allocation rules, outcome, window, target, optional rate and package version to repeat the plan. Never choose these after seeing the trial outcomes.
 
 Here are six offices in one stratum. This example omits the historical rate, so there is no simulation and no assessment of power. It still identifies an effect if the two assignments are randomized as planned.
@@ -40,9 +40,11 @@ print(plan.message)
 
 With a comparable rate of, say, 25%, pass `baseline_rate=0.25` to the same planning call **before assignment**. This is the only historical input; it does not adjust the later estimate. The plan models that rate as events spread across offices, concentrated in the largest offices, or concentrated in the smallest. For each profile it checks no change, offsetting gains and losses with zero average change, and the requested change spread across offices or concentrated in a few. Read `plan.message` for the advice and `plan.evidence.status` to act on it:
 
+The planner rounds the change to the nearest whole number of people. For example, on a roster of 20,000, `meaningful_effect=0.09998` models exactly 2,000 additional events, or **+10 percentage points**. The launch message names that modeled change. Its detection advice is about the six scenarios with that change, not the six with no average change.
+
 | Status | What to do |
 |---|---|
-| `supported` | The interval checks passed. Even the lower detection bounds reach 80% for all six modeled alternatives. If those scenarios fit your setting, this design meets the target for the change you named. |
+| `supported` | The interval checks passed. The lower detection bound reaches 80% in all six scenarios with the modeled change. If those scenarios fit your setting, the design meets that detection target. |
 | `underpowered` | The interval checks passed, but even the upper detection bound is below 80% for at least one alternative. Consider adding independently randomized offices before launch. If you proceed, an interval may still be available; not detecting the change will not rule it out. |
 | `inconclusive` | The interval checks passed, but the detection bounds do not settle the 80% decision. Do not describe the design as adequately powered. |
 | `not_calibrated` | Read `plan.evidence.reason`. No usable power or interval was established. A missing baseline or an infeasible modeled scenario does **not** invalidate a properly randomized comparison. |

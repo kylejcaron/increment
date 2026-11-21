@@ -333,8 +333,9 @@ The included [guide example](../guides/spillover.md#after-the-window-closes-reco
 uses the same data with no baseline rate; its point does not qualify an interval.
 
 **Scope of the interval.** The two-sided 95% Normal interval is asymptotic in
-independent, informative groups. Randomization must follow both uniform
-fixed-count laws. Within-group outcomes may depend on **how many** peers receive
+independent, informative groups. Draw policies independently across strata;
+conditional on those policies, draw offers independently across groups. Each
+draw is uniform at its fixed count. Within-group outcomes may depend on **how many** peers receive
 treatment, not **which** peers; there must be no influence across groups.
 A large number of people, or even a minimum group count, does not establish
 coverage. On a nine-group example with offsetting changes and exactly zero
