@@ -1488,8 +1488,12 @@ def _pilot_profiles(
     draw_order = _unit_order(schedule.units, _reject_units)
     shape = schedule.treated.shape
 
-    def align(array: np.ndarray, indices: list[int]) -> np.ndarray:
-        aligned = array if all(i == j for i, j in enumerate(indices)) else array[indices]
+    def align(array: np.ndarray, indices: list[int], *, borrowed: bool = False) -> np.ndarray:
+        if all(i == j for i, j in enumerate(indices)):
+            # A read-only view of a pandas column still follows writes to its parent.
+            aligned = array.copy() if borrowed else array
+        else:
+            aligned = array[indices]
         aligned.setflags(write=False)
         return aligned
 
@@ -1500,7 +1504,9 @@ def _pilot_profiles(
             if spec.type == "conversion"
             else _exact_period_totals(blocks.values[spec.name], blocks.rows)
         )
-        observed[spec.name] = align(totals.reshape(shape), order)
+        observed[spec.name] = align(
+            totals.reshape(shape), order, borrowed=totals is blocks.values[spec.name]
+        )
     return observed, align(schedule.treated, draw_order)
 
 

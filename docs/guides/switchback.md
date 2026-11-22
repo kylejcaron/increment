@@ -226,6 +226,10 @@ random assignment it can call a change more often than the chosen alpha.
 The [48-block example](../reference/switchback-inference.md#unadjusted-means-and-conversions)
 shows when that happens. More transactions per block do not fix it.
 
+The reader keeps the pilot values measured at construction. Editing the
+original dataframe later doesn't change planning or the readout; build
+a new reader to use corrected measurements.
+
 ### 4. Size a future study with the same randomization
 
 For orders, assume treatment adds the same amount to each retained-window

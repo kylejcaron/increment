@@ -466,6 +466,50 @@ def test_grid_first_crossing_requires_ruling_out_smaller_candidates():
     assert ambiguous.points[-1].power_lower > target
 
 
+def test_pilot_keeps_measured_periods_when_caller_edits_sorted_pandas_panel():
+    import pandas as pd
+
+    panel = pd.DataFrame(
+        {
+            "unit": "a",
+            "cycle": c,
+            "period": p,
+            "step": 0,
+            "arm": "T" if c == p else "C",
+            "outcome": p + 10 * (c == p),
+        }
+        for c in range(3)
+        for p in range(3)
+    )
+    experiment, reader = from_switchback_frame(
+        panel,
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="arm",
+        metrics={"outcome": "mean"},
+        assignment=SwitchbackAssignment.model_validate(
+            {
+                "periods_per_cycle": 3,
+                "sequence": {
+                    "scheme": "fixed_count",
+                    "treated_periods": 1,
+                    "independence_unit": "shared_block",
+                },
+                "window": {"washout_steps": 0, "observation_steps": 1},
+            }
+        ),
+        identification=Randomized(control_group="C", allocation={"C": 2 / 3, "T": 1 / 3}),
+    )
+    panel.loc[0, "outcome"] = 1010
+    with reader:
+        fitted = planning_baseline(experiment, reader, "outcome")
+    assert isinstance(fitted, SwitchbackTrajectoryBaseline)
+    assert fitted.delta_ref == 10
+    assert fitted.profiles == (((0, 1, 2),),) * 3
+
+
 def test_unrepresentable_period_totals_cancel_before_runtime_and_planning_contrast():
     a = assignment(3, 1)
     rows = [
