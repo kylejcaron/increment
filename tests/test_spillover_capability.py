@@ -3,7 +3,7 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from increment import run
+from increment import from_definitions, run, runnable
 from increment.errors import CodedError
 from increment.semantics.assignment import Assignment
 from tests.capability_consumers_auxiliary import assert_expected, assert_support
@@ -13,6 +13,7 @@ from tests.spillover_trial import (
     run_three_policy_probe,
     three_policy_trial,
     warehouse_run,
+    write_study,
 )
 
 
@@ -26,6 +27,41 @@ def test_ordinary_and_two_stage_assignments_are_not_interchangeable():
         assert_expected(
             "spillover_family_boundary", f"{ingress}_not_expressible", kind="not_expressible"
         )
+
+
+@pytest.mark.integration
+def test_families_share_a_definitions_directory(example_definitions, con):
+    from contextlib import ExitStack
+
+    design, frames = three_policy_trial()
+    names = {role: f"mixed_families_{role}" for role in frames}
+    write_study(example_definitions / "offers.yaml", design, names)
+    with ExitStack() as stack:
+        for role in ("roster", "offer_counts"):
+            con.create_table(names[role], obj=frames[role])
+            stack.callback(con.drop_table, names[role])
+        ordinary, reader = from_definitions(
+            example_definitions, con, experiment_name="new_onboarding_v2"
+        )
+        stack.enter_context(reader)
+        trial, spillover_reader = from_definitions(
+            example_definitions, con, family="spillover", experiment_name="pilot"
+        )
+        stack.enter_context(spillover_reader)
+        assert ordinary.experiment_id == "new_onboarding_v2"
+        assert [p.policy for p in trial.planning] == ["middle", "upper"]
+
+
+def test_ordinary_preflight_refuses_spillover_before_observations():
+    from increment.spillover import from_frame
+
+    design, frames = three_policy_trial()
+    trial, reader = from_frame(
+        frames["roster"], offer_counts=frames["offer_counts"], design=frame_design(design)
+    )
+    with reader, pytest.raises(CodedError) as exc:
+        runnable(trial, "bought")  # ty: ignore[invalid-argument-type]  # Unsupported family.
+    assert exc.value.code == "kernel.request.invalid"
 
 
 @pytest.mark.integration

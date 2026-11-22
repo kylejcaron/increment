@@ -5,12 +5,17 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
 
-from increment._spillover_design import PolicyCell, SpilloverComparison, SpilloverPopulation
+from increment._spillover_design import (
+    EffectCapacity,
+    PolicyCell,
+    SpilloverComparison,
+    SpilloverPopulation,
+)
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
 from increment.estimation._spillover_mixture import PolicyMixture
 
@@ -106,6 +111,8 @@ def _finish(
     estimate: NDArray[np.float64],
     se: NDArray[np.float64],
     reason: NDArray[np.uint8],
+    *,
+    known_zero: bool,
 ) -> None:
     # With T_j = n_j*y_j/u_j, each policy mean estimates a group total, not a rate.
     # The stratum expands it to all G_s groups, then divides by full roster size N.
@@ -113,6 +120,9 @@ def _finish(
     has_nonevent = np.zeros_like(has_event)
     scarce = False
     for s, pair in zip(strata, pairs, strict=True):
+        # Consume every pair (including its count checks) for a known-zero contrast.
+        if known_zero:
+            continue
         estimate += s.weight * (pair.policy_mean - pair.reference_mean)
         if min(s.n_policy, s.n_reference) < 2:
             scarce = True
@@ -122,6 +132,8 @@ def _finish(
         se += s.weight**2 / (s.n_reference * (s.n_reference - 1)) * pair.reference_ss
         has_event |= pair.has_event
         has_nonevent |= pair.has_nonevent
+    if known_zero:
+        return
     if scarce:
         reason.fill(_TOO_FEW)
         se.fill(np.nan)
@@ -171,15 +183,24 @@ def summarize_cells(
         refuse(_INVALID_COUNTS, requirement="supply one cell for each compared policy and stratum")
     result = _empty_batch(len(first.mean_total))
     pairs = _cell_pairs(strata, comparison, cells)
-    _finish(strata, pairs, result.estimate, result.standard_error, result.reason)
+    _finish(
+        strata,
+        pairs,
+        result.estimate,
+        result.standard_error,
+        result.reason,
+        known_zero=population.effect_capacity[comparison.policy, comparison.reference].outward == 0,
+    )
     return result
 
 
-def _observed_batch(
+def _as_batch(
     population: SpilloverPopulation,
     comparison: SpilloverComparison,
-    cells: Sequence[PolicyCell],
-) -> dict[tuple[str, str], BatchCell]:
+    cells: Sequence[PolicyCell] | Mapping[tuple[str, str], BatchCell],
+) -> Mapping[tuple[str, str], BatchCell]:
+    if isinstance(cells, Mapping):
+        return cast("Mapping[tuple[str, str], BatchCell]", cells)
     batched = {}
     quotas = population.design.groups_per_policy
     for cell in cells:
@@ -206,10 +227,10 @@ def _observed_batch(
 def estimate_comparison(
     population: SpilloverPopulation,
     comparison: SpilloverComparison,
-    cells: Sequence[PolicyCell],
+    cells: Sequence[PolicyCell] | Mapping[tuple[str, str], BatchCell],
 ) -> tuple[float, float | None, str | None]:
     """Estimate policy minus reference; preserve the observed point when SE is unavailable."""
-    batched = _observed_batch(population, comparison, cells)
+    batched = _as_batch(population, comparison, cells)
     batch = summarize_cells(population, comparison, batched)
     reason = reason_text(batch.reason[0])
     se = float(batch.standard_error[0]) if reason is None else None
@@ -364,9 +385,12 @@ def summarize_counts(
     is (G_s / N)^2 times the sum of each cell's sample variance divided by its group count
     (Jiang, Imai & Malani, Biometrics 2023).
     Inference assumes outcomes depend on the number, not the identities, of treated peers.
+    When both policies have the same offer count in every group, the contrast and its
+    standard error are zero by design rather than estimates from the randomized groups.
     """
     design = _CountDesign.prepare(population, comparison)
     result = _empty_batch(design.rows(assignment, successes))
+    known_zero = population.effect_capacity[comparison.policy, comparison.reference].outward == 0
     for rows, pairs in design.batches(assignment, successes, _WORK_CELLS):
         _finish(
             design.strata,
@@ -374,8 +398,14 @@ def summarize_counts(
             result.estimate[rows],
             result.standard_error[rows],
             result.reason[rows],
+            known_zero=known_zero,
         )
     return result
+
+
+type RangeBasis = Literal[
+    "family_interval", "identical_offer_counts", "attainable_range", "unavailable"
+]
 
 
 class SpilloverInterval:
@@ -389,6 +419,8 @@ class SpilloverInterval:
     bound this by one at the true target: the linear terms cancel because n_h eta_h
     is proportional to w_h. The same holds for 1-X. Markov's inequality and a union
     bound over the registered policies and both tails give the family level.
+    Intersecting with the range permitted by the offer counts preserves any covered
+    truth; if the intersection is empty, the full attainable range contains it.
     """
 
     def __init__(self, population: SpilloverPopulation) -> None:
@@ -423,6 +455,8 @@ class SpilloverInterval:
         policy: str,
         means: Sequence[NDArray[np.float64]],
         squares: Sequence[NDArray[np.float64]],
+        *,
+        invert: bool,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         # Deduplicate joint stratum summaries, not individual group outcomes.
         # Both tails and all identical draws reuse the same centered moments.
@@ -456,6 +490,9 @@ class SpilloverInterval:
         max_ss = k * (1 - d) ** 2 + (mass - k - d) ** 2 + (n - k - 1) * d**2
         if np.any(variance > max_ss / n + tol * a):
             refuse(_INVALID_COUNTS, requirement="centered sums must fit the bounded group totals")
+        if not invert:
+            # Identical counts identify the contrast from marginal support alone.
+            return np.zeros(len(means[0])), np.ones(len(means[0]))
 
         # Model mean and centered-SD errors as at most (n+8)*eps*max(X).
         # Bound max(X) by min(1, a + sqrt(n-1)*SD), allowing for both errors.
@@ -485,10 +522,20 @@ class SpilloverInterval:
     def _subtract(
         policy: tuple[NDArray[np.float64], NDArray[np.float64]],
         reference: tuple[NDArray[np.float64], NDArray[np.float64]],
+        capacity: EffectCapacity,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        lower = np.maximum(np.nextafter(policy[0] - reference[1], -np.inf), -1)
-        upper = np.minimum(np.nextafter(policy[1] - reference[0], np.inf), 1)
+        lower = np.nextafter(policy[0] - reference[1], -np.inf)
+        upper = np.nextafter(policy[1] - reference[0], np.inf)
         failed = np.isnan(lower) | np.isnan(upper)
+        # A family interval can miss the entire attainable set on a particular draw.
+        # Report that set, not a point at its nearest edge or a directional call.
+        # Test against the exact rational support before rounding endpoints out for display:
+        # a float exceeds the exact cap iff it exceeds its inward rounding.
+        disjoint = (lower > capacity.inward) | (upper < -capacity.inward) | (lower > upper)
+        np.maximum(lower, -capacity.outward, out=lower)
+        np.minimum(upper, capacity.outward, out=upper)
+        lower[disjoint] = -capacity.outward
+        upper[disjoint] = capacity.outward
         lower[failed] = np.nan
         upper[failed] = np.nan
         return lower, upper
@@ -503,11 +550,8 @@ class SpilloverInterval:
         Invalid summaries refuse. A numerical inversion failure gives two NaNs
         for that row, never an imputed physical interval.
         """
-        source = (
-            cast("Mapping[tuple[str, str], BatchCell]", cells)
-            if isinstance(cells, Mapping)
-            else _observed_batch(self._population, comparison, cells)
-        )
+        source = _as_batch(self._population, comparison, cells)
+        capacity = self._population.effect_capacity[comparison.policy, comparison.reference]
         arms: list[list[BatchCell]] = []
         rows = None
         for policy in (comparison.policy, comparison.reference):
@@ -556,10 +600,15 @@ class SpilloverInterval:
                     ):
                         refuse(_INVALID_COUNTS, requirement="supply feasible policy summary counts")
                 ranges.append(
-                    self._range(name, [c.mean_total[ix] for c in arm], [c.ss[ix] for c in arm])
+                    self._range(
+                        name,
+                        [c.mean_total[ix] for c in arm],
+                        [c.ss[ix] for c in arm],
+                        invert=capacity.outward != 0,
+                    )
                 )
             p, r = ranges
-            lower[ix], upper[ix] = self._subtract(p, r)
+            lower[ix], upper[ix] = self._subtract(p, r, capacity)
         return lower, upper
 
     def bounds_from_counts(
@@ -567,15 +616,40 @@ class SpilloverInterval:
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Use the same centered group reductions and column codes as summarize_counts."""
         key = (comparison.policy, comparison.reference)
+        capacity = self._population.effect_capacity[key]
         if key not in self._dense:
             self._dense[key] = _CountDesign.prepare(self._population, comparison)
         design = self._dense[key]
         n = design.rows(assignments, outcome_counts)
         lower, upper = np.empty(n), np.empty(n)
         for rows, pairs in design.batches(assignments, outcome_counts, self._block(comparison)):
-            p = self._range(key[0], [x.policy_mean for x in pairs], [x.policy_ss for x in pairs])
-            r = self._range(
-                key[1], [x.reference_mean for x in pairs], [x.reference_ss for x in pairs]
+            p = self._range(
+                key[0],
+                [x.policy_mean for x in pairs],
+                [x.policy_ss for x in pairs],
+                invert=capacity.outward != 0,
             )
-            lower[rows], upper[rows] = self._subtract(p, r)
+            r = self._range(
+                key[1],
+                [x.reference_mean for x in pairs],
+                [x.reference_ss for x in pairs],
+                invert=capacity.outward != 0,
+            )
+            lower[rows], upper[rows] = self._subtract(p, r, capacity)
         return lower, upper
+
+    def observed(
+        self, comparison: SpilloverComparison, cells: Sequence[PolicyCell]
+    ) -> tuple[float, float, float, RangeBasis]:
+        """Return the point, range and range basis from the validated group summaries."""
+        batch = _as_batch(self._population, comparison, cells)
+        lower, upper = self.bounds(comparison, batch)
+        lo, hi = float(lower[0]), float(upper[0])
+        point = estimate_comparison(self._population, comparison, batch)[0]
+        capacity = self._population.effect_capacity[comparison.policy, comparison.reference]
+        basis: RangeBasis = "family_interval"
+        if capacity.outward == 0:
+            basis = "identical_offer_counts"
+        elif (lo, hi) == (-capacity.outward, capacity.outward):
+            basis = "attainable_range"
+        return point, lo, hi, basis

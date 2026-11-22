@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from increment._source_types import declared_day_axis_metric_objects_supported
 from increment.errors import CodedError
-from increment.kernel.contracts import View, declared_breakouts
+from increment.kernel.contracts import View, _refuse, declared_breakouts
 from increment.kernel.experiment import Experiment, SourceReference
 
 if TYPE_CHECKING:
@@ -412,6 +412,12 @@ def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:
     """Conservative offline feasibility: absent declarations remain unknown."""
     from increment.declarations import estimator_refs
 
+    if not isinstance(exp, Experiment):
+        _refuse(
+            "kernel.request.invalid",
+            field="runnable requires an ordinary experiment; for spillover, check planning "
+            "before launch and call run after recording outcomes",
+        )
     exploratory_metric = None
     eligibility_unknown = False
     if isinstance(metric, str):

@@ -193,6 +193,7 @@ _NO_YAML_FILES_WARNING = WarningSpec(
 
 # Names of top-level list-valued keys that the loader merges across files
 _MERGE_LISTS = {"fact_sources", "dim_sources", "exposures", "metrics", "experiments", "spillovers"}
+_ORDINARY_SECTIONS = frozenset(Definitions.model_fields) | {"metric_definitions"}
 
 
 class _FactSources(_Base):
@@ -209,19 +210,18 @@ def load(path: str | Path) -> Definitions:
     return _load(Path(path), advise=True)
 
 
-def _raw_definitions(
-    path_obj: Path, *, advise: bool, shared_metrics: bool = True
-) -> tuple[dict[str, Any], _Provenance]:
+def _raw_definitions(path_obj: Path, *, advise: bool) -> tuple[dict[str, Any], _Provenance]:
     if path_obj.is_file():
         return _load_single(path_obj)
     if path_obj.is_dir():
-        return _load_dir(path_obj, advise=advise, shared_metrics=shared_metrics)
+        return _load_dir(path_obj, advise=advise)
     refuse(_MISSING_PATH, path=str(path_obj))
 
 
 def _load(path_obj: Path, *, advise: bool) -> Definitions:
     """Load and validate definitions, emitting load-time warnings only when ``advise``."""
     raw, provenance = _raw_definitions(path_obj, advise=advise)
+    raw.pop("spillovers", None)  # The spillover builder validates this separate family.
 
     dialect = raw.get("dialect")
 
@@ -478,9 +478,7 @@ def _directory_includes(
     return native, included
 
 
-def _load_dir(
-    path: Path, *, advise: bool, shared_metrics: bool
-) -> tuple[dict[str, Any], _Provenance]:
+def _load_dir(path: Path, *, advise: bool) -> tuple[dict[str, Any], _Provenance]:
     merged: dict[str, Any] = {}
     provenance = _Provenance()
 
@@ -489,7 +487,7 @@ def _load_dir(
         # A warning, not a refusal: an empty directory is a valid workflow,
         # but is more often a typo'd path whose symptom lands far from the cause.
         warn(_NO_YAML_FILES_WARNING, context={"path": path}, stacklevel=4)
-    native, included = _directory_includes(path, files) if shared_metrics else ({}, set())
+    native, included = _directory_includes(path, files)
     for yaml_file in files:
         if yaml_file.resolve() in included:
             if yaml_file in native and "metric_definitions" in native[yaml_file]:

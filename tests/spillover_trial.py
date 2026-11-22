@@ -117,6 +117,6 @@ def run_three_policy_probe(con, tmp_path, *, alpha=0.01, reader_con=None):
     for row, expected in zip(result.comparisons, ranges[alpha], strict=True):
         assert (row.lower, row.upper) == pytest.approx(expected, rel=0, abs=1e-10)
         assert (row.alpha, row.family_size, row.policy_count) == (alpha, 2, 3)
-        assert row.method == "two-stage-fixed-bet-v1"
+        assert row.method == "two-stage-fixed-bet-v2"
         assert row.direction == "inconclusive" and row.unavailable_reason is None
     return result

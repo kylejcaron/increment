@@ -168,6 +168,9 @@ values.
   `alpha` (default `0.05`) before assignment. Dataframes and warehouse tables
   return the same estimate, range and direction. An optional historical rate
   helps assess power; it does not determine whether the final interval is shown.
+  Stores with identical offer counts under both policies cannot contribute to
+  that spillover. The interval now respects this limit (`two-stage-fixed-bet-v2`);
+  register with this version before assignment.
 
 - DuckDB accumulates daily ratio statistics more accurately. A sparse day
   with valid data can now report an interval instead of refusing because
@@ -1132,13 +1135,17 @@ Use `increment.from_definitions(path, con, family="spillover")` for warehouse ta
 
 Before assignment, bind the eligible roster and the number of offers each group would make at each level. Check `experiment.planning` and save `experiment.registration_id`. To reopen, pass the saved value as `expected_registration` to the same builder and source recipe. To analyze, also supply the group policy log, individual offer log, and an explicit yes/no outcome for every person who got no offer. The [guide](guides/spillover.md) gives the five table schemas and an executable warehouse example.
 
+Ordinary and spillover studies can share a definitions directory. Select the spillover by `family="spillover", experiment_name=...`. Ordinary `runnable()` does not check spillover readiness: `experiment.planning` assesses power before launch; `run` checks the recorded inputs after the outcome window closes.
+
 The warehouse sends region-by-policy summaries to the estimator. They contain no customer or store IDs, but a total based on one person can still reveal that person's outcome.
 
 `run(...).comparisons` keeps the registered pairs in order. `estimate` is the change for people kept **without** an offer, under `policy` minus `reference`. Each eligible person counts equally. Simply pooling untreated people answers a different question. With unequal group sizes the estimate can lie outside `[-1, 1]`; the true difference in probabilities cannot.
 
 Read the endpoints (`lower`, `upper`) in proportion units. A range wholly above zero gives `direction="increase"`; one wholly below gives `"decrease"`. A range that touches or crosses zero is `"inconclusive"`. If no range can be computed, `direction` is `"unavailable"` and `unavailable_reason` says why. Low power, missing history, and identical observed outcomes do not withhold a range. Each row records `alpha`, `method`, the number of registered comparisons (`family_size`), and the number of distinct policies they compare (`policy_count`).
 
-These ranges apply at the registered horizon. They are not valid for repeated looks or for choosing new comparisons after seeing outcomes. See the [design assumptions and evidence](reference/validation-evidence.md#ev-spillover-rct2).
+`range_basis` tells you what the endpoints mean. `family_interval` uses the experiment's outcomes. `attainable_range` gives the whole range allowed by the registered offer counts; it does not show a direction. `identical_offer_counts` means the two policies cannot differ under this design's assumptions: the point and range are exactly zero. `unavailable` means no interval was computed. A nonzero range can be narrower than the sampling variation in the point estimate; the point is not clipped to fit.
+
+These ranges apply at the registered horizon, not to repeated looks or comparisons picked after seeing outcomes. For a record of the run, [archive the input versions and comparison rows](guides/spillover.md#keep-a-result-you-can-reproduce); the registration ID alone is not an outcome snapshot. See the [design assumptions and evidence](reference/validation-evidence.md#ev-spillover-rct2).
 
 ::: increment.spillover.SpilloverComparison
 

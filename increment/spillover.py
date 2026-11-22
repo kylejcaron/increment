@@ -18,7 +18,7 @@ from increment._spillover_design import (
     refuse_input,
 )
 from increment.errors import CodedError
-from increment.estimation.spillover import SpilloverInterval, estimate_comparison
+from increment.estimation.spillover import RangeBasis, SpilloverInterval
 from increment.kernel.contracts import _refuse
 from increment.power._spillover import PlanningEvidence, evaluate_design
 
@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 _PROTOCOL = "spillover-fixed-count-v2"
-_METHOD = "two-stage-fixed-bet-v1"
+_METHOD = "two-stage-fixed-bet-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +51,7 @@ class _ComparisonResult:
     estimate: float
     lower: float | None
     upper: float | None
+    range_basis: RangeBasis
     unavailable_reason: str | None = None
     direction: Literal["increase", "decrease", "inconclusive", "unavailable"] = field(init=False)
 
@@ -70,11 +71,24 @@ class _ComparisonResult:
             direction = "decrease"
         else:
             direction = "inconclusive"
+        if direction == "unavailable":
+            object.__setattr__(self, "range_basis", "unavailable")
         object.__setattr__(self, "direction", direction)
 
     @property
     def multiplicity(self) -> str:
         """How to interpret the interval alongside the other declared comparisons."""
+        if self.range_basis == "identical_offer_counts":
+            return (
+                "Both policies offer to the same number of people in every group. "
+                "Under the assumption that only the number offered matters, the effect "
+                "is exactly zero by design, not because the observed outcomes were equal."
+            )
+        if self.range_basis == "attainable_range":
+            return (
+                "The reported range spans every effect size allowed by the registered offer "
+                "counts. The observed outcomes do not establish a narrower range or a direction."
+            )
         return (
             f"Under the registered draws, the chance that any of the {self.family_size} ranges "
             f"excludes its true effect is at most {self.alpha} in exact arithmetic. The reported "
@@ -233,8 +247,7 @@ class SpilloverReader:
         policy_count = len(design.compared_policies)
         rows = []
         for comparison in design.comparisons:
-            point = estimate_comparison(experiment.population, comparison, cells)[0]
-            lower, upper = rule.bounds(comparison, cells)
+            point, lower, upper, basis = rule.observed(comparison, cells)
             rows.append(
                 _ComparisonResult(
                     policy=comparison.policy,
@@ -246,8 +259,9 @@ class SpilloverReader:
                     outcome=design.outcome,
                     horizon=design.horizon,
                     estimate=point,
-                    lower=float(lower[0]),
-                    upper=float(upper[0]),
+                    lower=lower,
+                    upper=upper,
+                    range_basis=basis,
                 )
             )
         return SpilloverResult(experiment.registration_id, tuple(rows))

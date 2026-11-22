@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from itertools import groupby
 from typing import Literal
@@ -251,13 +251,10 @@ def _states(
     comparison: SpilloverComparison,
     models: Sequence[_Scenario],
     attempts: int,
-    *,
-    order: Sequence[int] | None = None,
 ) -> Iterator[tuple[int, np.ndarray, np.ndarray]]:
-    """Sample in model order; return counts in registered group order."""
+    """Sample both stages in the population's column order."""
     r, p = _indices(population, comparison)
-    groups = population.groups if order is None else tuple(population.groups[i] for i in order)
-    restore = None if order is None else np.argsort(order)
+    groups = population.groups
     sizes = np.array([g.size for g in groups])
     low_draws = sizes - np.array([g.offers[r] for g in groups])
     high_draws = sizes - np.array([g.offers[p] for g in groups])
@@ -281,7 +278,6 @@ def _states(
             target = assignment[:, cols]
             rng.permuted(np.broadcast_to(allocation, target.shape), axis=1, out=target)
         reference, policy = assignment == 0, assignment == 1
-        registered = assignment if restore is None else assignment[:, restore]
         shared: dict[_Population, np.ndarray] = {}
         for i, (low_law, high_law) in enumerate(laws):
             for law in (low_law, high_law):
@@ -290,7 +286,7 @@ def _states(
             low = shared[low_law] if low_law in shared else low_law.sample(rng, rows)
             upper = shared[high_law] if high_law in shared else high_law.sample(rng, rows)
             counts = np.where(reference, low, np.where(policy, upper, 0))
-            yield i, registered, counts if restore is None else counts[:, restore]
+            yield i, assignment, counts
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,8 +493,6 @@ def _measure(
     population: SpilloverPopulation,
     comparison: SpilloverComparison,
     models: tuple[_Scenario, ...],
-    groups: tuple[GroupProfile, ...],
-    order: Sequence[int] | None,
 ) -> tuple[ScenarioEvidence, ...]:
     rule = SpilloverInterval(population)
     tail = 0.05 / (24 * len(population.design.comparisons))
@@ -509,7 +503,7 @@ def _measure(
     tallies = {key: _Tally() for key in unique}
     dense = []
     for key, model in unique.items():
-        classes = _classes(groups, r, p, model)
+        classes = _classes(population.groups, r, p, model)
         if not _compact(classes, len(population.groups)):
             dense.append(model)
             continue
@@ -517,7 +511,7 @@ def _measure(
             lo, hi = rule.bounds(comparison, cells)
             tallies[key].observe(lo, hi, model.true_effect)
     if dense:
-        for i, assignment, counts in _states(population, comparison, dense, _ATTEMPTS, order=order):
+        for i, assignment, counts in _states(population, comparison, dense, _ATTEMPTS):
             model = dense[i]
             lo, hi = rule.bounds_from_counts(comparison, assignment, counts)
             tallies[model.low, model.high].observe(lo, hi, model.true_effect)
@@ -549,6 +543,35 @@ def _indices(population: SpilloverPopulation, comparison: SpilloverComparison) -
     return policies.index(comparison.reference), policies.index(comparison.policy)
 
 
+def _planning_population(population: SpilloverPopulation) -> SpilloverPopulation:
+    """Use structural coordinates for allocation ties, random draws and interval reductions."""
+    design = population.design
+    strata = [
+        (
+            tuple(design.groups_per_policy[name].values()),
+            sorted((g.size, g.offers) for g in members),
+        )
+        for name, members in groupby(population.groups, key=lambda g: g.stratum)
+    ]
+    # Smaller first-stage allocations precede larger ones. Break ties by the
+    # ordered group profiles, larger first. Equal signatures are exchangeable.
+    strata.sort(key=lambda block: block[1], reverse=True)
+    strata.sort(key=lambda block: block[0])
+    # Population columns sort by (stratum label, group ID); use ranks for both
+    # so neither simulator nor interval reduction needs a second permutation.
+    width = len(str(len(strata) - 1))
+    quotas = {}
+    groups = []
+    for rank, (counts, profiles) in enumerate(strata):
+        name = str(rank).zfill(width)
+        quotas[name] = dict(zip(design.policies, counts, strict=True))
+        for size, offers in profiles:
+            groups.append(GroupProfile(len(groups), name, size, offers))
+    return replace(
+        population, design=replace(design, groups_per_policy=quotas), groups=tuple(groups)
+    )
+
+
 def evaluate_design(
     population: SpilloverPopulation, comparison: SpilloverComparison
 ) -> PlanningEvidence:
@@ -558,14 +581,8 @@ def evaluate_design(
     work = len(population.groups) * len(population.design.comparisons) * _ATTEMPTS
     if work > _MAX_GROUP_ATTEMPTS:
         return PlanningEvidence((), "not_assessed", "simulation_budget_exceeded")
-    # Tie-break allocations and sample in structural order, independent of group IDs.
-    registered = population.groups
-    order = sorted(
-        range(len(registered)),
-        key=lambda i: (registered[i].stratum, registered[i].size, registered[i].offers),
-    )
-    reordered = any(i != j for i, j in enumerate(order))
-    groups = tuple(registered[i] for i in order) if reordered else registered
+    population = _planning_population(population)
+    groups = population.groups
     r, p = _indices(population, comparison)
     sizes = tuple(g.size for g in groups)
     movable = tuple(g.offers[r] != g.offers[p] for g in groups)
@@ -583,4 +600,4 @@ def evaluate_design(
                 for k in events
             ):
                 return PlanningEvidence((), "not_assessed", "group_draw_exceeds_planning_limit")
-    return _conclude(_measure(population, comparison, grid, groups, order if reordered else None))
+    return _conclude(_measure(population, comparison, grid))

@@ -86,6 +86,44 @@ def test_no_history_keeps_wide_intervals_even_if_all_outcomes_are_zero():
     assert zero.unavailable_reason is None
 
 
+@pytest.mark.parametrize("changed", [False, True], ids=["identical", "disjoint"])
+def test_range_from_offer_counts_is_not_evidence_of_a_direction(changed):
+    roster, counts, design, policies, offered = _trial(groups=32, low=1, high=1)
+    if changed:
+        # Only the unassigned high policy of the last group offers to one more person.
+        counts.loc[(counts.group_id == "g031") & (counts.policy == "high"), "offers"] = 2
+    events = offered.loc[~offered.offered, ["person_id"]].copy()
+    events["outcome"] = events.person_id.str.split(":").str[0].astype(int) < 16
+    experiment, reader = from_frame(
+        roster,
+        offer_counts=counts,
+        design=design,
+        group_policy=policies,
+        offered=offered,
+        outcomes=events,
+    )
+    with reader:
+        (row,) = run(experiment, reader).comparisons
+    assert row.estimate == (1 if changed else 0)
+    cap = 1 / 32 if changed else 0
+    assert (row.lower, row.upper) == (-cap, cap)
+    assert row.direction == "inconclusive" and row.unavailable_reason is None
+    assert row.range_basis == ("attainable_range" if changed else "identical_offer_counts")
+
+    if not changed:
+        experiment, reader = from_frame(
+            roster,
+            offer_counts=counts,
+            design=design,
+            group_policy=policies,
+            offered=offered,
+            outcomes=events.iloc[1:],
+        )
+        with reader, pytest.raises(CodedError) as missing:
+            run(experiment, reader)
+        assert missing.value.code == "spillover.log.keys"
+
+
 def test_direction_requires_a_present_interval_strictly_on_one_side_of_zero():
     roster, counts, design, policies, offered = _trial()
     experiment, reader = from_frame(
@@ -111,6 +149,7 @@ def test_direction_requires_a_present_interval_strictly_on_one_side_of_zero():
     failed = replace(row, lower=float("nan"), upper=float("nan"))
     assert failed.lower is failed.upper is None
     assert (failed.direction, failed.unavailable_reason) == ("unavailable", "nonfinite_interval")
+    assert failed.range_basis == "unavailable"
     assert (failed.policy, failed.reference, failed.estimate) == (
         row.policy,
         row.reference,

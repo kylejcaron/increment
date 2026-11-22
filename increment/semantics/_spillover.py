@@ -12,7 +12,12 @@ from pydantic import ValidationError
 from increment._spillover_design import SpilloverComparison, SpilloverDesign, refuse_input
 from increment.errors import CodedError, refuse
 from increment.semantics.artifact import RelationLocator
-from increment.semantics.loader import _DUPLICATES, _check_category_duplicates, _raw_definitions
+from increment.semantics.loader import (
+    _DUPLICATES,
+    _ORDINARY_SECTIONS,
+    _check_category_duplicates,
+    _raw_definitions,
+)
 
 _ROLES = {"roster", "offer_counts", "group_policy", "offered", "outcomes"}
 
@@ -94,8 +99,8 @@ def _trial(raw: object) -> _Trial:
 
 
 def load_trials(path: Path) -> dict[str, _Trial]:
-    raw, provenance = _raw_definitions(path, advise=False, shared_metrics=False)
-    entries = _fields(raw, "spillovers", {"spillovers"})["spillovers"]
+    raw, provenance = _raw_definitions(path, advise=False)
+    entries = _fields(raw, "spillovers", {"spillovers"}, _ORDINARY_SECTIONS)["spillovers"]
     trials = tuple(_trial(item) for item in entries)
     duplicates: list[str] = []
     _check_category_duplicates(entries, "spillover", provenance.origins, duplicates)

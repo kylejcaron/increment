@@ -23,12 +23,23 @@ def _comparison(rate=0.4, effect=0.1, policy="upper"):
     )
 
 
-def _plan(sizes=(10,) * 4, *, comparisons=None, quotas=None, offers=None, alpha=0.05, groups=None):
+def _plan(
+    sizes=(10,) * 4,
+    *,
+    comparisons=None,
+    quotas=None,
+    offers=None,
+    alpha=0.05,
+    groups=None,
+    strata=None,
+):
     if groups is None:
         groups = range(len(sizes))
-    quotas = quotas or {"base": len(sizes) - len(sizes) // 2, "upper": len(sizes) // 2}
+    if strata is None:
+        strata = ["all"] * len(sizes)
+    quotas = quotas or {"all": {"base": len(sizes) - len(sizes) // 2, "upper": len(sizes) // 2}}
     design = SpilloverDesign(
-        groups_per_policy={"all": quotas},
+        groups_per_policy=quotas,
         comparisons=comparisons or (_comparison(),),
         outcome="renewed",
         horizon="90 days",
@@ -40,7 +51,7 @@ def _plan(sizes=(10,) * 4, *, comparisons=None, quotas=None, offers=None, alpha=
         {
             "person_id": np.arange(sum(sizes)),
             "group_id": np.repeat(groups, sizes),
-            "stratum": ["all"] * sum(sizes),
+            "stratum": np.repeat(strata, sizes),
         }
     )
     counts = pa.table(
@@ -350,7 +361,7 @@ def test_scarce_sibling_keeps_family_and_simulation_tails():
     assert 4 / 0.05 < e < 6 / 0.05
     first, scarce = _plan(
         (10,) * 33,
-        quotas={"base": 16, "middle": 16, "upper": 1},
+        quotas={"all": {"base": 16, "middle": 16, "upper": 1}},
         comparisons=(_comparison(0.5, 0.5, policy="middle"), _comparison(0.5, 0.5)),
         offers=((0, 1, 2),) * 33,
     )
@@ -394,7 +405,7 @@ def test_family_work_limit_is_monotone_through_2100_groups(family):
         quotas = {"base": groups - family, **dict.fromkeys(labels, 1)}
         return _plan(
             (2,) * groups,
-            quotas=quotas,
+            quotas={"all": quotas},
             comparisons=(_comparison(0.25, 1e-8, labels[0]), *siblings),
             offers=((0, *(1,) * family),) * groups,
         )[0].reason
@@ -421,6 +432,44 @@ def test_group_renaming_preserves_models_and_sampling_with_structural_ties():
     (renamed,) = _plan(sizes, offers=offers, comparisons=comparisons, groups=rename)
     assert len(original.scenarios) == 12
     assert renamed == original
+
+
+@pytest.mark.slow
+def test_region_names_do_not_decide_scenario_feasibility():
+    # Eight events fill two tied groups. Only one region's groups can change.
+    def advice(first, second):
+        return _plan(
+            (4,) * 8,
+            comparisons=(_comparison(0.25, 0.125),),
+            offers=((0, 1),) * 4 + ((0, 0),) * 4,
+            strata=(first,) * 4 + (second,) * 4,
+            quotas={s: {"base": 2, "upper": 2} for s in (first, second)},
+        )
+
+    assert advice("A", "Z") == advice("Z", "A")
+
+
+@pytest.mark.slow
+def test_stratified_three_policy_evidence_replays_under_region_renaming():
+    # The groups have identical sizes and offer counts. Only the registered
+    # policy allocations distinguish the two regions' assignment laws.
+    def advice(first, second):
+        (plan,) = _plan(
+            (4,) * 32,
+            comparisons=(_comparison(0.25, 0.5),),
+            offers=((0, 1, 3),) * 32,
+            strata=(first,) * 16 + (second,) * 16,
+            quotas={
+                first: {"base": 5, "middle": 2, "upper": 9},
+                second: {"base": 8, "middle": 3, "upper": 5},
+            },
+            alpha=0.5,
+        )
+        return plan
+
+    original = advice("A", "Z")
+    assert len(original.scenarios) == 12
+    assert advice("Z", "A") == original
 
 
 @pytest.mark.slow

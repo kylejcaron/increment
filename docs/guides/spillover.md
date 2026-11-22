@@ -32,13 +32,13 @@ spillovers:
     relations:
       roster: eligible_customers_v1
       offer_counts: planned_counts_v1
-      group_policy: store_assignment
-      offered: customer_assignment
-      outcomes: seven_day_purchase
+      group_policy: store_assignment_v1
+      offered: customer_assignment_v1
+      outcomes: seven_day_purchase_v1
 """)
 ```
 
-Use durable tables or views for **this experiment**. Short names use the connection's current schema when you register. The open reader stays on those locations if you switch schemas; use fully qualified names to reopen from a different default. Registration checks the roster and planned counts, not future outcomes or the definition of a mutable view. Keep the input versions you need to reproduce the result.
+Use durable tables or views for **this experiment**. Short names use the connection's current schema at registration; use fully qualified names to reopen from another schema. The registration checks the roster and planned counts, not the contents of future logs or outcomes. To reproduce a result, bind snapshots that cannot be overwritten and keep them. A version-looking name on a mutable view is not a snapshot.
 
 With DuckDB, attach the databases before registering, even if the outcome tables do not exist yet. Use absolute file paths to reopen on another connection; an in-memory database works only on its original connection. With Snowflake, avoid a temporary table or view with the same name as a registered input. The check applies to the named object, not the tables inside a view.
 
@@ -57,7 +57,8 @@ With DuckDB, attach the databases before registering, even if the outcome tables
 import ibis
 import pyarrow as pa
 
-con = ibis.duckdb.connect()
+database = Path("offers.duckdb").resolve()
+con = ibis.duckdb.connect(database)
 stores = list("ABCDEF")
 people = [f"{s}{i}" for s in stores for i in range(4)]
 roster = pa.table(
@@ -88,7 +89,7 @@ with reader:
     registration = experiment.registration_id
 ```
 
-Read the planning label before launch. `supported` means all modeled ways the chosen change could occur met the 80% detection target. `underpowered` means at least one fell short; `inconclusive` means the simulations couldn't settle that question. `not_assessed` gives a reason, such as missing history. These labels help you decide whether to change the design. None determines whether you get an interval after the trial.
+Read `experiment.planning` before launch. `supported` means all modeled scenarios met the 80% detection target; `underpowered` means at least one fell short. `inconclusive` means the simulations couldn't settle it; `not_assessed` gives a reason, such as missing history. These labels describe power, not whether the assignment logs and outcomes are ready. `run` checks those after the trial.
 
 ## Draw the assignments, then measure
 
@@ -107,9 +108,9 @@ offers = pa.table({"person_id": people, "offered": [p in selected for p in peopl
 unoffered = [p for p in people if p not in selected]
 bought = {"D0", "D1", "B1", "E1", "E2", "C2", "F2", "F3"}
 purchases = pa.table({"person_id": unoffered, "outcome": [p in bought for p in unoffered]})
-con.create_table("store_assignment", policy)
-con.create_table("customer_assignment", offers)
-con.create_table("seven_day_purchase", purchases)
+con.create_table("store_assignment_v1", policy)
+con.create_table("customer_assignment_v1", offers)
+con.create_table("seven_day_purchase_v1", purchases)
 ```
 
 </details>
@@ -123,13 +124,11 @@ experiment, reader = from_definitions(
 with reader:
     rows = run(experiment, reader).comparisons
 for row in rows:
+    point = f"{row.policy} minus {row.reference}: {100 * row.estimate:+.1f} points"
     if row.lower is None or row.upper is None:
-        print(f"{row.policy} minus {row.reference}: no interval; {row.unavailable_reason}")
+        print(f"{point}; no interval: {row.unavailable_reason}")
         continue
-    print(
-        f"{row.policy} minus {row.reference}: {100 * row.estimate:+.1f} points; "
-        f"range {100 * row.lower:+.1f} to {100 * row.upper:+.1f}; {row.direction}"
-    )
+    print(f"{point}; range {100 * row.lower:+.1f} to {100 * row.upper:+.1f}; {row.direction}")
 ```
 
 <!-- output -->
@@ -142,6 +141,38 @@ The best estimate for “some” versus “few” is a **25-point increase** in 
 
 If the whole range is above zero the row reports `increase`; if it is below zero, `decrease`. Whether that is good news depends on the outcome. A range that touches zero is inconclusive. All registered comparisons are protected without needing a previous event rate. Each eligible person counts equally; simply pooling everyone who got no offer answers a different question.
 
+Only people in stores that would make **different numbers of offers** can contribute to this spillover. If the two policies would make exactly the same number in every store, the effect is zero by design: the point and both ends of the range are zero. This follows from the assumption that the number of offers matters, not which coworkers get them or what the policy is called. It is not evidence that two genuinely different offers have the same effect.
+
 Warehouse analysis returns totals by region and policy, not rows labeled with a customer or store ID. That is not anonymization: if just one customer went without an offer in a cell, its event count reveals that customer's outcome. Apply your usual access and small-cell reporting rules.
 
 Already have dataframes? Use [`increment.spillover.from_frame`](../api.md#two-stage-spillover) with the same five roles, then `run(experiment, reader)`. No warehouse connection is needed. See the [validation evidence](../reference/validation-evidence.md#ev-spillover-rct2) for the published comparison and the limits of the planning check.
+
+## Keep a result you can reproduce
+
+Spillover results aren't written to Increment's results store. The registration ID identifies the design, not a particular set of purchases. Keep the definitions, the versions of all five tables **as analyzed**, and the comparison rows you reported. This example keeps one DuckDB file and records its checksum so you can verify it later. In a shared warehouse, bind immutable snapshots and retain their version identifiers instead.
+
+```python
+import json
+from dataclasses import asdict
+from hashlib import file_digest
+
+import yaml
+
+declared = yaml.safe_load(study.read_text())
+schema = con.current_database
+con.disconnect()
+with database.open("rb") as snapshot:
+    snapshot_sha256 = file_digest(snapshot, "sha256").hexdigest()
+archive = {
+    "registration_id": registration,
+    "definitions": declared,
+    "database": str(database),
+    "schema": schema,
+    "snapshot_sha256": snapshot_sha256,
+    "comparisons": [asdict(row) for row in rows],
+}
+with Path("store-offers-result.json").open("x") as output:
+    json.dump(archive, output, allow_nan=False, indent=2)
+```
+
+Retain the database file read-only alongside the JSON; a checksum can't recover deleted data. No customer rows are exported from the warehouse to build the report. If purchases are corrected later, keep the original snapshots and report the corrected analysis separately.

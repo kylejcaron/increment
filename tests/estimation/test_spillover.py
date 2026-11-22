@@ -449,13 +449,16 @@ def test_compressed_decimal_roots_for_unequal_groups_shared_reference_and_nuisan
         + ["upper", "upper", "medium", "spare"] * 3
     )
     sizes = [7 + (i * 5) % (7 if i < 32 else 10) for i in range(len(labels))]
-    groups = tuple(_group(i, n, (0, 2, 1, 4), "a" if i < 32 else "b") for i, n in enumerate(sizes))
+    groups = tuple(
+        _group(i, n, (0, 2 if i < 3 else 0, 1, 4), "a" if i < 32 else "b")
+        for i, n in enumerate(sizes)
+    )
     comparisons = (_comparison("medium"), _comparison("upper"))
     quotas = {"a": dict(Counter(labels[:32])), "b": dict(Counter(labels[32:]))}
     pop = _population(groups, quotas, comparisons, alpha=0.13)
     events = [
-        (i * 7 + 3) % (n - (0, 2, 1, 4)[pop.design.policies.index(p)] + 1)
-        for i, (n, p) in enumerate(zip(sizes, labels, strict=True))
+        (i * 7 + 3) % (g.size - g.offers[pop.design.policies.index(p)] + 1)
+        for i, (g, p) in enumerate(zip(pop.groups, labels, strict=True))
     ]
     cells = _cells(pop, labels, events)
     rule = spillover.SpilloverInterval(pop)
@@ -467,7 +470,10 @@ def test_compressed_decimal_roots_for_unequal_groups_shared_reference_and_nuisan
         }
         for c in comparisons:
             p, r = expected[c.policy], expected[c.reference]
-            want = (p[0] - r[1], p[1] - r[0])
+            # Only the first three groups (29 of 659 people) can differ from base
+            # under medium; upper changes the offer count in every group.
+            capacity = Decimal(29) / 659 if c.policy == "medium" else Decimal(1)
+            want = (max(p[0] - r[1], -capacity), min(p[1] - r[0], capacity))
             codes = np.array([[{c.policy: 1, c.reference: 0}.get(label, 2) for label in labels]])
             projected = np.where(codes == 2, 0, events)
             for lo, hi in (rule.bounds(c, cells), rule.bounds_from_counts(c, codes, projected)):
@@ -488,21 +494,50 @@ def test_one_group_and_no_events_have_the_fixed_single_bet_limit():
 
 
 def test_outside_domain_point_does_not_reverse_the_clipped_policy_range():
-    groups = tuple(_group(i, 2 if i < 30 else 100, (0, 1)) for i in range(60))
-    pop = _population(groups)
-    cells = _cells(pop, ["base"] * 30 + ["upper"] * 30, [0] * 30 + [99] * 30)
-    point = estimate_comparison(pop, _comparison(), cells)[0]
-    assert point == pytest.approx(100 / 51)
-    rule = spillover.SpilloverInterval(pop)
-    lo, hi = rule.bounds(_comparison(), cells)
+    labels = ["base"] * 30 + ["upper"] * 30
+    events = [0] * 30 + [99] * 30
     with localcontext() as ctx:
         ctx.prec = 58
         m = _decimal_tail([[Decimal(1)] * 30], [Decimal(1)], Decimal(80))
         # Higher-offer policy's untruncated lower and upper limits both exceed one.
         scale = Decimal(100) / 51
+        family_lower = 1 - scale * (1 - m)
         assert scale * m > 1
-        assert lo[0] == pytest.approx(float(1 - scale * (1 - m)), rel=0, abs=1e-10)
-    assert hi[0] == 1
+        for changed in (30, 1):
+            # Same observed arms in both designs: only unrealized quotas change.
+            groups = tuple(_group(i, 2, (0, 0)) for i in range(30)) + tuple(
+                _group(30 + i, 100, (0 if i < changed else 1, 1)) for i in range(30)
+            )
+            pop = _population(groups)
+            cells = _cells(pop, labels, events)
+            assert estimate_comparison(pop, _comparison(), cells)[0] == pytest.approx(100 / 51)
+            capacity = Decimal(100 * changed) / 3060
+            assert (family_lower <= capacity) == (changed == 30)
+            want = (family_lower if changed == 30 else -capacity, capacity)
+            rule = spillover.SpilloverInterval(pop)
+            dense = rule.bounds_from_counts(
+                _comparison(), np.array([[0] * 30 + [1] * 30]), np.array([events])
+            )
+            for lo, hi in (rule.bounds(_comparison(), cells), dense):
+                assert Decimal.from_float(lo[0]) <= want[0]
+                assert Decimal.from_float(hi[0]) >= want[1]
+                assert (lo[0], hi[0]) == pytest.approx(tuple(map(float, want)), abs=1e-10, rel=0)
+
+
+def test_rounded_contact_with_unattainable_boundary_cannot_establish_direction():
+    pop = _population((_group(0, 2, (0, 1)), _group(1, 4, (0, 0))))
+    # 1/3 rounds down. After outward subtraction the family lower endpoint
+    # touches the displayed cap, but is still strictly greater than the true cap.
+    outer = np.nextafter(1 / 3, np.inf)
+    assert Fraction.from_float(outer) > Fraction(1, 3)
+    above = np.nextafter(outer, np.inf)
+    policy = (np.array([above, 0.0, np.nan]), np.array([1.0, 0.0, 1.0]))
+    reference = (np.array([0.0, above, 0.0]), np.array([0.0, 1.0, 0.0]))
+    lower, upper = spillover.SpilloverInterval._subtract(
+        policy, reference, pop.effect_capacity["upper", "base"]
+    )
+    np.testing.assert_array_equal(lower, [-outer, -outer, np.nan])
+    np.testing.assert_array_equal(upper, [outer, outer, np.nan])
 
 
 @pytest.mark.parametrize(

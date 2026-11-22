@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -301,12 +302,37 @@ class GroupProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class EffectCapacity:
+    """The neighboring floats enclosing the exact fraction of people whose quota changes."""
+
+    inward: float
+    outward: float
+
+
+def _effect_capacity(
+    groups: Sequence[GroupProfile], policy: int, reference: int, people: int
+) -> EffectCapacity:
+    # Only people exposed to a different offer count can change their untreated outcome.
+    movable = sum(g.size for g in groups if g.offers[policy] != g.offers[reference])
+    cap = movable / people
+    numerator, denominator = cap.as_integer_ratio()
+    rounded, exact = numerator * people, movable * denominator
+    return EffectCapacity(
+        math.nextafter(cap, 0.0) if rounded > exact else cap,
+        math.nextafter(cap, 1.0) if rounded < exact else cap,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class SpilloverPopulation:
     """Frozen group profiles and identity of the eligible people and assignment law."""
 
     design: SpilloverDesign
     groups: tuple[GroupProfile, ...]
     roster_digest: str
+    effect_capacity: Mapping[tuple[str, str], EffectCapacity] = field(
+        init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.design, SpilloverDesign):
@@ -333,6 +359,15 @@ class SpilloverPopulation:
         ordered = tuple(sorted(groups, key=lambda g: (g.stratum, g.group_id)))
         object.__setattr__(self, "groups", ordered)
         object.__setattr__(self, "roster_digest", _label(self.roster_digest, "roster_digest"))
+        people = sum(g.size for g in groups)
+        policies = self.design.policies
+        capacities = {
+            (c.policy, c.reference): _effect_capacity(
+                groups, policies.index(c.policy), policies.index(c.reference), people
+            )
+            for c in self.design.comparisons
+        }
+        object.__setattr__(self, "effect_capacity", MappingProxyType(capacities))
 
 
 @dataclass(frozen=True, slots=True)
