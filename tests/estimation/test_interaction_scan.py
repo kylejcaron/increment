@@ -9,6 +9,7 @@ import pytest
 from scipy.stats import t
 
 from increment._overlap_evidence import CELL_IDS, FactorId, OverlapCell, overlap_binary_moments
+from increment.errors import CodedError
 from increment.estimation import interaction_scan as scan_estimation
 from increment.estimation.interaction_scan import evaluate_interaction_scan
 from increment.estimation.overlap import analyze_overlap
@@ -528,9 +529,7 @@ def test_excluded_candidate_retains_evidence_but_never_fits(saved_pair):
     assert detail.evidence.evidence_sha256 == evidence.evidence_sha256
 
 
-def test_joint_combinations_keep_the_registered_family_when_an_arm_is_empty(saved_pair):
-    from itertools import product
-
+def _registered_joint_family(saved_pair):
     from increment.semantics import interaction_scan as contract
 
     capture = _capture(saved_pair, candidates=4)
@@ -560,6 +559,16 @@ def test_joint_combinations_keep_the_registered_family_when_an_arm_is_empty(save
     assert (
         plan.plan_id != original.model_copy(update={"combination_registration": reordered}).plan_id
     )
+    return plan, observed, capture.observed_inventory
+
+
+def test_joint_combinations_keep_the_registered_family_when_an_arm_is_empty(saved_pair):
+    from itertools import product
+
+    from increment.semantics import interaction_scan as contract
+
+    plan, observed, unregistered = _registered_joint_family(saved_pair)
+    sets = plan.combinations
 
     counts_by_size = {3: 20_000, 4: 12_000, 5: 2500}
     rates_by_set = {}
@@ -635,9 +644,24 @@ def test_joint_combinations_keep_the_registered_family_when_an_arm_is_empty(save
     assert without_feed[-1].cells == ()
     assert without_feed[-1].rows[-1].reasons[0].code == "joint_feed_missing"
     not_preregistered = scan_estimation.evaluate_combinations(
-        plan, cells_by_set, coverage="complete", observed=capture.observed_inventory
+        plan, cells_by_set, coverage="complete", observed=unregistered
     )
     contrast = not_preregistered[1].rows[-1]
     assert contrast.estimate == pytest.approx(0.01)
     assert contrast.lower is contrast.upper is contrast.decision is None
     assert contrast.reasons[0].code == "joint_registration_unverified"
+    partial = scan_estimation.evaluate_combinations(
+        plan,
+        cells_by_set,
+        coverage="complete",
+        observed=observed.model_copy(update={"coverage": "partial"}),
+    )
+    assert partial[1].rows[-1].lower is None
+    assert partial[1].rows[-1].reasons[0].code == "incomplete_inventory"
+    cells = cells_by_set[sets[0]]
+    cells_by_set[sets[0]] = (cells[0].model_copy(update={"n_success": None}), *cells[1:])
+    with pytest.raises(CodedError) as malformed:
+        scan_estimation.evaluate_combinations(
+            plan, cells_by_set, coverage="complete", observed=observed
+        )
+    assert malformed.value.context["reason"] == "missing_success_count"

@@ -473,13 +473,19 @@ def evaluate_combinations(
         refuse(SCAN_INVALID, field="combination_feeds", reason="unknown_combination")
     if registration is None:
         return ()
+    if observed is not None:
+        plan.scope.require_cutoff(observed.cutoff)
     reason = None
-    if coverage != "complete":
+    if coverage != "complete" or plan.roster_coverage != "complete":
         reason = "incomplete_inventory"
     elif (
         observed is None or observed.combination_registration_sha256 != registration.registration_id
     ):
         reason = "joint_registration_unverified"
+    elif observed.coverage_for(plan.scope) != "complete" or not plan.matches_observed_roster(
+        observed
+    ):
+        reason = "incomplete_inventory"
     family_size = plan.combination_family_size
     tail = _member_tail(plan.scope.alpha, family_size) if reason is None else None
     if tail == 0.0:
@@ -498,6 +504,8 @@ def evaluate_combinations(
                 )
         for metric in plan.metrics:
             group = tuple(by_metric[metric.name, bits] for bits in assignments) if by_metric else ()
+            for cell in group:
+                cell.validate_metric_kind(binary=metric.kind == "binary_mean")
             target_count = sum(cell.n_assigned for cell in group)
             rows = tuple(
                 _combination_fit(
