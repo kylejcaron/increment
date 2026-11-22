@@ -222,7 +222,11 @@ if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Observational, Randomized
     from increment.semantics.interaction_scan import (
+        CombinationCell,
+        CombinationFeed,
+        CombinationRegistration,
         FocalSourceFacts,
+        InteractionCombination,
         InteractionScanPlan,
         StudyFeedFact,
     )
@@ -392,6 +396,26 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         from increment.query.overlap import interaction_pair_facts
 
         return interaction_pair_facts(self, evidence, tables)
+
+    def interaction_combination_cells(
+        self,
+        catalog: str,
+        plan: InteractionScanPlan,
+        combination: InteractionCombination,
+        feed: CombinationFeed,
+    ) -> tuple[CombinationCell, ...]:
+        """Reduce joint source facts in the qualified DuckDB generation."""
+        from increment.query.overlap import interaction_combination_cells
+
+        return interaction_combination_cells(self, catalog, plan, combination, feed)
+
+    def interaction_combination_registered(
+        self, catalog: str, registration: CombinationRegistration
+    ) -> bool:
+        """Verify the archived joint-comparison registration commitment."""
+        from increment.query.overlap import interaction_combination_registered
+
+        return interaction_combination_registered(self, catalog, registration)
 
     def __init__(
         self,

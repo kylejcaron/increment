@@ -12,7 +12,7 @@ from increment._interaction_binding import (
 )
 from increment._interaction_capture import capture_interaction_scan
 from increment._overlap_sdk import OverlapSdkArchive, sdk_overlap_decision, sdk_overlap_plan
-from increment.estimation.interaction_scan import evaluate_interaction_scan
+from increment.estimation.interaction_scan import evaluate_combinations, evaluate_interaction_scan
 from increment.estimation.overlap import (
     OverlapResult,
     _overlap_joint_decision,
@@ -25,8 +25,11 @@ from increment.power.overlap import (
     prepare_overlap_scenario,
 )
 from increment.semantics.interaction_scan import (
+    CombinationFeed,
+    CombinationRegistration,
     ExperimentIdentity,
     FocalStudy,
+    InteractionCombination,
     InteractionInventory,
     InteractionScanPlan,
     InventoryEntry,
@@ -60,8 +63,11 @@ if TYPE_CHECKING:
     from increment.semantics.overlap import CellId
 
 __all__ = [
+    "CombinationFeed",
+    "CombinationRegistration",
     "ExperimentIdentity",
     "FocalStudy",
+    "InteractionCombination",
     "InteractionDuckDBSource",
     "InteractionInventory",
     "InteractionScanPlan",
@@ -105,7 +111,17 @@ def bind_interaction_scan(
     capture: ScanCapture, *, source: InteractionDuckDBSource
 ) -> VerifiedInteractionAttachment:
     """Verify the scan's supplied data and prepare its evidence for a dashboard."""
-    return bind_scan(capture, source, evaluate_interaction_scan)
+    return bind_scan(
+        capture,
+        source,
+        evaluate_interaction_scan,
+        lambda scan, cells, verified: evaluate_combinations(
+            scan.plan,
+            cells,
+            coverage=scan.coverage,
+            observed=scan.observed_inventory if verified else None,
+        ),
+    )
 
 
 def interaction_duckdb_fact(table: Table) -> SourceFact:

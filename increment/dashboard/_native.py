@@ -231,18 +231,40 @@ class InteractionNativeRow:
     status: str
     tone: InteractionTone
     suffix: str
+    conditioning: str | None = None
 
 
 @dataclass(frozen=True)
 class _InteractionEstimate(ct.Estimate):
     suffixes: tuple[str, ...] = ()
+    compact_rows: tuple[InteractionNativeRow, ...] = ()
 
     def cell(self, ctx: Cell) -> str:
+        if self.compact_rows:
+            return self._compact_cell(ctx)
         if suffix := self.suffixes[ctx.index]:
             return ct.Estimate.cell(
                 replace(self, fmt=lambda value: f"{self.fmt(value)}{suffix}"), ctx
             )
         return super().cell(ctx)
+
+    def _compact_cell(self, ctx: Cell) -> str:
+        row = self.compact_rows[ctx.index]
+        if row.estimate is None:
+            return html.escape(row.status)
+        point = self.fmt(row.estimate)
+        detail = (
+            f"Interval: {self.fmt(row.lower)} to {self.fmt(row.upper)}"
+            if row.lower is not None and row.upper is not None
+            else "No interval"
+        )
+        if row.status:
+            detail += f". {row.status}"
+        return (
+            f'<span class="inc-combination-point inc-interaction-{row.tone}" tabindex="0" '
+            f'aria-label="{html.escape(f"{point}. {detail}", quote=True)}" '
+            f'data-inc-interval="{html.escape(detail, quote=True)}">{html.escape(point)}</span>'
+        )
 
 
 @dataclass(frozen=True)
@@ -278,8 +300,17 @@ def interaction_native(
     number: Callable[[float], str],
     axis_number: Callable[[float], str],
     theme: DashboardTheme,
+    assignment_columns: tuple[str, ...] = (),
 ) -> str:
     """Render stored points and bounds on the same zero-centered metric axis."""
+    state_keys = tuple(f"assignment_{i}" for i in range(len(assignment_columns)))
+    assignment = {
+        key: [
+            _assignment_dot(name, row.conditioning[index]) if row.conditioning is not None else ""
+            for row in rows
+        ]
+        for index, (key, name) in enumerate(zip(state_keys, assignment_columns, strict=True))
+    }
     points, lower, upper = (
         [getattr(row, field) for row in rows] for field in ("estimate", "lower", "upper")
     )
@@ -287,6 +318,7 @@ def interaction_native(
     # A point with no interval is a marker, not a bar with two open ends.
     data = pd.DataFrame(
         {
+            **assignment,
             "row_key": [row.key for row in rows],
             "point": points,
             "lower": lower,
@@ -311,26 +343,45 @@ def interaction_native(
         "point",
         ci=("lower", "upper"),
         fmt=number,
+        ci_style=ct.CIStyle(layout="value_only" if state_keys else "stacked"),
+        compact_rows=tuple(rows) if state_keys else (),
         suffixes=tuple(row.suffix for row in rows),
+    )
+    forest = _InteractionForest(
+        "Interval plot",
+        of=estimate.label,
+        ylim=(-1.0, 1.0),
+        width=theme.charts.segment_forest_width,
+        height=28 if state_keys else theme.charts.segment_forest_height,
+        axis_fmt=lambda tick: axis_number(tick * extent),
+        tones=tuple(row.tone for row in rows),
     )
     table = ct.CoefTable(
         data,
         rows="row_key",
         columns=(
-            estimate,
-            _InteractionForest(
-                "Interval plot",
-                of=estimate.label,
-                ylim=(-1.0, 1.0),
-                width=theme.charts.segment_forest_width,
-                height=theme.charts.segment_forest_height,
-                axis_fmt=lambda tick: axis_number(tick * extent),
-                tones=tuple(row.tone for row in rows),
-            ),
-            ct.Passthrough("Status", "status"),
+            (*[ct.Passthrough(key, key) for key in state_keys], forest, estimate)
+            if state_keys
+            else (estimate, forest, ct.Passthrough("Status", "status"))
         ),
         theme=coeftable_theme(theme),
     )
+    if state_keys:
+        return (
+            table.gt()
+            .cols_hide(columns="row_key")
+            .cols_label(
+                cases={
+                    **{
+                        key: html.escape(label)
+                        for key, label in zip(state_keys, assignment_columns, strict=True)
+                    },
+                    forest.label: "Effect",
+                }
+            )
+            .fmt(lambda value: value, columns=[*state_keys, forest.label, estimate.label])
+            .as_raw_html()
+        )
     labels = {row.key: row.label_html for row in rows}
     return (
         table.gt()
@@ -338,4 +389,14 @@ def interaction_native(
         .fmt(lambda key: labels.get(key, ""), columns="row_key")
         .fmt(lambda value: value, columns=["Status", "Interval plot", estimate.label])
         .as_raw_html()
+    )
+
+
+def _assignment_dot(experiment: str, bit: str) -> str:
+    on = bit == "1"
+    label = html.escape(f"{experiment} {'on' if on else 'off'}", quote=True)
+    return (
+        f'<span class="inc-assignment-dot" role="img" aria-label="{label}" title="{label}" '
+        f'data-inc-assignment="{bit}">'
+        f"{'●' if on else '○'}</span>"
     )

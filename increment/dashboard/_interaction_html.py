@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from increment.dashboard._native import InteractionTone
     from increment.dashboard._theme import DashboardTheme
     from increment.semantics.interaction_scan import (
+        CombinationResult,
+        CombinationRow,
         InteractionScan,
         InventoryEntry,
         PairDetail,
@@ -55,6 +57,14 @@ _REASONS = {
     "unit_namespace_mismatch": "the experiments assigned different kinds of units",
     "unsupported_arms": "the experiment did not have two assignment groups",
     "zero_cell_variance": "all observed outcomes were the same",
+}
+
+_COMBINATION_REASONS = {
+    **_REASONS,
+    "empty_cell": "Missing group",
+    "joint_feed_missing": "Joint assignments were not captured",
+    "joint_registration_unverified": "Registration was not verified",
+    "incomplete_inventory": "The experiment list was not verified",
 }
 
 
@@ -387,3 +397,153 @@ def _observed_value(cell: OverlapCell | None, *, binary: bool) -> str:
             # Decode the captured mean from its stored origin and offset.
             return _number(cell.anchor + cell.mean_delta)
     return "—"
+
+
+def _combination_row(row: CombinationRow, label: str, *, better: str) -> InteractionNativeRow:
+    status = "; ".join(
+        dict.fromkeys(
+            _COMBINATION_REASONS.get(reason.code, "The comparison could not be fully assessed")
+            for reason in row.reasons
+        )
+    )
+    tone: InteractionTone = "neutral"
+    if row.kind == "effect" and row.decision == "detected" and row.estimate is not None:
+        tone = "favorable" if (row.estimate > 0) == (better == "higher") else "unfavorable"
+    return InteractionNativeRow(
+        f"{row.kind}:{row.assignment or ''}",
+        escape(label),
+        row.estimate,
+        row.lower,
+        row.upper,
+        status,
+        tone,
+        "",
+        row.assignment,
+    )
+
+
+def _joint_assignment_table(result: CombinationResult, names: tuple[str, ...]) -> str:
+    if not result.cells:
+        return ""
+    heading = (
+        "".join(f"<th scope='col'>{escape(name)}</th>" for name in names)
+        + "<th scope='col'>Assigned</th><th scope='col'>Observed</th>"
+        "<th scope='col'>Missing</th><th scope='col'>Pending</th>"
+    )
+    body = "".join(
+        "<tr>"
+        + "".join(f"<td>{'On' if bit == '1' else 'Off'}</td>" for bit in cell.cell)
+        + f"<td>{cell.n_assigned:,}</td><td>{cell.n_observed:,}</td>"
+        f"<td>{cell.n_missing:,}</td><td>{cell.n_pending:,}</td></tr>"
+        for cell in result.cells
+    )
+    return (
+        "<details class='metric-detail'><summary>Assignment groups</summary>"
+        "<div class='table-surface inc-combination-groups' tabindex='0'>"
+        f"<table><thead><tr>{heading}</tr></thead><tbody>{body}</tbody></table></div></details>"
+    )
+
+
+def combination_packet(
+    result: CombinationResult,
+    scan: InteractionScan,
+    theme: DashboardTheme,
+) -> dict[str, str]:
+    """Render both questions from saved contrasts, without additional estimation."""
+    entries = (
+        scan.plan.scope.focal.entry,
+        *(candidate.entry for candidate in scan.plan.candidates),
+    )
+    counts = Counter(entry.display_name for entry in entries)
+    names_by_id = {
+        entry.identity: (
+            entry.display_name
+            if counts[entry.display_name] == 1
+            else f"{entry.display_name} ({' / '.join(entry.identity.sort_key)})"
+        )
+        for entry in entries
+    }
+    focal = names_by_id[scan.plan.scope.focal.entry.identity]
+    names = tuple(names_by_id[candidate] for candidate in result.declaration.candidates)
+    last = names[-1]
+    rate = result.metric.kind == "binary_mean"
+    unit = "pp" if rate else result.metric.unit
+
+    def number(value: float) -> str:
+        return _number(value, percent=rate, signed=True, places=2)
+
+    extent = (
+        max(
+            (
+                abs(value)
+                for row in result.rows
+                for value in (row.estimate, row.lower, row.upper)
+                if value is not None
+            ),
+            default=0.0,
+        )
+        or 1.0
+    )
+    effects = [
+        _combination_row(row, "", better=result.metric.better)
+        for row in result.rows
+        if row.kind == "effect"
+    ]
+    contrast_rows = tuple(row for row in result.rows if row.kind != "effect")
+    labels = (f"Without {last}", f"With {last}", "Change (with − without)")
+    change = [
+        _combination_row(row, label, better=result.metric.better)
+        for row, label in zip(contrast_rows, labels, strict=True)
+    ]
+    chart = interaction_native(
+        effects,
+        row_heading="",
+        estimate_heading=unit,
+        extent=extent,
+        number=number,
+        axis_number=number,
+        theme=theme,
+        assignment_columns=names,
+    )
+    detail = interaction_native(
+        change,
+        row_heading="Comparison",
+        estimate_heading=unit,
+        extent=extent,
+        number=number,
+        axis_number=number,
+        theme=theme,
+    )
+    diff = contrast_rows[-1]
+    explanation = (
+        "The full change couldn’t be assessed."
+        if diff.decision is None
+        else "No clear change. That does not rule out interactions among the other experiments."
+        if diff.decision == "none_detected"
+        else "The interval for the change excludes zero."
+    )
+    method = (
+        f"{result.family_size} comparisons were registered across sets and metrics, including "
+        "unavailable comparisons. The adjusted intervals are approximate and apply at the fixed cutoff."
+    )
+    return {
+        "id": "|".join(
+            candidate.key.pair_id
+            for candidate in scan.plan.candidates
+            if candidate.entry.identity in result.declaration.candidates
+        ),
+        "label": " + ".join(names),
+        "slice": last if len(names) > 2 else "",
+        "effects": (
+            f"<h4>When does {escape(focal)} help or hurt?</h4>"
+            f"<p>Effect of adding {escape(focal)} to each combination.</p>"
+            "<p aria-label='Filled dot: on. Hollow dot: off.'>● On &nbsp; ○ Off</p>"
+            f"<div class='table-surface inc-combination-chart' tabindex='0'>{chart}</div>"
+        ),
+        "change": (
+            f"<h4>Did {escape(last)} change how the other experiments work together?</h4>"
+            f"<p>{explanation}</p><div class='table-surface' tabindex='0'>{detail}</div>"
+        ),
+        "groups": _joint_assignment_table(result, (focal, *names)),
+        "method": method,
+    }

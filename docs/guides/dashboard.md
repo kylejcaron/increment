@@ -316,6 +316,27 @@ outcomes or an outcome-picked pair list to fill gaps in a frozen scan. The
 [output reference](../reference/dashboard-output.md#interaction-family-and-intervals)
 explains what counts in the adjustment, even when it isn't displayed.
 
+#### Compare a combination
+
+Open **Explore → Interactions → Compare a combination** if the publisher
+supplied a joint study. Choose a set of three to five experiments.
+**Effect by combination** shows what happens when you add the dashboard
+experiment to each setting. Filled dots mean on; hollow dots mean off.
+Focus or hover over an estimate to read its exact interval.
+
+**Change in interaction** asks whether the last experiment changed how the
+others work together. An interval that includes zero leaves that change
+uncertain; it does not rule out an interaction among the others.
+
+```bash
+uv run --extra demo --extra dashboard python examples/interaction_discovery.py interaction_combinations.html --combinations
+```
+
+Open the exported HTML and try the five-experiment set. The all-on group is
+missing, so its effect has no point. **Assignment groups** shows what was
+measured. To supply your own data, see
+[the joint input contract](../api.md#register-comparisons-of-three-to-five-experiments).
+
 ## 5. Export the captured result
 
 Open **Report** for the full-readout CSV or **Print / Save PDF**. Report keeps

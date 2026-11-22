@@ -82,7 +82,7 @@ from increment.dashboard._html import (
     temporal_refusal_table,
     unavailable_point_note,
 )
-from increment.dashboard._interaction_html import interaction_tables
+from increment.dashboard._interaction_html import combination_packet, interaction_tables
 from increment.dashboard._references import (
     ReferenceCatalog,
     build_reference_catalog,
@@ -390,6 +390,11 @@ def _interaction_payload(
             "defaultScale": "relative" if relative.has_interaction else "absolute",
             "absoluteLabel": f"{_label(metric)} in {fragments.absolute_unit}",
             "pairs": pairs,
+            "combinations": [
+                combination_packet(result, scan, snapshot.config.theme)
+                for result in snapshot.combinations
+                if result.metric.name == metric
+            ],
         }
     return {
         "status": status or "No planned interaction metrics are shown in this view.",

@@ -45,6 +45,10 @@ function render({ model, el }) {
         scale: asString(interaction.scale),
         focus: asString(interaction.focus),
         focusPair: asString(interaction.focusPair),
+        combination: asString(interaction.combination),
+        combinationQuestion: asString(interaction.combinationQuestion),
+        combinationFilter: asString(interaction.combinationFilter),
+        combinationOpen: interaction.combinationOpen === true,
       } : null;
       model.set("exploratory_metrics", message.metrics.map(String));
       model.save_changes();

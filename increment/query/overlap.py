@@ -17,7 +17,7 @@ import sqlglot
 from duckdb import DuckDBPyConnection
 from duckdb import Error as DuckDBError
 from ibis.backends.duckdb import Backend
-from ibis.common.exceptions import IbisError
+from ibis.common.exceptions import IbisError, TableNotFound
 from ibis.expr import datatypes as dt
 from ibis.expr import types as ir
 from sqlglot import exp
@@ -35,6 +35,7 @@ from increment._overlap_evidence import (
     MAX_EXACT_INTEGER,
     OVERLAP_RELATIONS,
     PREASSIGNED_GATE_COLUMNS,
+    OverlapColumn,
     overlap_binary_moments,
 )
 from increment._overlap_refusals import (
@@ -44,7 +45,15 @@ from increment._overlap_refusals import (
     SCAN_INVALID,
 )
 from increment.errors import refuse
-from increment.semantics.interaction_scan import FocalSourceFacts, SourceFact, StudyFeedFact
+from increment.semantics.interaction_scan import (
+    CombinationCell,
+    CombinationFeed,
+    CombinationRegistration,
+    FocalSourceFacts,
+    InteractionCombination,
+    SourceFact,
+    StudyFeedFact,
+)
 from increment.semantics.overlap import (
     OverlapCapture,
     OverlapCell,
@@ -56,7 +65,7 @@ from increment.semantics.overlap import (
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
-    from increment._overlap_evidence import CellId, FactorId, FeedRole, OverlapColumn
+    from increment._overlap_evidence import CellId, FactorId, FeedRole
     from increment.semantics.interaction_scan import InteractionScanPlan
     from increment.semantics.overlap import OverlapFactor, OverlapMetric
 
@@ -1013,7 +1022,7 @@ def _aggregate_capture(
     return _union_sections((proof.cross_join(_tallies(spine)), delivery_counts, cells)), checks
 
 
-def _make_cell(metric: OverlapMetric, cell: CellId, row: Mapping[str, Any]) -> OverlapCell:
+def _cell_values(metric: OverlapMetric, row: Mapping[str, Any]) -> dict[str, Any]:
     assigned = row.get("n_assigned", 0)
     observed = row.get("n_observed", 0)
     pending = row.get("n_pending", 0)
@@ -1034,18 +1043,21 @@ def _make_cell(metric: OverlapMetric, cell: CellId, row: Mapping[str, Any]) -> O
                 refuse(NUMERIC_RANGE, metric=metric.name, quantity="m2")
             if anchor == 0.0:
                 anchor = 0.0
-    return OverlapCell(
-        metric=metric.name,
-        cell=cell,
-        n_assigned=assigned,
-        n_observed=observed,
-        n_missing=assigned - observed - pending,
-        n_pending=pending,
-        n_success=success,
-        anchor=anchor,
-        mean_delta=delta,
-        m2=m2,
-    )
+    return {
+        "metric": metric.name,
+        "n_assigned": assigned,
+        "n_observed": observed,
+        "n_missing": assigned - observed - pending,
+        "n_pending": pending,
+        "n_success": success,
+        "anchor": anchor,
+        "mean_delta": delta,
+        "m2": m2,
+    }
+
+
+def _make_cell(metric: OverlapMetric, cell: CellId, row: Mapping[str, Any]) -> OverlapCell:
+    return OverlapCell(cell=cell, **_cell_values(metric, row))
 
 
 def _evidence(
@@ -1120,3 +1132,148 @@ def capture_overlap_warehouse(
         pass
     # A driver error can contain source values, SQL literals or filesystem paths.
     _unbound()
+
+
+_JOINT_ROSTER = (OverlapColumn("unit_id", "string"), OverlapColumn("assignment", "string"))
+_JOINT_OUTCOMES = (
+    OverlapColumn("unit_id", "string"),
+    OverlapColumn("metric", "string"),
+    OverlapColumn("definition_sha256", "string"),
+    OverlapColumn("value", "float", nullable=True),
+    OverlapColumn("finalized_at", "timestamp", nullable=True),
+)
+
+
+def _joint_relation(
+    backend: Backend, catalog: str, fact: SourceFact, columns: tuple[OverlapColumn, ...], role: str
+) -> ir.Table:
+    source_catalog, schema, name = fact.coordinate
+    if source_catalog != catalog:
+        refuse(SCAN_INVALID, field="combination_feeds", reason="different_source_generation")
+    table = backend.table(name, database=(source_catalog, schema))
+    if _native_interaction_fact(backend, table) != fact:
+        refuse(SCAN_INVALID, field="combination_feeds", reason="combination_evidence_mismatch")
+    types = table.schema()
+    if any(col.name not in types or not _valid_type(col.kind, types[col.name]) for col in columns):
+        _evidence_error(role, "invalid_column_type", 1)
+    return table.select(*(col.name for col in columns))
+
+
+def _joint_moments(
+    roster: ir.Table,
+    outcomes: ir.Table,
+    plan: InteractionScanPlan,
+    combination: InteractionCombination,
+) -> tuple[ir.Table, _Checks]:
+    checks = _Checks()
+    binary_metrics = [m.name for m in plan.metrics if m.kind == "binary_mean"]
+    checks.add(
+        roster,
+        "roster",
+        invalid_value=_scalars(roster, _JOINT_ROSTER),
+        invalid_assignment=~roster.assignment.isin(combination.assignments),
+    )
+    checks.add(
+        outcomes,
+        "outcomes",
+        invalid_value=_scalars(outcomes, _JOINT_OUTCOMES)
+        | outcomes.value.isnan()
+        | outcomes.value.isinf()
+        | (outcomes.metric.isin(binary_metrics) & ~outcomes.value.isin((0.0, 1.0))),
+        unknown_metric=~outcomes.metric.isin([m.name for m in plan.metrics]),
+        definition_mismatch=outcomes.definition_sha256
+        != ibis.cases(*((outcomes.metric == m.name, m.definition_sha256) for m in plan.metrics)),
+        finalized_after_cutoff=outcomes.finalized_at > plan.scope.cutoff,
+        finalized_before_end=outcomes.finalized_at < plan.scope.end,
+    )
+    for role, table, keys in (
+        ("roster", roster, ("unit_id",)),
+        ("outcomes", outcomes, ("unit_id", "metric")),
+    ):
+        distinct = table.group_by(*keys).aggregate(n=table.count())
+        checks.count(distinct.filter(distinct.n > 1), role, "duplicate_key")
+    checks.count(outcomes.anti_join(roster, "unit_id"), "outcomes", "orphan_unit")
+    proof = checks.summary()
+    names = cast("ir.ArrayScalar", ibis.literal([m.name for m in plan.metrics]))
+    skeleton = _guard(roster, proof.filter(_zero_violations(proof))).cross_join(
+        names.unnest().name("metric").as_table()
+    )
+    joined = skeleton.left_join(outcomes, ["unit_id", "metric"]).select(
+        cell=skeleton.assignment,
+        metric=skeleton.metric,
+        value=outcomes.value,
+        observed=outcomes.finalized_at.notnull() & outcomes.value.notnull(),
+        pending=outcomes.unit_id.notnull() & outcomes.finalized_at.isnull(),
+    )
+    stats = _cell_moments(
+        joined.select(
+            joined.cell,
+            joined.metric,
+            joined.pending,
+            joined.observed,
+            success=joined.observed & (joined.value == 1.0),
+            mean_value=(~joined.metric.isin(binary_metrics) & joined.observed).ifelse(
+                joined.value.cast("float64"), ibis.null("float64")
+            ),
+        )
+    )
+    return _union_sections((proof, stats)), checks
+
+
+def interaction_combination_cells(
+    source: Any,
+    catalog: str,
+    plan: InteractionScanPlan,
+    combination: InteractionCombination,
+    feed: CombinationFeed,
+) -> tuple[CombinationCell, ...]:
+    """Reduce native joint assignments rooted in the already qualified generation."""
+    backend = source._session.con
+    try:
+        roster = _joint_relation(backend, catalog, feed.roster, _JOINT_ROSTER, "roster")
+        outcomes = _joint_relation(backend, catalog, feed.outcomes, _JOINT_OUTCOMES, "outcomes")
+        expr, checks = _joint_moments(roster, outcomes, plan, combination)
+        with backend.con.cursor() as cursor:
+            cursor.execute("SET TimeZone = 'UTC'")
+            cursor.execute("SET default_collation = ''")
+            records = _query(cursor, backend, expr)
+    except (DuckDBError, IbisError, TableNotFound, OSError, SqlglotError, KeyError):
+        refuse(SCAN_INVALID, field="combination_feeds", reason="joint_relation_unavailable")
+    (proof,) = (row for row in records if row["section"] == 0)
+    checks.check(proof)
+    by_key = {(row["metric"], row["cell"]): row for row in records if row["section"] == 1}
+    assignments = combination.assignments
+    return tuple(
+        CombinationCell(cell=bits, **_cell_values(metric, by_key.get((metric.name, bits), {})))
+        for metric in plan.metrics
+        for bits in assignments
+    )
+
+
+def interaction_combination_registered(
+    source: Any, catalog: str, registration: CombinationRegistration
+) -> bool:
+    """Check the sealed publisher's pre-entry receipt, not the caller's timestamp."""
+    backend = source._session.con
+    try:
+        table = backend.table(
+            "increment_interaction_combination_registration", database=(catalog, "main")
+        )
+        types = table.schema()
+        if (
+            "registration_sha256" not in types
+            or not types["registration_sha256"].is_string()
+            or "registered_at" not in types
+            or not _valid_type("timestamp", types["registered_at"])
+            or _native_interaction_fact(backend, table) is None
+        ):
+            return False
+        matching = table.filter(table.registration_sha256 == registration.registration_id)
+        receipt = matching.aggregate(
+            rows=matching.count(),
+            exact=matching.count(where=matching.registered_at == registration.registered_at),
+        )
+        (record,) = _query(backend.con, backend, receipt)
+        return record["rows"] == record["exact"] == 1
+    except (DuckDBError, IbisError, TableNotFound, OSError, SqlglotError, KeyError):
+        return False

@@ -221,3 +221,34 @@ test("live refresh clears a missing pair without clearing its still-eligible met
   assert.equal(get("interaction-detail").hidden, true);
   assert.notEqual(dashboard.document.activeElement?.id, "interaction-detail-heading");
 });
+
+test("a saved joint selection restores the chosen question and hides on triggered", () => {
+  const dashboard = page((payload) => {
+    payload.interactions.metrics.save.combinations = [
+      { id: "three", label: "Cards and filters", effects: "Conditional effects for three" },
+      { id: "four", label: "Cards, filters and suggestions", effects: "Conditional effects for four",
+        change: "Compare the three-experiment interaction with suggestions off and on",
+        slice: "Suggestions", method: "18 planned rows in the joint family" },
+    ];
+  });
+  const get = (id) => dashboard.document.getElementById(id);
+  dashboard.dispatchHostMessage({
+    source: "inc-dashboard-host", type: "restore", view: "explore", interaction: {
+      metric: "save", combination: "four", combinationQuestion: "change", combinationOpen: true,
+    },
+  });
+  assert.equal(get("interaction-combinations").open, true);
+  assert.equal(get("interaction-combination").value, "four");
+  assert.equal(get("interaction-combination-question").value, "change");
+  assert.equal(get("interaction-combination-body").innerHTML,
+    "Compare the three-experiment interaction with suggestions off and on");
+  assert.equal(get("interaction-combination-filter-label").hidden, true);
+  get("interaction-combination-question").value = "effects";
+  get("interaction-combination-question").dispatch("change");
+  assert.equal(get("interaction-combination-filter-label").hidden, false);
+  assert.equal(get("interaction-combination-method").textContent, "18 planned rows in the joint family");
+  dashboard.populationSelect.value = "triggered";
+  dashboard.populationSelect.dispatch("change");
+  assert.equal(get("interaction-combinations").hidden, true);
+  assert.equal(get("interaction-combination-body").innerHTML, "");
+});

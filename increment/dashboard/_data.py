@@ -97,7 +97,7 @@ if TYPE_CHECKING:
     from increment._interaction_binding import VerifiedInteractionAttachment
     from increment.estimation.results import LiftEstimate
     from increment.kernel.experiment import Experiment
-    from increment.semantics.interaction_scan import InteractionScan
+    from increment.semantics.interaction_scan import CombinationResult, InteractionScan
     from increment.semantics.models import Experiment as ExperimentDefinition
     from increment.semantics.models import Metric, MultiplicitySpec
     from increment.tables import ReadoutValue
@@ -347,6 +347,7 @@ class DashboardSnapshot:
     view_multiplicity: MultiplicitySpec | None = None
     interactions: InteractionScan | None = None
     interaction_source_unverified: bool = False
+    combinations: tuple[CombinationResult, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metrics", tuple(self.metrics))
@@ -953,6 +954,9 @@ def _prepare_dashboard(
         view_multiplicity=definition.plan.view_multiplicity,
         interactions=scan,
         interaction_source_unverified=interactions is not None and scan is None,
+        combinations=interactions.combinations
+        if interactions is not None and scan is not None
+        else (),
     )
 
 

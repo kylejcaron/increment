@@ -113,6 +113,38 @@ without dashboard binding. It does not return the verified attachment
 required by `prepare_dashboard`. See the
 [offline example](guides/dashboard.md#check-for-interactions-with-other-experiments).
 
+#### Register comparisons of three to five experiments
+
+Use `InteractionCombination` to list two to four other binary experiments in
+the order you want to show them. The dashboard experiment is implicit and
+comes first; the last experiment is the one varied in **Change in interaction**.
+Publish a `CombinationRegistration` before entry with these sets, the scan's
+`scope` and `metrics`, and `registered_at`. Pass it as
+`combination_registration=` to `freeze_interaction_scan`.
+
+Put the registration's `registration_id` in the observed inventory as
+`combination_registration_sha256` and in the sealed file's native
+`main.increment_interaction_combination_registration` table alongside the
+original `registered_at` timestamp. Without both receipts the dashboard can
+show estimates, but not adjusted intervals or detections.
+
+In `SourceGenerationManifest.combination_feeds`, publish one `CombinationFeed`
+per set with the same ordered candidates and two native table fingerprints:
+
+- `roster`: `unit_id` and a string `assignment` of zeroes and ones in the
+  registered order, one row per jointly eligible assigned unit.
+- `outcomes`: `unit_id`, `metric`, `definition_sha256`, nullable floating-point
+  `value`, and nullable `finalized_at`. Use UTC timezone-aware microsecond
+  timestamps. A finalized zero is an outcome; an absent row is missing and
+  an unfinalized row is pending.
+
+The publisher must derive each roster from the original independent
+assignments at common entry, not from observed outcomes, exposure, or
+pairwise counts. The file and table fingerprints bind the inputs but cannot
+prove the assignment law or the completeness of the roster. Then bind and
+prepare the dashboard as above. See the
+[worked example](guides/dashboard.md#compare-a-combination).
+
 ## Compatibility policy
 
 This policy defines the compatibility promise beginning with release 1.0.0. It
@@ -221,6 +253,10 @@ numerical corrections in release notes; compatibility does not preserve wrong
 values.
 
 ### Current changes
+
+- The dashboard can compare registered sets of three to five concurrent
+  experiments from a sealed joint roster and outcomes. Pair scans and the
+  **Possible interaction** badge are unchanged.
 
 - DuckDB accumulates daily ratio statistics more accurately. A sparse day
   with valid data can now report an interval instead of refusing because
