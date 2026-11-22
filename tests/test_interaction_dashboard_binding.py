@@ -9,7 +9,7 @@ import pyarrow as pa
 import pytest
 
 from increment import from_definitions, load_definitions
-from increment.dashboard import DashboardConfig, prepare_dashboard, readout_csv
+from increment.dashboard import DashboardConfig, dashboard_html, prepare_dashboard, readout_csv
 from increment.errors import CodedError
 from increment.overlap import (
     ExperimentIdentity,
@@ -27,7 +27,13 @@ from increment.overlap import (
     interaction_metric_sha256,
 )
 from increment.query.session import SourceSnapshotEvidence
-from tests.test_dashboard_capture import EXPERIMENTS, FACT_SOURCES, _event_rows, _write_definitions
+from tests.test_dashboard_capture import (
+    EXPERIMENTS,
+    FACT_SOURCES,
+    _event_rows,
+    _page_payload,
+    _write_definitions,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -442,8 +448,6 @@ def _joint_manifest(path, con, experiment, capture):
 
 
 def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path):
-    from increment.dashboard._app import build_payload
-
     definitions = _write_definitions(tmp_path / "definitions")
     path = tmp_path / "facts.duckdb"
     _publish(path)
@@ -493,9 +497,8 @@ def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path)
             ("pending_outcomes", "001"),
             ("missing_outcomes", "101"),
         }
-        packet = build_payload(experiment, snapshot=snapshot)["interactions"]["metrics"][
-            metric.name
-        ]
+        payload = _page_payload(dashboard_html(experiment, snapshot=snapshot))
+        packet = payload["interactions"]["metrics"][metric.name]
         combination_view = packet["combinations"][0]
         assert 'aria-label="Cards off"' in combination_view["effects"]
         assert 'aria-label="Filters on"' in combination_view["effects"]
